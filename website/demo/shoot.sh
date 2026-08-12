@@ -292,6 +292,21 @@ demo_input escape
 demo_input click "32,489"
 sleep 0.5
 
+echo "==> guide: opened tmux session previews"
+palette "Open Terminal Settings" true sheet
+sleep 1
+demo_input session-preview-live
+dismiss_sheet
+palette "add-session-filters"
+sleep 3
+palette "scratch"
+sleep 3
+palette "add-session-filters"
+sleep 3
+demo_input press "Show session preview for scratch"
+sleep 5
+capture_state guide-session-previews.png
+
 echo "==> guide: remote host settings"
 palette "Open Hosts Settings" true sheet
 sleep 2

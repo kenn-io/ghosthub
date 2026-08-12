@@ -33,6 +33,27 @@ do in a native macOS terminal.
 Ghosthub avoids inheriting launcher-terminal `EDITOR` and `VISUAL` values that
 can unexpectedly change zsh keymaps. It sets `TERM_PROGRAM` to `ghosthub`.
 
+## Session previews
+
+**Settings → Terminal → Session previews** controls optional sidebar previews
+for tmux presentations you have already opened in a workspace:
+
+- **Off** is the default and performs no preview rendering.
+- **Efficient** keeps a bitmap of the latest frame captured on disclosure or
+  when you navigate away. It does not poll.
+- **Live** polls expanded tiles at no more than two frames per second. Ghosthub
+  limits live rendering to four inactive previews across all windows.
+
+The preference applies immediately. Each workspace window remembers its own
+expanded rows in memory, even while previews are Off. A fixed 16:10 tile shows
+the complete captured frame with letterboxing when the terminal has another
+aspect ratio. Reconnecting sessions show a placeholder until Ghosthub verifies
+that the replacement client is attached to the same server-side session.
+
+Previews reuse retained tmux clients only. They do not open sessions, create an
+extra tmux or SSH client, persist terminal pixels to disk, or reconstruct tmux
+panes and layout.
+
 ## Tmux themes
 
 The **Tmux Theme** picker in Settings supplies colors for new sessions created

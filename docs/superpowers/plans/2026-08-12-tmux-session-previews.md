@@ -568,19 +568,19 @@ Commit: `Show expandable tmux previews in the sidebar`
 - Modify: `website/demo/shoot.sh`
 - Modify: `Tests/test_demo_scripts.py`
 
-- [ ] **Step 1: Update the ownership invariant everywhere it appears**
+- [x] **Step 1: Update the ownership invariant everywhere it appears**
 
 Replace “one client” wording with: each scene has at most one active interactive native presentation; already-opened retained tmux clients may remain noninteractive and render only for explicitly enabled previews. State that tmux still owns panes/layout/history and previews never create another client.
 
-- [ ] **Step 2: Document user behavior and cost**
+- [x] **Step 2: Document user behavior and cost**
 
 In website session and terminal-configuration docs, describe Settings -> Terminal -> Session previews, Off/Efficient/Live behavior, already-opened-only scope, per-scene disclosure memory, the two-frames-per-second ceiling, the four-inactive-preview application cap, reconnect placeholders, and bitmap letterboxing.
 
-- [ ] **Step 3: Add the visual Guide section and asset contract**
+- [x] **Step 3: Add the visual Guide section and asset contract**
 
 Import `guide-session-previews.png` in `website/src/pages/overview.astro`, add a session-previews section with a `ZoomableImage`, and add the filename to `Tests/test_demo_scripts.py`. Extend `website/demo/shoot.sh` to enable Live through the deterministic demo controller, open two synthetic tmux sessions, return to the first, expand the inactive retained row, wait for a frame, and capture `guide-session-previews.png` without real data.
 
-- [ ] **Step 4: Run documentation and demo-script tests**
+- [x] **Step 4: Run documentation and demo-script tests**
 
 Run: `make python-test`
 
@@ -588,7 +588,7 @@ Run: `make docs-build`
 
 Expected: both pass; the docs build may use its allowed placeholder path until the acceptance screenshot is published.
 
-- [ ] **Step 5: Commit docs and deterministic capture support**
+- [x] **Step 5: Commit docs and deterministic capture support**
 
 Commit: `Document tmux session previews`
 

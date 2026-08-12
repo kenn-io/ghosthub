@@ -1669,7 +1669,9 @@ struct WorkspaceSidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(
-                        isExpanded ? "Hide session preview" : "Show session preview"
+                        isExpanded
+                            ? "Hide session preview for \(tmuxSession.name)"
+                            : "Show session preview for \(tmuxSession.name)"
                     )
                     .accessibilityIdentifier(
                         "tmux-preview-disclosure-\(tmuxSession.id)"

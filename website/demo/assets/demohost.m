@@ -210,6 +210,28 @@ static BOOL DemoPressLabel(id element, NSString *label, NSUInteger depth) {
   return DemoPressLabelWalk(element, label, depth, &budget);
 }
 
+static NSPopUpButton *DemoFindPopUpButtonWithItem(
+    NSView *view, NSString *itemTitle) {
+  if ([view isKindOfClass:[NSPopUpButton class]]) {
+    NSPopUpButton *button = (NSPopUpButton *)view;
+    if ([button itemWithTitle:itemTitle] != nil) return button;
+  }
+  for (NSView *subview in view.subviews) {
+    NSPopUpButton *match = DemoFindPopUpButtonWithItem(subview, itemTitle);
+    if (match != nil) return match;
+  }
+  return nil;
+}
+
+static BOOL DemoSelectPopUpItem(NSWindow *window, NSString *itemTitle) {
+  NSPopUpButton *button = window == nil
+      ? nil
+      : DemoFindPopUpButtonWithItem(window.contentView, itemTitle);
+  if (button == nil || !button.enabled) return NO;
+  [button selectItemWithTitle:itemTitle];
+  return [button sendAction:button.action to:button.target];
+}
+
 static BOOL DemoContainsTextWalk(id element, NSString *text,
                                  NSUInteger depth, NSUInteger *budget) {
   if (element == nil || depth > 20 || *budget == 0) return NO;
@@ -577,6 +599,12 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                       });
                 });
           });
+    } else if ([action isEqualToString:@"session-preview-live"]) {
+      BOOL selected = DemoSelectPopUpItem(DemoEventWindow(), @"Live");
+      [self acknowledge:requestID
+                success:selected
+                message:selected ? @"Live session previews selected"
+                                 : @"Session previews picker was not available"];
     } else if ([action isEqualToString:@"text"]) {
       BOOL inserted = DemoInsertText(text);
       [self acknowledge:requestID

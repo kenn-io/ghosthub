@@ -119,7 +119,9 @@ remote-client mode.
 Herdr owns workspaces, tabs, panes, layout, history, key bindings, terminal
 state, and the processes inside each session. Ghosthub owns discovery,
 whole-session lifecycle requests, and the disposable client presentation. Each
-scene may present one tmux, Herdr, or Zellij client, never more than one.
+scene has at most one active interactive tmux, Herdr, or Zellij presentation.
+Already-opened tmux clients may remain retained and noninteractive for
+explicitly enabled previews; previews never create another client.
 Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
 client. Ghosthub never reconstructs or otherwise controls Herdr themes,
 workspaces, tabs, panes, agents, plugins, installation, updates, configuration,

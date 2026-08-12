@@ -69,6 +69,37 @@ the session disappears, Herdr becomes unavailable, or the client reports a
 non-transport failure. **Reconnect Now** skips the current delay; host-key or
 authentication problems open the existing connection review flow.
 
+## Preview opened tmux sessions
+
+Choose **Settings → Terminal → Session previews**, then select **Efficient** or
+**Live**. A disclosure control appears only beside tmux sessions that you have
+already opened in that workspace. Expand it to show a fixed 16:10 bitmap
+preview; wider or taller terminal frames are letterboxed rather than cropped.
+Selecting the preview follows the same route as selecting its session row.
+
+![Ghosthub sidebar showing an expanded live preview for an already-opened tmux session](assets/guide-session-previews.png)
+
+The modes trade resource use for freshness:
+
+- **Off** is the default. It hides preview controls, clears cached frames, and
+  avoids preview GPU work.
+- **Efficient** captures when you expand a preview and when its tmux
+  presentation stops being active. It does not poll in the background.
+- **Live** refreshes expanded previews at no more than two frames per second.
+  Across the app, at most four inactive tmux surfaces can render live at once;
+  an additional tile reports that the live-preview limit was reached.
+
+Expansion choices stay in memory for each workspace window, including while
+the mode is Off, and reset when that window closes. Hiding the sidebar releases
+that window's live slots. Briefly switching away from Ghosthub releases all
+live slots until the app is active again.
+
+Previews never attach to unopened sessions and never add a tmux or SSH client.
+During reconnect, Ghosthub hides the cached frame behind a reconnecting
+placeholder until the replacement client proves the same tmux server, session,
+and creation identity. Closing the presentation, or detecting a replacement
+session under the same name, removes its frame.
+
 When Ghosthub restores a remote Zellij presentation after relaunch, it validates
 the active session using one frozen SSH route and rechecks that route before
 attaching. If the SSH configuration changed during validation, restoration

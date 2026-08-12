@@ -29,9 +29,12 @@ indicated on its worktree or directory row. Cached sessions do not remain live
 while a host is unreachable. Kwt-owned sessions are hidden from the separate tmux session
 group by default, with a Worktrees setting that exposes those duplicate
 entries.
-Tmux, Herdr, and Zellij sessions are each presented through their ordinary native
-whole-session client. The selected backend alone owns and renders its internal
-layout, and each scene presents at most one such client.
+Tmux, Herdr, and Zellij sessions are each presented through their ordinary
+native whole-session client. The selected backend alone owns its internal
+layout. Each scene has at most one active interactive presentation.
+Already-opened tmux clients may remain retained and noninteractive, and may
+render only when the user explicitly enables session previews. A preview never
+creates another client or reconstructs tmux panes, layout, or history.
 
 After an attachment reaches the connected state, Ghosthub keeps that exact
 session warm for the remainder of the app launch. One app-scoped, in-memory
@@ -451,8 +454,12 @@ remain visible, and explicit reloads publish a user-visible result.
 
 ## Session Attachment
 
-Each scene owns one native presentation slot shared by tmux, Herdr, and Zellij.
-Selecting either backend disposes the other client before opening the new one.
+Each scene owns one active interactive presentation slot shared by tmux, Herdr,
+and Zellij. Selecting Herdr or Zellij hides any active retained tmux client
+before opening the peer presentation; selecting another tmux session hides the
+previous retained tmux client. Already-opened retained tmux clients may render
+as noninteractive previews when the user enables them, but previewing never
+opens another client.
 Herdr discovery and attachment are supported on the local Mac and configured
 remote POSIX hosts, not experimental Windows/psmux hosts. Ghosthub shows
 running and stopped sessions. Ordinary open and restoration are attach-only;
@@ -505,6 +512,13 @@ client. Ghosthub never projects tmux windows or panes into a Swift split tree.
 Changing selection only hides the previous retained client. Pressing Cmd-W
 closes the active client, while closing its workspace window or the app closes
 every client retained by that scene; none of these paths runs `kill-session`.
+Optional sidebar previews copy fixed-size bitmap frames from these retained
+clients. Efficient mode captures on disclosure and navigation away. Live mode
+may keep an inactive surface mounted behind the visible workspace content and
+polls at no more than two frames per second. A process-wide budget permits at
+most four such inactive live surfaces. Parked surfaces preserve their terminal
+size and cannot receive focus, pointer input, or accessibility actions. The
+active surface stays in the detail area and is copied without reparenting.
 An explicit, confirmed Kill Session action
 targets the exact session (`=<name>:`) on its selected default or protected
 socket only when discovery or a currently connected active attachment
