@@ -8827,6 +8827,7 @@ final class WorkspaceSceneModel: ObservableObject {
             ),
             verifiedPreviewIdentity: discoveredIdentity
         )
+        objectWillChange.send()
         retainedTmuxPresentations[key] = presentation
         retainedTmuxPresentationKeysByHandle[handle.id] = key
         borrowedTmuxConnectionStates[handle.id] = .connecting
@@ -9338,6 +9339,9 @@ final class WorkspaceSceneModel: ObservableObject {
         let key = TmuxPresentationKey(selection)
         if activeBorrowedTmuxSelection == selection {
             prepareActiveTmuxPreviewForDeactivation()
+        }
+        if retainedTmuxPresentations[key] != nil {
+            objectWillChange.send()
         }
         guard let presentation = retainedTmuxPresentations.removeValue(
             forKey: key

@@ -1,6 +1,48 @@
 import Foundation
+import GhosthubSettings
 import GhosthubWorkspace
 import SwiftUI
+
+struct TmuxSessionPreviewExpansionState: Equatable {
+    private(set) var expandedSessionIDs: Set<String> = []
+
+    func isExpanded(_ sessionID: String) -> Bool {
+        expandedSessionIDs.contains(sessionID)
+    }
+
+    mutating func setExpanded(_ expanded: Bool, sessionID: String) {
+        if expanded {
+            expandedSessionIDs.insert(sessionID)
+        } else {
+            expandedSessionIDs.remove(sessionID)
+        }
+    }
+}
+
+enum TmuxSessionPreviewRowPresentation {
+    static let aspectRatio: CGFloat = 16 / 10
+
+    static func canDisclose(
+        mode: SessionPreviewMode,
+        sessionID: String,
+        previewableSessionIDs: Set<String>
+    ) -> Bool {
+        mode != .off && previewableSessionIDs.contains(sessionID)
+    }
+
+    static func isVisible(
+        mode: SessionPreviewMode,
+        sessionID: String,
+        previewableSessionIDs: Set<String>,
+        expansion: TmuxSessionPreviewExpansionState
+    ) -> Bool {
+        canDisclose(
+            mode: mode,
+            sessionID: sessionID,
+            previewableSessionIDs: previewableSessionIDs
+        ) && expansion.isExpanded(sessionID)
+    }
+}
 
 struct WorkspaceSessionActionPresentation: Equatable {
     static let controlWidth: CGFloat = 30
@@ -302,6 +344,12 @@ struct WorkspaceSidebarView: View {
     let activeZellijSession: WorkspaceZellijSessionSelection?
     let activeTmuxSessionIsConnected: Bool
     let workingTmuxSessionIDs: Set<String>
+    let previewableTmuxSessionIDs: Set<String>
+    let sessionPreviewMode: SessionPreviewMode
+    let tmuxSessionPreviewBuilder:
+        ((WorkspaceTmuxSessionSelection, @escaping () -> Void) -> AnyView?)?
+    let onTmuxSessionPreviewExpanded:
+        (WorkspaceTmuxSessionSelection, Bool) -> Void
     let onOpenTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onOpenHerdrSession: (WorkspaceHerdrSessionSelection) -> Void
     let onOpenZellijSession: (WorkspaceZellijSessionSelection) -> Void
@@ -338,6 +386,8 @@ struct WorkspaceSidebarView: View {
     @State private var draggedSidebarItem: WorkspaceSidebarDragItem?
     @State private var reorderIndicator:
         WorkspaceSidebarReorderIndicator?
+    @State private var tmuxPreviewExpansion =
+        TmuxSessionPreviewExpansionState()
     @AppStorage("workspaceSidebarDisclosureStateV2")
     private var disclosureState = ""
     @AppStorage("workspaceSidebarCollapsedItems")
@@ -357,6 +407,14 @@ struct WorkspaceSidebarView: View {
         activeZellijSession: WorkspaceZellijSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
         workingTmuxSessionIDs: Set<String> = [],
+        previewableTmuxSessionIDs: Set<String> = [],
+        sessionPreviewMode: SessionPreviewMode = .off,
+        tmuxSessionPreviewBuilder:
+        ((WorkspaceTmuxSessionSelection, @escaping () -> Void) -> AnyView?)? = nil,
+        onTmuxSessionPreviewExpanded: @escaping (
+            WorkspaceTmuxSessionSelection,
+            Bool
+        ) -> Void = { _, _ in },
         onOpenTmuxSession: @escaping (
             WorkspaceTmuxSessionSelection
         ) -> Void = { _ in },
@@ -414,6 +472,10 @@ struct WorkspaceSidebarView: View {
         self.activeZellijSession = activeZellijSession
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
+        self.previewableTmuxSessionIDs = previewableTmuxSessionIDs
+        self.sessionPreviewMode = sessionPreviewMode
+        self.tmuxSessionPreviewBuilder = tmuxSessionPreviewBuilder
+        self.onTmuxSessionPreviewExpanded = onTmuxSessionPreviewExpanded
         self.onOpenTmuxSession = onOpenTmuxSession
         self.onOpenHerdrSession = onOpenHerdrSession
         self.onOpenZellijSession = onOpenZellijSession
@@ -691,7 +753,10 @@ struct WorkspaceSidebarView: View {
                                 }
                             }
                             ForEach(section.directoryWorkspaceRows) { row in
-                                sidebarButton(row)
+                                tmuxPreviewRow(
+                                    row,
+                                    content: AnyView(sidebarButton(row))
+                                )
                             }
                         }
                         .padding(.vertical, 2)
@@ -813,16 +878,15 @@ struct WorkspaceSidebarView: View {
                 name: orderedName
             )
         }
-        return AnyView(
-            reorderableRow(
-                sidebarButton(row),
-                item: item,
-                groupItems: groupItems,
-                orderRawValue: tmuxSessionOrderRawValue
-            ) { updatedRawValue in
-                tmuxSessionOrderRawValue = updatedRawValue
-            }
-        )
+        let content = AnyView(reorderableRow(
+            sidebarButton(row),
+            item: item,
+            groupItems: groupItems,
+            orderRawValue: tmuxSessionOrderRawValue
+        ) { updatedRawValue in
+            tmuxSessionOrderRawValue = updatedRawValue
+        })
+        return tmuxPreviewRow(row, content: content)
     }
 
     private func herdrSessionButton(
@@ -999,12 +1063,14 @@ struct WorkspaceSidebarView: View {
                         hostID: hostID,
                         name: name
                     )
-                    selection.select(
-                        row.target,
-                        in: snapshot,
-                        visibility: visibility
+                    Self.activateTmuxSession(
+                        tmuxSelection,
+                        rowTarget: row.target,
+                        selection: &selection,
+                        snapshot: snapshot,
+                        visibility: visibility,
+                        onOpen: onOpenTmuxSession
                     )
-                    onOpenTmuxSession(tmuxSelection)
                     return
                 }
                 if case let .worktree(worktreeID) = row.target,
@@ -1464,7 +1530,7 @@ struct WorkspaceSidebarView: View {
                 isRowHovered: hoveredWorktreeID == worktreeID,
                 isActionHovered: isActionHovered
             )
-        return AnyView(
+        let content = AnyView(
             sidebarButton(
                 row,
                 reservedTrailingActionWidth:
@@ -1567,6 +1633,98 @@ struct WorkspaceSidebarView: View {
                 )
             )
         )
+        return tmuxPreviewRow(row, content: content)
+    }
+
+    private func tmuxPreviewRow(
+        _ row: WorkspaceSidebarRow,
+        content: AnyView
+    ) -> AnyView {
+        guard let tmuxSession = tmuxSessionSelection(for: row),
+              TmuxSessionPreviewRowPresentation.canDisclose(
+                  mode: sessionPreviewMode,
+                  sessionID: tmuxSession.id,
+                  previewableSessionIDs: previewableTmuxSessionIDs
+              )
+        else { return content }
+        let isExpanded = tmuxPreviewExpansion.isExpanded(tmuxSession.id)
+        return AnyView(
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 0) {
+                    Button {
+                        tmuxPreviewExpansion.setExpanded(
+                            !isExpanded,
+                            sessionID: tmuxSession.id
+                        )
+                        onTmuxSessionPreviewExpanded(
+                            tmuxSession,
+                            !isExpanded
+                        )
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .frame(width: 18, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(
+                        isExpanded ? "Hide session preview" : "Show session preview"
+                    )
+                    .accessibilityIdentifier(
+                        "tmux-preview-disclosure-\(tmuxSession.id)"
+                    )
+
+                    content
+                }
+                if TmuxSessionPreviewRowPresentation.isVisible(
+                    mode: sessionPreviewMode,
+                    sessionID: tmuxSession.id,
+                    previewableSessionIDs: previewableTmuxSessionIDs,
+                    expansion: tmuxPreviewExpansion
+                ),
+                    let preview = tmuxSessionPreviewBuilder?(
+                        tmuxSession,
+                        {
+                            Self.activateTmuxSession(
+                                tmuxSession,
+                                rowTarget: row.target,
+                                selection: &selection,
+                                snapshot: snapshot,
+                                visibility: visibility,
+                                onOpen: onOpenTmuxSession
+                            )
+                        }
+                    ) {
+                    preview
+                        .aspectRatio(
+                            TmuxSessionPreviewRowPresentation.aspectRatio,
+                            contentMode: .fit
+                        )
+                        .padding(.leading, 18)
+                        .padding(.trailing, 8)
+                        .accessibilityIdentifier(
+                            "tmux-preview-\(tmuxSession.id)"
+                        )
+                }
+            }
+        )
+    }
+
+    static func activateTmuxSession(
+        _ tmuxSession: WorkspaceTmuxSessionSelection,
+        rowTarget: WorkspaceNavigationTarget,
+        selection: inout WorkspaceSelection,
+        snapshot: WorkspaceSnapshot,
+        visibility: WorktreeVisibility,
+        onOpen: (WorkspaceTmuxSessionSelection) -> Void
+    ) {
+        selection.select(
+            rowTarget,
+            in: snapshot,
+            visibility: visibility
+        )
+        onOpen(tmuxSession)
     }
 
     private func reorderableRow<Content: View>(

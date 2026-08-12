@@ -336,7 +336,10 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         startCapture(key, reason: .navigationAway, completion: completion)
     }
 
-    func prepareToActivate(_ key: TmuxPreviewKey) {
+    func prepareToActivate(
+        _ key: TmuxPreviewKey,
+        activate: (() -> Void)? = nil
+    ) {
         guard presentations[key] != nil else { return }
         invalidate(key)
         invalidateActivationDelay()
@@ -349,7 +352,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                       let presentation = presentations[key]
                 else { return }
                 unparkAndRelease(key)
-                presentation.activate()
+                (activate ?? presentation.activate)()
                 activatingKeys.remove(key)
                 publish(key)
             }

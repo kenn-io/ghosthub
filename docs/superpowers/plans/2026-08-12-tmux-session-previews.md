@@ -507,17 +507,17 @@ Commit: `Fence previews to retained tmux identities`
 - Modify: `Tests/UI/SidebarToggleStabilityTests.swift`
 - Modify: `Tests/TerminalSmoke/TerminalSurfacePreviewTests.swift`
 
-- [ ] **Step 1: Add failing pure UI tests**
+- [x] **Step 1: Add failing pure UI tests**
 
 Add a small row-presentation model test proving disclosure is shown only when mode is not Off and the exact retained presentation ID is eligible. Cover memory-only expansion, Off preserving the expansion set while hiding controls, 16:10 sizing, and preview click using the same tmux selection callback as the row.
 
-- [ ] **Step 2: Run UI tests and confirm failure**
+- [x] **Step 2: Run UI tests and confirm failure**
 
 Run: `swift test --filter 'WorkspaceSidebarViewTests|SidebarToggleStabilityTests'`
 
 Expected: missing preview presentation model/builders.
 
-- [ ] **Step 3: Extend the UI boundary with opaque builders**
+- [x] **Step 3: Extend the UI boundary with opaque builders**
 
 Add to `WorkspaceDisplayState` the set of eligible retained presentation IDs. Add to `ContentBuilders`:
 
@@ -529,23 +529,23 @@ public let tmuxSessionPreviewParkingBuilder: (() -> AnyView?)?
 
 Add to `InteractionHandlers` a `setTmuxSessionPreviewExpanded` callback and a preview-selection callback that lets the scene coordinator complete unpark handoff before ordinary activation. Keep `GhosthubUI` independent of `GhosthubTerminal` and `GhosthubTmux`.
 
-- [ ] **Step 4: Add per-scene expansion and tile layout**
+- [x] **Step 4: Add per-scene expansion and tile layout**
 
 In `WorkspaceSidebarView`, store `@State private var expandedTmuxPreviewIDs: Set<String> = []`. Wrap eligible tmux rows in a vertical container with a disclosure button. When expanded, render the opaque preview view at `.aspectRatio(16 / 10, contentMode: .fit)`. The tile button calls the preview-selection callback. Use the exact selection `id` (`hostID:socketName:name`) instead of sidebar row UUID.
 
-- [ ] **Step 5: Install the covered parking host in the visible detail column**
+- [x] **Step 5: Install the covered parking host in the visible detail column**
 
 Change `terminalWorkspaceContent` to a `ZStack`: optional parking host at the back, an opaque `WorkspaceSurfaceColor` cover, then the normal detail content. The parking host remains in the same visible `NSWindow`, but cannot be seen or hit. Forward `isSidebarVisible` changes to the scene coordinator; hiding one sidebar releases only that scene.
 
-- [ ] **Step 6: Wire builders in `WorkspaceWindow`**
+- [x] **Step 6: Wire builders in `WorkspaceWindow`**
 
 Pass `settingsStore.sessionPreviewMode`, `sceneModel.previewableTmuxSessionIDs`, preview tile builder, parking builder, expansion changes, and ordered preview activation into `RootView`. Observe settings mode changes in the scene model/coordinator so mode transitions take effect immediately.
 
-- [ ] **Step 7: Add the real click-handoff smoke test**
+- [x] **Step 7: Add the real click-handoff smoke test**
 
 Mount an inactive surface in the parking host, invoke the preview selection path, and assert final capture -> unpark/occlude -> ordinary `BorrowedTmuxSessionView` mount -> parked-state clear -> focus request. Assert at every checkpoint that the surface has at most one superview.
 
-- [ ] **Step 8: Verify, format, and commit**
+- [x] **Step 8: Verify, format, and commit**
 
 Run: `swift test --filter 'WorkspaceSidebarViewTests|SidebarToggleStabilityTests|TerminalSurfacePreviewTests'`
 

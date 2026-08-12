@@ -7,10 +7,11 @@ struct TmuxSessionPreviewTile: View {
     @ObservedObject var coordinator: TmuxSessionPreviewCoordinator
     let key: TmuxPreviewKey
     let sessionName: String
+    let onActivate: () -> Void
 
     var body: some View {
         Button {
-            coordinator.prepareToActivate(key)
+            coordinator.prepareToActivate(key, activate: onActivate)
         } label: {
             ZStack(alignment: .bottomLeading) {
                 previewContent
@@ -96,37 +97,56 @@ struct TmuxSessionPreviewTile: View {
 }
 
 struct TmuxSessionPreviewParkingView: NSViewRepresentable {
-    final class Adapter {
+    final class ParkingContainer: NSView {
+        let parkingHost = LivePreviewParkingHost(frame: .zero)
         weak var previewCoordinator: TmuxSessionPreviewCoordinator?
 
-        init(_ previewCoordinator: TmuxSessionPreviewCoordinator) {
+        init(previewCoordinator: TmuxSessionPreviewCoordinator) {
             self.previewCoordinator = previewCoordinator
+            super.init(frame: .zero)
+            parkingHost.frame = bounds
+            parkingHost.autoresizingMask = [.width, .height]
+            addSubview(parkingHost)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                previewCoordinator?.removeParkingHost(parkingHost)
+            } else if let previewCoordinator {
+                previewCoordinator.installParkingHost(parkingHost)
+            }
         }
     }
 
     let previewCoordinator: TmuxSessionPreviewCoordinator
 
-    func makeCoordinator() -> Adapter {
-        Adapter(previewCoordinator)
-    }
-
-    func makeNSView(context: Context) -> LivePreviewParkingHost {
-        let host = LivePreviewParkingHost(frame: .zero)
-        previewCoordinator.installParkingHost(host)
-        return host
+    func makeNSView(context: Context) -> ParkingContainer {
+        ParkingContainer(previewCoordinator: previewCoordinator)
     }
 
     func updateNSView(
-        _ nsView: LivePreviewParkingHost,
+        _ nsView: ParkingContainer,
         context: Context
     ) {
-        previewCoordinator.installParkingHost(nsView)
+        guard nsView.previewCoordinator !== previewCoordinator else { return }
+        nsView.previewCoordinator?.removeParkingHost(nsView.parkingHost)
+        nsView.previewCoordinator = previewCoordinator
+        if nsView.window != nil {
+            previewCoordinator.installParkingHost(nsView.parkingHost)
+        }
     }
 
     static func dismantleNSView(
-        _ nsView: LivePreviewParkingHost,
-        coordinator: Adapter
+        _ nsView: ParkingContainer,
+        coordinator: ()
     ) {
-        coordinator.previewCoordinator?.removeParkingHost(nsView)
+        nsView.previewCoordinator?.removeParkingHost(nsView.parkingHost)
+        nsView.previewCoordinator = nil
     }
 }

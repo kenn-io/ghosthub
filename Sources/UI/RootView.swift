@@ -533,7 +533,7 @@ public struct RootView: View {
                                 * sidebarVisibilityProgress
                         )
 
-                    terminalWorkspaceContent
+                    terminalWorkspaceWithPreviewParking
                         .frame(
                             maxWidth: .infinity,
                             maxHeight: .infinity
@@ -557,6 +557,12 @@ public struct RootView: View {
             .coordinateSpace(name: Self.columnSpace)
             .onChange(of: isSidebarVisible) { _, visible in
                 animateSidebarVisibility(visible)
+                handlers.setTmuxSessionPreviewSidebarVisible?(visible)
+            }
+            .onAppear {
+                handlers.setTmuxSessionPreviewSidebarVisible?(
+                    isSidebarVisible
+                )
             }
         }
     }
@@ -649,6 +655,14 @@ public struct RootView: View {
             display.activeTmuxSessionIsConnected,
             workingTmuxSessionIDs:
             display.workingTmuxSessionIDs,
+            previewableTmuxSessionIDs:
+            display.previewableTmuxSessionIDs,
+            sessionPreviewMode: display.sessionPreviewMode,
+            tmuxSessionPreviewBuilder:
+            content.tmuxSessionPreviewBuilder,
+            onTmuxSessionPreviewExpanded: { session, expanded in
+                handlers.setTmuxSessionPreviewExpanded?(session, expanded)
+            },
             onOpenTmuxSession: { session in
                 activateTmuxSession(session)
             },
@@ -1747,6 +1761,18 @@ public struct RootView: View {
         guard let session = selectedWorktreeTmuxSession else { return }
         guard activeTmuxSession != session else { return }
         activateTmuxSession(session)
+    }
+
+    private var terminalWorkspaceWithPreviewParking: some View {
+        ZStack {
+            if let parkingView = content.tmuxSessionPreviewParkingBuilder?() {
+                parkingView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            WorkspaceSurfaceColor.color
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            terminalWorkspaceContent
+        }
     }
 
     @ViewBuilder

@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubSettings
 import GhosthubTestSupport
 import GhosthubWorkspace
 import Testing
@@ -6,6 +7,83 @@ import Testing
 
 @Suite("Workspace sidebar session actions")
 struct WorkspaceSidebarViewTests {
+    @Test("tmux preview disclosure requires mode and retained identity")
+    func tmuxPreviewDisclosureEligibility() {
+        let sessionID = "host:default:opened"
+
+        #expect(!TmuxSessionPreviewRowPresentation.canDisclose(
+            mode: .off,
+            sessionID: sessionID,
+            previewableSessionIDs: [sessionID]
+        ))
+        #expect(TmuxSessionPreviewRowPresentation.canDisclose(
+            mode: .efficient,
+            sessionID: sessionID,
+            previewableSessionIDs: [sessionID]
+        ))
+        #expect(!TmuxSessionPreviewRowPresentation.canDisclose(
+            mode: .live,
+            sessionID: sessionID,
+            previewableSessionIDs: []
+        ))
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio == 1.6)
+    }
+
+    @Test("Off hides previews without discarding scene expansion")
+    func tmuxPreviewExpansionSurvivesOff() {
+        let sessionID = "host:default:opened"
+        var state = TmuxSessionPreviewExpansionState()
+        state.setExpanded(true, sessionID: sessionID)
+
+        #expect(state.isExpanded(sessionID))
+        #expect(!TmuxSessionPreviewRowPresentation.isVisible(
+            mode: .off,
+            sessionID: sessionID,
+            previewableSessionIDs: [sessionID],
+            expansion: state
+        ))
+        #expect(TmuxSessionPreviewRowPresentation.isVisible(
+            mode: .live,
+            sessionID: sessionID,
+            previewableSessionIDs: [sessionID],
+            expansion: state
+        ))
+    }
+
+    @MainActor
+    @Test("preview activation uses the ordinary tmux row route")
+    func previewActivationUsesTmuxRowRoute() {
+        let hostID = UUID()
+        let session = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "opened"
+        )
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(
+                id: hostID,
+                tmuxSessions: [
+                    .init(name: session.name, managed: false, windows: []),
+                ]
+            ),
+        ])
+        var selection = WorkspaceSelection(selectedHostID: hostID)
+        var opened: [WorkspaceTmuxSessionSelection] = []
+
+        WorkspaceSidebarView.activateTmuxSession(
+            session,
+            rowTarget: .tmuxSession(hostID: hostID, name: session.name),
+            selection: &selection,
+            snapshot: snapshot,
+            visibility: .default,
+            onOpen: { opened.append($0) }
+        )
+
+        #expect(opened == [session])
+        #expect(selection.selectedHostID == hostID)
+        #expect(selection.selectedProjectID == nil)
+        #expect(selection.selectedWorktreeID == nil)
+    }
+
     @Test("section actions target their exact host")
     func sectionActionsTargetExactHost() throws {
         let host = HostSummary.fixture(

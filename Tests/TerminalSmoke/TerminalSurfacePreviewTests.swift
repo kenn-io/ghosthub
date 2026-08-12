@@ -1,8 +1,12 @@
 import AppKit
 import CoreVideo
 import GhosttyKit
+import GhosthubTmux
+import GhosthubTransport
 import IOSurface
+import SwiftUI
 import XCTest
+@testable import GhosthubApp
 @testable import GhosthubTerminal
 @testable import GhosthubTerminalSupport
 
@@ -300,6 +304,162 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         }
         XCTAssertFalse(view.isParkedForPreview)
         XCTAssertFalse(host.contains(view))
+    }
+
+    func testPreviewActivationUnparksBeforeTheNormalTmuxMount() async throws {
+        let surface = try makeSurface()
+        surface.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+        let root = NSView(frame: surface.frame)
+        let window = NSWindow(
+            contentRect: root.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = root
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        let parkingHost = LivePreviewParkingHost(frame: root.bounds)
+        root.addSubview(parkingHost)
+        let key = TmuxPreviewKey(
+            hostID: UUID(),
+            name: "previewed",
+            socketName: nil
+        )
+        let handle = BorrowedTmuxSessionHandle(
+            id: UUID(),
+            hostID: key.hostID,
+            name: key.name,
+            surfaceID: UUID(),
+            socketName: nil
+        )
+        var isActive = false
+        var mount: NSHostingView<BorrowedTmuxSessionView>?
+        let coordinator = TmuxSessionPreviewCoordinator(
+            mode: .live,
+            budget: LivePreviewBudget(limit: 1),
+            capture: { presentation, _ in
+                XCTAssertTrue(
+                    presentation.surface()?.superview === parkingHost
+                )
+                return TerminalSurfaceSnapshot(
+                    image: NSImage(size: CGSize(width: 32, height: 20)),
+                    captureToken: TerminalSurfaceCaptureToken(
+                        surfaceID: 1,
+                        seed: 1
+                    )
+                )
+            }
+        )
+        coordinator.installParkingHost(parkingHost)
+        coordinator.register(.init(
+            key: key,
+            surface: { surface },
+            handleID: { handle.id },
+            generation: { nil },
+            identity: {
+                TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$1",
+                    createdAt: "1000"
+                )
+            },
+            connectionState: { .connected },
+            isActive: { isActive },
+            activate: {}
+        ))
+        coordinator.setExpanded(true, for: key)
+        XCTAssertTrue(surface.superview === parkingHost)
+        XCTAssertTrue(surface.isParkedForPreview)
+
+        coordinator.prepareToActivate(key) {
+            XCTAssertNil(surface.superview)
+            XCTAssertFalse(surface.isParkedForPreview)
+            isActive = true
+            let presented = BorrowedTmuxSessionView(
+                handle: handle,
+                hostName: "This Mac",
+                isRemoteHost: false,
+                connectionState: .connected,
+                surface: { surface },
+                onCloseRequest: {},
+                onRetryRequest: {},
+                onHostSettingsRequest: {}
+            )
+            let hostingView = NSHostingView(rootView: presented)
+            hostingView.frame = root.bounds
+            root.addSubview(hostingView)
+            mount = hostingView
+        }
+        await coordinator.waitForPendingWork()
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertNotNil(mount)
+        XCTAssertFalse(surface.superview === parkingHost)
+        XCTAssertNotNil(surface.superview)
+        XCTAssertFalse(surface.isParkedForPreview)
+        XCTAssertFalse(surface.suppressAutoFocus)
+        XCTAssertTrue(isActive)
+    }
+
+    func testParkingAdapterWaitsForAVisibleWorkspaceWindow() throws {
+        let surface = try makeSurface()
+        surface.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+        let key = TmuxPreviewKey(
+            hostID: UUID(),
+            name: "park-after-mount",
+            socketName: nil
+        )
+        let coordinator = TmuxSessionPreviewCoordinator(
+            mode: .live,
+            budget: LivePreviewBudget(limit: 1),
+            capture: { _, _ in nil }
+        )
+        coordinator.register(.init(
+            key: key,
+            surface: { surface },
+            handleID: { UUID() },
+            generation: { nil },
+            identity: {
+                TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$1",
+                    createdAt: "1000"
+                )
+            },
+            connectionState: { .connected },
+            isActive: { false },
+            activate: {}
+        ))
+        coordinator.setExpanded(true, for: key)
+        let container = TmuxSessionPreviewParkingView.ParkingContainer(
+            previewCoordinator: coordinator
+        )
+
+        XCTAssertNil(surface.superview)
+
+        let root = NSView(frame: surface.frame)
+        let window = NSWindow(
+            contentRect: root.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = root
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        container.frame = root.bounds
+        root.addSubview(container)
+
+        XCTAssertTrue(
+            surface.superview === container.parkingHost
+        )
+        XCTAssertTrue(surface.isParkedForPreview)
+
+        container.removeFromSuperview()
+
+        XCTAssertNil(surface.superview)
+        XCTAssertFalse(surface.isParkedForPreview)
     }
 
     private func makeSurface() throws -> TerminalSurfaceView {
