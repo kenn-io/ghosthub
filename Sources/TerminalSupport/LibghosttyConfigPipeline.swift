@@ -289,6 +289,8 @@ public struct LibghosttyConfigPipeline {
             updated.append("\n")
         }
         updated.append("\n")
+        // libghostty loads recursive config-file entries after the root file,
+        // so included user values still override these root-level fallbacks.
         for setting in missingDefaults {
             updated.append("\(setting.key) = \(setting.value)\n")
         }
