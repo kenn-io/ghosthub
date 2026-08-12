@@ -466,6 +466,7 @@ public enum WorkspaceSidebarModel {
         herdrSessionOrderRawValue: String = "",
         zellijSessionOrderRawValue: String = ""
     ) -> [WorkspaceSidebarSection] {
+        RenderWorkCounters.countSidebarSectionComputation()
         let worktreeOrder = WorkspaceSidebarOrder(
             rawValue: worktreeOrderRawValue
         )

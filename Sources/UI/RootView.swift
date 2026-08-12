@@ -119,6 +119,7 @@ public struct RootView: View {
         display.activeZellijSession
     }
     public var body: some View {
+        let _ = RenderWorkCounters.countRootBodyEvaluation()
         contentWithNotifications
             .onAppear {
                 reviewSessionConnectionRequestIfNeeded()
