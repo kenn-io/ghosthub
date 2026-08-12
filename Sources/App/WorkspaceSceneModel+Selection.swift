@@ -52,6 +52,10 @@ extension WorkspaceSceneModel {
         invocation: ApplicationShortcutInvocation = .keyEvent
     ) -> Bool {
         guard invocation == .menu || isFocusedWindow else { return false }
+        if ApplicationShortcutMenuModel.menuOwnedActions.contains(action),
+           hasAttachedApplicationSheet {
+            return false
+        }
         switch action {
         case .nextSibling:
             return navigateSibling(step: 1)
@@ -120,6 +124,12 @@ extension WorkspaceSceneModel {
         terminalCoordinator.surfaceEntries().contains {
             $0.view.hasEffectiveKeyboardFocus
         }
+    }
+
+    private var hasAttachedApplicationSheet: Bool {
+        isSettingsPresented
+            || isCommandPalettePresented
+            || isLogViewerPresented
     }
 
     private var activeNavigationTarget: WorkspaceNavigationTarget {

@@ -224,4 +224,31 @@ struct WorkspaceApplicationShortcutTests {
         #expect(!model.performApplicationShortcut(.newHerdrSession))
         await model.shutdown()
     }
+
+    @Test("menu-owned shortcuts read sheet eligibility at dispatch time")
+    func menuOwnedShortcutsUseLiveSheetEligibility() async throws {
+        let environment = try setupHostEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot
+        )
+        model.isFocusedWindow = true
+        model.isSettingsPresented = true
+
+        #expect(!model.performApplicationShortcut(.toggleSidebar))
+        #expect(!model.performApplicationShortcut(
+            .toggleSidebar,
+            invocation: .menu
+        ))
+        #expect(!model.performApplicationShortcut(.commandPalette))
+        #expect(!model.isCommandPalettePresented)
+
+        model.isSettingsPresented = false
+
+        #expect(model.performApplicationShortcut(.toggleSidebar))
+        #expect(model.performApplicationShortcut(.commandPalette))
+        #expect(model.isCommandPalettePresented)
+        await model.shutdown()
+    }
 }

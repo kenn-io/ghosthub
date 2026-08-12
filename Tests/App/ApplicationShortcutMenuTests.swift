@@ -102,27 +102,51 @@ struct ApplicationShortcutMenuTests {
 
         #expect(ApplicationShortcutMenuModel.keyboardBinding(
             binding,
+            for: .newWorktree,
             sceneIsFocused: true,
             hasAttachedSheet: false,
             actionIsAvailable: true
         ) == binding)
         #expect(ApplicationShortcutMenuModel.keyboardBinding(
             binding,
+            for: .newWorktree,
             sceneIsFocused: false,
             hasAttachedSheet: false,
             actionIsAvailable: true
         ) == nil)
         #expect(ApplicationShortcutMenuModel.keyboardBinding(
             binding,
+            for: .newWorktree,
             sceneIsFocused: true,
             hasAttachedSheet: true,
             actionIsAvailable: true
         ) == nil)
         #expect(ApplicationShortcutMenuModel.keyboardBinding(
             binding,
+            for: .newWorktree,
             sceneIsFocused: true,
             hasAttachedSheet: false,
             actionIsAvailable: false
+        ) == nil)
+    }
+
+    @Test("menu-owned bindings remain registered across live eligibility changes")
+    func menuOwnedBindingsRemainRegistered() throws {
+        let binding = try ApplicationKeyBinding(parsing: "cmd+b")
+
+        #expect(ApplicationShortcutMenuModel.keyboardBinding(
+            binding,
+            for: .toggleSidebar,
+            sceneIsFocused: false,
+            hasAttachedSheet: true,
+            actionIsAvailable: false
+        ) == binding)
+        #expect(ApplicationShortcutMenuModel.keyboardBinding(
+            nil,
+            for: .toggleSidebar,
+            sceneIsFocused: true,
+            hasAttachedSheet: false,
+            actionIsAvailable: true
         ) == nil)
     }
 }

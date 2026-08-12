@@ -71,6 +71,34 @@ struct ShortcutMonitorTests {
         #expect(actions.isEmpty)
     }
 
+    @Test("command palette stays owned by the menu key equivalent")
+    func commandPalettePassesThroughToMenu() throws {
+        var actions: [ApplicationShortcutAction] = []
+        let monitor = ShortcutMonitor(
+            shortcuts: { ApplicationShortcutCatalog.compiledDefaults },
+            perform: { action in
+                actions.append(action)
+                return true
+            }
+        )
+        let keyDown = try #require(keyEvent(
+            modifiers: [.command, .shift], characters: "p", keyCode: 35
+        ))
+        let keyRepeat = try #require(keyEvent(
+            modifiers: [.command, .shift], characters: "p", keyCode: 35,
+            isRepeat: true
+        ))
+        let keyUp = try #require(keyEvent(
+            type: .keyUp,
+            modifiers: [.command, .shift], characters: "p", keyCode: 35
+        ))
+
+        #expect(monitor.processForTesting(keyDown) === keyDown)
+        #expect(monitor.processForTesting(keyRepeat) == nil)
+        #expect(monitor.processForTesting(keyUp) == nil)
+        #expect(actions.isEmpty)
+    }
+
     @Test("menu shortcut ownership is shared across scene monitors")
     func menuOwnershipIsSharedAcrossMonitors() throws {
         let first = ShortcutMonitor(
@@ -127,11 +155,11 @@ struct ShortcutMonitorTests {
             modifiers: [.control], characters: "\t", keyCode: 48,
             isRepeat: true
         ))
-        let paletteKeyDown = try #require(keyEvent(
-            modifiers: [.command, .shift], characters: "p", keyCode: 35
+        let reloadKeyDown = try #require(keyEvent(
+            modifiers: [.command, .shift], characters: ",", keyCode: 43
         ))
-        let palette = try #require(keyEvent(
-            modifiers: [.command, .shift], characters: "p", keyCode: 35,
+        let reloadRepeat = try #require(keyEvent(
+            modifiers: [.command, .shift], characters: ",", keyCode: 43,
             isRepeat: true
         ))
         var actions: [ApplicationShortcutAction] = []
@@ -143,18 +171,18 @@ struct ShortcutMonitorTests {
         )
 
         #expect(monitor.processForTesting(navigation) == nil)
-        #expect(monitor.processForTesting(paletteKeyDown) == nil)
-        #expect(monitor.processForTesting(palette) == nil)
-        #expect(actions == [.nextSibling, .commandPalette])
+        #expect(monitor.processForTesting(reloadKeyDown) == nil)
+        #expect(monitor.processForTesting(reloadRepeat) == nil)
+        #expect(actions == [.nextSibling, .reloadConfiguration])
     }
 
     @Test("unavailable non-repeating shortcuts pass through every key-down")
     func unavailableNonRepeatingShortcutPassesThrough() throws {
         let keyDown = try #require(keyEvent(
-            modifiers: [.command, .shift], characters: "p", keyCode: 35
+            modifiers: [.command, .shift], characters: ",", keyCode: 43
         ))
         let keyRepeat = try #require(keyEvent(
-            modifiers: [.command, .shift], characters: "p", keyCode: 35,
+            modifiers: [.command, .shift], characters: ",", keyCode: 43,
             isRepeat: true
         ))
         var attempts = 0
