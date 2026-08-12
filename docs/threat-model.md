@@ -373,6 +373,20 @@ second hard link. Protected directories receive the same hard-link check for
 every regular file beneath them. This narrows Git-metadata injection but does
 not make shared worktree content safe to execute later on the host.
 
+Direct hook symlinks are resolved: every in-mount chain element and canonical
+regular-file target is protected, while an invalid chain fails closed. Because
+Apple mount plans are immutable after creation, every Start repeats full
+preflight and requires its canonical result to match the persisted creation
+plan. A changed layout, config/include/hook target, symlink resolution, hard
+link, or missing target blocks Start and requires explicit recreation.
+
+The Apple boundary does not recursively protect interpreters, scripts,
+libraries, or data that an already-protected hook or Git config command refers
+to from the writable worktree. A sandbox can change those shared files, and a
+later host Git command may execute them automatically. The claimed protection
+covers direct Git metadata, direct hook entries, and direct hook symlink
+targets, not their arbitrary transitive runtime dependencies.
+
 Docker sbx has a documented partial boundary. Its standard `.git/hooks`
 directory is mounted read-only as defense in depth, but `.git/config` remains
 writable because sbx 0.38 does not accept file workspaces. The read-only hooks
@@ -381,8 +395,9 @@ directory is not a security barrier: a sandboxed process can set
 `include.path`, and filter, diff, or merge drivers. The sbx boundary therefore
 protects the rest of the Mac from direct sandbox filesystem access but does not
 protect against host-side code execution through this repository's Git
-metadata. A layout-aware hash baseline reports Git indirection, config, or
-resolved hook-path drift at detach and later reconciliation. Stop and Delete
+metadata. A layout-aware hash baseline reports Git indirection, config,
+resolved hook-path, and in-mount direct hook symlink-target drift at detach and
+later reconciliation. Stop and Delete
 fence and terminate provider execution before their final comparison. Detected
 drift and inability to capture or compare the baseline both become independent
 security notices that survive sandbox and worktree deletion until the user

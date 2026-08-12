@@ -50,7 +50,7 @@ lowest-denominator security claim.
 | Capability | Apple `container` | Docker `sbx` |
 | --- | --- | --- |
 | Worktree and Git metadata | Direct same-path mounts | Direct same-path workspaces |
-| Git indirection, repository config, and hook paths | Read-only when the preflight can protect every required path | Host-side Git execution remains possible through writable Git metadata |
+| Git indirection, repository config, hook entries, and direct hook symlink targets | Read-only when the preflight can protect every required path; transitive worktree dependencies remain writable | Host-side Git execution remains possible through writable Git metadata |
 | Standard `.git/hooks` directory | Read-only | Read-only defense-in-depth only |
 | Host SSH agent | Not forwarded; Ghosthub never passes `--ssh` | Forwarded whenever the running sbx daemon has a host agent; no per-sandbox opt-out exists in 0.38.0 |
 | Provider identity | Ghosthub label plus exact container name | Provider UUID plus exact sandbox name |
@@ -68,6 +68,11 @@ only in documentation:
 Selecting sbx requires an explicit acknowledgement of this capability summary.
 It is not described as equivalent to Apple's credential-off or Git-metadata
 posture.
+
+Apple creation copy also states that its read-only controls cover direct Git
+metadata, hook entries, and direct hook symlink targets, not writable
+worktree files those protected programs may invoke transitively. It does not
+describe Apple as preventing every later host-side Git execution path.
 
 ## Worktree and Git Mounts
 
@@ -112,6 +117,16 @@ indirection files must be regular existing files whose contents resolve to the
 exact worktree, worktree-specific Git directory, and common Git directory
 accepted by preflight.
 
+Preflight enumerates each existing direct entry in the effective hook
+directory. For a symlink entry, it records the complete host-side symlink chain
+and canonical final target. Every chain element and final regular-file target
+inside a writable mounted root joins the protected set, with its writable
+ancestors pinned like any other target. A dangling or cyclic link, a final
+in-mount target that is not a regular file, or a chain that cannot be
+canonicalized fails closed. A final target outside all mounted roots is
+recorded but does not receive a mount because the sandbox has no host-backed
+path through which to change it.
+
 Each protected target and ancestor must already exist, remain within its
 expected mounted root, and have no mutable symlink indirection that could
 replace its lexical path. At the final preflight check, every protected regular
@@ -123,6 +138,16 @@ additional link even when Ghosthub cannot prove that its other name will be
 mounted. The provider create command must consume the exact unchanged file
 identities and layout accepted by that check. Paths outside the mounted roots
 are not exposed to the container.
+
+Apple mount configuration is immutable after resource creation. Ghosthub
+therefore persists the canonical accepted mount plan and repeats the complete
+layout, generation, path, symlink-chain, hard-link, config, and hook preflight
+immediately before every Start, including restart after reboot. Start proceeds
+only when the newly computed plan exactly matches the stored plan. A mismatch
+blocks Start and offers explicit Delete and Recreate; Ghosthub never silently
+recreates or weakens the resource. Content changes to a still-protected target
+do not by themselves change the plan, but a new target, changed symlink
+resolution, additional hard link, layout change, or missing target does.
 
 Apple's read-only-path control protects only targets that exist when the
 container starts. Preflight therefore fails closed rather than claiming the
@@ -162,7 +187,12 @@ Shared source has a broader consequence for both providers. A sandboxed agent
 can change build scripts, editor configuration, or other executable worktree
 content that the user later chooses to run on the host. Apple's Git path
 protection narrows Git-metadata injection; it does not make shared source safe
-to execute without review.
+to execute without review. It also does not recursively secure an interpreter,
+script, library, or data file that an already-protected hook or Git config
+command references from the writable worktree. A later host Git command may
+execute such a transitive dependency automatically. The Apple capability is
+limited to the protected metadata, direct hook entries, and direct hook
+symlink targets named above.
 
 ## Git Metadata Drift Warning
 
@@ -177,7 +207,8 @@ worktree-specific Git paths. It contains hashes, not file contents, for:
   `gitdir` files
 - the resolved `core.hooksPath` value
 - a deterministic manifest of the resolved hook directory's file contents,
-  symlink targets, and relative paths when it is within a mounted root
+  symlink chains, relative paths, and canonical direct symlink-target contents
+  when they are within a mounted root
 
 Failure to capture a fresh baseline does not convert sbx into a stronger
 boundary or silently retain an older baseline as current. The requested Create
@@ -238,7 +269,9 @@ Ghosthub manages only sandboxes it created. A persistence record contains:
 - exact provider name and provider-reported stable identifier
 - dedicated tmux socket and session identity
 - optional saved launch command
-- last known lifecycle state and sbx Git drift baseline
+- last known lifecycle state
+- the canonical immutable Apple mount plan or layout-aware sbx Git drift
+  baseline, as applicable
 
 Git-metadata drift and comparison-failure notices are separate app-owned
 records, not fields whose lifetime is coupled to the managed sandbox record.
@@ -274,7 +307,9 @@ Create, Start, Open, Stop, and Delete are separate operations:
 - **Open** attaches to an already running sandbox and never starts a stopped
   resource.
 - **Start** is an explicit constructive action for a stopped sandbox. Provider
-  resources are not auto-started after reboot or application launch.
+  resources are not auto-started after reboot or application launch. Apple
+  Start repeats full preflight and requires the fresh canonical mount plan to
+  match the immutable stored plan; a mismatch requires explicit recreation.
 - **Stop** is confirmed because it fences and terminates sandbox processes
   while retaining provider state. After the provider confirms the resource is
   stopped, Ghosthub performs the final drift comparison and persists detected
@@ -345,6 +380,11 @@ The Apple probe asserts:
 - preflight rejects a protected file or protected-directory member with a
   pre-existing hard-link alias, and the running container cannot create a new
   hard link from a read-only target into a writable mounted root
+- a direct hook symlink cannot be used to change an in-mount target, and
+  changing its chain or target while stopped makes the next Start fail plan
+  reconciliation
+- after Stop, changing an included config or `core.hooksPath` to require a new
+  protected target makes Start fail instead of restoring the stale mount plan
 - a live host-side hook-directory change does not remove or weaken the overlay
 - label/name inventory, stop, start, and exact deletion reconciliation
 
@@ -352,6 +392,8 @@ The sbx probe asserts:
 
 - direct editing and host-visible commits in both standard and linked layouts
 - the hooks workspace remains read-only before and after a live host change
+- the layout-aware baseline detects changes to an in-mount direct hook symlink
+  target even when the symlink text is unchanged
 - repository config remains writable, preserving the declared partial
   capability rather than accidentally presenting a false stronger boundary
 - stable JSON UUID/name inventory, stop, start, and exact deletion
@@ -390,11 +432,16 @@ with a cross-device-link error. This is why preflight rejects any existing
 alias and the provider gate verifies that a running container cannot create
 one. A standard-checkout probe pinned its `.git` directory, protected config
 and hooks, rejected config writes, `.git` replacement, and new hard-link
-creation, and still committed inside the container. Sbx refused a config file
-as an additional workspace. The rejected read-only common-Git layout committed
-only with `packed-refs.lock` diagnostics. Creating an sbx sandbox with
-`SSH_AUTH_SOCK` removed from the client environment still exposed the
-already-running daemon's forwarded agent socket.
+creation, and still committed inside the container. A direct hook symlink into
+the writable worktree remained mutable until its canonical target was also a
+read-only path. Separately, stopping a container, changing `core.hooksPath`,
+and starting the raw provider resource restored its stale mount plan and left
+the new hook directory writable. These behaviors require direct-target
+protection and Ghosthub's full pre-Start plan reconciliation. Sbx refused a
+config file as an additional workspace. The rejected read-only common-Git
+layout committed only with `packed-refs.lock` diagnostics. Creating an sbx
+sandbox with `SSH_AUTH_SOCK` removed from the client environment still exposed
+the already-running daemon's forwarded agent socket.
 
 Provider behavior and future changes should be checked against the
 [Apple container releases](https://github.com/apple/container/releases),

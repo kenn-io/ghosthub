@@ -256,6 +256,13 @@ launch command runs only while constructing that new presentation after
 Create, Start, or explicit Open; reconnects and ordinary attachment never
 rerun it.
 
+Before invoking Apple Start, Ghosthub repeats the complete sandbox preflight
+and requires its canonical mount plan to match the plan persisted at Create.
+Only after that check and provider startup may it construct the presentation. A
+stopped resource whose Git layout, protected targets, hook symlink resolution,
+or hard-link state changed is not started or attached; the user must explicitly
+delete and recreate it.
+
 Stop and Delete fence every matching presentation before acting on the exact
 managed provider identity. They confirm provider execution has terminated
 before the final Git-metadata drift comparison. Stop retains provider state;
