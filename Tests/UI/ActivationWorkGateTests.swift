@@ -23,7 +23,7 @@ struct ActivationWorkGateTests {
     /// Budgets are a ratchet at the measured baseline plus 30%: 10 switches
     /// cost exactly 20 root body evaluations (one per window per switch)
     /// and 40 sidebar section computations (two call sites per root
-    /// evaluation until the sections result is memoized; kata 4rqt). The
+    /// evaluation until the sections result is memoized). The
     /// headroom absorbs a stray framework re-evaluation, while any new
     /// per-switch invalidation source adds at least one root evaluation
     /// per switch (+10 and +20 here) and trips the gate. Lower the budgets
