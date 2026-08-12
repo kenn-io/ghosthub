@@ -39,13 +39,18 @@ struct WorkspaceHerdrPresentationTests {
         )
 
         model.openBorrowedTmuxSession(tmux)
+        let tmuxHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: tmux)
+        )
         try await model.openBorrowedHerdrSession(herdr)
         #expect(model.activeBorrowedTmuxSelection == nil)
         #expect(model.activeBorrowedHerdrSelection == herdr)
+        #expect(model.retainedBorrowedTmuxHandle(for: tmux) == tmuxHandle)
 
         model.openBorrowedTmuxSession(tmux)
         #expect(model.activeBorrowedHerdrSelection == nil)
         #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(model.retainedBorrowedTmuxHandle(for: tmux) == tmuxHandle)
         #expect(store.removedKeys.contains { $0.target == .herdrSession })
         await model.shutdown()
     }

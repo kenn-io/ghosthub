@@ -436,7 +436,7 @@ Commit: `Coordinate bounded tmux previews per scene`
 - Modify: `Tests/App/WorkspaceTmuxDiscoveryTests.swift`
 - Modify: `Tests/App/TmuxSessionPreviewCoordinatorTests.swift`
 
-- [ ] **Step 1: Add failing retained-presentation lifecycle tests**
+- [x] **Step 1: Add failing retained-presentation lifecycle tests**
 
 Using the existing scene-model harness, cover:
 
@@ -453,13 +453,13 @@ Using the existing scene-model harness, cover:
 - a suspended initial identity read is discarded after handle, endpoint, or
   generation replacement.
 
-- [ ] **Step 2: Run focused tests and confirm failures**
+- [x] **Step 2: Run focused tests and confirm failures**
 
 Run: `swift test --filter 'WorkspaceTmuxDiscoveryTests|TmuxSessionPreviewCoordinatorTests'`
 
 Expected: the new lifecycle assertions fail because retained presentations do not notify the preview coordinator.
 
-- [ ] **Step 3: Make presentation identity explicit**
+- [x] **Step 3: Make presentation identity explicit**
 
 Move `TmuxPresentationKey` to file scope if necessary for coordinator use,
 preserving exactly `hostID`, `name`, and `socketName`. Store the current verified
@@ -473,21 +473,21 @@ after the asynchronous read before storing the identity.
 
 For reconnect, clear the parked surface immediately and quarantine the frame. After connection recovery reports connected, use the existing injected `tmuxSessionIdentityReader` to verify the exact identity. Reuse the frame only on equality; clear it on missing/changed identity. Pass the verified identity into any relaunched attachment that supports the existing identity fence.
 
-- [ ] **Step 4: Centralize every active-presentation transition**
+- [x] **Step 4: Centralize every active-presentation transition**
 
 Before any active tmux presentation is replaced or cleared, call one helper that captures the outgoing surface according to mode and expansion, then handles Live parking eligibility. Route `activateTmuxPresentation`, `hideBorrowedTmuxSession`, Herdr/Zellij activation, selection of content without a presentation, and explicit close through it. Do not rely only on SwiftUI `onDisappear`.
 
-- [ ] **Step 5: Register, update, and remove retained presentations**
+- [x] **Step 5: Register, update, and remove retained presentations**
 
 Register only after the ordinary retained presentation exists. Update handle/surface/connection closures when reconnect replaces a handle. Remove on close, invalidation, authoritative inventory removal, shutdown, and generation replacement. Expose a read-only `previewableTmuxSessionIDs: Set<String>` derived from retained keys for sidebar eligibility; never derive eligibility from inventory alone.
 
-- [ ] **Step 6: Verify attachment-count and identity safety**
+- [x] **Step 6: Verify attachment-count and identity safety**
 
 Run: `swift test --filter 'WorkspaceTmuxDiscoveryTests|TmuxSessionPreviewCoordinatorTests|NativeTmuxSessionCoordinatorTests'`
 
 Expected: all focused tests pass and the existing attachment-count assertions remain unchanged.
 
-- [ ] **Step 7: Format and commit**
+- [x] **Step 7: Format and commit**
 
 Run: `make format`
 

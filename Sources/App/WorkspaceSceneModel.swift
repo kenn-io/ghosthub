@@ -872,6 +872,19 @@ final class WorkspaceSceneModel: ObservableObject {
             name = selection.name
             socketName = selection.socketName
         }
+
+        var previewKey: TmuxPreviewKey {
+            TmuxPreviewKey(
+                hostID: hostID,
+                name: name,
+                socketName: socketName
+            )
+        }
+
+        var sessionID: String {
+            [hostID.uuidString, socketName ?? "default", name]
+                .joined(separator: ":")
+        }
     }
     private final class RetainedTmuxPresentation {
         var selection: WorkspaceTmuxSessionSelection
@@ -882,19 +895,25 @@ final class WorkspaceSceneModel: ObservableObject {
         var recoveryRequest: SessionConnectionRecoveryRequest?
         let reconnectSupervisor: SessionReconnectSupervisor
         var establishmentConfirmationTask: Task<Void, Never>?
+        var verifiedPreviewIdentity: TmuxSessionIdentity?
+        var reconnectExpectedIdentity: TmuxSessionIdentity?
+        var previewIdentityReadID: UUID?
+        var previewIdentityTask: Task<Void, Never>?
 
         init(
             selection: WorkspaceTmuxSessionSelection,
             handle: BorrowedTmuxSessionHandle,
             launchMode: TmuxAttachmentLaunchMode,
             reconnectContext: TmuxReconnectContext?,
-            reconnectSupervisor: SessionReconnectSupervisor
+            reconnectSupervisor: SessionReconnectSupervisor,
+            verifiedPreviewIdentity: TmuxSessionIdentity?
         ) {
             self.selection = selection
             self.handle = handle
             self.launchMode = launchMode
             self.reconnectContext = reconnectContext
             self.reconnectSupervisor = reconnectSupervisor
+            self.verifiedPreviewIdentity = verifiedPreviewIdentity
         }
     }
     private struct PendingRemovalPresentation {
@@ -2636,6 +2655,11 @@ final class WorkspaceSceneModel: ObservableObject {
         cancelPendingRestoration()
         cancelPendingHerdrShortcutNavigation()
         for presentation in retainedTmuxPresentations.values {
+            cancelTmuxPreviewIdentityRead(presentation)
+            tmuxSessionPreviewCoordinator.remove(
+                TmuxPresentationKey(presentation.selection).previewKey,
+                reason: .close
+            )
             cancelTmuxReconnect(presentation)
         }
         releaseAllProtectedTmuxAttachmentScopes()
@@ -7503,7 +7527,7 @@ final class WorkspaceSceneModel: ObservableObject {
         replacingWith selection: WorkspaceZellijSessionSelection
     ) {
         if let activeTmux = activeBorrowedTmuxSelection {
-            closeBorrowedTmuxSession(activeTmux)
+            hideBorrowedTmuxSession(activeTmux)
         }
         if let activeHerdr = activeBorrowedHerdrSelection {
             closeBorrowedHerdrSession(activeHerdr)
@@ -8317,7 +8341,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) -> BorrowedHerdrSessionHandle? {
         guard !isShutDown else { return nil }
         if let activeTmux = activeBorrowedTmuxSelection {
-            closeBorrowedTmuxSession(activeTmux)
+            hideBorrowedTmuxSession(activeTmux)
         }
         if let activeZellij = activeBorrowedZellijSelection {
             closeBorrowedZellijSession(activeZellij)
@@ -8754,6 +8778,10 @@ final class WorkspaceSceneModel: ObservableObject {
             && effectiveLaunchMode == .attach
             && selection.socketName != nil
             && selection.workspacePath != nil
+        let discoveredIdentity = Self.discoveredTmuxSessionIdentity(
+            selection,
+            hostSummary: host
+        )
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -8765,10 +8793,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 : nil,
             workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace,
-            sessionIdentity: Self.discoveredTmuxSessionIdentity(
-                selection,
-                hostSummary: host
-            )
+            sessionIdentity: discoveredIdentity
         )
         let phase: RemoteTmuxEstablishmentPhase
         if openWorkspace || protectedSessionNeedsEstablishment {
@@ -8799,17 +8824,22 @@ final class WorkspaceSceneModel: ObservableObject {
             reconnectSupervisor: SessionReconnectSupervisor(
                 intervals: tmuxReconnectIntervals,
                 probeDeadline: tmuxReconnectProbeDeadline
-            )
+            ),
+            verifiedPreviewIdentity: discoveredIdentity
         )
         retainedTmuxPresentations[key] = presentation
         retainedTmuxPresentationKeysByHandle[handle.id] = key
+        borrowedTmuxConnectionStates[handle.id] = .connecting
+        registerTmuxPreview(
+            presentation,
+            identityIsResolved: discoveredIdentity != nil
+        )
         _ = acquireProtectedTmuxAttachmentScopeIfNeeded(
             for: presentation
         )
         if activatesPresentation {
             activateTmuxPresentation(presentation)
         }
-        borrowedTmuxConnectionStates[handle.id] = .connecting
         if effectiveLaunchMode == .create {
             transferPendingCreation(
                 for: PendingTmuxSessionCreation(
@@ -8837,6 +8867,139 @@ final class WorkspaceSceneModel: ObservableObject {
         for selection: WorkspaceTmuxSessionSelection
     ) -> RetainedTmuxPresentation? {
         retainedTmuxPresentations[TmuxPresentationKey(selection)]
+    }
+
+    private func registerTmuxPreview(
+        _ presentation: RetainedTmuxPresentation,
+        identityIsResolved: Bool = true
+    ) {
+        let key = TmuxPresentationKey(presentation.selection)
+        tmuxSessionPreviewCoordinator.register(.init(
+            key: key.previewKey,
+            surface: { [weak self, weak presentation] in
+                guard let self, let presentation,
+                      retainedTmuxPresentations[key] === presentation
+                else { return nil }
+                return protectedTmuxSurface(handle: presentation.handle)
+            },
+            handleID: { [weak presentation] in
+                presentation?.handle.id
+            },
+            generation: { [weak presentation] in
+                presentation?.selection.worktreeGeneration
+            },
+            identity: { [weak presentation] in
+                presentation?.verifiedPreviewIdentity
+            },
+            connectionState: { [weak self, weak presentation] in
+                guard let self, let presentation else { return nil }
+                return borrowedTmuxConnectionStates[presentation.handle.id]
+            },
+            isActive: { [weak self, weak presentation] in
+                guard let self, let presentation else { return false }
+                return activeBorrowedTmuxHandle == presentation.handle
+            },
+            activate: { [weak self, weak presentation] in
+                guard let self, let presentation,
+                      retainedTmuxPresentations[key] === presentation
+                else { return }
+                activateTmuxPresentation(presentation)
+            },
+            ensureIdentity: { [weak self, weak presentation] in
+                guard let self, let presentation else { return }
+                readTmuxPreviewIdentityIfNeeded(presentation)
+            }
+        ), identityIsResolved: identityIsResolved)
+    }
+
+    private func cancelTmuxPreviewIdentityRead(
+        _ presentation: RetainedTmuxPresentation
+    ) {
+        presentation.previewIdentityReadID = nil
+        presentation.previewIdentityTask?.cancel()
+        presentation.previewIdentityTask = nil
+    }
+
+    private func readTmuxPreviewIdentityIfNeeded(
+        _ presentation: RetainedTmuxPresentation
+    ) {
+        let handleID = presentation.handle.id
+        guard borrowedTmuxConnectionStates[handleID] == .connected else {
+            return
+        }
+        if presentation.verifiedPreviewIdentity != nil {
+            registerTmuxPreview(presentation)
+            return
+        }
+        guard presentation.previewIdentityTask == nil,
+              let hostSummary = snapshot.host(
+                  id: presentation.selection.hostID
+              ),
+              let host = CommandHostResolver.resolve(hostSummary)
+        else { return }
+        let key = TmuxPresentationKey(presentation.selection)
+        let generation = presentation.selection.worktreeGeneration
+        let readID = UUID()
+        presentation.previewIdentityReadID = readID
+        let selection = presentation.selection
+        presentation.previewIdentityTask = Task { [weak self, weak presentation] in
+            guard let self else { return }
+            let identity = try? await tmuxSessionIdentityReader(
+                selection,
+                host
+            )
+            guard !Task.isCancelled,
+                  let presentation,
+                  presentation.previewIdentityReadID == readID
+            else { return }
+            presentation.previewIdentityTask = nil
+            presentation.previewIdentityReadID = nil
+            guard retainedTmuxPresentations[key] === presentation,
+                  presentation.handle.id == handleID,
+                  TmuxPresentationKey(presentation.selection) == key,
+                  presentation.selection.worktreeGeneration == generation,
+                  borrowedTmuxConnectionStates[handleID] == .connected
+            else { return }
+            presentation.verifiedPreviewIdentity = identity
+            presentation.reconnectExpectedIdentity = nil
+            registerTmuxPreview(presentation, identityIsResolved: true)
+        }
+    }
+
+    private func beginTmuxPreviewReconnect(
+        _ presentation: RetainedTmuxPresentation
+    ) {
+        cancelTmuxPreviewIdentityRead(presentation)
+        if presentation.reconnectExpectedIdentity == nil {
+            presentation.reconnectExpectedIdentity =
+                presentation.verifiedPreviewIdentity
+        }
+        presentation.verifiedPreviewIdentity = nil
+        tmuxSessionPreviewCoordinator.remove(
+            TmuxPresentationKey(presentation.selection).previewKey,
+            reason: .reconnect
+        )
+    }
+
+    private func prepareActiveTmuxPreviewForDeactivation() {
+        guard let handle = activeBorrowedTmuxHandle,
+              let presentation = retainedTmuxPresentation(for: handle)
+        else { return }
+        let key = TmuxPresentationKey(presentation.selection)
+        tmuxSessionPreviewCoordinator.captureBeforeDeactivation(
+            key.previewKey,
+            completion: { [weak self, weak presentation] in
+                Task { @MainActor in
+                    await Task.yield()
+                    guard let self, let presentation,
+                          self.retainedTmuxPresentations[key] === presentation
+                    else { return }
+                    self.tmuxSessionPreviewCoordinator.presentationDidChange(
+                        key.previewKey
+                    )
+                }
+            }
+        )
     }
 
     private func protectedTmuxSurface(
@@ -9029,6 +9192,10 @@ final class WorkspaceSceneModel: ObservableObject {
     private func activateTmuxPresentation(
         _ presentation: RetainedTmuxPresentation
     ) {
+        if let activeHandle = activeBorrowedTmuxHandle,
+           activeHandle != presentation.handle {
+            prepareActiveTmuxPreviewForDeactivation()
+        }
         activeBorrowedTmuxSelection = presentation.selection
         activeBorrowedTmuxHandle = presentation.handle
         activeBorrowedTmuxLaunchMode = presentation.launchMode
@@ -9050,6 +9217,7 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceTmuxSessionSelection
     ) {
         guard activeBorrowedTmuxSelection == selection else { return }
+        prepareActiveTmuxPreviewForDeactivation()
         activeBorrowedTmuxSelection = nil
         activeBorrowedTmuxHandle = nil
         activeBorrowedTmuxLaunchMode = nil
@@ -9059,6 +9227,10 @@ final class WorkspaceSceneModel: ObservableObject {
 
     var retainedBorrowedTmuxPresentationCount: Int {
         retainedTmuxPresentations.count
+    }
+
+    var previewableTmuxSessionIDs: Set<String> {
+        Set(retainedTmuxPresentations.keys.map(\.sessionID))
     }
 
     func retainedBorrowedTmuxHandle(
@@ -9133,18 +9305,27 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func closeBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
-        closeBorrowedTmuxSession(selection, recordsExplicitDismissal: true)
+        closeBorrowedTmuxSession(
+            selection,
+            recordsExplicitDismissal: true,
+            previewRemovalReason: .close
+        )
     }
 
     private func invalidateBorrowedTmuxSession(
         _ selection: WorkspaceTmuxSessionSelection
     ) {
-        closeBorrowedTmuxSession(selection, recordsExplicitDismissal: false)
+        closeBorrowedTmuxSession(
+            selection,
+            recordsExplicitDismissal: false,
+            previewRemovalReason: .replacement
+        )
     }
 
     private func closeBorrowedTmuxSession(
         _ selection: WorkspaceTmuxSessionSelection,
-        recordsExplicitDismissal: Bool
+        recordsExplicitDismissal: Bool,
+        previewRemovalReason: TmuxSessionPreviewCoordinator.RemovalReason
     ) {
         cancelPendingRestoration()
         if recordsExplicitDismissal, let worktreeID = selection.worktreeID {
@@ -9155,6 +9336,9 @@ final class WorkspaceSceneModel: ObservableObject {
             explicitlyDismissedDirectoryPresentationIDs.insert(directoryID)
         }
         let key = TmuxPresentationKey(selection)
+        if activeBorrowedTmuxSelection == selection {
+            prepareActiveTmuxPreviewForDeactivation()
+        }
         guard let presentation = retainedTmuxPresentations.removeValue(
             forKey: key
         ) else {
@@ -9170,6 +9354,11 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         let handle = presentation.handle
+        cancelTmuxPreviewIdentityRead(presentation)
+        tmuxSessionPreviewCoordinator.remove(
+            key.previewKey,
+            reason: previewRemovalReason
+        )
         releaseProtectedTmuxAttachmentScope(handleID: handle.id)
         retainedTmuxPresentationKeysByHandle.removeValue(forKey: handle.id)
         cancelTmuxReconnect(presentation)
@@ -9418,6 +9607,7 @@ final class WorkspaceSceneModel: ObservableObject {
         handle: BorrowedTmuxSessionHandle,
         state: ConnectionState
     ) {
+        let previousState = borrowedTmuxConnectionStates[handle.id]
         switch state {
         case .disconnected:
             releaseProtectedTmuxAttachmentScope(handleID: handle.id)
@@ -9427,6 +9617,13 @@ final class WorkspaceSceneModel: ObservableObject {
         borrowedTmuxConnectionStates[handle.id] = state
         guard let presentation = retainedTmuxPresentation(for: handle) else {
             return
+        }
+        if case .disconnected = state {
+            beginTmuxPreviewReconnect(presentation)
+        } else if case .reconnecting = state {
+            if previousState == .connected {
+                beginTmuxPreviewReconnect(presentation)
+            }
         }
         if state == .connected {
             confirmedEndedTmuxSessionHandles.remove(handle.id)
@@ -9441,6 +9638,11 @@ final class WorkspaceSceneModel: ObservableObject {
             warmConnectedTmuxSession(handle: handle)
             publishActiveState(for: presentation)
             applyDeferredTmuxPresentationIfReady(presentation)
+            registerTmuxPreview(
+                presentation,
+                identityIsResolved:
+                presentation.verifiedPreviewIdentity != nil
+            )
         } else {
             tmuxActivityEnrollmentTasks.removeValue(
                 forKey: handle.id
@@ -10454,6 +10656,7 @@ final class WorkspaceSceneModel: ObservableObject {
         intent: TmuxPresentationIntent
     ) {
         let selection = presentation.selection
+        beginTmuxPreviewReconnect(presentation)
         guard let host = snapshot.host(id: selection.hostID),
               let attachmentHost = CommandHostResolver.resolve(host)
         else {
@@ -10488,7 +10691,8 @@ final class WorkspaceSceneModel: ObservableObject {
             launchMode: launchMode,
             initialCommand: launchMode == .create ? initialCommand : nil,
             workingDirectory: selection.workspacePath,
-            openWorkspace: openWorkspace
+            openWorkspace: openWorkspace,
+            sessionIdentity: presentation.reconnectExpectedIdentity
         )
         if handle.id != previousHandle.id {
             retainedTmuxPresentationKeysByHandle.removeValue(

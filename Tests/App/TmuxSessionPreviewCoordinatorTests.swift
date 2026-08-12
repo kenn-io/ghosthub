@@ -33,7 +33,9 @@ struct TmuxSessionPreviewCoordinatorTests {
         let active = harness.presentation(index: 0, isActive: true)
         let granted = harness.presentation(index: 1, isActive: false)
         let waiting = harness.presentation(index: 2, isActive: false)
-        [active, granted, waiting].forEach(harness.coordinator.register)
+        for item in [active, granted, waiting] {
+            harness.coordinator.register(item)
+        }
         for item in [active, granted, waiting] {
             harness.coordinator.setExpanded(true, for: item.key)
         }
@@ -156,6 +158,28 @@ struct TmuxSessionPreviewCoordinatorTests {
 
         #expect(
             harness.coordinator.viewState(for: presentation.key)?.image === image
+        )
+    }
+
+    @Test("navigation-away capture can finish after the session becomes inactive")
+    func navigationAwayCaptureSurvivesDeactivation() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        await harness.coordinator.waitForPendingWork()
+        harness.captures.removeAll()
+        harness.suspendCaptures = true
+
+        harness.coordinator.captureBeforeDeactivation(presentation.key)
+        await harness.waitUntilCaptureSuspends()
+        harness.setActive(false, for: presentation.key)
+        harness.resumeCapture()
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [presentation.key])
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.image != nil
         )
     }
 
@@ -487,6 +511,10 @@ private final class PreviewCoordinatorHarness {
     func resumeCapture() {
         captureContinuation?.resume()
         captureContinuation = nil
+    }
+
+    func setActive(_ active: Bool, for key: TmuxPreviewKey) {
+        activeByKey[key] = active
     }
 
     private static func index(

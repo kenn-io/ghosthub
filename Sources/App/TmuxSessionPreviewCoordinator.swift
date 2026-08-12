@@ -25,6 +25,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         let connectionState: () -> ConnectionState?
         let isActive: () -> Bool
         let activate: () -> Void
+        let ensureIdentity: () -> Void
 
         init(
             key: TmuxPreviewKey,
@@ -34,7 +35,8 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             identity: @escaping () -> TmuxSessionIdentity?,
             connectionState: @escaping () -> ConnectionState?,
             isActive: @escaping () -> Bool,
-            activate: @escaping () -> Void
+            activate: @escaping () -> Void,
+            ensureIdentity: @escaping () -> Void = {}
         ) {
             self.key = key
             self.surface = surface
@@ -44,6 +46,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             self.connectionState = connectionState
             self.isActive = isActive
             self.activate = activate
+            self.ensureIdentity = ensureIdentity
         }
     }
 
@@ -68,6 +71,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 
     private enum CaptureReason {
         case scheduled
+        case navigationAway
         case finalBeforeUnpark
         case activationHandoff
     }
@@ -92,6 +96,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private var parkedKeys: Set<TmuxPreviewKey> = []
     private var activatingKeys: Set<TmuxPreviewKey> = []
     private var reconnectingKeys: Set<TmuxPreviewKey> = []
+    private var unresolvedIdentityKeys: Set<TmuxPreviewKey> = []
     private var isParkingHostChanging = false
     private var generations: [TmuxPreviewKey: UInt64] = [:]
     private var activeCaptureIDs: [TmuxPreviewKey: UUID] = [:]
@@ -160,7 +165,10 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         viewStates[key]
     }
 
-    func register(_ presentation: Presentation) {
+    func register(
+        _ presentation: Presentation,
+        identityIsResolved: Bool = true
+    ) {
         let key = presentation.key
         let version = version(of: presentation)
         if let previous = registeredVersions[key], previous != version,
@@ -171,28 +179,43 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         }
         presentations[key] = presentation
         registeredVersions[key] = version
+        if identityIsResolved {
+            unresolvedIdentityKeys.remove(key)
+        } else {
+            unresolvedIdentityKeys.insert(key)
+        }
         if previewStates[key] == nil {
             previewStates[key] = TmuxSessionPreviewState()
         } else if isConnected(presentation),
+                  identityIsResolved,
                   previewStates[key]?.quarantinedFrame != nil {
             previewStates[key]?.verifyIdentity(presentation.identity())
         }
-        reconnectingKeys.remove(key)
+        if identityIsResolved {
+            reconnectingKeys.remove(key)
+        }
         publish(key)
         reconcileEligibility()
+        requestIdentityIfNeeded(key)
+        captureExpandedEfficientActiveIfNeeded(key)
     }
 
     func presentationDidChange(_ key: TmuxPreviewKey) {
         guard let presentation = presentations[key] else { return }
         invalidate(key)
-        if isConnected(presentation) {
+        if isConnected(presentation),
+           !unresolvedIdentityKeys.contains(key) {
             previewStates[key]?.verifyIdentity(presentation.identity())
         } else {
-            previewStates[key]?.beginReconnect()
             unparkAndRelease(key)
+            if !isConnected(presentation) {
+                previewStates[key]?.beginReconnect()
+            }
         }
         publish(key)
         reconcileEligibility()
+        requestIdentityIfNeeded(key)
+        captureExpandedEfficientActiveIfNeeded(key)
     }
 
     func setExpanded(_ expanded: Bool, for key: TmuxPreviewKey) {
@@ -208,6 +231,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         }
         publish(key)
         reconcileEligibility()
+        requestIdentityIfNeeded(key)
         if expanded, mode == .efficient,
            presentations[key]?.isActive() == true {
             startCapture(key, reason: .scheduled)
@@ -248,6 +272,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             reconcileEligibility()
         }
         keys.forEach(publish)
+        keys.forEach(requestIdentityIfNeeded)
         restartLiveTaskIfNeeded()
     }
 
@@ -300,6 +325,17 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         startCapture(key, reason: .scheduled)
     }
 
+    func captureBeforeDeactivation(
+        _ key: TmuxPreviewKey,
+        completion: (() -> Void)? = nil
+    ) {
+        guard presentations[key]?.isActive() == true else {
+            completion?()
+            return
+        }
+        startCapture(key, reason: .navigationAway, completion: completion)
+    }
+
     func prepareToActivate(_ key: TmuxPreviewKey) {
         guard presentations[key] != nil else { return }
         invalidate(key)
@@ -328,6 +364,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         unparkAndRelease(key)
         switch reason {
         case .reconnect:
+            unresolvedIdentityKeys.insert(key)
             previewStates[key]?.beginReconnect()
             publish(key)
         case .close, .replacement:
@@ -339,6 +376,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             previewStates.removeValue(forKey: key)
             viewStates.removeValue(forKey: key)
             generations.removeValue(forKey: key)
+            unresolvedIdentityKeys.remove(key)
         }
         restartLiveTaskIfNeeded()
     }
@@ -472,6 +510,10 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             return mode == .live
                 && parkedKeys.contains(key)
                 && isGranted(key)
+        case .navigationAway:
+            return isApplicationActive
+                && isSidebarVisible
+                && expandedKeys.contains(key)
         case .finalBeforeUnpark:
             return mode == .efficient && parkedKeys.contains(key)
         case .activationHandoff:
@@ -651,6 +693,26 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 
     private func isConnected(_ presentation: Presentation) -> Bool {
         presentation.connectionState() == .connected
+    }
+
+    private func captureExpandedEfficientActiveIfNeeded(
+        _ key: TmuxPreviewKey
+    ) {
+        guard mode == .efficient,
+              expandedKeys.contains(key),
+              presentations[key]?.isActive() == true
+        else { return }
+        startCapture(key, reason: .scheduled)
+    }
+
+    private func requestIdentityIfNeeded(_ key: TmuxPreviewKey) {
+        guard mode != .off,
+              expandedKeys.contains(key),
+              unresolvedIdentityKeys.contains(key),
+              let presentation = presentations[key],
+              isConnected(presentation)
+        else { return }
+        presentation.ensureIdentity()
     }
 
     private func sceneIsKeyWindow() -> Bool {

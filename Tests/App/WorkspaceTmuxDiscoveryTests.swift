@@ -1142,6 +1142,261 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("only opened tmux sessions become previewable")
+    func onlyOpenedTmuxSessionsBecomePreviewable() async throws {
+        let environment = try setupHostEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .efficient,
+            budget: LivePreviewBudget(limit: 4),
+            capture: { _, _ in nil }
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        let opened = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "opened"
+        )
+        let unopened = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "unopened"
+        )
+
+        model.openBorrowedTmuxSession(opened)
+
+        #expect(model.previewableTmuxSessionIDs == [opened.id])
+        #expect(!model.previewableTmuxSessionIDs.contains(unopened.id))
+        #expect(previewCoordinator.viewState(for: TmuxPreviewKey(
+            hostID: opened.hostID,
+            name: opened.name,
+            socketName: opened.socketName
+        )) != nil)
+        #expect(surfaceStore.requestCount == 0)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+
+        model.closeBorrowedTmuxSession(opened)
+
+        #expect(model.previewableTmuxSessionIDs.isEmpty)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("preview identity is read only after the opened surface connects")
+    func previewIdentityIsReadAfterConnection() async throws {
+        let environment = try setupHostEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let identityReads = Counter()
+        let captures = Counter()
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .efficient,
+            budget: LivePreviewBudget(limit: 4),
+            capture: { _, _ in
+                _ = captures.increment()
+                return TerminalSurfaceSnapshot(
+                    image: NSImage(size: CGSize(width: 32, height: 20)),
+                    captureToken: TerminalSurfaceCaptureToken(
+                        surfaceID: 1,
+                        seed: 1
+                    )
+                )
+            }
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                _ = identityReads.increment()
+                return identity
+            },
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "opened"
+        )
+        let key = TmuxPreviewKey(
+            hostID: selection.hostID,
+            name: selection.name,
+            socketName: selection.socketName
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        #expect(identityReads.count == 0)
+        #expect(captures.count == 0)
+
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        #expect(identityReads.count == 0)
+        #expect(captures.count == 0)
+
+        previewCoordinator.setExpanded(true, for: key)
+        await waitUntilMainActor {
+            identityReads.count == 1 && captures.count == 1
+        }
+
+        #expect(previewCoordinator.viewState(for: key)?.image != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("leaving an opened tmux session captures its final frame")
+    func leavingTmuxCapturesFinalFrame() async throws {
+        let environment = try setupHostEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let captures = Counter()
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .efficient,
+            budget: LivePreviewBudget(limit: 4),
+            capture: { _, _ in
+                let sequence = captures.increment()
+                return TerminalSurfaceSnapshot(
+                    image: NSImage(size: CGSize(width: 32, height: 20)),
+                    captureToken: TerminalSurfaceCaptureToken(
+                        surfaceID: 1,
+                        seed: UInt32(sequence)
+                    )
+                )
+            }
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$1",
+                    createdAt: "1000"
+                )
+            },
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "opened"
+        )
+        let key = TmuxPreviewKey(
+            hostID: selection.hostID,
+            name: selection.name,
+            socketName: selection.socketName
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        previewCoordinator.setExpanded(true, for: key)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { captures.count == 1 }
+
+        model.hideBorrowedTmuxSession(selection)
+        await previewCoordinator.waitForPendingWork()
+
+        #expect(captures.count == 2)
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.previewableTmuxSessionIDs == [selection.id])
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a suspended preview identity read cannot cross a generation replacement")
+    func stalePreviewIdentityReadIsDiscarded() async throws {
+        let environment = try setupHostEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let reader = SuspendedPreviewIdentityReader()
+        let captures = Counter()
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .efficient,
+            budget: LivePreviewBudget(limit: 4),
+            capture: { _, _ in
+                let sequence = captures.increment()
+                return TerminalSurfaceSnapshot(
+                    image: NSImage(size: CGSize(width: 32, height: 20)),
+                    captureToken: TerminalSurfaceCaptureToken(
+                        surfaceID: UInt32(sequence),
+                        seed: UInt32(sequence)
+                    )
+                )
+            }
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                await reader.read()
+            },
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        let worktreeID = UUID()
+        let first = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "opened",
+            worktreeID: worktreeID,
+            worktreePath: "/tmp/opened",
+            worktreeGeneration: "11111111111111111111111111111111"
+        )
+        let replacement = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "opened",
+            worktreeID: worktreeID,
+            worktreePath: "/tmp/opened",
+            worktreeGeneration: "22222222222222222222222222222222"
+        )
+        let key = TmuxPreviewKey(
+            hostID: first.hostID,
+            name: first.name,
+            socketName: first.socketName
+        )
+
+        model.openBorrowedTmuxSession(first)
+        previewCoordinator.setExpanded(true, for: key)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        while await !reader.firstReadStarted {
+            await Task.yield()
+        }
+
+        model.openBorrowedTmuxSession(replacement)
+        #expect(previewCoordinator.viewState(for: key)?.image == nil)
+        previewCoordinator.setExpanded(true, for: key)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+        await waitUntilMainActor { captures.count == 1 }
+
+        await reader.resumeFirstRead()
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(captures.count == 1)
+        #expect(model.previewableTmuxSessionIDs == [replacement.id])
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("duplicate directory endpoint rebinds retained ownership")
     func duplicateDirectoryEndpointRebindsRetainedOwnership() async throws {
         let environment = try setupHostEnvironment()
@@ -9405,5 +9660,36 @@ private final class TmuxExactProbeResultQueue: @unchecked Sendable {
 
     var count: Int {
         lock.withLock { removalCount }
+    }
+}
+
+private actor SuspendedPreviewIdentityReader {
+    private var firstContinuation: CheckedContinuation<Void, Never>?
+    private(set) var firstReadStarted = false
+    private var readCount = 0
+
+    func read() async -> TmuxSessionIdentity {
+        readCount += 1
+        if readCount == 1 {
+            firstReadStarted = true
+            await withCheckedContinuation { continuation in
+                firstContinuation = continuation
+            }
+            return TmuxSessionIdentity(
+                serverPID: "101",
+                sessionID: "$old",
+                createdAt: "1000"
+            )
+        }
+        return TmuxSessionIdentity(
+            serverPID: "202",
+            sessionID: "$new",
+            createdAt: "2000"
+        )
+    }
+
+    func resumeFirstRead() {
+        firstContinuation?.resume()
+        firstContinuation = nil
     }
 }
