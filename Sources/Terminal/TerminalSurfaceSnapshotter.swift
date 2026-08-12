@@ -34,18 +34,19 @@ public final class TerminalSurfaceSnapshotter {
         let surface: ObjectIdentifier
         let width: Int
         let height: Int
+        let previousCaptureToken: TerminalSurfaceCaptureToken?
     }
 
     private struct RenderSource: @unchecked Sendable {
-        let image: CIImage
+        let ioSurface: IOSurface
         let backgroundColor: CGColor
         let pixelSize: (width: Int, height: Int)
-        let captureToken: TerminalSurfaceCaptureToken
+        let previousCaptureToken: TerminalSurfaceCaptureToken?
     }
 
     private let ciContext: CIContext
     private var inFlight:
-        [RequestKey: Task<TerminalSurfaceSnapshot, Error>] = [:]
+        [RequestKey: Task<TerminalSurfaceSnapshot?, Error>] = [:]
 
     public init() {
         ciContext = CIContext(options: [
@@ -62,7 +63,8 @@ public final class TerminalSurfaceSnapshotter {
         let requestKey = RequestKey(
             surface: ObjectIdentifier(surface),
             width: pixelSize.width,
-            height: pixelSize.height
+            height: pixelSize.height,
+            previousCaptureToken: previousCaptureToken
         )
         if let pending = inFlight[requestKey] {
             return try await pending.value
@@ -71,22 +73,12 @@ public final class TerminalSurfaceSnapshotter {
         guard let ioSurface = surface.layer?.contents as? IOSurface else {
             throw TerminalSurfaceSnapshotError.missingIOSurface
         }
-        let captureToken = TerminalSurfaceCaptureToken(
-            surfaceID: IOSurfaceGetID(ioSurface),
-            seed: IOSurfaceGetSeed(ioSurface)
-        )
-        guard captureToken != previousCaptureToken else { return nil }
-
-        let ciImage = CIImage(ioSurface: ioSurface)
-        guard !ciImage.extent.isEmpty else {
-            throw TerminalSurfaceSnapshotError.imageCopyFailed
-        }
         let source = RenderSource(
-            image: ciImage,
+            ioSurface: ioSurface,
             backgroundColor: surface.layer?.backgroundColor
                 ?? NSColor.black.cgColor,
             pixelSize: pixelSize,
-            captureToken: captureToken
+            previousCaptureToken: previousCaptureToken
         )
         let ciContext = ciContext
         let task = Task.detached(priority: .utility) {
@@ -121,9 +113,30 @@ public final class TerminalSurfaceSnapshotter {
     private nonisolated static func makeSnapshot(
         source: RenderSource,
         ciContext: CIContext
-    ) throws -> TerminalSurfaceSnapshot {
+    ) throws -> TerminalSurfaceSnapshot? {
+        var lockedSeed: UInt32 = 0
+        guard IOSurfaceLock(
+            source.ioSurface,
+            .readOnly,
+            &lockedSeed
+        ) == kIOReturnSuccess else {
+            throw TerminalSurfaceSnapshotError.imageCopyFailed
+        }
+        defer {
+            _ = IOSurfaceUnlock(source.ioSurface, .readOnly, nil)
+        }
+        let captureToken = TerminalSurfaceCaptureToken(
+            surfaceID: IOSurfaceGetID(source.ioSurface),
+            seed: lockedSeed
+        )
+        guard captureToken != source.previousCaptureToken else { return nil }
+
+        let sourceImage = CIImage(ioSurface: source.ioSurface)
+        guard !sourceImage.extent.isEmpty else {
+            throw TerminalSurfaceSnapshotError.imageCopyFailed
+        }
         let pixelSize = source.pixelSize
-        let sourceExtent = source.image.extent
+        let sourceExtent = sourceImage.extent
         let outputSize = CGSize(
             width: pixelSize.width,
             height: pixelSize.height
@@ -143,7 +156,7 @@ public final class TerminalSurfaceSnapshotter {
         let outputRect = CGRect(origin: .zero, size: outputSize)
         let background = CIImage(color: CIColor(cgColor: source.backgroundColor))
             .cropped(to: outputRect)
-        let composed = source.image
+        let composed = sourceImage
             .transformed(by: transform)
             .composited(over: background)
             .cropped(to: outputRect)
@@ -157,7 +170,7 @@ public final class TerminalSurfaceSnapshotter {
         }
         return TerminalSurfaceSnapshot(
             image: NSImage(cgImage: image, size: outputSize),
-            captureToken: source.captureToken
+            captureToken: captureToken
         )
     }
 }

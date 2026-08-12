@@ -523,6 +523,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         guard isParkedForPreview != parked else { return }
         if parked {
             suppressAutoFocus = true
+            mouseEventHandler.resetPointerStateForParking()
             isParkedForPreview = true
             updateTrackingAreas()
             if window?.firstResponder === self {

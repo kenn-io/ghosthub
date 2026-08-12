@@ -1,5 +1,6 @@
 import AppKit
 import CoreVideo
+import GhosttyKit
 import IOSurface
 import XCTest
 @testable import GhosthubTerminal
@@ -167,13 +168,27 @@ final class TerminalSurfacePreviewTests: XCTestCase {
     }
 
     func testParkedStateSuppressesPointerTrackingAndDelivery() throws {
+        let originalButtonSender = TerminalMouseEventHandler.mouseButtonSender
         let originalSender = TerminalMouseEventHandler.mousePositionSender
-        var positionCalls = 0
-        TerminalMouseEventHandler.mousePositionSender = { _, _, _, _ in
-            positionCalls += 1
+        let originalPressureSender = TerminalMouseEventHandler.mousePressureSender
+        var buttonActions: [UInt32] = []
+        var positions: [(Double, Double)] = []
+        var pressureStages: [UInt32] = []
+        TerminalMouseEventHandler.mouseButtonSender = {
+            _, action, _, _ in
+            buttonActions.append(action.rawValue)
+            return true
+        }
+        TerminalMouseEventHandler.mousePositionSender = { _, x, y, _ in
+            positions.append((x, y))
+        }
+        TerminalMouseEventHandler.mousePressureSender = { _, stage, _ in
+            pressureStages.append(stage)
         }
         defer {
+            TerminalMouseEventHandler.mouseButtonSender = originalButtonSender
             TerminalMouseEventHandler.mousePositionSender = originalSender
+            TerminalMouseEventHandler.mousePressureSender = originalPressureSender
         }
         let view = try makeSurface()
         let window = hostInWindow(view)
@@ -191,18 +206,37 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             clickCount: 0,
             pressure: 0
         ))
+        let mouseDown = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [],
+            timestamp: 1,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 1,
+            pressure: 1
+        ))
+        view.mouseDown(with: mouseDown)
 
         view.setParkedForPreview(true)
         view.mouseMoved(with: event)
 
         XCTAssertTrue(view.trackingAreas.isEmpty)
-        XCTAssertEqual(positionCalls, 0)
+        XCTAssertEqual(buttonActions, [
+            GHOSTTY_MOUSE_PRESS.rawValue,
+            GHOSTTY_MOUSE_RELEASE.rawValue,
+        ])
+        XCTAssertEqual(pressureStages, [0])
+        XCTAssertEqual(positions.count, 1)
+        XCTAssertEqual(positions.first?.0, -1)
+        XCTAssertEqual(positions.first?.1, -1)
 
         view.setParkedForPreview(false)
         view.mouseMoved(with: event)
 
         XCTAssertFalse(view.trackingAreas.isEmpty)
-        XCTAssertEqual(positionCalls, 1)
+        XCTAssertEqual(positions.count, 2)
     }
 
     func testParkingHostIsNoninteractiveAndPreservesSurfaceSize() throws {
