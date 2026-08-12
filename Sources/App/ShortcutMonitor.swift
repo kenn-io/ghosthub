@@ -55,9 +55,9 @@ final class ShortcutMonitor {
             let action = shortcuts().action(for: binding)
         else { return event }
 
-        // The SwiftUI View menu owns this key equivalent. Intercepting it here
-        // also invokes the menu command, toggling the sidebar twice.
-        if action == .toggleSidebar {
+        // SwiftUI menu key equivalents own these actions. Intercepting them
+        // here would also invoke the menu command and dispatch twice.
+        if ApplicationShortcutMenuModel.menuOwnedActions.contains(action) {
             if event.isARepeat {
                 return Self.menuOwnedKeyCodes.contains(event.keyCode)
                     ? nil : event

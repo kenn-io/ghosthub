@@ -83,6 +83,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     var onQuickLaunch: () -> Void
     var onSettings: () -> Void
     var onNewWorktree: () -> Void
+    var onWindowChanged: (NSWindow?) -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = FocusTrackingView(
@@ -92,12 +93,14 @@ private struct WindowFocusTracker: NSViewRepresentable {
         view.onFocusChanged = { [self] focused in
             isFocused = focused
         }
+        view.onWindowChanged = onWindowChanged
         configureTitlebar(view)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let view = nsView as? FocusTrackingView else { return }
+        view.onWindowChanged = onWindowChanged
         configureTitlebar(view)
     }
 
@@ -120,6 +123,8 @@ private struct WindowFocusTracker: NSViewRepresentable {
     private final class FocusTrackingView: NSView {
         nonisolated(unsafe) var onFocusChanged:
             ((Bool) -> Void)?
+        nonisolated(unsafe) var onWindowChanged:
+            ((NSWindow?) -> Void)?
         private nonisolated(unsafe) var observers:
             [NSObjectProtocol] = []
         private var tabObservation: NSKeyValueObservation?
@@ -147,6 +152,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             removeObservers()
+            onWindowChanged?(window)
             guard let window else {
                 DispatchQueue.main.async { [weak self] in
                     self?.onFocusChanged?(false)
@@ -1091,6 +1097,9 @@ struct WorkspaceWindow: View {
                         name: .ghosthubNewWorktree,
                         object: nil
                     )
+                },
+                onWindowChanged: { window in
+                    sceneModel.workspaceWindow = window
                 }
             )
         )

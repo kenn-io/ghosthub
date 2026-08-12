@@ -5,6 +5,14 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-11
+
+### Fixed
+
+- Configurable **Command-B** and **Command-Shift-P** shortcuts remain
+  registered across window-focus and sheet transitions, dispatch exactly once,
+  and no longer act beneath an open sheet.
+
 ## [0.8.1] - 2026-08-11
 
 ### Fixed
@@ -279,7 +287,8 @@ test, and documentation-only changes are omitted.
   and SSH tmux session discovery, automatic reconnect, and kwt-backed project
   and worktree navigation.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/kenn-io/ghosthub/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/kenn-io/ghosthub/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kenn-io/ghosthub/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/kenn-io/ghosthub/compare/v0.6.0...v0.7.0

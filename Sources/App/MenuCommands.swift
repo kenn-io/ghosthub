@@ -25,6 +25,7 @@ struct MenuActionContext {
     ) -> KeyboardShortcut? {
         ApplicationShortcutMenuModel.keyboardBinding(
             settingsStore.shortcutPreferences.resolved[action],
+            for: action,
             sceneIsFocused: sceneModel?.isFocusedWindow == true,
             hasAttachedSheet: sceneHasAttachedSheet,
             actionIsAvailable: actionIsAvailable
@@ -41,6 +42,7 @@ struct MenuActionContext {
         )
         return ApplicationShortcutMenuModel.keyboardBinding(
             splitBinding,
+            for: action,
             sceneIsFocused: sceneModel?.isFocusedWindow == true,
             hasAttachedSheet: sceneHasAttachedSheet,
             actionIsAvailable: sceneModel?.canSplitActivePane == true

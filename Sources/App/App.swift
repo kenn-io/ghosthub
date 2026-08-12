@@ -23,6 +23,11 @@ struct ApplicationShortcutMenuItem: Equatable {
 }
 
 enum ApplicationShortcutMenuModel {
+    static let menuOwnedActions: Set<ApplicationShortcutAction> = [
+        .commandPalette,
+        .toggleSidebar,
+    ]
+
     static func items(
         _ actions: [ApplicationShortcutAction],
         shortcuts: ResolvedApplicationShortcuts
@@ -63,10 +68,14 @@ enum ApplicationShortcutMenuModel {
 
     static func keyboardBinding(
         _ binding: ApplicationKeyBinding?,
+        for action: ApplicationShortcutAction,
         sceneIsFocused: Bool,
         hasAttachedSheet: Bool,
         actionIsAvailable: Bool
     ) -> ApplicationKeyBinding? {
+        if menuOwnedActions.contains(action) {
+            return binding
+        }
         guard sceneIsFocused,
               !hasAttachedSheet,
               actionIsAvailable

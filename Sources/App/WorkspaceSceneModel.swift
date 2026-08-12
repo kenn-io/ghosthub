@@ -1081,6 +1081,7 @@ final class WorkspaceSceneModel: ObservableObject {
             syncTerminalConfig()
         }
     }
+    weak var workspaceWindow: NSWindow?
     @Published var selection: WorkspaceSelection {
         didSet {
             syncTerminalConfig()

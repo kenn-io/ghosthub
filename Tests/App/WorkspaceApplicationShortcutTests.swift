@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GhosthubPersistence
 import GhosthubTerminalSupport
@@ -222,6 +223,48 @@ struct WorkspaceApplicationShortcutTests {
         #expect(model.isLogViewerPresented)
         #expect(!model.performApplicationShortcut(.splitRight))
         #expect(!model.performApplicationShortcut(.newHerdrSession))
+        await model.shutdown()
+    }
+
+    @Test("menu-owned shortcuts read attached sheet eligibility at dispatch time")
+    func menuOwnedShortcutsUseLiveSheetEligibility() async throws {
+        let environment = try setupHostEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot
+        )
+        model.isFocusedWindow = true
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let sheet = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        model.workspaceWindow = window
+        window.beginSheet(sheet) { _ in }
+        #expect(window.attachedSheet === sheet)
+
+        #expect(!model.performApplicationShortcut(.toggleSidebar))
+        #expect(!model.performApplicationShortcut(
+            .toggleSidebar,
+            invocation: .menu
+        ))
+        #expect(!model.performApplicationShortcut(.commandPalette))
+        #expect(!model.isCommandPalettePresented)
+
+        window.endSheet(sheet)
+        #expect(window.attachedSheet == nil)
+
+        #expect(model.performApplicationShortcut(.toggleSidebar))
+        #expect(model.performApplicationShortcut(.commandPalette))
+        #expect(model.isCommandPalettePresented)
         await model.shutdown()
     }
 }
