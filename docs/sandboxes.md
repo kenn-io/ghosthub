@@ -71,17 +71,26 @@ posture.
 
 ## Worktree and Git Mounts
 
-Ghosthub resolves the exact worktree path, common Git directory, and
-per-worktree Git directory from Git itself immediately before creation. Every
-path must remain inside the expected local project/worktree relationship and
-must still match the kwt worktree generation the user selected. The worktree
-and common Git directory are mounted at their identical absolute host paths so
-the linked worktree's `.git` pointer remains valid inside the sandbox.
+Ghosthub resolves the exact worktree path, absolute Git directory, common Git
+directory, and worktree-specific Git directory from Git itself immediately
+before creation. Every path must remain inside the expected local
+project/worktree relationship and must still match the kwt worktree generation
+the user selected. Preflight classifies one of two layouts:
 
-Both providers receive the worktree and common Git metadata read-write. This
-is what permits direct edits, staging, commits, objects, refs, reflogs, and the
-per-worktree index to remain shared with the host. Ghosthub does not use sbx
-clone mode and does not synthesize a second Git remote.
+- A **standard checkout** has an existing `.git` directory inside the
+  worktree. Its absolute, common, and worktree-specific Git directories are the
+  same directory. The worktree is the single top-level read-write mount; there
+  are no gitfile, `commondir`, or `gitdir` indirection targets.
+- A **linked worktree** has a regular `.git` gitfile that resolves to a
+  distinct worktree-specific directory beneath the common Git directory. The
+  worktree and common Git directory are separate top-level read-write mounts
+  at their identical absolute host paths so every Git indirection remains
+  valid inside the sandbox.
+
+Both layouts permit direct edits, staging, commits, objects, refs, reflogs, and
+the index to remain shared with the host. An unrecognized, mixed, or changing
+layout fails preflight. Ghosthub does not use sbx clone mode and does not
+synthesize a second Git remote.
 
 ### Apple container protection
 
@@ -91,27 +100,38 @@ read-write same-path mount. A mount point cannot be renamed, so a sandboxed
 process cannot bypass a protected file or directory by moving an ancestor and
 recreating the original path. For linked-worktree indirection, the pinned set
 necessarily includes the common `worktrees` directory and exact per-worktree
-Git directory. Creation then adds `--read-only-path` for the linked worktree's `.git` gitfile,
-the per-worktree Git directory's `commondir` and `gitdir` indirection files,
-the common repository config, standard hooks directory, an effective
-per-worktree config when enabled, every effective repository-local included
-config file under a mounted root, and the currently resolved `core.hooksPath`
-when that path is writable through a mounted root. The three indirection files
-must be regular existing files whose contents resolve to the exact worktree,
-per-worktree Git directory, and common Git directory accepted by preflight.
+Git directory. For a standard checkout, the pinned set includes its writable
+`.git` directory so that directory itself cannot be replaced. Creation then
+adds `--read-only-path` for the repository config, standard hooks directory,
+an effective per-worktree config when enabled, every effective
+repository-local included config file under a mounted root, and the currently
+resolved `core.hooksPath` when that path is writable through a mounted root. A
+linked worktree additionally protects its `.git` gitfile and the
+worktree-specific Git directory's `commondir` and `gitdir` files. Those three
+indirection files must be regular existing files whose contents resolve to the
+exact worktree, worktree-specific Git directory, and common Git directory
+accepted by preflight.
+
 Each protected target and ancestor must already exist, remain within its
 expected mounted root, and have no mutable symlink indirection that could
-replace its lexical path. Paths outside the mounted roots are not exposed to
-the container.
+replace its lexical path. At the final preflight check, every protected regular
+file and every regular file recursively beneath a protected directory must
+have a link count of exactly one. Ghosthub rejects additional hard links rather
+than trying to discover and protect aliases, because an alias anywhere in a
+writable mounted root can mutate the same inode. This deliberately rejects an
+additional link even when Ghosthub cannot prove that its other name will be
+mounted. The provider create command must consume the exact unchanged file
+identities and layout accepted by that check. Paths outside the mounted roots
+are not exposed to the container.
 
 Apple's read-only-path control protects only targets that exist when the
 container starts. Preflight therefore fails closed rather than claiming the
-stronger capability when a required indirection, effective config, or hook path
-within the mounted roots is absent, cannot be canonicalized, changes during
-preflight, or cannot be expressed as an existing read-only target. The error
-identifies the Git target and path the user must review. Ghosthub does not
-create placeholder Git configuration or rewrite repository metadata to make a
-target mountable.
+stronger capability when a layout-specific indirection, effective config, or
+hook path within the mounted roots is absent, cannot be canonicalized, has a
+writable hard-link alias, changes during preflight, or cannot be expressed as
+an existing read-only target. The error identifies the Git target and path the
+user must review. Ghosthub does not create placeholder Git configuration or
+rewrite repository metadata to make a target mountable.
 
 Nested file bind mounts are not used. In `container` 1.2.2, adding a nested
 file bind can make the enclosing directory mount disappear, while
@@ -120,14 +140,16 @@ that failure.
 
 ### Docker sbx partial boundary
 
-Sbx receives the worktree and common Git directory read-write plus the standard
-hooks directory as an additional read-only workspace. The hooks overlay blocks
-the naive or automated direct-write pattern and is retained because it is
-cheap, but it is not represented as a security barrier. Sbx 0.38 refuses a
-file path as a workspace, so `.git/config` remains writable. A sandboxed
-process can set `core.hooksPath` to a directory in the writable worktree and
-can configure `core.fsmonitor`, `include.path`, and filter, diff, or merge
-drivers that execute when the user later runs Git on the host.
+Sbx receives a standard checkout's worktree as its read-write workspace. A
+linked layout additionally receives the distinct common Git directory
+read-write. Both layouts add the standard hooks directory as a read-only
+workspace. The hooks overlay blocks the naive or automated direct-write
+pattern and is retained because it is cheap, but it is not represented as a
+security barrier. Sbx 0.38 refuses a file path as a workspace, so
+`.git/config` remains writable. A sandboxed process can set `core.hooksPath` to
+a directory in the writable worktree and can configure `core.fsmonitor`,
+`include.path`, and filter, diff, or merge drivers that execute when the user
+later runs Git on the host.
 
 The honest boundary is: sbx protects the rest of the Mac from direct filesystem
 access by the sandboxed process, but it does not protect against host-side code
@@ -145,14 +167,23 @@ to execute without review.
 ## Git Metadata Drift Warning
 
 Sbx records a defense-in-depth Git execution baseline at every successful
-Create or explicit Start. The baseline contains hashes, not file contents, for:
+Create or explicit Start. Every baseline records whether the checkout is
+standard or linked plus the resolved worktree, absolute Git, common Git, and
+worktree-specific Git paths. It contains hashes, not file contents, for:
 
 - the common repository config and effective per-worktree config
 - effective repository-local included config files within the mounted roots
-- the linked worktree gitfile and per-worktree `commondir` and `gitdir` files
+- for a linked worktree only, its gitfile and worktree-specific `commondir` and
+  `gitdir` files
 - the resolved `core.hooksPath` value
 - a deterministic manifest of the resolved hook directory's file contents,
   symlink targets, and relative paths when it is within a mounted root
+
+Failure to capture a fresh baseline does not convert sbx into a stronger
+boundary or silently retain an older baseline as current. The requested Create
+or Start may proceed under sbx's already acknowledged partial boundary only
+after Ghosthub persists a comparison-failure notice and records that no current
+baseline is available.
 
 Ghosthub compares that baseline when the sandbox terminal detaches and during
 later reconciliation of a sandbox that was recorded as running. Those are
@@ -168,12 +199,16 @@ warning:
 
 This is a warning, not prevention or attribution. It cannot protect a host Git
 command run before comparison, and an attacker that changes and restores the
-same bytes before comparison can evade it. Failure to compute or compare a
-baseline is itself visible and never upgrades sbx's capability presentation.
-A raised warning is stored as an app-owned security notice associated with the
-worktree generation, independently of the sandbox record and baseline. Stop,
-Delete, stale-record removal, and worktree removal cannot erase it; only an
-explicit user dismissal does.
+same bytes before comparison can evade it. Failure to capture or compare a
+baseline is itself a security notice and never upgrades sbx's capability
+presentation. The notice retains the last known project and worktree
+generation, provider, lifecycle operation, time, and comparison failure, but
+never stores Git file contents. Both detected drift and comparison failure are
+stored independently of the sandbox record and baseline. Stop, Delete,
+stale-record removal, and worktree removal cannot erase either notice; only an
+explicit user dismissal does. A failed final comparison does not prevent an
+otherwise identity-verified Stop, Delete, or guarded worktree removal after the
+notice has been persisted.
 
 ## Credentials and Network
 
@@ -205,8 +240,8 @@ Ghosthub manages only sandboxes it created. A persistence record contains:
 - optional saved launch command
 - last known lifecycle state and sbx Git drift baseline
 
-Raised Git-metadata security notices are separate app-owned records, not fields
-whose lifetime is coupled to the managed sandbox record.
+Git-metadata drift and comparison-failure notices are separate app-owned
+records, not fields whose lifetime is coupled to the managed sandbox record.
 
 Apple resources also carry `io.ghosthub.sandbox-id=<UUID>`. Sbx has no
 equivalent label in 0.38, so its provider UUID and exact generated name are
@@ -242,24 +277,26 @@ Create, Start, Open, Stop, and Delete are separate operations:
   resources are not auto-started after reboot or application launch.
 - **Stop** is confirmed because it fences and terminates sandbox processes
   while retaining provider state. After the provider confirms the resource is
-  stopped, Ghosthub performs the final drift comparison and persists any
-  security notice.
+  stopped, Ghosthub performs the final drift comparison and persists detected
+  drift or comparison failure as a security notice.
 - **Delete** is confirmed, fences execution, and removes the exact provider
   resource. After the provider confirms removal, Ghosthub performs the final
-  drift comparison and persists any security notice before removing the
-  dedicated tmux presentation, drift baseline, and sandbox record.
+  drift comparison and persists detected drift or comparison failure as a
+  security notice before removing the dedicated tmux presentation, drift
+  baseline, and sandbox record.
 
 Apple containers are expected to reconcile as stopped after a host reboot.
 Ghosthub does not promise provider process restoration across reboot.
 
 Removing a worktree uses its existing guarded confirmation and includes the
 managed sandbox in that summary. Ghosthub fences reconnect, deletes the exact
-verified provider resource, performs the final drift comparison, persists any
-independent security notice, removes the dedicated tmux presentation and
-sandbox record, and only then delegates worktree removal to kwt. A provider
-resource already confirmed missing permits a best-effort final comparison,
-stale-record removal, and continued worktree deletion; inability to compare is
-visible. An unavailable provider or identity mismatch blocks the worktree
+verified provider resource, performs the final drift comparison, persists
+detected drift or comparison failure as an independent security notice,
+removes the dedicated tmux presentation and sandbox record, and only then
+delegates worktree removal to kwt. A provider resource already confirmed
+missing permits a best-effort final comparison, stale-record removal, and
+continued worktree deletion; inability to compare is persisted before state is
+removed. An unavailable provider or identity mismatch blocks the worktree
 mutation because Ghosthub cannot prove that no live sandbox still mounts it.
 
 ## Terminal Presentation
@@ -288,27 +325,32 @@ destructive-to-fixtures-only integration probes when its provider environment
 gates are set. A requested provider probe must fail rather than skip when its
 binary, authentication, policy, or runtime is unavailable.
 
-Each probe creates a unique temporary repository and linked worktree, unique
-provider resource, and isolated tmux identity, with cleanup registered before
-creation. It performs no push or external credential operation.
+Each probe creates a unique temporary repository with both its standard
+checkout and a linked worktree, unique provider resources, and isolated tmux
+identities, with cleanup registered before creation. It performs no push or
+external credential operation.
 
 The Apple probe asserts:
 
-- direct worktree editing and a host-visible commit
-- read-only worktree gitfile, per-worktree `commondir` and `gitdir` files,
-  repository config, standard hooks, and resolved hook path
+- direct editing and host-visible commits in both standard and linked layouts
+- read-only repository config, standard hooks, and resolved hook path in both
+  layouts, plus the linked gitfile and worktree-specific `commondir` and
+  `gitdir` files
 - attempts to rewrite, rename, or replace any Git indirection file fail while
   host-side Git resolution and commits continue to use the expected metadata
 - attempts to rename the common `worktrees` directory or exact per-worktree
   Git directory fail because both are pinned as nested mount points
 - a nested repository-local config or hook target cannot be replaced by
   renaming any writable ancestor accepted by preflight
+- preflight rejects a protected file or protected-directory member with a
+  pre-existing hard-link alias, and the running container cannot create a new
+  hard link from a read-only target into a writable mounted root
 - a live host-side hook-directory change does not remove or weaken the overlay
 - label/name inventory, stop, start, and exact deletion reconciliation
 
 The sbx probe asserts:
 
-- direct worktree editing and a host-visible commit
+- direct editing and host-visible commits in both standard and linked layouts
 - the hooks workspace remains read-only before and after a live host change
 - repository config remains writable, preserving the declared partial
   capability rather than accidentally presenting a false stronger boundary
@@ -341,10 +383,17 @@ mounts closed that replacement path. Direct writes, unlinks, file renames, and
 ancestor-directory renames then failed while a commit remained host-visible. A
 separate nested-target probe pinned multiple writable ancestor levels for a
 repository-local config file and hooks directory; ancestor renames and target
-writes failed while another commit remained host-visible. Sbx refused a config
-file as an additional workspace. The rejected read-only common-Git layout
-committed only with `packed-refs.lock` diagnostics. Creating an sbx sandbox
-with `SSH_AUTH_SOCK` removed from the client environment still exposed the
+writes failed while another commit remained host-visible. A hard-link probe on
+August 12 confirmed that a pre-existing writable alias bypasses
+`--read-only-path`, while creating a new alias from the protected mount fails
+with a cross-device-link error. This is why preflight rejects any existing
+alias and the provider gate verifies that a running container cannot create
+one. A standard-checkout probe pinned its `.git` directory, protected config
+and hooks, rejected config writes, `.git` replacement, and new hard-link
+creation, and still committed inside the container. Sbx refused a config file
+as an additional workspace. The rejected read-only common-Git layout committed
+only with `packed-refs.lock` diagnostics. Creating an sbx sandbox with
+`SSH_AUTH_SOCK` removed from the client environment still exposed the
 already-running daemon's forwarded agent socket.
 
 Provider behavior and future changes should be checked against the

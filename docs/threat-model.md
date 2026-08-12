@@ -357,18 +357,21 @@ and capabilities in [Worktree Sandboxes](sandboxes.md). Ghosthub validates the
 exact worktree generation and manages only resources bound to its persisted
 identity; an unmanaged or same-named replacement is never adopted or deleted.
 
-Apple `container` pins every writable ancestor of a protected target as a
-nested mount point, then uses read-only-path controls for the linked worktree's
-`.git` gitfile, the per-worktree `commondir` and `gitdir` indirection files, and
-every effective repository config and hook target its preflight can resolve
-inside the mounted roots. Pinning the writable ancestors prevents directory
-rename from replacing protected paths; for Git indirection this includes the
-common `worktrees` directory and exact per-worktree Git directory. Creation
-fails closed when an indirection file does not resolve to the expected
-worktree/common-directory relationship, or when a required target or ancestor
-is absent, escapes its expected root, has mutable symlink indirection, changes
-during preflight, or cannot be protected. This narrows Git-metadata injection
-but does not make shared worktree content safe to execute later on the host.
+Apple `container` distinguishes a standard checkout with an in-worktree `.git`
+directory from a linked worktree with a gitfile and distinct common Git mount.
+It pins every writable ancestor of a protected target as a nested mount point,
+then uses read-only-path controls for every effective repository config and
+hook target it can resolve. A linked layout additionally protects its `.git`
+gitfile and worktree-specific `commondir` and `gitdir`; a standard layout pins
+its writable `.git` directory against replacement and has no indirection
+files. Pinning writable ancestors prevents directory rename from replacing
+protected paths. Creation fails closed when the layout or indirection does not
+resolve to the expected relationship, when a required target or ancestor is
+absent, escapes its expected root, has mutable symlink indirection, changes
+during preflight, or cannot be protected, or when a protected file has a
+second hard link. Protected directories receive the same hard-link check for
+every regular file beneath them. This narrows Git-metadata injection but does
+not make shared worktree content safe to execute later on the host.
 
 Docker sbx has a documented partial boundary. Its standard `.git/hooks`
 directory is mounted read-only as defense in depth, but `.git/config` remains
@@ -378,12 +381,13 @@ directory is not a security barrier: a sandboxed process can set
 `include.path`, and filter, diff, or merge drivers. The sbx boundary therefore
 protects the rest of the Mac from direct sandbox filesystem access but does not
 protect against host-side code execution through this repository's Git
-metadata. A hash-based warning reports Git indirection, config, or resolved
-hook-path drift at detach and later reconciliation. Stop and Delete fence and
-terminate provider execution before their final comparison, and a raised
-notice survives independently of sandbox deletion until the user dismisses it.
-The warning is neither prevention nor attribution and cannot protect a host
-Git command run before comparison.
+metadata. A layout-aware hash baseline reports Git indirection, config, or
+resolved hook-path drift at detach and later reconciliation. Stop and Delete
+fence and terminate provider execution before their final comparison. Detected
+drift and inability to capture or compare the baseline both become independent
+security notices that survive sandbox and worktree deletion until the user
+dismisses them. The warning is neither prevention nor attribution and cannot
+protect a host Git command run before comparison.
 
 Docker sbx also forwards the host SSH agent whenever its daemon has one. In the
 supported 0.38.0 version there is no per-sandbox disable flag or setting;

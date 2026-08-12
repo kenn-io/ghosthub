@@ -260,7 +260,8 @@ Stop and Delete fence every matching presentation before acting on the exact
 managed provider identity. They confirm provider execution has terminated
 before the final Git-metadata drift comparison. Stop retains provider state;
 Delete removes the dedicated tmux identity and sandbox record only after any
-drift notice is persisted independently. Neither action may target a
+detected drift or comparison failure is persisted as an independent security
+notice. Neither action may target a
 prefix-only or same-named replacement. Provider resources remain stopped after
 reboot until the user explicitly starts them. The complete provider and
 worktree lifecycle contract is in [Worktree Sandboxes](sandboxes.md).
