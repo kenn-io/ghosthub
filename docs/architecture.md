@@ -812,10 +812,12 @@ for the remaining live sessions on each host and for the eventual result of an
 explicit named-session creation request. A worktree open does not infer live
 session state from kwt inventory: it uses kwt's exact-path start-only command
 to converge the session before attachment.
-On the Rust Windows path, a selected ordinary worktree is revalidated by
-repository identity, exact path, generation, and computed session name before
-the revision-pinned helper is allowed to run `kwt open <exact-path>` as the
-PTY-hosted client. Worktree creation first uses KWT's no-launch branch flow,
+On the Rust Windows path, the revision-pinned helper receives the selected
+repository identity, registration fingerprint, exact path, generation, and
+computed session name. KWT revalidates them atomically under its project
+lifecycle lock before repairing or starting the PTY-hosted client; a separate
+inventory preflight cannot grant stale open authority. Worktree creation first
+uses KWT's no-launch branch flow,
 then refreshes machine-readable inventory before granting RepairOrOpen
 authority. Branch reads, creation, and reconciliation share the serialized KWT
 background lane and never block GPUI or replace the last usable sidebar tree.

@@ -20,7 +20,7 @@ use crate::kwt::{parse_branches, parse_command_failure, parse_project_mutation};
 use crate::zellij;
 use crate::{
     CancellationToken, CommandOutput, CommandRunner, KwtBranchCandidate, KwtBundle, KwtInventory,
-    KwtProject, KwtWorktreeCreate,
+    KwtProject, KwtWorktreeCreate, KwtWorktreeOpen,
 };
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
@@ -1094,8 +1094,7 @@ impl<R: CommandRunner> WslHost<R> {
         &self,
         endpoint: &WslEndpoint,
         runtime: &WslRuntimeIdentity,
-        worktree_path: &str,
-        session_name: &str,
+        request: &KwtWorktreeOpen,
         term: AttachTerm,
         cancellation: &CancellationToken,
     ) -> Result<RepairOrOpenPlan, HostError> {
@@ -1116,14 +1115,26 @@ impl<R: CommandRunner> WslHost<R> {
             &[],
         );
         args.extend(
-            [helper.as_str(), "open", worktree_path]
-                .into_iter()
-                .map(OsString::from),
+            [
+                helper.as_str(),
+                "open",
+                request.path(),
+                "--expected-repository",
+                request.repository(),
+                "--expected-registration",
+                request.registration_fingerprint(),
+                "--expected-generation",
+                request.generation(),
+                "--expected-session",
+                request.session_name(),
+            ]
+            .into_iter()
+            .map(OsString::from),
         );
         Ok(RepairOrOpenPlan::worktree(
             self.wsl_executable.as_os_str(),
             args,
-            session_name,
+            request.session_name(),
         ))
     }
 
@@ -4554,8 +4565,13 @@ mod tests {
             .kwt_repair_or_open_plan(
                 &endpoint,
                 &runtime,
-                "/work/widget/topic",
-                "widget-topic",
+                &KwtWorktreeOpen::new(
+                    "/work/widget/topic",
+                    "github.com/acme/widget",
+                    "registration-fingerprint",
+                    "0123456789abcdef0123456789abcdef",
+                    "widget-topic",
+                ),
                 AttachTerm::Xterm256Color,
                 &CancellationToken::new(),
             )
@@ -4572,6 +4588,23 @@ mod tests {
                 "/work/widget/topic",
             ]
         }));
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--expected-repository", "github.com/acme/widget"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--expected-registration", "registration-fingerprint"] })
+        );
+        assert!(
+            args.windows(2).any(|args| {
+                args == ["--expected-generation", "0123456789abcdef0123456789abcdef"]
+            })
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--expected-session", "widget-topic"])
+        );
         assert!(
             args.iter()
                 .any(|argument| argument == "TERM=xterm-256color")

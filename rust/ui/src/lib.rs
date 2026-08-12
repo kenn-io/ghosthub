@@ -308,6 +308,7 @@ pub struct RootView {
     sidebar_visible: bool,
     new_session: Option<NewSessionDraft>,
     project_dialog: Option<ProjectDialog>,
+    pending_worktree_navigation: Option<u64>,
     session_action_menu: Option<SessionActionMenu>,
     restore_focus: bool,
 }
@@ -438,6 +439,18 @@ fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
 
 fn can_create_worktree(branch: &str, loaded: bool, loading: bool, submitting: bool) -> bool {
     workspace::is_valid_git_branch_name(branch.trim()) && loaded && !loading && !submitting
+}
+
+fn owns_created_worktree_navigation(
+    pending: Option<u64>,
+    event_generation: u64,
+    workspace_generation_is_current: bool,
+    dialog_project_path: Option<&str>,
+    created_project_path: &str,
+) -> bool {
+    pending == Some(event_generation)
+        && workspace_generation_is_current
+        && dialog_project_path.is_none_or(|path| path == created_project_path)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -765,6 +778,7 @@ impl RootView {
             sidebar_visible: true,
             new_session: None,
             project_dialog: None,
+            pending_worktree_navigation: None,
             session_action_menu: None,
             restore_focus: false,
         };
@@ -874,6 +888,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         self.new_session = Some(NewSessionDraft {
             host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
@@ -898,6 +913,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         self.project_dialog = Some(ProjectDialog::Add {
             host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
@@ -964,6 +980,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         self.project_dialog = Some(ProjectDialog::Remove {
             host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
@@ -987,6 +1004,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         let result = self.workspace.load_kwt_branches(
             host_id,
             endpoint,
@@ -1020,6 +1038,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         let result = if let Some(generation) = target.open.generation.as_deref() {
             self.workspace.request_kwt_worktree_removal(
                 &target.open.host_id,
@@ -1112,7 +1131,10 @@ impl RootView {
                 path,
                 submitting: false,
                 ..
-            }) => self.workspace.add_kwt_project(host_id, endpoint, path),
+            }) => self
+                .workspace
+                .add_kwt_project(host_id, endpoint, path)
+                .map(|()| None),
             Some(ProjectDialog::Remove {
                 host_id,
                 endpoint,
@@ -1121,13 +1143,16 @@ impl RootView {
                 registration_fingerprint,
                 submitting: false,
                 ..
-            }) => self.workspace.remove_kwt_project(
-                host_id,
-                endpoint,
-                repository,
-                path,
-                registration_fingerprint,
-            ),
+            }) => self
+                .workspace
+                .remove_kwt_project(
+                    host_id,
+                    endpoint,
+                    repository,
+                    path,
+                    registration_fingerprint,
+                )
+                .map(|()| None),
             Some(ProjectDialog::NewWorktree {
                 host_id,
                 endpoint,
@@ -1152,16 +1177,18 @@ impl RootView {
                                 .is_none_or(|source| source == candidate.source())
                     })
                     .collect::<Vec<_>>();
-                self.workspace.create_kwt_worktree(
-                    host_id,
-                    endpoint,
-                    repository,
-                    project_path,
-                    registration_fingerprint,
-                    normalized,
-                    exact.first().map(|candidate| candidate.source()),
-                    exact.is_empty(),
-                )
+                self.workspace
+                    .create_kwt_worktree(
+                        host_id,
+                        endpoint,
+                        repository,
+                        project_path,
+                        registration_fingerprint,
+                        normalized,
+                        exact.first().map(|candidate| candidate.source()),
+                        exact.is_empty(),
+                    )
+                    .map(Some)
             }
             Some(ProjectDialog::RemoveWorktree {
                 target,
@@ -1182,22 +1209,27 @@ impl RootView {
                     cx.notify();
                     return;
                 };
-                self.workspace.remove_kwt_worktree(
-                    &target.open.host_id,
-                    &target.open.endpoint,
-                    &target.open.repository,
-                    &target.open.project_path,
-                    &target.open.registration_fingerprint,
-                    &target.open.worktree_path,
-                    generation,
-                    &target.open.session_name,
-                    authority,
-                )
+                self.workspace
+                    .remove_kwt_worktree(
+                        &target.open.host_id,
+                        &target.open.endpoint,
+                        &target.open.repository,
+                        &target.open.project_path,
+                        &target.open.registration_fingerprint,
+                        &target.open.worktree_path,
+                        generation,
+                        &target.open.session_name,
+                        authority,
+                    )
+                    .map(|()| None)
             }
             _ => return,
         };
         match result {
-            Ok(()) => {
+            Ok(navigation_generation) => {
+                if let Some(navigation_generation) = navigation_generation {
+                    self.pending_worktree_navigation = Some(navigation_generation);
+                }
                 if let Some(dialog) = &mut self.project_dialog {
                     match dialog {
                         ProjectDialog::Add {
@@ -1407,6 +1439,7 @@ impl RootView {
     }
 
     fn request_session_kill(&mut self, selection: &SessionSelection, cx: &mut Context<Self>) {
+        self.pending_worktree_navigation = None;
         match self.workspace.request_session_kill(selection) {
             Ok(()) => self.diagnostic = None,
             Err(error) => self.diagnostic = Some(error.to_string()),
@@ -1466,6 +1499,7 @@ impl RootView {
         action: workspace::HerdrLifecycleAction,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         match self.workspace.request_herdr_lifecycle(selection, action) {
             Ok(()) => self.diagnostic = None,
             Err(error) => self.diagnostic = Some(error.to_string()),
@@ -1623,7 +1657,10 @@ impl RootView {
                         *error = None;
                     }
                 }
-                WorkspaceEvent::KwtWorktreeCreated { target } => {
+                WorkspaceEvent::KwtWorktreeCreated {
+                    target,
+                    navigation_generation,
+                } => {
                     let open = WorktreeOpenTarget {
                         host_id: target.host_id().to_owned(),
                         endpoint: target.endpoint().to_owned(),
@@ -1634,6 +1671,29 @@ impl RootView {
                         generation: target.generation().map(str::to_owned),
                         session_name: target.session_name().to_owned(),
                     };
+                    let dialog_project_path = self.project_dialog.as_ref().map(|dialog| {
+                        if let ProjectDialog::NewWorktree { project_path, .. } = dialog {
+                            project_path.as_str()
+                        } else {
+                            ""
+                        }
+                    });
+                    let owns_navigation = owns_created_worktree_navigation(
+                        self.pending_worktree_navigation,
+                        navigation_generation,
+                        self.workspace
+                            .navigation_intent_is_current(navigation_generation),
+                        dialog_project_path,
+                        target.project_path(),
+                    );
+                    if self.pending_worktree_navigation == Some(navigation_generation) {
+                        self.pending_worktree_navigation = None;
+                    }
+                    if !owns_navigation {
+                        self.diagnostic =
+                            Some(format!("Created worktree {}.", target.worktree_path()));
+                        continue;
+                    }
                     self.project_dialog = None;
                     self.restore_focus = true;
                     if let Err(error) = self.workspace.open_kwt_worktree(
@@ -1671,9 +1731,25 @@ impl RootView {
                     }
                     self.diagnostic = None;
                 }
-                WorkspaceEvent::KwtWorktreeCreationPending { message, .. } => {
-                    self.project_dialog = None;
-                    self.restore_focus = true;
+                WorkspaceEvent::KwtWorktreeCreationPending {
+                    project_path,
+                    message,
+                    navigation_generation,
+                } => {
+                    if self.pending_worktree_navigation == Some(navigation_generation)
+                        && self.project_dialog.as_ref().is_some_and(|dialog| {
+                            matches!(
+                                dialog,
+                                ProjectDialog::NewWorktree {
+                                    project_path: dialog_path,
+                                    ..
+                                } if dialog_path == &project_path
+                            )
+                        })
+                    {
+                        self.project_dialog = None;
+                        self.restore_focus = true;
+                    }
                     self.diagnostic = Some(message);
                 }
                 WorkspaceEvent::KwtWorktreeOperationFailed {
@@ -5816,12 +5892,12 @@ mod tests {
         coalesce_last_resize, coalesce_last_wheel, has_ambiguous_worktree_source,
         herdr_row_actions, herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
         is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        named_key, new_session_validation, normalize_cell_width, queued_input_matches_presentation,
-        retained_key_event_with, session_action_menu_position, session_backend_id,
-        session_group_visibility, session_row_element_id, terminal_cell_at_with_offset,
-        terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
-        terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
-        tree_sessions, tree_zellij_sessions, workspace_window_title,
+        named_key, new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
+        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
+        session_backend_id, session_group_visibility, session_row_element_id,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
+        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, workspace_window_title,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -5869,6 +5945,38 @@ mod tests {
         assert!(!can_create_worktree("feature/new", false, false, false));
         assert!(!can_create_worktree("feature/new", true, true, false));
         assert!(can_create_worktree("feature/new", true, false, false));
+    }
+
+    #[test]
+    fn delayed_worktree_creation_does_not_override_newer_navigation_or_dialogs() {
+        assert!(owns_created_worktree_navigation(
+            Some(7),
+            7,
+            true,
+            Some("/code/widget"),
+            "/code/widget",
+        ));
+        assert!(!owns_created_worktree_navigation(
+            Some(7),
+            7,
+            false,
+            None,
+            "/code/widget",
+        ));
+        assert!(!owns_created_worktree_navigation(
+            Some(7),
+            7,
+            true,
+            Some("/code/other"),
+            "/code/widget",
+        ));
+        assert!(!owns_created_worktree_navigation(
+            Some(8),
+            7,
+            true,
+            None,
+            "/code/widget",
+        ));
     }
 
     #[test]

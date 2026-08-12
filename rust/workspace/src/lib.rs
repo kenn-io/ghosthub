@@ -829,6 +829,7 @@ pub enum WorkspaceEvent {
     },
     KwtWorktreeCreated {
         target: KwtWorktreeTarget,
+        navigation_generation: u64,
     },
     KwtWorktreeRemoved {
         project_path: String,
@@ -837,6 +838,7 @@ pub enum WorkspaceEvent {
     KwtWorktreeCreationPending {
         project_path: String,
         message: String,
+        navigation_generation: u64,
     },
     KwtWorktreeOperationFailed {
         project_path: String,
@@ -1565,6 +1567,7 @@ enum AttachTarget {
     Tmux(session::SessionIdentity),
     Worktree {
         repository: String,
+        registration_fingerprint: String,
         path: String,
         generation: Option<String>,
         session_name: String,
@@ -2729,11 +2732,12 @@ impl Workspace {
         branch: &str,
         source: Option<&str>,
         creates_branch: bool,
-    ) -> Result<(), WorkspaceError> {
+    ) -> Result<u64, WorkspaceError> {
         let branch = branch.trim();
         if !is_valid_git_branch_name(branch) {
             return Err(WorkspaceError::new("Enter a valid Git branch name."));
         }
+        let navigation_generation = self.begin_navigation();
         self.start_kwt_worktree_operation(
             host_id,
             endpoint,
@@ -2744,8 +2748,10 @@ impl Workspace {
                 branch: branch.to_owned(),
                 source: source.map(str::to_owned),
                 creates_branch,
+                navigation_generation,
             },
-        )
+        )?;
+        Ok(navigation_generation)
     }
 
     /// Capture the exact live tmux identity, if any, before presenting a
@@ -3599,6 +3605,11 @@ impl Workspace {
             .fetch_add(1, Ordering::AcqRel)
             .checked_add(1)
             .expect("navigation generation exhausted")
+    }
+
+    #[must_use]
+    pub fn navigation_intent_is_current(&self, generation: u64) -> bool {
+        self.inner.navigation_generation.load(Ordering::Acquire) == generation
     }
 
     fn retained_key_for_selection(&self, selection: &SessionSelection) -> Option<PresentationKey> {
@@ -6247,6 +6258,7 @@ enum KwtWorktreeOperation {
         branch: String,
         source: Option<String>,
         creates_branch: bool,
+        navigation_generation: u64,
     },
     Remove {
         worktree_path: String,
@@ -6300,6 +6312,7 @@ struct PendingKwtCreation {
     project_path: String,
     registration_fingerprint: String,
     branch: String,
+    navigation_generation: u64,
 }
 
 #[derive(Default)]
@@ -6685,6 +6698,7 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
             branch,
             source,
             creates_branch,
+            navigation_generation,
         } => KwtWorktreeOutcome {
             refresh_kwt: run_kwt_worktree_create(
                 inner,
@@ -6692,6 +6706,7 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
                 branch,
                 source.as_deref(),
                 *creates_branch,
+                *navigation_generation,
             ),
             refresh_tmux: false,
         },
@@ -6974,6 +6989,7 @@ fn run_kwt_worktree_create(
     branch: &str,
     source: Option<&str>,
     creates_branch: bool,
+    navigation_generation: u64,
 ) -> bool {
     let result = task.host.create_kwt_worktree(
         &task.endpoint,
@@ -6990,8 +7006,8 @@ fn run_kwt_worktree_create(
     );
     match result {
         Ok(()) => {
-            remember_pending_kwt_creation(inner, task, branch);
-            reconcile_created_kwt_worktree(inner, task, branch)
+            remember_pending_kwt_creation(inner, task, branch, navigation_generation);
+            reconcile_created_kwt_worktree(inner, task, branch, navigation_generation)
         }
         Err(error) => {
             publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
@@ -7011,13 +7027,15 @@ fn reconcile_created_kwt_worktree(
     inner: &Arc<Inner>,
     task: &KwtWorktreeTask,
     branch: &str,
+    navigation_generation: u64,
 ) -> bool {
     match task
         .host
         .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation)
     {
         Ok(Some(inventory)) => {
-            let target = created_kwt_worktree_target(task, branch, &inventory);
+            let target =
+                created_kwt_worktree_target(task, branch, navigation_generation, &inventory);
             publish_kwt_inventory(
                 inner,
                 task.generation,
@@ -7033,6 +7051,7 @@ fn reconcile_created_kwt_worktree(
                     WorkspaceEvent::KwtWorktreeCreationPending {
                         project_path: task.project_path.clone(),
                         message: "Worktree created. Waiting for KWT to refresh it.".to_owned(),
+                        navigation_generation,
                     },
                 );
                 true
@@ -7045,6 +7064,7 @@ fn reconcile_created_kwt_worktree(
                 WorkspaceEvent::KwtWorktreeCreationPending {
                     project_path: task.project_path.clone(),
                     message: "Worktree created. Waiting for KWT to become available.".to_owned(),
+                    navigation_generation,
                 },
             );
             true
@@ -7063,6 +7083,7 @@ fn reconcile_created_kwt_worktree(
                     project_path: task.project_path.clone(),
                     message: "Worktree created. KWT inventory is temporarily unavailable; Ghosthub will retry."
                         .to_owned(),
+                    navigation_generation,
                 },
             );
             true
@@ -7073,6 +7094,7 @@ fn reconcile_created_kwt_worktree(
 fn created_kwt_worktree_target(
     task: &KwtWorktreeTask,
     branch: &str,
+    navigation_generation: u64,
     inventory: &KwtInventory,
 ) -> Option<KwtWorktreeTarget> {
     pending_kwt_creation_target(
@@ -7082,18 +7104,25 @@ fn created_kwt_worktree_target(
             project_path: task.project_path.clone(),
             registration_fingerprint: task.registration_fingerprint.clone(),
             branch: branch.to_owned(),
+            navigation_generation,
         },
         inventory,
     )
 }
 
-fn remember_pending_kwt_creation(inner: &Inner, task: &KwtWorktreeTask, branch: &str) {
+fn remember_pending_kwt_creation(
+    inner: &Inner,
+    task: &KwtWorktreeTask,
+    branch: &str,
+    navigation_generation: u64,
+) {
     let pending = PendingKwtCreation {
         endpoint: task.endpoint.clone(),
         repository: task.repository.clone(),
         project_path: task.project_path.clone(),
         registration_fingerprint: task.registration_fingerprint.clone(),
         branch: branch.to_owned(),
+        navigation_generation,
     };
     let mut creations = inner
         .pending_kwt_creations
@@ -7149,15 +7178,21 @@ fn resolve_pending_kwt_creations(
             return true;
         }
         if let Some(target) = pending_kwt_creation_target(candidate, inventory) {
-            resolved.push(target);
+            resolved.push((target, candidate.navigation_generation));
             false
         } else {
             true
         }
     });
     drop(pending);
-    for target in resolved {
-        push_operation_event(inner, WorkspaceEvent::KwtWorktreeCreated { target });
+    for (target, navigation_generation) in resolved {
+        push_operation_event(
+            inner,
+            WorkspaceEvent::KwtWorktreeCreated {
+                target,
+                navigation_generation,
+            },
+        );
     }
 }
 
@@ -9424,29 +9459,25 @@ fn attach_fresh(
         }
         AttachTarget::Worktree {
             repository,
+            registration_fingerprint,
             path,
             generation,
             session_name,
         } => {
             let cancellation = CancellationToken::new();
-            validate_fresh_worktree(
-                request,
-                &fresh,
+            let open = host::KwtWorktreeOpen::new(
+                path,
                 repository,
-                path,
-                generation.as_deref(),
+                registration_fingerprint,
+                generation.as_deref().ok_or_else(|| {
+                    kwt_attachment_failure(
+                        &fresh,
+                        "worktree generation is unavailable; refresh KWT inventory before opening it",
+                    )
+                })?,
                 session_name,
-                &cancellation,
-            )?;
-            launch_fresh_worktree(
-                inner,
-                request,
-                term,
-                &fresh,
-                path,
-                session_name,
-                &cancellation,
-            )
+            );
+            launch_fresh_worktree(inner, request, term, &fresh, &open, &cancellation)
         }
         AttachTarget::Herdr { .. } => {
             let Some(session) = fresh_herdr_session(&fresh, &request.target) else {
@@ -9526,27 +9557,30 @@ fn attach_fresh_retained(
         }
         AttachTarget::Worktree {
             repository,
+            registration_fingerprint,
             path,
             generation,
             session_name,
         } => {
             let cancellation = CancellationToken::new();
-            validate_fresh_worktree(
-                &resolved_request,
-                &fresh,
-                repository,
+            let open = host::KwtWorktreeOpen::new(
                 path,
-                generation.as_deref(),
+                repository,
+                registration_fingerprint,
+                generation.as_deref().ok_or_else(|| {
+                    kwt_attachment_failure(
+                        &fresh,
+                        "worktree generation is unavailable; refresh KWT inventory before opening it",
+                    )
+                })?,
                 session_name,
-                &cancellation,
-            )?;
+            );
             launch_fresh_worktree(
                 inner,
                 &resolved_request,
                 AttachTerm::Xterm,
                 &fresh,
-                path,
-                session_name,
+                &open,
                 &cancellation,
             )?
         }
@@ -9577,49 +9611,6 @@ fn attach_fresh_retained(
         }
     };
     Ok((worker, snapshot, resolved_request, geometry))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn validate_fresh_worktree(
-    request: &AttachRequest,
-    fresh: &HostSnapshot,
-    repository: &str,
-    path: &str,
-    generation: Option<&str>,
-    session_name: &str,
-    cancellation: &CancellationToken,
-) -> Result<(), AttachFreshError> {
-    let inventory = request
-        .host
-        .discover_kwt(&request.endpoint, &request.runtime, cancellation)
-        .map_err(|error| kwt_attachment_failure(fresh, error))?
-        .ok_or_else(|| {
-            kwt_attachment_failure(fresh, "the revision-pinned KWT helper is unavailable")
-        })?;
-    let current = inventory.projects().iter().find_map(|project| {
-        (project.project().repository() == repository).then(|| {
-            project.worktrees().iter().find(|worktree| {
-                worktree.path() == path
-                    && worktree.generation() == generation
-                    && worktree.tmux_socket_name().is_none()
-            })
-        })?
-    });
-    match current {
-        Some(worktree) if worktree.session_name() == session_name => Ok(()),
-        Some(_) => Err(AttachFreshError::SessionChanged {
-            error: WorkspaceError::new(
-                "worktree session identity changed since discovery; refresh and choose it again",
-            ),
-            snapshot: Box::new(fresh.clone()),
-        }),
-        None => Err(AttachFreshError::SessionChanged {
-            error: WorkspaceError::new(
-                "worktree identity changed since discovery; refresh and choose it again",
-            ),
-            snapshot: Box::new(fresh.clone()),
-        }),
-    }
 }
 
 fn kwt_attachment_failure(fresh: &HostSnapshot, error: impl fmt::Display) -> AttachFreshError {
@@ -9762,6 +9753,7 @@ fn capture_kwt_worktree_request(
             runtime: context.snapshot.runtime().clone(),
             target: AttachTarget::Worktree {
                 repository: repository.to_owned(),
+                registration_fingerprint: registration_fingerprint.to_owned(),
                 path: worktree.path.clone(),
                 generation: worktree.generation.clone(),
                 session_name: worktree.session_name.clone(),
@@ -9777,20 +9769,12 @@ fn launch_fresh_worktree(
     request: &AttachRequest,
     term: AttachTerm,
     fresh: &HostSnapshot,
-    path: &str,
-    session_name: &str,
+    open: &host::KwtWorktreeOpen,
     cancellation: &CancellationToken,
 ) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), AttachFreshError> {
     let plan = request
         .host
-        .kwt_repair_or_open_plan(
-            fresh.endpoint(),
-            fresh.runtime(),
-            path,
-            session_name,
-            term,
-            cancellation,
-        )
+        .kwt_repair_or_open_plan(fresh.endpoint(), fresh.runtime(), open, term, cancellation)
         .map_err(|error| kwt_attachment_failure(fresh, error))?;
     let geometry = *inner
         .terminal_geometry
@@ -9818,7 +9802,7 @@ fn launch_fresh_worktree(
         Ok(snapshot
             .sessions()
             .iter()
-            .any(|session| session.name() == session_name)
+            .any(|session| session.name() == open.session_name())
             .then_some(snapshot))
     })
     .map_err(AttachFreshError::Host)?;
@@ -10389,6 +10373,7 @@ mod tests {
                 project_path: "/code/widget".to_owned(),
                 registration_fingerprint: "registration".to_owned(),
                 branch: "feature/new".to_owned(),
+                navigation_generation: 41,
             });
         let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
@@ -10416,8 +10401,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             events.front(),
-            Some(WorkspaceEvent::KwtWorktreeCreated { target })
-                if target.worktree_path() == "/work/widget/new"
+            Some(WorkspaceEvent::KwtWorktreeCreated {
+                target,
+                navigation_generation: 41,
+            }) if target.worktree_path() == "/work/widget/new"
         ));
     }
 
@@ -10585,6 +10572,7 @@ mod tests {
         let identity = session::SessionIdentity::new(100, "$1", 200);
         let target = AttachTarget::Worktree {
             repository: "project-id".to_owned(),
+            registration_fingerprint: "registration".to_owned(),
             path: "/work/project/topic".to_owned(),
             generation: Some("generation".to_owned()),
             session_name: "project-topic".to_owned(),
@@ -10621,6 +10609,7 @@ mod tests {
         let mut worktree = direct.clone();
         worktree.target = AttachTarget::Worktree {
             repository: "project-id".to_owned(),
+            registration_fingerprint: "registration".to_owned(),
             path: "/work/project/topic".to_owned(),
             generation: Some("generation".to_owned()),
             session_name: "project-topic".to_owned(),
@@ -10649,6 +10638,7 @@ mod tests {
         let mut worktree = direct.clone();
         worktree.target = AttachTarget::Worktree {
             repository: "project-id".to_owned(),
+            registration_fingerprint: "registration".to_owned(),
             path: "/work/project/topic".to_owned(),
             generation: Some("generation".to_owned()),
             session_name: "project-topic".to_owned(),

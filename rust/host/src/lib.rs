@@ -21,7 +21,7 @@ mod zellij;
 
 pub use kwt::{
     KwtBranchCandidate, KwtBundle, KwtDirectoryWorkspace, KwtInventory, KwtProject,
-    KwtProjectInventory, KwtWorktree, KwtWorktreeCreate,
+    KwtProjectInventory, KwtWorktree, KwtWorktreeCreate, KwtWorktreeOpen,
 };
 pub use wsl::{
     AdmissionAttacher, AttachTerm, CreationReceipt, HerdrInventory, HostError, HostSnapshot,

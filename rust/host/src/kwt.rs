@@ -227,6 +227,55 @@ pub struct KwtWorktreeCreate {
     creates_branch: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KwtWorktreeOpen {
+    path: String,
+    repository: String,
+    registration_fingerprint: String,
+    generation: String,
+    session_name: String,
+}
+
+impl KwtWorktreeOpen {
+    #[must_use]
+    pub fn new(
+        path: impl Into<String>,
+        repository: impl Into<String>,
+        registration_fingerprint: impl Into<String>,
+        generation: impl Into<String>,
+        session_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            repository: repository.into(),
+            registration_fingerprint: registration_fingerprint.into(),
+            generation: generation.into(),
+            session_name: session_name.into(),
+        }
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub(crate) fn repository(&self) -> &str {
+        &self.repository
+    }
+
+    pub(crate) fn registration_fingerprint(&self) -> &str {
+        &self.registration_fingerprint
+    }
+
+    pub(crate) fn generation(&self) -> &str {
+        &self.generation
+    }
+
+    #[must_use]
+    pub fn session_name(&self) -> &str {
+        &self.session_name
+    }
+}
+
 impl KwtWorktreeCreate {
     #[must_use]
     pub fn new(

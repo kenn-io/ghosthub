@@ -699,13 +699,19 @@ checkout while holding its project lifecycle lock before it mutates. A
 replacement registration cannot inherit mutation authority from a cached row.
 If the immediate post-create read is unavailable, Ghosthub retains the pending
 project-and-branch identity and emits the normal created event when a later
-authoritative inventory first resolves it.
+authoritative inventory first resolves it. That event carries the navigation
+generation that requested creation. It opens the worktree only while that
+intent still owns the UI; later navigation or another dialog turns completion
+into a notice instead of dismissing current work or changing presentations.
 The UI thread performs none of those commands and keeps the previous project
 tree visible throughout the operation.
 
-Opening a worktree consumes no one-shot tmux creation authority. The host
-revalidates its exact KWT identity and revision-pinned managed helper, then the
-terminal launches `kwt open <exact-path>` as the ordinary PTY client. This is a
+Opening a worktree consumes no one-shot tmux creation authority. The terminal
+launches the revision-pinned helper with the expected repository, registration
+fingerprint, worktree generation, and computed session name. KWT reacquires
+its project lifecycle lock, revalidates every identity, and only then repairs
+or starts the exact tmux session. A separate Ghosthub preflight never grants
+open authority. This is a
 cloneable, deliberately re-runnable RepairOrOpen capability: KWT owns
 probe/repair/bootstrap behavior and tmux continues to own the session. Directly
 discovered unbound sessions remain strictly attach-only.
