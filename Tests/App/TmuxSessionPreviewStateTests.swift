@@ -88,6 +88,16 @@ struct TmuxSessionPreviewStateTests {
         #expect(state.placeholder == nil)
     }
 
+    @Test("verifying an unchanged visible identity preserves its frame")
+    func visibleIdentityVerificationPreservesFrame() {
+        var state = stateWithFrame()
+
+        state.verifyIdentity(originalIdentity)
+
+        #expect(state.visibleFrame?.image == "frame")
+        #expect(state.placeholder == nil)
+    }
+
     @Test(arguments: [
         nil,
         TmuxSessionIdentity(

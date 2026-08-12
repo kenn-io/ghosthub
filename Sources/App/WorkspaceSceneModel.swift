@@ -1096,6 +1096,9 @@ final class WorkspaceSceneModel: ObservableObject {
     /// identity) so only the focused window handles them.
     var isFocusedWindow = false {
         didSet {
+            tmuxSessionPreviewCoordinator.sceneWindowFocusDidChange(
+                isKey: isFocusedWindow
+            )
             guard isFocusedWindow, !oldValue else { return }
             syncTerminalConfig()
         }
@@ -1103,6 +1106,9 @@ final class WorkspaceSceneModel: ObservableObject {
     weak var workspaceWindow: NSWindow?
     @Published var selection: WorkspaceSelection {
         didSet {
+            if selection != oldValue {
+                tmuxSessionPreviewCoordinator.cancelPendingActivation()
+            }
             syncTerminalConfig()
             activityController
                 .refreshWorkspaceResourceSummary()
@@ -2662,6 +2668,7 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             cancelTmuxReconnect(presentation)
         }
+        tmuxSessionPreviewCoordinator.shutdown()
         releaseAllProtectedTmuxAttachmentScopes()
         retainedTmuxPresentations.removeAll()
         retainedTmuxPresentationKeysByHandle.removeAll()
@@ -5796,6 +5803,11 @@ final class WorkspaceSceneModel: ObservableObject {
                     .removeValue(forKey: handle.id),
                     let presentation = retainedTmuxPresentations
                     .removeValue(forKey: key) {
+                    cancelTmuxPreviewIdentityRead(presentation)
+                    tmuxSessionPreviewCoordinator.remove(
+                        key.previewKey,
+                        reason: .replacement
+                    )
                     cancelTmuxReconnect(presentation)
                 }
                 cancelTmuxPresentationTasks(handleID: handle.id)
@@ -7199,6 +7211,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func openBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
+        tmuxSessionPreviewCoordinator.cancelPendingActivation()
         cancelPendingRestoration()
         invalidateZellijPresentationIntent()
         userNavigationRevision &+= 1
@@ -8825,15 +8838,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 intervals: tmuxReconnectIntervals,
                 probeDeadline: tmuxReconnectProbeDeadline
             ),
-            verifiedPreviewIdentity: discoveredIdentity
+            verifiedPreviewIdentity: nil
         )
+        presentation.reconnectExpectedIdentity = discoveredIdentity
         objectWillChange.send()
         retainedTmuxPresentations[key] = presentation
         retainedTmuxPresentationKeysByHandle[handle.id] = key
         borrowedTmuxConnectionStates[handle.id] = .connecting
         registerTmuxPreview(
             presentation,
-            identityIsResolved: discoveredIdentity != nil
+            identityIsResolved: false
         )
         _ = acquireProtectedTmuxAttachmentScopeIfNeeded(
             for: presentation
@@ -8945,10 +8959,21 @@ final class WorkspaceSceneModel: ObservableObject {
         let selection = presentation.selection
         presentation.previewIdentityTask = Task { [weak self, weak presentation] in
             guard let self else { return }
-            let identity = try? await tmuxSessionIdentityReader(
-                selection,
-                host
-            )
+            let identity: TmuxSessionIdentity
+            do {
+                identity = try await tmuxSessionIdentityReader(
+                    selection,
+                    host
+                )
+            } catch {
+                guard !Task.isCancelled,
+                      let presentation,
+                      presentation.previewIdentityReadID == readID
+                else { return }
+                presentation.previewIdentityTask = nil
+                presentation.previewIdentityReadID = nil
+                return
+            }
             guard !Task.isCancelled,
                   let presentation,
                   presentation.previewIdentityReadID == readID

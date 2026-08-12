@@ -13,6 +13,11 @@ protocol TerminalMouseEventDelegate: AnyObject {
 
 @MainActor
 struct TerminalMouseEventHandler {
+    private struct PressedButton {
+        let button: ghostty_input_mouse_button_e
+        let modifiers: ghostty_input_mods_e
+    }
+
     static var mouseButtonSender: (
         ghostty_surface_t,
         ghostty_input_mouse_state_e,
@@ -38,7 +43,7 @@ struct TerminalMouseEventHandler {
     }
 
     weak var delegate: TerminalMouseEventDelegate?
-    private var pressedButtons: [ghostty_input_mouse_button_e] = []
+    private var pressedButtons: [PressedButton] = []
 
     init(delegate: TerminalMouseEventDelegate) {
         self.delegate = delegate
@@ -51,7 +56,7 @@ struct TerminalMouseEventHandler {
         _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods
         )
-        recordPressed(GHOSTTY_MOUSE_LEFT)
+        recordPressed(GHOSTTY_MOUSE_LEFT, modifiers: mods)
     }
 
     mutating func handleMouseUp(_ event: NSEvent) {
@@ -72,7 +77,7 @@ struct TerminalMouseEventHandler {
         _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE, mods
         )
-        recordPressed(GHOSTTY_MOUSE_MIDDLE)
+        recordPressed(GHOSTTY_MOUSE_MIDDLE, modifiers: mods)
     }
 
     mutating func handleOtherMouseUp(_ event: NSEvent) {
@@ -91,9 +96,7 @@ struct TerminalMouseEventHandler {
         let handled = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT, mods
         )
-        if handled {
-            recordPressed(GHOSTTY_MOUSE_RIGHT)
-        }
+        recordPressed(GHOSTTY_MOUSE_RIGHT, modifiers: mods)
         return handled
     }
 
@@ -186,12 +189,12 @@ struct TerminalMouseEventHandler {
     mutating func resetPointerStateForParking() {
         guard let delegate,
               let surface = delegate.surfaceHandle else { return }
-        for button in pressedButtons {
+        for pressed in pressedButtons {
             _ = Self.mouseButtonSender(
                 surface,
                 GHOSTTY_MOUSE_RELEASE,
-                button,
-                GHOSTTY_MODS_NONE
+                pressed.button,
+                pressed.modifiers
             )
         }
         pressedButtons.removeAll()
@@ -201,17 +204,21 @@ struct TerminalMouseEventHandler {
     }
 
     private mutating func recordPressed(
-        _ button: ghostty_input_mouse_button_e
+        _ button: ghostty_input_mouse_button_e,
+        modifiers: ghostty_input_mods_e
     ) {
         guard !pressedButtons.contains(where: {
-            $0.rawValue == button.rawValue
+            $0.button.rawValue == button.rawValue
         }) else { return }
-        pressedButtons.append(button)
+        pressedButtons.append(PressedButton(
+            button: button,
+            modifiers: modifiers
+        ))
     }
 
     private mutating func recordReleased(
         _ button: ghostty_input_mouse_button_e
     ) {
-        pressedButtons.removeAll { $0.rawValue == button.rawValue }
+        pressedButtons.removeAll { $0.button.rawValue == button.rawValue }
     }
 }

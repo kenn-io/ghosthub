@@ -75,8 +75,16 @@ struct TmuxSessionPreviewState<Image> {
             connectionPlaceholder = .reconnecting
             return
         }
+        if let visibleFrame {
+            guard visibleFrame.identity == identity else {
+                clearFrames()
+                connectionPlaceholder = .awaitingFirstFrame
+                return
+            }
+            connectionPlaceholder = nil
+            return
+        }
         guard let quarantinedFrame else {
-            visibleFrame = nil
             connectionPlaceholder = .awaitingFirstFrame
             return
         }

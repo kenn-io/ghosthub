@@ -1701,6 +1701,9 @@ struct WorkspaceSidebarView: View {
                             TmuxSessionPreviewRowPresentation.aspectRatio,
                             contentMode: .fit
                         )
+                        .onAppear {
+                            onTmuxSessionPreviewExpanded(tmuxSession, true)
+                        }
                         .padding(.leading, 18)
                         .padding(.trailing, 8)
                         .accessibilityIdentifier(

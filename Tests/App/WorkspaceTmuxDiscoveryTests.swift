@@ -1193,6 +1193,7 @@ struct WorkspaceTmuxDiscoveryTests {
     @Test("preview identity is read only after the opened surface connects")
     func previewIdentityIsReadAfterConnection() async throws {
         let environment = try setupHostEnvironment()
+        var snapshot = environment.snapshot
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let identityReads = Counter()
         let captures = Counter()
@@ -1201,6 +1202,14 @@ struct WorkspaceTmuxDiscoveryTests {
             sessionID: "$1",
             createdAt: "1000"
         )
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: "opened",
+            managed: false,
+            windows: [],
+            serverPID: identity.serverPID,
+            sessionID: identity.sessionID,
+            createdAt: identity.createdAt
+        )]
         let previewCoordinator = TmuxSessionPreviewCoordinator(
             mode: .efficient,
             budget: LivePreviewBudget(limit: 4),
@@ -1218,7 +1227,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
@@ -1253,6 +1262,74 @@ struct WorkspaceTmuxDiscoveryTests {
         }
 
         #expect(previewCoordinator.viewState(for: key)?.image != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a transient preview identity failure retries on the next live tick")
+    func previewIdentityFailureRetries() async throws {
+        enum ExpectedFailure: Error { case transient }
+        let environment = try setupHostEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let identityReads = Counter()
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .live,
+            budget: LivePreviewBudget(limit: 4),
+            capture: { _, _ in
+                TerminalSurfaceSnapshot(
+                    image: NSImage(size: CGSize(width: 32, height: 20)),
+                    captureToken: TerminalSurfaceCaptureToken(
+                        surfaceID: 1,
+                        seed: 1
+                    )
+                )
+            },
+            park: { _ in },
+            unpark: { _ in }
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                if identityReads.increment() == 1 {
+                    throw ExpectedFailure.transient
+                }
+                return identity
+            },
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "opened"
+        )
+        let key = TmuxPreviewKey(
+            hostID: selection.hostID,
+            name: selection.name,
+            socketName: selection.socketName
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        previewCoordinator.setExpanded(true, for: key)
+        await waitUntilMainActor { identityReads.count == 1 }
+        #expect(previewCoordinator.viewState(for: key)?.image == nil)
+
+        await previewCoordinator.refreshLivePreviews()
+        await waitUntilMainActor {
+            identityReads.count == 2
+                && previewCoordinator.viewState(for: key)?.image != nil
+        }
+
         await model.shutdown()
     }
 
@@ -1314,6 +1391,7 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(captures.count == 2)
         #expect(model.activeBorrowedTmuxSelection == nil)
         #expect(model.previewableTmuxSessionIDs == [selection.id])
+        #expect(previewCoordinator.viewState(for: key)?.image != nil)
         await model.shutdown()
     }
 

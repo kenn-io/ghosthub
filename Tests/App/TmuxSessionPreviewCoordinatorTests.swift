@@ -183,6 +183,32 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test("navigation-away capture replaces an in-flight scheduled capture")
+    func navigationAwayReplacesScheduledCapture() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        harness.suspendCaptures = true
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        await harness.waitUntilCaptureSuspends(count: 1)
+        var didCompleteNavigationCapture = false
+
+        harness.coordinator.captureBeforeDeactivation(
+            presentation.key,
+            completion: { didCompleteNavigationCapture = true }
+        )
+        await harness.waitUntilCaptureSuspends(count: 2)
+        harness.setActive(false, for: presentation.key)
+        harness.resumeCapture()
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [presentation.key, presentation.key])
+        #expect(didCompleteNavigationCapture)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.image != nil
+        )
+    }
+
     @Test("sidebar hiding and app deactivation release only this scene")
     func visibilityAndActivityReleaseScene() {
         let harness = PreviewCoordinatorHarness(mode: .live)
@@ -233,6 +259,40 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.budget.granted.isEmpty)
     }
 
+    @Test("parking failure waits for a presentation lifecycle change")
+    func parkingFailureDoesNotRecurse() async {
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.parkShouldFail = true
+        harness.coordinator.register(presentation)
+
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        await harness.coordinator.refreshLivePreviews()
+
+        #expect(harness.parkAttempts == 1)
+        #expect(harness.budget.granted.isEmpty)
+
+        harness.parkShouldFail = false
+        harness.coordinator.presentationDidChange(presentation.key)
+
+        #expect(harness.parkAttempts == 2)
+        #expect(harness.parks == [presentation.key])
+    }
+
+    @Test("shutdown releases parked surfaces and the scene budget")
+    func shutdownReleasesPreviewResources() {
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+
+        harness.coordinator.shutdown()
+
+        #expect(harness.unparks == [presentation.key])
+        #expect(harness.budget.granted.isEmpty)
+        #expect(harness.coordinator.viewState(for: presentation.key) == nil)
+    }
+
     @Test("activation delay cannot repark after the app resigns")
     func activationDelayRevalidatesActivity() async {
         let harness = PreviewCoordinatorHarness(
@@ -276,6 +336,28 @@ struct TmuxSessionPreviewCoordinatorTests {
         harness.coordinator.applicationDidBecomeActive()
         #expect(harness.parks.isEmpty)
         try? await Task.sleep(for: .milliseconds(50))
+        #expect(harness.parks == [presentation.key])
+    }
+
+    @Test("a scene becoming key resumes delayed live parking")
+    func keyWindowChangeRestartsLiveParking() async {
+        let harness = PreviewCoordinatorHarness(
+            mode: .live,
+            activationDelay: .milliseconds(20)
+        )
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.coordinator.applicationDidResignActive()
+        harness.keyWindow = false
+        harness.coordinator.applicationDidBecomeActive()
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(harness.parks.isEmpty)
+
+        harness.keyWindow = true
+        harness.coordinator.sceneWindowFocusDidChange(isKey: true)
+        try? await Task.sleep(for: .milliseconds(50))
+
         #expect(harness.parks == [presentation.key])
     }
 
@@ -373,6 +455,72 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.budget.granted.isEmpty)
     }
 
+    @Test("reconciliation cannot unpark a suspended activation handoff")
+    func activationHandoffOwnsUnpark() async {
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        harness.suspendCaptures = true
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.events.removeAll()
+
+        harness.coordinator.prepareToActivate(presentation.key)
+        await harness.waitUntilCaptureSuspends()
+        await harness.coordinator.refreshLivePreviews()
+
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.unparks.isEmpty)
+
+        harness.resumeCapture()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.events == [
+            "capture:0",
+            "unpark:0",
+            "activate:0",
+        ])
+    }
+
+    @Test("newer navigation cancels a suspended preview activation")
+    func newerNavigationWinsOverPreviewActivation() async {
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        harness.suspendCaptures = true
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.events.removeAll()
+
+        harness.coordinator.prepareToActivate(presentation.key)
+        await harness.waitUntilCaptureSuspends()
+        harness.coordinator.cancelPendingActivation()
+        harness.resumeCapture()
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(!harness.events.contains("activate:0"))
+    }
+
+    @Test("disconnected presentations are placeholders, not live previews")
+    func disconnectedPresentationIsNotLive() {
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+
+        harness.setConnection(
+            .disconnected(reason: "transport ended"),
+            for: presentation.key
+        )
+        harness.coordinator.presentationDidChange(presentation.key)
+
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.placeholder
+                == .disconnected
+        )
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.isLive
+                == false
+        )
+    }
+
     @Test("scene model owns the coordinator and forwards mode and activity")
     func sceneModelIntegration() async throws {
         let workspace = try seededWorkspace()
@@ -422,7 +570,7 @@ private final class PreviewCoordinatorHarness {
             }
             if suspendCaptures {
                 await withCheckedContinuation { continuation in
-                    captureContinuation = continuation
+                    captureContinuations.append(continuation)
                 }
             }
             captureSequence &+= 1
@@ -435,8 +583,13 @@ private final class PreviewCoordinatorHarness {
             )
         },
         park: { [weak self] presentation in
-            self?.parks.insert(presentation.key)
-            self?.events.append("park:\(Self.index(of: presentation))")
+            guard let self else { return }
+            parkAttempts += 1
+            if parkShouldFail {
+                throw CaptureFailure.expected
+            }
+            parks.insert(presentation.key)
+            events.append("park:\(Self.index(of: presentation))")
         },
         unpark: { [weak self] presentation in
             self?.parks.remove(presentation.key)
@@ -458,9 +611,12 @@ private final class PreviewCoordinatorHarness {
     var captureShouldFail = false
     var suspendCaptures = false
     var keyWindow = true
-    private var captureContinuation: CheckedContinuation<Void, Never>?
+    var parkShouldFail = false
+    var parkAttempts = 0
+    private var captureContinuations: [CheckedContinuation<Void, Never>] = []
     private var captureSequence: UInt32 = 0
     private var activeByKey: [TmuxPreviewKey: Bool] = [:]
+    private var connectionByKey: [TmuxPreviewKey: ConnectionState] = [:]
 
     init(
         mode: SessionPreviewMode,
@@ -482,6 +638,7 @@ private final class PreviewCoordinatorHarness {
             socketName: nil
         )
         activeByKey[key] = isActive
+        connectionByKey[key] = .connected
         let identity = TmuxSessionIdentity(
             serverPID: "101",
             sessionID: "$\(index)",
@@ -493,7 +650,7 @@ private final class PreviewCoordinatorHarness {
             handleID: { UUID(uuidString: "00000000-0000-0000-0000-00000000000\(index + 1)")! },
             generation: { "generation-\(index)" },
             identity: { identity },
-            connectionState: { .connected },
+            connectionState: { [weak self] in self?.connectionByKey[key] },
             isActive: { [weak self] in self?.activeByKey[key] == true },
             activate: { [weak self] in
                 self?.events.append("activate:\(index)")
@@ -502,19 +659,24 @@ private final class PreviewCoordinatorHarness {
         )
     }
 
-    func waitUntilCaptureSuspends() async {
-        while captureContinuation == nil {
+    func waitUntilCaptureSuspends(count: Int = 1) async {
+        while captureContinuations.count < count {
             await Task.yield()
         }
     }
 
     func resumeCapture() {
-        captureContinuation?.resume()
-        captureContinuation = nil
+        let continuations = captureContinuations
+        captureContinuations.removeAll()
+        continuations.forEach { $0.resume() }
     }
 
     func setActive(_ active: Bool, for key: TmuxPreviewKey) {
         activeByKey[key] = active
+    }
+
+    func setConnection(_ state: ConnectionState, for key: TmuxPreviewKey) {
+        connectionByKey[key] = state
     }
 
     private static func index(

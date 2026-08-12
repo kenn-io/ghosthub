@@ -243,6 +243,43 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(positions.count, 2)
     }
 
+    func testParkingReleasesUnconsumedRightPressWithOriginalModifiers() throws {
+        let originalButtonSender = TerminalMouseEventHandler.mouseButtonSender
+        var actions: [(UInt32, UInt32, UInt32)] = []
+        TerminalMouseEventHandler.mouseButtonSender = {
+            _, action, button, modifiers in
+            actions.append((action.rawValue, button.rawValue, modifiers.rawValue))
+            return action.rawValue != GHOSTTY_MOUSE_PRESS.rawValue
+        }
+        defer {
+            TerminalMouseEventHandler.mouseButtonSender = originalButtonSender
+        }
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        let rightMouseDown = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [.shift],
+            timestamp: 1,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 3,
+            clickCount: 1,
+            pressure: 1
+        ))
+
+        view.rightMouseDown(with: rightMouseDown)
+        view.setParkedForPreview(true)
+
+        XCTAssertEqual(actions.count, 2)
+        XCTAssertEqual(actions[0].0, GHOSTTY_MOUSE_PRESS.rawValue)
+        XCTAssertEqual(actions[0].1, GHOSTTY_MOUSE_RIGHT.rawValue)
+        XCTAssertEqual(actions[1].0, GHOSTTY_MOUSE_RELEASE.rawValue)
+        XCTAssertEqual(actions[1].1, GHOSTTY_MOUSE_RIGHT.rawValue)
+        XCTAssertEqual(actions[1].2, actions[0].2)
+    }
+
     func testParkingHostIsNoninteractiveAndPreservesSurfaceSize() throws {
         let originalOcclusionSetter = TerminalSurfaceView.occlusionSetter
         var occlusionStates: [Bool] = []
