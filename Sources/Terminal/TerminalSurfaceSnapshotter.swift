@@ -8,21 +8,44 @@ public enum TerminalSurfaceSnapshotError: Error, Equatable {
     case imageCopyFailed
 }
 
+public struct TerminalSurfaceCaptureToken: Hashable, Sendable {
+    public let surfaceID: UInt32
+    public let seed: UInt32
+
+    public init(surfaceID: UInt32, seed: UInt32) {
+        self.surfaceID = surfaceID
+        self.seed = seed
+    }
+}
+
 public struct TerminalSurfaceSnapshot: @unchecked Sendable {
     public let image: NSImage
-    public let ioSurfaceSeed: UInt32
+    public let captureToken: TerminalSurfaceCaptureToken
 
-    public init(image: NSImage, ioSurfaceSeed: UInt32) {
+    public init(image: NSImage, captureToken: TerminalSurfaceCaptureToken) {
         self.image = image
-        self.ioSurfaceSeed = ioSurfaceSeed
+        self.captureToken = captureToken
     }
 }
 
 @MainActor
 public final class TerminalSurfaceSnapshotter {
+    private struct RequestKey: Hashable {
+        let surface: ObjectIdentifier
+        let width: Int
+        let height: Int
+    }
+
+    private struct RenderSource: @unchecked Sendable {
+        let image: CIImage
+        let backgroundColor: CGColor
+        let pixelSize: (width: Int, height: Int)
+        let captureToken: TerminalSurfaceCaptureToken
+    }
+
     private let ciContext: CIContext
     private var inFlight:
-        [ObjectIdentifier: Task<TerminalSurfaceSnapshot, Error>] = [:]
+        [RequestKey: Task<TerminalSurfaceSnapshot, Error>] = [:]
 
     public init() {
         ciContext = CIContext(options: [
@@ -33,41 +56,47 @@ public final class TerminalSurfaceSnapshotter {
     public func snapshot(
         of surface: TerminalSurfaceView,
         outputSize: CGSize,
-        previousSeed: UInt32?
+        previousCaptureToken: TerminalSurfaceCaptureToken?
     ) async throws -> TerminalSurfaceSnapshot? {
         let pixelSize = try Self.pixelSize(for: outputSize)
-        let identifier = ObjectIdentifier(surface)
-        if let pending = inFlight[identifier] {
+        let requestKey = RequestKey(
+            surface: ObjectIdentifier(surface),
+            width: pixelSize.width,
+            height: pixelSize.height
+        )
+        if let pending = inFlight[requestKey] {
             return try await pending.value
         }
 
         guard let ioSurface = surface.layer?.contents as? IOSurface else {
             throw TerminalSurfaceSnapshotError.missingIOSurface
         }
-        let seed = IOSurfaceGetSeed(ioSurface)
-        guard seed != previousSeed else { return nil }
+        let captureToken = TerminalSurfaceCaptureToken(
+            surfaceID: IOSurfaceGetID(ioSurface),
+            seed: IOSurfaceGetSeed(ioSurface)
+        )
+        guard captureToken != previousCaptureToken else { return nil }
 
         let ciImage = CIImage(ioSurface: ioSurface)
-        guard !ciImage.extent.isEmpty,
-              let sourceImage = ciContext.createCGImage(
-                  ciImage,
-                  from: ciImage.extent
-              )
-        else {
+        guard !ciImage.extent.isEmpty else {
             throw TerminalSurfaceSnapshotError.imageCopyFailed
         }
-        let backgroundColor = surface.layer?.backgroundColor
-            ?? NSColor.black.cgColor
-        let task = Task { @MainActor in
+        let source = RenderSource(
+            image: ciImage,
+            backgroundColor: surface.layer?.backgroundColor
+                ?? NSColor.black.cgColor,
+            pixelSize: pixelSize,
+            captureToken: captureToken
+        )
+        let ciContext = ciContext
+        let task = Task.detached(priority: .utility) {
             try Self.makeSnapshot(
-                sourceImage: sourceImage,
-                pixelSize: pixelSize,
-                backgroundColor: backgroundColor,
-                seed: seed
+                source: source,
+                ciContext: ciContext
             )
         }
-        inFlight[identifier] = task
-        defer { inFlight.removeValue(forKey: identifier) }
+        inFlight[requestKey] = task
+        defer { inFlight.removeValue(forKey: requestKey) }
         return try await task.value
     }
 
@@ -89,63 +118,46 @@ public final class TerminalSurfaceSnapshotter {
         return (width, height)
     }
 
-    private static func makeSnapshot(
-        sourceImage: CGImage,
-        pixelSize: (width: Int, height: Int),
-        backgroundColor: CGColor,
-        seed: UInt32
+    private nonisolated static func makeSnapshot(
+        source: RenderSource,
+        ciContext: CIContext
     ) throws -> TerminalSurfaceSnapshot {
-        guard let context = CGContext(
-            data: nil,
-            width: pixelSize.width,
-            height: pixelSize.height,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            throw TerminalSurfaceSnapshotError.imageCopyFailed
-        }
-
-        context.setFillColor(backgroundColor)
-        context.fill(CGRect(
-            x: 0,
-            y: 0,
-            width: pixelSize.width,
-            height: pixelSize.height
-        ))
-
-        let sourceSize = CGSize(
-            width: sourceImage.width,
-            height: sourceImage.height
-        )
+        let pixelSize = source.pixelSize
+        let sourceExtent = source.image.extent
         let outputSize = CGSize(
             width: pixelSize.width,
             height: pixelSize.height
         )
         let scale = min(
-            outputSize.width / sourceSize.width,
-            outputSize.height / sourceSize.height
+            outputSize.width / sourceExtent.width,
+            outputSize.height / sourceExtent.height
         )
-        let drawSize = CGSize(
-            width: sourceSize.width * scale,
-            height: sourceSize.height * scale
+        let scaledSize = CGSize(
+            width: sourceExtent.width * scale,
+            height: sourceExtent.height * scale
         )
-        let drawRect = CGRect(
-            x: (outputSize.width - drawSize.width) / 2,
-            y: (outputSize.height - drawSize.height) / 2,
-            width: drawSize.width,
-            height: drawSize.height
-        )
-        context.interpolationQuality = .high
-        context.draw(sourceImage, in: drawRect)
-
-        guard let image = context.makeImage() else {
+        let transform = CGAffineTransform(
+            translationX: (outputSize.width - scaledSize.width) / 2,
+            y: (outputSize.height - scaledSize.height) / 2
+        ).scaledBy(x: scale, y: scale)
+        let outputRect = CGRect(origin: .zero, size: outputSize)
+        let background = CIImage(color: CIColor(cgColor: source.backgroundColor))
+            .cropped(to: outputRect)
+        let composed = source.image
+            .transformed(by: transform)
+            .composited(over: background)
+            .cropped(to: outputRect)
+        guard let image = ciContext.createCGImage(
+            composed,
+            from: outputRect,
+            format: .RGBA8,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        ) else {
             throw TerminalSurfaceSnapshotError.imageCopyFailed
         }
         return TerminalSurfaceSnapshot(
             image: NSImage(cgImage: image, size: outputSize),
-            ioSurfaceSeed: seed
+            captureToken: source.captureToken
         )
     }
 }

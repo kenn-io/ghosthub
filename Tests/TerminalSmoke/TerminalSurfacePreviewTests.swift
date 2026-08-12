@@ -1,4 +1,5 @@
 import AppKit
+import CoreVideo
 import IOSurface
 import XCTest
 @testable import GhosthubTerminal
@@ -26,7 +27,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let captured = try await snapshotter.snapshot(
             of: view,
             outputSize: CGSize(width: 320, height: 200),
-            previousSeed: nil
+            previousCaptureToken: nil
         )
         let snapshot = try XCTUnwrap(captured)
 
@@ -47,26 +48,59 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertNotNil(view.surfaceHandle)
     }
 
-    func testSnapshotSkipsAnUnchangedIOSurfaceSeed() async throws {
+    func testSnapshotSkipsAnUnchangedIOSurfaceToken() async throws {
         let view = try makeSurface()
-        let window = hostInWindow(view)
-        defer { window.orderOut(nil) }
-        try waitForIOSurface(in: view)
+        view.layer?.contents = try makeIOSurface()
         let snapshotter = TerminalSurfaceSnapshotter()
         let captured = try await snapshotter.snapshot(
             of: view,
             outputSize: CGSize(width: 320, height: 200),
-            previousSeed: nil
+            previousCaptureToken: nil
         )
         let first = try XCTUnwrap(captured)
 
         let unchanged = try await snapshotter.snapshot(
             of: view,
             outputSize: CGSize(width: 320, height: 200),
-            previousSeed: first.ioSurfaceSeed
+            previousCaptureToken: first.captureToken
         )
 
         XCTAssertNil(unchanged)
+    }
+
+    func testSnapshotCapturesReplacementIOSurfaceWithRepeatedSeed() async throws {
+        let view = try makeSurface()
+        let firstSurface = try makeIOSurface()
+        let replacementSurface = try makeIOSurface()
+        XCTAssertNotEqual(
+            IOSurfaceGetID(firstSurface),
+            IOSurfaceGetID(replacementSurface)
+        )
+        XCTAssertEqual(
+            IOSurfaceGetSeed(firstSurface),
+            IOSurfaceGetSeed(replacementSurface)
+        )
+        view.layer?.contents = firstSurface
+        let snapshotter = TerminalSurfaceSnapshotter()
+        let firstCapture = try await snapshotter.snapshot(
+            of: view,
+            outputSize: CGSize(width: 320, height: 200),
+            previousCaptureToken: nil
+        )
+        let first = try XCTUnwrap(firstCapture)
+
+        view.layer?.contents = replacementSurface
+        let replacement = try await snapshotter.snapshot(
+            of: view,
+            outputSize: CGSize(width: 320, height: 200),
+            previousCaptureToken: first.captureToken
+        )
+
+        XCTAssertNotNil(replacement)
+        XCTAssertEqual(
+            replacement?.captureToken.surfaceID,
+            IOSurfaceGetID(replacementSurface)
+        )
     }
 
     func testSnapshotRejectsMissingContentsWithoutMutatingSurface() async throws {
@@ -78,7 +112,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             _ = try await TerminalSurfaceSnapshotter().snapshot(
                 of: view,
                 outputSize: CGSize(width: 320, height: 200),
-                previousSeed: nil
+                previousCaptureToken: nil
             )
             XCTFail("Expected missing IOSurface failure")
         } catch {
@@ -95,7 +129,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             _ = try await TerminalSurfaceSnapshotter().snapshot(
                 of: view,
                 outputSize: .zero,
-                previousSeed: nil
+                previousCaptureToken: nil
             )
             XCTFail("Expected invalid output size failure")
         } catch {
@@ -130,6 +164,45 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertFalse(window.firstResponder === view)
         XCTAssertTrue(view.nextKeyView === nextView)
         XCTAssertTrue(nextView.nextKeyView === view)
+    }
+
+    func testParkedStateSuppressesPointerTrackingAndDelivery() throws {
+        let originalSender = TerminalMouseEventHandler.mousePositionSender
+        var positionCalls = 0
+        TerminalMouseEventHandler.mousePositionSender = { _, _, _, _ in
+            positionCalls += 1
+        }
+        defer {
+            TerminalMouseEventHandler.mousePositionSender = originalSender
+        }
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        view.updateTrackingAreas()
+        XCTAssertFalse(view.trackingAreas.isEmpty)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [],
+            timestamp: 1,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 0,
+            pressure: 0
+        ))
+
+        view.setParkedForPreview(true)
+        view.mouseMoved(with: event)
+
+        XCTAssertTrue(view.trackingAreas.isEmpty)
+        XCTAssertEqual(positionCalls, 0)
+
+        view.setParkedForPreview(false)
+        view.mouseMoved(with: event)
+
+        XCTAssertFalse(view.trackingAreas.isEmpty)
+        XCTAssertEqual(positionCalls, 1)
     }
 
     func testParkingHostIsNoninteractiveAndPreservesSurfaceSize() throws {
@@ -202,6 +275,16 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             app: app,
             configuration: TerminalSurfaceConfiguration()
         )
+    }
+
+    private func makeIOSurface() throws -> IOSurface {
+        try XCTUnwrap(IOSurfaceCreate([
+            kIOSurfaceWidth: 32,
+            kIOSurfaceHeight: 32,
+            kIOSurfaceBytesPerElement: 4,
+            kIOSurfaceBytesPerRow: 128,
+            kIOSurfacePixelFormat: kCVPixelFormatType_32BGRA,
+        ] as CFDictionary))
     }
 
     private func retainedRuntime() -> LibghosttyRuntime {

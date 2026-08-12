@@ -524,12 +524,14 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         if parked {
             suppressAutoFocus = true
             isParkedForPreview = true
+            updateTrackingAreas()
             if window?.firstResponder === self {
                 window?.makeFirstResponder(nil)
             }
             focusDidChange(false)
         } else {
             isParkedForPreview = false
+            updateTrackingAreas()
         }
     }
 
@@ -933,6 +935,8 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     override public func updateTrackingAreas() {
         trackingAreas.forEach { removeTrackingArea($0) }
 
+        guard !isParkedForPreview else { return }
+
         addTrackingArea(NSTrackingArea(
             rect: frame,
             options: [
@@ -989,59 +993,72 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     }
 
     override public func mouseUp(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handleMouseUp(event)
     }
 
     override public func otherMouseDown(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handleOtherMouseDown(event)
     }
 
     override public func otherMouseUp(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handleOtherMouseUp(event)
     }
 
     override public func rightMouseDown(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         if !mouseEventHandler.handleRightMouseDown(event) {
             super.rightMouseDown(with: event)
         }
     }
 
     override public func rightMouseUp(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         if !mouseEventHandler.handleRightMouseUp(event) {
             super.rightMouseUp(with: event)
         }
     }
 
     override public func mouseEntered(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         super.mouseEntered(with: event)
         mouseEventHandler.handleMouseEntered(event)
     }
 
     override public func mouseExited(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handleMouseExited(event)
     }
 
     override public func mouseMoved(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handleMouseMoved(event)
     }
 
     override public func mouseDragged(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handleMouseDragged(event)
     }
 
     override public func rightMouseDragged(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handleRightMouseDragged(event)
     }
 
     override public func otherMouseDragged(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handleOtherMouseDragged(event)
     }
 
     override public func scrollWheel(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handleScrollWheel(event)
     }
 
     override public func pressureChange(with event: NSEvent) {
+        guard !isParkedForPreview else { return }
         mouseEventHandler.handlePressureChange(event)
     }
 

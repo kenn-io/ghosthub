@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubSettings
+import GhosthubTerminal
 import GhosthubTmux
 import Testing
 @testable import GhosthubApp
@@ -29,7 +30,7 @@ struct TmuxSessionPreviewStateTests {
         let didCapture = state.recordCapture(
             image: "first",
             capturedAt: capturedAt,
-            ioSurfaceSeed: 7,
+            captureToken: captureToken(surfaceID: 1, seed: 7),
             identity: originalIdentity
         )
         #expect(didCapture)
@@ -39,7 +40,7 @@ struct TmuxSessionPreviewStateTests {
         let didCaptureDuplicate = state.recordCapture(
             image: "duplicate",
             capturedAt: capturedAt.addingTimeInterval(5),
-            ioSurfaceSeed: 7,
+            captureToken: captureToken(surfaceID: 1, seed: 7),
             identity: originalIdentity
         )
         #expect(!didCaptureDuplicate)
@@ -54,7 +55,22 @@ struct TmuxSessionPreviewStateTests {
         state.recordCaptureFailure()
 
         #expect(state.visibleFrame?.image == "frame")
-        #expect(state.visibleFrame?.ioSurfaceSeed == 7)
+        #expect(state.visibleFrame?.captureToken.seed == 7)
+    }
+
+    @Test("a replacement IOSurface with the same seed is a new frame")
+    func replacementSurfaceWithRepeatedSeed() {
+        var state = stateWithFrame()
+
+        let didCapture = state.recordCapture(
+            image: "replacement",
+            capturedAt: capturedAt.addingTimeInterval(5),
+            captureToken: captureToken(surfaceID: 2, seed: 7),
+            identity: originalIdentity
+        )
+
+        #expect(didCapture)
+        #expect(state.visibleFrame?.image == "replacement")
     }
 
     @Test("reconnect quarantines pixels until the same identity verifies")
@@ -103,6 +119,32 @@ struct TmuxSessionPreviewStateTests {
         #expect(state.placeholder == .awaitingFirstFrame)
     }
 
+    @Test("budget release cannot reveal disconnected pixels")
+    func budgetReleaseDuringDisconnection() {
+        var state = stateWithFrame()
+        state.setLiveLimitReached(true)
+        state.setDisconnected()
+
+        state.setLiveLimitReached(false)
+
+        #expect(state.visibleFrame == nil)
+        #expect(state.quarantinedFrame?.image == "frame")
+        #expect(state.placeholder == .disconnected)
+    }
+
+    @Test("budget release preserves reconnect quarantine")
+    func budgetReleaseDuringReconnect() {
+        var state = stateWithFrame()
+        state.setLiveLimitReached(true)
+        state.beginReconnect()
+
+        state.setLiveLimitReached(false)
+
+        #expect(state.visibleFrame == nil)
+        #expect(state.quarantinedFrame?.image == "frame")
+        #expect(state.placeholder == .reconnecting)
+    }
+
     @Test("turning previews off clears all captured metadata")
     func offClearsState() {
         var state = stateWithFrame()
@@ -120,9 +162,16 @@ struct TmuxSessionPreviewStateTests {
         _ = state.recordCapture(
             image: "frame",
             capturedAt: capturedAt,
-            ioSurfaceSeed: 7,
+            captureToken: captureToken(surfaceID: 1, seed: 7),
             identity: originalIdentity
         )
         return state
+    }
+
+    private func captureToken(
+        surfaceID: UInt32,
+        seed: UInt32
+    ) -> TerminalSurfaceCaptureToken {
+        TerminalSurfaceCaptureToken(surfaceID: surfaceID, seed: seed)
     }
 }

@@ -13,6 +13,15 @@ protocol TerminalMouseEventDelegate: AnyObject {
 
 @MainActor
 struct TerminalMouseEventHandler {
+    static var mousePositionSender: (
+        ghostty_surface_t,
+        Double,
+        Double,
+        ghostty_input_mods_e
+    ) -> Void = { surface, x, y, mods in
+        ghostty_surface_mouse_pos(surface, x, y, mods)
+    }
+
     weak var delegate: TerminalMouseEventDelegate?
 
     init(delegate: TerminalMouseEventDelegate) {
@@ -77,7 +86,7 @@ struct TerminalMouseEventHandler {
               let surface = delegate.surfaceHandle else { return }
         let pos = delegate.convert(event.locationInWindow, from: nil)
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_pos(
+        Self.mousePositionSender(
             surface, pos.x, delegate.frame.height - pos.y, mods
         )
     }
@@ -88,7 +97,7 @@ struct TerminalMouseEventHandler {
             return
         }
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_pos(surface, -1, -1, mods)
+        Self.mousePositionSender(surface, -1, -1, mods)
     }
 
     func handleMouseMoved(_ event: NSEvent) {
@@ -96,7 +105,7 @@ struct TerminalMouseEventHandler {
               let surface = delegate.surfaceHandle else { return }
         let pos = delegate.convert(event.locationInWindow, from: nil)
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_pos(
+        Self.mousePositionSender(
             surface, pos.x, delegate.frame.height - pos.y, mods
         )
     }

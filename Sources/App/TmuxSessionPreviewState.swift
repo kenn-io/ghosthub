@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubSettings
+import GhosthubTerminal
 import GhosthubTmux
 
 enum TmuxPreviewPlaceholder: Equatable, Sendable {
@@ -12,25 +13,35 @@ enum TmuxPreviewPlaceholder: Equatable, Sendable {
 struct TmuxPreviewFrame<Image> {
     let image: Image
     let capturedAt: Date
-    let ioSurfaceSeed: UInt32
+    let captureToken: TerminalSurfaceCaptureToken
     let identity: TmuxSessionIdentity
 }
 
 struct TmuxSessionPreviewState<Image> {
     private(set) var visibleFrame: TmuxPreviewFrame<Image>?
     private(set) var quarantinedFrame: TmuxPreviewFrame<Image>?
-    private(set) var placeholder: TmuxPreviewPlaceholder? =
+    private var connectionPlaceholder: TmuxPreviewPlaceholder? =
         .awaitingFirstFrame
+    private var isLiveLimitReached = false
+
+    var placeholder: TmuxPreviewPlaceholder? {
+        switch connectionPlaceholder {
+        case .reconnecting, .disconnected:
+            connectionPlaceholder
+        default:
+            isLiveLimitReached ? .liveLimitReached : connectionPlaceholder
+        }
+    }
 
     @discardableResult
     mutating func recordCapture(
         image: Image,
         capturedAt: Date,
-        ioSurfaceSeed: UInt32,
+        captureToken: TerminalSurfaceCaptureToken,
         identity: TmuxSessionIdentity
     ) -> Bool {
         if let visibleFrame,
-           visibleFrame.ioSurfaceSeed == ioSurfaceSeed,
+           visibleFrame.captureToken == captureToken,
            visibleFrame.identity == identity {
             return false
         }
@@ -38,11 +49,11 @@ struct TmuxSessionPreviewState<Image> {
         visibleFrame = TmuxPreviewFrame(
             image: image,
             capturedAt: capturedAt,
-            ioSurfaceSeed: ioSurfaceSeed,
+            captureToken: captureToken,
             identity: identity
         )
         quarantinedFrame = nil
-        placeholder = nil
+        connectionPlaceholder = nil
         return true
     }
 
@@ -55,56 +66,54 @@ struct TmuxSessionPreviewState<Image> {
             quarantinedFrame = visibleFrame
         }
         visibleFrame = nil
-        placeholder = .reconnecting
+        connectionPlaceholder = .reconnecting
     }
 
     mutating func verifyIdentity(_ identity: TmuxSessionIdentity?) {
         guard let identity else {
             clearFrames()
-            placeholder = .reconnecting
+            connectionPlaceholder = .reconnecting
             return
         }
         guard let quarantinedFrame else {
             visibleFrame = nil
-            placeholder = .awaitingFirstFrame
+            connectionPlaceholder = .awaitingFirstFrame
             return
         }
         guard quarantinedFrame.identity == identity else {
             clearFrames()
-            placeholder = .awaitingFirstFrame
+            connectionPlaceholder = .awaitingFirstFrame
             return
         }
 
         visibleFrame = quarantinedFrame
         self.quarantinedFrame = nil
-        placeholder = nil
+        connectionPlaceholder = nil
     }
 
     mutating func setDisconnected() {
-        placeholder = .disconnected
+        if let visibleFrame {
+            quarantinedFrame = visibleFrame
+        }
+        visibleFrame = nil
+        connectionPlaceholder = .disconnected
     }
 
     mutating func setLiveLimitReached(_ reached: Bool) {
-        if reached {
-            placeholder = .liveLimitReached
-        } else if quarantinedFrame != nil {
-            placeholder = .reconnecting
-        } else if visibleFrame == nil {
-            placeholder = .awaitingFirstFrame
-        } else {
-            placeholder = nil
-        }
+        isLiveLimitReached = reached
     }
 
     mutating func setMode(_ mode: SessionPreviewMode) {
         guard mode == .off else { return }
         clearFrames()
-        placeholder = .awaitingFirstFrame
+        connectionPlaceholder = .awaitingFirstFrame
+        isLiveLimitReached = false
     }
 
     mutating func clear() {
         clearFrames()
-        placeholder = .awaitingFirstFrame
+        connectionPlaceholder = .awaitingFirstFrame
+        isLiveLimitReached = false
     }
 
     private mutating func clearFrames() {

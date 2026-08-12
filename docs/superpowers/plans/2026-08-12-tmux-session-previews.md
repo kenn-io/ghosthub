@@ -390,11 +390,15 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 
 Every capture receives a coordinator generation token. After any suspension,
 the completion revalidates that token together with mode, presentation
-generation, current handle, and verified identity before publishing. Off,
-removal, replacement, and reconnect advance the generation and cancel pending
-capture work. Activation-delay tasks use the same pattern: resigning active
-cancels the task and advances an activation generation, and delayed
-reacquisition also requires the application to still be active.
+generation, current handle, verified identity, application activity, sidebar
+visibility, row expansion, connection state, and (for a parked surface) the
+current budget grant before publishing. Off, removal, replacement, reconnect,
+deactivation, sidebar hiding, row collapse, and grant revocation advance the
+generation and cancel pending capture work. Activation-delay tasks use the same
+pattern: every eligibility transition cancels the task and advances an
+activation generation, and delayed reacquisition revalidates the generation,
+Live mode, application activity, scene sidebar visibility, row expansion,
+connection state, budget grant, and key-window ownership before parking.
 
 - [ ] **Step 4: Implement parking and click handoff order**
 
