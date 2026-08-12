@@ -134,6 +134,28 @@ final class SettingsStoreTests {
 
     // MARK: - Tests
 
+    @Test("session previews default to off and persist stable raw values")
+    func sessionPreviewModePersistence() {
+        let store = makeSUT()
+
+        #expect(store.sessionPreviewMode == .off)
+
+        for mode in SessionPreviewMode.allCases {
+            store.setSessionPreviewMode(mode)
+            #expect(makeSUT().sessionPreviewMode == mode)
+        }
+    }
+
+    @Test("unknown session preview modes fall back to off")
+    func unknownSessionPreviewModeFallsBackToOff() {
+        defaults.set(
+            "future-mode",
+            forKey: "ghosthub.settings.terminal.sessionPreviewMode"
+        )
+
+        #expect(makeSUT().sessionPreviewMode == .off)
+    }
+
     @Test
     func testLoadingDefaultsReflectsGhosthubTerminalDefaults() {
         let store = makeSUT()

@@ -147,6 +147,14 @@ final class SettingsViewTests: XCTestCase {
         assertStableSize(fittingSize(for: store))
     }
 
+    func testTerminalDomainWithSessionPreviewsKeepsStableMinimumSize() {
+        let store = makeSettingsStore()
+        store.selectedDomain = .terminal
+        store.setSessionPreviewMode(.live)
+
+        assertStableSize(fittingSize(for: store))
+    }
+
     func testFollowConfigAllowsSharedTmuxThemeOverride() throws {
         let store = makeSettingsStore()
         store.selectedDomain = .appearance

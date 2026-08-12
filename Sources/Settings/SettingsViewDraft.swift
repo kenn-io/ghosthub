@@ -33,6 +33,7 @@ public struct SettingsViewDraft: Equatable {
     public var allowShellIntegrationToControlCursor: Bool
     public var hideMouseWhileTyping: Bool
     public var copySelectionToClipboard: Bool
+    public var sessionPreviewMode: SessionPreviewMode
     public var hideRootCheckout: Bool
     public var showHiddenWorktreesByDefault: Bool
     public var hideKwtManagedSessions: Bool
@@ -66,6 +67,7 @@ public struct SettingsViewDraft: Equatable {
             terminal.allowShellIntegrationToControlCursor
         hideMouseWhileTyping = terminal.hideMouseWhileTyping
         copySelectionToClipboard = terminal.copySelectionToClipboard
+        sessionPreviewMode = store.sessionPreviewMode
         hideRootCheckout = store.worktreePreferences.hideRootCheckout
         showHiddenWorktreesByDefault = store.worktreePreferences
             .showHiddenWorktreesByDefault
@@ -126,6 +128,7 @@ public struct SettingsViewDraft: Equatable {
         )
         store.setHideMouseWhileTyping(hideMouseWhileTyping)
         store.setCopySelectionToClipboard(copySelectionToClipboard)
+        store.setSessionPreviewMode(sessionPreviewMode)
         store.setHideRootCheckout(hideRootCheckout)
         store.setShowHiddenWorktreesByDefault(
             showHiddenWorktreesByDefault

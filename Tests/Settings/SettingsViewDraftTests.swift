@@ -13,6 +13,7 @@ struct SettingsViewDraftTests {
         store.setInterfaceAppearance(.dark)
         store.setTerminalTheme(.homebrew)
         store.setTerminalThemeAppliesToTmuxSessions(true)
+        store.setSessionPreviewMode(.live)
         store.setHideRootCheckout(true)
         store.setShowHiddenWorktreesByDefault(true)
         store.setHideKwtManagedSessions(false)
@@ -34,6 +35,7 @@ struct SettingsViewDraftTests {
         #expect(draft.interfaceAppearance == .dark)
         #expect(draft.terminalTheme == .homebrew)
         #expect(draft.appliesTerminalThemeToTmuxSessions)
+        #expect(draft.sessionPreviewMode == .live)
         #expect(draft.hideRootCheckout)
         #expect(draft.showHiddenWorktreesByDefault)
         #expect(!draft.hideKwtManagedSessions)
@@ -46,6 +48,18 @@ struct SettingsViewDraftTests {
         #expect(draft.selectedSSHHostDraftID == draft.sshHosts.first?.id)
         #expect(draft.exeAccounts.map(\.configKey) == ["personal"])
         #expect(draft.shortcutOverrides == store.shortcutPreferences.overrides)
+    }
+
+    @Test("session preview mode persists without reloading libghostty")
+    func sessionPreviewModeDoesNotReloadTerminalConfig() {
+        let store = makeStore()
+        var draft = SettingsViewDraft(store: store)
+        draft.sessionPreviewMode = .efficient
+
+        let result = draft.persist(to: store)
+
+        #expect(store.sessionPreviewMode == .efficient)
+        #expect(!result.shouldReloadTerminalConfig)
     }
 
     @Test("draft persists shortcut overrides as one result")
