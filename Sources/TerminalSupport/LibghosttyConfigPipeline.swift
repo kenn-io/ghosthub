@@ -274,8 +274,16 @@ public struct LibghosttyConfigPipeline {
             updated.append("\(setting.key) = \(setting.value)\n")
         }
 
+        let writeTarget: URL
+        if (try? fileManager.destinationOfSymbolicLink(
+            atPath: configFile.path
+        )) != nil {
+            writeTarget = configFile.resolvingSymlinksInPath()
+        } else {
+            writeTarget = configFile
+        }
         try? updated.write(
-            to: configFile, atomically: true, encoding: .utf8
+            to: writeTarget, atomically: true, encoding: .utf8
         )
     }
 
