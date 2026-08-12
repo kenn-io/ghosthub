@@ -220,6 +220,8 @@ pub struct KwtBranchCandidate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KwtWorktreeCreate {
     project_path: String,
+    repository: String,
+    registration_fingerprint: String,
     branch: String,
     source: Option<String>,
     creates_branch: bool,
@@ -229,12 +231,16 @@ impl KwtWorktreeCreate {
     #[must_use]
     pub fn new(
         project_path: impl Into<String>,
+        repository: impl Into<String>,
+        registration_fingerprint: impl Into<String>,
         branch: impl Into<String>,
         source: Option<String>,
         creates_branch: bool,
     ) -> Self {
         Self {
             project_path: project_path.into(),
+            repository: repository.into(),
+            registration_fingerprint: registration_fingerprint.into(),
             branch: branch.into(),
             source,
             creates_branch,
@@ -244,6 +250,16 @@ impl KwtWorktreeCreate {
     #[must_use]
     pub fn project_path(&self) -> &str {
         &self.project_path
+    }
+
+    #[must_use]
+    pub fn repository(&self) -> &str {
+        &self.repository
+    }
+
+    #[must_use]
+    pub fn registration_fingerprint(&self) -> &str {
+        &self.registration_fingerprint
     }
 
     #[must_use]

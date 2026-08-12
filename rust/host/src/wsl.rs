@@ -1189,6 +1189,24 @@ impl<R: CommandRunner> WslHost<R> {
             )
         })?;
         let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let projects = self.run_kwt(endpoint, &helper, &["projects", "--json"], cancellation)?;
+        let current: Vec<KwtProject> =
+            serde_json::from_slice(&projects.stdout).map_err(|error| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    format!("KWT returned invalid project inventory before creation: {error}"),
+                )
+            })?;
+        if !current.iter().any(|project| {
+            project.path() == request.project_path()
+                && project.repository() == request.repository()
+                && project.registration_fingerprint() == request.registration_fingerprint()
+        }) {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "The project registration changed. Refresh before creating a worktree.",
+            ));
+        }
         let mut command = vec!["add"];
         if request.creates_branch() {
             command.push("--branch");
@@ -4451,6 +4469,8 @@ mod tests {
             &runtime,
             &KwtWorktreeCreate::new(
                 "/code/widget",
+                "github.com/acme/widget",
+                "opaque-registration",
                 "feature/ready",
                 Some("origin/feature/ready".to_owned()),
                 false,
@@ -4495,6 +4515,32 @@ mod tests {
             ]) && args
                 .windows(2)
                 .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+    }
+
+    #[test]
+    fn kwt_worktree_creation_rejects_a_changed_project_registration_before_add() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let error = host
+            .create_kwt_worktree(
+                &endpoint,
+                &runtime,
+                &KwtWorktreeCreate::new(
+                    "/code/widget",
+                    "github.com/acme/widget",
+                    "replacement-registration",
+                    "feature/ready",
+                    Some("origin/feature/ready".to_owned()),
+                    false,
+                ),
+                &CancellationToken::new(),
+            )
+            .expect_err("a stale project registration must not grant mutation authority");
+
+        assert!(error.to_string().contains("registration changed"));
+        assert!(!runner.calls.lock().expect("calls").iter().any(|args| {
+            args.iter().any(|argument| argument == "add")
+                && args.iter().any(|argument| argument == "--no-launch")
         }));
     }
 

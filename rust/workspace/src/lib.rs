@@ -1451,6 +1451,32 @@ fn equivalent_tmux_presentation_key(
     worktree_tmux_presentation_key(request, &host.value.snapshot)
 }
 
+fn normalize_attached_worktree_target(
+    active: &mut ActiveAttachment<AttachRequest>,
+    snapshot: &HostSnapshot,
+    attached_name: &str,
+) -> bool {
+    if !matches!(active.request.target, AttachTarget::Worktree { .. }) {
+        return false;
+    }
+    let Some(identity) = snapshot
+        .sessions()
+        .iter()
+        .find(|session| session.name() == attached_name)
+        .map(|session| session.identity().clone())
+    else {
+        return false;
+    };
+    let previous_key = active.request.presentation_key();
+    active.request.target = AttachTarget::Tmux(identity);
+    if let Some(fallback) = &mut active.fallback
+        && fallback.target == previous_key
+    {
+        fallback.target = active.request.presentation_key();
+    }
+    true
+}
+
 fn worktree_tmux_presentation_key(
     request: &AttachRequest,
     snapshot: &HostSnapshot,
@@ -6461,11 +6487,58 @@ fn run_kwt_worktree_remove(
             refresh_tmux: session_killed,
         };
     }
+    tombstone_removed_kwt_worktree(inner, task, worktree_path, generation);
 
     KwtWorktreeOutcome {
         refresh_kwt: reconcile_removed_kwt_worktree(inner, task, worktree_path, generation),
         refresh_tmux: session_killed,
     }
+}
+
+fn tombstone_removed_kwt_worktree(
+    inner: &Inner,
+    task: &KwtWorktreeTask,
+    worktree_path: &str,
+    generation: &str,
+) {
+    publish_kwt(
+        inner,
+        task.generation,
+        &task.endpoint,
+        &task.runtime,
+        |host| {
+            remove_cached_kwt_worktree(
+                host,
+                &task.repository,
+                &task.project_path,
+                &task.registration_fingerprint,
+                worktree_path,
+                generation,
+            );
+        },
+    );
+}
+
+fn remove_cached_kwt_worktree(
+    host: &mut HostItem,
+    repository: &str,
+    project_path: &str,
+    registration_fingerprint: &str,
+    worktree_path: &str,
+    generation: &str,
+) -> bool {
+    let Some(project) = host.projects.iter_mut().find(|project| {
+        project.repository == repository
+            && project.path == project_path
+            && project.registration_fingerprint == registration_fingerprint
+    }) else {
+        return false;
+    };
+    let before = project.worktrees.len();
+    project.worktrees.retain(|worktree| {
+        worktree.path != worktree_path || worktree.generation.as_deref() != Some(generation)
+    });
+    project.worktrees.len() != before
 }
 
 fn preflight_kwt_worktree_remove(
@@ -6600,6 +6673,8 @@ fn run_kwt_worktree_create(
         &task.runtime,
         &host::KwtWorktreeCreate::new(
             &task.project_path,
+            &task.repository,
+            &task.registration_fingerprint,
             branch,
             source.map(str::to_owned),
             creates_branch,
@@ -8248,6 +8323,9 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                 drop(worker);
                 return;
             }
+            if let Some(active) = attachment.active_mut() {
+                normalize_attached_worktree_target(active, &snapshot, &attached_session);
+            }
             let surface = worker.surface_handle();
             let endpoint = snapshot.endpoint().distro().to_owned();
             publish_attach_inventory(inner, request, snapshot);
@@ -8269,9 +8347,14 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                     worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
                 },
             ) {
+                let current_request = attachment
+                    .active()
+                    .expect("current attachment was checked")
+                    .request
+                    .clone();
                 let fallback = attachment
                     .fallback_if_current(generation)
-                    .filter(|fallback| fallback_owns_request(inner, fallback, request));
+                    .filter(|fallback| fallback_owns_request(inner, fallback, &current_request));
                 attachment.clear_if_current(generation);
                 drop(attachment);
                 publish_attachment_failure(inner, request.inventory_generation, error);
@@ -9124,11 +9207,9 @@ fn validate_fresh_worktree(
     let inventory = request
         .host
         .discover_kwt(&request.endpoint, &request.runtime, cancellation)
-        .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?
+        .map_err(|error| kwt_attachment_failure(fresh, error))?
         .ok_or_else(|| {
-            AttachFreshError::Host(WorkspaceError::new(
-                "the revision-pinned KWT helper is unavailable",
-            ))
+            kwt_attachment_failure(fresh, "the revision-pinned KWT helper is unavailable")
         })?;
     let current = inventory.projects().iter().find_map(|project| {
         (project.project().repository() == repository).then(|| {
@@ -9153,6 +9234,13 @@ fn validate_fresh_worktree(
             ),
             snapshot: Box::new(fresh.clone()),
         }),
+    }
+}
+
+fn kwt_attachment_failure(fresh: &HostSnapshot, error: impl fmt::Display) -> AttachFreshError {
+    AttachFreshError::SessionChanged {
+        error: WorkspaceError::new(error.to_string()),
+        snapshot: Box::new(fresh.clone()),
     }
 }
 
@@ -9318,7 +9406,7 @@ fn launch_fresh_worktree(
             term,
             cancellation,
         )
-        .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
+        .map_err(|error| kwt_attachment_failure(fresh, error))?;
     let geometry = *inner
         .terminal_geometry
         .lock()
@@ -10045,6 +10133,139 @@ mod tests {
         let key = worktree_tmux_presentation_key(&worktree, &snapshot)
             .expect("the current tmux session supplies a stable presentation key");
         assert_eq!(key, direct.presentation_key());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launched_worktree_identity_remains_reusable_after_it_becomes_unbound() {
+        let identity = session::SessionIdentity::new(100, "$1", 200);
+        let snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "project-topic",
+                identity.clone(),
+                1,
+            )],
+        );
+        let direct = attach_request_fixture(&snapshot, identity, "project-topic");
+        let mut worktree = direct.clone();
+        worktree.target = AttachTarget::Worktree {
+            repository: "project-id".to_owned(),
+            path: "/work/project/topic".to_owned(),
+            generation: Some("generation".to_owned()),
+            session_name: "project-topic".to_owned(),
+        };
+        let worktree_key = worktree.presentation_key();
+
+        let mut active = AttachmentState::new();
+        active.reserve_with_fallback(
+            worktree,
+            AttachTerm::Xterm256Color,
+            Some(FallbackAuthority {
+                presentation: direct.presentation_key(),
+                target: worktree_key,
+                navigation_generation: 0,
+            }),
+        );
+        assert!(normalize_attached_worktree_target(
+            active.active_mut().expect("active worktree"),
+            &snapshot,
+            "project-topic",
+        ));
+        assert_eq!(
+            active
+                .active()
+                .expect("normalized active presentation")
+                .request
+                .presentation_key(),
+            direct.presentation_key(),
+        );
+        assert_eq!(
+            active
+                .active()
+                .expect("normalized fallback")
+                .fallback
+                .as_ref()
+                .expect("fallback authority")
+                .target,
+            direct.presentation_key(),
+        );
+
+        let active = active.take_active().expect("retain active presentation");
+        let key = active.request.presentation_key();
+        let mut retained = RetainedPresentations::new();
+        retained.insert(RetainedPresentation {
+            key: key.clone(),
+            selection: active.request.selection(),
+            attachment: active,
+            worker: (),
+            presentation_id: 1,
+        });
+        assert!(retained.contains(&direct.presentation_key()));
+    }
+
+    #[test]
+    fn successful_worktree_removal_tombstones_only_the_exact_cached_generation() {
+        let mut host = HostItem::wsl("Ubuntu", None, HostConnectionState::Ready, Vec::new(), None);
+        host.projects = vec![ProjectItem::new(
+            "project-id",
+            "project",
+            "/repos/project",
+            "project-fingerprint",
+            vec![
+                WorktreeItem::new(
+                    "/work/project/topic",
+                    "topic",
+                    false,
+                    Some("old-generation".to_owned()),
+                    "project-topic",
+                    None,
+                    false,
+                ),
+                WorktreeItem::new(
+                    "/work/project/topic",
+                    "topic",
+                    false,
+                    Some("replacement-generation".to_owned()),
+                    "project-topic",
+                    None,
+                    false,
+                ),
+            ],
+        )];
+
+        assert!(remove_cached_kwt_worktree(
+            &mut host,
+            "project-id",
+            "/repos/project",
+            "project-fingerprint",
+            "/work/project/topic",
+            "old-generation",
+        ));
+        assert_eq!(host.projects[0].worktrees.len(), 1);
+        assert_eq!(
+            host.projects[0].worktrees[0].generation(),
+            Some("replacement-generation"),
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn kwt_attachment_failures_preserve_the_fresh_host_snapshot() {
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let AttachFreshError::SessionChanged {
+            error,
+            snapshot: preserved,
+        } = kwt_attachment_failure(&snapshot, "KWT inventory failed")
+        else {
+            panic!("KWT failures must remain scoped below host transport");
+        };
+
+        assert_eq!(error.to_string(), "KWT inventory failed");
+        assert_eq!(preserved.endpoint(), snapshot.endpoint());
+        assert_eq!(preserved.runtime(), snapshot.runtime());
     }
     use std::collections::VecDeque;
     use std::sync::{Barrier, atomic::AtomicUsize, mpsc};

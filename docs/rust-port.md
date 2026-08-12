@@ -693,6 +693,10 @@ create either a new branch (`add --branch`) or an existing local/remote branch
 (`add`, optionally with `--from`) using `--no-launch`. After creation, Rust
 refreshes authoritative KWT inventory and selects the exact repository,
 worktree path, generation, and computed session name returned by that refresh.
+Immediately before `add`, the host re-reads project inventory and requires the
+same repository, checkout path, and opaque registration fingerprint that
+authorized the UI action. A replacement registration cannot inherit mutation
+authority from a cached row.
 The UI thread performs none of those commands and keeps the previous project
 tree visible throughout the operation.
 
@@ -702,6 +706,11 @@ terminal launches `kwt open <exact-path>` as the ordinary PTY client. This is a
 cloneable, deliberately re-runnable RepairOrOpen capability: KWT owns
 probe/repair/bootstrap behavior and tmux continues to own the session. Directly
 discovered unbound sessions remain strictly attach-only.
+Once a worktree client resolves its live default-socket tmux identity, its
+presentation key is normalized to that identity. The same client therefore
+remains reusable when KWT later associates or disassociates the session with a
+project. KWT-only validation failures retain the fresh host inventory and are
+reported on the worktree action rather than disabling other multiplexers.
 
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound
@@ -709,9 +718,11 @@ tmux group. Custom-socket worktrees remain visible as project inventory but do
 not claim a default-socket session with the same name. Removal is unavailable
 for those worktrees until protected-socket discovery and identity-checked
 termination exist; deleting a checkout must never strand a session Ghosthub
-cannot currently observe. KWT rows carry display identity and exact session
-names; they do not acquire creation, repair, or destruction authority from
-cached inventory.
+cannot currently observe. A successful exact removal immediately tombstones
+that path and generation in the cached tree before broader reconciliation, so
+a KWT outage cannot resurrect an openable deleted row. KWT rows carry display
+identity and exact session names; they do not acquire creation, repair, or
+destruction authority from cached inventory.
 
 The remote helper activation root is a separate cross-controller contract:
 

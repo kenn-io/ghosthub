@@ -459,7 +459,12 @@ or matching WSL UNC folder into the selected distro, then applies these POSIX
 operations through the pinned Linux helper. It publishes a successful
 machine-readable registration or removal before attempting broader worktree
 reconciliation, so an unrelated inventory failure cannot erase the confirmed
-result. Native Windows hosts do not expose project registry mutations until
+result. Rust worktree creation likewise revalidates repository, checkout path,
+and registration fingerprint immediately before mutation. Successful worktree
+removal tombstones the exact path and generation locally before reconciliation,
+and live default-socket worktree presentations are keyed by their tmux identity
+so project registration changes cannot duplicate clients.
+Native Windows hosts do not expose project registry mutations until
 that command boundary supports native Windows paths.
 On macOS and Linux, the account login shell initializes the command
 environment, while Ghosthub's own inventory and discovery commands execute
