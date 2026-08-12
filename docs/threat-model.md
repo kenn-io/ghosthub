@@ -373,12 +373,16 @@ second hard link. Protected directories receive the same hard-link check for
 every regular file beneath them. This narrows Git-metadata injection but does
 not make shared worktree content safe to execute later on the host.
 
-Direct hook symlinks are resolved: every in-mount chain element and canonical
-regular-file target is protected, while an invalid chain fails closed. Because
-Apple mount plans are immutable after creation, every Start repeats full
-preflight and requires its canonical result to match the persisted creation
-plan. A changed layout, config/include/hook target, symlink resolution, hard
-link, or missing target blocks Start and requires explicit recreation.
+Direct hook symlinks are resolved. An in-mount intermediate symlink is accepted
+only when its parent is already a protected read-only directory, because
+protecting the symlink path itself does not prevent live unlink and
+replacement. Every in-mount canonical regular-file target is protected, every
+canonical target inside or outside the mounted roots must have exactly one
+hard link, and an invalid chain fails closed. Because Apple mount plans are
+immutable after creation, every Start repeats full preflight and requires its
+canonical result to match the persisted creation plan. A changed layout,
+config/include/hook target, symlink resolution, hard link, or missing target
+blocks Start and requires explicit recreation.
 
 The Apple boundary does not recursively protect interpreters, scripts,
 libraries, or data that an already-protected hook or Git config command refers

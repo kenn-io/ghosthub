@@ -119,25 +119,31 @@ accepted by preflight.
 
 Preflight enumerates each existing direct entry in the effective hook
 directory. For a symlink entry, it records the complete host-side symlink chain
-and canonical final target. Every chain element and final regular-file target
-inside a writable mounted root joins the protected set, with its writable
-ancestors pinned like any other target. A dangling or cyclic link, a final
-in-mount target that is not a regular file, or a chain that cannot be
-canonicalized fails closed. A final target outside all mounted roots is
-recorded but does not receive a mount because the sandbox has no host-backed
-path through which to change it.
+and canonical final target. The direct entry is immutable because its hook
+directory is protected. An intermediate symlink entry inside a writable
+mounted root is accepted only when its parent directory is already a protected
+read-only target; `--read-only-path` on the symlink itself follows its target
+but does not prevent unlinking and replacing the directory entry. Any other
+in-mount intermediate symlink fails closed. A final regular-file target inside
+a writable mounted root joins the protected set, with its writable ancestors
+pinned like any other target. A dangling or cyclic link, a final in-mount
+target that is not a regular file, or a chain that cannot be canonicalized also
+fails closed. A final target outside all mounted roots is recorded but does not
+receive a mount because the sandbox has no host-backed path through which to
+change it.
 
 Each protected target and ancestor must already exist, remain within its
 expected mounted root, and have no mutable symlink indirection that could
 replace its lexical path. At the final preflight check, every protected regular
-file and every regular file recursively beneath a protected directory must
+file, every regular file recursively beneath a protected directory, and every
+canonical final hook target whether inside or outside the mounted roots must
 have a link count of exactly one. Ghosthub rejects additional hard links rather
-than trying to discover and protect aliases, because an alias anywhere in a
-writable mounted root can mutate the same inode. This deliberately rejects an
-additional link even when Ghosthub cannot prove that its other name will be
-mounted. The provider create command must consume the exact unchanged file
-identities and layout accepted by that check. Paths outside the mounted roots
-are not exposed to the container.
+than trying to discover and protect aliases, because an in-mount alias can
+mutate the same inode even when the canonical target is not mounted. This
+deliberately rejects an additional link even when Ghosthub cannot prove that
+its other name will be mounted. The provider create command must consume the
+exact unchanged file identities and layout accepted by that check. Paths
+outside the mounted roots are not exposed to the container.
 
 Apple mount configuration is immutable after resource creation. Ghosthub
 therefore persists the canonical accepted mount plan and repeats the complete
@@ -152,11 +158,12 @@ resolution, additional hard link, layout change, or missing target does.
 Apple's read-only-path control protects only targets that exist when the
 container starts. Preflight therefore fails closed rather than claiming the
 stronger capability when a layout-specific indirection, effective config, or
-hook path within the mounted roots is absent, cannot be canonicalized, has a
-writable hard-link alias, changes during preflight, or cannot be expressed as
-an existing read-only target. The error identifies the Git target and path the
-user must review. Ghosthub does not create placeholder Git configuration or
-rewrite repository metadata to make a target mountable.
+hook path within the mounted roots is absent, cannot be canonicalized, has an
+unsafe intermediate symlink or additional hard link, changes during preflight,
+or cannot be expressed as an existing read-only target. The error identifies
+the Git target and path the user must review. Ghosthub does not create
+placeholder Git configuration or rewrite repository metadata to make a target
+mountable.
 
 Nested file bind mounts are not used. In `container` 1.2.2, adding a nested
 file bind can make the enclosing directory mount disappear, while
@@ -383,6 +390,10 @@ The Apple probe asserts:
 - a direct hook symlink cannot be used to change an in-mount target, and
   changing its chain or target while stopped makes the next Start fail plan
   reconciliation
+- preflight rejects an outside canonical hook target with another hard link
+  and an in-mount intermediate symlink whose parent is not already read-only;
+  an accepted multi-hop chain keeps every intermediate entry immutable during
+  live execution
 - after Stop, changing an included config or `core.hooksPath` to require a new
   protected target makes Start fail instead of restoring the stale mount plan
 - a live host-side hook-directory change does not remove or weaken the overlay
@@ -434,14 +445,20 @@ one. A standard-checkout probe pinned its `.git` directory, protected config
 and hooks, rejected config writes, `.git` replacement, and new hard-link
 creation, and still committed inside the container. A direct hook symlink into
 the writable worktree remained mutable until its canonical target was also a
-read-only path. Separately, stopping a container, changing `core.hooksPath`,
-and starting the raw provider resource restored its stale mount plan and left
-the new hook directory writable. These behaviors require direct-target
-protection and Ghosthub's full pre-Start plan reconciliation. Sbx refused a
-config file as an additional workspace. The rejected read-only common-Git
-layout committed only with `packed-refs.lock` diagnostics. Creating an sbx
-sandbox with `SSH_AUTH_SOCK` removed from the client environment still exposed
-the already-running daemon's forwarded agent socket.
+read-only path. A multi-hop follow-up showed that marking an intermediate
+symlink read-only still allowed the directory entry to be unlinked and
+replaced; only a read-only parent directory made that entry immutable, so v1
+rejects an intermediate entry in any other writable mounted directory. An
+outside canonical target also remains subject to the single-link invariant so
+an in-worktree alias cannot mutate it. Separately, stopping a container,
+changing `core.hooksPath`, and starting the raw provider resource restored its
+stale mount plan and left the new hook directory writable. These behaviors
+require direct-target protection and Ghosthub's full pre-Start plan
+reconciliation. Sbx refused a config file as an additional workspace. The
+rejected read-only common-Git layout committed only with `packed-refs.lock`
+diagnostics. Creating an sbx sandbox with `SSH_AUTH_SOCK` removed from the
+client environment still exposed the already-running daemon's forwarded agent
+socket.
 
 Provider behavior and future changes should be checked against the
 [Apple container releases](https://github.com/apple/container/releases),
