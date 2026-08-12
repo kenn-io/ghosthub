@@ -17,6 +17,7 @@ import Testing
 /// key-window transitions are not reliable. App-scene invalidation (e.g.
 /// focused-value reads on the `App` itself) happens above any hostable
 /// view, so it stays outside this gate's reach.
+@Suite(.serialized)
 @MainActor
 struct ActivationWorkGateTests {
     /// Budgets are a ratchet at 2x the measured baseline: 10 switches cost
@@ -36,17 +37,17 @@ struct ActivationWorkGateTests {
         let gate = GateEnvironment()
         defer { gate.close() }
 
-        RenderWorkCounters.reset()
+        RenderWorkCounters.beginRecording()
         for index in 0 ..< Budget.switches {
             gate.activateWindow(index.isMultiple(of: 2) ? 1 : 0)
         }
+        let counts = RenderWorkCounters.endRecording()
 
         #expect(
-            RenderWorkCounters.rootBodyEvaluations
-                <= Budget.rootBodyEvaluations
+            counts.rootBodyEvaluations <= Budget.rootBodyEvaluations
         )
         #expect(
-            RenderWorkCounters.sidebarSectionComputations
+            counts.sidebarSectionComputations
                 <= Budget.sidebarSectionComputations
         )
     }
@@ -56,14 +57,15 @@ struct ActivationWorkGateTests {
         let gate = GateEnvironment()
         defer { gate.close() }
 
-        RenderWorkCounters.reset()
+        RenderWorkCounters.beginRecording()
         gate.activateWindow(1)
+        #expect(RenderWorkCounters.endRecording().rootBodyEvaluations > 0)
 
-        #expect(RenderWorkCounters.rootBodyEvaluations > 0)
-
-        RenderWorkCounters.reset()
+        RenderWorkCounters.beginRecording()
         _ = WorkspaceSidebarModel.sections(in: gate.snapshot)
-        #expect(RenderWorkCounters.sidebarSectionComputations == 1)
+        #expect(
+            RenderWorkCounters.endRecording().sidebarSectionComputations == 1
+        )
     }
 }
 
