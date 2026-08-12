@@ -824,6 +824,10 @@ pub enum WorkspaceEvent {
     KwtWorktreeCreated {
         target: KwtWorktreeTarget,
     },
+    KwtWorktreeRemoved {
+        project_path: String,
+        worktree_path: String,
+    },
     KwtWorktreeCreationPending {
         project_path: String,
         message: String,
@@ -1038,6 +1042,10 @@ pub fn is_valid_git_branch_name(value: &str) -> bool {
             && !component.ends_with('.')
             && !component.ends_with(".lock")
     })
+}
+
+fn is_canonical_kwt_generation(generation: &str) -> bool {
+    generation.len() == 32 && generation.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub struct WslHostSpec {
@@ -2607,6 +2615,50 @@ impl Workspace {
                 branch: branch.to_owned(),
                 source: source.map(str::to_owned),
                 creates_branch,
+            },
+        )
+    }
+
+    /// Remove one exact non-main KWT worktree while preserving its Git branch.
+    ///
+    /// The operation revalidates the project, worktree generation, WSL
+    /// runtime, and expected tmux presence off the UI thread. A session that
+    /// was live when confirmation was shown is killed through fresh tmux
+    /// identity authority before KWT removes the checkout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale inventory, main worktrees, missing durable
+    /// generation, or another KWT operation already in progress.
+    #[allow(clippy::too_many_arguments)]
+    pub fn remove_kwt_worktree(
+        &self,
+        host_id: &str,
+        endpoint: &str,
+        repository: &str,
+        project_path: &str,
+        registration_fingerprint: &str,
+        worktree_path: &str,
+        generation: &str,
+        session_name: &str,
+        session_was_running: bool,
+    ) -> Result<(), WorkspaceError> {
+        if !is_canonical_kwt_generation(generation) {
+            return Err(WorkspaceError::new(
+                "Refresh KWT inventory before removing this worktree.",
+            ));
+        }
+        self.start_kwt_worktree_operation(
+            host_id,
+            endpoint,
+            repository,
+            project_path,
+            registration_fingerprint,
+            KwtWorktreeOperation::Remove {
+                worktree_path: worktree_path.to_owned(),
+                generation: generation.to_owned(),
+                session_name: session_name.to_owned(),
+                session_was_running,
             },
         )
     }
@@ -5965,6 +6017,12 @@ enum KwtWorktreeOperation {
         source: Option<String>,
         creates_branch: bool,
     },
+    Remove {
+        worktree_path: String,
+        generation: String,
+        session_name: String,
+        session_was_running: bool,
+    },
 }
 
 struct KwtWorktreeTask {
@@ -5979,7 +6037,11 @@ struct KwtWorktreeTask {
     operation: KwtWorktreeOperation,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "reservation keeps host identity validation and publication fencing atomic"
+)]
 fn reserve_kwt_worktree_operation(
     inner: &Arc<Inner>,
     host_id: &str,
@@ -6034,15 +6096,17 @@ fn reserve_kwt_worktree_operation(
                 "refresh KWT inventory before changing worktrees",
             ));
         }
-        if !item.projects.iter().any(|project| {
+        let project = item.projects.iter().find(|project| {
             project.repository == repository
                 && project.path == project_path
                 && project.registration_fingerprint == registration_fingerprint
-        }) {
+        });
+        let Some(project) = project else {
             return Err(WorkspaceError::new(
                 "the selected KWT project is no longer in current inventory",
             ));
-        }
+        };
+        validate_kwt_worktree_operation(project, &operation)?;
         drop(hosts);
         let cancellation = CancellationToken::new();
         let generation = {
@@ -6090,6 +6154,43 @@ fn reserve_kwt_worktree_operation(
     captured
 }
 
+fn validate_kwt_worktree_operation(
+    project: &ProjectItem,
+    operation: &KwtWorktreeOperation,
+) -> Result<(), WorkspaceError> {
+    let KwtWorktreeOperation::Remove {
+        worktree_path,
+        generation,
+        session_name,
+        session_was_running,
+    } = operation
+    else {
+        return Ok(());
+    };
+    let worktree = project
+        .worktrees
+        .iter()
+        .find(|worktree| {
+            worktree.path == *worktree_path
+                && worktree.generation.as_deref() == Some(generation)
+                && worktree.session_name == *session_name
+        })
+        .ok_or_else(|| {
+            WorkspaceError::new("the selected worktree changed; refresh and choose it again")
+        })?;
+    if worktree.is_main {
+        return Err(WorkspaceError::new(
+            "the primary checkout cannot be removed",
+        ));
+    }
+    if worktree.session_available != *session_was_running {
+        return Err(WorkspaceError::new(
+            "the worktree session changed; review the removal again",
+        ));
+    }
+    Ok(())
+}
+
 fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
     let refresh_after_completion = match &task.operation {
         KwtWorktreeOperation::Branches => {
@@ -6131,11 +6232,207 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
             source,
             creates_branch,
         } => run_kwt_worktree_create(inner, task, branch, source.as_deref(), *creates_branch),
+        KwtWorktreeOperation::Remove {
+            worktree_path,
+            generation,
+            session_name,
+            session_was_running,
+        } => run_kwt_worktree_remove(
+            inner,
+            task,
+            worktree_path,
+            generation,
+            session_name,
+            *session_was_running,
+        ),
     };
     finish_kwt_project_mutation(inner, Some((&task.endpoint, &task.runtime)));
     if refresh_after_completion {
         start_kwt_refresh(inner, false);
     }
+}
+
+fn run_kwt_worktree_remove(
+    inner: &Arc<Inner>,
+    task: &KwtWorktreeTask,
+    worktree_path: &str,
+    generation: &str,
+    session_name: &str,
+    session_was_running: bool,
+) -> bool {
+    let _session_operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Err(error) = preflight_kwt_worktree_remove(task, worktree_path, generation, session_name)
+    {
+        return fail_kwt_worktree_remove(inner, task, error);
+    }
+
+    let live_target = if session_was_running {
+        match task.host.capture_live_session(
+            &task.endpoint,
+            &task.runtime,
+            session_name,
+            &task.cancellation,
+        ) {
+            Ok(target) => Some(target),
+            Err(error) => return fail_kwt_worktree_remove(inner, task, error.to_string()),
+        }
+    } else {
+        match task.host.session_is_running(
+            &task.endpoint,
+            &task.runtime,
+            session_name,
+            &task.cancellation,
+        ) {
+            Ok(false) => None,
+            Ok(true) => {
+                return fail_kwt_worktree_remove(
+                    inner,
+                    task,
+                    "The worktree session started after confirmation. Review the removal again."
+                        .to_owned(),
+                );
+            }
+            Err(error) => return fail_kwt_worktree_remove(inner, task, error.to_string()),
+        }
+    };
+
+    if let Some(target) = &live_target {
+        if let Err(error) = task.host.kill_live_session(target, &task.cancellation) {
+            return fail_kwt_worktree_remove(inner, task, error.to_string());
+        }
+        Workspace {
+            inner: Arc::clone(inner),
+        }
+        .finish_session_kill(target);
+    }
+
+    if let Err(error) = task.host.remove_kwt_worktree(
+        &task.endpoint,
+        &task.runtime,
+        &task.project_path,
+        worktree_path,
+        generation,
+        &task.cancellation,
+    ) {
+        return fail_kwt_worktree_remove(inner, task, error.to_string());
+    }
+
+    reconcile_removed_kwt_worktree(inner, task, worktree_path, generation)
+}
+
+fn preflight_kwt_worktree_remove(
+    task: &KwtWorktreeTask,
+    worktree_path: &str,
+    generation: &str,
+    session_name: &str,
+) -> Result<(), String> {
+    let inventory = task
+        .host
+        .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "KWT is no longer available on this host".to_owned())?;
+    let current = inventory.projects().iter().find_map(|project| {
+        let identity_matches = project.project().repository() == task.repository
+            && project.project().path() == task.project_path
+            && project.project().registration_fingerprint() == task.registration_fingerprint;
+        identity_matches.then(|| {
+            project.worktrees().iter().find(|worktree| {
+                worktree.path() == worktree_path
+                    && worktree.generation() == Some(generation)
+                    && worktree.session_name() == session_name
+                    && !worktree.is_main()
+            })
+        })?
+    });
+    current.map(|_| ()).ok_or_else(|| {
+        "the worktree changed after confirmation; refresh and review the removal again".to_owned()
+    })
+}
+
+fn reconcile_removed_kwt_worktree(
+    inner: &Arc<Inner>,
+    task: &KwtWorktreeTask,
+    worktree_path: &str,
+    generation: &str,
+) -> bool {
+    match task
+        .host
+        .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation)
+    {
+        Ok(Some(inventory)) => {
+            let still_present = inventory.projects().iter().any(|project| {
+                project.worktrees().iter().any(|worktree| {
+                    worktree.path() == worktree_path && worktree.generation() == Some(generation)
+                })
+            });
+            if still_present {
+                return fail_kwt_worktree_remove(
+                    inner,
+                    task,
+                    "KWT reported success but the worktree is still present; refresh before retrying."
+                        .to_owned(),
+                );
+            }
+            publish_kwt_inventory(
+                inner,
+                task.generation,
+                &task.endpoint,
+                &task.runtime,
+                &inventory,
+            );
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtWorktreeRemoved {
+                    project_path: task.project_path.clone(),
+                    worktree_path: worktree_path.to_owned(),
+                },
+            );
+            true
+        }
+        Ok(None) => {
+            publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtWorktreeRemoved {
+                    project_path: task.project_path.clone(),
+                    worktree_path: worktree_path.to_owned(),
+                },
+            );
+            true
+        }
+        Err(error) => {
+            publish_kwt_error(
+                inner,
+                task.generation,
+                &task.endpoint,
+                &task.runtime,
+                HostDiagnostic::new(error.kind(), error.to_string()),
+            );
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtWorktreeRemoved {
+                    project_path: task.project_path.clone(),
+                    worktree_path: worktree_path.to_owned(),
+                },
+            );
+            true
+        }
+    }
+}
+
+fn fail_kwt_worktree_remove(inner: &Arc<Inner>, task: &KwtWorktreeTask, message: String) -> bool {
+    publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
+    push_operation_event(
+        inner,
+        WorkspaceEvent::KwtWorktreeOperationFailed {
+            project_path: task.project_path.clone(),
+            message,
+        },
+    );
+    false
 }
 
 fn run_kwt_worktree_create(
@@ -9419,6 +9716,91 @@ mod tests {
                 "expected {invalid:?} to be invalid"
             );
         }
+    }
+
+    #[test]
+    fn worktree_removal_requires_a_canonical_generation() {
+        assert!(is_canonical_kwt_generation(
+            "0123456789abcdef0123456789ABCDEF"
+        ));
+        assert!(!is_canonical_kwt_generation("0123456789abcdef"));
+        assert!(!is_canonical_kwt_generation(
+            "0123456789abcdef0123456789abcdeg"
+        ));
+    }
+
+    #[test]
+    fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
+        let project = ProjectItem::new(
+            "github.com/acme/widget",
+            "widget",
+            "/code/widget",
+            "registration",
+            vec![
+                WorktreeItem::new(
+                    "/code/widget",
+                    "main",
+                    true,
+                    Some("11111111111111111111111111111111".to_owned()),
+                    "widget-main",
+                    None,
+                    false,
+                ),
+                WorktreeItem::new(
+                    "/work/widget/topic",
+                    "topic",
+                    false,
+                    Some("22222222222222222222222222222222".to_owned()),
+                    "widget-topic",
+                    None,
+                    true,
+                ),
+            ],
+        );
+        let remove =
+            |path: &str, generation: &str, session: &str, running| KwtWorktreeOperation::Remove {
+                worktree_path: path.to_owned(),
+                generation: generation.to_owned(),
+                session_name: session.to_owned(),
+                session_was_running: running,
+            };
+
+        assert!(
+            validate_kwt_worktree_operation(
+                &project,
+                &remove(
+                    "/work/widget/topic",
+                    "22222222222222222222222222222222",
+                    "widget-topic",
+                    true,
+                ),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_kwt_worktree_operation(
+                &project,
+                &remove(
+                    "/code/widget",
+                    "11111111111111111111111111111111",
+                    "widget-main",
+                    false,
+                ),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_kwt_worktree_operation(
+                &project,
+                &remove(
+                    "/work/widget/topic",
+                    "22222222222222222222222222222222",
+                    "widget-topic",
+                    false,
+                ),
+            )
+            .is_err()
+        );
     }
     use std::collections::VecDeque;
     use std::sync::{Barrier, atomic::AtomicUsize, mpsc};

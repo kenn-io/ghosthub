@@ -1067,11 +1067,13 @@ used as evidence for the Windows ConPTY-to-WSL relay path.
 After Slice 1:
 
 1. Local Ghosthub inventory and ordinary worktree RepairOrOpen now ship with
-   pinned bundled kwt, project/worktree inventory, branch-backed creation, and
-   unbound reconciliation.
-2. Local lifecycle adds pull-request import, worktree removal, and protected
-   worktree behavior; plain local session creation already ships through
-   CreateOnce in the WSL slice.
+   pinned bundled kwt, project/worktree inventory, branch-backed creation,
+   generation-guarded confirmed removal, and unbound reconciliation. Removal
+   preserves the Git branch and terminates a live tmux session only through a
+   freshly captured exact identity.
+2. Local lifecycle adds pull-request import and protected worktree behavior;
+   plain local session creation already ships through CreateOnce in the WSL
+   slice.
 3. Remote hosts add OpenSSH diagnostics, managed-helper installation,
    attach-only transport reconnect, repair/open reconnect, and remote Windows.
 4. Persistence and restoration add the coalescing writer, host settings,

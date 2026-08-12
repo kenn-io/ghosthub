@@ -332,6 +332,14 @@ struct WorktreeOpenTarget {
     session_name: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorktreeRemoveTarget {
+    open: WorktreeOpenTarget,
+    project_name: String,
+    branch: String,
+    session_was_running: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NewSessionKind {
     Tmux,
@@ -347,7 +355,7 @@ struct SessionActionMenu {
     anchor_y: f32,
 }
 
-const SESSION_ACTION_MENU_WIDTH: f32 = 112.0;
+const SESSION_ACTION_MENU_WIDTH: f32 = 148.0;
 const SESSION_ACTION_MENU_ITEM_HEIGHT: f32 = 26.0;
 const SESSION_ACTION_MENU_VERTICAL_CHROME: f32 = 8.0;
 const SESSION_ACTION_MENU_MARGIN: f32 = 4.0;
@@ -386,6 +394,11 @@ enum ProjectDialog {
         submitting: bool,
         error: Option<String>,
     },
+    RemoveWorktree {
+        target: WorktreeRemoveTarget,
+        submitting: bool,
+        error: Option<String>,
+    },
 }
 
 impl ProjectDialog {
@@ -393,7 +406,7 @@ impl ProjectDialog {
         match self {
             Self::Add { .. } => Some(KwtProjectAction::Add),
             Self::Remove { .. } => Some(KwtProjectAction::Remove),
-            Self::NewWorktree { .. } => None,
+            Self::NewWorktree { .. } | Self::RemoveWorktree { .. } => None,
         }
     }
 }
@@ -993,6 +1006,22 @@ impl RootView {
         cx.notify();
     }
 
+    fn open_remove_worktree(
+        &mut self,
+        target: WorktreeRemoveTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_dialog = Some(ProjectDialog::RemoveWorktree {
+            target,
+            submitting: false,
+            error: None,
+        });
+        self.diagnostic = None;
+        window.focus(&self.project_focus);
+        cx.notify();
+    }
+
     fn cancel_project_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .project_dialog
@@ -1000,7 +1029,8 @@ impl RootView {
             .is_some_and(|dialog| match dialog {
                 ProjectDialog::Add { submitting, .. }
                 | ProjectDialog::Remove { submitting, .. }
-                | ProjectDialog::NewWorktree { submitting, .. } => *submitting,
+                | ProjectDialog::NewWorktree { submitting, .. }
+                | ProjectDialog::RemoveWorktree { submitting, .. } => *submitting,
             })
         {
             return;
@@ -1017,11 +1047,16 @@ impl RootView {
         let error = match dialog {
             ProjectDialog::Add { error, .. }
             | ProjectDialog::Remove { error, .. }
-            | ProjectDialog::NewWorktree { error, .. } => error,
+            | ProjectDialog::NewWorktree { error, .. }
+            | ProjectDialog::RemoveWorktree { error, .. } => error,
         };
         *error = Some(message.into());
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "dialog submission keeps one exhaustive mapping from UI state to workspace capabilities"
+    )]
     fn submit_project_dialog(&mut self, cx: &mut Context<Self>) {
         if self
             .project_dialog
@@ -1089,6 +1124,30 @@ impl RootView {
                     exact.is_empty(),
                 )
             }
+            Some(ProjectDialog::RemoveWorktree {
+                target,
+                submitting: false,
+                ..
+            }) => {
+                let Some(generation) = target.open.generation.as_deref() else {
+                    self.set_project_dialog_error(
+                        "Refresh KWT inventory before removing this worktree.",
+                    );
+                    cx.notify();
+                    return;
+                };
+                self.workspace.remove_kwt_worktree(
+                    &target.open.host_id,
+                    &target.open.endpoint,
+                    &target.open.repository,
+                    &target.open.project_path,
+                    &target.open.registration_fingerprint,
+                    &target.open.worktree_path,
+                    generation,
+                    &target.open.session_name,
+                    target.session_was_running,
+                )
+            }
             _ => return,
         };
         match result {
@@ -1102,6 +1161,9 @@ impl RootView {
                             submitting, error, ..
                         }
                         | ProjectDialog::NewWorktree {
+                            submitting, error, ..
+                        }
+                        | ProjectDialog::RemoveWorktree {
                             submitting, error, ..
                         } => {
                             *submitting = true;
@@ -1156,7 +1218,8 @@ impl RootView {
             }
             ProjectDialog::Remove { .. }
             | ProjectDialog::Add { .. }
-            | ProjectDialog::NewWorktree { .. } => {
+            | ProjectDialog::NewWorktree { .. }
+            | ProjectDialog::RemoveWorktree { .. } => {
                 cx.stop_propagation();
                 return;
             }
@@ -1468,7 +1531,8 @@ impl RootView {
                                 *submitting = false;
                                 *error = Some(message);
                             }
-                            ProjectDialog::NewWorktree { .. } => {}
+                            ProjectDialog::NewWorktree { .. }
+                            | ProjectDialog::RemoveWorktree { .. } => {}
                         }
                     } else {
                         self.diagnostic = Some(message);
@@ -1523,6 +1587,23 @@ impl RootView {
                         self.paint_cache.clear();
                     }
                 }
+                WorkspaceEvent::KwtWorktreeRemoved {
+                    project_path,
+                    worktree_path,
+                } => {
+                    if self.project_dialog.as_ref().is_some_and(|dialog| {
+                        matches!(
+                            dialog,
+                            ProjectDialog::RemoveWorktree { target, .. }
+                                if target.open.project_path == project_path
+                                    && target.open.worktree_path == worktree_path
+                        )
+                    }) {
+                        self.project_dialog = None;
+                        self.restore_focus = true;
+                    }
+                    self.diagnostic = None;
+                }
                 WorkspaceEvent::KwtWorktreeCreationPending { message, .. } => {
                     self.project_dialog = None;
                     self.restore_focus = true;
@@ -1531,23 +1612,28 @@ impl RootView {
                 WorkspaceEvent::KwtWorktreeOperationFailed {
                     project_path,
                     message,
-                } => {
-                    if let Some(ProjectDialog::NewWorktree {
+                } => match &mut self.project_dialog {
+                    Some(ProjectDialog::NewWorktree {
                         project_path: dialog_path,
                         loading,
                         submitting,
                         error,
                         ..
-                    }) = &mut self.project_dialog
-                        && *dialog_path == project_path
-                    {
+                    }) if *dialog_path == project_path => {
                         *loading = false;
                         *submitting = false;
                         *error = Some(message);
-                    } else {
-                        self.diagnostic = Some(message);
                     }
-                }
+                    Some(ProjectDialog::RemoveWorktree {
+                        target,
+                        submitting,
+                        error,
+                    }) if target.open.project_path == project_path => {
+                        *submitting = false;
+                        *error = Some(message);
+                    }
+                    _ => self.diagnostic = Some(message),
+                },
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
             }
         }
@@ -2664,6 +2750,54 @@ impl RootView {
                     error.as_deref(),
                 )
             }
+            ProjectDialog::RemoveWorktree {
+                target,
+                submitting,
+                error,
+            } => {
+                let session_copy = if target.session_was_running {
+                    " Its live tmux session will be terminated first."
+                } else {
+                    ""
+                };
+                let body = div()
+                    .px_4()
+                    .py_4()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(rgb(0xb6_bcc7))
+                    .child(format!(
+                        "Remove “{}” from {}?{}",
+                        target.branch, target.project_name, session_copy
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x8f_96_a3))
+                            .child(target.open.worktree_path.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x8f_96_a3))
+                            .child("The Git branch will be kept."),
+                    )
+                    .into_any_element();
+                (
+                    "Remove Worktree".to_owned(),
+                    body,
+                    if *submitting {
+                        "Removing…"
+                    } else {
+                        "Remove Worktree"
+                    },
+                    *submitting,
+                    !*submitting,
+                    error.as_deref(),
+                )
+            }
         };
 
         Some(
@@ -3039,9 +3173,12 @@ impl RootView {
         action: SessionRowAction,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let (id, label, color) = match action {
+        let (id, label, color) = match &action {
             SessionRowAction::Detach => ("session-action-detach", "Detach", 0x87_b9e8),
             SessionRowAction::KillSession => ("session-action-kill", "Kill", 0xd6_747a),
+            SessionRowAction::RemoveWorktree(_) => {
+                ("worktree-action-remove", "Remove Worktree", 0xd6_747a)
+            }
             SessionRowAction::Herdr(HerdrRowAction::Stop) => {
                 ("herdr-action-stop", "Stop", 0xd6_747a)
             }
@@ -3067,9 +3204,12 @@ impl RootView {
             .child(label)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.session_action_menu = None;
-                match action {
+                match &action {
                     SessionRowAction::Detach => this.detach_session(window, cx),
                     SessionRowAction::KillSession => this.request_session_kill(&selection, cx),
+                    SessionRowAction::RemoveWorktree(target) => {
+                        this.open_remove_worktree(target.as_ref().clone(), window, cx);
+                    }
                     SessionRowAction::Herdr(HerdrRowAction::Stop) => this.request_herdr_lifecycle(
                         &selection,
                         workspace::HerdrLifecycleAction::Stop,
@@ -3633,6 +3773,27 @@ impl RootView {
                         host.connection(),
                         HostConnectionState::Disconnected | HostConnectionState::Unavailable
                     );
+                let open_target = WorktreeOpenTarget {
+                    host_id: host.id().to_owned(),
+                    endpoint: host.endpoint().to_owned(),
+                    repository: project.repository().to_owned(),
+                    project_path: project.path().to_owned(),
+                    registration_fingerprint: project.registration_fingerprint().to_owned(),
+                    worktree_path: worktree.path().to_owned(),
+                    generation: worktree.generation().map(str::to_owned),
+                    session_name: worktree.session_name().to_owned(),
+                };
+                let remove_target = (!worktree.is_main()
+                    && worktree.generation().is_some()
+                    && host.connection() == HostConnectionState::Ready
+                    && host.kwt_available()
+                    && host.kwt_diagnostic().is_none())
+                .then(|| WorktreeRemoveTarget {
+                    open: open_target.clone(),
+                    project_name: project.name().to_owned(),
+                    branch: worktree.branch().to_owned(),
+                    session_was_running: worktree.session_available(),
+                });
                 tree = tree.child(Self::worktree_row(
                     host_index,
                     project_index,
@@ -3642,16 +3803,8 @@ impl RootView {
                     is_active,
                     can_open,
                     can_kill,
-                    Some(WorktreeOpenTarget {
-                        host_id: host.id().to_owned(),
-                        endpoint: host.endpoint().to_owned(),
-                        repository: project.repository().to_owned(),
-                        project_path: project.path().to_owned(),
-                        registration_fingerprint: project.registration_fingerprint().to_owned(),
-                        worktree_path: worktree.path().to_owned(),
-                        generation: worktree.generation().map(str::to_owned),
-                        session_name: worktree.session_name().to_owned(),
-                    }),
+                    Some(open_target),
+                    remove_target,
                     cx,
                 ));
             }
@@ -3715,6 +3868,7 @@ impl RootView {
                 can_open,
                 can_kill,
                 None,
+                None,
                 cx,
             ));
         }
@@ -3732,6 +3886,7 @@ impl RootView {
         can_open: bool,
         can_kill: bool,
         worktree_target: Option<WorktreeOpenTarget>,
+        remove_target: Option<WorktreeRemoveTarget>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let row_group = format!("worktree-actions-{host_index}-{project_index}-{worktree_index}");
@@ -3772,7 +3927,10 @@ impl RootView {
                     .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
                     .child(label),
             );
-        let actions = tmux_row_actions(is_active, can_kill);
+        let mut actions = tmux_row_actions(is_active, can_kill);
+        if let Some(target) = remove_target {
+            actions.push(SessionRowAction::RemoveWorktree(Box::new(target)));
+        }
         if !actions.is_empty() {
             row = row.child(Self::session_action_menu_button(
                 host_index,
@@ -4396,10 +4554,11 @@ enum HerdrRowAction {
     Delete,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum SessionRowAction {
     Detach,
     KillSession,
+    RemoveWorktree(Box<WorktreeRemoveTarget>),
     Herdr(HerdrRowAction),
 }
 
@@ -6073,7 +6232,7 @@ mod tests {
     fn session_action_menus_open_upward_and_stay_inside_the_viewport() {
         let (left, top) = session_action_menu_position(325.0, 695.0, 1_100.0, 720.0, 4);
 
-        assert!((left - 213.0).abs() <= f32::EPSILON);
+        assert!((left - 177.0).abs() <= f32::EPSILON);
         assert!((top - 580.0).abs() <= f32::EPSILON);
         assert!(top + 112.0 <= 716.0);
 

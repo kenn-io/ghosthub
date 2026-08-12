@@ -1232,6 +1232,66 @@ impl<R: CommandRunner> WslHost<R> {
         }
     }
 
+    /// Remove one exact KWT worktree while preserving its Git branch.
+    ///
+    /// KWT owns the filesystem and registry mutation. The expected generation
+    /// prevents a stale inventory row from removing a replacement checkout at
+    /// the same path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the WSL runtime changed, helper verification
+    /// fails, or KWT rejects the exact path/generation pair.
+    pub fn remove_kwt_worktree(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        project_path: &str,
+        worktree_path: &str,
+        generation: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_kwt_in_directory(
+            endpoint,
+            &helper,
+            project_path,
+            &["remove", "--if-generation", generation, worktree_path],
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        if output.status == 0 {
+            Ok(())
+        } else {
+            Err(HostError::new(
+                if output.status == 127 {
+                    DiagnosticKind::ExecutableNotFound
+                } else {
+                    DiagnosticKind::Transport
+                },
+                parse_command_failure(&output.stdout).map_or_else(
+                    || {
+                        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                        if detail.is_empty() {
+                            "KWT could not remove the worktree".to_owned()
+                        } else {
+                            detail
+                        }
+                    },
+                    |failure| friendly_kwt_failure(&failure),
+                ),
+            ))
+        }
+    }
+
     fn run_kwt_in_directory(
         &self,
         endpoint: &WslEndpoint,
@@ -1912,6 +1972,30 @@ impl<R: CommandRunner> WslHost<R> {
             name: session.name().to_owned(),
             identity: session.identity().clone(),
         })
+    }
+
+    /// Check whether one exact tmux session name is currently present.
+    ///
+    /// The WSL runtime is checked on both sides so a restart cannot turn an
+    /// absence observation into authority over a replacement environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified discovery or runtime error.
+    pub fn session_is_running(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, HostError> {
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        let running = self
+            .discover_sessions(endpoint, cancellation)?
+            .iter()
+            .any(|session| session.name() == name);
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        Ok(running)
     }
 
     /// Kill the exact session identity captured immediately before user
@@ -4198,8 +4282,10 @@ mod tests {
                 br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["branches", "--json"]) {
                 br#"[{"name":"feature/ready","label":"feature/ready","source":"origin/feature/ready","is_current":false,"is_remote":true,"last_commit":{"hash":"abc","message":"ready","author":"A","date":"2026-01-01T00:00:00Z"}}]"#.to_vec()
-            } else if args.iter().any(|argument| argument == "add")
-                && args.iter().any(|argument| argument == "--no-launch")
+            } else if (args.iter().any(|argument| argument == "add")
+                && args.iter().any(|argument| argument == "--no-launch"))
+                || (args.iter().any(|argument| argument == "remove")
+                    && args.iter().any(|argument| argument == "--if-generation"))
             {
                 Vec::new()
             } else if args.iter().any(|argument| argument == "projects") {
@@ -4372,6 +4458,15 @@ mod tests {
             &cancellation,
         )
         .expect("create existing remote branch worktree");
+        host.remove_kwt_worktree(
+            &endpoint,
+            &runtime,
+            "/code/widget",
+            "/work/widget/feature-ready",
+            "0123456789abcdef0123456789abcdef",
+            &cancellation,
+        )
+        .expect("remove exact worktree while preserving its branch");
 
         let calls = runner.calls.lock().expect("calls");
         assert!(calls.iter().any(|args| {
@@ -4387,6 +4482,16 @@ mod tests {
                 "origin/feature/ready".to_owned(),
                 "feature/ready".to_owned(),
                 "--no-launch".to_owned(),
+            ]) && args
+                .windows(2)
+                .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "remove".to_owned(),
+                "--if-generation".to_owned(),
+                "0123456789abcdef0123456789abcdef".to_owned(),
+                "/work/widget/feature-ready".to_owned(),
             ]) && args
                 .windows(2)
                 .any(|pair| pair == ["--chdir", "/code/widget"])
