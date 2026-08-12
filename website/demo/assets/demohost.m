@@ -210,38 +210,6 @@ static BOOL DemoPressLabel(id element, NSString *label, NSUInteger depth) {
   return DemoPressLabelWalk(element, label, depth, &budget);
 }
 
-static NSPopUpButton *DemoFindPopUpButtonWithItem(
-    NSView *view, NSString *itemTitle) {
-  if ([view isKindOfClass:[NSPopUpButton class]]) {
-    NSPopUpButton *button = (NSPopUpButton *)view;
-    if ([button itemWithTitle:itemTitle] != nil) return button;
-  }
-  for (NSView *subview in view.subviews) {
-    NSPopUpButton *match = DemoFindPopUpButtonWithItem(subview, itemTitle);
-    if (match != nil) return match;
-  }
-  return nil;
-}
-
-static BOOL DemoSelectPopUpItem(NSWindow *window, NSString *itemTitle) {
-  NSPopUpButton *button = window == nil
-      ? nil
-      : DemoFindPopUpButtonWithItem(window.contentView, itemTitle);
-  if (button == nil || !button.enabled) return NO;
-  [button selectItemWithTitle:itemTitle];
-  return [button sendAction:button.action to:button.target];
-}
-
-static BOOL DemoPressLabelInAnyWindow(NSString *label) {
-  NSWindow *eventWindow = DemoEventWindow();
-  if (DemoPressLabel(eventWindow.contentView, label, 0)) return YES;
-  for (NSWindow *window in NSApp.windows) {
-    if (window == eventWindow) continue;
-    if (DemoPressLabel(window.contentView, label, 0)) return YES;
-  }
-  return DemoPressLabel(NSApp, label, 0);
-}
-
 static BOOL DemoContainsTextWalk(id element, NSString *text,
                                  NSUInteger depth, NSUInteger *budget) {
   if (element == nil || depth > 20 || *budget == 0) return NO;
@@ -608,31 +576,6 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                             });
                       });
                 });
-          });
-    } else if ([action isEqualToString:@"session-preview-live"]) {
-      BOOL selected = DemoSelectPopUpItem(DemoEventWindow(), @"Live");
-      if (selected) {
-        [self acknowledge:requestID
-                  success:YES
-                  message:@"Live session previews selected"];
-        return;
-      }
-      BOOL opened = DemoPressLabel(
-          DemoEventWindow().contentView, @"Session previews", 0);
-      if (!opened) {
-        [self acknowledge:requestID
-                  success:NO
-                  message:@"Session previews picker was not available"];
-        return;
-      }
-      dispatch_after(
-          dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
-          dispatch_get_main_queue(), ^{
-            BOOL pressed = DemoPressLabelInAnyWindow(@"Live");
-            [self acknowledge:requestID
-                      success:pressed
-                      message:pressed ? @"Live session previews selected"
-                                      : @"Live preview option was not available"];
           });
     } else if ([action isEqualToString:@"text"]) {
       BOOL inserted = DemoInsertText(text);

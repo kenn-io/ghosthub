@@ -293,17 +293,16 @@ demo_input click "32,489"
 sleep 0.5
 
 echo "==> guide: opened tmux session previews"
-palette "Open Terminal Settings" true sheet
-sleep 1
-demo_input session-preview-live
-dismiss_sheet
 palette "add-session-filters"
 sleep 3
 palette "scratch"
 sleep 3
 palette "add-session-filters"
 sleep 3
-demo_input press "Show session preview for scratch"
+# The demo window is fixed at 1600x1000. SwiftUI does not expose this
+# disclosure button to the injected accessibility tree, so click the stable
+# scratch-row chevron in window coordinates.
+demo_input click "31,746"
 sleep 5
 capture_state guide-session-previews.png
 
