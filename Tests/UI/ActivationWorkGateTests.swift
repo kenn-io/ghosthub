@@ -20,16 +20,19 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct ActivationWorkGateTests {
-    /// Budgets are a ratchet at 2x the measured baseline: 10 switches cost
-    /// 20 root body evaluations (one per window per switch) and 40 sidebar
-    /// section computations (two call sites per root evaluation until the
-    /// sections result is memoized; kata 4rqt). Lower the budgets when
-    /// render work shrinks; never raise them without profiling why the
-    /// work grew.
+    /// Budgets are a ratchet at the measured baseline plus 30%: 10 switches
+    /// cost exactly 20 root body evaluations (one per window per switch)
+    /// and 40 sidebar section computations (two call sites per root
+    /// evaluation until the sections result is memoized; kata 4rqt). The
+    /// headroom absorbs a stray framework re-evaluation, while any new
+    /// per-switch invalidation source adds at least one root evaluation
+    /// per switch (+10 and +20 here) and trips the gate. Lower the budgets
+    /// when render work shrinks; never raise them without profiling why
+    /// the work grew.
     private enum Budget {
         static let switches = 10
-        static let rootBodyEvaluations = 40
-        static let sidebarSectionComputations = 80
+        static let rootBodyEvaluations = 26
+        static let sidebarSectionComputations = 52
     }
 
     @Test("key-window switching stays within the render work budget")
