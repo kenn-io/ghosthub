@@ -818,6 +818,7 @@ pub enum WorkspaceEvent {
         message: String,
     },
     KwtBranchesLoaded {
+        operation_id: u64,
         project_path: String,
         branches: Vec<KwtBranchItem>,
     },
@@ -832,6 +833,7 @@ pub enum WorkspaceEvent {
         navigation_generation: u64,
     },
     KwtWorktreeRemoved {
+        operation_id: u64,
         project_path: String,
         worktree_path: String,
     },
@@ -841,7 +843,9 @@ pub enum WorkspaceEvent {
         navigation_generation: u64,
     },
     KwtWorktreeOperationFailed {
+        operation_id: u64,
         project_path: String,
+        worktree_path: Option<String>,
         message: String,
     },
     Error(String),
@@ -2702,7 +2706,7 @@ impl Workspace {
         repository: &str,
         project_path: &str,
         registration_fingerprint: &str,
-    ) -> Result<(), WorkspaceError> {
+    ) -> Result<u64, WorkspaceError> {
         self.start_kwt_worktree_operation(
             host_id,
             endpoint,
@@ -2738,7 +2742,7 @@ impl Workspace {
             return Err(WorkspaceError::new("Enter a valid Git branch name."));
         }
         let navigation_generation = self.begin_navigation();
-        self.start_kwt_worktree_operation(
+        let operation_id = self.start_kwt_worktree_operation(
             host_id,
             endpoint,
             repository,
@@ -2751,6 +2755,7 @@ impl Workspace {
                 navigation_generation,
             },
         )?;
+        debug_assert_eq!(operation_id, navigation_generation);
         Ok(navigation_generation)
     }
 
@@ -2772,7 +2777,7 @@ impl Workspace {
         worktree_path: &str,
         generation: &str,
         session_name: &str,
-    ) -> Result<(), WorkspaceError> {
+    ) -> Result<u64, WorkspaceError> {
         if !is_canonical_kwt_generation(generation) {
             return Err(WorkspaceError::new(
                 "Refresh KWT inventory before removing this worktree.",
@@ -2789,16 +2794,18 @@ impl Workspace {
             generation,
             session_name,
         )?;
+        let mut pending = self
+            .inner
+            .pending_kwt_removal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let authority = self
             .inner
             .kwt_removal_generation
             .fetch_add(1, Ordering::AcqRel)
             + 1;
-        self.inner
-            .pending_kwt_removal
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        pending.take();
+        drop(pending);
         let capture = KwtRemovalCapture {
             host,
             authority,
@@ -2819,18 +2826,19 @@ impl Workspace {
                 Box::new(move || capture_kwt_removal_authority(&inner, capture)),
             )
             .map_err(|error| WorkspaceError::new(format!("verify worktree session: {error}")))?;
-        Ok(())
+        Ok(authority)
     }
 
     pub fn cancel_kwt_worktree_removal(&self) {
+        let mut pending = self
+            .inner
+            .pending_kwt_removal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.inner
             .kwt_removal_generation
             .fetch_add(1, Ordering::AcqRel);
-        self.inner
-            .pending_kwt_removal
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        pending.take();
     }
 
     /// Remove one exact non-main KWT worktree while preserving its Git branch.
@@ -2884,8 +2892,10 @@ impl Workspace {
                 generation: generation.to_owned(),
                 session_name: session_name.to_owned(),
                 live_target: pending.live_target,
+                operation_id: authority,
             },
         )
+        .map(|_| ())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2897,7 +2907,7 @@ impl Workspace {
         project_path: &str,
         registration_fingerprint: &str,
         operation: KwtWorktreeOperation,
-    ) -> Result<(), WorkspaceError> {
+    ) -> Result<u64, WorkspaceError> {
         let task = reserve_kwt_worktree_operation(
             &self.inner,
             host_id,
@@ -2907,6 +2917,7 @@ impl Workspace {
             registration_fingerprint,
             operation,
         )?;
+        let operation_id = task.operation_id;
         let task_inner = Arc::clone(&self.inner);
         if let Err(error) = self.inner.refresh_runtime.spawn(
             "ghosthub-kwt-worktree-operation",
@@ -2917,7 +2928,7 @@ impl Workspace {
                 "start KWT worktree operation: {error}"
             )));
         }
-        Ok(())
+        Ok(operation_id)
     }
 
     fn start_kwt_project_mutation(
@@ -6265,6 +6276,7 @@ enum KwtWorktreeOperation {
         generation: String,
         session_name: String,
         live_target: Option<Arc<host::LiveSessionTarget>>,
+        operation_id: u64,
     },
 }
 
@@ -6274,6 +6286,7 @@ struct KwtWorktreeTask {
     runtime: host::WslRuntimeIdentity,
     cancellation: CancellationToken,
     generation: u64,
+    operation_id: u64,
     repository: String,
     project_path: String,
     registration_fingerprint: String,
@@ -6338,23 +6351,23 @@ fn capture_kwt_removal_authority(inner: &Inner, capture: KwtRemovalCapture) {
         ) {
             Ok(target) => Some(Arc::new(target)),
             Err(error) => {
-                push_operation_event(
+                publish_kwt_removal_capture_failure(
                     inner,
-                    WorkspaceEvent::KwtWorktreeOperationFailed {
-                        project_path: capture.project_path,
-                        message: error.to_string(),
-                    },
+                    capture.authority,
+                    &capture.project_path,
+                    &capture.worktree_path,
+                    error.to_string(),
                 );
                 return;
             }
         },
         Err(error) => {
-            push_operation_event(
+            publish_kwt_removal_capture_failure(
                 inner,
-                WorkspaceEvent::KwtWorktreeOperationFailed {
-                    project_path: capture.project_path,
-                    message: error.to_string(),
-                },
+                capture.authority,
+                &capture.project_path,
+                &capture.worktree_path,
+                error.to_string(),
             );
             return;
         }
@@ -6388,6 +6401,31 @@ fn capture_kwt_removal_authority(inner: &Inner, capture: KwtRemovalCapture) {
             worktree_path,
             authority: capture.authority,
             session_was_running,
+        },
+    );
+}
+
+fn publish_kwt_removal_capture_failure(
+    inner: &Inner,
+    authority: u64,
+    project_path: &str,
+    worktree_path: &str,
+    message: String,
+) {
+    let _pending = inner
+        .pending_kwt_removal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.kwt_removal_generation.load(Ordering::Acquire) != authority {
+        return;
+    }
+    push_operation_event(
+        inner,
+        WorkspaceEvent::KwtWorktreeOperationFailed {
+            operation_id: authority,
+            project_path: project_path.to_owned(),
+            worktree_path: Some(worktree_path.to_owned()),
+            message,
         },
     );
 }
@@ -6603,12 +6641,21 @@ fn reserve_kwt_worktree_operation(
             }
             generation
         };
+        let operation_id = match &operation {
+            KwtWorktreeOperation::Branches => generation,
+            KwtWorktreeOperation::Create {
+                navigation_generation,
+                ..
+            } => *navigation_generation,
+            KwtWorktreeOperation::Remove { operation_id, .. } => *operation_id,
+        };
         Ok(KwtWorktreeTask {
             host,
             endpoint: resolved_endpoint,
             runtime,
             cancellation,
             generation,
+            operation_id,
             repository: repository.to_owned(),
             project_path: project_path.to_owned(),
             registration_fingerprint: registration_fingerprint.to_owned(),
@@ -6670,6 +6717,7 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
                 Ok(branches) => push_operation_event(
                     inner,
                     WorkspaceEvent::KwtBranchesLoaded {
+                        operation_id: task.operation_id,
                         project_path: task.project_path.clone(),
                         branches: branches
                             .into_iter()
@@ -6686,7 +6734,9 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
                 Err(error) => push_operation_event(
                     inner,
                     WorkspaceEvent::KwtWorktreeOperationFailed {
+                        operation_id: task.operation_id,
                         project_path: task.project_path.clone(),
+                        worktree_path: None,
                         message: error.to_string(),
                     },
                 ),
@@ -6715,6 +6765,7 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
             generation,
             session_name,
             live_target,
+            ..
         } => run_kwt_worktree_remove(
             inner,
             task,
@@ -6934,6 +6985,7 @@ fn reconcile_removed_kwt_worktree(
             push_operation_event(
                 inner,
                 WorkspaceEvent::KwtWorktreeRemoved {
+                    operation_id: task.operation_id,
                     project_path: task.project_path.clone(),
                     worktree_path: worktree_path.to_owned(),
                 },
@@ -6945,6 +6997,7 @@ fn reconcile_removed_kwt_worktree(
             push_operation_event(
                 inner,
                 WorkspaceEvent::KwtWorktreeRemoved {
+                    operation_id: task.operation_id,
                     project_path: task.project_path.clone(),
                     worktree_path: worktree_path.to_owned(),
                 },
@@ -6962,6 +7015,7 @@ fn reconcile_removed_kwt_worktree(
             push_operation_event(
                 inner,
                 WorkspaceEvent::KwtWorktreeRemoved {
+                    operation_id: task.operation_id,
                     project_path: task.project_path.clone(),
                     worktree_path: worktree_path.to_owned(),
                 },
@@ -6976,7 +7030,12 @@ fn fail_kwt_worktree_remove(inner: &Arc<Inner>, task: &KwtWorktreeTask, message:
     push_operation_event(
         inner,
         WorkspaceEvent::KwtWorktreeOperationFailed {
+            operation_id: task.operation_id,
             project_path: task.project_path.clone(),
+            worktree_path: match &task.operation {
+                KwtWorktreeOperation::Remove { worktree_path, .. } => Some(worktree_path.clone()),
+                KwtWorktreeOperation::Branches | KwtWorktreeOperation::Create { .. } => None,
+            },
             message,
         },
     );
@@ -7014,7 +7073,9 @@ fn run_kwt_worktree_create(
             push_operation_event(
                 inner,
                 WorkspaceEvent::KwtWorktreeOperationFailed {
+                    operation_id: task.operation_id,
                     project_path: task.project_path.clone(),
+                    worktree_path: None,
                     message: error.to_string(),
                 },
             );
@@ -8733,7 +8794,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
         return;
     }
     match attach_fresh(inner, request, term) {
-        Ok((worker, snapshot, attached_session, initial_geometry)) => {
+        Ok((worker, snapshot, attached_session, initial_geometry, attached_term)) => {
             let _snapshot_write = begin_snapshot_write(inner);
             let mut attachment = inner
                 .attachment
@@ -8745,6 +8806,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             }
             if let Some(active) = attachment.active_mut() {
                 normalize_attached_worktree_target(active, &snapshot, &attached_session);
+                active.term = attached_term;
             }
             let surface = worker.surface_handle();
             let endpoint = snapshot.endpoint().distro().to_owned();
@@ -8781,7 +8843,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                 restore_attach_fallback(inner, fallback);
                 return;
             }
-            set_terminal_notice(inner, term);
+            set_terminal_notice(inner, attached_term);
             let presentation_id = next_presentation_id(inner);
             set_inner_state(
                 inner,
@@ -9380,7 +9442,7 @@ fn reopen_closed_retained_presentation(
     mut closed: ClosedRetainedPresentation,
 ) -> Result<RetainedPresentation<TerminalWorker>, WorkspaceError> {
     let term = closed.attachment.term;
-    let (worker, _snapshot, attached_name, initial_geometry) =
+    let (worker, _snapshot, attached_name, initial_geometry, attached_term) =
         attach_fresh(inner, &closed.attachment.request, term).map_err(|error| match error {
             AttachFreshError::Host(error) | AttachFreshError::SessionChanged { error, .. } => error,
         })?;
@@ -9398,6 +9460,7 @@ fn reopen_closed_retained_presentation(
             .map_err(|error| WorkspaceError::from_worker(&error))?;
     }
     attached_name.clone_into(&mut closed.attachment.request.name);
+    closed.attachment.term = attached_term;
     let selection = closed.attachment.request.selection();
     worker.set_clipboard_writes_enabled(false);
     Ok(RetainedPresentation {
@@ -9430,9 +9493,18 @@ fn attach_fresh(
     inner: &Inner,
     request: &AttachRequest,
     term: AttachTerm,
-) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), AttachFreshError> {
+) -> Result<
+    (
+        TerminalWorker,
+        HostSnapshot,
+        String,
+        TerminalGeometry,
+        AttachTerm,
+    ),
+    AttachFreshError,
+> {
     let fresh = discover_fresh_runtime(request)?;
-    match &request.target {
+    let (worker, snapshot, name, geometry, actual_term) = match &request.target {
         AttachTarget::Tmux(identity) => {
             let session = fresh
                 .sessions()
@@ -9455,7 +9527,9 @@ fn attach_fresh(
                     snapshot: Box::new(fresh),
                 });
             }
-            launch_fresh_tmux(inner, request, term, &fresh, &session)
+            let (worker, snapshot, name, geometry) =
+                launch_fresh_tmux(inner, request, term, &fresh, &session)?;
+            (worker, snapshot, name, geometry, term)
         }
         AttachTarget::Worktree {
             repository,
@@ -9477,7 +9551,7 @@ fn attach_fresh(
                 })?,
                 session_name,
             );
-            launch_fresh_worktree(inner, request, term, &fresh, &open, &cancellation)
+            launch_fresh_worktree(inner, request, term, &fresh, &open, &cancellation)?
         }
         AttachTarget::Herdr { .. } => {
             let Some(session) = fresh_herdr_session(&fresh, &request.target) else {
@@ -9488,7 +9562,9 @@ fn attach_fresh(
                     snapshot: Box::new(fresh),
                 });
             };
-            launch_fresh_herdr(inner, request, term, &fresh, &session)
+            let (worker, snapshot, name, geometry) =
+                launch_fresh_herdr(inner, request, term, &fresh, &session)?;
+            (worker, snapshot, name, geometry, term)
         }
         AttachTarget::Zellij { executable, name } => {
             let ZellijInventory::Available {
@@ -9513,9 +9589,12 @@ fn attach_fresh(
                     snapshot: Box::new(fresh),
                 });
             };
-            launch_fresh_zellij(inner, request, term, &fresh, &session)
+            let (worker, snapshot, name, geometry) =
+                launch_fresh_zellij(inner, request, term, &fresh, &session)?;
+            (worker, snapshot, name, geometry, term)
         }
-    }
+    };
+    Ok((worker, snapshot, name, geometry, actual_term))
 }
 
 fn attach_fresh_retained(
@@ -9575,14 +9654,15 @@ fn attach_fresh_retained(
                 })?,
                 session_name,
             );
-            launch_fresh_worktree(
+            let (worker, snapshot, name, geometry, _actual_term) = launch_fresh_worktree(
                 inner,
                 &resolved_request,
                 AttachTerm::Xterm,
                 &fresh,
                 &open,
                 &cancellation,
-            )?
+            )?;
+            (worker, snapshot, name, geometry)
         }
         AttachTarget::Herdr { .. } => {
             let session = fresh_herdr_session(&fresh, &retry.key.target)
@@ -9771,11 +9851,62 @@ fn launch_fresh_worktree(
     fresh: &HostSnapshot,
     open: &host::KwtWorktreeOpen,
     cancellation: &CancellationToken,
-) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), AttachFreshError> {
+) -> Result<
+    (
+        TerminalWorker,
+        HostSnapshot,
+        String,
+        TerminalGeometry,
+        AttachTerm,
+    ),
+    AttachFreshError,
+> {
+    match launch_fresh_worktree_once(inner, request, term, fresh, open, cancellation) {
+        Ok((worker, snapshot, name, geometry)) => Ok((worker, snapshot, name, geometry, term)),
+        Err(WorktreeLaunchError::RetryWithXterm) if term == AttachTerm::Xterm256Color => {
+            let (worker, snapshot, name, geometry) = launch_fresh_worktree_once(
+                inner,
+                request,
+                AttachTerm::Xterm,
+                fresh,
+                open,
+                cancellation,
+            )
+            .map_err(WorktreeLaunchError::into_attach_error)?;
+            Ok((worker, snapshot, name, geometry, AttachTerm::Xterm))
+        }
+        Err(error) => Err(error.into_attach_error()),
+    }
+}
+
+enum WorktreeLaunchError {
+    RetryWithXterm,
+    Attach(AttachFreshError),
+}
+
+impl WorktreeLaunchError {
+    fn into_attach_error(self) -> AttachFreshError {
+        match self {
+            Self::RetryWithXterm => AttachFreshError::Host(WorkspaceError::new(
+                "KWT worktree client could not use the selected terminal type",
+            )),
+            Self::Attach(error) => error,
+        }
+    }
+}
+
+fn launch_fresh_worktree_once(
+    inner: &Inner,
+    request: &AttachRequest,
+    term: AttachTerm,
+    fresh: &HostSnapshot,
+    open: &host::KwtWorktreeOpen,
+    cancellation: &CancellationToken,
+) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), WorktreeLaunchError> {
     let plan = request
         .host
         .kwt_repair_or_open_plan(fresh.endpoint(), fresh.runtime(), open, term, cancellation)
-        .map_err(|error| kwt_attachment_failure(fresh, error))?;
+        .map_err(|error| WorktreeLaunchError::Attach(kwt_attachment_failure(fresh, error)))?;
     let geometry = *inner
         .terminal_geometry
         .lock()
@@ -9788,16 +9919,25 @@ fn launch_fresh_worktree(
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
         default_colors(&inner.appearance),
     )
-    .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
+    .map_err(|error| {
+        WorktreeLaunchError::Attach(AttachFreshError::Host(WorkspaceError::new(
+            error.to_string(),
+        )))
+    })?;
     if let Err(error) =
-        wait_for_worktree_client_startup(cancellation, &HERDR_STARTUP_BACKOFF, || {
+        wait_for_worktree_client_startup(term, cancellation, &HERDR_STARTUP_BACKOFF, || {
             worker
                 .startup_status()
                 .map_err(|error| WorkspaceError::new(error.to_string()))
         })
     {
         drop(worker);
-        return Err(kwt_attachment_failure(fresh, error));
+        return Err(match error {
+            WorktreeClientStartupError::RetryWithXterm => WorktreeLaunchError::RetryWithXterm,
+            WorktreeClientStartupError::Failed(error) => {
+                WorktreeLaunchError::Attach(kwt_attachment_failure(fresh, error))
+            }
+        });
     }
     let discovered = poll_session_startup("tmux", cancellation, &HERDR_STARTUP_BACKOFF, || {
         let snapshot = request
@@ -9815,55 +9955,81 @@ fn launch_fresh_worktree(
             .any(|session| session.name() == open.session_name())
             .then_some(snapshot))
     })
-    .map_err(AttachFreshError::Host)?;
+    .map_err(|error| WorktreeLaunchError::Attach(AttachFreshError::Host(error)))?;
     let Some(discovered) = discovered else {
         drop(worker);
-        return Err(kwt_attachment_failure(
+        return Err(WorktreeLaunchError::Attach(kwt_attachment_failure(
             fresh,
             "KWT attached its client, but the worktree session did not appear in inventory",
-        ));
+        )));
     };
     Ok((worker, discovered, plan.target_name().to_owned(), geometry))
 }
 
+#[derive(Debug)]
+enum WorktreeClientStartupError {
+    RetryWithXterm,
+    Failed(WorkspaceError),
+}
+
 fn wait_for_worktree_client_startup(
+    term: AttachTerm,
     cancellation: &CancellationToken,
     backoff: &[Duration],
     mut observe: impl FnMut() -> Result<TerminalStartup, WorkspaceError>,
-) -> Result<(), WorkspaceError> {
+) -> Result<(), WorktreeClientStartupError> {
     for delay in backoff {
-        match observe()? {
+        match observe().map_err(WorktreeClientStartupError::Failed)? {
             TerminalStartup::Confirmed => return Ok(()),
             TerminalStartup::Exited { code, output_tail } => {
-                return Err(WorkspaceError::new(format!(
-                    "KWT could not open the worktree: {}",
-                    classify_kwt_client_exit(code, &output_tail)
-                )));
+                return classify_kwt_startup_exit(code, &output_tail, term);
             }
             TerminalStartup::Failed(error) => {
-                return Err(WorkspaceError::new(format!(
-                    "KWT could not open the worktree: {error}"
+                return Err(WorktreeClientStartupError::Failed(WorkspaceError::new(
+                    format!("KWT could not open the worktree: {error}"),
                 )));
             }
             TerminalStartup::Pending => {}
         }
         if cancellation.wait_cancelled(*delay) {
-            return Err(WorkspaceError::new("KWT worktree startup was cancelled"));
+            return Err(WorktreeClientStartupError::Failed(WorkspaceError::new(
+                "KWT worktree startup was cancelled",
+            )));
         }
     }
-    match observe()? {
+    match observe().map_err(WorktreeClientStartupError::Failed)? {
         TerminalStartup::Confirmed => Ok(()),
-        TerminalStartup::Exited { code, output_tail } => Err(WorkspaceError::new(format!(
-            "KWT could not open the worktree: {}",
-            classify_kwt_client_exit(code, &output_tail)
-        ))),
-        TerminalStartup::Failed(error) => Err(WorkspaceError::new(format!(
-            "KWT could not open the worktree: {error}"
-        ))),
-        TerminalStartup::Pending => Err(WorkspaceError::new(
-            "KWT worktree client did not establish an attached terminal",
+        TerminalStartup::Exited { code, output_tail } => {
+            classify_kwt_startup_exit(code, &output_tail, term)
+        }
+        TerminalStartup::Failed(error) => Err(WorktreeClientStartupError::Failed(
+            WorkspaceError::new(format!("KWT could not open the worktree: {error}")),
         )),
+        TerminalStartup::Pending => Err(WorktreeClientStartupError::Failed(WorkspaceError::new(
+            "KWT worktree client did not establish an attached terminal",
+        ))),
     }
+}
+
+fn classify_kwt_startup_exit(
+    code: u32,
+    output_tail: &str,
+    term: AttachTerm,
+) -> Result<(), WorktreeClientStartupError> {
+    if is_exact_terminfo_startup_failure(output_tail, term) && term == AttachTerm::Xterm256Color {
+        return Err(WorktreeClientStartupError::RetryWithXterm);
+    }
+    let message = if is_exact_terminfo_startup_failure(output_tail, term) {
+        "WSL does not provide usable xterm terminfo for terminal attachment".to_owned()
+    } else {
+        format!(
+            "KWT could not open the worktree: {}",
+            classify_kwt_client_exit(code, output_tail)
+        )
+    };
+    Err(WorktreeClientStartupError::Failed(WorkspaceError::new(
+        message,
+    )))
 }
 
 fn classify_kwt_client_exit(code: u32, output_tail: &str) -> String {
@@ -10574,6 +10740,7 @@ mod tests {
             generation: generation.to_owned(),
             session_name: session.to_owned(),
             live_target: None,
+            operation_id: 1,
         };
 
         assert!(
@@ -10793,6 +10960,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cancelled_removal_capture_cannot_publish_a_late_failure() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        workspace
+            .inner
+            .kwt_removal_generation
+            .store(2, Ordering::Release);
+
+        publish_kwt_removal_capture_failure(
+            &workspace.inner,
+            1,
+            "/code/widget",
+            "/work/widget/topic",
+            "stale failure".to_owned(),
+        );
+        assert!(workspace.drain_events().0.is_empty());
+
+        publish_kwt_removal_capture_failure(
+            &workspace.inner,
+            2,
+            "/code/widget",
+            "/work/widget/topic",
+            "current failure".to_owned(),
+        );
+        let (events, _) = workspace.drain_events();
+        assert!(matches!(
+            events.as_slice(),
+            [WorkspaceEvent::KwtWorktreeOperationFailed {
+                operation_id: 2,
+                project_path,
+                worktree_path: Some(worktree_path),
+                message,
+            }] if project_path == "/code/widget"
+                && worktree_path == "/work/widget/topic"
+                && message == "current failure"
+        ));
+    }
+
     #[cfg(windows)]
     #[test]
     fn kwt_attachment_failures_preserve_the_fresh_host_snapshot() {
@@ -10822,6 +11031,7 @@ mod tests {
         ]);
 
         let error = wait_for_worktree_client_startup(
+            AttachTerm::Xterm256Color,
             &cancellation,
             &[Duration::ZERO, Duration::ZERO],
             || {
@@ -10832,6 +11042,9 @@ mod tests {
         )
         .expect_err("guard rejection must prevent session publication");
 
+        let WorktreeClientStartupError::Failed(error) = error else {
+            panic!("a KWT guard rejection is not a terminfo fallback");
+        };
         assert!(error.to_string().contains("registration_changed"));
         assert!(observations.is_empty());
     }
@@ -10841,14 +11054,39 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut observations = 0;
 
-        let error = wait_for_worktree_client_startup(&cancellation, &[Duration::ZERO; 3], || {
-            observations += 1;
-            Ok(TerminalStartup::Pending)
-        })
+        let error = wait_for_worktree_client_startup(
+            AttachTerm::Xterm256Color,
+            &cancellation,
+            &[Duration::ZERO; 3],
+            || {
+                observations += 1;
+                Ok(TerminalStartup::Pending)
+            },
+        )
         .expect_err("a same-named session cannot prove client attachment");
 
         assert_eq!(observations, 4);
+        let WorktreeClientStartupError::Failed(error) = error else {
+            panic!("a pending client is not a terminfo fallback");
+        };
         assert!(error.to_string().contains("did not establish"));
+    }
+
+    #[test]
+    fn worktree_startup_retries_only_the_exact_initial_terminfo_failure() {
+        let cancellation = CancellationToken::new();
+        let error =
+            wait_for_worktree_client_startup(AttachTerm::Xterm256Color, &cancellation, &[], || {
+                Ok(TerminalStartup::Exited {
+                    code: 1,
+                    output_tail:
+                        "open terminal failed: missing or unsuitable terminal: xterm-256color\r\n"
+                            .to_owned(),
+                })
+            })
+            .expect_err("missing xterm-256color requests the conservative retry");
+
+        assert!(matches!(error, WorktreeClientStartupError::RetryWithXterm));
     }
     use std::collections::VecDeque;
     use std::sync::{Barrier, atomic::AtomicUsize, mpsc};

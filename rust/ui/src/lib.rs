@@ -340,6 +340,7 @@ struct WorktreeRemoveTarget {
     branch: String,
     session_was_running: bool,
     authority: Option<u64>,
+    operation_id: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -392,6 +393,7 @@ enum ProjectDialog {
         branch: String,
         selected_source: Option<String>,
         branches: Vec<workspace::KwtBranchItem>,
+        operation_id: Option<u64>,
         loading: bool,
         loaded: bool,
         submitting: bool,
@@ -411,6 +413,31 @@ impl ProjectDialog {
             Self::Remove { .. } => Some(KwtProjectAction::Remove),
             Self::NewWorktree { .. } | Self::RemoveWorktree { .. } => None,
         }
+    }
+}
+
+fn kwt_operation_failure_owns_dialog(
+    dialog: Option<&ProjectDialog>,
+    operation_id: u64,
+    project_path: &str,
+    worktree_path: Option<&str>,
+) -> bool {
+    match dialog {
+        Some(ProjectDialog::NewWorktree {
+            project_path: dialog_project,
+            operation_id: dialog_operation,
+            ..
+        }) => {
+            *dialog_operation == Some(operation_id)
+                && dialog_project == project_path
+                && worktree_path.is_none()
+        }
+        Some(ProjectDialog::RemoveWorktree { target, .. }) => {
+            target.operation_id == Some(operation_id)
+                && target.open.project_path == project_path
+                && worktree_path == Some(target.open.worktree_path.as_str())
+        }
+        Some(ProjectDialog::Add { .. } | ProjectDialog::Remove { .. }) | None => false,
     }
 }
 
@@ -1012,6 +1039,10 @@ impl RootView {
             project.path(),
             project.registration_fingerprint(),
         );
+        let (operation_id, error) = match result {
+            Ok(operation_id) => (Some(operation_id), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         self.project_dialog = Some(ProjectDialog::NewWorktree {
             host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
@@ -1022,10 +1053,11 @@ impl RootView {
             branch: String::new(),
             selected_source: None,
             branches: Vec::new(),
-            loading: result.is_ok(),
+            operation_id,
+            loading: operation_id.is_some(),
             loaded: false,
             submitting: false,
-            error: result.err().map(|error| error.to_string()),
+            error,
         });
         self.diagnostic = None;
         window.focus(&self.project_focus);
@@ -1063,10 +1095,15 @@ impl RootView {
             return;
         };
         target.authority = None;
+        let (operation_id, error) = match result {
+            Ok(operation_id) => (Some(operation_id), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        target.operation_id = operation_id;
         self.project_dialog = Some(ProjectDialog::RemoveWorktree {
             target,
             submitting: false,
-            error: result.err().map(|error| error.to_string()),
+            error,
         });
         self.diagnostic = None;
         window.focus(&self.project_focus);
@@ -1229,6 +1266,11 @@ impl RootView {
             Ok(navigation_generation) => {
                 if let Some(navigation_generation) = navigation_generation {
                     self.pending_worktree_navigation = Some(navigation_generation);
+                    if let Some(ProjectDialog::NewWorktree { operation_id, .. }) =
+                        &mut self.project_dialog
+                    {
+                        *operation_id = Some(navigation_generation);
+                    }
                 }
                 if let Some(dialog) = &mut self.project_dialog {
                     match dialog {
@@ -1619,11 +1661,13 @@ impl RootView {
                     }
                 }
                 WorkspaceEvent::KwtBranchesLoaded {
+                    operation_id,
                     project_path,
                     branches,
                 } => {
                     if let Some(ProjectDialog::NewWorktree {
                         project_path: dialog_path,
+                        operation_id: dialog_operation,
                         branches: dialog_branches,
                         loading,
                         loaded,
@@ -1631,6 +1675,7 @@ impl RootView {
                         ..
                     }) = &mut self.project_dialog
                         && *dialog_path == project_path
+                        && *dialog_operation == Some(operation_id)
                     {
                         *dialog_branches = branches;
                         *loading = false;
@@ -1651,6 +1696,7 @@ impl RootView {
                     }) = &mut self.project_dialog
                         && target.open.project_path == project_path
                         && target.open.worktree_path == worktree_path
+                        && target.operation_id == Some(authority)
                     {
                         target.authority = Some(authority);
                         target.session_was_running = session_was_running;
@@ -1715,6 +1761,7 @@ impl RootView {
                     }
                 }
                 WorkspaceEvent::KwtWorktreeRemoved {
+                    operation_id,
                     project_path,
                     worktree_path,
                 } => {
@@ -1724,6 +1771,7 @@ impl RootView {
                             ProjectDialog::RemoveWorktree { target, .. }
                                 if target.open.project_path == project_path
                                     && target.open.worktree_path == worktree_path
+                                    && target.operation_id == Some(operation_id)
                         )
                     }) {
                         self.project_dialog = None;
@@ -1753,32 +1801,52 @@ impl RootView {
                     self.diagnostic = Some(message);
                 }
                 WorkspaceEvent::KwtWorktreeOperationFailed {
+                    operation_id,
                     project_path,
+                    worktree_path,
                     message,
-                } => match &mut self.project_dialog {
-                    Some(ProjectDialog::NewWorktree {
-                        project_path: dialog_path,
-                        loading,
-                        loaded,
-                        submitting,
-                        error,
-                        ..
-                    }) if *dialog_path == project_path => {
-                        *loading = false;
-                        *loaded = false;
-                        *submitting = false;
-                        *error = Some(message);
+                } => {
+                    if !kwt_operation_failure_owns_dialog(
+                        self.project_dialog.as_ref(),
+                        operation_id,
+                        &project_path,
+                        worktree_path.as_deref(),
+                    ) {
+                        continue;
                     }
-                    Some(ProjectDialog::RemoveWorktree {
-                        target,
-                        submitting,
-                        error,
-                    }) if target.open.project_path == project_path => {
-                        *submitting = false;
-                        *error = Some(message);
+                    match &mut self.project_dialog {
+                        Some(ProjectDialog::NewWorktree {
+                            project_path: dialog_path,
+                            operation_id: dialog_operation,
+                            loading,
+                            loaded,
+                            submitting,
+                            error,
+                            ..
+                        }) if *dialog_path == project_path
+                            && *dialog_operation == Some(operation_id)
+                            && worktree_path.is_none() =>
+                        {
+                            *loading = false;
+                            *loaded = false;
+                            *submitting = false;
+                            *error = Some(message);
+                        }
+                        Some(ProjectDialog::RemoveWorktree {
+                            target,
+                            submitting,
+                            error,
+                        }) if target.open.project_path == project_path
+                            && target.operation_id == Some(operation_id)
+                            && worktree_path.as_deref()
+                                == Some(target.open.worktree_path.as_str()) =>
+                        {
+                            *submitting = false;
+                            *error = Some(message);
+                        }
+                        _ => {}
                     }
-                    _ => self.diagnostic = Some(message),
-                },
+                }
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
             }
         }
@@ -3943,6 +4011,7 @@ impl RootView {
                     branch: worktree.branch().to_owned(),
                     session_was_running: worktree.session_available(),
                     authority: None,
+                    operation_id: None,
                 });
                 tree = tree.child(Self::worktree_row(
                     host_index,
@@ -5886,18 +5955,20 @@ mod tests {
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
         NewSessionDraft, NewSessionKind, PendingUiInput, ProjectDialog, QueuedUiInput,
         SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
-        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
-        application_navigation_width, can_create_worktree, canonical_terminal_key_with,
-        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
-        coalesce_last_resize, coalesce_last_wheel, has_ambiguous_worktree_source,
-        herdr_row_actions, herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
+        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeOpenTarget,
+        WorktreeRemoveTarget, active_session_selection, application_navigation_width,
+        can_create_worktree, canonical_terminal_key_with, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
+        herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
         is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        named_key, new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_group_visibility, session_row_element_id,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
-        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, workspace_window_title,
+        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
+        owns_created_worktree_navigation, queued_input_matches_presentation,
+        retained_key_event_with, session_action_menu_position, session_backend_id,
+        session_group_visibility, session_row_element_id, terminal_cell_at_with_offset,
+        terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
+        terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
+        tree_sessions, tree_zellij_sessions, workspace_window_title,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -5924,6 +5995,7 @@ mod tests {
                 KwtBranchItem::new("topic", "topic", false),
                 KwtBranchItem::new("topic", "origin/topic", true),
             ],
+            operation_id: Some(1),
             loading: false,
             loaded: true,
             submitting: false,
@@ -5945,6 +6017,72 @@ mod tests {
         assert!(!can_create_worktree("feature/new", false, false, false));
         assert!(!can_create_worktree("feature/new", true, true, false));
         assert!(can_create_worktree("feature/new", true, false, false));
+    }
+
+    #[test]
+    fn worktree_failures_require_the_dialogs_exact_operation_and_target() {
+        let create = ProjectDialog::NewWorktree {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            repository: "github.com/acme/widget".to_owned(),
+            project_name: "widget".to_owned(),
+            project_path: "/code/widget".to_owned(),
+            registration_fingerprint: "registration".to_owned(),
+            branch: "topic".to_owned(),
+            selected_source: None,
+            branches: Vec::new(),
+            operation_id: Some(7),
+            loading: false,
+            loaded: true,
+            submitting: true,
+            error: None,
+        };
+        assert!(kwt_operation_failure_owns_dialog(
+            Some(&create),
+            7,
+            "/code/widget",
+            None,
+        ));
+        assert!(!kwt_operation_failure_owns_dialog(
+            Some(&create),
+            6,
+            "/code/widget",
+            None,
+        ));
+
+        let remove = ProjectDialog::RemoveWorktree {
+            target: WorktreeRemoveTarget {
+                open: WorktreeOpenTarget {
+                    host_id: "wsl".to_owned(),
+                    endpoint: "Ubuntu".to_owned(),
+                    repository: "github.com/acme/widget".to_owned(),
+                    project_path: "/code/widget".to_owned(),
+                    registration_fingerprint: "registration".to_owned(),
+                    worktree_path: "/work/widget/topic".to_owned(),
+                    generation: Some("11111111111111111111111111111111".to_owned()),
+                    session_name: "widget-topic".to_owned(),
+                },
+                project_name: "widget".to_owned(),
+                branch: "topic".to_owned(),
+                session_was_running: false,
+                authority: None,
+                operation_id: Some(9),
+            },
+            submitting: false,
+            error: None,
+        };
+        assert!(kwt_operation_failure_owns_dialog(
+            Some(&remove),
+            9,
+            "/code/widget",
+            Some("/work/widget/topic"),
+        ));
+        assert!(!kwt_operation_failure_owns_dialog(
+            Some(&remove),
+            9,
+            "/code/widget",
+            Some("/work/widget/other"),
+        ));
     }
 
     #[test]
