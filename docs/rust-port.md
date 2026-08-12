@@ -706,9 +706,12 @@ discovered unbound sessions remain strictly attach-only.
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound
 tmux group. Custom-socket worktrees remain visible as project inventory but do
-not claim a default-socket session with the same name. KWT rows carry display
-identity and exact session names; they do not acquire creation, repair, or
-destruction authority from cached inventory.
+not claim a default-socket session with the same name. Removal is unavailable
+for those worktrees until protected-socket discovery and identity-checked
+termination exist; deleting a checkout must never strand a session Ghosthub
+cannot currently observe. KWT rows carry display identity and exact session
+names; they do not acquire creation, repair, or destruction authority from
+cached inventory.
 
 The remote helper activation root is a separate cross-controller contract:
 

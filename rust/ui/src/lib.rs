@@ -3785,6 +3785,7 @@ impl RootView {
                 };
                 let remove_target = (!worktree.is_main()
                     && worktree.generation().is_some()
+                    && worktree.tmux_socket_name().is_none()
                     && host.connection() == HostConnectionState::Ready
                     && host.kwt_available()
                     && host.kwt_diagnostic().is_none())

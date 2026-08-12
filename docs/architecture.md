@@ -241,6 +241,9 @@ it in the unbound tmux group; custom-socket worktrees cannot claim a
 same-named default-socket session. When WSL config selects an explicit
 `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery and
 attachment; cached rows never correlate sessions across those server roots.
+Removing a worktree with its own `tmux_socket_name` is refused until that
+protected socket can be discovered and its live session terminated by fresh
+identity authority.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
