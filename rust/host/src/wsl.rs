@@ -1189,24 +1189,6 @@ impl<R: CommandRunner> WslHost<R> {
             )
         })?;
         let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
-        let projects = self.run_kwt(endpoint, &helper, &["projects", "--json"], cancellation)?;
-        let current: Vec<KwtProject> =
-            serde_json::from_slice(&projects.stdout).map_err(|error| {
-                HostError::new(
-                    DiagnosticKind::MalformedOutput,
-                    format!("KWT returned invalid project inventory before creation: {error}"),
-                )
-            })?;
-        if !current.iter().any(|project| {
-            project.path() == request.project_path()
-                && project.repository() == request.repository()
-                && project.registration_fingerprint() == request.registration_fingerprint()
-        }) {
-            return Err(HostError::new(
-                DiagnosticKind::MalformedOutput,
-                "The project registration changed. Refresh before creating a worktree.",
-            ));
-        }
         let mut command = vec!["add"];
         if request.creates_branch() {
             command.push("--branch");
@@ -1216,7 +1198,14 @@ impl<R: CommandRunner> WslHost<R> {
         {
             command.extend(["--from", source]);
         }
-        command.extend([request.branch(), "--no-launch"]);
+        command.extend([
+            request.branch(),
+            "--no-launch",
+            "--expected-repository",
+            request.repository(),
+            "--expected-registration",
+            request.registration_fingerprint(),
+        ]);
         self.require_runtime(endpoint, runtime, cancellation)?;
         let output = self.run_kwt_in_directory(
             endpoint,
@@ -4276,6 +4265,16 @@ mod tests {
                 .map(|argument| argument.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
             self.calls.lock().expect("calls").push(args.clone());
+            if args
+                .windows(2)
+                .any(|pair| pair == ["--expected-registration", "replacement-registration"])
+            {
+                return Ok(CommandOutput {
+                    status: 1,
+                    stdout: br#"{"error":{"code":"registration_changed","message":"the project registration changed before the operation began","retryable":true}}"#.to_vec(),
+                    stderr: Vec::new(),
+                });
+            }
             let stdout = if args.iter().any(|argument| argument == "/usr/bin/cat") {
                 TEST_RUNTIME_OUTPUT.to_vec()
             } else if args.iter().any(|argument| argument == "/usr/bin/sha256sum") {
@@ -4502,6 +4501,10 @@ mod tests {
                 "origin/feature/ready".to_owned(),
                 "feature/ready".to_owned(),
                 "--no-launch".to_owned(),
+                "--expected-repository".to_owned(),
+                "github.com/acme/widget".to_owned(),
+                "--expected-registration".to_owned(),
+                "opaque-registration".to_owned(),
             ]) && args
                 .windows(2)
                 .any(|pair| pair == ["--chdir", "/code/widget"])
@@ -4538,9 +4541,9 @@ mod tests {
             .expect_err("a stale project registration must not grant mutation authority");
 
         assert!(error.to_string().contains("registration changed"));
-        assert!(!runner.calls.lock().expect("calls").iter().any(|args| {
-            args.iter().any(|argument| argument == "add")
-                && args.iter().any(|argument| argument == "--no-launch")
+        assert!(runner.calls.lock().expect("calls").iter().any(|args| {
+            args.windows(2)
+                .any(|pair| pair == ["--expected-registration", "replacement-registration"])
         }));
     }
 

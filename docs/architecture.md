@@ -459,11 +459,15 @@ or matching WSL UNC folder into the selected distro, then applies these POSIX
 operations through the pinned Linux helper. It publishes a successful
 machine-readable registration or removal before attempting broader worktree
 reconciliation, so an unrelated inventory failure cannot erase the confirmed
-result. Rust worktree creation likewise revalidates repository, checkout path,
-and registration fingerprint immediately before mutation. Successful worktree
-removal tombstones the exact path and generation locally before reconciliation,
-and live default-socket worktree presentations are keyed by their tmux identity
-so project registration changes cannot duplicate clients.
+result. Rust worktree creation passes the repository identity and registration
+fingerprint reviewed by the user into the same guarded `kwt add` invocation;
+KWT verifies both while holding its project lifecycle lock before mutation.
+Successful worktree removal tombstones the exact path and generation locally
+before reconciliation. If a default-socket session is live, Ghosthub captures
+its exact tmux identity before enabling confirmation and consumes only that
+authority after approval; a same-named replacement requires a new
+confirmation. Live worktree presentations are keyed by their tmux identity so
+project registration changes cannot duplicate clients.
 Native Windows hosts do not expose project registry mutations until
 that command boundary supports native Windows paths.
 On macOS and Linux, the account login shell initializes the command

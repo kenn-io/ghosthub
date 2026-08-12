@@ -821,6 +821,12 @@ pub enum WorkspaceEvent {
         project_path: String,
         branches: Vec<KwtBranchItem>,
     },
+    KwtWorktreeRemovalReady {
+        project_path: String,
+        worktree_path: String,
+        authority: u64,
+        session_was_running: bool,
+    },
     KwtWorktreeCreated {
         target: KwtWorktreeTarget,
     },
@@ -2310,6 +2316,9 @@ struct Inner {
     kwt_discovery_cancel: Mutex<Option<CancellationToken>>,
     kwt_publication: Mutex<()>,
     kwt_mutation_in_flight: AtomicBool,
+    kwt_removal_generation: AtomicU64,
+    pending_kwt_removal: Mutex<Option<PendingKwtRemoval>>,
+    pending_kwt_creations: Mutex<Vec<PendingKwtCreation>>,
     discovery: Arc<dyn WslDiscovery>,
     refresh_runtime: Arc<dyn RefreshRuntime>,
     attachment: Mutex<AttachmentState<AttachRequest>>,
@@ -2419,6 +2428,9 @@ impl Workspace {
                 kwt_discovery_cancel: Mutex::new(None),
                 kwt_publication: Mutex::new(()),
                 kwt_mutation_in_flight: AtomicBool::new(false),
+                kwt_removal_generation: AtomicU64::new(0),
+                pending_kwt_removal: Mutex::new(None),
+                pending_kwt_creations: Mutex::new(Vec::new()),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -2492,6 +2504,9 @@ impl Workspace {
                 kwt_discovery_cancel: Mutex::new(None),
                 kwt_publication: Mutex::new(()),
                 kwt_mutation_in_flight: AtomicBool::new(false),
+                kwt_removal_generation: AtomicU64::new(0),
+                pending_kwt_removal: Mutex::new(None),
+                pending_kwt_creations: Mutex::new(Vec::new()),
                 discovery,
                 refresh_runtime,
                 attachment: Mutex::new(AttachmentState::new()),
@@ -2549,6 +2564,9 @@ impl Workspace {
                 kwt_discovery_cancel: Mutex::new(None),
                 kwt_publication: Mutex::new(()),
                 kwt_mutation_in_flight: AtomicBool::new(false),
+                kwt_removal_generation: AtomicU64::new(0),
+                pending_kwt_removal: Mutex::new(None),
+                pending_kwt_creations: Mutex::new(Vec::new()),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -2730,6 +2748,85 @@ impl Workspace {
         )
     }
 
+    /// Capture the exact live tmux identity, if any, before presenting a
+    /// worktree-removal confirmation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale inventory or when the background identity
+    /// query cannot be started.
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_kwt_worktree_removal(
+        &self,
+        host_id: &str,
+        endpoint: &str,
+        repository: &str,
+        project_path: &str,
+        registration_fingerprint: &str,
+        worktree_path: &str,
+        generation: &str,
+        session_name: &str,
+    ) -> Result<(), WorkspaceError> {
+        if !is_canonical_kwt_generation(generation) {
+            return Err(WorkspaceError::new(
+                "Refresh KWT inventory before removing this worktree.",
+            ));
+        }
+        let (host, resolved_endpoint, runtime) = capture_kwt_worktree_removal_context(
+            &self.inner,
+            host_id,
+            endpoint,
+            repository,
+            project_path,
+            registration_fingerprint,
+            worktree_path,
+            generation,
+            session_name,
+        )?;
+        let authority = self
+            .inner
+            .kwt_removal_generation
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        self.inner
+            .pending_kwt_removal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let capture = KwtRemovalCapture {
+            host,
+            authority,
+            endpoint: resolved_endpoint,
+            runtime,
+            repository: repository.to_owned(),
+            project_path: project_path.to_owned(),
+            registration_fingerprint: registration_fingerprint.to_owned(),
+            worktree_path: worktree_path.to_owned(),
+            generation: generation.to_owned(),
+            session_name: session_name.to_owned(),
+        };
+        let inner = Arc::clone(&self.inner);
+        self.inner
+            .refresh_runtime
+            .spawn(
+                "ghosthub-kwt-removal-identity",
+                Box::new(move || capture_kwt_removal_authority(&inner, capture)),
+            )
+            .map_err(|error| WorkspaceError::new(format!("verify worktree session: {error}")))?;
+        Ok(())
+    }
+
+    pub fn cancel_kwt_worktree_removal(&self) {
+        self.inner
+            .kwt_removal_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.inner
+            .pending_kwt_removal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
     /// Remove one exact non-main KWT worktree while preserving its Git branch.
     ///
     /// The operation revalidates the project, worktree generation, WSL
@@ -2752,13 +2849,24 @@ impl Workspace {
         worktree_path: &str,
         generation: &str,
         session_name: &str,
-        session_was_running: bool,
+        authority: u64,
     ) -> Result<(), WorkspaceError> {
         if !is_canonical_kwt_generation(generation) {
             return Err(WorkspaceError::new(
                 "Refresh KWT inventory before removing this worktree.",
             ));
         }
+        let pending = take_pending_kwt_removal(
+            &self.inner,
+            authority,
+            endpoint,
+            repository,
+            project_path,
+            registration_fingerprint,
+            worktree_path,
+            generation,
+            session_name,
+        )?;
         self.start_kwt_worktree_operation(
             host_id,
             endpoint,
@@ -2769,7 +2877,7 @@ impl Workspace {
                 worktree_path: worktree_path.to_owned(),
                 generation: generation.to_owned(),
                 session_name: session_name.to_owned(),
-                session_was_running,
+                live_target: pending.live_target,
             },
         )
     }
@@ -6144,7 +6252,7 @@ enum KwtWorktreeOperation {
         worktree_path: String,
         generation: String,
         session_name: String,
-        session_was_running: bool,
+        live_target: Option<Arc<host::LiveSessionTarget>>,
     },
 }
 
@@ -6160,10 +6268,227 @@ struct KwtWorktreeTask {
     operation: KwtWorktreeOperation,
 }
 
+struct PendingKwtRemoval {
+    authority: u64,
+    endpoint: host::WslEndpoint,
+    repository: String,
+    project_path: String,
+    registration_fingerprint: String,
+    worktree_path: String,
+    generation: String,
+    session_name: String,
+    live_target: Option<Arc<host::LiveSessionTarget>>,
+}
+
+struct KwtRemovalCapture {
+    host: RuntimeHost,
+    authority: u64,
+    endpoint: host::WslEndpoint,
+    runtime: host::WslRuntimeIdentity,
+    repository: String,
+    project_path: String,
+    registration_fingerprint: String,
+    worktree_path: String,
+    generation: String,
+    session_name: String,
+}
+
+#[derive(Clone)]
+struct PendingKwtCreation {
+    endpoint: host::WslEndpoint,
+    repository: String,
+    project_path: String,
+    registration_fingerprint: String,
+    branch: String,
+}
+
 #[derive(Default)]
 struct KwtWorktreeOutcome {
     refresh_kwt: bool,
     refresh_tmux: bool,
+}
+
+fn capture_kwt_removal_authority(inner: &Inner, capture: KwtRemovalCapture) {
+    let cancellation = CancellationToken::new();
+    let live_target = match capture.host.session_is_running(
+        &capture.endpoint,
+        &capture.runtime,
+        &capture.session_name,
+        &cancellation,
+    ) {
+        Ok(false) => None,
+        Ok(true) => match capture.host.capture_live_session(
+            &capture.endpoint,
+            &capture.runtime,
+            &capture.session_name,
+            &cancellation,
+        ) {
+            Ok(target) => Some(Arc::new(target)),
+            Err(error) => {
+                push_operation_event(
+                    inner,
+                    WorkspaceEvent::KwtWorktreeOperationFailed {
+                        project_path: capture.project_path,
+                        message: error.to_string(),
+                    },
+                );
+                return;
+            }
+        },
+        Err(error) => {
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtWorktreeOperationFailed {
+                    project_path: capture.project_path,
+                    message: error.to_string(),
+                },
+            );
+            return;
+        }
+    };
+    let session_was_running = live_target.is_some();
+    let mut pending = inner
+        .pending_kwt_removal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.kwt_removal_generation.load(Ordering::Acquire) != capture.authority {
+        return;
+    }
+    let project_path = capture.project_path.clone();
+    let worktree_path = capture.worktree_path.clone();
+    *pending = Some(PendingKwtRemoval {
+        authority: capture.authority,
+        endpoint: capture.endpoint,
+        repository: capture.repository,
+        project_path: capture.project_path,
+        registration_fingerprint: capture.registration_fingerprint,
+        worktree_path: capture.worktree_path,
+        generation: capture.generation,
+        session_name: capture.session_name,
+        live_target,
+    });
+    drop(pending);
+    push_operation_event(
+        inner,
+        WorkspaceEvent::KwtWorktreeRemovalReady {
+            project_path,
+            worktree_path,
+            authority: capture.authority,
+            session_was_running,
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_kwt_worktree_removal_context(
+    inner: &Inner,
+    host_id: &str,
+    endpoint: &str,
+    repository: &str,
+    project_path: &str,
+    registration_fingerprint: &str,
+    worktree_path: &str,
+    generation: &str,
+    session_name: &str,
+) -> Result<(RuntimeHost, host::WslEndpoint, host::WslRuntimeIdentity), WorkspaceError> {
+    if host_id != "wsl" {
+        return Err(WorkspaceError::new(
+            "KWT worktrees are available only on WSL",
+        ));
+    }
+    let context = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|published| published.value.snapshot.endpoint().distro() == endpoint)
+        .map(|published| {
+            (
+                published.value.host.clone(),
+                published.value.snapshot.endpoint().clone(),
+                published.value.snapshot.runtime().clone(),
+            )
+        })
+        .ok_or_else(|| WorkspaceError::new("refresh WSL before removing a worktree"))?;
+    let hosts = inner
+        .hosts
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let item = hosts
+        .iter()
+        .find(|item| item.id == host_id && item.endpoint == endpoint)
+        .ok_or_else(|| WorkspaceError::new("the selected WSL host is unavailable"))?;
+    if item.connection != HostConnectionState::Ready
+        || !item.kwt_available()
+        || item.kwt_diagnostic.is_some()
+    {
+        return Err(WorkspaceError::new(
+            "refresh KWT inventory before removing this worktree",
+        ));
+    }
+    let worktree = item
+        .projects
+        .iter()
+        .find(|project| {
+            project.repository == repository
+                && project.path == project_path
+                && project.registration_fingerprint == registration_fingerprint
+        })
+        .and_then(|project| {
+            project.worktrees.iter().find(|worktree| {
+                worktree.path == worktree_path
+                    && worktree.generation.as_deref() == Some(generation)
+                    && worktree.session_name == session_name
+            })
+        })
+        .ok_or_else(|| {
+            WorkspaceError::new("the selected worktree changed; refresh and choose it again")
+        })?;
+    if worktree.is_main {
+        return Err(WorkspaceError::new(
+            "the primary checkout cannot be removed",
+        ));
+    }
+    if worktree.tmux_socket_name.is_some() {
+        return Err(WorkspaceError::new(
+            "worktrees using a custom tmux socket cannot be removed until Ghosthub can verify and stop that session",
+        ));
+    }
+    Ok(context)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn take_pending_kwt_removal(
+    inner: &Inner,
+    authority: u64,
+    endpoint: &str,
+    repository: &str,
+    project_path: &str,
+    registration_fingerprint: &str,
+    worktree_path: &str,
+    generation: &str,
+    session_name: &str,
+) -> Result<PendingKwtRemoval, WorkspaceError> {
+    let pending = inner
+        .pending_kwt_removal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .ok_or_else(|| WorkspaceError::new("review the worktree removal again"))?;
+    let matches = pending.authority == authority
+        && pending.endpoint.distro() == endpoint
+        && pending.repository == repository
+        && pending.project_path == project_path
+        && pending.registration_fingerprint == registration_fingerprint
+        && pending.worktree_path == worktree_path
+        && pending.generation == generation
+        && pending.session_name == session_name;
+    if !matches || inner.kwt_removal_generation.load(Ordering::Acquire) != authority {
+        return Err(WorkspaceError::new(
+            "the worktree changed after confirmation; review the removal again",
+        ));
+    }
+    Ok(pending)
 }
 
 #[allow(
@@ -6291,7 +6616,7 @@ fn validate_kwt_worktree_operation(
         worktree_path,
         generation,
         session_name,
-        session_was_running,
+        ..
     } = operation
     else {
         return Ok(());
@@ -6315,11 +6640,6 @@ fn validate_kwt_worktree_operation(
     if worktree.tmux_socket_name.is_some() {
         return Err(WorkspaceError::new(
             "worktrees using a custom tmux socket cannot be removed until Ghosthub can verify and stop that session",
-        ));
-    }
-    if worktree.session_available != *session_was_running {
-        return Err(WorkspaceError::new(
-            "the worktree session changed; review the removal again",
         ));
     }
     Ok(())
@@ -6379,14 +6699,14 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
             worktree_path,
             generation,
             session_name,
-            session_was_running,
+            live_target,
         } => run_kwt_worktree_remove(
             inner,
             task,
             worktree_path,
             generation,
             session_name,
-            *session_was_running,
+            live_target.as_deref(),
         ),
     };
     finish_kwt_project_mutation(inner, Some((&task.endpoint, &task.runtime)));
@@ -6411,7 +6731,7 @@ fn run_kwt_worktree_remove(
     worktree_path: &str,
     generation: &str,
     session_name: &str,
-    session_was_running: bool,
+    live_target: Option<&host::LiveSessionTarget>,
 ) -> KwtWorktreeOutcome {
     let _session_operation = inner
         .session_operations
@@ -6423,27 +6743,14 @@ fn run_kwt_worktree_remove(
         return KwtWorktreeOutcome::default();
     }
 
-    let live_target = if session_was_running {
-        match task.host.capture_live_session(
-            &task.endpoint,
-            &task.runtime,
-            session_name,
-            &task.cancellation,
-        ) {
-            Ok(target) => Some(target),
-            Err(error) => {
-                fail_kwt_worktree_remove(inner, task, error.to_string());
-                return KwtWorktreeOutcome::default();
-            }
-        }
-    } else {
+    if live_target.is_none() {
         match task.host.session_is_running(
             &task.endpoint,
             &task.runtime,
             session_name,
             &task.cancellation,
         ) {
-            Ok(false) => None,
+            Ok(false) => {}
             Ok(true) => {
                 fail_kwt_worktree_remove(
                     inner,
@@ -6458,10 +6765,10 @@ fn run_kwt_worktree_remove(
                 return KwtWorktreeOutcome::default();
             }
         }
-    };
+    }
 
     let mut session_killed = false;
-    if let Some(target) = &live_target {
+    if let Some(target) = live_target {
         if let Err(error) = task.host.kill_live_session(target, &task.cancellation) {
             fail_kwt_worktree_remove(inner, task, error.to_string());
             return KwtWorktreeOutcome::default();
@@ -6682,7 +6989,10 @@ fn run_kwt_worktree_create(
         &task.cancellation,
     );
     match result {
-        Ok(()) => reconcile_created_kwt_worktree(inner, task, branch),
+        Ok(()) => {
+            remember_pending_kwt_creation(inner, task, branch);
+            reconcile_created_kwt_worktree(inner, task, branch)
+        }
         Err(error) => {
             publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
             push_operation_event(
@@ -6715,8 +7025,7 @@ fn reconcile_created_kwt_worktree(
                 &task.runtime,
                 &inventory,
             );
-            if let Some(target) = target {
-                push_operation_event(inner, WorkspaceEvent::KwtWorktreeCreated { target });
+            if target.is_some() {
                 false
             } else {
                 push_operation_event(
@@ -6766,25 +7075,90 @@ fn created_kwt_worktree_target(
     branch: &str,
     inventory: &KwtInventory,
 ) -> Option<KwtWorktreeTarget> {
+    pending_kwt_creation_target(
+        &PendingKwtCreation {
+            endpoint: task.endpoint.clone(),
+            repository: task.repository.clone(),
+            project_path: task.project_path.clone(),
+            registration_fingerprint: task.registration_fingerprint.clone(),
+            branch: branch.to_owned(),
+        },
+        inventory,
+    )
+}
+
+fn remember_pending_kwt_creation(inner: &Inner, task: &KwtWorktreeTask, branch: &str) {
+    let pending = PendingKwtCreation {
+        endpoint: task.endpoint.clone(),
+        repository: task.repository.clone(),
+        project_path: task.project_path.clone(),
+        registration_fingerprint: task.registration_fingerprint.clone(),
+        branch: branch.to_owned(),
+    };
+    let mut creations = inner
+        .pending_kwt_creations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    creations.retain(|candidate| {
+        candidate.endpoint != pending.endpoint
+            || candidate.repository != pending.repository
+            || candidate.project_path != pending.project_path
+            || candidate.registration_fingerprint != pending.registration_fingerprint
+            || candidate.branch != pending.branch
+    });
+    creations.push(pending);
+}
+
+fn pending_kwt_creation_target(
+    pending: &PendingKwtCreation,
+    inventory: &KwtInventory,
+) -> Option<KwtWorktreeTarget> {
     let project = inventory.projects().iter().find(|project| {
-        project.project().repository() == task.repository
-            && project.project().path() == task.project_path
-            && project.project().registration_fingerprint() == task.registration_fingerprint
+        project.project().repository() == pending.repository
+            && project.project().path() == pending.project_path
+            && project.project().registration_fingerprint() == pending.registration_fingerprint
     })?;
     let worktree = project
         .worktrees()
         .iter()
-        .find(|worktree| worktree.branch() == branch)?;
+        .find(|worktree| worktree.branch() == pending.branch)?;
     Some(KwtWorktreeTarget {
         host_id: "wsl".to_owned(),
-        endpoint: task.endpoint.distro().to_owned(),
-        repository: task.repository.clone(),
-        project_path: task.project_path.clone(),
-        registration_fingerprint: task.registration_fingerprint.clone(),
+        endpoint: pending.endpoint.distro().to_owned(),
+        repository: pending.repository.clone(),
+        project_path: pending.project_path.clone(),
+        registration_fingerprint: pending.registration_fingerprint.clone(),
         worktree_path: worktree.path().to_owned(),
         generation: worktree.generation().map(str::to_owned),
         session_name: worktree.session_name().to_owned(),
     })
+}
+
+fn resolve_pending_kwt_creations(
+    inner: &Inner,
+    endpoint: &host::WslEndpoint,
+    inventory: &KwtInventory,
+) {
+    let mut resolved = Vec::new();
+    let mut pending = inner
+        .pending_kwt_creations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pending.retain(|candidate| {
+        if candidate.endpoint != *endpoint {
+            return true;
+        }
+        if let Some(target) = pending_kwt_creation_target(candidate, inventory) {
+            resolved.push(target);
+            false
+        } else {
+            true
+        }
+    });
+    drop(pending);
+    for target in resolved {
+        push_operation_event(inner, WorkspaceEvent::KwtWorktreeCreated { target });
+    }
 }
 
 fn reserve_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> Option<KwtRefresh> {
@@ -7025,13 +7399,15 @@ fn run_kwt_project_mutation(inner: &Arc<Inner>, task: &KwtProjectMutationTask) {
                 task.host
                     .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation);
             match refreshed {
-                Ok(Some(inventory)) => publish_kwt_inventory(
-                    inner,
-                    task.generation,
-                    &task.endpoint,
-                    &task.runtime,
-                    &inventory,
-                ),
+                Ok(Some(inventory)) => {
+                    publish_kwt_inventory(
+                        inner,
+                        task.generation,
+                        &task.endpoint,
+                        &task.runtime,
+                        &inventory,
+                    );
+                }
                 Ok(None) => publish_kwt_error(
                     inner,
                     task.generation,
@@ -7235,13 +7611,15 @@ fn start_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> bool {
                 return;
             }
             match result {
-                Ok(Some(inventory)) => publish_kwt_inventory(
-                    &task_inner,
-                    generation,
-                    &task_endpoint,
-                    &task_runtime,
-                    &inventory,
-                ),
+                Ok(Some(inventory)) => {
+                    publish_kwt_inventory(
+                        &task_inner,
+                        generation,
+                        &task_endpoint,
+                        &task_runtime,
+                        &inventory,
+                    );
+                }
                 Ok(None) => {
                     publish_kwt_unavailable(&task_inner, generation, &task_endpoint, &task_runtime);
                 }
@@ -7278,8 +7656,8 @@ fn publish_kwt_inventory(
     endpoint: &host::WslEndpoint,
     runtime: &host::WslRuntimeIdentity,
     inventory: &KwtInventory,
-) {
-    publish_kwt(inner, generation, endpoint, runtime, |host| {
+) -> bool {
+    let published = publish_kwt(inner, generation, endpoint, runtime, |host| {
         let session_names = host
             .sessions
             .iter()
@@ -7329,6 +7707,10 @@ fn publish_kwt_inventory(
         host.kwt_state = KwtState::Ready;
         host.kwt_diagnostic = None;
     });
+    if published {
+        resolve_pending_kwt_creations(inner, endpoint, inventory);
+    }
+    published
 }
 
 fn publish_kwt_error(
@@ -7368,13 +7750,13 @@ fn publish_kwt(
     endpoint: &host::WslEndpoint,
     runtime: &host::WslRuntimeIdentity,
     publish: impl FnOnce(&mut HostItem),
-) {
+) -> bool {
     let _publication = inner
         .kwt_publication
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if inner.kwt_refresh_generation.load(Ordering::Acquire) != generation {
-        return;
+        return false;
     }
     let current_matches = inner
         .host
@@ -7386,7 +7768,7 @@ fn publish_kwt(
                 && published.value.snapshot.runtime() == runtime
         });
     if !current_matches {
-        return;
+        return false;
     }
     let _snapshot_write = begin_snapshot_write(inner);
     if let Some(host) = inner
@@ -7398,6 +7780,9 @@ fn publish_kwt(
     {
         publish(host);
         inner.revision.fetch_add(1, Ordering::Release);
+        true
+    } else {
+        false
     }
 }
 
@@ -9989,6 +10374,122 @@ mod tests {
     }
 
     #[test]
+    fn later_kwt_inventory_resolves_a_pending_created_worktree_once() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        workspace
+            .inner
+            .pending_kwt_creations
+            .lock()
+            .expect("pending creations")
+            .push(PendingKwtCreation {
+                endpoint: snapshot.endpoint().clone(),
+                repository: "github.com/acme/widget".to_owned(),
+                project_path: "/code/widget".to_owned(),
+                registration_fingerprint: "registration".to_owned(),
+                branch: "feature/new".to_owned(),
+            });
+        let inventory = KwtInventory::parse(
+            br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
+            br#"[{"path":"/work/widget/new","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-new","tmux_socket_name":null}]"#,
+            b"[]",
+        )
+        .expect("valid KWT inventory");
+
+        resolve_pending_kwt_creations(&workspace.inner, snapshot.endpoint(), &inventory);
+        resolve_pending_kwt_creations(&workspace.inner, snapshot.endpoint(), &inventory);
+
+        assert!(
+            workspace
+                .inner
+                .pending_kwt_creations
+                .lock()
+                .expect("pending creations")
+                .is_empty()
+        );
+        let events = workspace
+            .inner
+            .operation_events
+            .lock()
+            .expect("operation events");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events.front(),
+            Some(WorkspaceEvent::KwtWorktreeCreated { target })
+                if target.worktree_path() == "/work/widget/new"
+        ));
+    }
+
+    #[test]
+    fn worktree_removal_consumes_the_exact_preconfirmation_session_authority() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let identity = session::SessionIdentity::new(100, "$1", 200);
+        let snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "widget-topic",
+                identity.clone(),
+                1,
+            )],
+        );
+        let authority = 7;
+        workspace
+            .inner
+            .kwt_removal_generation
+            .store(authority, Ordering::Release);
+        workspace
+            .inner
+            .pending_kwt_removal
+            .lock()
+            .expect("pending removal")
+            .replace(PendingKwtRemoval {
+                authority,
+                endpoint: snapshot.endpoint().clone(),
+                repository: "github.com/acme/widget".to_owned(),
+                project_path: "/code/widget".to_owned(),
+                registration_fingerprint: "registration".to_owned(),
+                worktree_path: "/work/widget/topic".to_owned(),
+                generation: "0123456789abcdef0123456789abcdef".to_owned(),
+                session_name: "widget-topic".to_owned(),
+                live_target: Some(Arc::new(host::LiveSessionTarget::test_fixture(
+                    &snapshot,
+                    "widget-topic",
+                    identity.clone(),
+                ))),
+            });
+
+        let pending = take_pending_kwt_removal(
+            &workspace.inner,
+            authority,
+            "Ubuntu",
+            "github.com/acme/widget",
+            "/code/widget",
+            "registration",
+            "/work/widget/topic",
+            "0123456789abcdef0123456789abcdef",
+            "widget-topic",
+        )
+        .expect("exact confirmation authority");
+
+        assert_eq!(
+            pending.live_target.expect("live authority").identity(),
+            &identity
+        );
+        assert!(
+            workspace
+                .inner
+                .pending_kwt_removal
+                .lock()
+                .expect("pending removal")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
         let project = ProjectItem::new(
             "github.com/acme/widget",
@@ -10025,13 +10526,12 @@ mod tests {
                 ),
             ],
         );
-        let remove =
-            |path: &str, generation: &str, session: &str, running| KwtWorktreeOperation::Remove {
-                worktree_path: path.to_owned(),
-                generation: generation.to_owned(),
-                session_name: session.to_owned(),
-                session_was_running: running,
-            };
+        let remove = |path: &str, generation: &str, session: &str| KwtWorktreeOperation::Remove {
+            worktree_path: path.to_owned(),
+            generation: generation.to_owned(),
+            session_name: session.to_owned(),
+            live_target: None,
+        };
 
         assert!(
             validate_kwt_worktree_operation(
@@ -10040,7 +10540,6 @@ mod tests {
                     "/work/widget/topic",
                     "22222222222222222222222222222222",
                     "widget-topic",
-                    true,
                 ),
             )
             .is_ok()
@@ -10052,7 +10551,6 @@ mod tests {
                     "/code/widget",
                     "11111111111111111111111111111111",
                     "widget-main",
-                    false,
                 ),
             )
             .is_err()
@@ -10063,8 +10561,7 @@ mod tests {
                 &remove(
                     "/work/widget/topic",
                     "22222222222222222222222222222222",
-                    "widget-topic",
-                    false,
+                    "replacement",
                 ),
             )
             .is_err()
@@ -10076,7 +10573,6 @@ mod tests {
                     "/work/widget/protected",
                     "33333333333333333333333333333333",
                     "widget-protected",
-                    false,
                 ),
             )
             .is_err(),

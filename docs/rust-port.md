@@ -693,10 +693,13 @@ create either a new branch (`add --branch`) or an existing local/remote branch
 (`add`, optionally with `--from`) using `--no-launch`. After creation, Rust
 refreshes authoritative KWT inventory and selects the exact repository,
 worktree path, generation, and computed session name returned by that refresh.
-Immediately before `add`, the host re-reads project inventory and requires the
-same repository, checkout path, and opaque registration fingerprint that
-authorized the UI action. A replacement registration cannot inherit mutation
-authority from a cached row.
+The `add` invocation carries `--expected-repository` and
+`--expected-registration`; KWT verifies those values against the selected
+checkout while holding its project lifecycle lock before it mutates. A
+replacement registration cannot inherit mutation authority from a cached row.
+If the immediate post-create read is unavailable, Ghosthub retains the pending
+project-and-branch identity and emits the normal created event when a later
+authoritative inventory first resolves it.
 The UI thread performs none of those commands and keeps the previous project
 tree visible throughout the operation.
 
@@ -720,9 +723,13 @@ for those worktrees until protected-socket discovery and identity-checked
 termination exist; deleting a checkout must never strand a session Ghosthub
 cannot currently observe. A successful exact removal immediately tombstones
 that path and generation in the cached tree before broader reconciliation, so
-a KWT outage cannot resurrect an openable deleted row. KWT rows carry display
-identity and exact session names; they do not acquire creation, repair, or
-destruction authority from cached inventory.
+a KWT outage cannot resurrect an openable deleted row. Before the removal
+dialog becomes actionable, a background query captures the exact live tmux
+identity when one exists. Confirmation consumes that authority; if the client
+exits and a same-named replacement starts, identity-checked kill fails closed
+and the user must review the replacement. KWT rows carry display identity and
+exact session names; they do not acquire creation, repair, or destruction
+authority from cached inventory.
 
 The remote helper activation root is a separate cross-controller contract:
 

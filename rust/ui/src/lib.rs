@@ -338,6 +338,7 @@ struct WorktreeRemoveTarget {
     project_name: String,
     branch: String,
     session_was_running: bool,
+    authority: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -391,6 +392,7 @@ enum ProjectDialog {
         selected_source: Option<String>,
         branches: Vec<workspace::KwtBranchItem>,
         loading: bool,
+        loaded: bool,
         submitting: bool,
         error: Option<String>,
     },
@@ -416,6 +418,7 @@ fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
         branch,
         selected_source,
         branches,
+        loaded: true,
         loading: false,
         submitting: false,
         ..
@@ -431,6 +434,10 @@ fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
             .take(2)
             .count()
             > 1
+}
+
+fn can_create_worktree(branch: &str, loaded: bool, loading: bool, submitting: bool) -> bool {
+    workspace::is_valid_git_branch_name(branch.trim()) && loaded && !loading && !submitting
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -998,6 +1005,7 @@ impl RootView {
             selected_source: None,
             branches: Vec::new(),
             loading: result.is_ok(),
+            loaded: false,
             submitting: false,
             error: result.err().map(|error| error.to_string()),
         });
@@ -1008,14 +1016,38 @@ impl RootView {
 
     fn open_remove_worktree(
         &mut self,
-        target: WorktreeRemoveTarget,
+        mut target: WorktreeRemoveTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let result = if let Some(generation) = target.open.generation.as_deref() {
+            self.workspace.request_kwt_worktree_removal(
+                &target.open.host_id,
+                &target.open.endpoint,
+                &target.open.repository,
+                &target.open.project_path,
+                &target.open.registration_fingerprint,
+                &target.open.worktree_path,
+                generation,
+                &target.open.session_name,
+            )
+        } else {
+            target.authority = None;
+            self.project_dialog = Some(ProjectDialog::RemoveWorktree {
+                target,
+                submitting: false,
+                error: Some("Refresh KWT inventory before removing this worktree.".to_owned()),
+            });
+            self.diagnostic = None;
+            window.focus(&self.project_focus);
+            cx.notify();
+            return;
+        };
+        target.authority = None;
         self.project_dialog = Some(ProjectDialog::RemoveWorktree {
             target,
             submitting: false,
-            error: None,
+            error: result.err().map(|error| error.to_string()),
         });
         self.diagnostic = None;
         window.focus(&self.project_focus);
@@ -1034,6 +1066,12 @@ impl RootView {
             })
         {
             return;
+        }
+        if matches!(
+            self.project_dialog,
+            Some(ProjectDialog::RemoveWorktree { .. })
+        ) {
+            self.workspace.cancel_kwt_worktree_removal();
         }
         self.project_dialog = None;
         window.focus(&self.focus);
@@ -1099,6 +1137,7 @@ impl RootView {
                 branch,
                 selected_source,
                 branches,
+                loaded: true,
                 loading: false,
                 submitting: false,
                 ..
@@ -1136,6 +1175,13 @@ impl RootView {
                     cx.notify();
                     return;
                 };
+                let Some(authority) = target.authority else {
+                    self.set_project_dialog_error(
+                        "Wait for Ghosthub to verify the worktree session.",
+                    );
+                    cx.notify();
+                    return;
+                };
                 self.workspace.remove_kwt_worktree(
                     &target.open.host_id,
                     &target.open.endpoint,
@@ -1145,7 +1191,7 @@ impl RootView {
                     &target.open.worktree_path,
                     generation,
                     &target.open.session_name,
-                    target.session_was_running,
+                    authority,
                 )
             }
             _ => return,
@@ -1546,6 +1592,7 @@ impl RootView {
                         project_path: dialog_path,
                         branches: dialog_branches,
                         loading,
+                        loaded,
                         error,
                         ..
                     }) = &mut self.project_dialog
@@ -1553,6 +1600,26 @@ impl RootView {
                     {
                         *dialog_branches = branches;
                         *loading = false;
+                        *loaded = true;
+                        *error = None;
+                    }
+                }
+                WorkspaceEvent::KwtWorktreeRemovalReady {
+                    project_path,
+                    worktree_path,
+                    authority,
+                    session_was_running,
+                } => {
+                    if let Some(ProjectDialog::RemoveWorktree {
+                        target,
+                        submitting: false,
+                        error,
+                    }) = &mut self.project_dialog
+                        && target.open.project_path == project_path
+                        && target.open.worktree_path == worktree_path
+                    {
+                        target.authority = Some(authority);
+                        target.session_was_running = session_was_running;
                         *error = None;
                     }
                 }
@@ -1616,11 +1683,13 @@ impl RootView {
                     Some(ProjectDialog::NewWorktree {
                         project_path: dialog_path,
                         loading,
+                        loaded,
                         submitting,
                         error,
                         ..
                     }) if *dialog_path == project_path => {
                         *loading = false;
+                        *loaded = false;
                         *submitting = false;
                         *error = Some(message);
                     }
@@ -2517,159 +2586,27 @@ impl RootView {
     fn project_overlay(&self, window: &Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let dialog = self.project_dialog.as_ref()?;
         let focused = self.project_focus.is_focused(window);
-        let (title, body, action_label, submitting, can_submit, error) = match dialog {
-            ProjectDialog::Add {
-                path,
-                submitting,
-                error,
-                ..
-            } => {
-                let valid = workspace::is_absolute_project_path_input(path);
-                let text = if path.is_empty() && !focused {
-                    "Choose a folder or enter a WSL path".to_owned()
-                } else if path.is_empty() {
-                    "▏".to_owned()
-                } else {
-                    format!("{path}▏")
-                };
-                let input = div()
-                    .id("kwt-project-path-input")
-                    .px_3()
-                    .h(px(38.0))
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(rgb(if focused { 0x4a_8f_cf } else { 0x3a_404c }))
-                    .bg(rgb(0x0f_1218))
-                    .cursor_text()
-                    .text_sm()
-                    .text_color(rgb(if path.is_empty() && !focused {
-                        0x72_7986
+        let (title, body, action_label, submitting, can_submit, error) =
+            match dialog {
+                ProjectDialog::Add {
+                    path,
+                    submitting,
+                    error,
+                    ..
+                } => {
+                    let valid = workspace::is_absolute_project_path_input(path);
+                    let text = if path.is_empty() && !focused {
+                        "Choose a folder or enter a WSL path".to_owned()
+                    } else if path.is_empty() {
+                        "▏".to_owned()
                     } else {
-                        0xe1_e5ec
-                    }))
-                    .child(text)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        window.focus(&this.project_focus);
-                        cx.notify();
-                    }))
-                    .into_any_element();
-                let body = div()
-                    .m_4()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(input)
-                    .child(
-                        div()
-                            .id("browse-kwt-project")
-                            .h(px(38.0))
-                            .px_3()
-                            .flex()
-                            .items_center()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(rgb(0x3a_404c))
-                            .text_sm()
-                            .text_color(rgb(if *submitting { 0x72_7986 } else { 0xc7_ccd5 }))
-                            .child("Browse…")
-                            .when(!*submitting, |element| {
-                                element
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(rgb(0x29_2e38)))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.browse_for_project(cx);
-                                    }))
-                            }),
-                    )
-                    .into_any_element();
-                (
-                    "Add Project".to_owned(),
-                    body,
-                    if *submitting {
-                        "Adding…"
-                    } else {
-                        "Add Project"
-                    },
-                    *submitting,
-                    valid && !*submitting,
-                    error.as_deref(),
-                )
-            }
-            ProjectDialog::Remove {
-                endpoint,
-                name,
-                path,
-                submitting,
-                error,
-                ..
-            } => {
-                let body = div()
-                    .px_4()
-                    .py_4()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .text_sm()
-                    .text_color(rgb(0xb6_bcc7))
-                    .child(format!("Remove “{name}” from {endpoint}?"))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x8f_96_a3))
-                            .child(path.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x8f_96_a3))
-                            .child("The repository, worktrees, and tmux sessions are not deleted."),
-                    )
-                    .into_any_element();
-                (
-                    "Remove Project".to_owned(),
-                    body,
-                    if *submitting { "Removing…" } else { "Remove" },
-                    *submitting,
-                    !*submitting,
-                    error.as_deref(),
-                )
-            }
-            ProjectDialog::NewWorktree {
-                project_name,
-                branch,
-                selected_source,
-                branches,
-                loading,
-                submitting,
-                error,
-                ..
-            } => {
-                let query = branch.trim().to_ascii_lowercase();
-                let visible = branches
-                    .iter()
-                    .filter(|candidate| {
-                        query.is_empty()
-                            || candidate.name().to_ascii_lowercase().contains(&query)
-                            || candidate.source().to_ascii_lowercase().contains(&query)
-                    })
-                    .take(7)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let text = if branch.is_empty() && !focused {
-                    "Branch name".to_owned()
-                } else if branch.is_empty() {
-                    "▏".to_owned()
-                } else {
-                    format!("{branch}▏")
-                };
-                let mut body = div().m_4().flex().flex_col().gap_2().child(
-                    div()
-                        .id("kwt-worktree-branch-input")
+                        format!("{path}▏")
+                    };
+                    let input = div()
+                        .id("kwt-project-path-input")
                         .px_3()
                         .h(px(38.0))
+                        .flex_1()
                         .flex()
                         .items_center()
                         .rounded_md()
@@ -2678,7 +2615,7 @@ impl RootView {
                         .bg(rgb(0x0f_1218))
                         .cursor_text()
                         .text_sm()
-                        .text_color(rgb(if branch.is_empty() && !focused {
+                        .text_color(rgb(if path.is_empty() && !focused {
                             0x72_7986
                         } else {
                             0xe1_e5ec
@@ -2687,118 +2624,253 @@ impl RootView {
                         .on_click(cx.listener(|this, _, window, cx| {
                             window.focus(&this.project_focus);
                             cx.notify();
-                        })),
-                );
-                if *loading {
-                    body = body.child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x8f_96_a3))
-                            .child("Loading branches…"),
-                    );
-                } else {
-                    for (index, candidate) in visible.into_iter().enumerate() {
-                        let name = candidate.name().to_owned();
-                        let source = candidate.source().to_owned();
-                        let selected = branch == &name
-                            && selected_source
-                                .as_deref()
-                                .is_some_and(|value| value == source);
-                        let detail = if candidate.is_remote() {
-                            format!("{}  ·  {}", candidate.name(), candidate.source())
-                        } else {
-                            candidate.name().to_owned()
-                        };
-                        body = body.child(
+                        }))
+                        .into_any_element();
+                    let body = div()
+                        .m_4()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(input)
+                        .child(
                             div()
-                                .id(("kwt-branch-candidate", index))
-                                .h(px(28.0))
-                                .px_2()
+                                .id("browse-kwt-project")
+                                .h(px(38.0))
+                                .px_3()
                                 .flex()
                                 .items_center()
-                                .rounded_sm()
-                                .cursor_pointer()
-                                .bg(rgb(if selected { 0x1d_3f63 } else { 0x13_161c }))
-                                .text_xs()
-                                .text_color(rgb(0xc4_c9_d2))
-                                .hover(|style| style.bg(rgb(0x25_2a34)))
-                                .child(detail)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if let Some(ProjectDialog::NewWorktree {
-                                        branch,
-                                        selected_source,
-                                        error,
-                                        ..
-                                    }) = &mut this.project_dialog
-                                    {
-                                        branch.clone_from(&name);
-                                        *selected_source = Some(source.clone());
-                                        *error = None;
-                                    }
-                                    window.focus(&this.project_focus);
-                                    cx.notify();
-                                })),
-                        );
-                    }
+                                .rounded_md()
+                                .border_1()
+                                .border_color(rgb(0x3a_404c))
+                                .text_sm()
+                                .text_color(rgb(if *submitting { 0x72_7986 } else { 0xc7_ccd5 }))
+                                .child("Browse…")
+                                .when(!*submitting, |element| {
+                                    element
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(rgb(0x29_2e38)))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.browse_for_project(cx);
+                                        }))
+                                }),
+                        )
+                        .into_any_element();
+                    (
+                        "Add Project".to_owned(),
+                        body,
+                        if *submitting {
+                            "Adding…"
+                        } else {
+                            "Add Project"
+                        },
+                        *submitting,
+                        valid && !*submitting,
+                        error.as_deref(),
+                    )
                 }
-                (
-                    format!("New worktree · {project_name}"),
-                    body.into_any_element(),
-                    if *submitting { "Creating…" } else { "Create" },
-                    *submitting,
-                    workspace::is_valid_git_branch_name(branch.trim()) && !*loading && !*submitting,
-                    error.as_deref(),
-                )
-            }
-            ProjectDialog::RemoveWorktree {
-                target,
-                submitting,
-                error,
-            } => {
-                let session_copy = if target.session_was_running {
-                    " Its live tmux session will be terminated first."
-                } else {
-                    ""
-                };
-                let body = div()
-                    .px_4()
-                    .py_4()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .text_sm()
-                    .text_color(rgb(0xb6_bcc7))
-                    .child(format!(
-                        "Remove “{}” from {}?{}",
-                        target.branch, target.project_name, session_copy
-                    ))
-                    .child(
+                ProjectDialog::Remove {
+                    endpoint,
+                    name,
+                    path,
+                    submitting,
+                    error,
+                    ..
+                } => {
+                    let body =
                         div()
-                            .text_xs()
-                            .text_color(rgb(0x8f_96_a3))
-                            .child(target.open.worktree_path.clone()),
+                            .px_4()
+                            .py_4()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(rgb(0xb6_bcc7))
+                            .child(format!("Remove “{name}” from {endpoint}?"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0x8f_96_a3))
+                                    .child(path.clone()),
+                            )
+                            .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(
+                                "The repository, worktrees, and tmux sessions are not deleted.",
+                            ))
+                            .into_any_element();
+                    (
+                        "Remove Project".to_owned(),
+                        body,
+                        if *submitting { "Removing…" } else { "Remove" },
+                        *submitting,
+                        !*submitting,
+                        error.as_deref(),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x8f_96_a3))
-                            .child("The Git branch will be kept."),
-                    )
-                    .into_any_element();
-                (
-                    "Remove Worktree".to_owned(),
-                    body,
-                    if *submitting {
-                        "Removing…"
+                }
+                ProjectDialog::NewWorktree {
+                    project_name,
+                    branch,
+                    selected_source,
+                    branches,
+                    loading,
+                    loaded,
+                    submitting,
+                    error,
+                    ..
+                } => {
+                    let query = branch.trim().to_ascii_lowercase();
+                    let visible = branches
+                        .iter()
+                        .filter(|candidate| {
+                            query.is_empty()
+                                || candidate.name().to_ascii_lowercase().contains(&query)
+                                || candidate.source().to_ascii_lowercase().contains(&query)
+                        })
+                        .take(7)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let text = if branch.is_empty() && !focused {
+                        "Branch name".to_owned()
+                    } else if branch.is_empty() {
+                        "▏".to_owned()
                     } else {
-                        "Remove Worktree"
-                    },
-                    *submitting,
-                    !*submitting,
-                    error.as_deref(),
-                )
-            }
-        };
+                        format!("{branch}▏")
+                    };
+                    let mut body = div().m_4().flex().flex_col().gap_2().child(
+                        div()
+                            .id("kwt-worktree-branch-input")
+                            .px_3()
+                            .h(px(38.0))
+                            .flex()
+                            .items_center()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(if focused { 0x4a_8f_cf } else { 0x3a_404c }))
+                            .bg(rgb(0x0f_1218))
+                            .cursor_text()
+                            .text_sm()
+                            .text_color(rgb(if branch.is_empty() && !focused {
+                                0x72_7986
+                            } else {
+                                0xe1_e5ec
+                            }))
+                            .child(text)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                window.focus(&this.project_focus);
+                                cx.notify();
+                            })),
+                    );
+                    if *loading {
+                        body = body.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x8f_96_a3))
+                                .child("Loading branches…"),
+                        );
+                    } else {
+                        for (index, candidate) in visible.into_iter().enumerate() {
+                            let name = candidate.name().to_owned();
+                            let source = candidate.source().to_owned();
+                            let selected = branch == &name
+                                && selected_source
+                                    .as_deref()
+                                    .is_some_and(|value| value == source);
+                            let detail = if candidate.is_remote() {
+                                format!("{}  ·  {}", candidate.name(), candidate.source())
+                            } else {
+                                candidate.name().to_owned()
+                            };
+                            body = body.child(
+                                div()
+                                    .id(("kwt-branch-candidate", index))
+                                    .h(px(28.0))
+                                    .px_2()
+                                    .flex()
+                                    .items_center()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgb(if selected { 0x1d_3f63 } else { 0x13_161c }))
+                                    .text_xs()
+                                    .text_color(rgb(0xc4_c9_d2))
+                                    .hover(|style| style.bg(rgb(0x25_2a34)))
+                                    .child(detail)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if let Some(ProjectDialog::NewWorktree {
+                                            branch,
+                                            selected_source,
+                                            error,
+                                            ..
+                                        }) = &mut this.project_dialog
+                                        {
+                                            branch.clone_from(&name);
+                                            *selected_source = Some(source.clone());
+                                            *error = None;
+                                        }
+                                        window.focus(&this.project_focus);
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                    }
+                    (
+                        format!("New worktree · {project_name}"),
+                        body.into_any_element(),
+                        if *submitting { "Creating…" } else { "Create" },
+                        *submitting,
+                        can_create_worktree(branch, *loaded, *loading, *submitting),
+                        error.as_deref(),
+                    )
+                }
+                ProjectDialog::RemoveWorktree {
+                    target,
+                    submitting,
+                    error,
+                } => {
+                    let session_copy = if target.session_was_running {
+                        " Its live tmux session will be terminated first."
+                    } else {
+                        ""
+                    };
+                    let checking = target.authority.is_none() && error.is_none();
+                    let body = div()
+                        .px_4()
+                        .py_4()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(rgb(0xb6_bcc7))
+                        .child(format!(
+                            "Remove “{}” from {}?{}",
+                            target.branch, target.project_name, session_copy
+                        ))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x8f_96_a3))
+                                .child(target.open.worktree_path.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x8f_96_a3))
+                                .child("The Git branch will be kept."),
+                        )
+                        .into_any_element();
+                    (
+                        "Remove Worktree".to_owned(),
+                        body,
+                        if *submitting {
+                            "Removing…"
+                        } else if checking {
+                            "Checking…"
+                        } else {
+                            "Remove Worktree"
+                        },
+                        *submitting,
+                        target.authority.is_some() && !*submitting,
+                        error.as_deref(),
+                    )
+                }
+            };
 
         Some(
             div()
@@ -3794,6 +3866,7 @@ impl RootView {
                     project_name: project.name().to_owned(),
                     branch: worktree.branch().to_owned(),
                     session_was_running: worktree.session_available(),
+                    authority: None,
                 });
                 tree = tree.child(Self::worktree_row(
                     host_index,
@@ -5738,10 +5811,10 @@ mod tests {
         NewSessionDraft, NewSessionKind, PendingUiInput, ProjectDialog, QueuedUiInput,
         SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
         UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
-        application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
-        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
-        herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
+        application_navigation_width, can_create_worktree, canonical_terminal_key_with,
+        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
+        coalesce_last_resize, coalesce_last_wheel, has_ambiguous_worktree_source,
+        herdr_row_actions, herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
         is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
         named_key, new_session_validation, normalize_cell_width, queued_input_matches_presentation,
         retained_key_event_with, session_action_menu_position, session_backend_id,
@@ -5776,6 +5849,7 @@ mod tests {
                 KwtBranchItem::new("topic", "origin/topic", true),
             ],
             loading: false,
+            loaded: true,
             submitting: false,
             error: None,
         };
@@ -5788,6 +5862,13 @@ mod tests {
             *selected_source = Some("origin/topic".to_owned());
         }
         assert!(!has_ambiguous_worktree_source(&dialog));
+    }
+
+    #[test]
+    fn worktree_creation_requires_successful_branch_inventory() {
+        assert!(!can_create_worktree("feature/new", false, false, false));
+        assert!(!can_create_worktree("feature/new", true, true, false));
+        assert!(can_create_worktree("feature/new", true, false, false));
     }
 
     #[test]
