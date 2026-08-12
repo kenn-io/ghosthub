@@ -1012,6 +1012,49 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         XCTAssertEqual(runtime.diagnostics, [])
     }
 
+    func testNewOptionalIncludeOverridesBackfilledMinimumContrast() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        let included = pipeline.paths.configDirectory
+            .appendingPathComponent("contrast.conf")
+        try "config-file = ?contrast.conf\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        _ = try pipeline.prepareGlobalConfig()
+
+        try "minimum-contrast = 7\n".write(
+            to: included,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        XCTAssertEqual(runtime.phase, .ready)
+        let config = try XCTUnwrap(runtime.unsafeConfigHandle)
+
+        var contrast: Double = 0
+        let key = "minimum-contrast"
+        XCTAssertTrue(key.withCString { pointer in
+            ghostty_config_get(
+                config,
+                &contrast,
+                pointer,
+                UInt(key.utf8.count)
+            )
+        })
+        XCTAssertEqual(contrast, 7)
+    }
+
     func testPasteboardTypeMappingPreservesMimeSpecificTypes() {
         XCTAssertEqual(
             LibghosttyRuntime.pasteboardType(forMIMEType: "text/plain"),
