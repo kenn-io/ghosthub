@@ -257,12 +257,13 @@ Create, Start, or explicit Open; reconnects and ordinary attachment never
 rerun it.
 
 Stop and Delete fence every matching presentation before acting on the exact
-managed provider identity. Stop terminates provider processes but retains
-provider state; Delete also removes the dedicated tmux identity and persistence
-record. Neither action may target a prefix-only or same-named replacement.
-Provider resources remain stopped after reboot until the user explicitly
-starts them. The complete provider and worktree lifecycle contract is in
-[Worktree Sandboxes](sandboxes.md).
+managed provider identity. They confirm provider execution has terminated
+before the final Git-metadata drift comparison. Stop retains provider state;
+Delete removes the dedicated tmux identity and sandbox record only after any
+drift notice is persisted independently. Neither action may target a
+prefix-only or same-named replacement. Provider resources remain stopped after
+reboot until the user explicitly starts them. The complete provider and
+worktree lifecycle contract is in [Worktree Sandboxes](sandboxes.md).
 
 ## Relaunch Restoration
 

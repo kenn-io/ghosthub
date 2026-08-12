@@ -50,7 +50,7 @@ lowest-denominator security claim.
 | Capability | Apple `container` | Docker `sbx` |
 | --- | --- | --- |
 | Worktree and Git metadata | Direct same-path mounts | Direct same-path workspaces |
-| Existing repository config and hook paths | Read-only when the preflight can protect every effective path | Host-side Git execution remains possible through writable Git config |
+| Git indirection, repository config, and hook paths | Read-only when the preflight can protect every required path | Host-side Git execution remains possible through writable Git metadata |
 | Standard `.git/hooks` directory | Read-only | Read-only defense-in-depth only |
 | Host SSH agent | Not forwarded; Ghosthub never passes `--ssh` | Forwarded whenever the running sbx daemon has a host agent; no per-sandbox opt-out exists in 0.38.0 |
 | Provider identity | Ghosthub label plus exact container name | Provider UUID plus exact sandbox name |
@@ -85,19 +85,33 @@ clone mode and does not synthesize a second Git remote.
 
 ### Apple container protection
 
-Apple creation adds `--read-only-path` for the common repository config,
-standard hooks directory, an effective per-worktree config when enabled, every
-effective repository-local included config file under a mounted root, and the
-currently resolved `core.hooksPath` when that path is writable through a
-mounted root. Paths outside the mounted roots are not exposed to the container.
+Apple creation pins every writable ancestor directory between a protected path
+and its enclosing top-level worktree or common Git mount as an explicit nested
+read-write same-path mount. A mount point cannot be renamed, so a sandboxed
+process cannot bypass a protected file or directory by moving an ancestor and
+recreating the original path. For linked-worktree indirection, the pinned set
+necessarily includes the common `worktrees` directory and exact per-worktree
+Git directory. Creation then adds `--read-only-path` for the linked worktree's `.git` gitfile,
+the per-worktree Git directory's `commondir` and `gitdir` indirection files,
+the common repository config, standard hooks directory, an effective
+per-worktree config when enabled, every effective repository-local included
+config file under a mounted root, and the currently resolved `core.hooksPath`
+when that path is writable through a mounted root. The three indirection files
+must be regular existing files whose contents resolve to the exact worktree,
+per-worktree Git directory, and common Git directory accepted by preflight.
+Each protected target and ancestor must already exist, remain within its
+expected mounted root, and have no mutable symlink indirection that could
+replace its lexical path. Paths outside the mounted roots are not exposed to
+the container.
 
 Apple's read-only-path control protects only targets that exist when the
 container starts. Preflight therefore fails closed rather than claiming the
-stronger capability when an effective config or hook path within the mounted
-roots is absent, cannot be canonicalized, changes during preflight, or cannot
-be expressed as an existing read-only target. The error identifies the Git
-setting and path the user must review. Ghosthub does not create placeholder Git
-configuration or rewrite repository metadata to make a target mountable.
+stronger capability when a required indirection, effective config, or hook path
+within the mounted roots is absent, cannot be canonicalized, changes during
+preflight, or cannot be expressed as an existing read-only target. The error
+identifies the Git target and path the user must review. Ghosthub does not
+create placeholder Git configuration or rewrite repository metadata to make a
+target mountable.
 
 Nested file bind mounts are not used. In `container` 1.2.2, adding a nested
 file bind can make the enclosing directory mount disappear, while
@@ -135,13 +149,18 @@ Create or explicit Start. The baseline contains hashes, not file contents, for:
 
 - the common repository config and effective per-worktree config
 - effective repository-local included config files within the mounted roots
+- the linked worktree gitfile and per-worktree `commondir` and `gitdir` files
 - the resolved `core.hooksPath` value
 - a deterministic manifest of the resolved hook directory's file contents,
   symlink targets, and relative paths when it is within a mounted root
 
-Ghosthub compares that baseline when the sandbox terminal detaches, before Stop
-or Delete, and during later reconciliation of a sandbox that was recorded as
-running. A difference produces a persistent warning:
+Ghosthub compares that baseline when the sandbox terminal detaches and during
+later reconciliation of a sandbox that was recorded as running. Those are
+point-in-time checks while provider execution may continue. Stop and Delete
+instead establish the cross-scene lifecycle fence, terminate provider
+execution, confirm no sandbox process remains able to mutate the mounts, and
+only then perform the final comparison. A difference produces a persistent
+warning:
 
 > Git metadata changed while this sandbox was running. The change may have
 > come from the sandbox or from a host-side edit. Review the repository's Git
@@ -151,6 +170,10 @@ This is a warning, not prevention or attribution. It cannot protect a host Git
 command run before comparison, and an attacker that changes and restores the
 same bytes before comparison can evade it. Failure to compute or compare a
 baseline is itself visible and never upgrades sbx's capability presentation.
+A raised warning is stored as an app-owned security notice associated with the
+worktree generation, independently of the sandbox record and baseline. Stop,
+Delete, stale-record removal, and worktree removal cannot erase it; only an
+explicit user dismissal does.
 
 ## Credentials and Network
 
@@ -181,6 +204,9 @@ Ghosthub manages only sandboxes it created. A persistence record contains:
 - dedicated tmux socket and session identity
 - optional saved launch command
 - last known lifecycle state and sbx Git drift baseline
+
+Raised Git-metadata security notices are separate app-owned records, not fields
+whose lifetime is coupled to the managed sandbox record.
 
 Apple resources also carry `io.ghosthub.sandbox-id=<UUID>`. Sbx has no
 equivalent label in 0.38, so its provider UUID and exact generated name are
@@ -214,22 +240,27 @@ Create, Start, Open, Stop, and Delete are separate operations:
   resource.
 - **Start** is an explicit constructive action for a stopped sandbox. Provider
   resources are not auto-started after reboot or application launch.
-- **Stop** is confirmed because it terminates sandbox processes while
-  retaining provider state.
-- **Delete** is confirmed and removes the exact provider resource, dedicated
-  tmux presentation, drift baseline, and persistence record.
+- **Stop** is confirmed because it fences and terminates sandbox processes
+  while retaining provider state. After the provider confirms the resource is
+  stopped, Ghosthub performs the final drift comparison and persists any
+  security notice.
+- **Delete** is confirmed, fences execution, and removes the exact provider
+  resource. After the provider confirms removal, Ghosthub performs the final
+  drift comparison and persists any security notice before removing the
+  dedicated tmux presentation, drift baseline, and sandbox record.
 
 Apple containers are expected to reconcile as stopped after a host reboot.
 Ghosthub does not promise provider process restoration across reboot.
 
 Removing a worktree uses its existing guarded confirmation and includes the
 managed sandbox in that summary. Ghosthub fences reconnect, deletes the exact
-verified provider resource and its dedicated tmux presentation, removes the
+verified provider resource, performs the final drift comparison, persists any
+independent security notice, removes the dedicated tmux presentation and
 sandbox record, and only then delegates worktree removal to kwt. A provider
-resource already confirmed missing permits stale-record removal and continued
-worktree deletion. An unavailable provider or identity mismatch blocks the
-worktree mutation because Ghosthub cannot prove that no live sandbox still
-mounts it.
+resource already confirmed missing permits a best-effort final comparison,
+stale-record removal, and continued worktree deletion; inability to compare is
+visible. An unavailable provider or identity mismatch blocks the worktree
+mutation because Ghosthub cannot prove that no live sandbox still mounts it.
 
 ## Terminal Presentation
 
@@ -264,7 +295,14 @@ creation. It performs no push or external credential operation.
 The Apple probe asserts:
 
 - direct worktree editing and a host-visible commit
-- read-only repository config, standard hooks, and resolved hook path
+- read-only worktree gitfile, per-worktree `commondir` and `gitdir` files,
+  repository config, standard hooks, and resolved hook path
+- attempts to rewrite, rename, or replace any Git indirection file fail while
+  host-side Git resolution and commits continue to use the expected metadata
+- attempts to rename the common `worktrees` directory or exact per-worktree
+  Git directory fail because both are pinned as nested mount points
+- a nested repository-local config or hook target cannot be replaced by
+  renaming any writable ancestor accepted by preflight
 - a live host-side hook-directory change does not remove or weaken the overlay
 - label/name inventory, stop, start, and exact deletion reconciliation
 
@@ -294,11 +332,20 @@ survived a live host-side source change in both providers.
 Apple's nested file bind hid the enclosing Git-directory mount, while its
 read-only-path control preserved the mount and blocked writes to existing
 config and hook paths. A nonexistent read-only-path target remained creatable,
-which is why Apple preflight requires existing protectable targets. Sbx refused
-a config file as an additional workspace. The rejected read-only common-Git
-layout committed only with `packed-refs.lock` diagnostics. Creating an sbx
-sandbox with `SSH_AUTH_SOCK` removed from the client environment still exposed
-the already-running daemon's forwarded agent socket.
+which is why Apple preflight requires existing protectable targets. A follow-up
+probe on August 12 also protected the worktree gitfile and per-worktree
+`commondir` and `gitdir` files. Protecting only those files still allowed the
+writable per-worktree directory to be renamed; pinning both the common
+`worktrees` directory and exact per-worktree directory as nested read-write
+mounts closed that replacement path. Direct writes, unlinks, file renames, and
+ancestor-directory renames then failed while a commit remained host-visible. A
+separate nested-target probe pinned multiple writable ancestor levels for a
+repository-local config file and hooks directory; ancestor renames and target
+writes failed while another commit remained host-visible. Sbx refused a config
+file as an additional workspace. The rejected read-only common-Git layout
+committed only with `packed-refs.lock` diagnostics. Creating an sbx sandbox
+with `SSH_AUTH_SOCK` removed from the client environment still exposed the
+already-running daemon's forwarded agent socket.
 
 Provider behavior and future changes should be checked against the
 [Apple container releases](https://github.com/apple/container/releases),

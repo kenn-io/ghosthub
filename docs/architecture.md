@@ -692,8 +692,8 @@ Ghosthub local persistence stores app-owned state:
 - selected worktree/window state
 - settings that are explicitly native-app concerns
 - configured SSH hosts and their launch profiles
-- managed worktree sandbox records, provider identity, terminal identity, and
-  Git-metadata drift hashes
+- managed worktree sandbox records, provider identity, terminal identity,
+  Git-metadata drift hashes, and independently persistent drift notices
 - the anonymous telemetry installation UUID and last attempted activity day
 
 Do not add database migrations before the first production release. Edit the
