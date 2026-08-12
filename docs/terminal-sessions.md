@@ -238,6 +238,32 @@ stable session-generation identifier, so a same-name replacement between that
 final check and the kill command cannot receive tmux's replacement-identity
 guarantee. Closing or disconnecting never implies a kill.
 
+## Worktree Sandbox Attachment
+
+The accepted sandbox design uses one dedicated local tmux session on a
+Ghosthub-owned socket for each managed sandbox. It never adds a pane or window
+to the worktree's existing kwt session. The session's first process is an
+ordinary interactive `container exec -it` or `sbx exec -it` client rooted at
+the exact worktree. Tmux owns terminal layout, history, key bindings, and
+process presentation; the sandbox provider owns the VM or container lifecycle.
+
+Closing the terminal presentation detaches only its tmux client. It does not
+stop or delete the provider resource. An existing dedicated tmux identity is
+attach-only. A missing presentation may be constructed only after Create or an
+explicit Start/Open action has revalidated the persisted sandbox, provider
+identity, current worktree generation, and lifecycle fence. An optional saved
+launch command runs only while constructing that new presentation after
+Create, Start, or explicit Open; reconnects and ordinary attachment never
+rerun it.
+
+Stop and Delete fence every matching presentation before acting on the exact
+managed provider identity. Stop terminates provider processes but retains
+provider state; Delete also removes the dedicated tmux identity and persistence
+record. Neither action may target a prefix-only or same-named replacement.
+Provider resources remain stopped after reboot until the user explicitly
+starts them. The complete provider and worktree lifecycle contract is in
+[Worktree Sandboxes](sandboxes.md).
+
 ## Relaunch Restoration
 
 Quitting Ghosthub or installing an update only drops disposable clients. When

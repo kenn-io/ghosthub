@@ -12,6 +12,10 @@ the [Threat Model](threat-model.md).
   through a tailnet.
 - **Project:** a git repository reported by kwt on a host.
 - **Worktree:** a kwt workspace with an exact tmux session name.
+- **Worktree sandbox:** one optional Ghosthub-managed local Apple container or
+  Docker sbx resource bound to an exact kwt worktree generation. The accepted
+  design is documented in [Worktree Sandboxes](sandboxes.md) and is not yet
+  implemented.
 - **Directory workspace:** one kwt-registered plain directory with an exact
   tmux session name and no Git children.
 - **Session:** an ordinary tmux session, running/stopped Herdr session, or
@@ -349,6 +353,34 @@ owns configuration, host-key storage, authentication, and routing for both the
 exe.dev control destination and every discovered VM. Tmux and kwt continue to
 own session and worktree identity exactly as they do on any other SSH host.
 
+### Worktree Sandboxes
+
+The accepted version 1 sandbox design is local-Mac-only and integrates with
+Apple `container` and Docker `sbx` exclusively through their CLIs. Ghosthub
+shares the selected existing worktree and its Git metadata so sandbox commits
+are immediately host-visible. It creates at most one managed sandbox for an
+exact kwt worktree generation, persists provider identity, and never adopts an
+unmanaged resource from a name prefix.
+
+Provider asymmetry is explicit. Apple receives read-only protection for every
+effective Git config and hook path that its preflight can safely express.
+Docker sbx cannot make `.git/config` read-only while retaining ordinary direct
+Git behavior, so its boundary explicitly permits host-side code execution
+through repository Git metadata. Sbx also forwards a host SSH agent whenever
+its daemon has one, with no per-sandbox opt-out in the supported 0.38.0
+version.
+Both differences appear prominently before creation. Exact mount, identity,
+drift-warning, lifecycle, version-gate, and integration-probe contracts live in
+[Worktree Sandboxes](sandboxes.md); security claims live in the
+[Threat Model](threat-model.md).
+
+Sandbox terminals use a dedicated local tmux session on a Ghosthub-owned
+sandbox socket. They never inject a window or pane into the worktree's kwt
+session. Tmux remains terminal authority, while `container` or `sbx` remains
+resource authority. Provider resources are explicitly started after reboot,
+and guarded worktree deletion deletes the exact managed sandbox before asking
+kwt to remove the worktree.
+
 Kwt also owns pull-request provider integration: authentication, repository
 identity, candidate discovery, and worktree import. Ghosthub may present a
 machine-readable candidate list and submit the user's selection through a
@@ -660,6 +692,8 @@ Ghosthub local persistence stores app-owned state:
 - selected worktree/window state
 - settings that are explicitly native-app concerns
 - configured SSH hosts and their launch profiles
+- managed worktree sandbox records, provider identity, terminal identity, and
+  Git-metadata drift hashes
 - the anonymous telemetry installation UUID and last attempted activity day
 
 Do not add database migrations before the first production release. Edit the

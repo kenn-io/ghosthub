@@ -7,8 +7,10 @@ description: Security boundaries and trust assumptions for Ghosthub
 
 This document defines the security claims Ghosthub makes and the assumptions
 used to classify security findings. Ghosthub is a native terminal and tmux/Herdr/Zellij
-control plane for one user across machines that user administers. It is not a
-sandbox or a hardened client for attaching to hostile terminal servers.
+control plane for one user across machines that user administers. Ghosthub is
+not itself a sandbox or a hardened client for attaching to hostile terminal
+servers; its accepted worktree-sandbox design delegates isolation to explicit
+local providers under the narrower boundary below.
 
 ## Assets and Security Goals
 
@@ -344,6 +346,60 @@ prefixes, mouse behavior, windows, panes, layout, history, or process state.
 The separate explicit pane-split shortcuts authorize only creation of one pane
 at a time in the active attachment.
 
+### Worktree sandboxes
+
+The accepted worktree-sandbox design introduces an intentionally narrower
+trust boundary than Ghosthub's ordinary terminals. The selected existing
+worktree and its Git metadata are writable inside a local provider resource so
+edits and commits are shared with the host. The provider is expected to prevent
+direct filesystem access elsewhere on the Mac, subject to the explicit mounts
+and capabilities in [Worktree Sandboxes](sandboxes.md). Ghosthub validates the
+exact worktree generation and manages only resources bound to its persisted
+identity; an unmanaged or same-named replacement is never adopted or deleted.
+
+Apple `container` uses read-only-path controls for every effective repository
+config and hook target its preflight can resolve inside the mounted roots.
+Creation fails closed when a required target is absent, changes during
+preflight, or cannot be protected. This narrows Git-metadata injection but does
+not make shared worktree content safe to execute later on the host.
+
+Docker sbx has a documented partial boundary. Its standard `.git/hooks`
+directory is mounted read-only as defense in depth, but `.git/config` remains
+writable because sbx 0.38 does not accept file workspaces. The read-only hooks
+directory is not a security barrier: a sandboxed process can set
+`core.hooksPath` into the writable worktree, or configure `core.fsmonitor`,
+`include.path`, and filter, diff, or merge drivers. The sbx boundary therefore
+protects the rest of the Mac from direct sandbox filesystem access but does not
+protect against host-side code execution through this repository's Git
+metadata. A hash-based warning reports Git config or resolved hook-path drift
+at detach, stop, and later reconciliation, but it is neither prevention nor
+attribution and cannot protect a host Git command run before comparison.
+
+Docker sbx also forwards the host SSH agent whenever its daemon has one. In the
+supported 0.38.0 version there is no per-sandbox disable flag or setting;
+removing `SSH_AUTH_SOCK` only from the create command does not remove a socket
+already available to the daemon. Processes inside the sandbox can request
+signatures, authenticate Git-over-SSH, sign commits, or authenticate to other
+SSH services reachable under provider network policy. Private key bytes remain
+in the host agent, but signature and authentication authority is intentionally
+exposed. Ghosthub presents this capability before creation and never describes
+sbx as credentials-off.
+
+For Apple, Ghosthub does not pass `--ssh`, mount a home directory, copy
+credentials, or configure credential helpers. For either provider Ghosthub
+does not manage provider login, secrets, or network policy. Push behavior is
+provider-dependent and never a Ghosthub guarantee; review and push from the
+host is the recommended workflow.
+
+Changing repository source, build scripts, editor configuration, or another
+executable file inside the intentionally shared worktree is in scope for the
+sandbox's work product and outside the claimed filesystem boundary when the
+user later executes that content on the host. A report that bypasses the
+declared mounts or mutates another worktree or unmounted host path remains an
+in-scope sandbox escape. For sbx, host execution reached only through the
+documented repository Git-metadata channel is a product limitation, not an
+escape from the stated boundary.
+
 ### Release distribution
 
 GitHub release hosting and the network path used to fetch an appcast or DMG are
@@ -378,6 +434,8 @@ compromising a trusted component, including:
 - bypassing the user's SSH host identity and authentication policy
 - confusing host, worktree, pane, or session identity in a way that mutates a
   different target
+- allowing a managed sandbox to read or write an undeclared host path, inherit
+  a replacement worktree generation, or mutate an unverified provider resource
 - killing or structurally mutating a tmux session through Ghosthub's ordinary
   presentation, or terminating a session other than the exact target confirmed
   by the user
@@ -401,7 +459,8 @@ not security-boundary violations.
   or unbounded output
 - compromise of the local Mac, user account, SSH agent, shell startup files,
   configuration, or locally installed command-line tools
-- sandboxing commands the user chooses to run in a terminal pane
+- sandboxing commands the user chooses to run in an ordinary terminal pane
+  outside an explicitly managed worktree sandbox
 - availability of the network, SSH service, tmux server, or external state
   provider
 

@@ -69,8 +69,10 @@ layer, as subject to direct iteration.
    workflow, build commands, and quality gates).
 2. `docs/architecture.md`: Architecture and Product source of truth.
 3. `docs/threat-model.md`: Security boundaries and trusted-peer assumptions.
-4. `docs/terminal-sessions.md`: Source of truth for terminal ownership, shell startup, and restart semantics.
-5. `docs/release.md`: Signing, notarization, and release process source of truth.
+4. `docs/sandboxes.md`: Accepted provider, identity, lifecycle, terminal, and
+   security contract for worktree-scoped sandboxes.
+5. `docs/terminal-sessions.md`: Source of truth for terminal ownership, shell startup, and restart semantics.
+6. `docs/release.md`: Signing, notarization, and release process source of truth.
 
 ## Non-Negotiable Workflow Rules
 
