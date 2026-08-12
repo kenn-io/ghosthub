@@ -66,7 +66,8 @@ The tile can show these restrained states:
 - a quiet terminal placeholder before the first successful capture;
 - the latest frame and its relative update time;
 - a Live indicator while the tile is refreshing;
-- a reconnecting or disconnected status over the retained frame;
+- a reconnecting or disconnected placeholder while server-side session
+  identity is unverified;
 - **Live preview limit reached** when an inactive expanded tile cannot obtain a
   live-rendering slot.
 
@@ -118,9 +119,12 @@ live-preview budget.
 
 Preview state is keyed by the retained presentation identity used by
 `TmuxPresentationKey`: host ID, exact session name, and optional protected
-socket name. Sidebar row UUIDs are not presentation identity. A worktree
-generation change is still a replacement event even when it reuses the same
-key, and the coordinator clears the old preview explicitly.
+socket name. That endpoint key is not sufficient authority to reuse terminal
+pixels: every successful capture also records the presentation's verified
+`TmuxSessionIdentity` (tmux server PID, session ID, and creation time). Sidebar
+row UUIDs are not presentation identity. A worktree generation change is still
+a replacement event even when it reuses the same key, and the coordinator
+clears the old preview explicitly.
 
 The coordinator publishes small view state objects containing the image,
 capture date, connection status, live state, and placeholder reason. SwiftUI
@@ -174,7 +178,8 @@ an inactive parked preview performs this ordered handoff:
 3. set the surface occluded by removing it from the parking host and release
    its live-preview slot;
 4. activate the retained presentation;
-5. let the existing `BorrowedTmuxSessionView` path mount the surface, reset
+5. let the existing `BorrowedTmuxSessionView` path mount the surface, clear
+   `isParkedForPreview`, restore key-view eligibility, reset
    `suppressAutoFocus` to false, and request keyboard focus.
 
 At no point does the surface have two parents.
@@ -189,8 +194,12 @@ only an immutable image.
 
 Parking obeys these invariants:
 
+- set an explicit `isParkedForPreview` state before attachment; while set,
+  `TerminalSurfaceView.acceptsFirstResponder` returns false, the view has no
+  next/previous key-view links, and any existing first-responder/focused state
+  is resigned before the surface enters the parking host;
 - set `suppressAutoFocus = true` before attaching the surface because
-  `viewDidMoveToWindow` otherwise claims first responder in a key window;
+  `viewDidMoveToWindow` otherwise requests first responder in a key window;
 - bypass `BorrowedTmuxSessionView` and its focus-requesting `onAppear` path;
 - preserve the surface's existing bounds, frame size, and backing scale so
   `viewDidMoveToWindow` cannot reflow the tmux client grid;
@@ -246,12 +255,17 @@ ownership between scenes.
 
 ### Reconnect and Replacement
 
-A transport reconnect for the same session identity releases the stale parked
-surface and its budget slot but retains the cached image. The tile overlays the
-existing per-handle `borrowedTmuxConnectionStates` status. When the recovery
-supervisor installs the replacement surface for the same presentation, the
-coordinator can capture or park it again according to the current mode,
-expansion, visibility gates, and budget.
+A transport reconnect releases the stale parked surface and its budget slot.
+The cached image remains quarantined and is not displayed while server-side
+session identity is unverified; the tile shows a reconnecting or disconnected
+placeholder derived from the existing per-handle
+`borrowedTmuxConnectionStates`. When recovery verifies a
+`TmuxSessionIdentity` equal to the identity recorded with the image, the
+coordinator may display that image again and can capture or park the replacement
+surface according to the current mode, expansion, visibility gates, and budget.
+If recovery cannot verify the identity or observes a different server PID,
+session ID, or creation time, the coordinator clears the quarantined image and
+seed before presenting the replacement session.
 
 Closing or invalidating a presentation clears both its parking state and cached
 image. A replacement such as a new non-nil worktree generation under the same
@@ -302,7 +316,9 @@ Use Swift Testing for new pure-logic coverage:
 - deterministic application-wide budget allocation, release, and waiter
   promotion;
 - preview-state transitions among Off, Efficient, and Live;
-- reconnect retaining an image while releasing a stale parked surface;
+- reconnect quarantining an image while releasing a stale parked surface, then
+  restoring it only after equal `TmuxSessionIdentity` verification;
+- missing or changed reconnect identity clearing the quarantined image;
 - close, invalidation, and generation replacement clearing the image;
 - active versus inactive capture routing;
 - unchanged IOSurface seed suppression;
@@ -314,6 +330,8 @@ window lifecycle are the behavior under test:
 - parking preserves the surface size and terminal grid;
 - parking sets `suppressAutoFocus` before window attachment and does not steal
   first responder;
+- parked surface state refuses first responder, leaves the key-view loop, and
+  resigns existing focus before attachment;
 - the parking container rejects hit testing and accessibility exposure;
 - a parked surface stays renderable in a visible covered host;
 - the active preview captures without reparenting;
@@ -351,7 +369,8 @@ grid resizing, and undocumented user-facing behavior.
 - Active surfaces are never reparented for capture.
 - Parked surfaces cannot take focus, receive pointer input, or change terminal
   grid dimensions.
-- Same-identity reconnects retain the last image; close, invalidation, and
+- Reconnects display a cached image only after equal `TmuxSessionIdentity`
+  verification; missing or changed identity, close, invalidation, and
   generation replacement clear it.
 - Preview failures never impair session attachment, reconnect, input, or close
   behavior.
