@@ -38,12 +38,14 @@ extension WorkspaceSceneModel {
 
     func handleApplicationDidBecomeActiveForResourceMonitoring() {
         isAppActive = true
+        tmuxSessionPreviewCoordinator.applicationDidBecomeActive()
         activityController
             .handleApplicationDidBecomeActiveForResourceMonitoring()
     }
 
     func handleApplicationDidResignActiveForResourceMonitoring() {
         isAppActive = false
+        tmuxSessionPreviewCoordinator.applicationDidResignActive()
         activityController
             .handleApplicationDidResignActiveForResourceMonitoring()
     }

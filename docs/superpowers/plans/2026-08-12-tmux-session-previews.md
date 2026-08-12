@@ -337,7 +337,7 @@ Commit: `Add focus-safe terminal preview parking`
 - Modify: `Tests/App/SceneModelTestSupport.swift`
 - Create: `Tests/App/TmuxSessionPreviewCoordinatorTests.swift`
 
-- [ ] **Step 1: Add failing coordinator tests with injected collaborators**
+- [x] **Step 1: Add failing coordinator tests with injected collaborators**
 
 Inject a budget, clock, snapshot closure, 500ms Live clock, 250ms activation delay, key-window predicate, and park/unpark closures. Cover:
 
@@ -359,13 +359,13 @@ Inject a budget, clock, snapshot closure, 500ms Live clock, 250ms activation del
 - suspended snapshot completions cannot publish after Off, removal,
   replacement, or reconnect invalidates their capture generation.
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [x] **Step 2: Run focused tests and confirm failure**
 
 Run: `swift test --filter TmuxSessionPreviewCoordinatorTests`
 
 Expected: compilation fails because the coordinator is missing.
 
-- [ ] **Step 3: Implement coordinator inputs and published view state**
+- [x] **Step 3: Implement coordinator inputs and published view state**
 
 Use an internal main-actor observable object:
 
@@ -400,11 +400,11 @@ activation generation, and delayed reacquisition revalidates the generation,
 Live mode, application activity, scene sidebar visibility, row expansion,
 connection state, budget grant, and key-window ownership before parking.
 
-- [ ] **Step 4: Implement parking and click handoff order**
+- [x] **Step 4: Implement parking and click handoff order**
 
 On inactive Live eligibility: request a slot, then park only after a host is installed and the surface has left the detail parent. On tile activation: stop scheduling that key, final-capture best effort, unpark, release the slot, then invoke the existing open-selection action. Record the steps through injected closures so the test asserts capture -> unpark -> activate.
 
-- [ ] **Step 5: Add the opaque SwiftUI/AppKit adapters**
+- [x] **Step 5: Add the opaque SwiftUI/AppKit adapters**
 
 In `TmuxSessionPreviewViews.swift`, add:
 
@@ -413,11 +413,11 @@ In `TmuxSessionPreviewViews.swift`, add:
 
 The tile supplies one combined VoiceOver label describing session, live/retained status, relative update time, connection state, and limit state. It contains no surface or timer.
 
-- [ ] **Step 6: Wire app activity into the coordinator**
+- [x] **Step 6: Wire app activity into the coordinator**
 
 Create the coordinator in `WorkspaceSceneModel.init`, defaulting to `LivePreviewBudget.shared` and `TerminalSurfaceSnapshotter`, with injectable substitutes in `SceneModelTestSupport.makeModel`. Forward the existing app-active notifications from `WorkspaceSceneModel+Subscriptions` in addition to resource-monitoring behavior.
 
-- [ ] **Step 7: Verify, format, and commit**
+- [x] **Step 7: Verify, format, and commit**
 
 Run: `swift test --filter 'TmuxSessionPreviewCoordinatorTests|LivePreviewBudgetTests'`
 

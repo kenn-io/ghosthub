@@ -1139,6 +1139,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let sceneSettings: WorkspaceSceneSettings
     let terminalRuntime: LibghosttyRuntime
     let terminalCoordinator: TerminalSurfaceCoordinator
+    let tmuxSessionPreviewCoordinator: TmuxSessionPreviewCoordinator
     let localHostID: UUID
     private let notificationService: NotificationService
     private let tmuxSessionActivityController:
@@ -1183,6 +1184,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let startExeHostInventory: () -> Void
     private var configuredExeHostsCancellable: AnyCancellable?
     private var terminalColorsCancellable: AnyCancellable?
+    private var sessionPreviewModeCancellable: AnyCancellable?
     private var deferredTmuxPresentationTasks: [UUID: Task<Void, Never>] = [:]
     private var drainingDeferredTmuxPresentationTasks:
         [UUID: Task<Void, Never>] = [:]
@@ -1557,6 +1559,9 @@ final class WorkspaceSceneModel: ObservableObject {
         },
         terminalColorsPublisher:
         AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
+        sessionPreviewCoordinator: TmuxSessionPreviewCoordinator? = nil,
+        sessionPreviewModePublisher:
+        AnyPublisher<SessionPreviewMode, Never>? = nil,
         tmuxSessionActivityController:
         TmuxSessionActivityController? = nil,
         sceneSettings: WorkspaceSceneSettings = .live(),
@@ -1692,6 +1697,11 @@ final class WorkspaceSceneModel: ObservableObject {
             SettingsStore.shared.shortcutPreferences.resolved
         }
         self.terminalCoordinator = terminalCoordinator
+        tmuxSessionPreviewCoordinator = sessionPreviewCoordinator
+            ?? TmuxSessionPreviewCoordinator(
+                mode: SettingsStore.shared.sessionPreviewMode,
+                snapshotter: TerminalSurfaceSnapshotter()
+            )
         self.notificationService = notificationService
         self.tmuxSessionActivityController =
             tmuxSessionActivityController
@@ -1950,6 +1960,11 @@ final class WorkspaceSceneModel: ObservableObject {
                     self?.terminalPresentationStyleDidChange()
                 }
             }
+        let previewModePublisher = sessionPreviewModePublisher
+            ?? (sessionPreviewCoordinator == nil
+                ? SettingsStore.shared.$sessionPreviewMode
+                .eraseToAnyPublisher()
+                : nil)
         // Forward panel routing changes to WSM's
         // objectWillChange so SwiftUI picks up state.
         panelRoutingCancellable = panelRoutingService
@@ -1983,8 +1998,13 @@ final class WorkspaceSceneModel: ObservableObject {
         // avoid "Publishing changes from within view updates" when
         // @StateObject creates the model during body evaluation.
         DispatchQueue.main.async {
-            [self, sshHostsPublisher, exeHostsPublisher] in
+            [self, sshHostsPublisher, exeHostsPublisher, previewModePublisher] in
             guard !isShutDown else { return }
+            sessionPreviewModeCancellable = previewModePublisher?
+                .removeDuplicates()
+                .sink { [weak self] mode in
+                    self?.tmuxSessionPreviewCoordinator.setMode(mode)
+                }
             configuredSSHHostsCancellable = sshHostsPublisher.sink {
                 [weak self] hosts in
                 guard let self, !self.hasOverrideSnapshot else { return }
@@ -2038,6 +2058,7 @@ final class WorkspaceSceneModel: ObservableObject {
         configuredSSHHostsCancellable?.cancel()
         configuredExeHostsCancellable?.cancel()
         terminalColorsCancellable?.cancel()
+        sessionPreviewModeCancellable?.cancel()
         worktreeMutationCancellable?.cancel()
         let mutationCoordinator = worktreeMutationCoordinator
         let mutationParticipantID = worktreeMutationParticipantID
