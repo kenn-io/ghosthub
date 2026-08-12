@@ -203,6 +203,29 @@ public struct LibghosttyConfigPipeline {
         self.fileManager = fileManager
     }
 
+    public func writeGlobalConfig(_ contents: String) throws {
+        let configFile = paths.globalConfigFile
+        let writeTarget: URL
+        if let destination = try? fileManager.destinationOfSymbolicLink(
+            atPath: configFile.path
+        ) {
+            let target = if destination.hasPrefix("/") {
+                URL(fileURLWithPath: destination)
+            } else {
+                configFile.deletingLastPathComponent()
+                    .appendingPathComponent(destination)
+            }
+            writeTarget = target.resolvingSymlinksInPath()
+        } else {
+            writeTarget = configFile
+        }
+        try contents.write(
+            to: writeTarget,
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
     @discardableResult
     public func prepareGlobalConfig() throws -> Bool {
         let configFile = paths.globalConfigFile
@@ -225,11 +248,7 @@ public struct LibghosttyConfigPipeline {
         }
 
         do {
-            try Self.defaultGlobalConfigContents.write(
-                to: configFile,
-                atomically: true,
-                encoding: .utf8
-            )
+            try writeGlobalConfig(Self.defaultGlobalConfigContents)
         } catch {
             throw LibghosttyConfigPipelineError.writeDefaultConfig(
                 configFile,
@@ -274,17 +293,7 @@ public struct LibghosttyConfigPipeline {
             updated.append("\(setting.key) = \(setting.value)\n")
         }
 
-        let writeTarget: URL
-        if (try? fileManager.destinationOfSymbolicLink(
-            atPath: configFile.path
-        )) != nil {
-            writeTarget = configFile.resolvingSymlinksInPath()
-        } else {
-            writeTarget = configFile
-        }
-        try? updated.write(
-            to: writeTarget, atomically: true, encoding: .utf8
-        )
+        try? writeGlobalConfig(updated)
     }
 
     private func configContainsKey(

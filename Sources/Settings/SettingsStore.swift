@@ -579,11 +579,7 @@ public final class SettingsStore: ObservableObject {
                 with: managedBlock
             )
 
-            try contents.write(
-                to: terminalConfigFile,
-                atomically: true,
-                encoding: .utf8
-            )
+            try configPipeline.writeGlobalConfig(contents)
             lastErrorMessage = nil
         } catch {
             lastErrorMessage = error.localizedDescription

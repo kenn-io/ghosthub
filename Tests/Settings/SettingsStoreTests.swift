@@ -167,6 +167,50 @@ final class SettingsStoreTests {
         )
     }
 
+    @Test("startup preserves a symlinked terminal config")
+    func startupPreservesSymlinkedTerminalConfig() throws {
+        let managedDirectory = tempRoot.appendingPathComponent(
+            "managed-config",
+            isDirectory: true
+        )
+        let managedConfig = managedDirectory.appendingPathComponent(
+            "ghostty.conf",
+            isDirectory: false
+        )
+        try FileManager.default.createDirectory(
+            at: managedDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try LibghosttyConfigPipeline.defaultGlobalConfigContents.write(
+            to: managedConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.createSymbolicLink(
+            at: paths.globalConfigFile,
+            withDestinationURL: managedConfig
+        )
+
+        _ = makeSUT()
+
+        let destination = try? FileManager.default
+            .destinationOfSymbolicLink(
+                atPath: paths.globalConfigFile.path
+            )
+        #expect(destination == managedConfig.path)
+        let managedContents = try String(
+            contentsOf: managedConfig,
+            encoding: .utf8
+        )
+        #expect(managedContents.contains(
+            "# >>> Ghosthub managed terminal settings >>>"
+        ))
+    }
+
     @Test("startup uses defaults and reports invalid shortcut config")
     func invalidStartupShortcutConfigUsesDefaults() throws {
         try writeAppConfig(toml: """
