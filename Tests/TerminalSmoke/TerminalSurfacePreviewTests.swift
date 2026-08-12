@@ -103,6 +103,98 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         }
     }
 
+    func testParkedStateResignsFocusWithoutMutatingKeyViewLinks() throws {
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        let nextView = NSButton(title: "Next", target: nil, action: nil)
+        view.nextKeyView = nextView
+        nextView.nextKeyView = view
+        XCTAssertTrue(window.firstResponder === view)
+
+        view.setParkedForPreview(true)
+
+        XCTAssertTrue(view.isParkedForPreview)
+        XCTAssertFalse(view.acceptsFirstResponder)
+        XCTAssertFalse(view.canBecomeKeyView)
+        XCTAssertFalse(window.firstResponder === view)
+        XCTAssertFalse(view.focused)
+        XCTAssertTrue(view.nextKeyView === nextView)
+        XCTAssertTrue(nextView.nextKeyView === view)
+
+        view.setParkedForPreview(false)
+
+        XCTAssertFalse(view.isParkedForPreview)
+        XCTAssertTrue(view.acceptsFirstResponder)
+        XCTAssertTrue(view.canBecomeKeyView)
+        XCTAssertFalse(window.firstResponder === view)
+        XCTAssertTrue(view.nextKeyView === nextView)
+        XCTAssertTrue(nextView.nextKeyView === view)
+    }
+
+    func testParkingHostIsNoninteractiveAndPreservesSurfaceSize() throws {
+        let originalOcclusionSetter = TerminalSurfaceView.occlusionSetter
+        var occlusionStates: [Bool] = []
+        TerminalSurfaceView.occlusionSetter = { surface, visible in
+            occlusionStates.append(visible)
+            originalOcclusionSetter(surface, visible)
+        }
+        defer {
+            TerminalSurfaceView.occlusionSetter = originalOcclusionSetter
+        }
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        try waitForIOSurface(in: view)
+        let originalFrame = view.frame
+        let originalBounds = view.bounds
+        let originalSurfaceSize = try XCTUnwrap(view.surfaceSize)
+        let root = NSView(frame: try XCTUnwrap(window.contentView).bounds)
+        window.contentView = root
+        let host = LivePreviewParkingHost(frame: root.bounds)
+        root.addSubview(host)
+
+        try host.park(view)
+
+        XCTAssertTrue(host.contains(view))
+        XCTAssertTrue(view.superview === host)
+        XCTAssertEqual(view.frame, originalFrame)
+        XCTAssertEqual(view.bounds, originalBounds)
+        XCTAssertEqual(view.surfaceSize?.width_px, originalSurfaceSize.width_px)
+        XCTAssertEqual(view.surfaceSize?.height_px, originalSurfaceSize.height_px)
+        XCTAssertEqual(view.surfaceSize?.columns, originalSurfaceSize.columns)
+        XCTAssertEqual(view.surfaceSize?.rows, originalSurfaceSize.rows)
+        XCTAssertNil(host.hitTest(CGPoint(x: 10, y: 10)))
+        XCTAssertEqual(host.accessibilityChildren()?.count, 0)
+        XCTAssertFalse(host.isAccessibilityElement())
+        XCTAssertTrue(view.layer?.contents is IOSurface)
+
+        host.unpark(view)
+
+        XCTAssertFalse(host.contains(view))
+        XCTAssertNil(view.superview)
+        XCTAssertFalse(view.isParkedForPreview)
+        XCTAssertEqual(view.frame, originalFrame)
+        XCTAssertEqual(view.bounds, originalBounds)
+        XCTAssertEqual(occlusionStates.last, false)
+    }
+
+    func testParkingRejectsAStillMountedSurface() throws {
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        let host = LivePreviewParkingHost(frame: window.contentView?.bounds ?? .zero)
+
+        XCTAssertThrowsError(try host.park(view)) { error in
+            XCTAssertEqual(
+                error as? LivePreviewParkingError,
+                .surfaceStillMounted
+            )
+        }
+        XCTAssertFalse(view.isParkedForPreview)
+        XCTAssertFalse(host.contains(view))
+    }
+
     private func makeSurface() throws -> TerminalSurfaceView {
         let runtime = retainedRuntime()
         let app = try XCTUnwrap(runtime.unsafeAppHandle)
