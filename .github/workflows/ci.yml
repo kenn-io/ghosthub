@@ -160,6 +160,14 @@ jobs:
       - name: Build Swift tests
         run: swift build --build-tests
 
+      # Runs before the long test lanes so a window-switch render
+      # regression fails the build in seconds with a legible step name.
+      - name: Run activation work gate
+        run: >-
+          sh tools/run_swift_tests.sh
+          swift test --skip-build --disable-xctest
+          --filter ActivationWorkGateTests
+
       - name: Run terminal smoke tests
         # Most AppKit/PTY tests are isolated by fixture, so parallel workers
         # shorten the runner exposure window without saturating hosted Macs.
