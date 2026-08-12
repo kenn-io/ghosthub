@@ -150,11 +150,13 @@ The snapshotter follows these rules:
 
 Efficient mode has no timer. The coordinator captures an active surface when
 its row first expands and captures every outgoing active tmux surface in the
-active-presentation transition immediately before another presentation
-replaces it in the detail area. Capturing every outgoing surface makes a frame
-available if the user expands that inactive row later. The retained layer
-contents remain a fallback capture source after SwiftUI removal, but the
-explicit pre-unmount hook is the primary ordering contract.
+active-presentation transition immediately before it stops being active for any
+reason. This includes selection of another tmux, Herdr, or Zellij presentation,
+navigation to content with no native presentation, and explicit close.
+Capturing every outgoing surface makes a frame available if the user expands
+that inactive row later. The retained layer contents remain a fallback capture
+source after SwiftUI removal, but the explicit pre-unmount hook is the primary
+ordering contract.
 
 Live mode uses one coalescing timer source per scene, scheduled no faster than
 every 500 milliseconds. A tick captures the active onscreen surface when its
@@ -208,8 +210,12 @@ Parking obeys these invariants:
 - disable interaction structurally: the parking container returns `nil` from
   `hitTest(_:)`, exposes no accessibility children, and installs no input or
   focus handlers;
-- unpark all surfaces when the application becomes inactive or the sidebar is
-  hidden, then reacquire slots when the gate reopens.
+- unpark all surfaces across the application when the application becomes
+  inactive; after activation, wait for a short 250-millisecond stabilization
+  interval and revalidate the key window before requesting parking slots, so a
+  brief Cmd-Tab does not reattach surfaces during AppKit's focus transition;
+- when one scene hides its sidebar, unpark and release only that scene's
+  surfaces; other visible scenes keep their slots.
 
 A failure to park degrades that tile to Efficient behavior and does not disturb
 the retained attachment.
@@ -246,8 +252,10 @@ ownership between scenes.
 ### Navigate Away
 
 1. Before changing the active retained presentation, the scene preview
-   coordinator captures the outgoing active surface in Efficient mode. In Live
-   mode it captures the outgoing surface only when its row is expanded.
+   coordinator captures the outgoing active tmux surface in Efficient mode,
+   regardless of whether the next state is tmux, Herdr, Zellij, or no native
+   presentation. In Live mode it captures the outgoing surface only when its
+   row is expanded.
 2. In Efficient mode the surface unmounts normally and remains occluded.
 3. In Live mode an expanded outgoing surface requests a parking slot. If
    granted, the parking host attaches it at the unchanged size with focus and
@@ -266,6 +274,11 @@ surface according to the current mode, expansion, visibility gates, and budget.
 If recovery cannot verify the identity or observes a different server PID,
 session ID, or creation time, the coordinator clears the quarantined image and
 seed before presenting the replacement session.
+
+Hiding the frame while identity is unverified deliberately favors safety over
+continuity. An endpoint can name a replacement session during an outage, so
+Ghosthub does not show terminal pixels until it has authority that they belong
+to the reconnected session.
 
 Closing or invalidating a presentation clears both its parking state and cached
 image. A replacement such as a new non-nil worktree generation under the same
@@ -316,6 +329,11 @@ Use Swift Testing for new pure-logic coverage:
 - deterministic application-wide budget allocation, release, and waiter
   promotion;
 - preview-state transitions among Off, Efficient, and Live;
+- outgoing capture for tmux-to-tmux, tmux-to-Herdr, tmux-to-Zellij,
+  presentation-free navigation, and explicit close;
+- application-wide deactivation release plus delayed, key-window-validated
+  reacquisition;
+- scene-scoped sidebar hiding releases only that scene's slots;
 - reconnect quarantining an image while releasing a stale parked surface, then
   restoring it only after equal `TmuxSessionIdentity` verification;
 - missing or changed reconnect identity clearing the quarantined image;
