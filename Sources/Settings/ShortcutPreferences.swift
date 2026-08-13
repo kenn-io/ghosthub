@@ -114,17 +114,15 @@ public struct ShortcutPreferences: Equatable, Sendable {
             ApplicationShortcutAction: ApplicationShortcutOverride
         ]
     ) -> [ApplicationShortcutAction: ApplicationShortcutOverride] {
-        // v0.8.2 documented Command-number sibling bindings before those
-        // chords became fixed native-tab shortcuts. Ignore only those exact
-        // legacy pairs so one stale entry cannot discard unrelated overrides.
+        // Command-number bindings were configurable before those chords
+        // became fixed native-tab shortcuts. Ignore every stale collision so
+        // one legacy entry cannot discard unrelated overrides.
         var migrated = overrides
         for (action, override) in overrides {
-            guard let index = action.siblingIndex,
-                  case let .binding(binding) = override,
-                  binding == ApplicationKeyBinding(
-                      modifiers: .command,
-                      key: .character(Character(String(index)))
-                  )
+            guard case let .binding(binding) = override,
+                  binding.modifiers == .command,
+                  case let .character(character) = binding.key,
+                  ("1" ... "9").contains(character)
             else { continue }
             migrated[action] = nil
         }

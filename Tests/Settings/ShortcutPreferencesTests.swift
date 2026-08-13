@@ -23,12 +23,13 @@ struct ShortcutPreferencesTests {
         #expect(preferences.resolved[.splitRight] == nil)
     }
 
-    @Test("legacy Command-number sibling bindings preserve other overrides")
-    func migratesLegacyNumberedSiblingBindings() throws {
+    @Test("legacy Command-number bindings preserve other overrides")
+    func migratesLegacyNumberBindings() throws {
         let result = ShortcutPreferences.load(contents: """
         [keyboard.shortcuts]
         select-sibling-1 = "cmd+1"
         select-sibling-9 = "cmd+9"
+        split-right = "cmd+4"
         next-sibling = "cmd+k"
         """)
 
@@ -39,6 +40,7 @@ struct ShortcutPreferencesTests {
         let unrelatedBinding = try ApplicationKeyBinding(parsing: "cmd+k")
         #expect(preferences.overrides[.selectSibling1] == nil)
         #expect(preferences.overrides[.selectSibling9] == nil)
+        #expect(preferences.overrides[.splitRight] == nil)
         #expect(preferences.overrides[.nextSibling]
             == .binding(unrelatedBinding))
         #expect(preferences.resolved[.nextSibling] == unrelatedBinding)

@@ -534,6 +534,47 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertFalse(NSWindow.allowsAutomaticWindowTabbing)
     }
 
+    func testAdoptedWorkspaceTabRestoresParentFrameAfterHostingResize() async {
+        let delegate = ApplicationDelegate.forTesting()
+        let parent = NSWindow(
+            contentRect: NSRect(x: 80, y: 120, width: 1200, height: 760),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let expectedFrame = parent.frame
+        parent.tabbingIdentifier = WorkspaceWindowIdentity.tabbingIdentifier
+        var requestID: UUID?
+        delegate.openWorkspaceWindow = { state in
+            requestID = state.windowID
+        }
+        delegate.requestNewWorkspaceTab(from: parent)
+        let child = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        child.tabbingIdentifier = WorkspaceWindowIdentity.tabbingIdentifier
+
+        delegate.adoptWorkspaceWindowAsTabIfRequested(
+            child,
+            requestID: requestID
+        )
+        child.setFrame(
+            NSRect(x: 80, y: 120, width: 224, height: 200),
+            display: false
+        )
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+
+        XCTAssertEqual(parent.frame, expectedFrame)
+        XCTAssertEqual(child.frame, expectedFrame)
+    }
+
     func testLastWindowClosesWithoutRequestingTermination() {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: true
