@@ -532,7 +532,7 @@ final class CompactWorkspaceTitlebarController {
                 Image(systemName: sessionTitle.icon.systemImageName)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                Text(sessionTitle.sessionName)
+                Text(sessionTitle.displayName)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)

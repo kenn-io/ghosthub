@@ -318,6 +318,14 @@ capture_state guide-terminal.png
 dismiss_sheet
 fi
 
+expected_window_title() {
+  case "$1" in
+    fix-reconnect-backoff) printf '%s\n' 'ghosthub / fix-reconnect-backoff' ;;
+    add-session-filters) printf '%s\n' 'agentsview / add-session-filters' ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 prepare_command_window() {
   local query="$1" create="${2:-true}" select="${3:-palette}"
   if [[ "$create" == "true" ]]; then
@@ -352,7 +360,7 @@ prepare_command_window() {
     palette "$query"
   fi
   sleep 3
-  demo_input expect-window-title "$query"
+  demo_input expect-window-title "$(expected_window_title "$query")"
   demo_input hide-sidebar
 }
 
@@ -388,7 +396,7 @@ prepare_command_tab() {
   sleep 1
   palette "$query"
   sleep 3
-  demo_input expect-window-title "$query"
+  demo_input expect-window-title "$(expected_window_title "$query")"
   demo_input hide-sidebar
 }
 
