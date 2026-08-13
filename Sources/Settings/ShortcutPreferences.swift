@@ -85,7 +85,9 @@ public struct ShortcutPreferences: Equatable, Sendable {
         }
 
         do {
-            return .success(try Self(overrides: overrides))
+            return .success(try Self(
+                overrides: removingLegacyNativeTabBindings(from: overrides)
+            ))
         } catch let error as ApplicationShortcutResolutionError {
             return .failure(.init(
                 action: error.affectedAction,
@@ -105,5 +107,27 @@ public struct ShortcutPreferences: Equatable, Sendable {
               raw.last == "\""
         else { return nil }
         return TOMLConfigParser.unquoteTOMLString(raw)
+    }
+
+    private static func removingLegacyNativeTabBindings(
+        from overrides: [
+            ApplicationShortcutAction: ApplicationShortcutOverride
+        ]
+    ) -> [ApplicationShortcutAction: ApplicationShortcutOverride] {
+        // v0.8.2 documented Command-number sibling bindings before those
+        // chords became fixed native-tab shortcuts. Ignore only those exact
+        // legacy pairs so one stale entry cannot discard unrelated overrides.
+        var migrated = overrides
+        for (action, override) in overrides {
+            guard let index = action.siblingIndex,
+                  case let .binding(binding) = override,
+                  binding == ApplicationKeyBinding(
+                      modifiers: .command,
+                      key: .character(Character(String(index)))
+                  )
+            else { continue }
+            migrated[action] = nil
+        }
+        return migrated
     }
 }

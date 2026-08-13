@@ -23,6 +23,27 @@ struct ShortcutPreferencesTests {
         #expect(preferences.resolved[.splitRight] == nil)
     }
 
+    @Test("legacy Command-number sibling bindings preserve other overrides")
+    func migratesLegacyNumberedSiblingBindings() throws {
+        let result = ShortcutPreferences.load(contents: """
+        [keyboard.shortcuts]
+        select-sibling-1 = "cmd+1"
+        select-sibling-9 = "cmd+9"
+        next-sibling = "cmd+k"
+        """)
+
+        guard case let .success(preferences) = result else {
+            Issue.record("Expected migrated shortcut preferences")
+            return
+        }
+        let unrelatedBinding = try ApplicationKeyBinding(parsing: "cmd+k")
+        #expect(preferences.overrides[.selectSibling1] == nil)
+        #expect(preferences.overrides[.selectSibling9] == nil)
+        #expect(preferences.overrides[.nextSibling]
+            == .binding(unrelatedBinding))
+        #expect(preferences.resolved[.nextSibling] == unrelatedBinding)
+    }
+
     @Test("invalid known scalar reports the action")
     func rejectsInvalidScalar() {
         let result = ShortcutPreferences.load(contents: """

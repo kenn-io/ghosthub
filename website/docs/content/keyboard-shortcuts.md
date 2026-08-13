@@ -40,6 +40,8 @@ native-tab shortcuts, and <kbd>⌘</kbd><kbd>9</kbd> selects the last native tab
 If the requested tab number is beyond the end of a short tab group, Ghosthub
 selects that group's last tab. Bind numbered sibling actions to different
 key combinations when you need both forms of navigation.
+Existing `select-sibling-N = "cmd+N"` entries are ignored during upgrade so
+other custom shortcuts in the same configuration remain active.
 
 ## Other defaults
 

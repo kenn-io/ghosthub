@@ -108,12 +108,13 @@ struct NativeTabCommandsTests {
         #expect(badgeText(in: windows[0]) == "⌘1")
         #expect(badgeText(in: windows[7]) == "⌘8")
         #expect(badgeText(in: windows[8]) == nil)
-        #expect(badgeText(in: windows[9]) == nil)
+        #expect(badgeText(in: windows[9]) == "⌘9")
 
         NativeTabCommands.refreshBadges(in: windows.reversed())
 
         #expect(badgeText(in: windows[9]) == "⌘1")
-        #expect(badgeText(in: windows[0]) == nil)
+        #expect(badgeText(in: windows[1]) == nil)
+        #expect(badgeText(in: windows[0]) == "⌘9")
     }
 
     @Test("tab shortcut badges refresh after AppKit reorders tabs")

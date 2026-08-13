@@ -131,8 +131,16 @@ enum NativeTabCommands {
     static func refreshBadges(
         in windows: some Sequence<NSWindow>
     ) {
+        let windows = Array(windows)
         for (index, window) in windows.enumerated() {
-            guard index < 8 else {
+            let shortcut: Int? = if index < 8 {
+                index + 1
+            } else if index == windows.indices.last {
+                9
+            } else {
+                nil
+            }
+            guard let shortcut else {
                 if window.tab.accessoryView?.identifier == badgeIdentifier {
                     window.tab.accessoryView = nil
                 }
@@ -159,7 +167,7 @@ enum NativeTabCommands {
             } else {
                 continue
             }
-            label.stringValue = "⌘\(index + 1)"
+            label.stringValue = "⌘\(shortcut)"
         }
     }
 
