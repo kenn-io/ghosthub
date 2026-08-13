@@ -107,6 +107,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private var unresolvedIdentityKeys: Set<TmuxPreviewKey> = []
     private var unavailableIdentityKeys: Set<TmuxPreviewKey> = []
     private var parkingBlockedKeys: Set<TmuxPreviewKey> = []
+    private var deferredEfficientCaptureKeys: Set<TmuxPreviewKey> = []
     private var isParkingHostChanging = false
     private var isShutDown = false
     private var generations: [TmuxPreviewKey: UInt64] = [:]
@@ -272,6 +273,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         invalidate(key)
         invalidateActivationDelay()
         if !expanded {
+            deferredEfficientCaptureKeys.remove(key)
             unparkAndRelease(key)
         }
         publish(key)
@@ -296,6 +298,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 
         switch newMode {
         case .off:
+            deferredEfficientCaptureKeys.removeAll()
             for key in keys {
                 unparkAndRelease(key)
                 previewStates[key]?.setMode(.off)
@@ -318,6 +321,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             keys.filter { !formerlyParked.contains($0) }
                 .forEach(unparkAndRelease)
         case .live:
+            deferredEfficientCaptureKeys.removeAll()
             if isLeavingOff {
                 keys.forEach(restorePreviewState)
             }
@@ -339,6 +343,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             releaseAllParking()
         } else {
             reconcileEligibility()
+            retryDeferredEfficientCaptures()
         }
         restartLiveTaskIfNeeded()
     }
@@ -355,6 +360,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     func applicationDidBecomeActive() {
         guard !isApplicationActive else { return }
         isApplicationActive = true
+        retryDeferredEfficientCaptures()
         guard sceneIsKeyWindow() else { return }
         scheduleParkingReacquisition()
     }
@@ -406,6 +412,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         unresolvedIdentityKeys.removeAll()
         unavailableIdentityKeys.removeAll()
         parkingBlockedKeys.removeAll()
+        deferredEfficientCaptureKeys.removeAll()
         generations.removeAll()
     }
 
@@ -493,6 +500,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             publish(key)
         case .close:
             expandedKeys.remove(key)
+            deferredEfficientCaptureKeys.remove(key)
             activatingKeys.remove(key)
             reconnectingKeys.remove(key)
             presentations.removeValue(forKey: key)
@@ -504,6 +512,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             unavailableIdentityKeys.remove(key)
             parkingBlockedKeys.remove(key)
         case .replacement:
+            deferredEfficientCaptureKeys.remove(key)
             activatingKeys.remove(key)
             reconnectingKeys.remove(key)
             presentations.removeValue(forKey: key)
@@ -869,8 +878,21 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         guard mode == .efficient,
               expandedKeys.contains(key),
               presentations[key]?.isActive() == true
-        else { return }
+        else {
+            deferredEfficientCaptureKeys.remove(key)
+            return
+        }
+        guard isApplicationActive, isSidebarVisible else {
+            deferredEfficientCaptureKeys.insert(key)
+            return
+        }
+        deferredEfficientCaptureKeys.remove(key)
         startCapture(key, reason: .scheduled)
+    }
+
+    private func retryDeferredEfficientCaptures() {
+        let keys = deferredEfficientCaptureKeys
+        keys.forEach(captureExpandedEfficientActiveIfNeeded)
     }
 
     private func restorePreviewState(_ key: TmuxPreviewKey) {

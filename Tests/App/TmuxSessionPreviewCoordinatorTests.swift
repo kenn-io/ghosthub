@@ -238,6 +238,36 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test("Efficient retries an Off transition capture when the sidebar appears")
+    func efficientRetriesOffCaptureAfterSidebarReveal() async {
+        let harness = PreviewCoordinatorHarness(mode: .off)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.coordinator.setSidebarVisible(false)
+        harness.coordinator.setMode(.efficient)
+
+        harness.coordinator.setSidebarVisible(true)
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [presentation.key])
+    }
+
+    @Test("Efficient retries an Off transition capture when the app activates")
+    func efficientRetriesOffCaptureAfterApplicationActivation() async {
+        let harness = PreviewCoordinatorHarness(mode: .off)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.coordinator.applicationDidResignActive()
+        harness.coordinator.setMode(.efficient)
+
+        harness.coordinator.applicationDidBecomeActive()
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [presentation.key])
+    }
+
     @Test("capture failure preserves the last valid frame")
     func captureFailurePreservesFrame() async {
         let harness = PreviewCoordinatorHarness(mode: .efficient)
