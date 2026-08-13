@@ -248,6 +248,9 @@ it in the unbound tmux group; custom-socket worktrees cannot claim a
 same-named default-socket session. When WSL config selects an explicit
 `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery and
 attachment; cached rows never correlate sessions across those server roots.
+Removing a worktree with its own `tmux_socket_name` is refused until that
+protected socket can be discovered and its live session terminated by fresh
+identity authority.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
@@ -483,7 +486,16 @@ or matching WSL UNC folder into the selected distro, then applies these POSIX
 operations through the pinned Linux helper. It publishes a successful
 machine-readable registration or removal before attempting broader worktree
 reconciliation, so an unrelated inventory failure cannot erase the confirmed
-result. Native Windows hosts do not expose project registry mutations until
+result. Rust worktree creation passes the repository identity and registration
+fingerprint reviewed by the user into the same guarded `kwt add` invocation;
+KWT verifies both while holding its project lifecycle lock before mutation.
+Successful worktree removal tombstones the exact path and generation locally
+before reconciliation. If a default-socket session is live, Ghosthub captures
+its exact tmux identity before enabling confirmation and consumes only that
+authority after approval; a same-named replacement requires a new
+confirmation. Live worktree presentations are keyed by their tmux identity so
+project registration changes cannot duplicate clients.
+Native Windows hosts do not expose project registry mutations until
 that command boundary supports native Windows paths.
 On macOS and Linux, the account login shell initializes the command
 environment, while Ghosthub's own inventory and discovery commands execute
@@ -899,6 +911,15 @@ for the remaining live sessions on each host and for the eventual result of an
 explicit named-session creation request. A worktree open does not infer live
 session state from kwt inventory: it uses kwt's exact-path start-only command
 to converge the session before attachment.
+On the Rust Windows path, the revision-pinned helper receives the selected
+repository identity, registration fingerprint, exact path, generation, and
+computed session name. KWT revalidates them atomically under its project
+lifecycle lock before repairing or starting the PTY-hosted client; a separate
+inventory preflight cannot grant stale open authority. Worktree creation first
+uses KWT's no-launch branch flow,
+then refreshes machine-readable inventory before granting RepairOrOpen
+authority. Branch reads, creation, and reconciliation share the serialized KWT
+background lane and never block GPUI or replace the last usable sidebar tree.
 Herdr's JSON session list is independently authoritative for running and
 stopped Herdr sessions. Exit 127 means optional capability absence and emits no diagnostic;
 malformed output or another failure produces only a host-scoped warning and

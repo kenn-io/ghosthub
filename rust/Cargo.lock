@@ -2101,6 +2101,7 @@ dependencies = [
  "ghosthub-model",
  "ghosthub-session",
  "libc",
+ "portable-pty",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
