@@ -317,6 +317,7 @@ func makeModel(
     herdrPaneSplitCapabilityProvider:
     NativeHerdrSessionCoordinator.PaneSplitCapabilityProvider? = nil,
     herdrPaneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
+    nativeTmuxPaneSplitter: TmuxPaneSplitter = TmuxPaneSplitter(),
     localKwtPathProvider: @escaping @Sendable () -> String? = {
         KwtBinaryLocator.bundledPath()
     },
@@ -475,9 +476,6 @@ func makeModel(
         .milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2),
         .seconds(4), .seconds(8),
     ],
-    tmuxPreviewIdentityRetryDelays: [Duration] = [
-        .milliseconds(250), .seconds(1), .seconds(4),
-    ],
     tmuxReconnectIntervals: [Duration] = [
         .seconds(1), .seconds(2), .seconds(4), .seconds(8),
         .seconds(16), .seconds(30),
@@ -499,6 +497,7 @@ func makeModel(
         nativeZellijPathProvider: nativeZellijPathProvider,
         herdrPaneSplitCapabilityProvider: herdrPaneSplitCapabilityProvider,
         herdrPaneSplitter: herdrPaneSplitter,
+        nativeTmuxPaneSplitter: nativeTmuxPaneSplitter,
         localKwtPathProvider: localKwtPathProvider,
         remoteTmuxPathProvider: remoteTmuxPathProvider,
         tmuxPresentationStyleProvider: tmuxPresentationStyleProvider,
@@ -560,7 +559,6 @@ func makeModel(
         createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
         deferredTmuxPresentationRetryDelays:
         deferredTmuxPresentationRetryDelays,
-        tmuxPreviewIdentityRetryDelays: tmuxPreviewIdentityRetryDelays,
         tmuxReconnectIntervals: tmuxReconnectIntervals,
         tmuxReconnectProbeDeadline: tmuxReconnectProbeDeadline,
         startServices: startServices

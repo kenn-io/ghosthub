@@ -739,6 +739,15 @@ final class NativeTmuxSessionCoordinator {
         attachments[handle.id]?.supportsPaneSplitting == true
     }
 
+    func attachedSessionIdentity(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> TmuxSessionIdentity? {
+        guard attachments[handle.id] != nil,
+              launchedHandles.contains(handle.id)
+        else { return nil }
+        return paneSplitClients[handle.id]?.sessionIdentity
+    }
+
     func requestPaneSplit(
         _ shortcut: TerminalPaneSplitShortcut,
         handle: BorrowedTmuxSessionHandle,

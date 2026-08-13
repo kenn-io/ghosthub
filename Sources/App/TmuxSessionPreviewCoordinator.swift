@@ -192,9 +192,8 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         }
         if previewStates[key] == nil {
             previewStates[key] = TmuxSessionPreviewState()
-        } else if isConnected(presentation),
-                  identityIsResolved,
-                  previewStates[key]?.quarantinedFrame != nil {
+        }
+        if isConnected(presentation), identityIsResolved {
             previewStates[key]?.verifyIdentity(presentation.identity())
         }
         if identityIsResolved {
@@ -441,8 +440,18 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                 previewStates[key]?.beginReconnect()
             }
             publish(key)
-        case .close, .replacement:
+        case .close:
             expandedKeys.remove(key)
+            activatingKeys.remove(key)
+            reconnectingKeys.remove(key)
+            presentations.removeValue(forKey: key)
+            registeredVersions.removeValue(forKey: key)
+            previewStates.removeValue(forKey: key)
+            viewStates.removeValue(forKey: key)
+            generations.removeValue(forKey: key)
+            unresolvedIdentityKeys.remove(key)
+            parkingBlockedKeys.remove(key)
+        case .replacement:
             activatingKeys.remove(key)
             reconnectingKeys.remove(key)
             presentations.removeValue(forKey: key)
@@ -602,9 +611,8 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                 && parkedKeys.contains(key)
                 && isGranted(key)
         case .navigationAway:
-            return isApplicationActive
-                && isSidebarVisible
-                && expandedKeys.contains(key)
+            guard isApplicationActive, isSidebarVisible else { return false }
+            return mode == .efficient || expandedKeys.contains(key)
         case .finalBeforeUnpark:
             return mode == .efficient && parkedKeys.contains(key)
         case .activationHandoff:
@@ -814,9 +822,15 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 
     func requiresIdentity(_ key: TmuxPreviewKey) -> Bool {
         mode != .off
-            && expandedKeys.contains(key)
             && unresolvedIdentityKeys.contains(key)
             && presentations[key].map(isConnected) == true
+            && (
+                expandedKeys.contains(key)
+                    || (
+                        mode == .efficient
+                            && presentations[key]?.isActive() == true
+                    )
+            )
     }
 
     private func sceneIsKeyWindow() -> Bool {

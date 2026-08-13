@@ -515,12 +515,18 @@ every client retained by that scene; none of these paths runs `kill-session`.
 Optional sidebar previews copy width-bounded bitmap frames from these retained
 clients. A tile follows its terminal's aspect ratio between 4:3 and 2:1 and
 letterboxes only content outside those limits. Efficient mode captures on
-disclosure and navigation away. Live mode
+disclosure and whenever the active tmux presentation navigates away, even when
+its tile is collapsed. Live mode
 may keep an inactive surface mounted behind the visible workspace content and
 polls at no more than two frames per second. A process-wide budget permits at
 most four such inactive live surfaces. Parked surfaces preserve their terminal
 size and cannot receive focus, pointer input, or accessibility actions. The
 active surface stays in the detail area and is copied without reparenting.
+Preview pixels are published only after the attachment's token-bound tmux
+client identity is available; a name-based session lookup never authorizes a
+cached frame. Reconnecting keeps the last frame quarantined until the new
+attachment binds to the same server and session identity, while replacement
+clears the frame without collapsing the tile.
 An explicit, confirmed Kill Session action
 targets the exact session (`=<name>:`) on its selected default or protected
 socket only when discovery or a currently connected active attachment

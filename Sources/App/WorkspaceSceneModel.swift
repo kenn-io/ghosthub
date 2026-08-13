@@ -897,10 +897,6 @@ final class WorkspaceSceneModel: ObservableObject {
         var establishmentConfirmationTask: Task<Void, Never>?
         var verifiedPreviewIdentity: TmuxSessionIdentity?
         var reconnectExpectedIdentity: TmuxSessionIdentity?
-        var previewIdentityReadID: UUID?
-        var previewIdentityTask: Task<Void, Never>?
-        var previewIdentityRetryTask: Task<Void, Never>?
-        var previewIdentityRetryIndex = 0
 
         init(
             selection: WorkspaceTmuxSessionSelection,
@@ -1218,7 +1214,6 @@ final class WorkspaceSceneModel: ObservableObject {
     private var tmuxActivityEnrollmentTasks:
         [UUID: Task<Void, Never>] = [:]
     private let deferredTmuxPresentationRetryDelays: [Duration]
-    private let tmuxPreviewIdentityRetryDelays: [Duration]
     private var worktreeMutationCancellable: AnyCancellable?
     private var herdrLifecycleCancellable: AnyCancellable?
     private var zellijSessionKillCancellable: AnyCancellable?
@@ -1350,6 +1345,7 @@ final class WorkspaceSceneModel: ObservableObject {
         herdrPaneSplitCapabilityProvider:
         NativeHerdrSessionCoordinator.PaneSplitCapabilityProvider? = nil,
         herdrPaneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
+        nativeTmuxPaneSplitter: TmuxPaneSplitter = TmuxPaneSplitter(),
         localKwtPathProvider: @escaping @Sendable () -> String? = {
             KwtBinaryLocator.bundledPath()
         },
@@ -1605,9 +1601,6 @@ final class WorkspaceSceneModel: ObservableObject {
             .milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2),
             .seconds(4), .seconds(8),
         ],
-        tmuxPreviewIdentityRetryDelays: [Duration] = [
-            .milliseconds(250), .seconds(1), .seconds(4),
-        ],
         tmuxReconnectIntervals: [Duration] = [
             .seconds(1), .seconds(2), .seconds(4), .seconds(8),
             .seconds(16), .seconds(30),
@@ -1717,7 +1710,6 @@ final class WorkspaceSceneModel: ObservableObject {
             createdSessionDiscoveryDelays
         self.deferredTmuxPresentationRetryDelays =
             deferredTmuxPresentationRetryDelays
-        self.tmuxPreviewIdentityRetryDelays = tmuxPreviewIdentityRetryDelays
         self.configuredSSHHostsProvider = configuredSSHHostsProvider
         self.configuredExeHostsProvider = configuredExeHostsProvider
         self.refreshExeHosts = refreshExeHosts
@@ -1800,7 +1792,8 @@ final class WorkspaceSceneModel: ObservableObject {
             },
             appliesPresentationStyleToExistingSessionsProvider:
             appliesTmuxPresentationStyleToExistingSessionsProvider,
-            remoteTmuxPathProvider: remoteTmuxPathProvider
+            remoteTmuxPathProvider: remoteTmuxPathProvider,
+            paneSplitter: nativeTmuxPaneSplitter
         )
         nativeTmuxSessionCoordinatorBacking?.onStateChanged = {
             [weak self] handle, state in
@@ -1815,6 +1808,7 @@ final class WorkspaceSceneModel: ObservableObject {
                   )
             else { return }
             _ = protectedTmuxSurface(handle: handle)
+            readTmuxPreviewIdentityIfNeeded(presentation)
             if activeBorrowedTmuxHandle == handle {
                 objectWillChange.send()
             }
@@ -2668,7 +2662,6 @@ final class WorkspaceSceneModel: ObservableObject {
         cancelPendingRestoration()
         cancelPendingHerdrShortcutNavigation()
         for presentation in retainedTmuxPresentations.values {
-            cancelTmuxPreviewIdentityRead(presentation)
             tmuxSessionPreviewCoordinator.remove(
                 TmuxPresentationKey(presentation.selection).previewKey,
                 reason: .close
@@ -5810,7 +5803,6 @@ final class WorkspaceSceneModel: ObservableObject {
                     .removeValue(forKey: handle.id),
                     let presentation = retainedTmuxPresentations
                     .removeValue(forKey: key) {
-                    cancelTmuxPreviewIdentityRead(presentation)
                     tmuxSessionPreviewCoordinator.remove(
                         key.previewKey,
                         reason: .replacement
@@ -8934,118 +8926,29 @@ final class WorkspaceSceneModel: ObservableObject {
         ), identityIsResolved: identityIsResolved)
     }
 
-    private func cancelTmuxPreviewIdentityRead(
-        _ presentation: RetainedTmuxPresentation
-    ) {
-        presentation.previewIdentityReadID = nil
-        presentation.previewIdentityTask?.cancel()
-        presentation.previewIdentityTask = nil
-        presentation.previewIdentityRetryTask?.cancel()
-        presentation.previewIdentityRetryTask = nil
-        presentation.previewIdentityRetryIndex = 0
-    }
-
-    private func scheduleTmuxPreviewIdentityRetry(
-        _ presentation: RetainedTmuxPresentation
-    ) {
-        let retryIndex = presentation.previewIdentityRetryIndex
-        let key = TmuxPresentationKey(presentation.selection)
-        guard tmuxSessionPreviewCoordinator.requiresIdentity(key.previewKey),
-              presentation.previewIdentityRetryTask == nil,
-              retryIndex < tmuxPreviewIdentityRetryDelays.count
-        else { return }
-        let delay = tmuxPreviewIdentityRetryDelays[retryIndex]
-        let handleID = presentation.handle.id
-        presentation.previewIdentityRetryIndex += 1
-        presentation.previewIdentityRetryTask = Task {
-            [weak self, weak presentation] in
-            do {
-                try await Task.sleep(for: delay)
-            } catch {
-                return
-            }
-            guard let self, let presentation else { return }
-            presentation.previewIdentityRetryTask = nil
-            guard tmuxSessionPreviewCoordinator.requiresIdentity(
-                key.previewKey
-            ),
-                retainedTmuxPresentations[key] === presentation,
-                presentation.handle.id == handleID,
-                borrowedTmuxConnectionStates[handleID] == .connected
-            else { return }
-            readTmuxPreviewIdentityIfNeeded(presentation)
-        }
-    }
-
     private func readTmuxPreviewIdentityIfNeeded(
         _ presentation: RetainedTmuxPresentation
     ) {
         let handleID = presentation.handle.id
-        guard borrowedTmuxConnectionStates[handleID] == .connected else {
-            return
-        }
+        let key = TmuxPresentationKey(presentation.selection)
+        guard retainedTmuxPresentations[key] === presentation,
+              borrowedTmuxConnectionStates[handleID] == .connected
+        else { return }
         if presentation.verifiedPreviewIdentity != nil {
             registerTmuxPreview(presentation)
             return
         }
-        guard presentation.previewIdentityTask == nil,
-              let hostSummary = snapshot.host(
-                  id: presentation.selection.hostID
-              ),
-              let host = CommandHostResolver.resolve(hostSummary)
+        guard let identity = nativeTmuxSessionCoordinator
+            .attachedSessionIdentity(presentation.handle)
         else { return }
-        let key = TmuxPresentationKey(presentation.selection)
-        let generation = presentation.selection.worktreeGeneration
-        let readID = UUID()
-        presentation.previewIdentityReadID = readID
-        let selection = presentation.selection
-        presentation.previewIdentityTask = Task { [weak self, weak presentation] in
-            guard let self else { return }
-            let identity: TmuxSessionIdentity
-            do {
-                identity = try await tmuxSessionIdentityReader(
-                    selection,
-                    host
-                )
-            } catch {
-                guard !Task.isCancelled,
-                      let presentation,
-                      presentation.previewIdentityReadID == readID
-                else { return }
-                presentation.previewIdentityTask = nil
-                presentation.previewIdentityReadID = nil
-                guard retainedTmuxPresentations[key] === presentation,
-                      presentation.handle.id == handleID,
-                      borrowedTmuxConnectionStates[handleID] == .connected
-                else { return }
-                scheduleTmuxPreviewIdentityRetry(presentation)
-                return
-            }
-            guard !Task.isCancelled,
-                  let presentation,
-                  presentation.previewIdentityReadID == readID
-            else { return }
-            presentation.previewIdentityTask = nil
-            presentation.previewIdentityReadID = nil
-            presentation.previewIdentityRetryTask?.cancel()
-            presentation.previewIdentityRetryTask = nil
-            presentation.previewIdentityRetryIndex = 0
-            guard retainedTmuxPresentations[key] === presentation,
-                  presentation.handle.id == handleID,
-                  TmuxPresentationKey(presentation.selection) == key,
-                  presentation.selection.worktreeGeneration == generation,
-                  borrowedTmuxConnectionStates[handleID] == .connected
-            else { return }
-            presentation.verifiedPreviewIdentity = identity
-            presentation.reconnectExpectedIdentity = nil
-            registerTmuxPreview(presentation, identityIsResolved: true)
-        }
+        presentation.verifiedPreviewIdentity = identity
+        presentation.reconnectExpectedIdentity = nil
+        registerTmuxPreview(presentation, identityIsResolved: true)
     }
 
     private func beginTmuxPreviewReconnect(
         _ presentation: RetainedTmuxPresentation
     ) {
-        cancelTmuxPreviewIdentityRead(presentation)
         if presentation.reconnectExpectedIdentity == nil {
             presentation.reconnectExpectedIdentity =
                 presentation.verifiedPreviewIdentity
@@ -9433,7 +9336,6 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         let handle = presentation.handle
-        cancelTmuxPreviewIdentityRead(presentation)
         tmuxSessionPreviewCoordinator.remove(
             key.previewKey,
             reason: previewRemovalReason

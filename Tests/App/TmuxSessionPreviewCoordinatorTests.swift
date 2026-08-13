@@ -183,6 +183,45 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test("Efficient captures a collapsed active session on navigation away")
+    func efficientCapturesCollapsedActiveSessionOnNavigationAway() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+
+        harness.coordinator.captureBeforeDeactivation(presentation.key)
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [presentation.key])
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.image != nil
+        )
+    }
+
+    @Test("Efficient resolves identity for a collapsed active session")
+    func efficientResolvesCollapsedActiveIdentity() {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let key = TmuxPreviewKey(
+            hostID: UUID(),
+            name: "unresolved",
+            socketName: nil
+        )
+        var identityRequests = 0
+        harness.coordinator.register(.init(
+            key: key,
+            surface: { nil },
+            handleID: { UUID() },
+            generation: { "generation" },
+            identity: { nil },
+            connectionState: { .connected },
+            isActive: { true },
+            activate: {},
+            ensureIdentity: { identityRequests += 1 }
+        ), identityIsResolved: false)
+
+        #expect(identityRequests == 1)
+    }
+
     @Test("navigation-away capture replaces an in-flight scheduled capture")
     func navigationAwayReplacesScheduledCapture() async {
         let harness = PreviewCoordinatorHarness(mode: .efficient)
@@ -241,6 +280,43 @@ struct TmuxSessionPreviewCoordinatorTests {
             harness.coordinator.viewState(for: presentation.key)?.placeholder
                 == .reconnecting
         )
+    }
+
+    @Test("resolved reconnect without a frame awaits its first capture")
+    func resolvedReconnectWithoutFrameAwaitsFirstCapture() {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.setConnection(
+            .disconnected(reason: "transport ended"),
+            for: presentation.key
+        )
+        harness.coordinator.presentationDidChange(presentation.key)
+        harness.coordinator.remove(presentation.key, reason: .reconnect)
+        harness.setConnection(.connected, for: presentation.key)
+
+        harness.coordinator.register(presentation, identityIsResolved: true)
+
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.placeholder
+                == .awaitingFirstFrame
+        )
+    }
+
+    @Test("replacement preserves expansion for the same preview key")
+    func replacementPreservesExpansion() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        await harness.coordinator.waitForPendingWork()
+        harness.captures.removeAll()
+
+        harness.coordinator.remove(presentation.key, reason: .replacement)
+        harness.coordinator.register(presentation)
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [presentation.key])
     }
 
     @Test("removing the parking host cannot repark during slot release")

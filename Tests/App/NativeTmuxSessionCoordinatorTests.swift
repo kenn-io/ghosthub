@@ -149,6 +149,10 @@ struct NativeTmuxSessionCoordinatorTests {
 
         releaseBinding.signal()
         await waitUntilMainActor { readyCount == 2 }
+        #expect(
+            coordinator.attachedSessionIdentity(handle)
+                == coordinatorSplitIdentity
+        )
         handler(.right)
         await waitUntilMainActor { splitCommands.load() == 1 }
     }
