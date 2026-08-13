@@ -232,11 +232,14 @@ The file uses
 [Ghostty's configuration format](https://ghostty.org/docs/config/reference),
 but remains independent of Ghostty.app configuration and state. Ghosthub
 reloads the active configuration when the base file, an included file, or a
-project override changes. The **Tmux Theme** setting supplies colors for new
-sessions created by Ghosthub. Existing sessions keep their own appearance by
-default; **Apply theme to shared tmux sessions** explicitly applies the
-selected colors before future attachments. Use **Session → Apply Theme to
-Current Session** to update only the connected active session immediately.
+project override changes. Ghosthub's generated config enforces a modest local
+text-contrast floor so ANSI colors remain legible on light and dark terminal
+backgrounds without changing shared tmux styles. The **Tmux Theme** setting
+supplies colors for new sessions created by Ghosthub. Existing sessions keep
+their own appearance by default; **Apply theme to shared tmux sessions**
+explicitly applies the selected colors before future attachments. Use
+**Session → Apply Theme to Current Session** to update only the connected
+active session immediately.
 Both choices update the session's existing windows and chrome for every
 attached terminal. Quit confirmation is on by default and can be disabled in
 Terminal Settings; closing the final workspace leaves Ghosthub running, while

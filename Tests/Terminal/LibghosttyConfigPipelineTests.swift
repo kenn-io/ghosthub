@@ -31,6 +31,7 @@ struct LibghosttyConfigPipelineTests {
             "term = xterm-256color",
             "cursor-style = block",
             "copy-on-select = clipboard",
+            "minimum-contrast = 3",
             "macos-option-as-alt = true",
             "shell-integration = detect",
         ], omits: [
@@ -183,11 +184,51 @@ struct LibghosttyConfigPipelineTests {
         expectConfig(contents, contains: [
             "scrollback-limit = 50000000",
             "term = xterm-256color",
+            "minimum-contrast = 3",
             "macos-option-as-alt = true",
             "shell-integration = detect",
         ], omits: [
             "shell-integration-features",
         ])
+    }
+
+    @Test("loadPlan preserves a symlinked global config while backfilling")
+    func loadPlanPreservesSymlinkedGlobalConfigWhileBackfilling() throws {
+        let fixture = try ConfigPipelineFixture.create()
+        let managedDirectory = fixture.tempRoot.appendingPathComponent(
+            "managed-config",
+            isDirectory: true
+        )
+        let managedConfig = managedDirectory.appendingPathComponent(
+            "ghostty.conf",
+            isDirectory: false
+        )
+        try FileManager.default.createDirectory(
+            at: managedDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-family = Berkeley Mono\n".write(
+            to: managedConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.createSymbolicLink(
+            at: fixture.paths.globalConfigFile,
+            withDestinationURL: managedConfig
+        )
+
+        _ = try fixture.pipeline.loadPlan()
+
+        let destination = try? FileManager.default
+            .destinationOfSymbolicLink(
+                atPath: fixture.paths.globalConfigFile.path
+            )
+        #expect(destination == managedConfig.path)
+        let managedContents = try String(
+            contentsOf: managedConfig,
+            encoding: .utf8
+        )
+        #expect(managedContents.contains("minimum-contrast = 3"))
     }
 
     @Test("loadPlan preserves existing scrollback-limit in Ghosthub-generated config")

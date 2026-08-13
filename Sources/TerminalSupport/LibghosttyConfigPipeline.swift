@@ -181,6 +181,7 @@ public struct LibghosttyConfigPipeline {
     scrollback-limit = 50000000
     term = xterm-256color
     cursor-style = block
+    minimum-contrast = 3
     mouse-hide-while-typing = true
     copy-on-select = clipboard
     macos-option-as-alt = true
@@ -200,6 +201,29 @@ public struct LibghosttyConfigPipeline {
     public init(paths: LibghosttyConfigPaths = .live, fileManager: FileManager = .default) {
         self.paths = paths
         self.fileManager = fileManager
+    }
+
+    public func writeGlobalConfig(_ contents: String) throws {
+        let configFile = paths.globalConfigFile
+        let writeTarget: URL
+        if let destination = try? fileManager.destinationOfSymbolicLink(
+            atPath: configFile.path
+        ) {
+            let target = if destination.hasPrefix("/") {
+                URL(fileURLWithPath: destination)
+            } else {
+                configFile.deletingLastPathComponent()
+                    .appendingPathComponent(destination)
+            }
+            writeTarget = target.resolvingSymlinksInPath()
+        } else {
+            writeTarget = configFile
+        }
+        try contents.write(
+            to: writeTarget,
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     @discardableResult
@@ -224,11 +248,7 @@ public struct LibghosttyConfigPipeline {
         }
 
         do {
-            try Self.defaultGlobalConfigContents.write(
-                to: configFile,
-                atomically: true,
-                encoding: .utf8
-            )
+            try writeGlobalConfig(Self.defaultGlobalConfigContents)
         } catch {
             throw LibghosttyConfigPipelineError.writeDefaultConfig(
                 configFile,
@@ -252,6 +272,7 @@ public struct LibghosttyConfigPipeline {
         let defaults: [(key: String, value: String)] = [
             ("scrollback-limit", "50000000"),
             ("term", "xterm-256color"),
+            ("minimum-contrast", "3"),
             ("macos-option-as-alt", "true"),
             ("shell-integration", "detect"),
         ]
@@ -268,13 +289,13 @@ public struct LibghosttyConfigPipeline {
             updated.append("\n")
         }
         updated.append("\n")
+        // libghostty loads recursive config-file entries after the root file,
+        // so included user values still override these root-level fallbacks.
         for setting in missingDefaults {
             updated.append("\(setting.key) = \(setting.value)\n")
         }
 
-        try? updated.write(
-            to: configFile, atomically: true, encoding: .utf8
-        )
+        try? writeGlobalConfig(updated)
     }
 
     private func configContainsKey(

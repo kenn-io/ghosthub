@@ -73,6 +73,11 @@ session's existing windows and tmux chrome for all attached clients.
 To style future attachments to shared sessions automatically, enable **Apply
 theme to shared tmux sessions** in Settings. This is an explicit opt-in.
 
+Ghosthub also applies a modest client-local text-contrast floor so inherited
+ANSI colors remain legible on light and dark backgrounds without changing the
+shared tmux theme. An explicit `minimum-contrast` value in `ghostty.conf`
+remains authoritative.
+
 Theme application is not available for the Console Panel or native Windows
 sessions.
 

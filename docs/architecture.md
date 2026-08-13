@@ -594,6 +594,12 @@ callback, including the active conditional light or dark theme. Until a surface
 has delivered that state, no effective Follow ghostty.conf tmux style is
 available.
 
+The generated Ghosthub terminal config sets libghostty's minimum text contrast
+to 3 so dark-oriented ANSI palettes remain legible when an existing session
+uses a light background. This is a client-local rendering constraint and does
+not modify tmux options or the colors seen by another attached client. An
+explicit user value in `ghostty.conf` remains authoritative.
+
 Existing sessions retain their own appearance by default; Ghosthub neither
 places a client-local palette over them nor changes their tmux options. The
 persistent shared-session override applies the selected effective style on
