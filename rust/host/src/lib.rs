@@ -20,7 +20,9 @@ mod wsl;
 mod zellij;
 
 pub use kwt::{
-    KwtBundle, KwtDirectoryWorkspace, KwtInventory, KwtProject, KwtProjectInventory, KwtWorktree,
+    KwtBranchCandidate, KwtBundle, KwtDirectoryWorkspace, KwtInventory, KwtProject,
+    KwtProjectInventory, KwtWorktree, KwtWorktreeCreate, KwtWorktreeOpen,
+    kwt_command_failure_message,
 };
 pub use wsl::{
     AdmissionAttacher, AttachTerm, CreationReceipt, HerdrInventory, HostError, HostSnapshot,

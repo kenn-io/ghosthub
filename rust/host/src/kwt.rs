@@ -118,6 +118,27 @@ struct KwtCommandError {
     retryable: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct KwtCommandFailure {
+    code: String,
+    message: String,
+    retryable: bool,
+}
+
+impl KwtCommandFailure {
+    pub(crate) fn code(&self) -> &str {
+        &self.code
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) const fn retryable(&self) -> bool {
+        self.retryable
+    }
+}
+
 impl KwtProject {
     #[must_use]
     pub fn repository(&self) -> &str {
@@ -156,17 +177,21 @@ pub(crate) fn parse_project_mutation(
     Ok(response.project)
 }
 
-pub(crate) fn project_command_error(output: &[u8]) -> Option<String> {
+pub(crate) fn parse_command_failure(output: &[u8]) -> Option<KwtCommandFailure> {
     let response: KwtCommandErrorEnvelope = serde_json::from_slice(output).ok()?;
-    let retry = if response.error.retryable {
-        " Try again."
-    } else {
-        ""
-    };
-    Some(format!(
-        "{} ({}).{retry}",
-        response.error.message, response.error.code
-    ))
+    Some(KwtCommandFailure {
+        code: response.error.code,
+        message: response.error.message,
+        retryable: response.error.retryable,
+    })
+}
+
+/// Decode a machine-readable KWT command failure for presentation by an
+/// owning workflow layer.
+#[must_use]
+pub fn kwt_command_failure_message(output: &[u8]) -> Option<String> {
+    let failure = parse_command_failure(output)?;
+    Some(format!("{} ({})", failure.message(), failure.code()))
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -181,6 +206,154 @@ pub struct KwtWorktree {
     repository: String,
     session_name: String,
     tmux_socket_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KwtBranchCandidate {
+    name: String,
+    source: String,
+    is_remote: bool,
+    #[serde(default)]
+    #[serde(rename = "label")]
+    _label: String,
+    #[serde(default)]
+    #[serde(rename = "is_current")]
+    _is_current: bool,
+    #[serde(default)]
+    #[serde(rename = "last_commit")]
+    _last_commit: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KwtWorktreeCreate {
+    project_path: String,
+    repository: String,
+    registration_fingerprint: String,
+    branch: String,
+    source: Option<String>,
+    creates_branch: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KwtWorktreeOpen {
+    path: String,
+    repository: String,
+    registration_fingerprint: String,
+    generation: String,
+    session_name: String,
+}
+
+impl KwtWorktreeOpen {
+    #[must_use]
+    pub fn new(
+        path: impl Into<String>,
+        repository: impl Into<String>,
+        registration_fingerprint: impl Into<String>,
+        generation: impl Into<String>,
+        session_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            repository: repository.into(),
+            registration_fingerprint: registration_fingerprint.into(),
+            generation: generation.into(),
+            session_name: session_name.into(),
+        }
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub(crate) fn repository(&self) -> &str {
+        &self.repository
+    }
+
+    pub(crate) fn registration_fingerprint(&self) -> &str {
+        &self.registration_fingerprint
+    }
+
+    pub(crate) fn generation(&self) -> &str {
+        &self.generation
+    }
+
+    #[must_use]
+    pub fn session_name(&self) -> &str {
+        &self.session_name
+    }
+}
+
+impl KwtWorktreeCreate {
+    #[must_use]
+    pub fn new(
+        project_path: impl Into<String>,
+        repository: impl Into<String>,
+        registration_fingerprint: impl Into<String>,
+        branch: impl Into<String>,
+        source: Option<String>,
+        creates_branch: bool,
+    ) -> Self {
+        Self {
+            project_path: project_path.into(),
+            repository: repository.into(),
+            registration_fingerprint: registration_fingerprint.into(),
+            branch: branch.into(),
+            source,
+            creates_branch,
+        }
+    }
+
+    #[must_use]
+    pub fn project_path(&self) -> &str {
+        &self.project_path
+    }
+
+    #[must_use]
+    pub fn repository(&self) -> &str {
+        &self.repository
+    }
+
+    #[must_use]
+    pub fn registration_fingerprint(&self) -> &str {
+        &self.registration_fingerprint
+    }
+
+    #[must_use]
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    #[must_use]
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+
+    #[must_use]
+    pub const fn creates_branch(&self) -> bool {
+        self.creates_branch
+    }
+}
+
+impl KwtBranchCandidate {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    pub const fn is_remote(&self) -> bool {
+        self.is_remote
+    }
+}
+
+pub(crate) fn parse_branches(output: &[u8]) -> Result<Vec<KwtBranchCandidate>, serde_json::Error> {
+    serde_json::from_slice(output)
 }
 
 impl KwtWorktree {
@@ -321,7 +494,7 @@ impl KwtInventory {
 
 #[cfg(test)]
 mod tests {
-    use super::{KwtBundle, KwtInventory, parse_project_mutation, project_command_error};
+    use super::{KwtBundle, KwtInventory, parse_command_failure, parse_project_mutation};
 
     #[test]
     fn bundle_rejects_ambiguous_metadata_and_hides_payload_in_debug() {
@@ -389,12 +562,12 @@ mod tests {
 
     #[test]
     fn project_command_errors_preserve_retry_guidance() {
-        assert_eq!(
-            project_command_error(
-                br#"{"error":{"code":"registration_changed","message":"the project changed","retryable":true}}"#,
-            )
-            .as_deref(),
-            Some("the project changed (registration_changed). Try again.")
-        );
+        let failure = parse_command_failure(
+            br#"{"error":{"code":"registration_changed","message":"the project changed","retryable":true}}"#,
+        )
+        .expect("structured KWT failure");
+        assert_eq!(failure.code(), "registration_changed");
+        assert_eq!(failure.message(), "the project changed");
+        assert!(failure.retryable());
     }
 }
