@@ -726,13 +726,15 @@ project/worktree rows and removes only those exact sessions from the unbound
 tmux group. Active and retained custom-socket presentations remain accessible
 only from their worktree row, whose live indicator reflects the presentation;
 they do not claim a genuinely separate default-socket session with the same
-name. A successful exact removal immediately tombstones
-that path and generation in the cached tree before broader reconciliation, so
-a KWT outage cannot resurrect an openable deleted row. Before the removal
-dialog becomes actionable, a background query captures the exact live tmux
-identity and socket when one exists. Confirmation consumes that authority and
-invokes pinned KWT's guarded removal; KWT revalidates the project,
-registration, generation, socket, and exact session identity under its
+name. Their navigation identity retains the socket, worktree path, and
+generation. A standalone Kill Session action queries that named socket for
+fresh identity before confirmation. A successful exact removal immediately
+tombstones that path and generation in the cached tree before broader
+reconciliation, so a KWT outage cannot resurrect an openable deleted row.
+Before the removal dialog becomes actionable, a background query captures the
+exact live tmux identity and socket when one exists. Confirmation consumes
+that authority and invokes pinned KWT's guarded removal; KWT revalidates the
+project, registration, generation, socket, and exact session identity under its
 lifecycle lock before terminating the session and removing the checkout. If
 the client exits and a same-named replacement starts, removal fails closed and
 the user must review the replacement. KWT rows carry display identity and

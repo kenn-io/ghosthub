@@ -435,11 +435,7 @@ fn kwt_operation_failure_owns_dialog(
             project_path: dialog_project,
             operation_id: dialog_operation,
             ..
-        }) => {
-            *dialog_operation == Some(operation_id)
-                && dialog_project == project_path
-                && worktree_path.is_none()
-        }
+        }) => *dialog_operation == Some(operation_id) && dialog_project == project_path,
         Some(ProjectDialog::RemoveWorktree { target, .. }) => {
             target.operation_id == Some(operation_id)
                 && target.open.project_path == project_path
@@ -639,6 +635,20 @@ const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
     } else {
         WorktreeOpenMode::Disabled
     }
+}
+
+const fn can_kill_worktree(
+    host_can_attach: bool,
+    socket: WorktreeSocket,
+    session: WorktreeSessionPresence,
+    authority: WorktreeAuthority,
+) -> bool {
+    host_can_attach
+        && if matches!(socket, WorktreeSocket::Custom) {
+            matches!(authority, WorktreeAuthority::Generation)
+        } else {
+            matches!(session, WorktreeSessionPresence::Discovered)
+        }
 }
 
 fn owns_created_worktree_navigation(
@@ -1013,7 +1023,13 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.workspace.snapshot();
-        if active_session_selection(snapshot.content()).as_ref() == Some(selection) {
+        if snapshot
+            .active_selection()
+            .cloned()
+            .or_else(|| active_session_selection(snapshot.content()))
+            .as_ref()
+            == Some(selection)
+        {
             if matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
                 window.focus(&self.focus);
             }
@@ -2184,8 +2200,7 @@ impl RootView {
                             error,
                             ..
                         }) if *dialog_path == project_path
-                            && *dialog_operation == Some(operation_id)
-                            && worktree_path.is_none() =>
+                            && *dialog_operation == Some(operation_id) =>
                         {
                             *loading = false;
                             *loaded = false;
@@ -4023,6 +4038,10 @@ impl RootView {
         snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let active = snapshot
+            .active_selection()
+            .cloned()
+            .or_else(|| active_session_selection(snapshot.content()));
         let mut body = div()
             .id("workspace-tree-scroll")
             .flex_1()
@@ -4034,7 +4053,7 @@ impl RootView {
                 host_index,
                 host,
                 snapshot.selected_host() == Some(host.id()),
-                snapshot.content(),
+                active.as_ref(),
                 snapshot.retained_selections(),
                 cx,
             ));
@@ -4071,7 +4090,7 @@ impl RootView {
         host_index: usize,
         host: &HostItem,
         is_selected: bool,
-        content: &WorkspaceContent,
+        active: Option<&SessionSelection>,
         retained: &[SessionSelection],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -4090,9 +4109,9 @@ impl RootView {
             ));
         }
 
-        let sessions = tree_sessions(host, content, retained);
-        let herdr_sessions = tree_herdr_sessions(host, content, retained);
-        let zellij_sessions = tree_zellij_sessions(host, content, retained);
+        let sessions = tree_sessions(host, active, retained);
+        let herdr_sessions = tree_herdr_sessions(host, active, retained);
+        let zellij_sessions = tree_zellij_sessions(host, active, retained);
         let groups = session_group_visibility(host, &herdr_sessions, &zellij_sessions);
         if groups.tmux {
             host_tree = host_tree.child(Self::session_tree(
@@ -4125,8 +4144,7 @@ impl RootView {
             || !host.directory_workspaces().is_empty()
             || host.kwt_diagnostic().is_some()
         {
-            host_tree =
-                host_tree.child(Self::project_tree(host_index, host, content, retained, cx));
+            host_tree = host_tree.child(Self::project_tree(host_index, host, active, retained, cx));
         }
         host_tree.into_any_element()
     }
@@ -4308,11 +4326,10 @@ impl RootView {
     fn project_tree(
         host_index: usize,
         host: &HostItem,
-        content: &WorkspaceContent,
+        active: Option<&SessionSelection>,
         retained: &[SessionSelection],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let active = active_session_selection(content);
         let can_add = host.can_add_kwt_project();
         let can_remove = host.can_remove_kwt_project();
         let mut tree = div().w_full().flex().flex_col().child({
@@ -4444,31 +4461,49 @@ impl RootView {
             }
             tree = tree.child(row);
             for (worktree_index, worktree) in project.worktrees().iter().enumerate() {
-                let selection =
-                    SessionSelection::new(host.id(), host.endpoint(), worktree.session_name());
-                let is_active = active.as_ref() == Some(&selection);
+                let selection = worktree
+                    .tmux_socket_name()
+                    .and_then(|socket| {
+                        worktree.generation().map(|generation| {
+                            SessionSelection::protected_worktree(
+                                host.id(),
+                                host.endpoint(),
+                                worktree.session_name(),
+                                socket,
+                                worktree.path(),
+                                generation,
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        SessionSelection::new(host.id(), host.endpoint(), worktree.session_name())
+                    });
+                let is_active = active == Some(&selection);
                 let is_retained = retained.contains(&selection);
                 let has_generation = worktree.generation().is_some();
                 let host_can_attach = !matches!(
                     host.connection(),
                     HostConnectionState::Disconnected | HostConnectionState::Unavailable
                 );
+                let authority = if has_generation {
+                    WorktreeAuthority::Generation
+                } else {
+                    WorktreeAuthority::Generationless
+                };
+                let socket = if worktree.tmux_socket_name().is_some() {
+                    WorktreeSocket::Custom
+                } else {
+                    WorktreeSocket::Default
+                };
+                let session = if worktree.session_available() {
+                    WorktreeSessionPresence::Discovered
+                } else {
+                    WorktreeSessionPresence::Absent
+                };
                 let open_mode = worktree_open_mode(WorktreeOpenContext {
-                    authority: if has_generation {
-                        WorktreeAuthority::Generation
-                    } else {
-                        WorktreeAuthority::Generationless
-                    },
-                    socket: if worktree.tmux_socket_name().is_some() {
-                        WorktreeSocket::Custom
-                    } else {
-                        WorktreeSocket::Default
-                    },
-                    session: if worktree.session_available() {
-                        WorktreeSessionPresence::Discovered
-                    } else {
-                        WorktreeSessionPresence::Absent
-                    },
+                    authority,
+                    socket,
+                    session,
                     presentation: if is_active || is_retained {
                         WorktreePresentation::ActiveOrRetained
                     } else {
@@ -4483,7 +4518,7 @@ impl RootView {
                     },
                 });
                 let can_open = open_mode != WorktreeOpenMode::Disabled;
-                let can_kill = worktree.session_available() && host_can_attach;
+                let can_kill = can_kill_worktree(host_can_attach, socket, session, authority);
                 let open_target = WorktreeOpenTarget {
                     host_id: host.id().to_owned(),
                     endpoint: host.endpoint().to_owned(),
@@ -4531,11 +4566,7 @@ impl RootView {
             }
         }
         tree.children(Self::directory_workspace_rows(
-            host_index,
-            host,
-            active.as_ref(),
-            retained,
-            cx,
+            host_index, host, active, retained, cx,
         ))
         .into_any_element()
     }
@@ -5470,11 +5501,10 @@ fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelecti
 
 fn tree_sessions(
     host: &HostItem,
-    content: &WorkspaceContent,
+    active: Option<&SessionSelection>,
     retained: &[SessionSelection],
 ) -> Vec<TreeSession> {
-    let active = active_session_selection(content);
-    let active_for_host = active.as_ref().filter(|active| {
+    let active_for_host = active.filter(|active| {
         active.host_id() == host.id() && active.kind() == workspace::SessionKind::Tmux
     });
 
@@ -5495,11 +5525,13 @@ fn tree_sessions(
             selection.host_id() == host.id()
                 && selection.kind() == workspace::SessionKind::Tmux
                 && !(selection.endpoint() == host.endpoint()
-                    && host.kwt_owns_presented_tmux_session(selection.session()))
+                    && (selection.tmux_socket_name().is_some()
+                        || host.kwt_owns_default_tmux_session(selection.session())))
         })
         .chain(active_for_host.into_iter().filter(|selection| {
             !(selection.endpoint() == host.endpoint()
-                && host.kwt_owns_presented_tmux_session(selection.session()))
+                && (selection.tmux_socket_name().is_some()
+                    || host.kwt_owns_default_tmux_session(selection.session())))
         }))
     {
         if !selections
@@ -5517,7 +5549,7 @@ fn tree_sessions(
         .into_iter()
         .map(|(selection, discovered)| {
             let retained = retained.contains(&selection);
-            let is_active = active.as_ref() == Some(&selection);
+            let is_active = active == Some(&selection);
             let can_kill = discovered && host_accepts_actions;
             let state = match (is_active, retained, host_accepts_actions, can_kill) {
                 (true, _, _, true) => TreeSessionState::ActiveKillable,
@@ -5538,11 +5570,10 @@ fn tree_sessions(
 
 fn tree_herdr_sessions(
     host: &HostItem,
-    content: &WorkspaceContent,
+    active: Option<&SessionSelection>,
     retained: &[SessionSelection],
 ) -> Vec<TreeHerdrSession> {
-    let active = active_session_selection(content);
-    let active_for_host = active.as_ref().filter(|selection| {
+    let active_for_host = active.filter(|selection| {
         selection.host_id() == host.id() && selection.kind() == workspace::SessionKind::Herdr
     });
     let mut sessions = host
@@ -5581,7 +5612,7 @@ fn tree_herdr_sessions(
         HostConnectionState::Disconnected | HostConnectionState::Unavailable
     ) && host.herdr_diagnostic().is_none();
     for session in &mut sessions {
-        session.active = active.as_ref() == Some(&session.selection);
+        session.active = active == Some(&session.selection);
         let retained = retained.contains(&session.selection);
         session.access = if session.inventory.is_some() && host_accepts_actions {
             HerdrRowAccess::Mutable
@@ -5596,11 +5627,10 @@ fn tree_herdr_sessions(
 
 fn tree_zellij_sessions(
     host: &HostItem,
-    content: &WorkspaceContent,
+    active: Option<&SessionSelection>,
     retained: &[SessionSelection],
 ) -> Vec<TreeSession> {
-    let active = active_session_selection(content);
-    let active_for_host = active.as_ref().filter(|selection| {
+    let active_for_host = active.filter(|selection| {
         selection.host_id() == host.id() && selection.kind() == workspace::SessionKind::Zellij
     });
     let mut selections = host
@@ -5635,7 +5665,7 @@ fn tree_zellij_sessions(
         .into_iter()
         .map(|(selection, discovered)| {
             let retained = retained.contains(&selection);
-            let is_active = active.as_ref() == Some(&selection);
+            let is_active = active == Some(&selection);
             let can_kill = discovered && host_accepts_actions;
             let state = match (is_active, retained, host_accepts_actions, can_kill) {
                 (true, _, _, true) => TreeSessionState::ActiveKillable,
@@ -6475,10 +6505,10 @@ mod tests {
         WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
         WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
         active_session_selection, application_navigation_width, apply_worktree_removal_failure,
-        can_create_worktree, canonical_terminal_key_with, clear_terminal_input_state,
-        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
-        herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
+        can_create_worktree, can_kill_worktree, canonical_terminal_key_with,
+        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
+        coalesce_last_resize, coalesce_last_wheel, has_ambiguous_worktree_source,
+        herdr_row_actions, herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
         is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
         kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
         owns_created_worktree_navigation, queued_input_matches_presentation,
@@ -6656,6 +6686,34 @@ mod tests {
     }
 
     #[test]
+    fn protected_worktrees_offer_fresh_named_socket_kill_capture() {
+        assert!(can_kill_worktree(
+            true,
+            WorktreeSocket::Custom,
+            WorktreeSessionPresence::Absent,
+            WorktreeAuthority::Generation,
+        ));
+        assert!(!can_kill_worktree(
+            false,
+            WorktreeSocket::Custom,
+            WorktreeSessionPresence::Absent,
+            WorktreeAuthority::Generation,
+        ));
+        assert!(!can_kill_worktree(
+            true,
+            WorktreeSocket::Custom,
+            WorktreeSessionPresence::Absent,
+            WorktreeAuthority::Generationless,
+        ));
+        assert!(!can_kill_worktree(
+            true,
+            WorktreeSocket::Default,
+            WorktreeSessionPresence::Absent,
+            WorktreeAuthority::Generationless,
+        ));
+    }
+
+    #[test]
     fn pull_requests_filter_by_provider_owned_fields() {
         let pull_requests = vec![
             KwtPullRequestItem::new(
@@ -6716,6 +6774,12 @@ mod tests {
             7,
             "/code/widget",
             None,
+        ));
+        assert!(kwt_operation_failure_owns_dialog(
+            Some(&create),
+            7,
+            "/code/widget",
+            Some("/work/widget/imported-pr"),
         ));
         assert!(!kwt_operation_failure_owns_dialog(
             Some(&create),
@@ -6993,7 +7057,8 @@ mod tests {
                 None,
             );
 
-            let rows = tree_sessions(&host, &terminal, &[]);
+            let active = active_session_selection(&terminal);
+            let rows = tree_sessions(&host, active.as_ref(), &[]);
             assert_eq!(rows.len(), 2);
             assert_eq!(rows[0].selection.session(), "other");
             assert!(!rows[0].state.is_active());
@@ -7054,7 +7119,7 @@ mod tests {
             Vec::new(),
         );
 
-        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|row| row.selection.session() == "scratch"));
@@ -7071,7 +7136,10 @@ mod tests {
             "Ubuntu",
             None,
             HostConnectionState::Ready,
-            vec![SessionItem::new("scratch", 0)],
+            vec![
+                SessionItem::new("scratch", 0),
+                SessionItem::new("project-pr-17", 0),
+            ],
             None,
         )
         .with_kwt_inventory(
@@ -7092,20 +7160,23 @@ mod tests {
             )],
             Vec::new(),
         );
-        let size = GridSize::new(80, 24).expect("valid grid");
-        let terminal = WorkspaceContent::Terminal {
-            host_id: "wsl".to_owned(),
-            endpoint: "Ubuntu".to_owned(),
-            session: "project-pr-17".to_owned(),
-            kind: workspace::SessionKind::Tmux,
-            presentation_id: 7,
-            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
-        };
+        let active = SessionSelection::protected_worktree(
+            "wsl",
+            "Ubuntu",
+            "project-pr-17",
+            "kwt-pr-0123456789abcdef",
+            "/repos/project-pr",
+            "0123456789abcdef0123456789abcdef",
+        );
+        let rows = tree_sessions(&host, Some(&active), &[]);
 
-        let rows = tree_sessions(&host, &terminal, &[]);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].selection.session(), "scratch");
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.selection.session() == "scratch"));
+        let same_named_default = rows
+            .iter()
+            .find(|row| row.selection.session() == "project-pr-17")
+            .expect("separate default-socket session stays visible");
+        assert!(!same_named_default.state.is_active());
     }
 
     #[test]
@@ -7146,7 +7217,8 @@ mod tests {
             "retained",
         )];
 
-        let rows = tree_herdr_sessions(&host, &active, &retained);
+        let active = active_session_selection(&active);
+        let rows = tree_herdr_sessions(&host, active.as_ref(), &retained);
 
         assert_eq!(rows.len(), 2);
         assert!(session_group_visibility(&host, &rows, &[]).herdr);
@@ -7177,7 +7249,7 @@ mod tests {
             HerdrSessionState::Stopped,
         )]);
 
-        let rows = tree_herdr_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_herdr_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].selection.session(), "cached");
@@ -7209,7 +7281,8 @@ mod tests {
             "retained",
         )];
 
-        let rows = tree_zellij_sessions(&host, &active, &retained);
+        let active = active_session_selection(&active);
+        let rows = tree_zellij_sessions(&host, active.as_ref(), &retained);
 
         assert_eq!(rows.len(), 2);
         assert!(session_group_visibility(&host, &[], &rows).zellij);
@@ -7232,7 +7305,7 @@ mod tests {
                 "invalid Zellij inventory",
             ));
 
-        let rows = tree_zellij_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_zellij_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].selection.session(), "cached");
@@ -7253,7 +7326,7 @@ mod tests {
                 "invalid Herdr inventory",
             ));
 
-        let rows = tree_herdr_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_herdr_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].access, HerdrRowAccess::Cached);
@@ -7352,7 +7425,8 @@ mod tests {
             None,
         );
 
-        let rows = tree_sessions(&host, &terminal, &[]);
+        let active = active_session_selection(&terminal);
+        let rows = tree_sessions(&host, active.as_ref(), &[]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
         assert!(!rows[0].state.is_active());
@@ -7373,7 +7447,7 @@ mod tests {
         );
         let retained = vec![SessionSelection::new("wsl", "Ubuntu", "demo")];
 
-        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &retained);
+        let rows = tree_sessions(&host, None, &retained);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
@@ -7399,7 +7473,7 @@ mod tests {
             SessionSelection::new("wsl", "Ubuntu", "two"),
         ];
 
-        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &retained);
+        let rows = tree_sessions(&host, None, &retained);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.session(), "one");
@@ -7419,7 +7493,7 @@ mod tests {
             None,
         );
 
-        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].selection.session(), "cached");

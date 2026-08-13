@@ -138,6 +138,9 @@ pub struct SessionSelection {
     endpoint: String,
     session: String,
     kind: SessionKind,
+    tmux_socket_name: Option<String>,
+    worktree_path: Option<String>,
+    worktree_generation: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,6 +162,29 @@ impl SessionSelection {
             endpoint: endpoint.into(),
             session: session.into(),
             kind: SessionKind::Tmux,
+            tmux_socket_name: None,
+            worktree_path: None,
+            worktree_generation: None,
+        }
+    }
+
+    #[must_use]
+    pub fn protected_worktree(
+        host_id: impl Into<String>,
+        endpoint: impl Into<String>,
+        session: impl Into<String>,
+        socket_name: impl Into<String>,
+        path: impl Into<String>,
+        generation: impl Into<String>,
+    ) -> Self {
+        Self {
+            host_id: host_id.into(),
+            endpoint: endpoint.into(),
+            session: session.into(),
+            kind: SessionKind::Tmux,
+            tmux_socket_name: Some(socket_name.into()),
+            worktree_path: Some(path.into()),
+            worktree_generation: Some(generation.into()),
         }
     }
 
@@ -173,6 +199,9 @@ impl SessionSelection {
             endpoint: endpoint.into(),
             session: session.into(),
             kind: SessionKind::Herdr,
+            tmux_socket_name: None,
+            worktree_path: None,
+            worktree_generation: None,
         }
     }
 
@@ -187,6 +216,9 @@ impl SessionSelection {
             endpoint: endpoint.into(),
             session: session.into(),
             kind: SessionKind::Zellij,
+            tmux_socket_name: None,
+            worktree_path: None,
+            worktree_generation: None,
         }
     }
 
@@ -208,6 +240,21 @@ impl SessionSelection {
     #[must_use]
     pub const fn kind(&self) -> SessionKind {
         self.kind
+    }
+
+    #[must_use]
+    pub fn tmux_socket_name(&self) -> Option<&str> {
+        self.tmux_socket_name.as_deref()
+    }
+
+    #[must_use]
+    pub fn worktree_path(&self) -> Option<&str> {
+        self.worktree_path.as_deref()
+    }
+
+    #[must_use]
+    pub fn worktree_generation(&self) -> Option<&str> {
+        self.worktree_generation.as_deref()
     }
 }
 
@@ -695,21 +742,6 @@ impl HostItem {
             .iter()
             .any(|workspace| workspace.session_name == name)
     }
-
-    /// Whether an active or retained tmux presentation belongs under a KWT
-    /// worktree row, including protected named-socket presentations.
-    #[must_use]
-    pub fn kwt_owns_presented_tmux_session(&self, name: &str) -> bool {
-        self.projects.iter().any(|project| {
-            project
-                .worktrees
-                .iter()
-                .any(|worktree| worktree.session_name == name)
-        }) || self
-            .directory_workspaces
-            .iter()
-            .any(|workspace| workspace.session_name == name)
-    }
 }
 
 #[derive(Clone)]
@@ -747,6 +779,7 @@ pub struct WorkspaceSnapshot {
     hosts: Vec<HostItem>,
     selected_host: Option<String>,
     notice: Option<String>,
+    active_selection: Option<SessionSelection>,
     retained_selections: Vec<SessionSelection>,
 }
 
@@ -767,6 +800,7 @@ impl WorkspaceSnapshot {
             hosts: Vec::new(),
             selected_host: None,
             notice: None,
+            active_selection: None,
             retained_selections: Vec::new(),
         }
     }
@@ -781,6 +815,7 @@ impl WorkspaceSnapshot {
             hosts,
             selected_host,
             notice: None,
+            active_selection: None,
             retained_selections: Vec::new(),
         }
     }
@@ -818,6 +853,11 @@ impl WorkspaceSnapshot {
     #[must_use]
     pub fn retained_selections(&self) -> &[SessionSelection] {
         &self.retained_selections
+    }
+
+    #[must_use]
+    pub const fn active_selection(&self) -> Option<&SessionSelection> {
+        self.active_selection.as_ref()
     }
 }
 
@@ -1872,6 +1912,22 @@ impl AttachRequest {
     }
 
     fn selection(&self) -> SessionSelection {
+        if let AttachTarget::ProtectedWorktree {
+            path,
+            generation,
+            tmux_socket_name,
+            ..
+        } = &self.target
+        {
+            return SessionSelection::protected_worktree(
+                &self.host_id,
+                self.endpoint.distro(),
+                &self.name,
+                tmux_socket_name,
+                path,
+                generation,
+            );
+        }
         match self.target.kind() {
             SessionKind::Tmux => {
                 SessionSelection::new(&self.host_id, self.endpoint.distro(), &self.name)
@@ -2534,6 +2590,7 @@ impl Workspace {
             hosts: Vec::new(),
             selected_host: None,
             notice: None,
+            active_selection: None,
             retained_selections: Vec::new(),
         })
     }
@@ -3311,6 +3368,13 @@ impl Workspace {
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone(),
+                    active_selection: self
+                        .inner
+                        .attachment
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .active()
+                        .map(|active| active.request.selection()),
                     retained_selections: self
                         .inner
                         .retained_presentations
@@ -4155,11 +4219,24 @@ impl Workspace {
         thread::Builder::new()
             .name("ghosthub-session-kill-identity".to_owned())
             .spawn(move || {
-                let result = host.capture_live_session(
-                    &endpoint,
-                    &runtime,
-                    selection.session(),
-                    &CancellationToken::new(),
+                let result = selection.tmux_socket_name().map_or_else(
+                    || {
+                        host.capture_live_session(
+                            &endpoint,
+                            &runtime,
+                            selection.session(),
+                            &CancellationToken::new(),
+                        )
+                    },
+                    |socket_name| {
+                        host.capture_live_session_on_socket(
+                            &endpoint,
+                            &runtime,
+                            socket_name,
+                            selection.session(),
+                            &CancellationToken::new(),
+                        )
+                    },
                 );
                 match result {
                     Ok(target) => {
@@ -5721,12 +5798,7 @@ fn capture_kill_request(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .active()
         .map(|active| active.request.clone())
-        .filter(|request| {
-            request.host_id == selection.host_id()
-                && request.endpoint.distro() == selection.endpoint()
-                && request.name == selection.session()
-                && request.target.kind() == SessionKind::Tmux
-        })
+        .filter(|request| request.selection() == *selection)
     {
         return Ok(KillCaptureRequest::Tmux {
             selection: selection.clone(),
@@ -5735,6 +5807,7 @@ fn capture_kill_request(
             runtime: request.runtime,
         });
     }
+    require_current_protected_selection(inner, selection)?;
     let host = inner
         .host
         .lock()
@@ -5750,11 +5823,12 @@ fn capture_kill_request(
         }
         match selection.kind() {
             SessionKind::Tmux => {
-                if !context
-                    .snapshot
-                    .sessions()
-                    .iter()
-                    .any(|session| session.name() == selection.session())
+                if selection.tmux_socket_name().is_none()
+                    && !context
+                        .snapshot
+                        .sessions()
+                        .iter()
+                        .any(|session| session.name() == selection.session())
                 {
                     return Err(WorkspaceError::new(
                         "session is not in the current inventory",
@@ -5798,6 +5872,40 @@ fn capture_kill_request(
             SessionKind::Herdr => unreachable!("Herdr was rejected above"),
         }
     })
+}
+
+fn require_current_protected_selection(
+    inner: &Inner,
+    selection: &SessionSelection,
+) -> Result<(), WorkspaceError> {
+    let Some(socket_name) = selection.tmux_socket_name() else {
+        return Ok(());
+    };
+    let exact_worktree = inner
+        .hosts
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter(|host| {
+            host.id() == selection.host_id()
+                && host.endpoint() == selection.endpoint()
+                && host.connection() == HostConnectionState::Ready
+        })
+        .flat_map(HostItem::projects)
+        .flat_map(ProjectItem::worktrees)
+        .any(|worktree| {
+            worktree.session_name() == selection.session()
+                && worktree.tmux_socket_name() == Some(socket_name)
+                && worktree.path() == selection.worktree_path().unwrap_or_default()
+                && worktree.generation() == selection.worktree_generation()
+        });
+    if exact_worktree {
+        Ok(())
+    } else {
+        Err(WorkspaceError::new(
+            "protected worktree is not in the current inventory",
+        ))
+    }
 }
 
 fn capture_herdr_lifecycle(
@@ -13490,6 +13598,7 @@ mod tests {
             hosts: Vec::new(),
             selected_host: None,
             notice: None,
+            active_selection: None,
             retained_selections: Vec::new(),
         });
         *workspace.inner.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
@@ -15909,6 +16018,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture verifies ordinary and protected KWT identity from the same inventory"
+    )]
     fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         let bundle =
             host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
@@ -15987,6 +16100,19 @@ mod tests {
             protected.target,
             AttachTarget::ProtectedWorktree { ref tmux_socket_name, .. }
                 if tmux_socket_name == "kwt-pr-a1b2"
+        ));
+        let protected_selection = protected.selection();
+        assert_eq!(protected_selection.tmux_socket_name(), Some("kwt-pr-a1b2"));
+        assert_ne!(
+            protected_selection,
+            SessionSelection::new("wsl", "Ubuntu", "project-pr-17"),
+            "a same-named default-socket session is a different presentation"
+        );
+        assert!(matches!(
+            capture_kill_request(&workspace.inner, &protected_selection, 9)
+                .expect("protected selection grants a fresh named-socket kill query"),
+            KillCaptureRequest::Tmux { selection, .. }
+                if selection.tmux_socket_name() == Some("kwt-pr-a1b2")
         ));
         assert!(
             capture_kwt_worktree_request(
@@ -16551,6 +16677,7 @@ mod tests {
             )],
             selected_host: Some("wsl".to_owned()),
             notice: None,
+            active_selection: None,
             retained_selections: Vec::new(),
         });
 

@@ -480,7 +480,11 @@ while tmux remains authoritative for pane creation and layout. If tmux rejects
 a split, Ghosthub displays its diagnostic over the attachment. Native Windows
 psmux attachments do not offer pane-split actions or intercept these shortcuts.
 Kill Session is exposed separately from presentation only for a session known
-to be running and always requires confirmation.
+to be running and always requires confirmation. For a protected worktree,
+Ghosthub preserves the named socket, path, and generation in navigation state,
+then queries that exact socket for fresh server and session identity before
+showing confirmation. A same-named session on the default server is unrelated
+and can never satisfy or receive the protected action.
 
 Native Windows creation also supplies the SSH account's process `PATH` through
 psmux's `new-session -e` contract. Psmux otherwise starts detached panes
