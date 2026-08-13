@@ -441,6 +441,34 @@ fn kwt_operation_failure_owns_dialog(
     }
 }
 
+fn apply_worktree_removal_failure(
+    dialog: &mut ProjectDialog,
+    operation_id: u64,
+    project_path: &str,
+    worktree_path: Option<&str>,
+    message: String,
+) -> bool {
+    let ProjectDialog::RemoveWorktree {
+        target,
+        submitting,
+        error,
+    } = dialog
+    else {
+        return false;
+    };
+    if target.open.project_path != project_path
+        || target.operation_id != Some(operation_id)
+        || worktree_path != Some(target.open.worktree_path.as_str())
+    {
+        return false;
+    }
+    *submitting = false;
+    target.authority = None;
+    target.operation_id = None;
+    *error = Some(message);
+    true
+}
+
 fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
     let ProjectDialog::NewWorktree {
         branch,
@@ -1261,6 +1289,48 @@ impl RootView {
             cx.notify();
             return;
         }
+        if let Some(open) = self.project_dialog.as_ref().and_then(|dialog| {
+            let ProjectDialog::RemoveWorktree {
+                target,
+                submitting: false,
+                error: Some(_),
+            } = dialog
+            else {
+                return None;
+            };
+            target.authority.is_none().then(|| target.open.clone())
+        }) {
+            let Some(generation) = open.generation.as_deref() else {
+                self.set_project_dialog_error(
+                    "Refresh KWT inventory before removing this worktree.",
+                );
+                cx.notify();
+                return;
+            };
+            match self.workspace.request_kwt_worktree_removal(
+                &open.host_id,
+                &open.endpoint,
+                &open.repository,
+                &open.project_path,
+                &open.registration_fingerprint,
+                &open.worktree_path,
+                generation,
+                &open.session_name,
+            ) {
+                Ok(operation_id) => {
+                    if let Some(ProjectDialog::RemoveWorktree { target, error, .. }) =
+                        &mut self.project_dialog
+                    {
+                        target.operation_id = Some(operation_id);
+                        target.session_was_running = false;
+                        *error = None;
+                    }
+                }
+                Err(error) => self.set_project_dialog_error(error.to_string()),
+            }
+            cx.notify();
+            return;
+        }
         let result = match self.project_dialog.as_ref() {
             Some(ProjectDialog::Add {
                 host_id,
@@ -1938,6 +2008,17 @@ impl RootView {
                     ) {
                         continue;
                     }
+                    if self.project_dialog.as_mut().is_some_and(|dialog| {
+                        apply_worktree_removal_failure(
+                            dialog,
+                            operation_id,
+                            &project_path,
+                            worktree_path.as_deref(),
+                            message.clone(),
+                        )
+                    }) {
+                        continue;
+                    }
                     match &mut self.project_dialog {
                         Some(ProjectDialog::NewWorktree {
                             project_path: dialog_path,
@@ -1953,18 +2034,6 @@ impl RootView {
                         {
                             *loading = false;
                             *loaded = false;
-                            *submitting = false;
-                            *error = Some(message);
-                        }
-                        Some(ProjectDialog::RemoveWorktree {
-                            target,
-                            submitting,
-                            error,
-                        }) if target.open.project_path == project_path
-                            && target.operation_id == Some(operation_id)
-                            && worktree_path.as_deref()
-                                == Some(target.open.worktree_path.as_str()) =>
-                        {
                             *submitting = false;
                             *error = Some(message);
                         }
@@ -3096,6 +3165,7 @@ impl RootView {
                         ""
                     };
                     let checking = target.authority.is_none() && error.is_none();
+                    let review_again = target.authority.is_none() && error.is_some();
                     let body = div()
                         .px_4()
                         .py_4()
@@ -3128,11 +3198,13 @@ impl RootView {
                             "Removing…"
                         } else if checking {
                             "Checking…"
+                        } else if review_again {
+                            "Review Again"
                         } else {
                             "Remove Worktree"
                         },
                         *submitting,
-                        target.authority.is_some() && !*submitting,
+                        (target.authority.is_some() || review_again) && !*submitting,
                         error.as_deref(),
                     )
                 }
@@ -6105,19 +6177,20 @@ mod tests {
         UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
         WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
         WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
-        active_session_selection, application_navigation_width, can_create_worktree,
-        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
-        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
-        host_tree_status, input_queue_has_capacity, is_toggle_sidebar_shortcut,
-        kill_confirmation_description, kill_confirmation_title, kwt_operation_failure_owns_dialog,
-        named_key, new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_group_visibility, session_row_element_id,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
-        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates,
-        workspace_window_title, worktree_open_mode,
+        active_session_selection, application_navigation_width, apply_worktree_removal_failure,
+        can_create_worktree, canonical_terminal_key_with, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
+        herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
+        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
+        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
+        owns_created_worktree_navigation, queued_input_matches_presentation,
+        retained_key_event_with, session_action_menu_position, session_backend_id,
+        session_group_visibility, session_row_element_id, terminal_cell_at_with_offset,
+        terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
+        terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
+        tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates, workspace_window_title,
+        worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -6313,10 +6386,10 @@ mod tests {
                 project_name: "widget".to_owned(),
                 branch: "topic".to_owned(),
                 session_was_running: false,
-                authority: None,
+                authority: Some(9),
                 operation_id: Some(9),
             },
-            submitting: false,
+            submitting: true,
             error: None,
         };
         assert!(kwt_operation_failure_owns_dialog(
@@ -6331,6 +6404,27 @@ mod tests {
             "/code/widget",
             Some("/work/widget/other"),
         ));
+
+        let mut failed = remove;
+        assert!(apply_worktree_removal_failure(
+            &mut failed,
+            9,
+            "/code/widget",
+            Some("/work/widget/topic"),
+            "remove failed".to_owned(),
+        ));
+        let ProjectDialog::RemoveWorktree {
+            target,
+            submitting,
+            error,
+        } = failed
+        else {
+            panic!("removal dialog remains active");
+        };
+        assert!(!submitting);
+        assert_eq!(target.authority, None);
+        assert_eq!(target.operation_id, None);
+        assert_eq!(error.as_deref(), Some("remove failed"));
     }
 
     #[test]

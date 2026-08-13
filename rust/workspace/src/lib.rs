@@ -2900,7 +2900,7 @@ impl Workspace {
             generation,
             session_name,
         )?;
-        self.start_kwt_worktree_operation(
+        let result = self.start_kwt_worktree_operation(
             host_id,
             endpoint,
             repository,
@@ -2910,11 +2910,14 @@ impl Workspace {
                 worktree_path: worktree_path.to_owned(),
                 generation: generation.to_owned(),
                 session_name: session_name.to_owned(),
-                live_target: pending.live_target,
+                live_target: pending.live_target.clone(),
                 operation_id: authority,
             },
-        )
-        .map(|_| ())
+        );
+        if result.is_err() {
+            restore_pending_kwt_removal(&self.inner, pending);
+        }
+        result.map(|_| ())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6568,6 +6571,16 @@ fn take_pending_kwt_removal(
         ));
     }
     Ok(pending)
+}
+
+fn restore_pending_kwt_removal(inner: &Inner, pending: PendingKwtRemoval) {
+    let mut slot = inner
+        .pending_kwt_removal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.kwt_removal_generation.load(Ordering::Acquire) == pending.authority && slot.is_none() {
+        *slot = Some(pending);
+    }
 }
 
 #[allow(
@@ -10967,7 +10980,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_removal_consumes_the_exact_preconfirmation_session_authority() {
+    fn worktree_removal_authority_can_be_restored_before_dispatch() {
         let workspace =
             Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
         let identity = session::SessionIdentity::new(100, "$1", 200);
@@ -11021,7 +11034,11 @@ mod tests {
         .expect("exact confirmation authority");
 
         assert_eq!(
-            pending.live_target.expect("live authority").identity(),
+            pending
+                .live_target
+                .as_ref()
+                .expect("live authority")
+                .identity(),
             &identity
         );
         assert!(
@@ -11031,6 +11048,18 @@ mod tests {
                 .lock()
                 .expect("pending removal")
                 .is_none()
+        );
+
+        restore_pending_kwt_removal(&workspace.inner, pending);
+        assert_eq!(
+            workspace
+                .inner
+                .pending_kwt_removal
+                .lock()
+                .expect("restored pending removal")
+                .as_ref()
+                .map(|pending| pending.authority),
+            Some(authority)
         );
     }
 
