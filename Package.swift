@@ -323,6 +323,7 @@ targets.append(
         dependencies: [
             "GhosthubTransport",
             "GhosthubTmux",
+            "GhosthubTestSupport",
         ],
         path: "Tests/Tmux"
     )

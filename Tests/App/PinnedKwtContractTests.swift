@@ -242,28 +242,12 @@ struct PinnedKwtContractTests {
         )
         #expect(primary.tmuxSocketName == nil)
         let tmuxPath = try TmuxBinaryResolver().resolveTmuxPath().get()
-        let startSession = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-f", "/dev/null", "-L", "default",
-                "new-session", "-d", "-s", primary.sessionName,
-            ],
-            timeout: 10
+        let tmuxServer = try TestTmuxServer(
+            tmuxPath: tmuxPath,
+            socket: .productContract(name: "default")
         )
-        try #require(
-            startSession.status == 0,
-            Comment(rawValue: startSession.stderr)
-        )
-        defer {
-            _ = AccountCommandRunner.runProcess(
-                executable: tmuxPath,
-                arguments: [
-                    "-L", "default", "kill-session",
-                    "-t", "=\(primary.sessionName):",
-                ],
-                timeout: 10
-            )
-        }
+        defer { tmuxServer.stop() }
+        try tmuxServer.createSession(primary.sessionName)
         _ = try await registry.unregister(
             projectPath: registeredProject.project.path,
             expectedRepository: registeredProject.project.repository,
@@ -387,23 +371,11 @@ struct PinnedKwtContractTests {
         var expectedRepository = registered.repository
         var preservedProvenance: (url: URL, data: Data)?
         var protectedSession: (
+            server: TestTmuxServer,
             tmux: String,
-            socket: String,
             session: String
         )?
-        defer {
-            if let protectedSession {
-                _ = AccountCommandRunner.runProcess(
-                    executable: protectedSession.tmux,
-                    arguments: [
-                        "-L", protectedSession.socket,
-                        "kill-session", "-t",
-                        "=\(protectedSession.session):",
-                    ],
-                    timeout: 10
-                )
-            }
-        }
+        defer { protectedSession?.server.stop() }
         if guardCase == .repositoryMismatch {
             expectedRepository = "github.com/acme/replacement"
         } else {
@@ -459,19 +431,12 @@ struct PinnedKwtContractTests {
                     String(format: "%02x", $0)
                 }.joined()
                 let tmux = try TmuxBinaryResolver().resolveTmuxPath().get()
-                let startSession = AccountCommandRunner.runProcess(
-                    executable: tmux,
-                    arguments: [
-                        "-f", "/dev/null", "-L", socket,
-                        "new-session", "-d", "-s", session,
-                    ],
-                    timeout: 10
+                let server = try TestTmuxServer(
+                    tmuxPath: tmux,
+                    socket: .productContract(name: socket)
                 )
-                try #require(
-                    startSession.status == 0,
-                    Comment(rawValue: startSession.stderr)
-                )
-                protectedSession = (tmux, socket, session)
+                try server.createSession(session)
+                protectedSession = (server, tmux, session)
             }
         }
 
@@ -523,7 +488,7 @@ struct PinnedKwtContractTests {
             let liveSession = AccountCommandRunner.runProcess(
                 executable: protectedSession.tmux,
                 arguments: [
-                    "-L", protectedSession.socket,
+                    "-L", protectedSession.server.socketName,
                     "has-session", "-t", "=\(protectedSession.session):",
                 ],
                 timeout: 10

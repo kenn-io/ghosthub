@@ -1,5 +1,6 @@
 import GhosthubTransport
 import Foundation
+import GhosthubTestSupport
 import GhosthubTmux
 import GhosthubUI
 import Testing
@@ -14,38 +15,15 @@ struct TmuxSessionKillerTests {
         else {
             return
         }
-        let socketName = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ].map { "ghosthub-kill-\($0)" }
-            ?? "ghosthub-kill-\(UUID().uuidString.lowercased())"
+        let server = try TestTmuxServer(
+            tmuxPath: tmuxPath,
+            socket: .runOwned(purpose: "kill")
+        )
+        defer { server.stop() }
+        let socketName = server.socketName
         let sessionName = "same-name"
-        defer {
-            _ = AccountCommandRunner.runProcess(
-                executable: tmuxPath,
-                arguments: [
-                    "-L", socketName,
-                    "kill-session", "-a", ";", "kill-session",
-                ],
-                timeout: 5
-            )
-        }
-        let anchor = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-f", "/dev/null", "-L", socketName,
-                "new-session", "-d", "-s", "anchor",
-            ],
-            timeout: 5
-        )
-        #expect(anchor.status == 0)
-        let initial = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-L", socketName, "new-session", "-d", "-s", sessionName,
-            ],
-            timeout: 5
-        )
-        #expect(initial.status == 0)
+        try server.createSession("anchor")
+        try server.createSession(sessionName)
 
         let killer = TmuxSessionKiller(
             pathResolver: { _ in .success(tmuxPath) }
@@ -74,14 +52,7 @@ struct TmuxSessionKillerTests {
         )
         #expect(absent.status != 0)
 
-        let replacement = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-L", socketName, "new-session", "-d", "-s", sessionName,
-            ],
-            timeout: 5
-        )
-        #expect(replacement.status == 0)
+        try server.createSession(sessionName)
         await #expect {
             try await killer.kill(
                 selection,

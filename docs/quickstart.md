@@ -58,7 +58,7 @@ prepared kwt executable.
 
 ```bash
 make swift-warning-check
-swift test
+make swift-test
 make python-test
 make docs-build
 ```

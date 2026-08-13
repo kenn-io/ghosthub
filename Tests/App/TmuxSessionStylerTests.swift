@@ -1,5 +1,6 @@
 import GhosthubTransport
 import Foundation
+import GhosthubTestSupport
 import GhosthubTmux
 import GhosthubUI
 import Testing
@@ -172,30 +173,14 @@ struct TmuxSessionStylerTests {
         else {
             return
         }
-        let socketName = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ].map { "ghosthub-style-\($0)" }
-            ?? "ghosthub-style-\(UUID().uuidString.lowercased())"
-        let sessionName = "review"
-        defer {
-            _ = AccountCommandRunner.runProcess(
-                executable: tmuxPath,
-                arguments: [
-                    "-L", socketName,
-                    "kill-session", "-a", ";", "kill-session",
-                ],
-                timeout: 5
-            )
-        }
-        let created = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-f", "/dev/null", "-L", socketName,
-                "new-session", "-d", "-s", sessionName,
-            ],
-            timeout: 5
+        let server = try TestTmuxServer(
+            tmuxPath: tmuxPath,
+            socket: .runOwned(purpose: "style")
         )
-        try #require(created.status == 0)
+        defer { server.stop() }
+        let socketName = server.socketName
+        let sessionName = "review"
+        try server.createSession(sessionName)
 
         let identity = try await TmuxSessionKiller(
             pathResolver: { _ in .success(tmuxPath) }

@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubTerminalSupport
+import GhosthubTestSupport
 import GhosthubTmux
 import GhosthubTransport
 import Testing
@@ -109,15 +110,19 @@ private final class TestTmuxClient {
     }
 }
 
-private func stopTestTmuxServer(tmuxPath: String, socketName: String) {
-    _ = AccountCommandRunner.runProcess(
-        executable: tmuxPath,
-        arguments: [
-            "-L", socketName,
-            "kill-session", "-a", ";", "kill-session",
-        ],
-        timeout: 5
+private func makeTestTmuxServer(
+    tmuxPath: String,
+    purpose: String,
+    sessions: [String]
+) throws -> TestTmuxServer {
+    let server = try TestTmuxServer(
+        tmuxPath: tmuxPath,
+        socket: .runOwned(purpose: purpose)
     )
+    for session in sessions {
+        try server.createSession(session)
+    }
+    return server
 }
 
 private func nativePaneSplitsAreAvailable(_ tmuxPath: String) -> Bool {
@@ -161,22 +166,13 @@ struct TmuxPaneSplitterTests {
             return
         }
         guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
-        let socketName = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ].map { "ghosthub-split-\($0)" }
-            ?? "ghosthub-split-\(UUID().uuidString.lowercased())"
-        defer {
-            stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
-        }
-        let created = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-f", "/dev/null", "-L", socketName,
-                "new-session", "-d", "-s", "customized",
-            ],
-            timeout: 5
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "split",
+            sessions: ["customized"]
         )
-        #expect(created.status == 0)
+        defer { server.stop() }
+        let socketName = server.socketName
         let customized = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
@@ -290,24 +286,13 @@ struct TmuxPaneSplitterTests {
             TmuxBinaryResolver().resolveTmuxPath()
         else { return }
         guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
-        let runID = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ] ?? String(UUID().uuidString.prefix(8)).lowercased()
-        let socketName = "ghosthub-concurrent-hooks-\(runID)"
-        defer {
-            stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
-        }
-        for sessionName in ["concurrent-a", "concurrent-b"] {
-            let created = AccountCommandRunner.runProcess(
-                executable: tmuxPath,
-                arguments: [
-                    "-f", "/dev/null", "-L", socketName,
-                    "new-session", "-d", "-s", sessionName,
-                ],
-                timeout: 5
-            )
-            #expect(created.status == 0)
-        }
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "concurrent-hooks",
+            sessions: ["concurrent-a", "concurrent-b"]
+        )
+        defer { server.stop() }
+        let socketName = server.socketName
 
         let firstToken = UUID().uuidString.lowercased()
         let secondToken = UUID().uuidString.lowercased()
@@ -444,22 +429,13 @@ struct TmuxPaneSplitterTests {
         guard case let .success(tmuxPath) =
             TmuxBinaryResolver().resolveTmuxPath()
         else { return }
-        let runID = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ] ?? String(UUID().uuidString.lowercased().prefix(8))
-        let socketName = "ghosthub-token-race-\(runID)"
-        defer {
-            stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
-        }
-        let created = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-f", "/dev/null", "-L", socketName,
-                "new-session", "-d", "-s", "token-race",
-            ],
-            timeout: 5
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "token-race",
+            sessions: ["token-race"]
         )
-        #expect(created.status == 0)
+        defer { server.stop() }
+        let socketName = server.socketName
 
         let token = UUID().uuidString.lowercased()
         let target = TmuxPaneSplitTarget(
@@ -510,22 +486,13 @@ struct TmuxPaneSplitterTests {
             TmuxBinaryResolver().resolveTmuxPath()
         else { return }
         guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
-        let runID = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ] ?? String(UUID().uuidString.lowercased().prefix(8))
-        let socketName = "ghosthub-slow-split-\(runID)"
-        defer {
-            stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
-        }
-        let created = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-f", "/dev/null", "-L", socketName,
-                "new-session", "-d", "-s", "slow",
-            ],
-            timeout: 5
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "slow-split",
+            sessions: ["slow"]
         )
-        #expect(created.status == 0)
+        defer { server.stop() }
+        let socketName = server.socketName
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -613,40 +580,23 @@ struct TmuxPaneSplitterTests {
         guard case let .success(tmuxPath) =
             TmuxBinaryResolver().resolveTmuxPath()
         else { return }
-        let runID = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ] ?? String(UUID().uuidString.lowercased().prefix(8))
-        let targetSocketName = "gh-target-\(runID)"
-        let launcherSocketName = "gh-launcher-\(runID)"
+        let targetServer = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "target",
+            sessions: ["inherited-target"]
+        )
+        let launcherServer = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "launcher",
+            sessions: ["launcher"]
+        )
+        let targetSocketName = targetServer.socketName
+        let launcherSocketName = launcherServer.socketName
         let token = UUID().uuidString.lowercased()
         let tokenPath = try testClientTokenPath(token)
-        let targetCreate = [
-            tmuxPath, "-f", "/dev/null", "-L", targetSocketName,
-            "new-session", "-d", "-s", "inherited-target",
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let launcherCreate = [
-            tmuxPath, "-f", "/dev/null", "-L", launcherSocketName,
-            "new-session", "-d", "-s", "launcher",
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
-        #expect(AccountCommandRunner.runLoginShell(
-            shell: "/bin/sh",
-            command: targetCreate,
-            timeout: 5
-        ).status == 0)
-        #expect(AccountCommandRunner.runLoginShell(
-            shell: "/bin/sh",
-            command: launcherCreate,
-            timeout: 5
-        ).status == 0)
         defer {
-            stopTestTmuxServer(
-                tmuxPath: tmuxPath,
-                socketName: targetSocketName
-            )
-            stopTestTmuxServer(
-                tmuxPath: tmuxPath,
-                socketName: launcherSocketName
-            )
+            targetServer.stop()
+            launcherServer.stop()
             try? FileManager.default.removeItem(at: tokenPath)
         }
         let renameHook = [
@@ -905,22 +855,13 @@ struct TmuxPaneSplitterTests {
             TmuxBinaryResolver().resolveTmuxPath()
         else { return }
         guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
-        let runID = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ] ?? String(UUID().uuidString.prefix(8)).lowercased()
-        let socketName = "ghosthub-client-identity-\(runID)"
-        defer {
-            stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
-        }
-        let created = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-f", "/dev/null", "-L", socketName,
-                "new-session", "-d", "-s", "identity",
-            ],
-            timeout: 5
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "client-identity",
+            sessions: ["identity"]
         )
-        #expect(created.status == 0)
+        defer { server.stop() }
+        let socketName = server.socketName
         let originalToken = UUID().uuidString.lowercased()
         let replacementToken = UUID().uuidString.lowercased()
         let original = try TestTmuxClient(
@@ -996,13 +937,13 @@ struct TmuxPaneSplitterTests {
             return
         }
         guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
-        let runID = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ] ?? String(UUID().uuidString.prefix(8)).lowercased()
-        let socketName = "ghosthub-replacement-\(runID)"
-        defer {
-            stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
-        }
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "replacement",
+            sessions: ["replaceable"]
+        )
+        defer { server.stop() }
+        let socketName = server.socketName
         let target = TmuxPaneSplitTarget(
             host: .local,
             tmuxPath: tmuxPath,
@@ -1011,15 +952,6 @@ struct TmuxPaneSplitterTests {
             sshConnectionArguments: [],
             clientToken: UUID().uuidString.lowercased()
         )
-        let created = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-f", "/dev/null", "-L", socketName,
-                "new-session", "-d", "-s", "replaceable",
-            ],
-            timeout: 5
-        )
-        #expect(created.status == 0)
         let clientProcess = try TestTmuxClient(
             tmuxPath: tmuxPath,
             socketName: socketName,
@@ -1037,15 +969,7 @@ struct TmuxPaneSplitterTests {
             arguments: ["-L", socketName, "kill-session", "-t", "replaceable"],
             timeout: 5
         )
-        let replacement = AccountCommandRunner.runProcess(
-            executable: tmuxPath,
-            arguments: [
-                "-f", "/dev/null", "-L", socketName,
-                "new-session", "-d", "-s", "replaceable",
-            ],
-            timeout: 5
-        )
-        #expect(replacement.status == 0)
+        try server.createSession("replaceable")
 
         var guardedTarget = target
         guardedTarget.expectedIdentity = client?.sessionIdentity
@@ -1073,24 +997,13 @@ struct TmuxPaneSplitterTests {
             TmuxBinaryResolver().resolveTmuxPath()
         else { return }
         guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
-        let runID = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ] ?? String(UUID().uuidString.prefix(8)).lowercased()
-        let socketName = "ghosthub-client-switch-\(runID)"
-        defer {
-            stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
-        }
-        for session in ["original", "visible"] {
-            let created = AccountCommandRunner.runProcess(
-                executable: tmuxPath,
-                arguments: [
-                    "-f", "/dev/null", "-L", socketName,
-                    "new-session", "-d", "-s", session,
-                ],
-                timeout: 5
-            )
-            #expect(created.status == 0)
-        }
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "client-switch",
+            sessions: ["original", "visible"]
+        )
+        defer { server.stop() }
+        let socketName = server.socketName
         let target = TmuxPaneSplitTarget(
             host: .local,
             tmuxPath: tmuxPath,

@@ -187,7 +187,10 @@ parent's checklist.
 
 - Run `make format` before committing Swift changes. CI runs
   `make format-check` and fails on drift.
-- Run Swift tests with `swift test` or targeted `xcodebuild test`.
+- Run Swift tests with `make swift-test` or targeted `xcodebuild test`.
+- Tests that start a real tmux server must use `TestTmuxServer` and run under
+  `tools/run_swift_tests.sh`; command-construction-only and Zellij tests do not
+  need that fixture.
 - Run Python tests with `make python-test`.
 
 ## Naming
@@ -221,7 +224,7 @@ If you touch terminal startup, shell environment, config layering, embedded libg
 
 - `make test-libghostty-bootstrap`
 - `make python-test`
-- `swift test`
+- `make swift-test`
 - `make build`
 
 If the change is specifically about interactive shell behavior, also verify the existing smoke coverage around:
