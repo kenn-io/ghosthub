@@ -22,8 +22,9 @@ Ghosthub aims to protect:
   with confirmation before tmux or Zellij Kill and Herdr Stop/Delete
 - app-owned settings and persistence from unintended cross-host or
   cross-worktree mutation
-- application-update integrity, rooted in the reviewed Sparkle Ed25519 key,
-  with Apple Developer ID signing and notarization as independent defenses
+- application-update integrity, rooted in the reviewed channel-specific
+  Sparkle Ed25519 key and its feed-publication boundary, with Apple Developer
+  ID signing and notarization as independent defenses
 
 The main security goals are to use the system SSH trust and encryption model,
 avoid sending local data to a remote pane except through an intentional
@@ -346,27 +347,37 @@ at a time in the active attachment.
 
 ### Release distribution
 
-GitHub release hosting and the network path used to fetch an appcast or DMG are
-not trusted to authorize executable code. Packaged Ghosthub releases require an
-HTTPS appcast signed with the embedded Sparkle Ed25519 public key and verify the
-update archive before extraction. Signed-feed failures never expire into
-Sparkle's rotation fallback. Changing an asset or feed after publication
-without the private Sparkle key must therefore fail closed.
+GitHub release hosting, the nightly object host, and the network paths used to
+fetch an appcast or DMG are not trusted to authorize executable code. Each
+packaged Ghosthub channel requires an HTTPS appcast signed with its embedded
+Sparkle Ed25519 public key and verifies the update archive before extraction.
+Signed-feed failures never expire into Sparkle's rotation fallback. Changing
+an asset or feed after publication without an applicable signing identity must
+therefore fail closed.
 
 Release artifacts are also Apple Developer ID signed and notarized. This is an
 independent platform integrity check, not a second mandatory authorization
 factor: Sparkle intentionally accepts either a valid Ed25519 chain or a
 matching Apple identity so applications can rotate a lost key or certificate.
-Ghosthub does not intentionally use that rotation path. Compromise of the
-trusted Sparkle private key can authorize an update and is therefore a release
-incident, not a failure this model claims the client can contain.
+Ghosthub does not intentionally use that rotation path. Stable and nightly use
+different Sparkle keys, but both use the same Apple Developer ID identity, so
+the keys are defense in depth rather than independent authorization factors.
+Compromise of a trusted Sparkle private key or the shared Apple signing
+identity is therefore a release incident, not a failure this model claims the
+client can contain.
 
-The protected GitHub `release-signing` environment, its independent approval
-policy, the organization-controlled 1Password vault, the Sparkle private key,
-and the Apple signing credentials are trusted operational components. Loss or
-suspected disclosure of either signing identity is a release incident governed
-by the Kenn operations runbook; it is not resolved by silently generating a
-replacement key.
+Stable-feed routing and publication authority are the operational boundary
+that protects stable users from nightly automation. The unattended nightly
+environment can write only the nightly object store and cannot create a GitHub
+release, replace a stable release asset, or change the stable appcast. The
+protected GitHub `release-signing` environment and its independent approval
+policy, the `main`-restricted unattended `nightly-signing` environment, the
+organization-controlled 1Password vault, both Sparkle private keys, the shared
+Apple signing credentials, and the nightly object-store credentials are
+trusted operational components. Loss or suspected disclosure of a signing
+identity or publication credential is a release incident governed by the Kenn
+operations runbook; it is not resolved by silently generating a replacement
+key.
 
 ## In-Scope Failures
 
@@ -423,4 +434,5 @@ control of a trusted peer, remain security issues.
 Changes to these assumptions are product decisions. Update this document and
 the relevant architecture or terminal-session contract in the same change
 when Ghosthub begins supporting untrusted hosts, multi-user systems, sandboxed
-workloads, or a different transport boundary.
+workloads, a different transport boundary, or a different release-distribution
+boundary.

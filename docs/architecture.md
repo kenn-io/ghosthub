@@ -148,12 +148,17 @@ consumed through kwt's machine-readable CLI surfaces.
 
 ### Application Updates
 
-Packaged releases embed Sparkle 2 and check a stable HTTPS appcast published as
-an asset of the latest GitHub release. The app menu exposes **Check for
-Updates…**, and Sparkle performs automatic background checks using its standard
-native UI and installation flow. Development binaries without the packaged
-feed and public key disable the update command instead of contacting a release
-service.
+Packaged releases embed Sparkle 2 and select exactly one update channel at
+build time. Stable builds check the HTTPS appcast published as an asset of the
+latest GitHub release. Nightly builds check the separately hosted nightly
+appcast, carry a distinct Sparkle public key, and identify themselves as
+**Ghosthub Nightly** while retaining the stable `com.ghosthub` bundle identity
+and app-owned state. Installing one channel therefore replaces the other; the
+channels cannot update into each other through Sparkle. Development binaries
+without a packaged feed and public key disable the update command instead of
+contacting a release service. The app menu exposes **Check for Updates…**, and
+Sparkle performs automatic background checks using its standard native UI and
+installation flow.
 
 When the user accepts Sparkle's **Install and Relaunch**, Ghosthub captures
 every live scene descriptor into the updater relaunch manifest before it
@@ -167,15 +172,18 @@ callback ordering cannot resurface the quit confirmation mid-relaunch.
 Command-Q, final-window close, logout, restart, and
 shutdown continue through the ordinary user preference and confirmation path.
 
-The release workflow generates the appcast only after the DMG is Developer ID
-signed, notarized, stapled, and checksummed. The update archive and appcast are
-authorized by Ghosthub's Sparkle Ed25519 key. Apple Developer ID signing and
-notarization provide an independent platform integrity check, but stock Sparkle
-allows either identity to authorize key rotation; they are not an AND gate.
-Ghosthub disables signed-feed failure expiration and does not intentionally use
-that rotation path. The reviewed public key is embedded in `Info.plist`; its
-private counterpart exists only in 1Password and the protected
-`release-signing` GitHub environment.
+Each release workflow generates its appcast only after the DMG is Developer ID
+signed, notarized, stapled, and checksummed. The stable and nightly appcasts
+use different Sparkle Ed25519 keys. Apple Developer ID signing and notarization
+provide an independent platform integrity check, but stock Sparkle allows
+either identity to authorize key rotation; the channel key and shared Apple
+identity are not an AND gate. Ghosthub disables signed-feed failure expiration
+and does not intentionally use that rotation path. Stable-feed routing and
+publication authority are therefore the boundary that prevents unattended
+nightly credentials from reaching stable users; the distinct nightly Sparkle
+key is defense in depth. The private keys live only in 1Password and their
+respective GitHub environments: approval-gated `release-signing` for stable
+and unattended, `main`-restricted `nightly-signing` for nightly.
 
 ### Anonymous Usage Telemetry
 
