@@ -205,6 +205,23 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test("Presentation changes preserve unavailable preview state")
+    func presentationChangePreservesUnavailableState() {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(
+            presentation,
+            identityIsUnavailable: true
+        )
+
+        harness.coordinator.presentationDidChange(presentation.key)
+
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.placeholder
+                == .unavailable
+        )
+    }
+
     @Test("Efficient captures an expanded active preview when leaving Off")
     func efficientCapturesExpandedActivePreviewAfterOff() async {
         let harness = PreviewCoordinatorHarness(mode: .off)
@@ -287,6 +304,26 @@ struct TmuxSessionPreviewCoordinatorTests {
         await harness.coordinator.waitForPendingWork()
 
         #expect(harness.captures == [presentation.key])
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.image != nil
+        )
+    }
+
+    @Test("Revealing the sidebar preserves a hidden final capture")
+    func sidebarRevealPreservesHiddenNavigationCapture() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        harness.suspendCaptures = true
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setSidebarVisible(false)
+        harness.coordinator.captureBeforeDeactivation(presentation.key)
+        await harness.waitUntilCaptureSuspends()
+        harness.setActive(false, for: presentation.key)
+
+        harness.coordinator.setSidebarVisible(true)
+        harness.resumeCapture()
+        await harness.coordinator.waitForPendingWork()
+
         #expect(
             harness.coordinator.viewState(for: presentation.key)?.image != nil
         )

@@ -244,6 +244,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         parkingBlockedKeys.remove(key)
         invalidate(key)
         switch presentation.connectionState() {
+        case .connected where unavailableIdentityKeys.contains(key):
+            unparkAndRelease(key)
+            previewStates[key]?.setUnavailable()
         case .connected where !unresolvedIdentityKeys.contains(key):
             previewStates[key]?.verifyIdentity(presentation.identity())
         case .disconnected:
@@ -331,8 +334,8 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     func setSidebarVisible(_ visible: Bool) {
         guard isSidebarVisible != visible else { return }
         isSidebarVisible = visible
-        invalidateAllEligibility()
         if !visible {
+            invalidateAllEligibility()
             releaseAllParking()
         } else {
             reconcileEligibility()

@@ -1162,7 +1162,7 @@ struct WorkspaceTmuxDiscoveryTests {
     func retainedTmuxActivationUnparksBeforePublishingHandle() async throws {
         let environment = try setupHostEnvironment()
         let budget = LivePreviewBudget(limit: 4)
-        weak var model: WorkspaceSceneModel?
+        weak var weakModel: WorkspaceSceneModel?
         var events: [String] = []
         let previewCoordinator = TmuxSessionPreviewCoordinator(
             mode: .live,
@@ -1170,16 +1170,16 @@ struct WorkspaceTmuxDiscoveryTests {
             capture: { _, _ in nil },
             park: { _ in
                 events.append(
-                    "park:\(model?.activeBorrowedTmuxSelection?.name ?? "none")"
+                    "park:\(weakModel?.activeBorrowedTmuxSelection?.name ?? "none")"
                 )
             },
             unpark: { _ in
                 events.append(
-                    "unpark:\(model?.activeBorrowedTmuxSelection?.name ?? "none")"
+                    "unpark:\(weakModel?.activeBorrowedTmuxSelection?.name ?? "none")"
                 )
             }
         )
-        model = try makeModel(
+        let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
@@ -1188,6 +1188,7 @@ struct WorkspaceTmuxDiscoveryTests {
             },
             sessionPreviewCoordinator: previewCoordinator
         )
+        weakModel = model
         let first = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
             name: "first"
@@ -1196,11 +1197,11 @@ struct WorkspaceTmuxDiscoveryTests {
             hostID: environment.host.id,
             name: "second"
         )
-        model?.openBorrowedTmuxSession(first)
+        model.openBorrowedTmuxSession(first)
         let firstHandle = try #require(
-            model?.retainedBorrowedTmuxHandle(for: first)
+            model.retainedBorrowedTmuxHandle(for: first)
         )
-        model?.openBorrowedTmuxSession(second)
+        model.openBorrowedTmuxSession(second)
         let key = TmuxPreviewKey(
             hostID: first.hostID,
             name: first.name,
@@ -1218,7 +1219,7 @@ struct WorkspaceTmuxDiscoveryTests {
             generation: { nil },
             identity: { identity },
             connectionState: { .connected },
-            isActive: { model?.activeBorrowedTmuxSelection == first },
+            isActive: { weakModel?.activeBorrowedTmuxSelection == first },
             activate: {}
         ))
         previewCoordinator.setExpanded(true, for: key)
@@ -1229,15 +1230,15 @@ struct WorkspaceTmuxDiscoveryTests {
             presentation: key
         )))
 
-        model?.openBorrowedTmuxSession(first)
+        model.openBorrowedTmuxSession(first)
 
         #expect(events == ["park:second", "unpark:second"])
-        #expect(model?.activeBorrowedTmuxSelection == first)
+        #expect(model.activeBorrowedTmuxSelection == first)
         #expect(!budget.granted.contains(LivePreviewRequestID(
             sceneID: previewCoordinator.sceneID,
             presentation: key
         )))
-        await model?.shutdown()
+        await model.shutdown()
     }
 
     @MainActor
