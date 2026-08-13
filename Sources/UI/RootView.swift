@@ -937,8 +937,8 @@ public struct RootView: View {
                     replacing: replacedTmuxSession,
                     open: open,
                     isCurrent: isCurrent,
-                    closeTmux: { replaced in
-                        handlers.closeTmuxSession?(replaced)
+                    hideTmux: { replaced in
+                        handlers.hideTmuxSession?(replaced)
                     }
                 )
             },
@@ -2353,12 +2353,12 @@ public struct RootView: View {
         replacing tmuxSession: WorkspaceTmuxSessionSelection?,
         open: (WorkspaceHerdrSessionSelection) async throws -> Void,
         isCurrent: () -> Bool = { true },
-        closeTmux: (WorkspaceTmuxSessionSelection) -> Void
+        hideTmux: (WorkspaceTmuxSessionSelection) -> Void
     ) async throws -> Bool {
         try await open(session)
         guard isCurrent() else { return false }
         if let tmuxSession {
-            closeTmux(tmuxSession)
+            hideTmux(tmuxSession)
         }
         return true
     }

@@ -363,6 +363,126 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test("Efficient retries navigation capture after identity resolves")
+    func efficientRetriesNavigationCaptureAfterIdentityResolution() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let key = TmuxPreviewKey(
+            hostID: UUID(),
+            name: "session-0",
+            socketName: nil
+        )
+        let handleID = UUID()
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let pendingPresentation = TmuxSessionPreviewCoordinator.Presentation(
+            key: key,
+            surface: { nil },
+            handleID: { handleID },
+            generation: { nil },
+            identity: { nil },
+            connectionState: { .connected },
+            isActive: { true },
+            activate: {},
+            refreshIdentity: { nil }
+        )
+        let resolvedPresentation = TmuxSessionPreviewCoordinator.Presentation(
+            key: key,
+            surface: { nil },
+            handleID: { handleID },
+            generation: { nil },
+            identity: { identity },
+            connectionState: { .connected },
+            isActive: { false },
+            activate: {},
+            refreshIdentity: { identity }
+        )
+        harness.coordinator.register(
+            pendingPresentation,
+            identityIsResolved: false
+        )
+
+        harness.coordinator.captureBeforeDeactivation(key)
+        harness.coordinator.register(
+            resolvedPresentation,
+            identityIsResolved: true
+        )
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [key])
+        #expect(harness.coordinator.viewState(for: key)?.image != nil)
+    }
+
+    @Test(
+        "Deferred navigation capture clears when identity cannot be reused",
+        arguments: DeferredNavigationDisposition.allCases
+    )
+    func deferredNavigationCaptureClears(
+        disposition: DeferredNavigationDisposition
+    ) async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let key = TmuxPreviewKey(
+            hostID: UUID(),
+            name: "session-0",
+            socketName: nil
+        )
+        let handleID = UUID()
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let pendingPresentation = TmuxSessionPreviewCoordinator.Presentation(
+            key: key,
+            surface: { nil },
+            handleID: { handleID },
+            generation: { nil },
+            identity: { nil },
+            connectionState: { .connected },
+            isActive: { true },
+            activate: {},
+            refreshIdentity: { nil }
+        )
+        let resolvedPresentation = TmuxSessionPreviewCoordinator.Presentation(
+            key: key,
+            surface: { nil },
+            handleID: { handleID },
+            generation: { nil },
+            identity: { identity },
+            connectionState: { .connected },
+            isActive: { false },
+            activate: {},
+            refreshIdentity: { identity }
+        )
+        harness.coordinator.register(
+            pendingPresentation,
+            identityIsResolved: false
+        )
+        harness.coordinator.captureBeforeDeactivation(key)
+
+        switch disposition {
+        case .close:
+            harness.coordinator.remove(key, reason: .close)
+        case .replacement:
+            harness.coordinator.remove(key, reason: .replacement)
+        case .unavailable:
+            harness.coordinator.register(
+                pendingPresentation,
+                identityIsResolved: false,
+                identityIsUnavailable: true
+            )
+        }
+        harness.coordinator.register(
+            resolvedPresentation,
+            identityIsResolved: true
+        )
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures.isEmpty)
+    }
+
     @Test("Efficient captures navigation away while the sidebar is hidden")
     func efficientCapturesNavigationAwayWithHiddenSidebar() async {
         let harness = PreviewCoordinatorHarness(mode: .efficient)
@@ -1090,6 +1210,12 @@ enum PreviewInvalidation: CaseIterable, Sendable {
     case reconnect
     case replacement
     case close
+}
+
+enum DeferredNavigationDisposition: CaseIterable, Sendable {
+    case close
+    case replacement
+    case unavailable
 }
 
 private actor PreviewIntervalRecorder {

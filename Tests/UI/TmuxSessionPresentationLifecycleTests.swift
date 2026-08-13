@@ -98,8 +98,8 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(deactivated == ["tmux", "herdr", "zellij"])
     }
 
-    @Test("validated Herdr activation closes the tmux presentation it replaced")
-    func herdrActivationClosesReplacedTmuxAfterValidation() async throws {
+    @Test("validated Herdr activation hides the tmux presentation it replaced")
+    func herdrActivationHidesReplacedTmuxAfterValidation() async throws {
         let hostID = UUID()
         let herdr = WorkspaceHerdrSessionSelection(
             hostID: hostID,
@@ -109,36 +109,36 @@ struct TmuxSessionPresentationLifecycleTests {
             hostID: hostID,
             name: "editor"
         )
-        var closedTmuxSessions: [WorkspaceTmuxSessionSelection] = []
+        var hiddenTmuxSessions: [WorkspaceTmuxSessionSelection] = []
 
         let didActivate = try await RootView.openHerdrSession(
             herdr,
             replacing: tmux,
             open: { _ in },
-            closeTmux: { closedTmuxSessions.append($0) }
+            hideTmux: { hiddenTmuxSessions.append($0) }
         )
         #expect(didActivate)
-        #expect(closedTmuxSessions == [tmux])
+        #expect(hiddenTmuxSessions == [tmux])
 
         let staleActivation = try await RootView.openHerdrSession(
             herdr,
             replacing: tmux,
             open: { _ in },
             isCurrent: { false },
-            closeTmux: { closedTmuxSessions.append($0) }
+            hideTmux: { hiddenTmuxSessions.append($0) }
         )
         #expect(!staleActivation)
-        #expect(closedTmuxSessions == [tmux])
+        #expect(hiddenTmuxSessions == [tmux])
 
         await #expect(throws: CancellationError.self) {
             try await RootView.openHerdrSession(
                 herdr,
                 replacing: tmux,
                 open: { _ in throw CancellationError() },
-                closeTmux: { closedTmuxSessions.append($0) }
+                hideTmux: { hiddenTmuxSessions.append($0) }
             )
         }
-        #expect(closedTmuxSessions == [tmux])
+        #expect(hiddenTmuxSessions == [tmux])
     }
 
     @Test("Zellij activation delegates peer takeover to the scene model")

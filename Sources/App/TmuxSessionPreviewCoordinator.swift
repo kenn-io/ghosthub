@@ -108,6 +108,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private var unavailableIdentityKeys: Set<TmuxPreviewKey> = []
     private var parkingBlockedKeys: Set<TmuxPreviewKey> = []
     private var deferredEfficientCaptureKeys: Set<TmuxPreviewKey> = []
+    private var deferredNavigationCaptureKeys: Set<TmuxPreviewKey> = []
     private var isParkingHostChanging = false
     private var isShutDown = false
     private var generations: [TmuxPreviewKey: UInt64] = [:]
@@ -206,6 +207,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         if let previous = registeredVersions[key], previous != version,
            !reconnectingKeys.contains(key) {
             previewStates[key]?.clear()
+            deferredNavigationCaptureKeys.remove(key)
             invalidate(key)
             unparkAndRelease(key)
         }
@@ -226,6 +228,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             previewStates[key] = TmuxSessionPreviewState()
         }
         if identityIsUnavailable {
+            deferredNavigationCaptureKeys.remove(key)
             unparkAndRelease(key)
             previewStates[key]?.setUnavailable()
         } else if isConnected(presentation), identityIsResolved {
@@ -238,6 +241,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         reconcileEligibility()
         requestIdentityIfNeeded(key)
         captureExpandedEfficientActiveIfNeeded(key)
+        if identityIsResolved {
+            retryDeferredNavigationCaptureIfNeeded(key)
+        }
     }
 
     func presentationDidChange(_ key: TmuxPreviewKey) {
@@ -299,6 +305,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         switch newMode {
         case .off:
             deferredEfficientCaptureKeys.removeAll()
+            deferredNavigationCaptureKeys.removeAll()
             for key in keys {
                 unparkAndRelease(key)
                 previewStates[key]?.setMode(.off)
@@ -322,6 +329,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                 .forEach(unparkAndRelease)
         case .live:
             deferredEfficientCaptureKeys.removeAll()
+            deferredNavigationCaptureKeys.removeAll()
             if isLeavingOff {
                 keys.forEach(restorePreviewState)
             }
@@ -361,6 +369,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         guard !isApplicationActive else { return }
         isApplicationActive = true
         retryDeferredEfficientCaptures()
+        retryDeferredNavigationCaptures()
         guard sceneIsKeyWindow() else { return }
         scheduleParkingReacquisition()
     }
@@ -413,6 +422,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         unavailableIdentityKeys.removeAll()
         parkingBlockedKeys.removeAll()
         deferredEfficientCaptureKeys.removeAll()
+        deferredNavigationCaptureKeys.removeAll()
         generations.removeAll()
     }
 
@@ -452,7 +462,17 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         _ key: TmuxPreviewKey,
         completion: (() -> Void)? = nil
     ) {
-        guard presentations[key]?.isActive() == true else {
+        guard let presentation = presentations[key], presentation.isActive()
+        else {
+            completion?()
+            return
+        }
+        if mode == .efficient,
+           isConnected(presentation),
+           presentation.identity() == nil,
+           !unavailableIdentityKeys.contains(key) {
+            deferredNavigationCaptureKeys.insert(key)
+            requestIdentityIfNeeded(key)
             completion?()
             return
         }
@@ -501,6 +521,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         case .close:
             expandedKeys.remove(key)
             deferredEfficientCaptureKeys.remove(key)
+            deferredNavigationCaptureKeys.remove(key)
             activatingKeys.remove(key)
             reconnectingKeys.remove(key)
             presentations.removeValue(forKey: key)
@@ -513,6 +534,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             parkingBlockedKeys.remove(key)
         case .replacement:
             deferredEfficientCaptureKeys.remove(key)
+            deferredNavigationCaptureKeys.remove(key)
             activatingKeys.remove(key)
             reconnectingKeys.remove(key)
             presentations.removeValue(forKey: key)
@@ -901,6 +923,30 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private func retryDeferredEfficientCaptures() {
         let keys = deferredEfficientCaptureKeys
         keys.forEach(captureExpandedEfficientActiveIfNeeded)
+    }
+
+    private func retryDeferredNavigationCaptures() {
+        let keys = deferredNavigationCaptureKeys
+        keys.forEach(retryDeferredNavigationCaptureIfNeeded)
+    }
+
+    private func retryDeferredNavigationCaptureIfNeeded(
+        _ key: TmuxPreviewKey
+    ) {
+        guard deferredNavigationCaptureKeys.contains(key) else { return }
+        guard mode == .efficient else {
+            deferredNavigationCaptureKeys.remove(key)
+            return
+        }
+        guard isApplicationActive,
+              !unresolvedIdentityKeys.contains(key),
+              !unavailableIdentityKeys.contains(key),
+              let presentation = presentations[key],
+              isConnected(presentation),
+              presentation.identity() != nil
+        else { return }
+        deferredNavigationCaptureKeys.remove(key)
+        startCapture(key, reason: .navigationAway)
     }
 
     private func restorePreviewState(_ key: TmuxPreviewKey) {
