@@ -34,6 +34,8 @@ public struct WorkspaceDisplayState {
     public let sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest?
     public let workingTmuxSessionIDs: Set<String>
+    public let previewableTmuxSessionIDs: Set<String>
+    public let sessionPreviewMode: SessionPreviewMode
 
     public init(
         snapshot: WorkspaceSnapshot,
@@ -63,7 +65,9 @@ public struct WorkspaceDisplayState {
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
         sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest? = nil,
-        workingTmuxSessionIDs: Set<String> = []
+        workingTmuxSessionIDs: Set<String> = [],
+        previewableTmuxSessionIDs: Set<String> = [],
+        sessionPreviewMode: SessionPreviewMode = .off
     ) {
         self.snapshot = snapshot
         self.workspaceResourceSummary = workspaceResourceSummary
@@ -99,6 +103,8 @@ public struct WorkspaceDisplayState {
         self.sessionConnectionRecoveryRequest =
             sessionConnectionRecoveryRequest
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
+        self.previewableTmuxSessionIDs = previewableTmuxSessionIDs
+        self.sessionPreviewMode = sessionPreviewMode
     }
 }
 
@@ -126,6 +132,9 @@ public struct ContentBuilders {
     public let settingsSheetBuilder: ((SettingsStore) -> AnyView)?
     public let logViewerBuilder: (() -> AnyView?)?
     public let sshAuthenticationBuilder: ((UUID) -> AnyView?)?
+    public let tmuxSessionPreviewBuilder:
+        ((WorkspaceTmuxSessionSelection, @escaping () -> Void) -> AnyView?)?
+    public let tmuxSessionPreviewParkingBuilder: (() -> AnyView?)?
 
     public init(
         tmuxSessionContentBuilder:
@@ -136,7 +145,10 @@ public struct ContentBuilders {
         ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)? = nil,
         settingsSheetBuilder: ((SettingsStore) -> AnyView)? = nil,
         logViewerBuilder: (() -> AnyView?)? = nil,
-        sshAuthenticationBuilder: ((UUID) -> AnyView?)? = nil
+        sshAuthenticationBuilder: ((UUID) -> AnyView?)? = nil,
+        tmuxSessionPreviewBuilder:
+        ((WorkspaceTmuxSessionSelection, @escaping () -> Void) -> AnyView?)? = nil,
+        tmuxSessionPreviewParkingBuilder: (() -> AnyView?)? = nil
     ) {
         self.tmuxSessionContentBuilder = tmuxSessionContentBuilder
         self.herdrSessionContentBuilder = herdrSessionContentBuilder
@@ -144,6 +156,9 @@ public struct ContentBuilders {
         self.settingsSheetBuilder = settingsSheetBuilder
         self.logViewerBuilder = logViewerBuilder
         self.sshAuthenticationBuilder = sshAuthenticationBuilder
+        self.tmuxSessionPreviewBuilder = tmuxSessionPreviewBuilder
+        self.tmuxSessionPreviewParkingBuilder =
+            tmuxSessionPreviewParkingBuilder
     }
 }
 
@@ -412,6 +427,9 @@ public struct InteractionHandlers {
         ((UUID) async throws -> WorktreeRemovalRequest)?
     public let removeWorktree:
         ((WorktreeRemovalRequest) async throws -> WorktreeRemovalResult)?
+    public let setTmuxSessionPreviewExpanded:
+        ((WorkspaceTmuxSessionSelection, Bool) -> Void)?
+    public let setTmuxSessionPreviewSidebarVisible: ((Bool) -> Void)?
 
     public init(
         closeWindow: (() -> Void)? = nil,
@@ -493,7 +511,10 @@ public struct InteractionHandlers {
         prepareWorktreeRemoval:
         ((UUID) async throws -> WorktreeRemovalRequest)? = nil,
         removeWorktree:
-        ((WorktreeRemovalRequest) async throws -> WorktreeRemovalResult)? = nil
+        ((WorktreeRemovalRequest) async throws -> WorktreeRemovalResult)? = nil,
+        setTmuxSessionPreviewExpanded:
+        ((WorkspaceTmuxSessionSelection, Bool) -> Void)? = nil,
+        setTmuxSessionPreviewSidebarVisible: ((Bool) -> Void)? = nil
     ) {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
@@ -540,5 +561,8 @@ public struct InteractionHandlers {
         self.importPullRequest = importPullRequest
         self.prepareWorktreeRemoval = prepareWorktreeRemoval
         self.removeWorktree = removeWorktree
+        self.setTmuxSessionPreviewExpanded = setTmuxSessionPreviewExpanded
+        self.setTmuxSessionPreviewSidebarVisible =
+            setTmuxSessionPreviewSidebarVisible
     }
 }

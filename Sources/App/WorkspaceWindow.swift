@@ -689,7 +689,10 @@ struct WorkspaceWindow: View {
                 sessionConnectionRecoveryRequest:
                 sceneModel.sessionConnectionRecoveryRequest,
                 workingTmuxSessionIDs:
-                sceneModel.workingTmuxSessionIDs
+                sceneModel.workingTmuxSessionIDs,
+                previewableTmuxSessionIDs:
+                sceneModel.previewableTmuxSessionIDs,
+                sessionPreviewMode: settingsStore.sessionPreviewMode
             ),
             content: ContentBuilders(
                 tmuxSessionContentBuilder: {
@@ -847,6 +850,30 @@ struct WorkspaceWindow: View {
                     sceneModel.sshAuthenticationView(
                         forHostID: hostID
                     )
+                },
+                tmuxSessionPreviewBuilder: {
+                    [sceneModel] selection, activate in
+                    AnyView(TmuxSessionPreviewTile(
+                        coordinator:
+                        sceneModel.tmuxSessionPreviewCoordinator,
+                        key: TmuxPreviewKey(
+                            hostID: selection.hostID,
+                            name: selection.name,
+                            socketName: selection.socketName
+                        ),
+                        sessionName: selection.name,
+                        onActivate: activate
+                    ))
+                },
+                tmuxSessionPreviewParkingBuilder: {
+                    [sceneModel, settingsStore] in
+                    guard settingsStore.sessionPreviewMode != .off else {
+                        return nil
+                    }
+                    return AnyView(TmuxSessionPreviewParkingView(
+                        previewCoordinator:
+                        sceneModel.tmuxSessionPreviewCoordinator
+                    ))
                 }
             ),
             handlers: InteractionHandlers(
@@ -1006,6 +1033,22 @@ struct WorkspaceWindow: View {
                 },
                 removeWorktree: { [sceneModel] request in
                     try await sceneModel.resolveWorktreeRemoval(request)
+                },
+                setTmuxSessionPreviewExpanded: {
+                    [sceneModel] selection, expanded in
+                    sceneModel.tmuxSessionPreviewCoordinator.setExpanded(
+                        expanded,
+                        for: TmuxPreviewKey(
+                            hostID: selection.hostID,
+                            name: selection.name,
+                            socketName: selection.socketName
+                        )
+                    )
+                },
+                setTmuxSessionPreviewSidebarVisible: { [sceneModel] visible in
+                    sceneModel.tmuxSessionPreviewCoordinator.setSidebarVisible(
+                        visible
+                    )
                 }
             ),
             sidebarToggleTarget: sceneModel,

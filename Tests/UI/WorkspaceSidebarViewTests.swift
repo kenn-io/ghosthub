@@ -1,11 +1,164 @@
 import Foundation
+import GhosthubSettings
 import GhosthubTestSupport
 import GhosthubWorkspace
+import SwiftUI
 import Testing
 @testable import GhosthubUI
 
 @Suite("Workspace sidebar session actions")
 struct WorkspaceSidebarViewTests {
+    @Test("tmux preview disclosure requires mode and retained identity")
+    func tmuxPreviewDisclosureEligibility() {
+        let sessionID = "host:default:opened"
+
+        #expect(!TmuxSessionPreviewRowPresentation.canDisclose(
+            mode: .off,
+            sessionID: sessionID,
+            previewableSessionIDs: [sessionID]
+        ))
+        #expect(TmuxSessionPreviewRowPresentation.canDisclose(
+            mode: .efficient,
+            sessionID: sessionID,
+            previewableSessionIDs: [sessionID]
+        ))
+        #expect(!TmuxSessionPreviewRowPresentation.canDisclose(
+            mode: .live,
+            sessionID: sessionID,
+            previewableSessionIDs: []
+        ))
+        #expect(TmuxSessionPreviewRowPresentation.placeholderAspectRatio == 1.6)
+    }
+
+    @Test("tmux preview height follows captured geometry within limits")
+    func tmuxPreviewAdaptiveAspectRatio() {
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
+            for: CGSize(width: 4, height: 3)
+        ) == CGFloat(4) / 3)
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
+            for: CGSize(width: 16, height: 9)
+        ) == CGFloat(16) / 9)
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
+            for: CGSize(width: 1, height: 1)
+        ) == CGFloat(4) / 3)
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
+            for: CGSize(width: 3, height: 1)
+        ) == 2)
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(for: nil) == 1.6)
+    }
+
+    @Test("Off hides previews without discarding scene expansion")
+    func tmuxPreviewExpansionSurvivesOff() {
+        let sessionID = "host:default:opened"
+        var state = TmuxSessionPreviewExpansionState()
+        state.setExpanded(true, sessionID: sessionID)
+
+        #expect(state.isExpanded(sessionID))
+        #expect(!TmuxSessionPreviewRowPresentation.isVisible(
+            mode: .off,
+            sessionID: sessionID,
+            previewableSessionIDs: [sessionID],
+            expansion: state
+        ))
+        #expect(TmuxSessionPreviewRowPresentation.isVisible(
+            mode: .live,
+            sessionID: sessionID,
+            previewableSessionIDs: [sessionID],
+            expansion: state
+        ))
+    }
+
+    @MainActor
+    @Test("duplicate preview mounts release after their last ancestor collapses")
+    func duplicatePreviewMountsReleaseAfterLastAncestorCollapse() {
+        let hostID = UUID()
+        let session = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "opened"
+        )
+        var mountState = TmuxSessionPreviewMountState()
+        var mountedStates: [Bool] = []
+        let onMountChanged: (
+            WorkspaceTmuxSessionSelection,
+            UUID,
+            Bool
+        ) -> Void = { session, mountID, mounted in
+            if let expanded = mountState.setMounted(
+                mounted,
+                sessionID: session.id,
+                mountID: mountID
+            ) {
+                mountedStates.append(expanded)
+            }
+        }
+        let firstPreview = AnyView(
+            Color.clear
+                .frame(height: 40)
+                .modifier(TmuxSessionPreviewMountModifier(
+                    session: session,
+                    onMountChanged: onMountChanged
+                ))
+        )
+        let secondPreview = AnyView(
+            Color.clear
+                .frame(height: 40)
+                .modifier(TmuxSessionPreviewMountModifier(
+                    session: session,
+                    onMountChanged: onMountChanged
+                ))
+        )
+        let firstHostingView = hostView(firstPreview)
+        let secondHostingView = hostView(secondPreview)
+
+        #expect(mountedStates == [true])
+
+        firstHostingView.rootView = AnyView(EmptyView())
+        firstHostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        #expect(mountedStates == [true])
+
+        secondHostingView.rootView = AnyView(EmptyView())
+        secondHostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        #expect(mountedStates == [true, false])
+    }
+
+    @MainActor
+    @Test("preview activation uses the ordinary tmux row route")
+    func previewActivationUsesTmuxRowRoute() {
+        let hostID = UUID()
+        let session = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "opened"
+        )
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(
+                id: hostID,
+                tmuxSessions: [
+                    .init(name: session.name, managed: false, windows: []),
+                ]
+            ),
+        ])
+        var selection = WorkspaceSelection(selectedHostID: hostID)
+        var opened: [WorkspaceTmuxSessionSelection] = []
+
+        WorkspaceSidebarView.activateTmuxSession(
+            session,
+            rowTarget: .tmuxSession(hostID: hostID, name: session.name),
+            selection: &selection,
+            snapshot: snapshot,
+            visibility: .default,
+            onOpen: { opened.append($0) }
+        )
+
+        #expect(opened == [session])
+        #expect(selection.selectedHostID == hostID)
+        #expect(selection.selectedProjectID == nil)
+        #expect(selection.selectedWorktreeID == nil)
+    }
+
     @Test("section actions target their exact host")
     func sectionActionsTargetExactHost() throws {
         let host = HostSummary.fixture(

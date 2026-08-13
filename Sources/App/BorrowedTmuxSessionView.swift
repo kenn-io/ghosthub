@@ -245,6 +245,7 @@ private struct NativeTmuxTerminalView: View {
                 id: observerID,
                 onCloseRequest: onCloseRequest
             )
+            surfaceView.setParkedForPreview(false)
             surfaceView.suppressAutoFocus = false
             DispatchQueue.main.async { [surfaceView] in
                 surfaceView.requestKeyboardFocus()

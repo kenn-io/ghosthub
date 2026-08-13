@@ -7,6 +7,7 @@ import commandCenter from '../assets/guide-command-center.png';
 import hosts from '../assets/guide-hosts.png';
 import nativeTabs from '../assets/guide-native-tabs.png';
 import commandPalette from '../assets/guide-quick-launch.png';
+import sessionPreviews from '../assets/guide-session-previews.png';
 import sessions from '../assets/guide-sessions.png';
 import terminal from '../assets/guide-terminal.png';
 import worktree from '../assets/guide-worktree.png';
@@ -22,6 +23,8 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
 const imageAlt = {
   sessions:
     'Ghosthub workspace showing Tmux, Herdr, and Zellij sessions for local and remote hosts',
+  sessionPreviews:
+    'Ghosthub sidebar with an expanded live bitmap preview for an already-opened tmux session',
   hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
   worktree:
     'Ghosthub new worktree sheet listing available local and remote branches',
@@ -76,11 +79,12 @@ const imageAlt = {
 
   <nav class="contents container" aria-label="On this page">
     <a href="#sessions"><b>01</b> Session fleet</a>
-    <a href="#hosts"><b>02</b> Mac and SSH</a>
-    <a href="#worktrees"><b>03</b> Project context</a>
-    <a href="#command-palette"><b>04</b> Move quickly</a>
-    <a href="#command-center"><b>05</b> Command center</a>
-    <a href="#terminal"><b>06</b> Make it yours</a>
+    <a href="#session-previews"><b>02</b> Session previews</a>
+    <a href="#hosts"><b>03</b> Mac and SSH</a>
+    <a href="#worktrees"><b>04</b> Project context</a>
+    <a href="#command-palette"><b>05</b> Move quickly</a>
+    <a href="#command-center"><b>06</b> Command center</a>
+    <a href="#terminal"><b>07</b> Make it yours</a>
   </nav>
 
   <ol class="steps">
@@ -114,9 +118,35 @@ const imageAlt = {
       </figure>
     </li>
 
-    <li id="hosts">
+    <li id="session-previews">
       <div class="container step-copy">
         <p class="number">02</p>
+        <div>
+          <h2>Glance at opened tmux sessions</h2>
+          <p>
+            Expand optional bitmap previews beside tmux sessions you already
+            opened. Efficient mode keeps the latest captured frame; Live mode
+            refreshes a bounded set without creating another client or taking
+            focus from your active terminal.
+          </p>
+          <p><a href="/docs/sessions/#preview-opened-tmux-sessions">Explore session previews</a>.</p>
+        </div>
+      </div>
+      <figure class="container window">
+        <ZoomableImage label={imageAlt.sessionPreviews}>
+          <Image
+            src={sessionPreviews}
+            alt={imageAlt.sessionPreviews}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
+      </figure>
+    </li>
+
+    <li id="hosts">
+      <div class="container step-copy">
+        <p class="number">03</p>
         <div>
           <h2>One view across Mac and SSH hosts</h2>
           <p>
@@ -142,7 +172,7 @@ const imageAlt = {
 
     <li id="worktrees">
       <div class="container step-copy">
-        <p class="number">03</p>
+        <p class="number">04</p>
         <div>
           <h2>Project context when you want it</h2>
           <p>
@@ -167,7 +197,7 @@ const imageAlt = {
 
     <li id="command-palette">
       <div class="container step-copy">
-        <p class="number">04</p>
+        <p class="number">05</p>
         <div>
           <h2>Move through the fleet quickly</h2>
           <p>
@@ -192,7 +222,7 @@ const imageAlt = {
 
     <li id="command-center">
       <div class="container step-copy">
-        <p class="number">05</p>
+        <p class="number">06</p>
         <div>
           <h2>Build your command center</h2>
           <p>
@@ -228,7 +258,7 @@ const imageAlt = {
 
     <li id="terminal">
       <div class="container step-copy">
-        <p class="number">06</p>
+        <p class="number">07</p>
         <div>
           <h2>Make the terminal yours</h2>
           <p>

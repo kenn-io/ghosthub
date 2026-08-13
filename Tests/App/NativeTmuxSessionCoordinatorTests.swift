@@ -149,6 +149,10 @@ struct NativeTmuxSessionCoordinatorTests {
 
         releaseBinding.signal()
         await waitUntilMainActor { readyCount == 2 }
+        #expect(
+            coordinator.attachedSessionIdentity(handle)
+                == coordinatorSplitIdentity
+        )
         handler(.right)
         await waitUntilMainActor { splitCommands.load() == 1 }
     }
@@ -189,9 +193,14 @@ struct NativeTmuxSessionCoordinatorTests {
 
         await waitUntilMainActor { isReady }
         _ = coordinator.surface(handle: handle)
+        coordinator.requestAttachedSessionIdentity(handle)
 
         #expect(store.surface.paneSplitShortcutHandler == nil)
         #expect(!coordinator.supportsPaneSplitting(handle))
+        #expect(
+            coordinator.attachedSessionIdentityResolution(handle)
+                == .unavailable
+        )
     }
 
     @Test("new named sessions use tmux create-or-attach mode")
@@ -843,8 +852,8 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(events.load() == ["start-right", "cancel-right"])
     }
 
-    @Test("failed client binding can be retried without queuing a split")
-    func failedClientBindingCanBeRetried() async throws {
+    @Test("preview identity retries a failed client binding")
+    func failedClientBindingRetriesForPreviewIdentity() async throws {
         let clientLookups = LockedValue(0)
         let splitCommands = LockedValue(0)
         let store = RecordingNativeSessionSurfaceStore()
@@ -865,7 +874,8 @@ struct NativeTmuxSessionCoordinatorTests {
                 }
                 splitCommands.withLock { $0 += 1 }
                 return (0, "")
-            }
+            },
+            clientIdentityRetryDelays: [.zero]
         )
         var readyCount = 0
         coordinator.onSurfaceReady = { _ in readyCount += 1 }
@@ -879,16 +889,72 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: handle)
         await waitUntilMainActor { clientLookups.load() == 1 }
+        coordinator.requestAttachedSessionIdentity(handle)
+        await waitUntilMainActor {
+            coordinator.attachedSessionIdentity(handle)
+                == coordinatorSplitIdentity
+        }
         #expect(coordinator.supportsPaneSplitting(handle))
         let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
-        await waitUntilMainActor { readyCount == 2 }
         #expect(store.surface.paneSplitErrorMessage == nil)
-        #expect(splitCommands.load() == 0)
-        handler(.down)
         await waitUntilMainActor { splitCommands.load() == 1 }
         #expect(clientLookups.load() == 3)
         #expect(store.surface.paneSplitErrorMessage == nil)
+    }
+
+    @Test("capture revalidation observes a client session switch")
+    func captureRevalidationObservesSessionSwitch() async {
+        let switchedOutput =
+            "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t123\t789\t321"
+                + "\t/dev/ttys001\t$8\t654\t%10\n"
+        let clientLookups = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY")
+                else { return (0, "") }
+                clientLookups.withLock { $0 += 1 }
+                let lookup = clientLookups.load()
+                return (
+                    0,
+                    lookup == 1
+                        ? coordinatorSplitClientOutput
+                        : switchedOutput
+                )
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "switching",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            coordinator.attachedSessionIdentity(handle)
+                == coordinatorSplitIdentity
+        }
+
+        let current = await coordinator.revalidateAttachedSessionIdentity(
+            handle
+        )
+
+        #expect(current == TmuxSessionIdentity(
+            serverPID: "123",
+            sessionID: "$8",
+            createdAt: "654"
+        ))
+        #expect(
+            coordinator.attachedSessionIdentity(handle)
+                == coordinatorSplitIdentity
+        )
     }
 
     @Test("a replacement client reusing the attachment TTY is rejected")

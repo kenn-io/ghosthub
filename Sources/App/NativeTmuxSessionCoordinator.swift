@@ -64,6 +64,12 @@ private struct NativeTmuxAttachment {
     var remoteExitStatusURL: URL?
 }
 
+enum TmuxAttachedSessionIdentityResolution: Equatable {
+    case pending
+    case resolved(TmuxSessionIdentity)
+    case unavailable
+}
+
 /// Hosts ordinary tmux clients for kwt workspaces and unbound sessions.
 /// Tmux owns every window, pane, and byte of history; this coordinator owns
 /// only binary resolution and the disposable local libghostty presentation.
@@ -101,6 +107,8 @@ final class NativeTmuxSessionCoordinator {
     private let appliesPresentationStyleToExistingSessionsProvider:
         () -> Bool
     private let paneSplitter: TmuxPaneSplitter
+    private let clientIdentityRetryDelays: [Duration]
+    private let sleep: @Sendable (Duration) async throws -> Void
     private let remoteExitStatusStore: RemoteExitStatusStore
     private var handlesByKey: [NativeTmuxSessionKey: BorrowedTmuxSessionHandle] = [:]
     private var targetHostsByHandle: [UUID: CommandHost] = [:]
@@ -116,11 +124,15 @@ final class NativeTmuxSessionCoordinator {
     private var paneSplitWorkers: [UUID: PaneSplitWorker] = [:]
     private var paneSplitClientBindings: [UUID: PaneSplitClientBinding] = [:]
     private var paneSplitClients: [UUID: TmuxPaneSplitClientIdentity] = [:]
+    private var previewIdentityRetryHandles: Set<UUID> = []
+    private var unavailablePreviewIdentityHandles: Set<UUID> = []
     private var deferredPresentationStyleHandles: Set<UUID> = []
     private var isShuttingDown = false
 
     var onStateChanged: ((BorrowedTmuxSessionHandle, ConnectionState) -> Void)?
     var onSurfaceReady: ((BorrowedTmuxSessionHandle) -> Void)?
+    var onAttachedSessionIdentityUnavailable:
+        ((BorrowedTmuxSessionHandle) -> Void)?
 
     init(
         terminalCoordinator: any NativeSessionSurfaceStoring,
@@ -182,6 +194,12 @@ final class NativeTmuxSessionCoordinator {
                 )
             },
         paneSplitter: TmuxPaneSplitter = TmuxPaneSplitter(),
+        clientIdentityRetryDelays: [Duration] = [
+            .milliseconds(250), .seconds(1),
+        ],
+        sleep: @escaping @Sendable (Duration) async throws -> Void = {
+            try await Task.sleep(for: $0)
+        },
         remoteExitStatusDirectory: URL = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "ghosthub-tmux-exit-\(UUID().uuidString)",
@@ -202,6 +220,8 @@ final class NativeTmuxSessionCoordinator {
         self.sshConnectionArgumentsProvider =
             sshConnectionArgumentsProvider
         self.paneSplitter = paneSplitter
+        self.clientIdentityRetryDelays = clientIdentityRetryDelays
+        self.sleep = sleep
         remoteExitStatusStore = RemoteExitStatusStore(
             directory: remoteExitStatusDirectory
         )
@@ -600,6 +620,23 @@ final class NativeTmuxSessionCoordinator {
         )
     }
 
+    private func paneSplitTarget(
+        handle: BorrowedTmuxSessionHandle,
+        attachment: NativeTmuxAttachment,
+        expectedIdentity: TmuxSessionIdentity?
+    ) -> TmuxPaneSplitTarget {
+        TmuxPaneSplitTarget(
+            host: attachment.host,
+            tmuxPath: attachment.tmuxPath,
+            sessionName: handle.name,
+            socketName: attachment.socketName,
+            sshConnectionArguments: attachment.sshConnectionSnapshot.arguments,
+            expectedIdentity: expectedIdentity,
+            clientToken: attachment.paneSplitClientToken,
+            expectedClient: paneSplitClients[handle.id]
+        )
+    }
+
     private func runPaneSplitQueue(
         handle: BorrowedTmuxSessionHandle,
         workerID: UUID
@@ -678,27 +715,62 @@ final class NativeTmuxSessionCoordinator {
         attachmentID: UUID
     ) {
         guard attachments[handle.id]?.id == attachmentID,
-              attachments[handle.id]?.supportsPaneSplitting == true,
               launchedHandles.contains(handle.id),
               paneSplitClients[handle.id] == nil,
               paneSplitClientBindings[handle.id] == nil
         else { return }
+        guard attachments[handle.id]?.supportsPaneSplitting == true else {
+            if previewIdentityRetryHandles.remove(handle.id) != nil {
+                unavailablePreviewIdentityHandles.insert(handle.id)
+                onAttachedSessionIdentityUnavailable?(handle)
+            }
+            return
+        }
 
         let bindingID = UUID()
         let task = Task { [weak self] in
             guard let self else { return }
-            let result = await paneSplitter.clientIdentity(target: target)
-            guard !Task.isCancelled,
-                  paneSplitClientBindings[handle.id]?.id == bindingID,
-                  attachments[handle.id]?.id == attachmentID
-            else { return }
-            paneSplitClientBindings.removeValue(forKey: handle.id)
-            guard case let .success(client) = result else { return }
-            paneSplitClients[handle.id] = client
-            terminalCoordinator.paneSurfaceIfPresent(
-                for: surfaceKey(handle)
-            )?.paneSplitErrorMessage = nil
-            onSurfaceReady?(handle)
+            defer {
+                if paneSplitClientBindings[handle.id]?.id == bindingID {
+                    paneSplitClientBindings.removeValue(forKey: handle.id)
+                }
+            }
+            var retryIndex = 0
+            while !Task.isCancelled {
+                let result = await paneSplitter.clientIdentity(target: target)
+                guard !Task.isCancelled,
+                      paneSplitClientBindings[handle.id]?.id == bindingID,
+                      attachments[handle.id]?.id == attachmentID
+                else { return }
+                if case let .success(client) = result {
+                    paneSplitClientBindings.removeValue(forKey: handle.id)
+                    paneSplitClients[handle.id] = client
+                    previewIdentityRetryHandles.remove(handle.id)
+                    unavailablePreviewIdentityHandles.remove(handle.id)
+                    terminalCoordinator.paneSurfaceIfPresent(
+                        for: surfaceKey(handle)
+                    )?.paneSplitErrorMessage = nil
+                    onSurfaceReady?(handle)
+                    return
+                }
+                guard previewIdentityRetryHandles.contains(handle.id),
+                      retryIndex < clientIdentityRetryDelays.count
+                else {
+                    paneSplitClientBindings.removeValue(forKey: handle.id)
+                    if previewIdentityRetryHandles.remove(handle.id) != nil {
+                        unavailablePreviewIdentityHandles.insert(handle.id)
+                        onAttachedSessionIdentityUnavailable?(handle)
+                    }
+                    return
+                }
+                let delay = clientIdentityRetryDelays[retryIndex]
+                retryIndex += 1
+                do {
+                    try await sleep(delay)
+                } catch {
+                    return
+                }
+            }
         }
         paneSplitClientBindings[handle.id] = PaneSplitClientBinding(
             id: bindingID,
@@ -711,6 +783,8 @@ final class NativeTmuxSessionCoordinator {
         paneSplitWorkers.removeValue(forKey: handleID)?.task.cancel()
         paneSplitRequests.removeValue(forKey: handleID)
         paneSplitClients.removeValue(forKey: handleID)
+        previewIdentityRetryHandles.remove(handleID)
+        unavailablePreviewIdentityHandles.remove(handleID)
     }
 
     private func failSurfaceLaunch(
@@ -737,6 +811,72 @@ final class NativeTmuxSessionCoordinator {
 
     func supportsPaneSplitting(_ handle: BorrowedTmuxSessionHandle) -> Bool {
         attachments[handle.id]?.supportsPaneSplitting == true
+    }
+
+    func attachedSessionIdentity(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> TmuxSessionIdentity? {
+        guard attachments[handle.id] != nil,
+              launchedHandles.contains(handle.id)
+        else { return nil }
+        return paneSplitClients[handle.id]?.sessionIdentity
+    }
+
+    func attachedSessionIdentityResolution(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> TmuxAttachedSessionIdentityResolution {
+        guard attachments[handle.id] != nil,
+              launchedHandles.contains(handle.id)
+        else { return .pending }
+        if let identity = paneSplitClients[handle.id]?.sessionIdentity {
+            return .resolved(identity)
+        }
+        return unavailablePreviewIdentityHandles.contains(handle.id)
+            ? .unavailable
+            : .pending
+    }
+
+    func requestAttachedSessionIdentity(
+        _ handle: BorrowedTmuxSessionHandle
+    ) {
+        guard let attachment = attachments[handle.id],
+              launchedHandles.contains(handle.id)
+        else { return }
+        previewIdentityRetryHandles.insert(handle.id)
+        startPaneSplitClientBinding(
+            target: paneSplitTarget(
+                handle: handle,
+                attachment: attachment,
+                expectedIdentity: attachment.sessionIdentity
+            ),
+            handle: handle,
+            attachmentID: attachment.id
+        )
+    }
+
+    func revalidateAttachedSessionIdentity(
+        _ handle: BorrowedTmuxSessionHandle
+    ) async -> TmuxSessionIdentity? {
+        guard let attachment = attachments[handle.id],
+              attachment.supportsPaneSplitting,
+              launchedHandles.contains(handle.id),
+              paneSplitClients[handle.id] != nil
+        else { return nil }
+        let attachmentID = attachment.id
+        let result = await paneSplitter.clientIdentity(
+            target: paneSplitTarget(
+                handle: handle,
+                attachment: attachment,
+                expectedIdentity: nil
+            ),
+            priority: .utility
+        )
+        guard !Task.isCancelled,
+              attachments[handle.id]?.id == attachmentID,
+              launchedHandles.contains(handle.id),
+              case let .success(client) = result
+        else { return nil }
+        return client.sessionIdentity
     }
 
     func requestPaneSplit(
@@ -814,6 +954,8 @@ final class NativeTmuxSessionCoordinator {
         paneSplitWorkers.removeAll()
         paneSplitRequests.removeAll()
         paneSplitClients.removeAll()
+        previewIdentityRetryHandles.removeAll()
+        unavailablePreviewIdentityHandles.removeAll()
         provisioningHandles.removeAll()
         handlesByKey.removeAll()
         targetHostsByHandle.removeAll()

@@ -19,7 +19,14 @@ Worktrees are optional; Ghosthub remains fully useful without them.
 - **Projects:** A Project is a git repository reported by kwt on a specific Host.
 - **Worktrees:** Projects contain kwt workspaces (standard checkouts or linked git worktrees), each with an exact tmux session name.
 - **Sessions:** Worktree sessions and otherwise-unbound tmux sessions open through an ordinary tmux client. Running and stopped Herdr sessions are host inventory; opening a running session attaches, while creating or restarting uses Herdr's launch path. Active Zellij sessions are separate host inventory and open through an ordinary Zellij client. Each backend owns its windows, tabs, panes, layout, history, key bindings, and process lifetime.
-- **Attachment:** Each scene presents at most one native tmux, Herdr, or Zellij client. Ghosthub owns discovery, local/SSH client presentation, keepalives, and reconnect. Closing a presentation detaches. Tmux and Zellij destruction require explicit, confirmed Kill Session actions. Herdr Stop and Delete are separate confirmed actions; Restart and Create are constructive actions.
+- **Attachment:** Each scene has at most one active interactive native tmux,
+  Herdr, or Zellij presentation. Already-opened tmux clients may remain retained
+  and noninteractive, and may render only when the user explicitly enables
+  session previews. Previews never create another client. Ghosthub owns
+  discovery, local/SSH client presentation, keepalives, and reconnect. Closing
+  a presentation detaches. Tmux and Zellij destruction require explicit,
+  confirmed Kill Session actions. Herdr Stop and Delete are separate confirmed
+  actions; Restart and Create are constructive actions.
 - **Middleman:** Sessions created by Middleman remain discoverable because they are ordinary sessions on a host tmux server. Ghosthub does not use Middleman as session authority.
 - **Console Panel:** A host-scoped persistent terminal area (e.g., for `roborev`) that is independent of the active worktree.
 

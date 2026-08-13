@@ -134,6 +134,28 @@ final class SettingsStoreTests {
 
     // MARK: - Tests
 
+    @Test("session previews default to off and persist stable raw values")
+    func sessionPreviewModePersistence() {
+        let store = makeSUT()
+
+        #expect(store.sessionPreviewMode == .off)
+
+        for mode in SessionPreviewMode.allCases {
+            store.setSessionPreviewMode(mode)
+            #expect(makeSUT().sessionPreviewMode == mode)
+        }
+    }
+
+    @Test("unknown session preview modes fall back to off")
+    func unknownSessionPreviewModeFallsBackToOff() {
+        defaults.set(
+            "future-mode",
+            forKey: "ghosthub.settings.terminal.sessionPreviewMode"
+        )
+
+        #expect(makeSUT().sessionPreviewMode == .off)
+    }
+
     @Test
     func testLoadingDefaultsReflectsGhosthubTerminalDefaults() {
         let store = makeSUT()
@@ -631,7 +653,7 @@ final class SettingsStoreTests {
         [[hosts]]
         config_key = "local"
         name = "This Mac"
-        workspace_root = "/Users/wesm/code"
+        workspace_root = "/Users/example/code"
 
         [general]
         appearance = "system"
@@ -649,7 +671,7 @@ final class SettingsStoreTests {
 
         let contents = try readAppConfig()
         #expect(contents.contains("config_key = \"local\""))
-        #expect(contents.contains("workspace_root = \"/Users/wesm/code\""))
+        #expect(contents.contains("workspace_root = \"/Users/example/code\""))
         #expect(!contents.contains("config_key = \"office\""))
         #expect(store.lastErrorMessage == nil)
         let reloaded = makeSUT()

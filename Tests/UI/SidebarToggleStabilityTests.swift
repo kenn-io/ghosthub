@@ -407,6 +407,7 @@ private final class StabilityTestModel: ObservableObject {
     func clearTerminalResizeDeferrals() {
         terminalResizeDeferrals.removeAll()
     }
+
 }
 
 private struct StabilityTestHarness: View {
@@ -430,6 +431,9 @@ private struct StabilityTestHarness: View {
                     return AnyView(
                         PresentedTmuxSessionMarker(sessionName: sessionName)
                     )
+                },
+                tmuxSessionPreviewParkingBuilder: {
+                    AnyView(Color.clear)
                 }
             ),
             sidebarToggleTarget: sidebarToggleTarget,

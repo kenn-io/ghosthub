@@ -37,6 +37,8 @@ public final class SettingsStore: ObservableObject {
             "ghosthub.settings.terminalAppearance.fontFamily"
         static let terminalFontSize =
             "ghosthub.settings.terminalAppearance.fontSize"
+        static let sessionPreviewMode =
+            "ghosthub.settings.terminal.sessionPreviewMode"
         static let sshHosts = "ghosthub.settings.hosts.ssh"
         static let exeAccounts = "ghosthub.settings.hosts.exeAccounts"
     }
@@ -77,6 +79,8 @@ public final class SettingsStore: ObservableObject {
 
     public static let defaultAgentPreferences = AgentPreferences()
 
+    public static let defaultSessionPreviewMode: SessionPreviewMode = .off
+
     @Published public var selectedDomain: SettingsDomain = .appearance
     @Published public private(set) var confirmBeforeQuitting: Bool
     @Published public private(set) var interfaceAppearance: AppearancePreference
@@ -85,6 +89,7 @@ public final class SettingsStore: ObservableObject {
         set
     ) var terminalAppearancePreferences: TerminalAppearancePreferences
     @Published public private(set) var terminalPreferences: TerminalPreferences
+    @Published public private(set) var sessionPreviewMode: SessionPreviewMode
     @Published public private(set) var worktreePreferences: WorktreePreferences
     @Published public private(set) var tmuxSessionPreferences: TmuxSessionPreferences
     @Published public private(set) var agentPreferences: AgentPreferences
@@ -139,6 +144,9 @@ public final class SettingsStore: ObservableObject {
             using: configPipeline,
             userDefaults: userDefaults
         )
+        let loadedSessionPreviewMode = Self.loadSessionPreviewMode(
+            using: userDefaults
+        )
         let loadedWorktrees = Self.loadWorktreePreferences(
             using: userDefaults
         )
@@ -169,6 +177,7 @@ public final class SettingsStore: ObservableObject {
         notificationConfiguration = loadedNotifications
         terminalAppearancePreferences = loadedTerminalAppearance
         terminalPreferences = loadedTerminal
+        sessionPreviewMode = loadedSessionPreviewMode
         worktreePreferences = loadedWorktrees
         tmuxSessionPreferences = loadedTmuxSessions
         agentPreferences = loadedAgents
@@ -205,6 +214,9 @@ public final class SettingsStore: ObservableObject {
         terminalPreferences = Self.loadTerminalPreferences(
             using: configPipeline,
             userDefaults: userDefaults
+        )
+        sessionPreviewMode = Self.loadSessionPreviewMode(
+            using: userDefaults
         )
         worktreePreferences = Self.loadWorktreePreferences(using: userDefaults)
         tmuxSessionPreferences = Self.loadTmuxSessionPreferences(
@@ -278,6 +290,14 @@ public final class SettingsStore: ObservableObject {
         userDefaults.set(
             enabled,
             forKey: DefaultsKey.shareAnonymousUsageData
+        )
+    }
+
+    public func setSessionPreviewMode(_ mode: SessionPreviewMode) {
+        sessionPreviewMode = mode
+        userDefaults.set(
+            mode.rawValue,
+            forKey: DefaultsKey.sessionPreviewMode
         )
     }
 
@@ -777,6 +797,16 @@ public final class SettingsStore: ObservableObject {
         )
         .flatMap(AppearancePreference.init(rawValue:))
         ?? .system
+    }
+
+    private static func loadSessionPreviewMode(
+        using userDefaults: UserDefaults
+    ) -> SessionPreviewMode {
+        userDefaults.string(
+            forKey: DefaultsKey.sessionPreviewMode
+        )
+        .flatMap(SessionPreviewMode.init(rawValue:))
+        ?? defaultSessionPreviewMode
     }
 
     private static func loadConfirmBeforeQuitting(

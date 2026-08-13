@@ -566,16 +566,21 @@ struct WorkspaceZellijTests {
         )
 
         model.openBorrowedTmuxSession(tmux)
+        let tmuxHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: tmux)
+        )
         model.openBorrowedZellijSession(zellij)
         await waitUntilMainActor {
             model.activeBorrowedZellijSelection == zellij
         }
         #expect(model.activeBorrowedTmuxSelection == nil)
         #expect(model.activeBorrowedZellijSelection == zellij)
+        #expect(model.retainedBorrowedTmuxHandle(for: tmux) == tmuxHandle)
 
         model.openBorrowedTmuxSession(tmux)
         #expect(model.activeBorrowedZellijSelection == nil)
         #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(model.retainedBorrowedTmuxHandle(for: tmux) == tmuxHandle)
         #expect(zellijStore.removedKeys.contains {
             $0.target == .zellijSession
         })

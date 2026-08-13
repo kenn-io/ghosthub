@@ -66,6 +66,7 @@ configuration.arguments = [
     "-ApplePersistenceIgnoreState", "YES",
     "-ghosthub.settings.hosts.ssh", "<\(hostsHex)>",
     "-ghosthub.settings.hosts.exeAccounts", "<\(exeAccountsHex)>",
+    "-ghosthub.settings.terminal.sessionPreviewMode", "live",
 ]
 configuration.createsNewApplicationInstance = true
 configuration.environment = [

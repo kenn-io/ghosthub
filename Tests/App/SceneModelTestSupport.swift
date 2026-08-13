@@ -317,6 +317,7 @@ func makeModel(
     herdrPaneSplitCapabilityProvider:
     NativeHerdrSessionCoordinator.PaneSplitCapabilityProvider? = nil,
     herdrPaneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
+    nativeTmuxPaneSplitter: TmuxPaneSplitter = TmuxPaneSplitter(),
     localKwtPathProvider: @escaping @Sendable () -> String? = {
         KwtBinaryLocator.bundledPath()
     },
@@ -459,6 +460,9 @@ func makeModel(
     refreshExeHosts: @escaping () -> Void = {},
     terminalColorsPublisher:
     AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
+    sessionPreviewCoordinator: TmuxSessionPreviewCoordinator? = nil,
+    sessionPreviewModePublisher:
+    AnyPublisher<SessionPreviewMode, Never>? = nil,
     tmuxSessionActivityController:
     TmuxSessionActivityController? = nil,
     sceneSettings: WorkspaceSceneSettings = .live(),
@@ -493,6 +497,7 @@ func makeModel(
         nativeZellijPathProvider: nativeZellijPathProvider,
         herdrPaneSplitCapabilityProvider: herdrPaneSplitCapabilityProvider,
         herdrPaneSplitter: herdrPaneSplitter,
+        nativeTmuxPaneSplitter: nativeTmuxPaneSplitter,
         localKwtPathProvider: localKwtPathProvider,
         remoteTmuxPathProvider: remoteTmuxPathProvider,
         tmuxPresentationStyleProvider: tmuxPresentationStyleProvider,
@@ -545,6 +550,8 @@ func makeModel(
         configuredExeHostsPublisher: configuredExeHostsPublisher,
         refreshExeHosts: refreshExeHosts,
         terminalColorsPublisher: terminalColorsPublisher,
+        sessionPreviewCoordinator: sessionPreviewCoordinator,
+        sessionPreviewModePublisher: sessionPreviewModePublisher,
         tmuxSessionActivityController: tmuxSessionActivityController,
         sceneSettings: sceneSettings,
         localHostID: localHostID,

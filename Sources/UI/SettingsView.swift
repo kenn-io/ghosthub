@@ -425,6 +425,27 @@ public struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
+            settingsSection("Session Previews") {
+                Picker(
+                    "Session previews",
+                    selection: $draft.sessionPreviewMode
+                ) {
+                    ForEach(SessionPreviewMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+
+                Text(
+                    "Efficient stores the latest frame when you leave a"
+                        + " session. Live refreshes up to twice per second"
+                        + " and parks at most four inactive sessions across"
+                        + " the app. Off avoids preview GPU work."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             settingsSection("Quit Behavior") {
                 Toggle(
                     "Confirm before quitting Ghosthub",

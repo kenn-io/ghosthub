@@ -13,63 +13,101 @@ protocol TerminalMouseEventDelegate: AnyObject {
 
 @MainActor
 struct TerminalMouseEventHandler {
+    private struct PressedButton {
+        let button: ghostty_input_mouse_button_e
+        let modifiers: ghostty_input_mods_e
+    }
+
+    static var mouseButtonSender: (
+        ghostty_surface_t,
+        ghostty_input_mouse_state_e,
+        ghostty_input_mouse_button_e,
+        ghostty_input_mods_e
+    ) -> Bool = { surface, action, button, mods in
+        ghostty_surface_mouse_button(surface, action, button, mods)
+    }
+    static var mousePositionSender: (
+        ghostty_surface_t,
+        Double,
+        Double,
+        ghostty_input_mods_e
+    ) -> Void = { surface, x, y, mods in
+        ghostty_surface_mouse_pos(surface, x, y, mods)
+    }
+    static var mousePressureSender: (
+        ghostty_surface_t,
+        UInt32,
+        Double
+    ) -> Void = { surface, stage, pressure in
+        ghostty_surface_mouse_pressure(surface, stage, pressure)
+    }
+
     weak var delegate: TerminalMouseEventDelegate?
+    private var pressedButtons: [PressedButton] = []
 
     init(delegate: TerminalMouseEventDelegate) {
         self.delegate = delegate
     }
 
-    func handleMouseDown(_ event: NSEvent) {
+    mutating func handleMouseDown(_ event: NSEvent) {
         delegate?.ensureFirstResponder()
         guard let surface = delegate?.surfaceHandle else { return }
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_button(
+        _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods
         )
+        recordPressed(GHOSTTY_MOUSE_LEFT, modifiers: mods)
     }
 
-    func handleMouseUp(_ event: NSEvent) {
+    mutating func handleMouseUp(_ event: NSEvent) {
         delegate?.prevPressureStage = 0
         guard let surface = delegate?.surfaceHandle else { return }
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_button(
+        _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods
         )
-        ghostty_surface_mouse_pressure(surface, 0, 0)
+        recordReleased(GHOSTTY_MOUSE_LEFT)
+        Self.mousePressureSender(surface, 0, 0)
     }
 
-    func handleOtherMouseDown(_ event: NSEvent) {
+    mutating func handleOtherMouseDown(_ event: NSEvent) {
         guard let surface = delegate?.surfaceHandle,
               event.buttonNumber == 2 else { return }
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_button(
+        _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE, mods
         )
+        recordPressed(GHOSTTY_MOUSE_MIDDLE, modifiers: mods)
     }
 
-    func handleOtherMouseUp(_ event: NSEvent) {
+    mutating func handleOtherMouseUp(_ event: NSEvent) {
         guard let surface = delegate?.surfaceHandle,
               event.buttonNumber == 2 else { return }
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_button(
+        _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_MIDDLE, mods
         )
+        recordReleased(GHOSTTY_MOUSE_MIDDLE)
     }
 
-    func handleRightMouseDown(_ event: NSEvent) -> Bool {
+    mutating func handleRightMouseDown(_ event: NSEvent) -> Bool {
         guard let surface = delegate?.surfaceHandle else { return false }
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        return ghostty_surface_mouse_button(
+        let handled = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT, mods
         )
+        recordPressed(GHOSTTY_MOUSE_RIGHT, modifiers: mods)
+        return handled
     }
 
-    func handleRightMouseUp(_ event: NSEvent) -> Bool {
+    mutating func handleRightMouseUp(_ event: NSEvent) -> Bool {
         guard let surface = delegate?.surfaceHandle else { return false }
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        return ghostty_surface_mouse_button(
+        let handled = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, mods
         )
+        recordReleased(GHOSTTY_MOUSE_RIGHT)
+        return handled
     }
 
     func handleMouseEntered(_ event: NSEvent) {
@@ -77,7 +115,7 @@ struct TerminalMouseEventHandler {
               let surface = delegate.surfaceHandle else { return }
         let pos = delegate.convert(event.locationInWindow, from: nil)
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_pos(
+        Self.mousePositionSender(
             surface, pos.x, delegate.frame.height - pos.y, mods
         )
     }
@@ -88,7 +126,7 @@ struct TerminalMouseEventHandler {
             return
         }
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_pos(surface, -1, -1, mods)
+        Self.mousePositionSender(surface, -1, -1, mods)
     }
 
     func handleMouseMoved(_ event: NSEvent) {
@@ -96,7 +134,7 @@ struct TerminalMouseEventHandler {
               let surface = delegate.surfaceHandle else { return }
         let pos = delegate.convert(event.locationInWindow, from: nil)
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
-        ghostty_surface_mouse_pos(
+        Self.mousePositionSender(
             surface, pos.x, delegate.frame.height - pos.y, mods
         )
     }
@@ -135,7 +173,7 @@ struct TerminalMouseEventHandler {
     func handlePressureChange(_ event: NSEvent) {
         guard let delegate,
               let surface = delegate.surfaceHandle else { return }
-        ghostty_surface_mouse_pressure(
+        Self.mousePressureSender(
             surface, UInt32(event.stage), Double(event.pressure)
         )
 
@@ -146,5 +184,41 @@ struct TerminalMouseEventHandler {
             forKey: "com.apple.trackpad.forceClick"
         ) else { return }
         delegate.quickLook(with: event)
+    }
+
+    mutating func resetPointerStateForParking() {
+        guard let delegate,
+              let surface = delegate.surfaceHandle else { return }
+        for pressed in pressedButtons {
+            _ = Self.mouseButtonSender(
+                surface,
+                GHOSTTY_MOUSE_RELEASE,
+                pressed.button,
+                pressed.modifiers
+            )
+        }
+        pressedButtons.removeAll()
+        delegate.prevPressureStage = 0
+        Self.mousePressureSender(surface, 0, 0)
+        Self.mousePositionSender(surface, -1, -1, GHOSTTY_MODS_NONE)
+    }
+
+    private mutating func recordPressed(
+        _ button: ghostty_input_mouse_button_e,
+        modifiers: ghostty_input_mods_e
+    ) {
+        guard !pressedButtons.contains(where: {
+            $0.button.rawValue == button.rawValue
+        }) else { return }
+        pressedButtons.append(PressedButton(
+            button: button,
+            modifiers: modifiers
+        ))
+    }
+
+    private mutating func recordReleased(
+        _ button: ghostty_input_mouse_button_e
+    ) {
+        pressedButtons.removeAll { $0.button.rawValue == button.rawValue }
     }
 }
