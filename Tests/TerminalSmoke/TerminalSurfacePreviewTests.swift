@@ -4,6 +4,7 @@ import GhosttyKit
 import GhosthubTmux
 import GhosthubTransport
 import IOSurface
+import os
 import SwiftUI
 import XCTest
 @testable import GhosthubApp
@@ -91,6 +92,32 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         )
 
         XCTAssertNil(unchanged)
+    }
+
+    func testSnapshotRetriesAnIOSurfaceGenerationChange() async throws {
+        let view = try makeSurface()
+        let ioSurface = try makeIOSurface()
+        view.layer?.contents = ioSurface
+        let surfaceID = IOSurfaceGetID(ioSurface)
+        let tokenReads = OSAllocatedUnfairLock(initialState: 0)
+        let snapshotter = TerminalSurfaceSnapshotter(captureToken: { _ in
+            tokenReads.withLock { reads in
+                defer { reads += 1 }
+                return TerminalSurfaceCaptureToken(
+                    surfaceID: surfaceID,
+                    seed: reads == 0 ? 1 : 2
+                )
+            }
+        })
+
+        let captured = try await snapshotter.snapshot(
+            of: view,
+            outputWidth: 320,
+            previousCaptureToken: nil
+        )
+
+        XCTAssertEqual(captured?.captureToken.seed, 2)
+        XCTAssertEqual(tokenReads.withLock { $0 }, 4)
     }
 
     func testSnapshotCapturesReplacementIOSurfaceWithRepeatedSeed() async throws {

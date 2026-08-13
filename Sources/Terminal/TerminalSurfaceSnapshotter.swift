@@ -8,6 +8,7 @@ public enum TerminalSurfaceSnapshotError: Error, Equatable {
     case invalidOutputSize
     case missingIOSurface
     case imageCopyFailed
+    case unstableIOSurface
 }
 
 public struct TerminalSurfaceCaptureToken: Hashable, Sendable {
@@ -45,6 +46,7 @@ public final class TerminalSurfaceSnapshotter {
         let pixelSize: (width: Int, height: Int)
         let previousCaptureToken: TerminalSurfaceCaptureToken?
         let metal: MetalCaptureContext
+        let captureToken: @Sendable (IOSurface) -> TerminalSurfaceCaptureToken
     }
 
     private struct MetalCaptureContext: @unchecked Sendable {
@@ -58,10 +60,19 @@ public final class TerminalSurfaceSnapshotter {
     }
 
     private let metal: MetalCaptureContext?
+    private let captureToken: @Sendable (IOSurface) -> TerminalSurfaceCaptureToken
     private var inFlight:
         [RequestKey: Task<RenderedSnapshot?, Error>] = [:]
 
-    public init() {
+    public convenience init() {
+        self.init(captureToken: Self.captureToken)
+    }
+
+    init(
+        captureToken: @escaping @Sendable (IOSurface) ->
+            TerminalSurfaceCaptureToken
+    ) {
+        self.captureToken = captureToken
         if let device = MTLCreateSystemDefaultDevice(),
            let commandQueue = device.makeCommandQueue() {
             metal = MetalCaptureContext(
@@ -115,7 +126,8 @@ public final class TerminalSurfaceSnapshotter {
                 ?? NSColor.black.cgColor,
             pixelSize: pixelSize,
             previousCaptureToken: previousCaptureToken,
-            metal: metal
+            metal: metal,
+            captureToken: captureToken
         )
         let task = Task.detached(priority: .utility) {
             try Self.makeSnapshot(source: source)
@@ -142,13 +154,6 @@ public final class TerminalSurfaceSnapshotter {
     private nonisolated static func makeSnapshot(
         source: RenderSource
     ) throws -> RenderedSnapshot? {
-        let captureTokenBeforeCopy = TerminalSurfaceCaptureToken(
-            surfaceID: IOSurfaceGetID(source.ioSurface),
-            seed: IOSurfaceGetSeed(source.ioSurface)
-        )
-        guard captureTokenBeforeCopy != source.previousCaptureToken else {
-            return nil
-        }
         guard IOSurfaceGetPixelFormat(source.ioSurface)
             == kCVPixelFormatType_32BGRA
         else {
@@ -174,74 +179,88 @@ public final class TerminalSurfaceSnapshotter {
         ) else {
             throw TerminalSurfaceSnapshotError.imageCopyFailed
         }
-        let bytesPerRow = alignedBytesPerRow(sourceWidth * 4)
-        guard let buffer = source.metal.device.makeBuffer(
-            length: bytesPerRow * sourceHeight,
-            options: .storageModeShared
-        ),
-            let commandBuffer = source.metal.commandQueue.makeCommandBuffer(),
-            let blit = commandBuffer.makeBlitCommandEncoder()
-        else {
-            throw TerminalSurfaceSnapshotError.imageCopyFailed
-        }
-        blit.copy(
-            from: texture,
-            sourceSlice: 0,
-            sourceLevel: 0,
-            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-            sourceSize: MTLSize(
-                width: sourceWidth,
-                height: sourceHeight,
-                depth: 1
-            ),
-            to: buffer,
-            destinationOffset: 0,
-            destinationBytesPerRow: bytesPerRow,
-            destinationBytesPerImage: bytesPerRow * sourceHeight
-        )
-        blit.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        guard commandBuffer.status == .completed else {
-            throw TerminalSurfaceSnapshotError.imageCopyFailed
-        }
-        let captureToken = TerminalSurfaceCaptureToken(
-            surfaceID: IOSurfaceGetID(source.ioSurface),
-            seed: IOSurfaceGetSeed(source.ioSurface)
-        )
-        guard captureToken == captureTokenBeforeCopy else { return nil }
 
-        let ownedPixels = Data(
-            bytes: buffer.contents(),
-            count: bytesPerRow * sourceHeight
-        )
-        guard let provider = CGDataProvider(data: ownedPixels as CFData),
-              let sourceImage = CGImage(
-                  width: sourceWidth,
-                  height: sourceHeight,
-                  bitsPerComponent: 8,
-                  bitsPerPixel: 32,
-                  bytesPerRow: bytesPerRow,
-                  space: CGColorSpaceCreateDeviceRGB(),
-                  bitmapInfo: CGBitmapInfo(
-                      rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
-                  ).union(.byteOrder32Little),
-                  provider: provider,
-                  decode: nil,
-                  shouldInterpolate: false,
-                  intent: .defaultIntent
-              ),
-              let thumbnail = makeThumbnail(
-                  sourceImage,
-                  outputSize: source.pixelSize,
-                  backgroundColor: source.backgroundColor
-              )
-        else {
-            throw TerminalSurfaceSnapshotError.imageCopyFailed
+        for _ in 0 ..< 3 {
+            let captureTokenBeforeCopy = source.captureToken(source.ioSurface)
+            guard captureTokenBeforeCopy != source.previousCaptureToken else {
+                return nil
+            }
+            let bytesPerRow = alignedBytesPerRow(sourceWidth * 4)
+            guard let buffer = source.metal.device.makeBuffer(
+                length: bytesPerRow * sourceHeight,
+                options: .storageModeShared
+            ),
+                let commandBuffer = source.metal.commandQueue.makeCommandBuffer(),
+                let blit = commandBuffer.makeBlitCommandEncoder()
+            else {
+                throw TerminalSurfaceSnapshotError.imageCopyFailed
+            }
+            blit.copy(
+                from: texture,
+                sourceSlice: 0,
+                sourceLevel: 0,
+                sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                sourceSize: MTLSize(
+                    width: sourceWidth,
+                    height: sourceHeight,
+                    depth: 1
+                ),
+                to: buffer,
+                destinationOffset: 0,
+                destinationBytesPerRow: bytesPerRow,
+                destinationBytesPerImage: bytesPerRow * sourceHeight
+            )
+            blit.endEncoding()
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            guard commandBuffer.status == .completed else {
+                throw TerminalSurfaceSnapshotError.imageCopyFailed
+            }
+            let captureToken = source.captureToken(source.ioSurface)
+            guard captureToken == captureTokenBeforeCopy else { continue }
+
+            let ownedPixels = Data(
+                bytes: buffer.contents(),
+                count: bytesPerRow * sourceHeight
+            )
+            guard let provider = CGDataProvider(data: ownedPixels as CFData),
+                  let sourceImage = CGImage(
+                      width: sourceWidth,
+                      height: sourceHeight,
+                      bitsPerComponent: 8,
+                      bitsPerPixel: 32,
+                      bytesPerRow: bytesPerRow,
+                      space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: CGBitmapInfo(
+                          rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
+                      ).union(.byteOrder32Little),
+                      provider: provider,
+                      decode: nil,
+                      shouldInterpolate: false,
+                      intent: .defaultIntent
+                  ),
+                  let thumbnail = makeThumbnail(
+                      sourceImage,
+                      outputSize: source.pixelSize,
+                      backgroundColor: source.backgroundColor
+                  )
+            else {
+                throw TerminalSurfaceSnapshotError.imageCopyFailed
+            }
+            return RenderedSnapshot(
+                image: thumbnail,
+                captureToken: captureToken
+            )
         }
-        return RenderedSnapshot(
-            image: thumbnail,
-            captureToken: captureToken
+        throw TerminalSurfaceSnapshotError.unstableIOSurface
+    }
+
+    private nonisolated static func captureToken(
+        for ioSurface: IOSurface
+    ) -> TerminalSurfaceCaptureToken {
+        TerminalSurfaceCaptureToken(
+            surfaceID: IOSurfaceGetID(ioSurface),
+            seed: IOSurfaceGetSeed(ioSurface)
         )
     }
 
