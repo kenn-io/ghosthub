@@ -636,6 +636,15 @@ repositories, worktrees, and tmux sessions remain untouched. Reads and
 mutations stay off the UI thread, and the last usable project tree remains
 visible while either is in flight.
 
+Removing a generation-backed worktree is a distinct destructive action. The
+confirmation is bound to its exact project, generation, tmux socket, and a
+fresh live session identity or freshly confirmed absence. Pinned KWT
+revalidates those facts under the project lifecycle lock, terminates only the
+confirmed session when necessary, and removes the checkout in the same guarded
+operation. A replaced session or changed socket fails closed and requires new
+confirmation. Closing or detaching a presentation never grants this removal
+authority.
+
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,
 verifies its SHA-256 and exact revision, and activates it at

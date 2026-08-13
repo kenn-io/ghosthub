@@ -601,6 +601,23 @@ enum WorktreePresentation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeRowPresence {
+    Idle,
+    Live,
+    Active,
+}
+
+impl WorktreeRowPresence {
+    const fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+
+    const fn is_live(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorktreeHostAccess {
     Ready { kwt_available: bool },
     Unavailable,
@@ -4481,7 +4498,6 @@ impl RootView {
                     (open_mode == WorktreeOpenMode::RepairOrOpen).then(|| open_target.clone());
                 let remove_target = (!worktree.is_main()
                     && worktree.generation().is_some()
-                    && worktree.tmux_socket_name().is_none()
                     && host.connection() == HostConnectionState::Ready
                     && host.kwt_available()
                     && host.kwt_diagnostic().is_none())
@@ -4499,7 +4515,13 @@ impl RootView {
                     worktree_index,
                     worktree.branch().to_owned(),
                     selection,
-                    is_active,
+                    if is_active {
+                        WorktreeRowPresence::Active
+                    } else if worktree.session_available() || is_retained {
+                        WorktreeRowPresence::Live
+                    } else {
+                        WorktreeRowPresence::Idle
+                    },
                     can_open,
                     can_kill,
                     repair_open_target,
@@ -4563,7 +4585,13 @@ impl RootView {
                 index,
                 workspace.name().to_owned(),
                 selection,
-                is_active,
+                if is_active {
+                    WorktreeRowPresence::Active
+                } else if workspace.session_available() || is_retained {
+                    WorktreeRowPresence::Live
+                } else {
+                    WorktreeRowPresence::Idle
+                },
                 can_open,
                 can_kill,
                 None,
@@ -4581,13 +4609,15 @@ impl RootView {
         worktree_index: usize,
         label: String,
         selection: SessionSelection,
-        is_active: bool,
+        presence: WorktreeRowPresence,
         can_open: bool,
         can_kill: bool,
         worktree_target: Option<WorktreeOpenTarget>,
         remove_target: Option<WorktreeRemoveTarget>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let is_active = presence.is_active();
+        let is_live = presence.is_live();
         let row_group = format!("worktree-actions-{host_index}-{project_index}-{worktree_index}");
         let mut row = div()
             .id((
@@ -4614,8 +4644,14 @@ impl RootView {
                     .w(px(18.0))
                     .flex_none()
                     .text_xs()
-                    .text_color(rgb(if is_active { 0x9d_c7ed } else { 0x7f_8794 }))
-                    .child("◇"),
+                    .text_color(rgb(if is_active {
+                        0x9d_c7ed
+                    } else if is_live {
+                        0x79_c9_a3
+                    } else {
+                        0x7f_8794
+                    }))
+                    .child(if is_live { ">_" } else { "◇" }),
             )
             .child(
                 div()
@@ -5459,11 +5495,11 @@ fn tree_sessions(
             selection.host_id() == host.id()
                 && selection.kind() == workspace::SessionKind::Tmux
                 && !(selection.endpoint() == host.endpoint()
-                    && host.kwt_owns_default_tmux_session(selection.session()))
+                    && host.kwt_owns_presented_tmux_session(selection.session()))
         })
         .chain(active_for_host.into_iter().filter(|selection| {
             !(selection.endpoint() == host.endpoint()
-                && host.kwt_owns_default_tmux_session(selection.session()))
+                && host.kwt_owns_presented_tmux_session(selection.session()))
         }))
     {
         if !selections
@@ -7027,6 +7063,49 @@ mod tests {
                 .any(|row| row.selection.session() == "custom-socket"),
             "a custom-socket worktree cannot claim a default-socket tmux row"
         );
+    }
+
+    #[test]
+    fn active_protected_worktree_is_shown_only_under_its_project() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Ready,
+            vec![SessionItem::new("scratch", 0)],
+            None,
+        )
+        .with_kwt_inventory(
+            vec![ProjectItem::new(
+                "project-id",
+                "project",
+                "/repos/project",
+                "project-fingerprint",
+                vec![WorktreeItem::new(
+                    "/repos/project-pr",
+                    "pr-17",
+                    false,
+                    Some("0123456789abcdef0123456789abcdef".to_owned()),
+                    "project-pr-17",
+                    Some("kwt-pr-0123456789abcdef".to_owned()),
+                    false,
+                )],
+            )],
+            Vec::new(),
+        );
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let terminal = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "project-pr-17".to_owned(),
+            kind: workspace::SessionKind::Tmux,
+            presentation_id: 7,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
+        };
+
+        let rows = tree_sessions(&host, &terminal, &[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].selection.session(), "scratch");
     }
 
     #[test]

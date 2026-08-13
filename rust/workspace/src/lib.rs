@@ -695,6 +695,21 @@ impl HostItem {
             .iter()
             .any(|workspace| workspace.session_name == name)
     }
+
+    /// Whether an active or retained tmux presentation belongs under a KWT
+    /// worktree row, including protected named-socket presentations.
+    #[must_use]
+    pub fn kwt_owns_presented_tmux_session(&self, name: &str) -> bool {
+        self.projects.iter().any(|project| {
+            project
+                .worktrees
+                .iter()
+                .any(|worktree| worktree.session_name == name)
+        }) || self
+            .directory_workspaces
+            .iter()
+            .any(|workspace| workspace.session_name == name)
+    }
 }
 
 #[derive(Clone)]
@@ -1645,15 +1660,22 @@ fn attach_target_matches_killed_tmux(
     target: &AttachTarget,
     identity: &session::SessionIdentity,
     name: Option<&str>,
+    socket_name: Option<&str>,
 ) -> bool {
     match target {
         AttachTarget::Tmux(target_identity) => target_identity == identity,
         AttachTarget::Worktree { session_name, .. } => {
-            name.is_some_and(|name| session_name == name)
+            socket_name.is_none() && name.is_some_and(|name| session_name == name)
         }
-        AttachTarget::ProtectedWorktree { .. }
-        | AttachTarget::Herdr { .. }
-        | AttachTarget::Zellij { .. } => false,
+        AttachTarget::ProtectedWorktree {
+            session_name,
+            tmux_socket_name,
+            ..
+        } => {
+            name.is_some_and(|name| session_name == name)
+                && socket_name.is_some_and(|socket| tmux_socket_name == socket)
+        }
+        AttachTarget::Herdr { .. } | AttachTarget::Zellij { .. } => false,
     }
 }
 
@@ -1663,10 +1685,11 @@ fn request_matches_killed_tmux(
     runtime: &host::WslRuntimeIdentity,
     identity: &session::SessionIdentity,
     name: Option<&str>,
+    socket_name: Option<&str>,
 ) -> bool {
     request.endpoint == *endpoint
         && request.runtime == *runtime
-        && attach_target_matches_killed_tmux(&request.target, identity, name)
+        && attach_target_matches_killed_tmux(&request.target, identity, name, socket_name)
 }
 
 fn presentation_key_matches_killed_tmux(
@@ -1675,10 +1698,11 @@ fn presentation_key_matches_killed_tmux(
     runtime: &host::WslRuntimeIdentity,
     identity: &session::SessionIdentity,
     name: Option<&str>,
+    socket_name: Option<&str>,
 ) -> bool {
     key.endpoint == endpoint.distro()
         && key.runtime == *runtime
-        && attach_target_matches_killed_tmux(&key.target, identity, name)
+        && attach_target_matches_killed_tmux(&key.target, identity, name, socket_name)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2968,7 +2992,7 @@ impl Workspace {
                 "Refresh KWT inventory before removing this worktree.",
             ));
         }
-        let (host, resolved_endpoint, runtime) = capture_kwt_worktree_removal_context(
+        let (host, resolved_endpoint, runtime, socket_name) = capture_kwt_worktree_removal_context(
             &self.inner,
             host_id,
             endpoint,
@@ -3002,6 +3026,7 @@ impl Workspace {
             worktree_path: worktree_path.to_owned(),
             generation: generation.to_owned(),
             session_name: session_name.to_owned(),
+            socket_name,
         };
         let inner = Arc::clone(&self.inner);
         self.inner
@@ -3076,6 +3101,7 @@ impl Workspace {
                 worktree_path: worktree_path.to_owned(),
                 generation: generation.to_owned(),
                 session_name: session_name.to_owned(),
+                socket_name: pending.socket_name.clone(),
                 live_target: pending.live_target.clone(),
                 operation_id: authority,
             },
@@ -4445,6 +4471,7 @@ impl Workspace {
             target.runtime(),
             target.identity(),
             target.name(),
+            target.socket_name(),
         );
     }
 
@@ -4454,6 +4481,7 @@ impl Workspace {
         runtime: &host::WslRuntimeIdentity,
         identity: &session::SessionIdentity,
         target_name: &str,
+        socket_name: Option<&str>,
     ) {
         let _snapshot_write = begin_snapshot_write(&self.inner);
         let _navigation = self
@@ -4462,7 +4490,14 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key_matches = |request: &AttachRequest| {
-            request_matches_killed_tmux(request, endpoint, runtime, identity, Some(target_name))
+            request_matches_killed_tmux(
+                request,
+                endpoint,
+                runtime,
+                identity,
+                Some(target_name),
+                socket_name,
+            )
         };
         let active_matches = self
             .inner
@@ -4486,6 +4521,7 @@ impl Workspace {
                     runtime,
                     identity,
                     Some(target_name),
+                    socket_name,
                 )
             });
         if changed {
@@ -6468,6 +6504,7 @@ enum KwtWorktreeOperation {
         worktree_path: String,
         generation: String,
         session_name: String,
+        socket_name: Option<String>,
         live_target: Option<Arc<host::LiveSessionTarget>>,
         operation_id: u64,
     },
@@ -6495,6 +6532,7 @@ struct PendingKwtRemoval {
     worktree_path: String,
     generation: String,
     session_name: String,
+    socket_name: Option<String>,
     live_target: Option<Arc<host::LiveSessionTarget>>,
 }
 
@@ -6509,6 +6547,7 @@ struct KwtRemovalCapture {
     worktree_path: String,
     generation: String,
     session_name: String,
+    socket_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -6538,18 +6577,42 @@ struct KwtWorktreeOutcome {
 
 fn capture_kwt_removal_authority(inner: &Inner, capture: KwtRemovalCapture) {
     let cancellation = CancellationToken::new();
-    let live_target = match capture.host.session_is_running(
-        &capture.endpoint,
-        &capture.runtime,
-        &capture.session_name,
-        &cancellation,
-    ) {
-        Ok(false) => None,
-        Ok(true) => match capture.host.capture_live_session(
+    let running = if let Some(socket_name) = capture.socket_name.as_deref() {
+        capture.host.session_is_running_on_socket(
+            &capture.endpoint,
+            &capture.runtime,
+            socket_name,
+            &capture.session_name,
+            &cancellation,
+        )
+    } else {
+        capture.host.session_is_running(
             &capture.endpoint,
             &capture.runtime,
             &capture.session_name,
             &cancellation,
+        )
+    };
+    let live_target = match running {
+        Ok(false) => None,
+        Ok(true) => match capture.socket_name.as_deref().map_or_else(
+            || {
+                capture.host.capture_live_session(
+                    &capture.endpoint,
+                    &capture.runtime,
+                    &capture.session_name,
+                    &cancellation,
+                )
+            },
+            |socket_name| {
+                capture.host.capture_live_session_on_socket(
+                    &capture.endpoint,
+                    &capture.runtime,
+                    socket_name,
+                    &capture.session_name,
+                    &cancellation,
+                )
+            },
         ) {
             Ok(target) => Some(Arc::new(target)),
             Err(error) => {
@@ -6593,6 +6656,7 @@ fn capture_kwt_removal_authority(inner: &Inner, capture: KwtRemovalCapture) {
         worktree_path: capture.worktree_path,
         generation: capture.generation,
         session_name: capture.session_name,
+        socket_name: capture.socket_name,
         live_target,
     });
     drop(pending);
@@ -6643,7 +6707,15 @@ fn capture_kwt_worktree_removal_context(
     worktree_path: &str,
     generation: &str,
     session_name: &str,
-) -> Result<(RuntimeHost, host::WslEndpoint, host::WslRuntimeIdentity), WorkspaceError> {
+) -> Result<
+    (
+        RuntimeHost,
+        host::WslEndpoint,
+        host::WslRuntimeIdentity,
+        Option<String>,
+    ),
+    WorkspaceError,
+> {
     if host_id != "wsl" {
         return Err(WorkspaceError::new(
             "KWT worktrees are available only on WSL",
@@ -6702,12 +6774,12 @@ fn capture_kwt_worktree_removal_context(
             "the primary checkout cannot be removed",
         ));
     }
-    if worktree.tmux_socket_name.is_some() {
-        return Err(WorkspaceError::new(
-            "worktrees using a custom tmux socket cannot be removed until Ghosthub can verify and stop that session",
-        ));
-    }
-    Ok(context)
+    Ok((
+        context.0,
+        context.1,
+        context.2,
+        worktree.tmux_socket_name.clone(),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6892,6 +6964,7 @@ fn validate_kwt_worktree_operation(
         worktree_path,
         generation,
         session_name,
+        socket_name,
         ..
     } = operation
     else {
@@ -6904,6 +6977,7 @@ fn validate_kwt_worktree_operation(
             worktree.path == *worktree_path
                 && worktree.generation.as_deref() == Some(generation)
                 && worktree.session_name == *session_name
+                && worktree.tmux_socket_name.as_ref() == socket_name.as_ref()
         })
         .ok_or_else(|| {
             WorkspaceError::new("the selected worktree changed; refresh and choose it again")
@@ -6911,11 +6985,6 @@ fn validate_kwt_worktree_operation(
     if worktree.is_main {
         return Err(WorkspaceError::new(
             "the primary checkout cannot be removed",
-        ));
-    }
-    if worktree.tmux_socket_name.is_some() {
-        return Err(WorkspaceError::new(
-            "worktrees using a custom tmux socket cannot be removed until Ghosthub can verify and stop that session",
         ));
     }
     Ok(())
@@ -7019,6 +7088,7 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
             worktree_path,
             generation,
             session_name,
+            socket_name,
             live_target,
             ..
         } => run_kwt_worktree_remove(
@@ -7027,6 +7097,7 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
             worktree_path,
             generation,
             session_name,
+            socket_name.as_deref(),
             live_target.as_deref(),
         ),
     };
@@ -7189,13 +7260,15 @@ fn run_kwt_worktree_remove(
     worktree_path: &str,
     generation: &str,
     session_name: &str,
+    socket_name: Option<&str>,
     live_target: Option<&host::LiveSessionTarget>,
 ) -> KwtWorktreeOutcome {
     let _session_operation = inner
         .session_operations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Err(error) = preflight_kwt_worktree_remove(task, worktree_path, generation, session_name)
+    if let Err(error) =
+        preflight_kwt_worktree_remove(task, worktree_path, generation, session_name, socket_name)
     {
         fail_kwt_worktree_remove(inner, task, error);
         return KwtWorktreeOutcome::default();
@@ -7208,6 +7281,7 @@ fn run_kwt_worktree_remove(
         worktree_path,
         generation,
         session_name,
+        socket_name,
         live_target,
         &task.cancellation,
     ) {
@@ -7374,6 +7448,7 @@ fn preflight_kwt_worktree_remove(
     worktree_path: &str,
     generation: &str,
     session_name: &str,
+    socket_name: Option<&str>,
 ) -> Result<(), String> {
     let inventory = task
         .host
@@ -7389,21 +7464,17 @@ fn preflight_kwt_worktree_remove(
                 worktree.path() == worktree_path
                     && worktree.generation() == Some(generation)
                     && worktree.session_name() == session_name
+                    && worktree.tmux_socket_name() == socket_name
                     && !worktree.is_main()
             })
         })?
     });
     current
         .ok_or_else(|| {
-        "the worktree changed after confirmation; refresh and review the removal again".to_owned()
+            "the worktree changed after confirmation; refresh and review the removal again"
+                .to_owned()
         })
-        .and_then(|worktree| {
-            if worktree.tmux_socket_name().is_some() {
-                Err("worktrees using a custom tmux socket cannot be removed until Ghosthub can verify and stop that session".to_owned())
-            } else {
-                Ok(())
-            }
-        })
+        .map(|_| ())
 }
 
 fn reconcile_removed_kwt_worktree(
@@ -11591,6 +11662,7 @@ mod tests {
                 worktree_path: "/work/widget/topic".to_owned(),
                 generation: "0123456789abcdef0123456789abcdef".to_owned(),
                 session_name: "widget-topic".to_owned(),
+                socket_name: None,
                 live_target: Some(Arc::new(host::LiveSessionTarget::test_fixture(
                     &snapshot,
                     "widget-topic",
@@ -11678,12 +11750,15 @@ mod tests {
                 ),
             ],
         );
-        let remove = |path: &str, generation: &str, session: &str| KwtWorktreeOperation::Remove {
-            worktree_path: path.to_owned(),
-            generation: generation.to_owned(),
-            session_name: session.to_owned(),
-            live_target: None,
-            operation_id: 1,
+        let remove = |path: &str, generation: &str, session: &str, socket_name: Option<&str>| {
+            KwtWorktreeOperation::Remove {
+                worktree_path: path.to_owned(),
+                generation: generation.to_owned(),
+                session_name: session.to_owned(),
+                socket_name: socket_name.map(str::to_owned),
+                live_target: None,
+                operation_id: 1,
+            }
         };
 
         assert!(
@@ -11693,6 +11768,7 @@ mod tests {
                     "/work/widget/topic",
                     "22222222222222222222222222222222",
                     "widget-topic",
+                    None,
                 ),
             )
             .is_ok()
@@ -11704,6 +11780,7 @@ mod tests {
                     "/code/widget",
                     "11111111111111111111111111111111",
                     "widget-main",
+                    None,
                 ),
             )
             .is_err()
@@ -11715,6 +11792,7 @@ mod tests {
                     "/work/widget/topic",
                     "22222222222222222222222222222222",
                     "replacement",
+                    None,
                 ),
             )
             .is_err()
@@ -11726,10 +11804,11 @@ mod tests {
                     "/work/widget/protected",
                     "33333333333333333333333333333333",
                     "widget-protected",
+                    Some("protected-socket"),
                 ),
             )
-            .is_err(),
-            "custom-socket worktrees require protected discovery before removal"
+            .is_ok(),
+            "custom-socket worktrees are removable only through their exact protected socket"
         );
     }
 
@@ -11747,14 +11826,18 @@ mod tests {
         assert!(attach_target_matches_killed_tmux(
             &target,
             &identity,
-            Some("project-topic")
+            Some("project-topic"),
+            None,
         ));
         assert!(!attach_target_matches_killed_tmux(
             &target,
             &identity,
-            Some("replacement")
+            Some("replacement"),
+            None,
         ));
-        assert!(!attach_target_matches_killed_tmux(&target, &identity, None));
+        assert!(!attach_target_matches_killed_tmux(
+            &target, &identity, None, None
+        ));
     }
 
     #[cfg(windows)]
@@ -14691,6 +14774,7 @@ mod tests {
             snapshot.runtime(),
             &killed_identity,
             "killed",
+            None,
         );
 
         assert!(matches!(

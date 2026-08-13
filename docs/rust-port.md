@@ -723,17 +723,19 @@ reported on the worktree action rather than disabling other multiplexers.
 
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound
-tmux group. Custom-socket worktrees remain visible as project inventory but do
-not claim a default-socket session with the same name. Removal is unavailable
-for those worktrees until protected-socket discovery and identity-checked
-termination exist; deleting a checkout must never strand a session Ghosthub
-cannot currently observe. A successful exact removal immediately tombstones
+tmux group. Active and retained custom-socket presentations remain accessible
+only from their worktree row, whose live indicator reflects the presentation;
+they do not claim a genuinely separate default-socket session with the same
+name. A successful exact removal immediately tombstones
 that path and generation in the cached tree before broader reconciliation, so
 a KWT outage cannot resurrect an openable deleted row. Before the removal
 dialog becomes actionable, a background query captures the exact live tmux
-identity when one exists. Confirmation consumes that authority; if the client
-exits and a same-named replacement starts, identity-checked kill fails closed
-and the user must review the replacement. KWT rows carry display identity and
+identity and socket when one exists. Confirmation consumes that authority and
+invokes pinned KWT's guarded removal; KWT revalidates the project,
+registration, generation, socket, and exact session identity under its
+lifecycle lock before terminating the session and removing the checkout. If
+the client exits and a same-named replacement starts, removal fails closed and
+the user must review the replacement. KWT rows carry display identity and
 exact session names; they do not acquire creation, repair, or destruction
 authority from cached inventory.
 
@@ -1122,8 +1124,8 @@ After Slice 1:
 2. Local pull-request import and protected worktree attachment now ship through
    the pinned KWT provider contract and protected socket identity. Plain local
    session creation already ships through CreateOnce in the WSL slice.
-3. Remaining local work adds protected worktree removal, host/project settings,
-   Console Panel, and broader command and accessibility surfaces without
+3. Remaining local work adds host/project settings, Console Panel, and broader
+   command and accessibility surfaces without
    introducing remote transport.
 4. Remote hosts add OpenSSH diagnostics, managed-helper installation,
    attach-only transport reconnect, repair/open reconnect, and remote Windows.

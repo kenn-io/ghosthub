@@ -340,6 +340,7 @@ pub struct LiveSessionTarget {
     endpoint: WslEndpoint,
     runtime: WslRuntimeIdentity,
     name: String,
+    socket_name: Option<String>,
     identity: SessionIdentity,
 }
 
@@ -356,6 +357,7 @@ impl LiveSessionTarget {
             endpoint: snapshot.endpoint.clone(),
             runtime: snapshot.runtime.clone(),
             name: name.into(),
+            socket_name: None,
             identity,
         }
     }
@@ -373,6 +375,11 @@ impl LiveSessionTarget {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    #[must_use]
+    pub fn socket_name(&self) -> Option<&str> {
+        self.socket_name.as_deref()
     }
 
     #[must_use]
@@ -1608,13 +1615,15 @@ impl<R: CommandRunner> WslHost<R> {
         worktree_path: &str,
         generation: &str,
         session_name: &str,
+        socket_name: Option<&str>,
         live_target: Option<&LiveSessionTarget>,
         cancellation: &CancellationToken,
     ) -> Result<(), HostError> {
         if let Some(target) = live_target
             && (target.endpoint() != endpoint
                 || target.runtime() != runtime
-                || target.name() != session_name)
+                || target.name() != session_name
+                || target.socket_name() != socket_name)
         {
             return Err(HostError::new(
                 DiagnosticKind::Transport,
@@ -1649,10 +1658,19 @@ impl<R: CommandRunner> WslHost<R> {
         } else {
             command.push("--if-session-absent".to_owned());
         }
-        if let Some(socket_directory) = self.config.tmux_tmpdir.as_deref() {
+        if socket_name.is_none()
+            && let Some(socket_directory) = self.config.tmux_tmpdir.as_deref()
+        {
             command.extend([
                 "--if-session-socket-directory".to_owned(),
                 socket_directory.to_owned(),
+            ]);
+        }
+        if let Some(socket_name) = socket_name {
+            require_kwt_socket_name(socket_name)?;
+            command.extend([
+                "--if-session-socket-name".to_owned(),
+                socket_name.to_owned(),
             ]);
         }
         command.push(worktree_path.to_owned());
@@ -2398,6 +2416,43 @@ impl<R: CommandRunner> WslHost<R> {
             endpoint: endpoint.clone(),
             runtime: expected_runtime.clone(),
             name: session.name().to_owned(),
+            socket_name: None,
+            identity: session.identity().clone(),
+        })
+    }
+
+    /// Capture fresh destructive authority on one exact named tmux socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when the protected socket, session, or WSL
+    /// runtime changed while authority was being captured.
+    pub fn capture_live_session_on_socket(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        socket_name: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<LiveSessionTarget, HostError> {
+        require_kwt_socket_name(socket_name)?;
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        let sessions = self.discover_sessions_on_socket(endpoint, socket_name, cancellation)?;
+        let session = sessions
+            .into_iter()
+            .find(|session| session.name() == name)
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::Transport,
+                    format!("Session ‘{name}’ is no longer running. Refresh before trying again."),
+                )
+            })?;
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        Ok(LiveSessionTarget {
+            endpoint: endpoint.clone(),
+            runtime: expected_runtime.clone(),
+            name: session.name().to_owned(),
+            socket_name: Some(socket_name.to_owned()),
             identity: session.identity().clone(),
         })
     }
@@ -2426,6 +2481,29 @@ impl<R: CommandRunner> WslHost<R> {
         Ok(running)
     }
 
+    /// Check one exact session on a protected named tmux socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified discovery or runtime error.
+    pub fn session_is_running_on_socket(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        socket_name: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, HostError> {
+        require_kwt_socket_name(socket_name)?;
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        let running = self
+            .discover_sessions_on_socket(endpoint, socket_name, cancellation)?
+            .iter()
+            .any(|session| session.name() == name);
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        Ok(running)
+    }
+
     /// Kill the exact session identity captured immediately before user
     /// confirmation.
     ///
@@ -2447,25 +2525,29 @@ impl<R: CommandRunner> WslHost<R> {
         let condition = tmux_identity_condition(identity);
         let kill = format!("kill-session -t ={}", identity.session_id());
         let mismatch = format!("display-message -p {KILL_IDENTITY_MISMATCH_MARKER}");
-        let output = self.run_tmux_command(
-            &target.endpoint,
-            cancellation,
-            &[
-                "-f",
-                "/dev/null",
-                "if-shell",
-                "-F",
-                "-t",
-                &tmux_target,
-                &condition,
-                &kill,
-                &mismatch,
-            ],
-        )?;
+        let socket_args = target
+            .socket_name()
+            .map_or_else(Vec::new, |socket| vec!["-L", socket]);
+        let mut tmux_args = vec!["-f", "/dev/null"];
+        tmux_args.extend(socket_args);
+        tmux_args.extend([
+            "if-shell",
+            "-F",
+            "-t",
+            tmux_target.as_str(),
+            condition.as_str(),
+            kill.as_str(),
+            mismatch.as_str(),
+        ]);
+        let output = self.run_tmux_command(&target.endpoint, cancellation, &tmux_args)?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if is_no_server(&stderr) || is_missing_session(&stderr) {
-                let sessions = self.discover_sessions(&target.endpoint, cancellation)?;
+                let sessions = if let Some(socket_name) = target.socket_name() {
+                    self.discover_sessions_on_socket(&target.endpoint, socket_name, cancellation)?
+                } else {
+                    self.discover_sessions(&target.endpoint, cancellation)?
+                };
                 self.require_runtime(&target.endpoint, &target.runtime, cancellation)?;
                 if sessions.iter().any(|session| {
                     session.name() == target.name && session.identity() != &target.identity
@@ -2588,6 +2670,39 @@ impl<R: CommandRunner> WslHost<R> {
             .map(OsString::from),
         );
         let output = self.run(&args, cancellation)?;
+        if output.status != 0 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_no_server(&stderr) {
+                return Ok(Vec::new());
+            }
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                &self.config.tmux_binary,
+            ));
+        }
+        parse_inventory(&output.stdout)
+    }
+
+    fn discover_sessions_on_socket(
+        &self,
+        endpoint: &WslEndpoint,
+        socket_name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<DiscoveredSession>, HostError> {
+        let output = self.run_tmux_command(
+            endpoint,
+            cancellation,
+            &[
+                "-f",
+                "/dev/null",
+                "-L",
+                socket_name,
+                "list-sessions",
+                "-F",
+                INVENTORY_FORMAT,
+            ],
+        )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if is_no_server(&stderr) {
@@ -5086,10 +5201,10 @@ mod tests {
             "0123456789abcdef0123456789abcdef",
             "kwt-workspace-widget-feature-ready",
             None,
+            None,
             &cancellation,
         )
         .expect("remove exact worktree while preserving its branch");
-
         let calls = runner.calls.lock().expect("calls");
         assert!(calls.iter().any(|args| {
             args.windows(2).any(|pair| pair == ["branches", "--json"])
@@ -5128,6 +5243,49 @@ mod tests {
         assert_eq!(
             *runner.mutation_timeouts.lock().expect("mutation timeouts"),
             vec![KWT_MUTATION_TIMEOUT, KWT_MUTATION_TIMEOUT]
+        );
+    }
+
+    #[test]
+    fn protected_kwt_removal_uses_the_exact_named_socket() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        host.remove_kwt_worktree(
+            &endpoint,
+            &runtime,
+            "/code/widget",
+            "/work/widget/pr-17",
+            "fedcba9876543210fedcba9876543210",
+            "kwt-pr-widget-17",
+            Some("kwt-pr-fedcba9876543210"),
+            None,
+            &cancellation,
+        )
+        .expect("remove an absent protected worktree session on its exact socket");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "remove".to_owned(),
+                "--if-generation".to_owned(),
+                "fedcba9876543210fedcba9876543210".to_owned(),
+                "--if-session-name".to_owned(),
+                "kwt-pr-widget-17".to_owned(),
+                "--if-session-absent".to_owned(),
+                "--if-session-socket-name".to_owned(),
+                "kwt-pr-fedcba9876543210".to_owned(),
+                "/work/widget/pr-17".to_owned(),
+            ]) && !args
+                .iter()
+                .any(|arg| arg == "--if-session-socket-directory")
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+        assert_eq!(
+            *runner.mutation_timeouts.lock().expect("mutation timeouts"),
+            vec![KWT_MUTATION_TIMEOUT]
         );
     }
 
@@ -5223,6 +5381,7 @@ mod tests {
                 "/work/widget/feature-ready",
                 "0123456789abcdef0123456789abcdef",
                 "kwt-workspace-widget-feature-ready",
+                None,
                 None,
                 &cancellation,
             )

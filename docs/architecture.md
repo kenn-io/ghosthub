@@ -237,13 +237,17 @@ managed-helper verification run entirely on the background host lane. A late
 or failed KWT generation keeps the last usable project tree, and a session-only
 refresh updates only worktree session availability. The sidebar treats a
 KWT-owned default-socket tmux session as a project row instead of duplicating
-it in the unbound tmux group; custom-socket worktrees cannot claim a
-same-named default-socket session. When WSL config selects an explicit
-`TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery and
-attachment; cached rows never correlate sessions across those server roots.
-Removing a worktree with its own `tmux_socket_name` is refused until that
-protected socket can be discovered and its live session terminated by fresh
-identity authority.
+it in the unbound tmux group. Active and retained protected-socket
+presentations likewise remain on their worktree row, where a live indicator
+shows that the client exists. A genuinely separate same-named default-socket
+session remains visible as unbound inventory. When WSL config selects an
+explicit `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery
+and attachment; cached rows never correlate sessions across those server roots.
+Removing a generation-backed worktree on either server type is separately
+confirmed. Ghosthub captures the exact socket and live session identity, when
+present, and delegates one guarded operation to pinned KWT. KWT revalidates
+the project, generation, socket, and session identity under its lifecycle lock
+before terminating the session and removing the checkout.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing

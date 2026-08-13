@@ -291,6 +291,7 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
         worktree.path(),
         "00000000000000000000000000000000",
         worktree.session_name(),
+        None,
         Some(&target),
         &cancellation,
     );
@@ -311,6 +312,7 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
         worktree.path(),
         generation,
         worktree.session_name(),
+        None,
         Some(&target),
         &cancellation,
     )
