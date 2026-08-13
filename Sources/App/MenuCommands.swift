@@ -26,7 +26,8 @@ struct MenuActionContext {
         ApplicationShortcutMenuModel.keyboardBinding(
             settingsStore.shortcutPreferences.resolved[action],
             for: action,
-            sceneIsFocused: sceneModel?.isFocusedWindow == true,
+            sceneIsFocused:
+            sceneModel?.acceptsApplicationShortcutKeyEvents == true,
             hasAttachedSheet: sceneHasAttachedSheet,
             actionIsAvailable: actionIsAvailable
         )?.swiftUI
@@ -43,7 +44,8 @@ struct MenuActionContext {
         return ApplicationShortcutMenuModel.keyboardBinding(
             splitBinding,
             for: action,
-            sceneIsFocused: sceneModel?.isFocusedWindow == true,
+            sceneIsFocused:
+            sceneModel?.acceptsApplicationShortcutKeyEvents == true,
             hasAttachedSheet: sceneHasAttachedSheet,
             actionIsAvailable: sceneModel?.canSplitActivePane == true
         )?.swiftUI

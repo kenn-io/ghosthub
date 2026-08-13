@@ -1082,6 +1082,9 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
     weak var workspaceWindow: NSWindow?
+    var acceptsApplicationShortcutKeyEvents: Bool {
+        workspaceWindow?.isKeyWindow ?? isFocusedWindow
+    }
     @Published var selection: WorkspaceSelection {
         didSet {
             syncTerminalConfig()

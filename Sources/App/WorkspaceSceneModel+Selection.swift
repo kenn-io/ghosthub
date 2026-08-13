@@ -51,7 +51,8 @@ extension WorkspaceSceneModel {
         _ action: ApplicationShortcutAction,
         invocation: ApplicationShortcutInvocation = .keyEvent
     ) -> Bool {
-        guard invocation == .menu || isFocusedWindow else { return false }
+        guard invocation == .menu || acceptsApplicationShortcutKeyEvents
+        else { return false }
         if ApplicationShortcutMenuModel.menuOwnedActions.contains(action),
            hasAttachedApplicationSheet {
             return false
