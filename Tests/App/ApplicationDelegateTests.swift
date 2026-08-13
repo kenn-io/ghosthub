@@ -537,13 +537,24 @@ final class ApplicationDelegateTests: XCTestCase {
     func testAdoptedWorkspaceTabRestoresParentFrameAfterHostingResize() async {
         let delegate = ApplicationDelegate.forTesting()
         let parent = NSWindow(
-            contentRect: NSRect(x: 80, y: 120, width: 1200, height: 760),
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
-        let expectedFrame = parent.frame
+        let visibleFrame = NSScreen.screens.first?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        parent.setFrame(
+            NSRect(
+                x: visibleFrame.minX + 40,
+                y: visibleFrame.minY + 40,
+                width: min(1200, visibleFrame.width - 80),
+                height: min(760, visibleFrame.height - 80)
+            ),
+            display: false
+        )
         parent.tabbingIdentifier = WorkspaceWindowIdentity.tabbingIdentifier
+        let expectedFrame = parent.frame
         var requestID: UUID?
         delegate.openWorkspaceWindow = { state in
             requestID = state.windowID

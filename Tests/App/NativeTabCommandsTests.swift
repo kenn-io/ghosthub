@@ -1,4 +1,5 @@
 import AppKit
+import GhosthubTerminalSupport
 import Testing
 @testable import GhosthubApp
 
@@ -91,13 +92,34 @@ struct NativeTabCommandsTests {
         #expect(target == nil)
     }
 
+    @Test("configured application shortcuts supersede numbered tabs")
+    func configuredShortcutWins() throws {
+        let binding = try ApplicationKeyBinding(parsing: "cmd+1")
+        let shortcuts = try ApplicationShortcutCatalog.resolve(overrides: [
+            .selectSibling1: .binding(binding),
+        ])
+
+        #expect(NativeTabCommands.binding(
+            for: 1,
+            claimedBy: shortcuts
+        ) == nil)
+        #expect(NativeTabCommands.binding(
+            for: 2,
+            claimedBy: shortcuts
+        ) == (try ApplicationKeyBinding(parsing: "cmd+2")))
+    }
+
     @Test("tab shortcut badges follow current native tab order")
     func shortcutBadges() {
         let windows = (0 ..< 10).map { _ in NSWindow() }
 
-        NativeTabCommands.refreshBadges(in: windows)
+        NativeTabCommands.refreshBadges(
+            in: windows,
+            availableShortcuts: [2, 3, 4, 5, 6, 7, 8, 9]
+        )
 
-        #expect(badgeText(in: windows[0]) == "⌘1")
+        #expect(badgeText(in: windows[0]) == nil)
+        #expect(badgeText(in: windows[1]) == "⌘2")
         #expect(badgeText(in: windows[7]) == "⌘8")
         #expect(badgeText(in: windows[8]) == nil)
         #expect(badgeText(in: windows[9]) == "⌘9")

@@ -35,13 +35,12 @@ available, Ghosthub leaves the key event untouched so the active terminal can
 receive it. Stopped Herdr sessions are never started by a navigation shortcut.
 
 Numbered sibling actions 1–9 are available in Settings but are unbound by
-default. <kbd>⌘</kbd><kbd>1</kbd> through <kbd>⌘</kbd><kbd>8</kbd> are fixed
-native-tab shortcuts, and <kbd>⌘</kbd><kbd>9</kbd> selects the last native tab.
-If the requested tab number is beyond the end of a short tab group, Ghosthub
-selects that group's last tab. Bind numbered sibling actions to different
-key combinations when you need both forms of navigation.
-Existing `select-sibling-N = "cmd+N"` entries are ignored during upgrade so
-other custom shortcuts in the same configuration remain active.
+default. When those keys are otherwise unbound, <kbd>⌘</kbd><kbd>1</kbd> through
+<kbd>⌘</kbd><kbd>8</kbd> select native tabs and <kbd>⌘</kbd><kbd>9</kbd> selects
+the last native tab. If the requested tab number is beyond the end of a short
+tab group, Ghosthub selects that group's last tab. An explicit Ghosthub
+shortcut assignment takes precedence, so you can use Command-number for
+numbered sibling navigation instead.
 
 ## Other defaults
 
@@ -61,9 +60,10 @@ in menus and the Command Palette but are unbound by default.
 
 Standard macOS commands are fixed rather than configurable in Ghosthub. These
 include Settings (++cmd+comma++), New Window (++cmd+n++), New Tab (++cmd+t++),
-numbered native tabs (++cmd+1++ through ++cmd+9++), Close (++cmd+w++), Close
-Window (++shift+cmd+w++), Quit (++cmd+q++), and the usual Edit shortcuts. The
-Keyboard pane lists them for reference.
+Close (++cmd+w++), Close Window (++shift+cmd+w++), Quit (++cmd+q++), and the
+usual Edit shortcuts. Numbered native tabs (++cmd+1++ through ++cmd+9++) are
+fallbacks that yield to explicit Ghosthub shortcut assignments. The Keyboard
+pane lists both groups for reference.
 
 Closing a presentation, window, or the app detaches from tmux, Herdr, or Zellij. It does
 not end the session.

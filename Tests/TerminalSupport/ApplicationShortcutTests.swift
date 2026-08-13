@@ -136,24 +136,21 @@ struct ApplicationShortcutTests {
     }
 
     @Test(
-        "numbered native tabs reserve Command digits",
-        arguments: [
-            ("cmd+1", "Select Tab 1"),
-            ("cmd+8", "Select Tab 8"),
-            ("cmd+9", "Select Last Tab"),
-        ]
+        "configurable shortcuts can supersede numbered native tabs",
+        arguments: ["cmd+1", "cmd+8", "cmd+9"]
     )
-    func numberedNativeTabCollision(
-        source: String,
-        owner: String
-    ) throws {
+    func numberedNativeTabOverride(source: String) throws {
         let binding = try ApplicationKeyBinding(parsing: source)
 
         #expect(ApplicationShortcutCatalog.validationMessage(
             for: binding,
             action: .selectSibling1,
             overrides: [:]
-        ) == "Reserved for \(owner).")
+        ) == nil)
+        let resolved = try ApplicationShortcutCatalog.resolve(overrides: [
+            .selectSibling1: .binding(binding),
+        ])
+        #expect(resolved[.selectSibling1] == binding)
     }
 
     @Test(

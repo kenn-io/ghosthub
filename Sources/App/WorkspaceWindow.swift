@@ -130,7 +130,11 @@ private struct WindowFocusTracker: NSViewRepresentable {
         private var tabObservation: NSKeyValueObservation?
         private weak var applicationDelegate: ApplicationDelegate?
         private let requestID: UUID?
-        private let tabBadgeController = NativeTabBadgeController()
+        private let tabBadgeController = NativeTabBadgeController(
+            shortcuts: SettingsStore.shared.$shortcutPreferences
+                .map(\.resolved)
+                .eraseToAnyPublisher()
+        )
         let titlebarController: CompactWorkspaceTitlebarController
 
         init(

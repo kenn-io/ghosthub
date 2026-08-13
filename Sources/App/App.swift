@@ -233,16 +233,19 @@ struct GhosthubApp: App {
                     Button("Select Tab \(shortcut)") {
                         NativeTabCommands.select(shortcut)
                     }
-                    .keyboardShortcut(
-                        KeyEquivalent(Character(String(shortcut))),
-                        modifiers: .command
-                    )
+                    .keyboardShortcut(NativeTabCommands.binding(
+                        for: shortcut,
+                        claimedBy: settingsStore.shortcutPreferences.resolved
+                    )?.swiftUI)
                 }
 
                 Button("Select Last Tab") {
                     NativeTabCommands.select(9)
                 }
-                .keyboardShortcut("9", modifiers: .command)
+                .keyboardShortcut(NativeTabCommands.binding(
+                    for: 9,
+                    claimedBy: settingsStore.shortcutPreferences.resolved
+                )?.swiftUI)
             }
             #endif
         }

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import GhosthubTerminalSupport
 
 @MainActor
@@ -6,7 +7,23 @@ final class NativeTabBadgeController {
     private weak var window: NSWindow?
     private weak var observedGroup: NSWindowTabGroup?
     private nonisolated(unsafe) var groupObservation: NSKeyValueObservation?
+    private nonisolated(unsafe) var shortcutObservation: AnyCancellable?
     private var order: [ObjectIdentifier] = []
+    private var availableShortcuts = Set(1 ... 9)
+
+    init(
+        shortcuts: AnyPublisher<ResolvedApplicationShortcuts, Never>? = nil
+    ) {
+        shortcutObservation = shortcuts?.removeDuplicates().sink {
+            [weak self] shortcuts in
+            MainActor.assumeIsolated {
+                self?.update(
+                    availableShortcuts: NativeTabCommands
+                        .availableShortcuts(claimedBy: shortcuts)
+                )
+            }
+        }
+    }
 
     func install(on window: NSWindow) {
         invalidate()
@@ -21,7 +38,17 @@ final class NativeTabBadgeController {
         let newOrder = windows.map(ObjectIdentifier.init)
         guard newOrder != order else { return }
         order = newOrder
-        NativeTabCommands.refreshBadges(in: windows)
+        NativeTabCommands.refreshBadges(
+            in: windows,
+            availableShortcuts: availableShortcuts
+        )
+    }
+
+    func update(availableShortcuts: Set<Int>) {
+        guard self.availableShortcuts != availableShortcuts else { return }
+        self.availableShortcuts = availableShortcuts
+        order = []
+        refresh()
     }
 
     private func updateGroupObservation(_ group: NSWindowTabGroup?) {
@@ -48,6 +75,7 @@ final class NativeTabBadgeController {
 
     deinit {
         groupObservation?.invalidate()
+        shortcutObservation?.cancel()
     }
 }
 
@@ -90,6 +118,24 @@ enum NativeTabCommands {
         )?.makeKeyAndOrderFront(nil)
     }
 
+    static func binding(
+        for shortcut: Int,
+        claimedBy shortcuts: ResolvedApplicationShortcuts
+    ) -> ApplicationKeyBinding? {
+        guard let binding = numberBindings[shortcut],
+              shortcuts.action(for: binding) == nil
+        else { return nil }
+        return binding
+    }
+
+    static func availableShortcuts(
+        claimedBy shortcuts: ResolvedApplicationShortcuts
+    ) -> Set<Int> {
+        Set(numberBindings.keys.filter {
+            binding(for: $0, claimedBy: shortcuts) != nil
+        })
+    }
+
     static func target<Window: AnyObject>(
         for shortcut: Int,
         candidate: Window?,
@@ -112,7 +158,8 @@ enum NativeTabCommands {
     }
 
     static func refreshBadges(
-        in windows: some Sequence<NSWindow>
+        in windows: some Sequence<NSWindow>,
+        availableShortcuts: Set<Int> = Set(1 ... 9)
     ) {
         let windows = Array(windows)
         for (index, window) in windows.enumerated() {
@@ -123,7 +170,9 @@ enum NativeTabCommands {
             } else {
                 nil
             }
-            guard let shortcut else {
+            guard let shortcut,
+                  availableShortcuts.contains(shortcut)
+            else {
                 if window.tab.accessoryView?.identifier == badgeIdentifier {
                     window.tab.accessoryView = nil
                 }
@@ -176,4 +225,13 @@ enum NativeTabCommands {
         item.keyEquivalent = String(character)
         item.keyEquivalentModifierMask = binding.modifiers.appKit
     }
+
+    private static let numberBindings = Dictionary(
+        uniqueKeysWithValues: (1 ... 9).map { shortcut in
+            (
+                shortcut,
+                try! ApplicationKeyBinding(parsing: "cmd+\(shortcut)")
+            )
+        }
+    )
 }

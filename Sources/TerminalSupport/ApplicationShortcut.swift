@@ -416,15 +416,6 @@ public enum ApplicationShortcutCatalog {
     public static let fixedShortcuts: [FixedApplicationShortcut] = [
         fixed("Previous Tab", "cmd+shift+["),
         fixed("Next Tab", "cmd+shift+]"),
-        fixed("Select Tab 1", "cmd+1"),
-        fixed("Select Tab 2", "cmd+2"),
-        fixed("Select Tab 3", "cmd+3"),
-        fixed("Select Tab 4", "cmd+4"),
-        fixed("Select Tab 5", "cmd+5"),
-        fixed("Select Tab 6", "cmd+6"),
-        fixed("Select Tab 7", "cmd+7"),
-        fixed("Select Tab 8", "cmd+8"),
-        fixed("Select Last Tab", "cmd+9"),
         fixed("New Window", "cmd+n"),
         fixed("New Tab", "cmd+t"),
         fixed("Close", "cmd+w"),
@@ -445,6 +436,18 @@ public enum ApplicationShortcutCatalog {
         fixed("Enter Full Screen", "ctrl+cmd+f"),
         fixed("Next Window", "cmd+`"),
         fixed("Previous Window", "cmd+shift+`"),
+    ]
+
+    public static let nativeTabFallbackShortcuts: [FixedApplicationShortcut] = [
+        fixed("Select Tab 1", "cmd+1"),
+        fixed("Select Tab 2", "cmd+2"),
+        fixed("Select Tab 3", "cmd+3"),
+        fixed("Select Tab 4", "cmd+4"),
+        fixed("Select Tab 5", "cmd+5"),
+        fixed("Select Tab 6", "cmd+6"),
+        fixed("Select Tab 7", "cmd+7"),
+        fixed("Select Tab 8", "cmd+8"),
+        fixed("Select Last Tab", "cmd+9"),
     ]
 
     public static let compiledDefaults: ResolvedApplicationShortcuts = try! resolve(overrides: [:])
