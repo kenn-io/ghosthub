@@ -464,6 +464,39 @@ fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
             > 1
 }
 
+fn visible_kwt_branch_candidates<'a>(
+    branches: &'a [workspace::KwtBranchItem],
+    branch: &str,
+) -> Vec<&'a workspace::KwtBranchItem> {
+    const FUZZY_SUGGESTION_LIMIT: usize = 7;
+
+    let query = branch.trim();
+    let folded_query = query.to_ascii_lowercase();
+    let mut exact = branches
+        .iter()
+        .filter(|candidate| !query.is_empty() && candidate.name() == query)
+        .collect::<Vec<_>>();
+    let fuzzy_limit = FUZZY_SUGGESTION_LIMIT.saturating_sub(exact.len());
+    exact.extend(
+        branches
+            .iter()
+            .filter(|candidate| candidate.name() != query)
+            .filter(|candidate| {
+                folded_query.is_empty()
+                    || candidate
+                        .name()
+                        .to_ascii_lowercase()
+                        .contains(&folded_query)
+                    || candidate
+                        .source()
+                        .to_ascii_lowercase()
+                        .contains(&folded_query)
+            })
+            .take(fuzzy_limit),
+    );
+    exact
+}
+
 fn can_create_worktree(branch: &str, loaded: bool, loading: bool, submitting: bool) -> bool {
     workspace::is_valid_git_branch_name(branch.trim()) && loaded && !loading && !submitting
 }
@@ -2860,17 +2893,7 @@ impl RootView {
                     error,
                     ..
                 } => {
-                    let query = branch.trim().to_ascii_lowercase();
-                    let visible = branches
-                        .iter()
-                        .filter(|candidate| {
-                            query.is_empty()
-                                || candidate.name().to_ascii_lowercase().contains(&query)
-                                || candidate.source().to_ascii_lowercase().contains(&query)
-                        })
-                        .take(7)
-                        .cloned()
-                        .collect::<Vec<_>>();
+                    let visible = visible_kwt_branch_candidates(branches, branch);
                     let text = if branch.is_empty() && !focused {
                         "Branch name".to_owned()
                     } else if branch.is_empty() {
@@ -2910,6 +2933,13 @@ impl RootView {
                                 .child("Loading branches…"),
                         );
                     } else {
+                        let mut candidates = div()
+                            .id("kwt-branch-candidates")
+                            .max_h(px(196.0))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_1();
                         for (index, candidate) in visible.into_iter().enumerate() {
                             let name = candidate.name().to_owned();
                             let source = candidate.source().to_owned();
@@ -2922,7 +2952,7 @@ impl RootView {
                             } else {
                                 candidate.name().to_owned()
                             };
-                            body = body.child(
+                            candidates = candidates.child(
                                 div()
                                     .id(("kwt-branch-candidate", index))
                                     .h(px(28.0))
@@ -2953,6 +2983,7 @@ impl RootView {
                                     })),
                             );
                         }
+                        body = body.child(candidates);
                     }
                     (
                         format!("New worktree · {project_name}"),
@@ -5968,7 +5999,7 @@ mod tests {
         session_group_visibility, session_row_element_id, terminal_cell_at_with_offset,
         terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
         terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
-        tree_sessions, tree_zellij_sessions, workspace_window_title,
+        tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates, workspace_window_title,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -6017,6 +6048,45 @@ mod tests {
         assert!(!can_create_worktree("feature/new", false, false, false));
         assert!(!can_create_worktree("feature/new", true, true, false));
         assert!(can_create_worktree("feature/new", true, false, false));
+    }
+
+    #[test]
+    fn exact_branch_sources_are_ranked_ahead_of_the_fuzzy_limit() {
+        let mut branches = (0..9)
+            .map(|index| {
+                workspace::KwtBranchItem::new(
+                    format!("topic-{index}"),
+                    format!("origin/topic-{index}"),
+                    true,
+                )
+            })
+            .collect::<Vec<_>>();
+        branches.extend([
+            workspace::KwtBranchItem::new("topic", "topic", false),
+            workspace::KwtBranchItem::new("topic", "origin/topic", true),
+        ]);
+
+        let visible = visible_kwt_branch_candidates(&branches, "topic");
+        let sources = visible
+            .iter()
+            .map(|candidate| candidate.source())
+            .collect::<Vec<_>>();
+
+        assert_eq!(&sources[..2], &["topic", "origin/topic"]);
+        assert_eq!(sources.len(), 7);
+    }
+
+    #[test]
+    fn every_ambiguous_exact_branch_source_remains_selectable() {
+        let branches = (0..10)
+            .map(|index| {
+                workspace::KwtBranchItem::new("topic", format!("remote-{index}/topic"), true)
+            })
+            .collect::<Vec<_>>();
+
+        let visible = visible_kwt_branch_candidates(&branches, "topic");
+
+        assert_eq!(visible.len(), branches.len());
     }
 
     #[test]

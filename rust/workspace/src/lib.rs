@@ -6854,6 +6854,15 @@ fn run_kwt_worktree_remove(
         generation,
         &task.cancellation,
     ) {
+        if error.kind() == DiagnosticKind::Timeout {
+            return reconcile_timed_out_kwt_worktree_remove(
+                inner,
+                task,
+                worktree_path,
+                generation,
+                session_killed,
+            );
+        }
         fail_kwt_worktree_remove(inner, task, error.to_string());
         return KwtWorktreeOutcome {
             refresh_kwt: false,
@@ -6864,6 +6873,92 @@ fn run_kwt_worktree_remove(
 
     KwtWorktreeOutcome {
         refresh_kwt: reconcile_removed_kwt_worktree(inner, task, worktree_path, generation),
+        refresh_tmux: session_killed,
+    }
+}
+
+fn reconcile_timed_out_kwt_worktree_remove(
+    inner: &Arc<Inner>,
+    task: &KwtWorktreeTask,
+    worktree_path: &str,
+    generation: &str,
+    session_killed: bool,
+) -> KwtWorktreeOutcome {
+    match task
+        .host
+        .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation)
+    {
+        Ok(Some(inventory)) => {
+            let still_present = inventory.projects().iter().any(|project| {
+                project.worktrees().iter().any(|worktree| {
+                    worktree.path() == worktree_path && worktree.generation() == Some(generation)
+                })
+            });
+            publish_kwt_inventory(
+                inner,
+                task.generation,
+                &task.endpoint,
+                &task.runtime,
+                &inventory,
+            );
+            if still_present {
+                push_operation_event(
+                    inner,
+                    WorkspaceEvent::KwtWorktreeOperationFailed {
+                        operation_id: task.operation_id,
+                        project_path: task.project_path.clone(),
+                        worktree_path: Some(worktree_path.to_owned()),
+                        message: "Worktree removal timed out. KWT still reports the worktree; Ghosthub will keep refreshing its inventory."
+                            .to_owned(),
+                    },
+                );
+            } else {
+                tombstone_removed_kwt_worktree(inner, task, worktree_path, generation);
+                push_operation_event(
+                    inner,
+                    WorkspaceEvent::KwtWorktreeRemoved {
+                        operation_id: task.operation_id,
+                        project_path: task.project_path.clone(),
+                        worktree_path: worktree_path.to_owned(),
+                    },
+                );
+            }
+        }
+        Ok(None) => {
+            publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtWorktreeOperationFailed {
+                    operation_id: task.operation_id,
+                    project_path: task.project_path.clone(),
+                    worktree_path: Some(worktree_path.to_owned()),
+                    message: "Worktree removal timed out and KWT inventory is temporarily unavailable. Ghosthub will reconcile it automatically."
+                        .to_owned(),
+                },
+            );
+        }
+        Err(error) => {
+            publish_kwt_error(
+                inner,
+                task.generation,
+                &task.endpoint,
+                &task.runtime,
+                HostDiagnostic::new(error.kind(), error.to_string()),
+            );
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtWorktreeOperationFailed {
+                    operation_id: task.operation_id,
+                    project_path: task.project_path.clone(),
+                    worktree_path: Some(worktree_path.to_owned()),
+                    message: "Worktree removal timed out and its result could not be confirmed. Ghosthub will reconcile it automatically."
+                        .to_owned(),
+                },
+            );
+        }
+    }
+    KwtWorktreeOutcome {
+        refresh_kwt: true,
         refresh_tmux: session_killed,
     }
 }
@@ -7066,7 +7161,11 @@ fn run_kwt_worktree_create(
     match result {
         Ok(()) => {
             remember_pending_kwt_creation(inner, task, branch, navigation_generation);
-            reconcile_created_kwt_worktree(inner, task, branch, navigation_generation)
+            reconcile_created_kwt_worktree(inner, task, branch, navigation_generation, true)
+        }
+        Err(error) if error.kind() == DiagnosticKind::Timeout => {
+            remember_pending_kwt_creation(inner, task, branch, navigation_generation);
+            reconcile_created_kwt_worktree(inner, task, branch, navigation_generation, false)
         }
         Err(error) => {
             publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
@@ -7089,6 +7188,7 @@ fn reconcile_created_kwt_worktree(
     task: &KwtWorktreeTask,
     branch: &str,
     navigation_generation: u64,
+    mutation_confirmed: bool,
 ) -> bool {
     match task
         .host
@@ -7111,7 +7211,12 @@ fn reconcile_created_kwt_worktree(
                     inner,
                     WorkspaceEvent::KwtWorktreeCreationPending {
                         project_path: task.project_path.clone(),
-                        message: "Worktree created. Waiting for KWT to refresh it.".to_owned(),
+                        message: if mutation_confirmed {
+                            "Worktree created. Waiting for KWT to refresh it.".to_owned()
+                        } else {
+                            "Worktree creation timed out. Ghosthub will reconcile KWT inventory automatically."
+                                .to_owned()
+                        },
                         navigation_generation,
                     },
                 );
@@ -7124,7 +7229,12 @@ fn reconcile_created_kwt_worktree(
                 inner,
                 WorkspaceEvent::KwtWorktreeCreationPending {
                     project_path: task.project_path.clone(),
-                    message: "Worktree created. Waiting for KWT to become available.".to_owned(),
+                    message: if mutation_confirmed {
+                        "Worktree created. Waiting for KWT to become available.".to_owned()
+                    } else {
+                        "Worktree creation timed out and KWT inventory is temporarily unavailable. Ghosthub will reconcile it automatically."
+                            .to_owned()
+                    },
                     navigation_generation,
                 },
             );
@@ -7142,8 +7252,13 @@ fn reconcile_created_kwt_worktree(
                 inner,
                 WorkspaceEvent::KwtWorktreeCreationPending {
                     project_path: task.project_path.clone(),
-                    message: "Worktree created. KWT inventory is temporarily unavailable; Ghosthub will retry."
-                        .to_owned(),
+                    message: if mutation_confirmed {
+                        "Worktree created. KWT inventory is temporarily unavailable; Ghosthub will retry."
+                            .to_owned()
+                    } else {
+                        "Worktree creation timed out and its result could not be confirmed. Ghosthub will reconcile it automatically."
+                            .to_owned()
+                    },
                     navigation_generation,
                 },
             );

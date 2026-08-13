@@ -26,6 +26,10 @@ use crate::{
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const DISCOVERY_ATTEMPTS: usize = 2;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+// Worktree creation may fetch a remote branch and both creation and removal
+// may run repository hooks. Keep these background mutations cancellable, but
+// do not apply the short inventory/probe deadline to them.
+const KWT_MUTATION_TIMEOUT: Duration = Duration::from_mins(5);
 const ATTACHMENT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_millis(500);
 const UNCERTAIN_CLEANUP_DELAY: Duration = Duration::from_millis(50);
@@ -1218,7 +1222,7 @@ impl<R: CommandRunner> WslHost<R> {
             request.registration_fingerprint(),
         ]);
         self.require_runtime(endpoint, runtime, cancellation)?;
-        let output = self.run_kwt_in_directory(
+        let output = self.run_kwt_mutation_in_directory(
             endpoint,
             &helper,
             request.project_path(),
@@ -1278,7 +1282,7 @@ impl<R: CommandRunner> WslHost<R> {
         })?;
         let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
         self.require_runtime(endpoint, runtime, cancellation)?;
-        let output = self.run_kwt_in_directory(
+        let output = self.run_kwt_mutation_in_directory(
             endpoint,
             &helper,
             project_path,
@@ -1327,7 +1331,27 @@ impl<R: CommandRunner> WslHost<R> {
         }
         args.push(OsString::from(helper));
         args.extend(command.iter().map(OsString::from));
-        self.run(&args, cancellation)
+        self.run_with_timeout(&args, cancellation, COMMAND_TIMEOUT)
+    }
+
+    fn run_kwt_mutation_in_directory(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        directory: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        append_scrubbed_environment(&mut args);
+        args.push(OsString::from("--chdir"));
+        args.push(OsString::from(directory));
+        if let Some(path) = self.config.tmux_tmpdir.as_deref() {
+            args.push(OsString::from(format!("TMUX_TMPDIR={path}")));
+        }
+        args.push(OsString::from(helper));
+        args.extend(command.iter().map(OsString::from));
+        self.run_with_timeout(&args, cancellation, KWT_MUTATION_TIMEOUT)
     }
 
     fn run_scrubbed(
@@ -3412,13 +3436,17 @@ impl<R: CommandRunner> WslHost<R> {
         args: &[OsString],
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
+        self.run_with_timeout(args, cancellation, COMMAND_TIMEOUT)
+    }
+
+    fn run_with_timeout(
+        &self,
+        args: &[OsString],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<CommandOutput, HostError> {
         self.runner
-            .run(
-                self.wsl_executable.as_os_str(),
-                args,
-                cancellation,
-                COMMAND_TIMEOUT,
-            )
+            .run(self.wsl_executable.as_os_str(), args, cancellation, timeout)
             .map_err(|error| {
                 HostError::new(
                     if error.kind() == std::io::ErrorKind::TimedOut {
@@ -4251,6 +4279,7 @@ mod tests {
     #[derive(Clone)]
     struct KwtMutationRunner {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
+        mutation_timeouts: Arc<Mutex<Vec<Duration>>>,
         helper_matches: Arc<AtomicBool>,
     }
 
@@ -4258,6 +4287,7 @@ mod tests {
         fn default() -> Self {
             Self {
                 calls: Arc::default(),
+                mutation_timeouts: Arc::default(),
                 helper_matches: Arc::new(AtomicBool::new(true)),
             }
         }
@@ -4269,12 +4299,22 @@ mod tests {
             _program: &OsStr,
             args: &[OsString],
             _cancellation: &CancellationToken,
-            _timeout: Duration,
+            timeout: Duration,
         ) -> io::Result<CommandOutput> {
             let args = args
                 .iter()
                 .map(|argument| argument.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
+            if (args.iter().any(|argument| argument == "add")
+                && args.iter().any(|argument| argument == "--no-launch"))
+                || (args.iter().any(|argument| argument == "remove")
+                    && args.iter().any(|argument| argument == "--if-generation"))
+            {
+                self.mutation_timeouts
+                    .lock()
+                    .expect("mutation timeouts")
+                    .push(timeout);
+            }
             self.calls.lock().expect("calls").push(args.clone());
             if args
                 .windows(2)
@@ -4530,6 +4570,10 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair == ["--chdir", "/code/widget"])
         }));
+        assert_eq!(
+            *runner.mutation_timeouts.lock().expect("mutation timeouts"),
+            vec![KWT_MUTATION_TIMEOUT, KWT_MUTATION_TIMEOUT]
+        );
     }
 
     #[test]
