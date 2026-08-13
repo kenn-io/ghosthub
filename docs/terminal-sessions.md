@@ -658,6 +658,6 @@ handling, or remote terminal changes, run:
 ```bash
 make test-libghostty-bootstrap
 make python-test
-swift test
+make swift-test
 make build
 ```

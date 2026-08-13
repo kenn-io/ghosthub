@@ -1,6 +1,7 @@
 import GhosthubTransport
 import Darwin
 import Foundation
+import GhosthubTestSupport
 import Testing
 @testable import GhosthubTmux
 
@@ -475,22 +476,12 @@ struct TmuxAttachmentInfoTests {
         let kwt = directory.appendingPathComponent("kwt")
         let config = directory.appendingPathComponent("tmux.conf")
         let marker = directory.appendingPathComponent("session-ran")
-        let socketName = ProcessInfo.processInfo.environment[
-            "GHOSTHUB_TEST_TMUX_RUN_ID"
-        ].map { "ghosthub-test-\($0)" }
-            ?? "ghosthub-test-\(UUID().uuidString.lowercased())"
-        defer {
-            let cleanup = Process()
-            cleanup.executableURL = URL(fileURLWithPath: tmuxPath)
-            cleanup.arguments = [
-                "-L", socketName,
-                "kill-session", "-a", ";", "kill-session",
-            ]
-            cleanup.standardOutput = FileHandle.nullDevice
-            cleanup.standardError = FileHandle.nullDevice
-            try? cleanup.run()
-            cleanup.waitUntilExit()
-        }
+        let server = try TestTmuxServer(
+            tmuxPath: tmuxPath,
+            socket: .runOwned(purpose: "attachment")
+        )
+        defer { server.stop() }
+        let socketName = server.socketName
         try """
         set-option -g destroy-unattached on
         """.write(to: config, atomically: true, encoding: .utf8)
