@@ -653,7 +653,7 @@ final class SettingsStoreTests {
         [[hosts]]
         config_key = "local"
         name = "This Mac"
-        workspace_root = "/Users/wesm/code"
+        workspace_root = "/Users/example/code"
 
         [general]
         appearance = "system"
@@ -671,7 +671,7 @@ final class SettingsStoreTests {
 
         let contents = try readAppConfig()
         #expect(contents.contains("config_key = \"local\""))
-        #expect(contents.contains("workspace_root = \"/Users/wesm/code\""))
+        #expect(contents.contains("workspace_root = \"/Users/example/code\""))
         #expect(!contents.contains("config_key = \"office\""))
         #expect(store.lastErrorMessage == nil)
         let reloaded = makeSUT()
