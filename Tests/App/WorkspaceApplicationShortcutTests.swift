@@ -7,6 +7,12 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
+private final class ShortcutFocusWindow: NSWindow {
+    var keyState = false
+
+    override var isKeyWindow: Bool { keyState }
+}
+
 @Suite("Workspace application shortcuts", .serialized)
 @MainActor
 struct WorkspaceApplicationShortcutTests {
@@ -69,6 +75,79 @@ struct WorkspaceApplicationShortcutTests {
         #expect(model.performApplicationShortcut(.nextSibling))
         #expect(model.selection.selectedWorktreeID == second.id)
         #expect(model.performApplicationShortcut(.previousSibling))
+        #expect(model.selection.selectedWorktreeID == first.id)
+        await model.shutdown()
+    }
+
+    @Test("sibling shortcuts use the live workspace window focus")
+    func siblingShortcutsUseLiveWindowFocus() async throws {
+        let host = HostSummary.fixture()
+        let project = ProjectSummary.fixture(hostID: host.id)
+        let first = WorktreeSummary.fixture(
+            hostID: host.id, projectID: project.id, name: "first"
+        )
+        let second = WorktreeSummary.fixture(
+            hostID: host.id, projectID: project.id, name: "second"
+        )
+        let model = try makeModel(
+            database: .inMemory(), localHostID: host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: [host], projects: [project],
+                worktrees: [first, second]
+            )
+        )
+        model.selection = .init(
+            selectedHostID: host.id,
+            selectedProjectID: project.id,
+            selectedWorktreeID: first.id
+        )
+        let window = ShortcutFocusWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        model.workspaceWindow = window
+        let monitor = ShortcutMonitor(
+            shortcuts: { ApplicationShortcutCatalog.compiledDefaults },
+            perform: { action in
+                model.performApplicationShortcut(action)
+            }
+        )
+        let next = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.control],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\t",
+            charactersIgnoringModifiers: "\t",
+            isARepeat: false,
+            keyCode: 48
+        ))
+        let previous = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.control, .shift],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\t",
+            charactersIgnoringModifiers: "\t",
+            isARepeat: false,
+            keyCode: 48
+        ))
+
+        window.keyState = true
+        #expect(monitor.processForTesting(next) == nil)
+        #expect(model.selection.selectedWorktreeID == second.id)
+        #expect(monitor.processForTesting(previous) == nil)
+        #expect(model.selection.selectedWorktreeID == first.id)
+
+        window.keyState = false
+        model.isFocusedWindow = true
+        #expect(monitor.processForTesting(next) === next)
         #expect(model.selection.selectedWorktreeID == first.id)
         await model.shutdown()
     }
@@ -235,12 +314,13 @@ struct WorkspaceApplicationShortcutTests {
             snapshot: environment.snapshot
         )
         model.isFocusedWindow = true
-        let window = NSWindow(
+        let window = ShortcutFocusWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled],
             backing: .buffered,
             defer: false
         )
+        window.keyState = true
         let sheet = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
             styleMask: [.titled],
