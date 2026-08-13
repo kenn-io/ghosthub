@@ -146,11 +146,13 @@ public final class TerminalSurfaceSnapshotter {
     private nonisolated static func makeSnapshot(
         source: RenderSource
     ) throws -> RenderedSnapshot? {
-        let captureToken = TerminalSurfaceCaptureToken(
+        let captureTokenBeforeCopy = TerminalSurfaceCaptureToken(
             surfaceID: IOSurfaceGetID(source.ioSurface),
             seed: IOSurfaceGetSeed(source.ioSurface)
         )
-        guard captureToken != source.previousCaptureToken else { return nil }
+        guard captureTokenBeforeCopy != source.previousCaptureToken else {
+            return nil
+        }
         guard IOSurfaceGetPixelFormat(source.ioSurface)
             == kCVPixelFormatType_32BGRA
         else {
@@ -207,6 +209,11 @@ public final class TerminalSurfaceSnapshotter {
         guard commandBuffer.status == .completed else {
             throw TerminalSurfaceSnapshotError.imageCopyFailed
         }
+        let captureToken = TerminalSurfaceCaptureToken(
+            surfaceID: IOSurfaceGetID(source.ioSurface),
+            seed: IOSurfaceGetSeed(source.ioSurface)
+        )
+        guard captureToken == captureTokenBeforeCopy else { return nil }
 
         let ownedPixels = Data(
             bytes: buffer.contents(),

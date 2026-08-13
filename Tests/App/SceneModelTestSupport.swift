@@ -475,6 +475,9 @@ func makeModel(
         .milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2),
         .seconds(4), .seconds(8),
     ],
+    tmuxPreviewIdentityRetryDelays: [Duration] = [
+        .milliseconds(250), .seconds(1), .seconds(4),
+    ],
     tmuxReconnectIntervals: [Duration] = [
         .seconds(1), .seconds(2), .seconds(4), .seconds(8),
         .seconds(16), .seconds(30),
@@ -557,6 +560,7 @@ func makeModel(
         createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
         deferredTmuxPresentationRetryDelays:
         deferredTmuxPresentationRetryDelays,
+        tmuxPreviewIdentityRetryDelays: tmuxPreviewIdentityRetryDelays,
         tmuxReconnectIntervals: tmuxReconnectIntervals,
         tmuxReconnectProbeDeadline: tmuxReconnectProbeDeadline,
         startServices: startServices

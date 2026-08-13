@@ -1266,7 +1266,7 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("a transient preview identity failure retries on the next live tick")
+    @Test("a transient preview identity failure retries in Efficient mode")
     func previewIdentityFailureRetries() async throws {
         enum ExpectedFailure: Error { case transient }
         let environment = try setupHostEnvironment()
@@ -1278,7 +1278,7 @@ struct WorkspaceTmuxDiscoveryTests {
             createdAt: "1000"
         )
         let previewCoordinator = TmuxSessionPreviewCoordinator(
-            mode: .live,
+            mode: .efficient,
             budget: LivePreviewBudget(limit: 4),
             capture: { _, _ in
                 TerminalSurfaceSnapshot(
@@ -1306,7 +1306,8 @@ struct WorkspaceTmuxDiscoveryTests {
                 }
                 return identity
             },
-            sessionPreviewCoordinator: previewCoordinator
+            sessionPreviewCoordinator: previewCoordinator,
+            tmuxPreviewIdentityRetryDelays: [.zero]
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -1321,10 +1322,6 @@ struct WorkspaceTmuxDiscoveryTests {
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
         previewCoordinator.setExpanded(true, for: key)
-        await waitUntilMainActor { identityReads.count == 1 }
-        #expect(previewCoordinator.viewState(for: key)?.image == nil)
-
-        await previewCoordinator.refreshLivePreviews()
         await waitUntilMainActor {
             identityReads.count == 2
                 && previewCoordinator.viewState(for: key)?.image != nil

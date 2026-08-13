@@ -44,8 +44,9 @@ for tmux presentations you have already opened in a workspace:
 - **Live** polls expanded tiles at no more than two frames per second. Ghosthub
   limits live rendering to four inactive previews across all windows.
 
-The preference applies immediately. Each workspace window remembers its own
-expanded rows in memory, even while previews are Off. A fixed 16:10 tile shows
+The preference takes effect when you close Settings. Each workspace window
+remembers its own expanded rows in memory, even while previews are Off. A fixed
+16:10 tile shows
 the complete captured frame with letterboxing when the terminal has another
 aspect ratio. Reconnecting sessions show a placeholder until Ghosthub verifies
 that the replacement client is attached to the same server-side session.

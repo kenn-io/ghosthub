@@ -335,7 +335,9 @@ struct TmuxSessionPreviewCoordinatorTests {
         harness.keyWindow = true
         harness.coordinator.applicationDidBecomeActive()
         #expect(harness.parks.isEmpty)
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitUntilMainActor {
+            harness.parks == [presentation.key]
+        }
         #expect(harness.parks == [presentation.key])
     }
 
@@ -356,7 +358,9 @@ struct TmuxSessionPreviewCoordinatorTests {
 
         harness.keyWindow = true
         harness.coordinator.sceneWindowFocusDidChange(isKey: true)
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitUntilMainActor {
+            harness.parks == [presentation.key]
+        }
 
         #expect(harness.parks == [presentation.key])
     }
@@ -452,6 +456,30 @@ struct TmuxSessionPreviewCoordinatorTests {
             "unpark:0",
             "activate:0",
         ])
+        #expect(harness.budget.granted.isEmpty)
+    }
+
+    @Test("activation callback cannot cancel its own handoff fence")
+    func activationCallbackPreservesHandoffFence() async {
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.events.removeAll()
+
+        harness.coordinator.prepareToActivate(presentation.key) {
+            harness.coordinator.cancelPendingActivation()
+            harness.events.append("activate:0")
+            harness.setActive(true, for: presentation.key)
+        }
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.events == [
+            "capture:0",
+            "unpark:0",
+            "activate:0",
+        ])
+        #expect(harness.parks.isEmpty)
         #expect(harness.budget.granted.isEmpty)
     }
 

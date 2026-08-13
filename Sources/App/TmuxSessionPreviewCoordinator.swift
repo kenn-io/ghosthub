@@ -106,6 +106,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private var liveTask: Task<Void, Never>?
     private var activationTask: Task<Void, Never>?
     private var activationGeneration: UInt64 = 0
+    private var isInvokingActivation = false
     private var navigationGeneration: UInt64 = 0
     private var budgetCancellable: AnyCancellable?
     private var lastGranted: Set<LivePreviewRequestID>
@@ -317,6 +318,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     func cancelPendingActivation() {
+        guard !isInvokingActivation else { return }
         navigationGeneration &+= 1
         let keys = activatingKeys
         for key in keys {
@@ -411,9 +413,15 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                       let presentation = presentations[key]
                 else { return }
                 unparkAndRelease(key)
-                activatingKeys.remove(key)
+                isInvokingActivation = true
                 (activate ?? presentation.activate)()
+                isInvokingActivation = false
+                guard intentGeneration == navigationGeneration,
+                      presentations[key] != nil
+                else { return }
+                activatingKeys.remove(key)
                 publish(key)
+                reconcileEligibility()
             }
         )
     }
@@ -799,13 +807,16 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     private func requestIdentityIfNeeded(_ key: TmuxPreviewKey) {
-        guard mode != .off,
-              expandedKeys.contains(key),
-              unresolvedIdentityKeys.contains(key),
-              let presentation = presentations[key],
-              isConnected(presentation)
+        guard requiresIdentity(key), let presentation = presentations[key]
         else { return }
         presentation.ensureIdentity()
+    }
+
+    func requiresIdentity(_ key: TmuxPreviewKey) -> Bool {
+        mode != .off
+            && expandedKeys.contains(key)
+            && unresolvedIdentityKeys.contains(key)
+            && presentations[key].map(isConnected) == true
     }
 
     private func sceneIsKeyWindow() -> Bool {
