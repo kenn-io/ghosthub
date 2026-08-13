@@ -737,6 +737,27 @@ and the user must review the replacement. KWT rows carry display identity and
 exact session names; they do not acquire creation, repair, or destruction
 authority from cached inventory.
 
+Pull-request import follows the same ownership boundary. The pinned helper is
+the sole provider API for listing open pull requests and importing one into an
+exact registered project. Ghosthub filters KWT's machine-readable title,
+author, branch, number, URL, and draft fields for presentation, but passes the
+opaque KWT selector back unchanged. An import is accepted only when KWT returns
+the expected project path and a protected worktree with a generation, exact
+session name, and nonempty tmux socket name. Ghosthub then refreshes
+authoritative KWT inventory before publishing or opening that worktree; an
+unavailable reconciliation reports scoped completion uncertainty rather than
+inventing worktree authority from the request.
+
+Protected pull-request worktrees use a distinct attachment capability. The
+terminal launches `kwt pr attach` through the resolved argv plan, while the
+workspace verifies the exact project, registration fingerprint, path,
+generation, session name, and socket before and after launch. Readiness is
+confirmed by finding the spawned client PID on that protected socket. A
+protected presentation never aliases or deduplicates with a same-named session
+on the default tmux server. Protected removal remains unavailable until KWT can
+atomically validate and terminate the protected session while holding its
+lifecycle lock.
+
 The remote helper activation root is a separate cross-controller contract:
 
 - POSIX remote: $HOME/.ghosthub/helpers/kwt/{revision}/kwt
@@ -1098,12 +1119,15 @@ After Slice 1:
    generation-guarded confirmed removal, and unbound reconciliation. Removal
    preserves the Git branch and terminates a live tmux session only through a
    freshly captured exact identity.
-2. Local lifecycle adds pull-request import and protected worktree behavior;
-   plain local session creation already ships through CreateOnce in the WSL
-   slice.
-3. Remote hosts add OpenSSH diagnostics, managed-helper installation,
+2. Local pull-request import and protected worktree attachment now ship through
+   the pinned KWT provider contract and protected socket identity. Plain local
+   session creation already ships through CreateOnce in the WSL slice.
+3. Remaining local work adds protected worktree removal, host/project settings,
+   Console Panel, and broader command and accessibility surfaces without
+   introducing remote transport.
+4. Remote hosts add OpenSSH diagnostics, managed-helper installation,
    attach-only transport reconnect, repair/open reconnect, and remote Windows.
-4. Persistence and restoration add the coalescing writer, host settings,
+5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.
 6. Product completion adds multi-window behavior, Console Panel, settings,

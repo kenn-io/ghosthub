@@ -16,11 +16,15 @@ use session::{
 };
 
 use crate::herdr::{self, ExecutableProbe};
-use crate::kwt::{parse_branches, parse_command_failure, parse_project_mutation};
+use crate::kwt::{
+    parse_branches, parse_command_failure, parse_project_mutation, parse_pull_request_import,
+    parse_pull_requests,
+};
 use crate::zellij;
 use crate::{
     CancellationToken, CommandOutput, CommandRunner, KwtBranchCandidate, KwtBundle, KwtInventory,
-    KwtProject, KwtWorktreeCreate, KwtWorktreeOpen,
+    KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport, KwtWorktreeCreate,
+    KwtWorktreeOpen,
 };
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
@@ -1168,6 +1172,79 @@ impl<R: CommandRunner> WslHost<R> {
         ))
     }
 
+    /// Build a re-runnable protected attach for one imported PR workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the helper, runtime, or socket cannot be verified.
+    pub fn kwt_protected_attach_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        request: &KwtProtectedWorktreeOpen,
+        term: AttachTerm,
+        cancellation: &CancellationToken,
+    ) -> Result<RepairOrOpenPlan, HostError> {
+        require_kwt_socket_name(request.tmux_socket_name())?;
+        if request.repository().is_empty()
+            || request.registration_fingerprint().is_empty()
+            || request.generation().is_empty()
+        {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT protected worktree authority was incomplete",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let readiness_path = kwt_client_readiness_path()?;
+        let readiness_staging_path = format!("{readiness_path}.tmp");
+        let mut args = pinned_prefix(endpoint);
+        let kwt_home = self
+            .config
+            .kwt_home
+            .as_deref()
+            .map(|path| format!("KWT_HOME={path}"));
+        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        append_tmux_environment(
+            &mut args,
+            Some(term.environment()),
+            self.config.tmux_tmpdir.as_deref(),
+            &extra_environment,
+        );
+        args.extend(
+            [
+                "/bin/sh",
+                "-c",
+                "umask 077; /usr/bin/printf '%s\\n' \"$$\" > \"$1\" && /usr/bin/mv -T -- \"$1\" \"$2\" && shift 2 && exec \"$@\"",
+                "ghosthub-protected-worktree-client",
+                readiness_staging_path.as_str(),
+                readiness_path.as_str(),
+                helper.as_str(),
+                "pr",
+                "attach",
+                request.path(),
+                "--project",
+                request.project_path(),
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        Ok(RepairOrOpenPlan::worktree(
+            self.wsl_executable.as_os_str(),
+            args,
+            request.session_name(),
+            &readiness_path,
+        ))
+    }
+
     /// Query whether the exact client process launched by a KWT open plan is
     /// attached to tmux, returning that client's live session identity.
     ///
@@ -1233,6 +1310,74 @@ impl<R: CommandRunner> WslHost<R> {
         Ok(matched)
     }
 
+    /// Query the exact client on a KWT-owned protected tmux socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid socket names, runtime changes, malformed
+    /// receipts, or unsafe tmux output.
+    pub fn kwt_protected_client_session_identity(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        readiness_path: &str,
+        tmux_socket_name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<SessionIdentity>, HostError> {
+        require_kwt_socket_name(tmux_socket_name)?;
+        require_kwt_client_readiness_path(readiness_path)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let receipt = self.run_scrubbed(
+            endpoint,
+            &[
+                "/bin/sh",
+                "-c",
+                "if [ -s \"$1\" ]; then exec /usr/bin/cat -- \"$1\"; fi",
+                "ghosthub-read-protected-worktree-client",
+                readiness_path,
+            ],
+            cancellation,
+        )?;
+        if receipt.status != 0 {
+            return Err(classify_command_failure(
+                receipt.status,
+                &receipt.stderr,
+                "read protected KWT client readiness",
+            ));
+        }
+        if receipt.stdout.is_empty() {
+            return Ok(None);
+        }
+        let client_pid = parse_kwt_client_pid(&receipt.stdout)?;
+        let output = self.run_tmux_command(
+            endpoint,
+            cancellation,
+            &[
+                "-L",
+                tmux_socket_name,
+                "-f",
+                "/dev/null",
+                "list-clients",
+                "-F",
+                CLIENT_READINESS_FORMAT,
+            ],
+        )?;
+        if output.status != 0 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_no_server(&stderr) {
+                return Ok(None);
+            }
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "query protected KWT tmux client readiness",
+            ));
+        }
+        let matched = parse_kwt_client_identity(&output.stdout, client_pid)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        Ok(matched)
+    }
+
     pub fn remove_kwt_client_readiness(
         &self,
         endpoint: &WslEndpoint,
@@ -1285,6 +1430,106 @@ impl<R: CommandRunner> WslHost<R> {
         self.require_runtime(endpoint, runtime, cancellation)?;
         parse_branches(&output.stdout)
             .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error.to_string()))
+    }
+
+    /// List open pull requests through the exact managed KWT helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when project authority is stale, GitHub discovery
+    /// fails, or KWT emits malformed machine-readable output.
+    pub fn list_kwt_pull_requests(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<KwtPullRequest>, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_kwt_in_directory(
+            endpoint,
+            &helper,
+            project_path,
+            &[
+                "pr",
+                "list",
+                "--project",
+                project_path,
+                "--state",
+                "open",
+                "--json",
+            ],
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(classify_kwt_command_failure(
+                &output,
+                "list KWT pull requests",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        parse_pull_requests(&output.stdout)
+            .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error.to_string()))
+    }
+
+    /// Import one provider-owned pull request without starting its session.
+    ///
+    /// KWT owns selector parsing, GitHub access, fetch/checkout hardening, and
+    /// project lifecycle serialization. The response carries the exact
+    /// protected workspace and socket identity used for later attachment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when KWT rejects the selector or project,
+    /// the mutation times out, or the response violates the pinned contract.
+    pub fn import_kwt_pull_request(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        project_path: &str,
+        selector: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<KwtPullRequestImport, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_kwt_mutation_in_directory(
+            endpoint,
+            &helper,
+            project_path,
+            &[
+                "pr",
+                "import",
+                selector,
+                "--project",
+                project_path,
+                "--json",
+            ],
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        if output.status != 0 {
+            return Err(classify_kwt_command_failure(
+                &output,
+                "import KWT pull request",
+            ));
+        }
+        parse_pull_request_import(&output.stdout)
+            .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error))
     }
 
     /// Create one KWT worktree without launching its tmux client.
@@ -4044,6 +4289,23 @@ fn require_kwt_client_readiness_path(path: &str) -> Result<(), HostError> {
     Ok(())
 }
 
+fn require_kwt_socket_name(name: &str) -> Result<(), HostError> {
+    if name.is_empty()
+        || name.len() > 128
+        || name == "."
+        || name == ".."
+        || name
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || matches!(byte, b'/' | b'\\'))
+    {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT protected tmux socket name was invalid",
+        ));
+    }
+    Ok(())
+}
+
 fn parse_kwt_client_pid(bytes: &[u8]) -> Result<u32, HostError> {
     let text = decode(bytes, "KWT client readiness")?.trim();
     let pid = text.parse::<u32>().map_err(|_| {
@@ -4555,6 +4817,10 @@ mod tests {
     }
 
     impl CommandRunner for KwtMutationRunner {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "the fake runner keeps its complete argv-to-contract transcript together"
+        )]
         fn run(
             &self,
             _program: &OsStr,
@@ -4630,6 +4896,10 @@ mod tests {
                 br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["branches", "--json"]) {
                 br#"[{"name":"feature/ready","label":"feature/ready","source":"origin/feature/ready","is_current":false,"is_remote":true,"last_commit":{"hash":"abc","message":"ready","author":"A","date":"2026-01-01T00:00:00Z"}}]"#.to_vec()
+            } else if args.windows(2).any(|pair| pair == ["pr", "list"]) {
+                br#"{"pull_requests":[{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":false}]}"#.to_vec()
+            } else if args.windows(2).any(|pair| pair == ["pr", "import"]) {
+                br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2"}}"#.to_vec()
             } else if (args.iter().any(|argument| argument == "add")
                 && args.iter().any(|argument| argument == "--no-launch"))
                 || (args.iter().any(|argument| argument == "remove")
@@ -4862,6 +5132,47 @@ mod tests {
     }
 
     #[test]
+    fn kwt_pull_request_commands_keep_provider_logic_inside_the_pinned_helper() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+        let pull_requests = host
+            .list_kwt_pull_requests(&endpoint, &runtime, "/code/widget", &cancellation)
+            .expect("list pull requests");
+        assert_eq!(pull_requests[0].id(), "github:github.com/acme/widget#17");
+        let imported = host
+            .import_kwt_pull_request(
+                &endpoint,
+                &runtime,
+                "/code/widget",
+                pull_requests[0].id(),
+                &cancellation,
+            )
+            .expect("import pull request");
+        assert_eq!(imported.workspace().tmux_socket_name(), Some("kwt-pr-a1b2"));
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.windows(2).any(|pair| pair == ["pr", "list"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--project", "/code/widget"])
+                && args.windows(2).any(|pair| pair == ["--state", "open"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.windows(2).any(|pair| pair == ["pr", "import"])
+                && args
+                    .iter()
+                    .any(|argument| argument == "github:github.com/acme/widget#17")
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--project", "/code/widget"])
+        }));
+    }
+
+    #[test]
     fn kwt_branch_list_preserves_structured_command_failures() {
         let (host, runner, endpoint, runtime) = kwt_mutation_host();
         runner.branch_failure.store(true, Ordering::Release);
@@ -5008,6 +5319,48 @@ mod tests {
             .expect("plan uses a private canonical readiness path");
         assert_eq!(plan.target_name(), "widget-topic");
         assert_eq!(plan.clone(), plan);
+    }
+
+    #[test]
+    fn protected_kwt_attach_plan_uses_pr_attach_and_exact_socket_authority() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let plan = host
+            .kwt_protected_attach_plan(
+                &endpoint,
+                &runtime,
+                &KwtProtectedWorktreeOpen::new(
+                    "/work/widget/pr-17",
+                    "/code/widget",
+                    "github.com/acme/widget",
+                    "registration-fingerprint",
+                    "0123456789abcdef0123456789abcdef",
+                    "widget-pr-17",
+                    "kwt-pr-a1b2",
+                ),
+                AttachTerm::Xterm256Color,
+                &CancellationToken::new(),
+            )
+            .expect("build protected attach plan");
+        let args = plan
+            .args()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert!(args.windows(4).any(|args| {
+            args == [
+                "/home/test/.ghosthub/helpers/kwt/revision/kwt",
+                "pr",
+                "attach",
+                "/work/widget/pr-17",
+            ]
+        }));
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--project", "/code/widget"])
+        );
+        assert_eq!(plan.target_name(), "widget-pr-17");
+        assert!(require_kwt_socket_name("kwt-pr-a1b2").is_ok());
+        assert!(require_kwt_socket_name("../default").is_err());
     }
 
     #[test]

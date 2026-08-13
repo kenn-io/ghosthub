@@ -225,6 +225,86 @@ pub struct KwtBranchCandidate {
     _last_commit: Option<serde_json::Value>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KwtPullRequest {
+    id: String,
+    provider: String,
+    repository: KwtPullRequestRepository,
+    number: u64,
+    url: String,
+    title: String,
+    author: String,
+    source: KwtPullRequestBranch,
+    target: KwtPullRequestBranch,
+    draft: bool,
+    state: String,
+    head_sha: String,
+    #[serde(default)]
+    merged_at: Option<String>,
+    imported: bool,
+    #[serde(default)]
+    workspace: Option<KwtImportedWorkspace>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct KwtPullRequestRepository {
+    provider: String,
+    identity: String,
+    host: String,
+    owner: String,
+    name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct KwtPullRequestBranch {
+    branch: String,
+    repository: KwtPullRequestRepository,
+    is_fork: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KwtImportedWorkspace {
+    id: String,
+    repository: String,
+    branch: String,
+    path: String,
+    #[serde(default)]
+    generation: Option<String>,
+    state: String,
+    session_name: String,
+    #[serde(default)]
+    tmux_socket_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KwtPullRequestList {
+    pull_requests: Vec<KwtPullRequest>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KwtPullRequestImport {
+    status: String,
+    pull_request: KwtPullRequest,
+    project: KwtPullRequestProject,
+    workspace: KwtImportedWorkspace,
+    #[serde(default)]
+    session_start_error: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct KwtPullRequestProject {
+    identity: String,
+    name: String,
+    path: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KwtWorktreeCreate {
     project_path: String,
@@ -354,6 +434,165 @@ impl KwtBranchCandidate {
 
 pub(crate) fn parse_branches(output: &[u8]) -> Result<Vec<KwtBranchCandidate>, serde_json::Error> {
     serde_json::from_slice(output)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KwtProtectedWorktreeOpen {
+    path: String,
+    project_path: String,
+    repository: String,
+    registration_fingerprint: String,
+    generation: String,
+    session_name: String,
+    tmux_socket_name: String,
+}
+
+impl KwtProtectedWorktreeOpen {
+    #[must_use]
+    pub fn new(
+        path: impl Into<String>,
+        project_path: impl Into<String>,
+        repository: impl Into<String>,
+        registration_fingerprint: impl Into<String>,
+        generation: impl Into<String>,
+        session_name: impl Into<String>,
+        tmux_socket_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            project_path: project_path.into(),
+            repository: repository.into(),
+            registration_fingerprint: registration_fingerprint.into(),
+            generation: generation.into(),
+            session_name: session_name.into(),
+            tmux_socket_name: tmux_socket_name.into(),
+        }
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+    pub(crate) fn repository(&self) -> &str {
+        &self.repository
+    }
+    pub(crate) fn project_path(&self) -> &str {
+        &self.project_path
+    }
+    pub(crate) fn registration_fingerprint(&self) -> &str {
+        &self.registration_fingerprint
+    }
+    pub(crate) fn generation(&self) -> &str {
+        &self.generation
+    }
+    #[must_use]
+    pub fn session_name(&self) -> &str {
+        &self.session_name
+    }
+    #[must_use]
+    pub fn tmux_socket_name(&self) -> &str {
+        &self.tmux_socket_name
+    }
+}
+
+pub(crate) fn parse_pull_requests(output: &[u8]) -> Result<Vec<KwtPullRequest>, serde_json::Error> {
+    serde_json::from_slice::<KwtPullRequestList>(output).map(|response| response.pull_requests)
+}
+
+pub(crate) fn parse_pull_request_import(output: &[u8]) -> Result<KwtPullRequestImport, String> {
+    let response: KwtPullRequestImport =
+        serde_json::from_slice(output).map_err(|error| error.to_string())?;
+    if !matches!(response.status.as_str(), "created" | "already_imported") {
+        return Err(format!(
+            "unexpected KWT pull-request import status {:?}",
+            response.status
+        ));
+    }
+    if response
+        .workspace
+        .tmux_socket_name
+        .as_deref()
+        .is_none_or(str::is_empty)
+    {
+        return Err("KWT pull-request import omitted its protected tmux socket".to_owned());
+    }
+    Ok(response)
+}
+
+impl KwtPullRequest {
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    #[must_use]
+    pub const fn number(&self) -> u64 {
+        self.number
+    }
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    #[must_use]
+    pub fn author(&self) -> &str {
+        &self.author
+    }
+    #[must_use]
+    pub fn source_branch(&self) -> &str {
+        &self.source.branch
+    }
+    #[must_use]
+    pub const fn draft(&self) -> bool {
+        self.draft
+    }
+    #[must_use]
+    pub const fn imported(&self) -> bool {
+        self.imported
+    }
+}
+
+impl KwtImportedWorkspace {
+    #[must_use]
+    pub fn repository(&self) -> &str {
+        &self.repository
+    }
+    #[must_use]
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    #[must_use]
+    pub fn generation(&self) -> Option<&str> {
+        self.generation.as_deref()
+    }
+    #[must_use]
+    pub fn session_name(&self) -> &str {
+        &self.session_name
+    }
+    #[must_use]
+    pub fn tmux_socket_name(&self) -> Option<&str> {
+        self.tmux_socket_name.as_deref()
+    }
+}
+
+impl KwtPullRequestImport {
+    #[must_use]
+    pub fn workspace(&self) -> &KwtImportedWorkspace {
+        &self.workspace
+    }
+    #[must_use]
+    pub fn project_identity(&self) -> &str {
+        &self.project.identity
+    }
+    #[must_use]
+    pub fn project_path(&self) -> &str {
+        &self.project.path
+    }
 }
 
 impl KwtWorktree {
@@ -494,7 +733,10 @@ impl KwtInventory {
 
 #[cfg(test)]
 mod tests {
-    use super::{KwtBundle, KwtInventory, parse_command_failure, parse_project_mutation};
+    use super::{
+        KwtBundle, KwtInventory, parse_command_failure, parse_project_mutation,
+        parse_pull_request_import, parse_pull_requests,
+    };
 
     #[test]
     fn bundle_rejects_ambiguous_metadata_and_hides_payload_in_debug() {
@@ -569,5 +811,21 @@ mod tests {
         assert_eq!(failure.code(), "registration_changed");
         assert_eq!(failure.message(), "the project changed");
         assert!(failure.retryable());
+    }
+
+    #[test]
+    fn pull_request_contract_preserves_provider_identity_and_protected_socket() {
+        let pull_requests = parse_pull_requests(br#"{"pull_requests":[{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":false}]}"#).expect("valid PR list");
+        assert_eq!(pull_requests[0].number(), 17);
+        assert_eq!(pull_requests[0].source_branch(), "feature/rendering");
+
+        let imported = parse_pull_request_import(br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true,"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2"}},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2"}}"#).expect("valid import");
+        assert_eq!(imported.workspace().tmux_socket_name(), Some("kwt-pr-a1b2"));
+    }
+
+    #[test]
+    fn pull_request_import_rejects_missing_protected_socket() {
+        let result = parse_pull_request_import(br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17"}}"#);
+        assert!(result.is_err());
     }
 }

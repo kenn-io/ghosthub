@@ -391,8 +391,10 @@ enum ProjectDialog {
         project_path: String,
         registration_fingerprint: String,
         branch: String,
+        mode: NewWorktreeMode,
         selected_source: Option<String>,
         branches: Vec<workspace::KwtBranchItem>,
+        pull_requests: Vec<workspace::KwtPullRequestItem>,
         operation_id: Option<u64>,
         loading: bool,
         loaded: bool,
@@ -404,6 +406,12 @@ enum ProjectDialog {
         submitting: bool,
         error: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NewWorktreeMode {
+    Branch,
+    PullRequest,
 }
 
 impl ProjectDialog {
@@ -472,6 +480,7 @@ fn apply_worktree_removal_failure(
 fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
     let ProjectDialog::NewWorktree {
         branch,
+        mode: NewWorktreeMode::Branch,
         selected_source,
         branches,
         loaded: true,
@@ -490,6 +499,28 @@ fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
             .take(2)
             .count()
             > 1
+}
+
+fn visible_kwt_pull_requests<'a>(
+    pull_requests: &'a [workspace::KwtPullRequestItem],
+    query: &str,
+) -> Vec<&'a workspace::KwtPullRequestItem> {
+    let query = query.trim().to_ascii_lowercase();
+    pull_requests
+        .iter()
+        .filter(|pull_request| {
+            query.is_empty()
+                || pull_request.number().to_string() == query
+                || pull_request.id().to_ascii_lowercase().contains(&query)
+                || pull_request.url().to_ascii_lowercase().contains(&query)
+                || pull_request.title().to_ascii_lowercase().contains(&query)
+                || pull_request.author().to_ascii_lowercase().contains(&query)
+                || pull_request
+                    .source_branch()
+                    .to_ascii_lowercase()
+                    .contains(&query)
+        })
+        .collect()
 }
 
 fn visible_kwt_branch_candidates<'a>(
@@ -582,9 +613,6 @@ const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
     let WorktreeHostAccess::Ready { kwt_available } = context.host else {
         return WorktreeOpenMode::Disabled;
     };
-    if matches!(context.socket, WorktreeSocket::Custom) {
-        return WorktreeOpenMode::Disabled;
-    }
     if matches!(context.authority, WorktreeAuthority::Generation) && kwt_available {
         WorktreeOpenMode::RepairOrOpen
     } else if matches!(context.authority, WorktreeAuthority::Generationless)
@@ -1179,8 +1207,10 @@ impl RootView {
             project_path: project.path().to_owned(),
             registration_fingerprint: project.registration_fingerprint().to_owned(),
             branch: String::new(),
+            mode: NewWorktreeMode::Branch,
             selected_source: None,
             branches: Vec::new(),
+            pull_requests: Vec::new(),
             operation_id,
             loading: operation_id.is_some(),
             loaded: false,
@@ -1235,6 +1265,65 @@ impl RootView {
         });
         self.diagnostic = None;
         window.focus(&self.project_focus);
+        cx.notify();
+    }
+
+    fn switch_new_worktree_mode(&mut self, mode: NewWorktreeMode, cx: &mut Context<Self>) {
+        let Some(ProjectDialog::NewWorktree {
+            host_id,
+            endpoint,
+            repository,
+            project_path,
+            registration_fingerprint,
+            mode: current_mode,
+            branch,
+            selected_source,
+            operation_id,
+            loading,
+            loaded,
+            submitting: false,
+            error,
+            ..
+        }) = &mut self.project_dialog
+        else {
+            return;
+        };
+        if *current_mode == mode || *loading {
+            return;
+        }
+        *current_mode = mode;
+        branch.clear();
+        *selected_source = None;
+        *error = None;
+        let result = match mode {
+            NewWorktreeMode::Branch => self.workspace.load_kwt_branches(
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+            ),
+            NewWorktreeMode::PullRequest => self.workspace.load_kwt_pull_requests(
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+            ),
+        };
+        match result {
+            Ok(id) => {
+                *operation_id = Some(id);
+                *loading = true;
+                *loaded = false;
+            }
+            Err(failure) => {
+                *operation_id = None;
+                *loading = false;
+                *loaded = false;
+                *error = Some(failure.to_string());
+            }
+        }
         cx.notify();
     }
 
@@ -1367,6 +1456,7 @@ impl RootView {
                 project_path,
                 registration_fingerprint,
                 branch,
+                mode: NewWorktreeMode::Branch,
                 selected_source,
                 branches,
                 loaded: true,
@@ -1397,6 +1487,29 @@ impl RootView {
                     )
                     .map(Some)
             }
+            Some(ProjectDialog::NewWorktree {
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+                branch,
+                mode: NewWorktreeMode::PullRequest,
+                loaded: true,
+                loading: false,
+                submitting: false,
+                ..
+            }) => self
+                .workspace
+                .import_kwt_pull_request(
+                    host_id,
+                    endpoint,
+                    repository,
+                    project_path,
+                    registration_fingerprint,
+                    branch,
+                )
+                .map(Some),
             Some(ProjectDialog::RemoveWorktree {
                 target,
                 submitting: false,
@@ -1837,6 +1950,7 @@ impl RootView {
                 } => {
                     if let Some(ProjectDialog::NewWorktree {
                         project_path: dialog_path,
+                        mode: NewWorktreeMode::Branch,
                         operation_id: dialog_operation,
                         branches: dialog_branches,
                         loading,
@@ -1848,6 +1962,30 @@ impl RootView {
                         && *dialog_operation == Some(operation_id)
                     {
                         *dialog_branches = branches;
+                        *loading = false;
+                        *loaded = true;
+                        *error = None;
+                    }
+                }
+                WorkspaceEvent::KwtPullRequestsLoaded {
+                    operation_id,
+                    project_path,
+                    pull_requests,
+                } => {
+                    if let Some(ProjectDialog::NewWorktree {
+                        project_path: dialog_path,
+                        mode: NewWorktreeMode::PullRequest,
+                        operation_id: dialog_operation,
+                        pull_requests: dialog_pull_requests,
+                        loading,
+                        loaded,
+                        error,
+                        ..
+                    }) = &mut self.project_dialog
+                        && *dialog_path == project_path
+                        && *dialog_operation == Some(operation_id)
+                    {
+                        *dialog_pull_requests = pull_requests;
                         *loading = false;
                         *loaded = true;
                         *error = None;
@@ -3045,23 +3183,70 @@ impl RootView {
                 ProjectDialog::NewWorktree {
                     project_name,
                     branch,
+                    mode,
                     selected_source,
                     branches,
+                    pull_requests,
                     loading,
                     loaded,
                     submitting,
                     error,
                     ..
                 } => {
-                    let visible = visible_kwt_branch_candidates(branches, branch);
+                    let visible_branches = visible_kwt_branch_candidates(branches, branch);
+                    let visible_pull_requests = visible_kwt_pull_requests(pull_requests, branch);
                     let text = if branch.is_empty() && !focused {
-                        "Branch name".to_owned()
+                        match mode {
+                            NewWorktreeMode::Branch => "Branch name".to_owned(),
+                            NewWorktreeMode::PullRequest => {
+                                "Pull request number, title, or URL".to_owned()
+                            }
+                        }
                     } else if branch.is_empty() {
                         "▏".to_owned()
                     } else {
                         format!("{branch}▏")
                     };
-                    let mut body = div().m_4().flex().flex_col().gap_2().child(
+                    let tabs = div()
+                        .flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .id("new-worktree-branch-mode")
+                                .px_3()
+                                .py_1()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(rgb(if *mode == NewWorktreeMode::Branch {
+                                    0x25_3549
+                                } else {
+                                    0x13_161c
+                                }))
+                                .text_xs()
+                                .child("Branch")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.switch_new_worktree_mode(NewWorktreeMode::Branch, cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("new-worktree-pr-mode")
+                                .px_3()
+                                .py_1()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(rgb(if *mode == NewWorktreeMode::PullRequest {
+                                    0x25_3549
+                                } else {
+                                    0x13_161c
+                                }))
+                                .text_xs()
+                                .child("Pull Request")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.switch_new_worktree_mode(NewWorktreeMode::PullRequest, cx);
+                                })),
+                        );
+                    let mut body = div().m_4().flex().flex_col().gap_2().child(tabs).child(
                         div()
                             .id("kwt-worktree-branch-input")
                             .px_3()
@@ -3086,13 +3271,13 @@ impl RootView {
                             })),
                     );
                     if *loading {
-                        body = body.child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(0x8f_96_a3))
-                                .child("Loading branches…"),
-                        );
-                    } else {
+                        body = body.child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(
+                            match mode {
+                                NewWorktreeMode::Branch => "Loading branches…",
+                                NewWorktreeMode::PullRequest => "Loading pull requests…",
+                            },
+                        ));
+                    } else if *mode == NewWorktreeMode::Branch {
                         let mut candidates = div()
                             .id("kwt-branch-candidates")
                             .max_h(px(196.0))
@@ -3100,7 +3285,7 @@ impl RootView {
                             .flex()
                             .flex_col()
                             .gap_1();
-                        for (index, candidate) in visible.into_iter().enumerate() {
+                        for (index, candidate) in visible_branches.into_iter().enumerate() {
                             let name = candidate.name().to_owned();
                             let source = candidate.source().to_owned();
                             let selected = branch == &name
@@ -3144,13 +3329,89 @@ impl RootView {
                             );
                         }
                         body = body.child(candidates);
+                    } else {
+                        let mut candidates = div()
+                            .id("kwt-pull-request-candidates")
+                            .max_h(px(240.0))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_1();
+                        for (index, pull_request) in visible_pull_requests.into_iter().enumerate() {
+                            let id = pull_request.id().to_owned();
+                            let selected = branch == &id;
+                            let imported = pull_request.imported();
+                            let title = format!(
+                                "#{}  {}{}",
+                                pull_request.number(),
+                                pull_request.title(),
+                                if pull_request.draft() {
+                                    "  ·  draft"
+                                } else {
+                                    ""
+                                }
+                            );
+                            let detail = format!(
+                                "{}  ·  {}",
+                                pull_request.author(),
+                                pull_request.source_branch()
+                            );
+                            candidates = candidates.child(
+                                div()
+                                    .id(("kwt-pull-request-candidate", index))
+                                    .px_2()
+                                    .py_1()
+                                    .flex()
+                                    .flex_col()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgb(if selected { 0x1d_3f63 } else { 0x13_161c }))
+                                    .text_xs()
+                                    .text_color(rgb(0xc4_c9_d2))
+                                    .hover(|style| style.bg(rgb(0x25_2a34)))
+                                    .child(title)
+                                    .child(div().text_color(rgb(0x78_808e)).child(if imported {
+                                        format!("{detail}  ·  imported")
+                                    } else {
+                                        detail
+                                    }))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if let Some(ProjectDialog::NewWorktree {
+                                            branch,
+                                            mode: NewWorktreeMode::PullRequest,
+                                            error,
+                                            ..
+                                        }) = &mut this.project_dialog
+                                        {
+                                            branch.clone_from(&id);
+                                            *error = None;
+                                        }
+                                        window.focus(&this.project_focus);
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                        body = body.child(candidates);
                     }
                     (
                         format!("New worktree · {project_name}"),
                         body.into_any_element(),
-                        if *submitting { "Creating…" } else { "Create" },
+                        if *submitting {
+                            "Creating…"
+                        } else if *mode == NewWorktreeMode::PullRequest {
+                            "Import"
+                        } else {
+                            "Create"
+                        },
                         *submitting,
-                        can_create_worktree(branch, *loaded, *loading, *submitting),
+                        match mode {
+                            NewWorktreeMode::Branch => {
+                                can_create_worktree(branch, *loaded, *loading, *submitting)
+                            }
+                            NewWorktreeMode::PullRequest => {
+                                *loaded && !*loading && !*submitting && !branch.trim().is_empty()
+                            }
+                        },
                         error.as_deref(),
                     )
                 }
@@ -6172,9 +6433,9 @@ mod tests {
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
-        NewSessionDraft, NewSessionKind, PendingUiInput, ProjectDialog, QueuedUiInput,
-        SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
-        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
+        NewSessionDraft, NewSessionKind, NewWorktreeMode, PendingUiInput, ProjectDialog,
+        QueuedUiInput, SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer,
+        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
         WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
         WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
         active_session_selection, application_navigation_width, apply_worktree_removal_failure,
@@ -6189,17 +6450,17 @@ mod tests {
         session_group_visibility, session_row_element_id, terminal_cell_at_with_offset,
         terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
         terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
-        tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates, workspace_window_title,
-        worktree_open_mode,
+        tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates,
+        visible_kwt_pull_requests, workspace_window_title, worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
-        KeyEvent, KeyInput, KwtBranchItem, Modifiers, MouseAction, MouseButton, MouseInput,
-        NamedKey, ProjectItem, SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot,
-        WorktreeItem,
+        KeyEvent, KeyInput, KwtBranchItem, KwtPullRequestItem, Modifiers, MouseAction, MouseButton,
+        MouseInput, NamedKey, ProjectItem, SessionItem, SessionSelection, WorkspaceContent,
+        WorkspaceSnapshot, WorktreeItem,
     };
 
     #[test]
@@ -6212,11 +6473,13 @@ mod tests {
             project_path: "/code/widget".to_owned(),
             registration_fingerprint: "registration".to_owned(),
             branch: "topic".to_owned(),
+            mode: NewWorktreeMode::Branch,
             selected_source: None,
             branches: vec![
                 KwtBranchItem::new("topic", "topic", false),
                 KwtBranchItem::new("topic", "origin/topic", true),
             ],
+            pull_requests: Vec::new(),
             operation_id: Some(1),
             loading: false,
             loaded: true,
@@ -6341,6 +6604,58 @@ mod tests {
     }
 
     #[test]
+    fn protected_generation_backed_worktrees_use_kwt_attach() {
+        assert_eq!(
+            worktree_open_mode(WorktreeOpenContext {
+                authority: WorktreeAuthority::Generation,
+                socket: WorktreeSocket::Custom,
+                session: WorktreeSessionPresence::Absent,
+                presentation: WorktreePresentation::Inactive,
+                host: WorktreeHostAccess::Ready {
+                    kwt_available: true,
+                },
+            }),
+            WorktreeOpenMode::RepairOrOpen
+        );
+    }
+
+    #[test]
+    fn pull_requests_filter_by_provider_owned_fields() {
+        let pull_requests = vec![
+            KwtPullRequestItem::new(
+                "github:github.com/acme/widget#17",
+                17,
+                "https://github.com/acme/widget/pull/17",
+                "Improve rendering",
+                "octocat",
+                "feature/rendering",
+                false,
+                false,
+            ),
+            KwtPullRequestItem::new(
+                "github:github.com/acme/widget#42",
+                42,
+                "https://github.com/acme/widget/pull/42",
+                "Fix startup",
+                "hubot",
+                "fix/startup",
+                true,
+                true,
+            ),
+        ];
+        for query in ["17", "rendering", "octocat", "feature/rendering", "pull/17"] {
+            assert_eq!(
+                visible_kwt_pull_requests(&pull_requests, query),
+                [&pull_requests[0]]
+            );
+        }
+        assert_eq!(
+            visible_kwt_pull_requests(&pull_requests, "42"),
+            [&pull_requests[1]]
+        );
+    }
+
+    #[test]
     fn worktree_failures_require_the_dialogs_exact_operation_and_target() {
         let create = ProjectDialog::NewWorktree {
             host_id: "wsl".to_owned(),
@@ -6350,8 +6665,10 @@ mod tests {
             project_path: "/code/widget".to_owned(),
             registration_fingerprint: "registration".to_owned(),
             branch: "topic".to_owned(),
+            mode: NewWorktreeMode::Branch,
             selected_source: None,
             branches: Vec::new(),
+            pull_requests: Vec::new(),
             operation_id: Some(7),
             loading: false,
             loaded: true,
