@@ -50,6 +50,8 @@ follows the captured terminal's aspect ratio between 4:3 and 2:1. More extreme
 shapes use minimal letterboxing so the complete frame remains visible.
 Reconnecting sessions show a placeholder until Ghosthub verifies that the
 replacement client is attached to the same server-side session.
+If an attachment cannot provide a safe client identity, such as psmux or tmux
+older than 3.4, its tile reports that the preview is unavailable.
 
 Previews reuse retained tmux clients only. They do not open sessions, create an
 extra tmux or SSH client, persist terminal pixels to disk, or reconstruct tmux

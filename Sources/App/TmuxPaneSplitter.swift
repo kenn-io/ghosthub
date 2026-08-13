@@ -266,7 +266,8 @@ struct TmuxPaneSplitter: Sendable {
     }
 
     func clientIdentity(
-        target: TmuxPaneSplitTarget
+        target: TmuxPaneSplitTarget,
+        priority: TaskPriority = .userInitiated
     ) async -> Result<TmuxPaneSplitClientIdentity, TmuxPaneSplitFailure> {
         guard let clientToken = target.clientToken else {
             return .failure(clientIdentityUnavailable(target: target))
@@ -277,7 +278,11 @@ struct TmuxPaneSplitter: Sendable {
             clientToken: clientToken,
             platform: Self.platform(for: target.host)
         )
-        let result = await run(command: command, target: target)
+        let result = await run(
+            command: command,
+            target: target,
+            priority: priority
+        )
         guard result.status == 0 else {
             return .failure(TmuxPaneSplitFailure(
                 host: target.host.displayName,
@@ -304,10 +309,11 @@ struct TmuxPaneSplitter: Sendable {
 
     private func run(
         command: String,
-        target: TmuxPaneSplitTarget
+        target: TmuxPaneSplitTarget,
+        priority: TaskPriority = .userInitiated
     ) async -> (status: Int32, diagnostic: String) {
         let runner = runner
-        let task = Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: priority) {
             guard !Task.isCancelled else {
                 return (status: Int32(0), diagnostic: "")
             }

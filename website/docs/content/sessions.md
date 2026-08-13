@@ -96,6 +96,10 @@ that window's live slots. Briefly switching away from Ghosthub releases all
 live slots until the app is active again.
 
 Previews never attach to unopened sessions and never add a tmux or SSH client.
+They require a token-bound client identity, which is available for tmux 3.4 or
+newer on POSIX hosts. Other attachments, including psmux, show a **Preview
+unavailable** placeholder rather than displaying pixels that Ghosthub cannot
+verify.
 During reconnect, Ghosthub hides the cached frame behind a reconnecting
 placeholder until the replacement client proves the same tmux server, session,
 and creation identity. Closing the presentation, or detecting a replacement

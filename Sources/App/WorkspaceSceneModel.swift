@@ -897,6 +897,7 @@ final class WorkspaceSceneModel: ObservableObject {
         var establishmentConfirmationTask: Task<Void, Never>?
         var verifiedPreviewIdentity: TmuxSessionIdentity?
         var reconnectExpectedIdentity: TmuxSessionIdentity?
+        var previewIdentityUnavailable = false
 
         init(
             selection: WorkspaceTmuxSessionSelection,
@@ -1814,6 +1815,14 @@ final class WorkspaceSceneModel: ObservableObject {
                 objectWillChange.send()
             }
         }
+        nativeTmuxSessionCoordinatorBacking?
+            .onAttachedSessionIdentityUnavailable = {
+                [weak self] handle in
+                guard let self,
+                      let presentation = retainedTmuxPresentation(for: handle)
+                else { return }
+                readTmuxPreviewIdentityIfNeeded(presentation)
+            }
         nativeHerdrSessionCoordinatorBacking = NativeHerdrSessionCoordinator(
             terminalCoordinator: nativeHerdrSurfaceStore
                 ?? terminalCoordinator,
@@ -8889,42 +8898,50 @@ final class WorkspaceSceneModel: ObservableObject {
         identityIsResolved: Bool = true
     ) {
         let key = TmuxPresentationKey(presentation.selection)
-        tmuxSessionPreviewCoordinator.register(.init(
-            key: key.previewKey,
-            surface: { [weak self, weak presentation] in
-                guard let self, let presentation,
-                      retainedTmuxPresentations[key] === presentation
-                else { return nil }
-                return protectedTmuxSurface(handle: presentation.handle)
-            },
-            handleID: { [weak presentation] in
-                presentation?.handle.id
-            },
-            generation: { [weak presentation] in
-                presentation?.selection.worktreeGeneration
-            },
-            identity: { [weak presentation] in
-                presentation?.verifiedPreviewIdentity
-            },
-            connectionState: { [weak self, weak presentation] in
-                guard let self, let presentation else { return nil }
-                return borrowedTmuxConnectionStates[presentation.handle.id]
-            },
-            isActive: { [weak self, weak presentation] in
-                guard let self, let presentation else { return false }
-                return activeBorrowedTmuxHandle == presentation.handle
-            },
-            activate: { [weak self, weak presentation] in
-                guard let self, let presentation,
-                      retainedTmuxPresentations[key] === presentation
-                else { return }
-                activateTmuxPresentation(presentation)
-            },
-            ensureIdentity: { [weak self, weak presentation] in
-                guard let self, let presentation else { return }
-                readTmuxPreviewIdentityIfNeeded(presentation)
-            }
-        ), identityIsResolved: identityIsResolved)
+        tmuxSessionPreviewCoordinator.register(
+            .init(
+                key: key.previewKey,
+                surface: { [weak self, weak presentation] in
+                    guard let self, let presentation,
+                          retainedTmuxPresentations[key] === presentation
+                    else { return nil }
+                    return protectedTmuxSurface(handle: presentation.handle)
+                },
+                handleID: { [weak presentation] in
+                    presentation?.handle.id
+                },
+                generation: { [weak presentation] in
+                    presentation?.selection.worktreeGeneration
+                },
+                identity: { [weak presentation] in
+                    presentation?.verifiedPreviewIdentity
+                },
+                connectionState: { [weak self, weak presentation] in
+                    guard let self, let presentation else { return nil }
+                    return borrowedTmuxConnectionStates[presentation.handle.id]
+                },
+                isActive: { [weak self, weak presentation] in
+                    guard let self, let presentation else { return false }
+                    return activeBorrowedTmuxHandle == presentation.handle
+                },
+                activate: { [weak self, weak presentation] in
+                    guard let self, let presentation,
+                          retainedTmuxPresentations[key] === presentation
+                    else { return }
+                    activateTmuxPresentation(presentation)
+                },
+                ensureIdentity: { [weak self, weak presentation] in
+                    guard let self, let presentation else { return }
+                    readTmuxPreviewIdentityIfNeeded(presentation)
+                },
+                refreshIdentity: { [weak self, weak presentation] in
+                    guard let self, let presentation else { return nil }
+                    return await revalidateTmuxPreviewIdentity(presentation)
+                }
+            ),
+            identityIsResolved: identityIsResolved,
+            identityIsUnavailable: presentation.previewIdentityUnavailable
+        )
     }
 
     private func readTmuxPreviewIdentityIfNeeded(
@@ -8935,16 +8952,59 @@ final class WorkspaceSceneModel: ObservableObject {
         guard retainedTmuxPresentations[key] === presentation,
               borrowedTmuxConnectionStates[handleID] == .connected
         else { return }
-        if presentation.verifiedPreviewIdentity != nil {
+        if presentation.verifiedPreviewIdentity != nil,
+           !presentation.previewIdentityUnavailable {
             registerTmuxPreview(presentation)
             return
         }
-        guard let identity = nativeTmuxSessionCoordinator
-            .attachedSessionIdentity(presentation.handle)
-        else { return }
-        presentation.verifiedPreviewIdentity = identity
-        presentation.reconnectExpectedIdentity = nil
-        registerTmuxPreview(presentation, identityIsResolved: true)
+        switch nativeTmuxSessionCoordinator
+            .attachedSessionIdentityResolution(presentation.handle) {
+        case .pending:
+            nativeTmuxSessionCoordinator.requestAttachedSessionIdentity(
+                presentation.handle
+            )
+        case let .resolved(identity):
+            presentation.previewIdentityUnavailable = false
+            presentation.verifiedPreviewIdentity = identity
+            presentation.reconnectExpectedIdentity = nil
+            registerTmuxPreview(presentation, identityIsResolved: true)
+        case .unavailable:
+            presentation.previewIdentityUnavailable = true
+            presentation.verifiedPreviewIdentity = nil
+            registerTmuxPreview(
+                presentation,
+                identityIsResolved: false
+            )
+        }
+    }
+
+    private func revalidateTmuxPreviewIdentity(
+        _ presentation: RetainedTmuxPresentation
+    ) async -> TmuxSessionIdentity? {
+        let handle = presentation.handle
+        let key = TmuxPresentationKey(presentation.selection)
+        guard retainedTmuxPresentations[key] === presentation,
+              borrowedTmuxConnectionStates[handle.id] == .connected,
+              let expectedIdentity = presentation.verifiedPreviewIdentity
+        else { return nil }
+        guard let currentIdentity = await nativeTmuxSessionCoordinator
+            .revalidateAttachedSessionIdentity(handle)
+        else { return nil }
+        guard retainedTmuxPresentations[key] === presentation,
+              presentation.handle == handle,
+              borrowedTmuxConnectionStates[handle.id] == .connected,
+              presentation.verifiedPreviewIdentity == expectedIdentity
+        else { return nil }
+        guard currentIdentity == expectedIdentity else {
+            presentation.previewIdentityUnavailable = true
+            presentation.verifiedPreviewIdentity = nil
+            registerTmuxPreview(
+                presentation,
+                identityIsResolved: false
+            )
+            return nil
+        }
+        return currentIdentity
     }
 
     private func beginTmuxPreviewReconnect(
@@ -8954,6 +9014,7 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.reconnectExpectedIdentity =
                 presentation.verifiedPreviewIdentity
         }
+        presentation.previewIdentityUnavailable = false
         presentation.verifiedPreviewIdentity = nil
         tmuxSessionPreviewCoordinator.remove(
             TmuxPresentationKey(presentation.selection).previewKey,

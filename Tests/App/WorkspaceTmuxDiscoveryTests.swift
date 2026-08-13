@@ -1290,6 +1290,86 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a switched tmux client cannot authorize preview pixels")
+    func switchedClientCannotAuthorizePreviewPixels() async throws {
+        let environment = try setupHostEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let clientLookups = Counter()
+        let captures = Counter()
+        let originalIdentity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let switchedIdentity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$2",
+            createdAt: "2000"
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY")
+            else { return (0, "") }
+            let identity = clientLookups.increment() == 1
+                ? originalIdentity
+                : switchedIdentity
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t\(identity.serverPID)\t789\t321"
+                    + "\t/dev/ttys001\t\(identity.sessionID)"
+                    + "\t\(identity.createdAt)\t%9\n"
+            )
+        }
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .efficient,
+            budget: LivePreviewBudget(limit: 4),
+            capture: { _, _ in
+                _ = captures.increment()
+                return TerminalSurfaceSnapshot(
+                    image: NSImage(size: CGSize(width: 32, height: 20)),
+                    captureToken: TerminalSurfaceCaptureToken(
+                        surfaceID: 1,
+                        seed: 1
+                    )
+                )
+            }
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "opened"
+        )
+        let key = TmuxPreviewKey(
+            hostID: selection.hostID,
+            name: selection.name,
+            socketName: selection.socketName
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        previewCoordinator.setExpanded(true, for: key)
+        await previewCoordinator.waitForPendingWork()
+
+        #expect(captures.count == 1)
+        #expect(previewCoordinator.viewState(for: key)?.image == nil)
+        #expect(
+            previewCoordinator.viewState(for: key)?.placeholder
+                == .unavailable
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("leaving an opened tmux session captures its final frame")
     func leavingTmuxCapturesFinalFrame() async throws {
         let environment = try setupHostEnvironment()

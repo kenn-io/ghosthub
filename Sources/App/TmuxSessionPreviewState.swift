@@ -7,6 +7,7 @@ enum TmuxPreviewPlaceholder: Equatable, Sendable {
     case awaitingFirstFrame
     case reconnecting
     case disconnected
+    case unavailable
     case liveLimitReached
 }
 
@@ -105,6 +106,12 @@ struct TmuxSessionPreviewState<Image> {
         }
         visibleFrame = nil
         connectionPlaceholder = .disconnected
+    }
+
+    mutating func setUnavailable() {
+        clearFrames()
+        connectionPlaceholder = .unavailable
+        isLiveLimitReached = false
     }
 
     mutating func setLiveLimitReached(_ reached: Bool) {

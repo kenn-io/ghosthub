@@ -524,9 +524,19 @@ size and cannot receive focus, pointer input, or accessibility actions. The
 active surface stays in the detail area and is copied without reparenting.
 Preview pixels are published only after the attachment's token-bound tmux
 client identity is available; a name-based session lookup never authorizes a
-cached frame. Reconnecting keeps the last frame quarantined until the new
+cached frame. Ghosthub revalidates that attached client after copying each
+changed frame and rejects the copy if the client switched sessions. Attachments
+that cannot supply this safe identity, including psmux and tmux older than 3.4,
+show an unavailable placeholder instead of retaining unverified pixels.
+Reconnect identity binding uses bounded background retries only after a preview
+requests identity. Reconnecting keeps the last frame quarantined until the new
 attachment binds to the same server and session identity, while replacement
 clears the frame without collapsing the tile.
+Off and Efficient modes schedule no preview work when a window becomes key,
+and Off does not mount the hidden parking host. Live coalesces its delayed
+parking reconciliation for the key scene. Selecting a parked preview unparks
+and activates its retained surface synchronously; snapshot and identity work
+never delay that pane-activation path.
 An explicit, confirmed Kill Session action
 targets the exact session (`=<name>:`) on its selected default or protected
 socket only when discovery or a currently connected active attachment

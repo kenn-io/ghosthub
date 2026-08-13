@@ -155,6 +155,17 @@ struct TmuxSessionPreviewStateTests {
         #expect(state.placeholder == .reconnecting)
     }
 
+    @Test("unavailable identity removes pixels and explains the absence")
+    func unavailableIdentityClearsPixels() {
+        var state = stateWithFrame()
+
+        state.setUnavailable()
+
+        #expect(state.visibleFrame == nil)
+        #expect(state.quarantinedFrame == nil)
+        #expect(state.placeholder == .unavailable)
+    }
+
     @Test("turning previews off clears all captured metadata")
     func offClearsState() {
         var state = stateWithFrame()

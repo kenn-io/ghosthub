@@ -75,6 +75,7 @@ struct TmuxSessionPreviewTile: View {
         case .awaitingFirstFrame: return "Open to capture"
         case .reconnecting: return "Reconnecting"
         case .disconnected: return "Disconnected"
+        case .unavailable: return "Preview unavailable"
         case .liveLimitReached: return "Live preview limit reached"
         case nil:
             guard let capturedAt = state.capturedAt else { return nil }
