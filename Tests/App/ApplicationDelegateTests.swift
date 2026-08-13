@@ -776,7 +776,7 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertEqual(forwardingDelegate.resizeCount, 1)
     }
 
-    func testCompactTitlebarKeepsSessionIdentity() {
+    func testCompactTitlebarUsesDisplayName() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .resizable],
@@ -788,7 +788,7 @@ final class ApplicationDelegateTests: XCTestCase {
             isSidebarVisible: true,
             canCreateWorktree: true,
             sessionTitle: SessionTitlebarPresentation(
-                sessionName: "docbank",
+                displayName: "ghosthub / feature/api",
                 hostname: "studio-mac",
                 icon: .tmuxSession
             ),
@@ -801,7 +801,10 @@ final class ApplicationDelegateTests: XCTestCase {
         controller.install(on: window)
 
         XCTAssertNil(window.toolbar)
-        XCTAssertEqual(window.title, "docbank · studio-mac")
+        XCTAssertEqual(
+            window.title,
+            "ghosthub / feature/api · studio-mac"
+        )
         XCTAssertEqual(window.titleVisibility, .hidden)
     }
 

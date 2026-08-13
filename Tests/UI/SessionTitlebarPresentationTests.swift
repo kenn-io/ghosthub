@@ -32,14 +32,14 @@ struct SessionTitlebarPresentationTests {
         #expect(presentation?.icon.systemImageName == "terminal")
     }
 
-    @Test("workspace session reuses linked-worktree sidebar icon")
+    @Test("workspace session shows project and worktree names")
     func linkedWorktreeSession() {
         let hostID = UUID()
         let projectID = UUID()
         let worktree = WorktreeSummary.fixture(
             hostID: hostID,
             projectID: projectID,
-            name: "feature"
+            name: "feature/api"
         )
         let snapshot = WorkspaceSnapshot.fixture(
             hosts: [
@@ -47,23 +47,29 @@ struct SessionTitlebarPresentationTests {
                     id: hostID,
                     name: "Build Box",
                     kind: .remote,
-                    sshDestination: "wesm@build.example:2222"
+                    sshDestination: "builder@build.example:2222"
                 ),
             ],
-            projects: [.fixture(id: projectID, hostID: hostID)],
+            projects: [
+                .fixture(
+                    id: projectID,
+                    hostID: hostID,
+                    name: "ghosthub"
+                ),
+            ],
             worktrees: [worktree]
         )
 
         let presentation = SessionTitlebarPresentation.resolve(
             activeSession: WorkspaceTmuxSessionSelection(
                 hostID: hostID,
-                name: "kwt-feature",
+                name: "kwt-wt-ghosthub-feature-api-deadbeef",
                 worktreeID: worktree.id
             ),
             in: snapshot
         )
 
-        #expect(presentation?.title == "kwt-feature · build.example")
+        #expect(presentation?.title == "ghosthub / feature/api · build.example")
         #expect(presentation?.icon == .worktree)
     }
 
@@ -86,7 +92,13 @@ struct SessionTitlebarPresentationTests {
         host.remoteHostname = "builder.internal"
         let snapshot = WorkspaceSnapshot.fixture(
             hosts: [host],
-            projects: [.fixture(id: projectID, hostID: hostID)],
+            projects: [
+                .fixture(
+                    id: projectID,
+                    hostID: hostID,
+                    name: "ghosthub"
+                ),
+            ],
             worktrees: [worktree]
         )
 
@@ -99,8 +111,45 @@ struct SessionTitlebarPresentationTests {
             in: snapshot
         )
 
-        #expect(presentation?.title == "kwt-main · builder.internal")
+        #expect(presentation?.title == "ghosthub / main · builder.internal")
         #expect(presentation?.icon == .primaryWorktree)
+    }
+
+    @Test("workspace title falls back without parsing its session name")
+    func workspaceTitleFallbacks() {
+        let hostID = UUID()
+        let worktree = WorktreeSummary.fixture(
+            hostID: hostID,
+            projectID: UUID(),
+            name: "feature/api"
+        )
+        let snapshot = WorkspaceSnapshot.fixture(
+            hosts: [.fixture(id: hostID, name: "studio-mac")],
+            worktrees: [worktree]
+        )
+
+        let projectless = SessionTitlebarPresentation.resolve(
+            activeSession: WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: "kwt-wt-ghosthub-feature-api-deadbeef",
+                worktreeID: worktree.id
+            ),
+            in: snapshot
+        )
+        #expect(projectless?.title == "feature/api · studio-mac")
+
+        let missingWorktree = SessionTitlebarPresentation.resolve(
+            activeSession: WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: "kwt-wt-ghosthub-feature-api-deadbeef",
+                worktreeID: UUID()
+            ),
+            in: snapshot
+        )
+        #expect(
+            missingWorktree?.title
+                == "kwt-wt-ghosthub-feature-api-deadbeef · studio-mac"
+        )
     }
 
     @Test("missing active session or host has no title")

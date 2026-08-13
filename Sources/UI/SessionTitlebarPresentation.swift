@@ -2,22 +2,22 @@ import Foundation
 import GhosthubWorkspace
 
 public struct SessionTitlebarPresentation: Equatable, Sendable {
-    public let sessionName: String
+    public let displayName: String
     public let hostname: String
     public let icon: WorkspaceSidebarRowIcon
 
     public init(
-        sessionName: String,
+        displayName: String,
         hostname: String,
         icon: WorkspaceSidebarRowIcon
     ) {
-        self.sessionName = sessionName
+        self.displayName = displayName
         self.hostname = hostname
         self.icon = icon
     }
 
     public var title: String {
-        "\(sessionName) · \(hostname)"
+        "\(displayName) · \(hostname)"
     }
 
     public static func resolve(
@@ -37,7 +37,7 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
         if let activeZellijSession,
            let host = snapshot.host(id: activeZellijSession.hostID) {
             return SessionTitlebarPresentation(
-                sessionName: activeZellijSession.name,
+                displayName: activeZellijSession.name,
                 hostname: hostname(for: host),
                 icon: .zellijSession
             )
@@ -71,7 +71,10 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
         }
 
         return SessionTitlebarPresentation(
-            sessionName: activeSession.name,
+            displayName: tmuxDisplayName(
+                activeSession: activeSession,
+                in: snapshot
+            ),
             hostname: hostname(for: host),
             icon: icon
         )
@@ -85,10 +88,24 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
               let host = snapshot.host(id: activeHerdrSession.hostID)
         else { return nil }
         return SessionTitlebarPresentation(
-            sessionName: activeHerdrSession.name,
+            displayName: activeHerdrSession.name,
             hostname: hostname(for: host),
             icon: .herdrSession
         )
+    }
+
+    private static func tmuxDisplayName(
+        activeSession: WorkspaceTmuxSessionSelection,
+        in snapshot: WorkspaceSnapshot
+    ) -> String {
+        guard let worktreeID = activeSession.worktreeID,
+              let worktree = snapshot.worktree(id: worktreeID),
+              let worktreeName = nonempty(worktree.name)
+        else { return activeSession.name }
+        guard let project = snapshot.project(id: worktree.projectID),
+              let projectName = nonempty(project.name)
+        else { return worktreeName }
+        return "\(projectName) / \(worktreeName)"
     }
 
     private static func hostname(for host: HostSummary) -> String {
