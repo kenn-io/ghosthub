@@ -113,16 +113,76 @@ private final class TestTmuxClient {
 private func makeTestTmuxServer(
     tmuxPath: String,
     purpose: String,
-    sessions: [String]
+    sessions: [String],
+    commandRunner: TestTmuxServer.CommandRunner? = nil
 ) throws -> TestTmuxServer {
     let server = try TestTmuxServer(
         tmuxPath: tmuxPath,
-        socket: .runOwned(purpose: purpose)
+        socket: .runOwned(purpose: purpose),
+        commandRunner: commandRunner
     )
     for session in sessions {
         try server.createSession(session)
     }
     return server
+}
+
+private struct TestTmuxLoginShell: Sendable {
+    let shell: String
+    let tmuxDirectory: String
+
+    init(shell: String) throws {
+        self.shell = shell
+        tmuxDirectory = try #require(
+            ProcessInfo.processInfo.environment["TMUX_TMPDIR"]
+        )
+    }
+
+    func run(
+        command: String,
+        timeout: TimeInterval,
+        captureStandardError: Bool = false
+    ) -> (status: Int32, stdout: String) {
+        AccountCommandRunner.runLoginShell(
+            shell: shell,
+            command: "export TMUX_TMPDIR="
+                + shellQuotedCommandArgument(tmuxDirectory)
+                + "; " + command,
+            timeout: timeout,
+            captureStandardError: captureStandardError
+        )
+    }
+
+    func commandRunner() -> TestTmuxServer.CommandRunner {
+        { executable, arguments, timeout in
+            let command = ([executable] + arguments)
+                .map(shellQuotedCommandArgument)
+                .joined(separator: " ")
+            let result = run(
+                command: command,
+                timeout: timeout,
+                captureStandardError: true
+            )
+            return TestTmuxCommandOutput(
+                status: result.status,
+                stderr: result.stdout
+            )
+        }
+    }
+
+    func paneRunner() -> TmuxPaneSplitter.Runner {
+        { host, _, command in
+            guard host == .local else {
+                return (127, "test login-shell runner only supports localhost")
+            }
+            let result = run(
+                command: command,
+                timeout: 15,
+                captureStandardError: true
+            )
+            return (result.status, result.stdout)
+        }
+    }
 }
 
 private func nativePaneSplitsAreAvailable(_ tmuxPath: String) -> Bool {
@@ -580,15 +640,51 @@ struct TmuxPaneSplitterTests {
         guard case let .success(tmuxPath) =
             TmuxBinaryResolver().resolveTmuxPath()
         else { return }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "ghosthub-login-tmux-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let profileTmuxDirectory = directory
+            .appendingPathComponent("profile-tmux", isDirectory: true).path
+        let shell = directory.appendingPathComponent("login-shell")
+        try """
+        #!/bin/sh
+        export TMUX_TMPDIR=\(shellQuotedCommandArgument(profileTmuxDirectory))
+        exec /bin/sh "$@"
+        """.write(to: shell, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: shell.path
+        )
+        let rawLoginEnvironment = AccountCommandRunner.runLoginShell(
+            shell: shell.path,
+            command: "/usr/bin/printenv TMUX_TMPDIR",
+            timeout: 5
+        )
+        #expect(
+            rawLoginEnvironment.stdout
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                == profileTmuxDirectory
+        )
+        let tmuxLoginShell = try TestTmuxLoginShell(shell: shell.path)
+        let commandRunner = tmuxLoginShell.commandRunner()
         let targetServer = try makeTestTmuxServer(
             tmuxPath: tmuxPath,
             purpose: "target",
-            sessions: ["inherited-target"]
+            sessions: ["inherited-target"],
+            commandRunner: commandRunner
         )
         let launcherServer = try makeTestTmuxServer(
             tmuxPath: tmuxPath,
             purpose: "launcher",
-            sessions: ["launcher"]
+            sessions: ["launcher"],
+            commandRunner: commandRunner
         )
         let targetSocketName = targetServer.socketName
         let launcherSocketName = launcherServer.socketName
@@ -604,8 +700,7 @@ struct TmuxPaneSplitterTests {
             "client-attached",
             "rename-session -t =inherited-target: inherited-renamed",
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        #expect(AccountCommandRunner.runLoginShell(
-            shell: "/bin/sh",
+        #expect(tmuxLoginShell.run(
             command: renameHook,
             timeout: 5
         ).status == 0)
@@ -613,8 +708,7 @@ struct TmuxPaneSplitterTests {
             tmuxPath, "-L", launcherSocketName, "display-message", "-p",
             "#{socket_path}\t#{pid}",
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let launcherFields = AccountCommandRunner.runLoginShell(
-            shell: "/bin/sh",
+        let launcherFields = tmuxLoginShell.run(
             command: launcherIdentity,
             timeout: 5
         ).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -656,8 +750,7 @@ struct TmuxPaneSplitterTests {
             "=inherited-renamed:",
             "#{pid}\t#{session_id}\t#{session_created}",
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let targetIdentityResult = AccountCommandRunner.runLoginShell(
-            shell: "/bin/sh",
+        let targetIdentityResult = tmuxLoginShell.run(
             command: targetIdentity,
             timeout: 5
         )
@@ -665,7 +758,9 @@ struct TmuxPaneSplitterTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "\t")
 
-        let client = try await TmuxPaneSplitter().clientIdentity(
+        let client = try await TmuxPaneSplitter(
+            runner: tmuxLoginShell.paneRunner()
+        ).clientIdentity(
             target: TmuxPaneSplitTarget(
                 host: .local,
                 tmuxPath: tmuxPath,

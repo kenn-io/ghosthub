@@ -19,7 +19,23 @@ public enum TestTmuxServerError: Error, CustomStringConvertible, Sendable {
     }
 }
 
+public struct TestTmuxCommandOutput: Sendable {
+    public let status: Int32
+    public let stderr: String
+
+    public init(status: Int32, stderr: String) {
+        self.status = status
+        self.stderr = stderr
+    }
+}
+
 public final class TestTmuxServer: @unchecked Sendable {
+    public typealias CommandRunner = @Sendable (
+        _ executable: String,
+        _ arguments: [String],
+        _ timeout: TimeInterval
+    ) throws -> TestTmuxCommandOutput
+
     public enum SocketKind: Sendable {
         case runOwned(purpose: String)
         case productContract(name: String)
@@ -30,16 +46,19 @@ public final class TestTmuxServer: @unchecked Sendable {
     public let connectionArguments: [String]
 
     private let tmuxPath: String
+    private let commandRunner: CommandRunner
     private let lock = NSLock()
     private var stopped = false
 
     public init(
         tmuxPath: String,
         socket: SocketKind,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        commandRunner: CommandRunner? = nil
     ) throws {
         let context = try Self.wrapperContext(environment: environment)
         self.tmuxPath = tmuxPath
+        self.commandRunner = commandRunner ?? Self.run
 
         switch socket {
         case let .runOwned(purpose):
@@ -93,11 +112,7 @@ public final class TestTmuxServer: @unchecked Sendable {
         if let command {
             arguments.append(command)
         }
-        let result = try Self.run(
-            executable: tmuxPath,
-            arguments: arguments,
-            timeout: 10
-        )
+        let result = try commandRunner(tmuxPath, arguments, 10)
         guard result.status == 0 else {
             throw TestTmuxServerError.commandFailed(
                 arguments: arguments,
@@ -117,21 +132,16 @@ public final class TestTmuxServer: @unchecked Sendable {
             return true
         }
         guard shouldStop else { return }
-        _ = try? Self.run(
-            executable: tmuxPath,
-            arguments: connectionArguments + ["kill-server"],
-            timeout: 5
+        _ = try? commandRunner(
+            tmuxPath,
+            connectionArguments + ["kill-server"],
+            5
         )
     }
 
     private struct WrapperContext {
         let runID: String
         let tmuxDirectory: String
-    }
-
-    private struct ProcessResult {
-        let status: Int32
-        let stderr: String
     }
 
     private static func wrapperContext(
@@ -248,7 +258,7 @@ public final class TestTmuxServer: @unchecked Sendable {
         executable: String,
         arguments: [String],
         timeout: TimeInterval
-    ) throws -> ProcessResult {
+    ) throws -> TestTmuxCommandOutput {
         let process = Process()
         let stderr = Pipe()
         let completed = DispatchSemaphore(value: 0)
@@ -268,7 +278,7 @@ public final class TestTmuxServer: @unchecked Sendable {
             throw TestTmuxServerError.commandTimedOut(arguments: arguments)
         }
         let data = stderr.fileHandleForReading.readDataToEndOfFile()
-        return ProcessResult(
+        return TestTmuxCommandOutput(
             status: process.terminationStatus,
             stderr: String(decoding: data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)

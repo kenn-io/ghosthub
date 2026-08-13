@@ -3,6 +3,28 @@ import Foundation
 import GhosthubTestSupport
 import Testing
 
+private func findTestTmux() -> String? {
+    ProcessInfo.processInfo.environment["PATH"]?
+        .split(separator: ":")
+        .map { String($0) + "/tmux" }
+        .first { FileManager.default.isExecutableFile(atPath: $0) }
+}
+
+private final class TestTmuxCommandRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var arguments: [[String]] = []
+
+    func record(_ arguments: [String]) {
+        lock.withLock {
+            self.arguments.append(arguments)
+        }
+    }
+
+    func snapshot() -> [[String]] {
+        lock.withLock { arguments }
+    }
+}
+
 @Suite("test tmux server boundary")
 struct TestTmuxServerTests {
     @Test("wrapper identity is required before deriving a socket")
@@ -76,9 +98,12 @@ struct TestTmuxServerTests {
         )
     }
 
-    @Test("a real server is removed by whole-server teardown")
+    @Test(
+        "a real server is removed by whole-server teardown",
+        .enabled(if: findTestTmux() != nil, "tmux is unavailable")
+    )
     func stopsRealServer() throws {
-        let tmuxPath = try #require(findTmux())
+        let tmuxPath = try #require(findTestTmux())
         let environment = try wrapperEnvironment()
         let server = try TestTmuxServer(
             tmuxPath: tmuxPath,
@@ -92,9 +117,12 @@ struct TestTmuxServerTests {
         #expect(tmuxStatus(tmuxPath, server, ["has-session", "-t", "=owned:"]) != 0)
     }
 
-    @Test("a protected exact socket remains reachable by its product name")
+    @Test(
+        "a protected exact socket remains reachable by its product name",
+        .enabled(if: findTestTmux() != nil, "tmux is unavailable")
+    )
     func productSocketUsesPrivateNamedPath() throws {
-        let tmuxPath = try #require(findTmux())
+        let tmuxPath = try #require(findTestTmux())
         let server = try TestTmuxServer(
             tmuxPath: tmuxPath,
             socket: .productContract(name: "kwt-pr-0123456789abcdef")
@@ -118,18 +146,32 @@ struct TestTmuxServerTests {
         )
     }
 
+    @Test("an injected runner owns server creation and teardown")
+    func injectedRunnerOwnsLifecycle() throws {
+        let recorder = TestTmuxCommandRecorder()
+        let server = try TestTmuxServer(
+            tmuxPath: "/test/tmux",
+            socket: .runOwned(purpose: "runner"),
+            commandRunner: { _, arguments, _ in
+                recorder.record(arguments)
+                return TestTmuxCommandOutput(status: 0, stderr: "")
+            }
+        )
+
+        try server.createSession("owned")
+        server.stop()
+
+        let calls = recorder.snapshot()
+        #expect(calls.count == 2)
+        #expect(calls.first?.contains("new-session") == true)
+        #expect(calls.last?.suffix(1) == ["kill-server"])
+    }
+
     private func wrapperEnvironment() throws -> [String: String] {
         let environment = ProcessInfo.processInfo.environment
         _ = try #require(environment["GHOSTHUB_TEST_TMUX_RUN_ID"])
         _ = try #require(environment["TMUX_TMPDIR"])
         return environment
-    }
-
-    private func findTmux() -> String? {
-        ProcessInfo.processInfo.environment["PATH"]?
-            .split(separator: ":")
-            .map { String($0) + "/tmux" }
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     private func tmuxStatus(
