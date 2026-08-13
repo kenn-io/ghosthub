@@ -31,12 +31,19 @@ final class TerminalSurfacePreviewTests: XCTestCase {
 
         let captured = try await snapshotter.snapshot(
             of: view,
-            outputSize: CGSize(width: 320, height: 200),
+            outputWidth: 320,
             previousCaptureToken: nil
         )
         let snapshot = try XCTUnwrap(captured)
+        let expectedThumbnailSize = TerminalPreviewGeometry.thumbnailSize(
+            sourceSize: CGSize(
+                width: Int(originalSurfaceSize.width_px),
+                height: Int(originalSurfaceSize.height_px)
+            ),
+            outputWidth: 320
+        )
 
-        XCTAssertEqual(snapshot.image.size, CGSize(width: 320, height: 200))
+        XCTAssertEqual(snapshot.image.size, expectedThumbnailSize)
         let image = try XCTUnwrap(
             snapshot.image.cgImage(
                 forProposedRect: nil,
@@ -45,12 +52,25 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             )
         )
         XCTAssertEqual(image.width, 320)
-        XCTAssertEqual(image.height, 200)
+        XCTAssertEqual(image.height, Int(expectedThumbnailSize.height))
         XCTAssertTrue(view.superview === originalSuperview)
         XCTAssertEqual(view.frame, originalFrame)
         XCTAssertEqual(view.surfaceSize?.width_px, originalSurfaceSize.width_px)
         XCTAssertEqual(view.surfaceSize?.height_px, originalSurfaceSize.height_px)
         XCTAssertNotNil(view.surfaceHandle)
+    }
+
+    func testSnapshotPreservesInRangeSourceAspectRatio() async throws {
+        let view = try makeSurface()
+        view.layer?.contents = try makeIOSurface(width: 400, height: 300)
+
+        let captured = try await TerminalSurfaceSnapshotter().snapshot(
+            of: view,
+            outputWidth: 320,
+            previousCaptureToken: nil
+        )
+
+        XCTAssertEqual(captured?.image.size, CGSize(width: 320, height: 240))
     }
 
     func testSnapshotSkipsAnUnchangedIOSurfaceToken() async throws {
@@ -59,14 +79,14 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let snapshotter = TerminalSurfaceSnapshotter()
         let captured = try await snapshotter.snapshot(
             of: view,
-            outputSize: CGSize(width: 320, height: 200),
+            outputWidth: 320,
             previousCaptureToken: nil
         )
         let first = try XCTUnwrap(captured)
 
         let unchanged = try await snapshotter.snapshot(
             of: view,
-            outputSize: CGSize(width: 320, height: 200),
+            outputWidth: 320,
             previousCaptureToken: first.captureToken
         )
 
@@ -89,7 +109,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let snapshotter = TerminalSurfaceSnapshotter()
         let firstCapture = try await snapshotter.snapshot(
             of: view,
-            outputSize: CGSize(width: 320, height: 200),
+            outputWidth: 320,
             previousCaptureToken: nil
         )
         let first = try XCTUnwrap(firstCapture)
@@ -97,7 +117,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         view.layer?.contents = replacementSurface
         let replacement = try await snapshotter.snapshot(
             of: view,
-            outputSize: CGSize(width: 320, height: 200),
+            outputWidth: 320,
             previousCaptureToken: first.captureToken
         )
 
@@ -116,7 +136,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         do {
             _ = try await TerminalSurfaceSnapshotter().snapshot(
                 of: view,
-                outputSize: CGSize(width: 320, height: 200),
+                outputWidth: 320,
                 previousCaptureToken: nil
             )
             XCTFail("Expected missing IOSurface failure")
@@ -133,7 +153,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         do {
             _ = try await TerminalSurfaceSnapshotter().snapshot(
                 of: view,
-                outputSize: .zero,
+                outputWidth: 0,
                 previousCaptureToken: nil
             )
             XCTFail("Expected invalid output size failure")
@@ -508,12 +528,15 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         )
     }
 
-    private func makeIOSurface() throws -> IOSurface {
+    private func makeIOSurface(
+        width: Int = 32,
+        height: Int = 32
+    ) throws -> IOSurface {
         try XCTUnwrap(IOSurfaceCreate([
-            kIOSurfaceWidth: 32,
-            kIOSurfaceHeight: 32,
+            kIOSurfaceWidth: width,
+            kIOSurfaceHeight: height,
             kIOSurfaceBytesPerElement: 4,
-            kIOSurfaceBytesPerRow: 128,
+            kIOSurfaceBytesPerRow: width * 4,
             kIOSurfacePixelFormat: kCVPixelFormatType_32BGRA,
         ] as CFDictionary))
     }

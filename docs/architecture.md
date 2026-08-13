@@ -512,8 +512,10 @@ client. Ghosthub never projects tmux windows or panes into a Swift split tree.
 Changing selection only hides the previous retained client. Pressing Cmd-W
 closes the active client, while closing its workspace window or the app closes
 every client retained by that scene; none of these paths runs `kill-session`.
-Optional sidebar previews copy fixed-size bitmap frames from these retained
-clients. Efficient mode captures on disclosure and navigation away. Live mode
+Optional sidebar previews copy width-bounded bitmap frames from these retained
+clients. A tile follows its terminal's aspect ratio between 4:3 and 2:1 and
+letterboxes only content outside those limits. Efficient mode captures on
+disclosure and navigation away. Live mode
 may keep an inactive surface mounted behind the visible workspace content and
 polls at no more than two frames per second. A process-wide budget permits at
 most four such inactive live surfaces. Parked surfaces preserve their terminal

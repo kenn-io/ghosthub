@@ -1,5 +1,6 @@
 import AppKit
 import GhosthubTerminal
+import GhosthubTerminalSupport
 import GhosthubTransport
 import SwiftUI
 
@@ -25,7 +26,7 @@ struct TmuxSessionPreviewTile: View {
                         .background(.regularMaterial)
                 }
             }
-            .aspectRatio(16 / 10, contentMode: .fit)
+            .aspectRatio(tileAspectRatio, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay {
                 RoundedRectangle(cornerRadius: 6)
@@ -59,6 +60,10 @@ struct TmuxSessionPreviewTile: View {
 
     private var viewState: TmuxPreviewViewState? {
         coordinator.viewState(for: key)
+    }
+
+    private var tileAspectRatio: CGFloat {
+        TerminalPreviewGeometry.aspectRatio(for: viewState?.image?.size)
     }
 
     private var statusText: String? {

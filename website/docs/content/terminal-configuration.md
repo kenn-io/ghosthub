@@ -45,11 +45,11 @@ for tmux presentations you have already opened in a workspace:
   limits live rendering to four inactive previews across all windows.
 
 The preference takes effect when you close Settings. Each workspace window
-remembers its own expanded rows in memory, even while previews are Off. A fixed
-16:10 tile shows
-the complete captured frame with letterboxing when the terminal has another
-aspect ratio. Reconnecting sessions show a placeholder until Ghosthub verifies
-that the replacement client is attached to the same server-side session.
+remembers its own expanded rows in memory, even while previews are Off. A tile
+follows the captured terminal's aspect ratio between 4:3 and 2:1. More extreme
+shapes use minimal letterboxing so the complete frame remains visible.
+Reconnecting sessions show a placeholder until Ghosthub verifies that the
+replacement client is attached to the same server-side session.
 
 Previews reuse retained tmux clients only. They do not open sessions, create an
 extra tmux or SSH client, persist terminal pixels to disk, or reconstruct tmux

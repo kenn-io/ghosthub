@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubSettings
+import GhosthubTerminalSupport
 import GhosthubWorkspace
 import SwiftUI
 
@@ -20,7 +21,12 @@ struct TmuxSessionPreviewExpansionState: Equatable {
 }
 
 enum TmuxSessionPreviewRowPresentation {
-    static let aspectRatio: CGFloat = 16 / 10
+    static let placeholderAspectRatio =
+        TerminalPreviewGeometry.placeholderAspectRatio
+
+    static func aspectRatio(for imageSize: CGSize?) -> CGFloat {
+        TerminalPreviewGeometry.aspectRatio(for: imageSize)
+    }
 
     static func canDisclose(
         mode: SessionPreviewMode,
@@ -1699,10 +1705,6 @@ struct WorkspaceSidebarView: View {
                         }
                     ) {
                     preview
-                        .aspectRatio(
-                            TmuxSessionPreviewRowPresentation.aspectRatio,
-                            contentMode: .fit
-                        )
                         .onAppear {
                             onTmuxSessionPreviewExpanded(tmuxSession, true)
                         }

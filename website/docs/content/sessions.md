@@ -73,8 +73,9 @@ authentication problems open the existing connection review flow.
 
 Choose **Settings → Terminal → Session previews**, then select **Efficient** or
 **Live**. A disclosure control appears only beside tmux sessions that you have
-already opened in that workspace. Expand it to show a fixed 16:10 bitmap
-preview; wider or taller terminal frames are letterboxed rather than cropped.
+already opened in that workspace. Expand it to show a bitmap preview. The tile
+adapts to the terminal's shape between 4:3 and 2:1; only
+taller or wider frames need minimal letterboxing, and content is never cropped.
 Selecting the preview follows the same route as selecting its session row.
 
 ![Ghosthub sidebar showing an expanded live preview for an already-opened tmux session](assets/guide-session-previews.png)

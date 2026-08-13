@@ -140,7 +140,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             }
             return try await resolvedSnapshotter.snapshot(
                 of: surface,
-                outputSize: CGSize(width: 320, height: 200),
+                outputWidth: 320,
                 previousCaptureToken: previousCaptureToken
             )
         }

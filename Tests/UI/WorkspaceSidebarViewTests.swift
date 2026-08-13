@@ -26,7 +26,24 @@ struct WorkspaceSidebarViewTests {
             sessionID: sessionID,
             previewableSessionIDs: []
         ))
-        #expect(TmuxSessionPreviewRowPresentation.aspectRatio == 1.6)
+        #expect(TmuxSessionPreviewRowPresentation.placeholderAspectRatio == 1.6)
+    }
+
+    @Test("tmux preview height follows captured geometry within limits")
+    func tmuxPreviewAdaptiveAspectRatio() {
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
+            for: CGSize(width: 4, height: 3)
+        ) == CGFloat(4) / 3)
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
+            for: CGSize(width: 16, height: 9)
+        ) == CGFloat(16) / 9)
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
+            for: CGSize(width: 1, height: 1)
+        ) == CGFloat(4) / 3)
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
+            for: CGSize(width: 3, height: 1)
+        ) == 2)
+        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(for: nil) == 1.6)
     }
 
     @Test("Off hides previews without discarding scene expansion")

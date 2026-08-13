@@ -1,5 +1,6 @@
 import AppKit
 import CoreVideo
+import GhosthubTerminalSupport
 import IOSurface
 import Metal
 
@@ -74,10 +75,26 @@ public final class TerminalSurfaceSnapshotter {
 
     public func snapshot(
         of surface: TerminalSurfaceView,
-        outputSize: CGSize,
+        outputWidth: CGFloat,
         previousCaptureToken: TerminalSurfaceCaptureToken?
     ) async throws -> TerminalSurfaceSnapshot? {
-        let pixelSize = try Self.pixelSize(for: outputSize)
+        guard outputWidth.isFinite, outputWidth > 0 else {
+            throw TerminalSurfaceSnapshotError.invalidOutputSize
+        }
+        guard let ioSurface = surface.layer?.contents as? IOSurface else {
+            throw TerminalSurfaceSnapshotError.missingIOSurface
+        }
+        let adaptiveSize = TerminalPreviewGeometry.thumbnailSize(
+            sourceSize: CGSize(
+                width: IOSurfaceGetWidth(ioSurface),
+                height: IOSurfaceGetHeight(ioSurface)
+            ),
+            outputWidth: outputWidth
+        )
+        let pixelSize = (
+            width: Int(adaptiveSize.width),
+            height: Int(adaptiveSize.height)
+        )
         let requestKey = RequestKey(
             surface: ObjectIdentifier(surface),
             width: pixelSize.width,
@@ -89,9 +106,6 @@ public final class TerminalSurfaceSnapshotter {
             return Self.snapshot(from: rendered, pixelSize: pixelSize)
         }
 
-        guard let ioSurface = surface.layer?.contents as? IOSurface else {
-            throw TerminalSurfaceSnapshotError.missingIOSurface
-        }
         guard let metal else {
             throw TerminalSurfaceSnapshotError.imageCopyFailed
         }
@@ -123,24 +137,6 @@ public final class TerminalSurfaceSnapshotter {
             ),
             captureToken: rendered.captureToken
         )
-    }
-
-    private static func pixelSize(
-        for outputSize: CGSize
-    ) throws -> (width: Int, height: Int) {
-        guard outputSize.width.isFinite,
-              outputSize.height.isFinite,
-              outputSize.width > 0,
-              outputSize.height > 0
-        else {
-            throw TerminalSurfaceSnapshotError.invalidOutputSize
-        }
-        let width = Int(outputSize.width.rounded())
-        let height = Int(outputSize.height.rounded())
-        guard width > 0, height > 0 else {
-            throw TerminalSurfaceSnapshotError.invalidOutputSize
-        }
-        return (width, height)
     }
 
     private nonisolated static func makeSnapshot(
