@@ -723,12 +723,16 @@ reported on the worktree action rather than disabling other multiplexers.
 
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound
-tmux group. Active and retained custom-socket presentations remain accessible
-only from their worktree row, whose live indicator reflects the presentation;
-they do not claim a genuinely separate default-socket session with the same
-name. Their navigation identity retains the socket, worktree path, and
-generation. A standalone Kill Session action queries that named socket for
-fresh identity before confirmation. A successful exact removal immediately
+tmux group. Active and retained custom-socket presentations with an exact
+current worktree owner remain accessible only from that row, whose live
+indicator reflects the presentation; they do not claim a genuinely separate
+default-socket session with the same name. Their navigation identity retains
+the socket, worktree path, and generation. A standalone Kill Session action
+queries that named socket for fresh identity before confirmation. Open actions
+revalidate that same socket;
+if current inventory no longer owns the exact presentation, its active or
+retained client remains available as a fallback session row rather than being
+hidden under a replacement worktree. A successful exact removal immediately
 tombstones that path and generation in the cached tree before broader
 reconciliation, so a KWT outage cannot resurrect an openable deleted row.
 Before the removal dialog becomes actionable, a background query captures the
@@ -745,7 +749,10 @@ Pull-request import follows the same ownership boundary. The pinned helper is
 the sole provider API for listing open pull requests and importing one into an
 exact registered project. Ghosthub filters KWT's machine-readable title,
 author, branch, number, URL, and draft fields for presentation, but passes the
-opaque KWT selector back unchanged. An import is accepted only when KWT returns
+selected candidate's opaque KWT selector back unchanged. Typed input is
+accepted only as an exact loaded selector, a pull-request number, or a URL;
+title, author, and branch searches remain filters and cannot be submitted as
+selectors. An import is accepted only when KWT returns
 the expected project path and a protected worktree with a generation, exact
 session name, and nonempty tmux socket name. Ghosthub then refreshes
 authoritative KWT inventory before publishing or opening that worktree; an

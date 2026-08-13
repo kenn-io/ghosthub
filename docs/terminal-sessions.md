@@ -484,7 +484,10 @@ to be running and always requires confirmation. For a protected worktree,
 Ghosthub preserves the named socket, path, and generation in navigation state,
 then queries that exact socket for fresh server and session identity before
 showing confirmation. A same-named session on the default server is unrelated
-and can never satisfy or receive the protected action.
+and can never satisfy or receive the protected action. Opening also requires
+the rendered socket to match fresh KWT inventory. If no current worktree owns
+an active or retained protected presentation's complete identity, Ghosthub
+keeps a fallback session row so that live client remains reachable.
 
 Native Windows creation also supplies the SSH account's process `PATH` through
 psmux's `new-session -e` contract. Psmux otherwise starts detached panes

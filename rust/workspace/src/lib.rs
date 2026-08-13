@@ -742,6 +742,28 @@ impl HostItem {
             .iter()
             .any(|workspace| workspace.session_name == name)
     }
+
+    #[must_use]
+    pub fn kwt_owns_protected_presentation(&self, selection: &SessionSelection) -> bool {
+        let (Some(socket_name), Some(worktree_path), Some(generation)) = (
+            selection.tmux_socket_name(),
+            selection.worktree_path(),
+            selection.worktree_generation(),
+        ) else {
+            return false;
+        };
+        selection.kind() == SessionKind::Tmux
+            && selection.host_id() == self.id
+            && selection.endpoint() == self.endpoint
+            && self.projects.iter().any(|project| {
+                project.worktrees.iter().any(|worktree| {
+                    worktree.session_name == selection.session()
+                        && worktree.tmux_socket_name.as_deref() == Some(socket_name)
+                        && worktree.path == worktree_path
+                        && worktree.generation.as_deref() == Some(generation)
+                })
+            })
+    }
 }
 
 #[derive(Clone)]
@@ -3460,6 +3482,7 @@ impl Workspace {
         worktree_path: &str,
         generation: Option<&str>,
         session_name: &str,
+        tmux_socket_name: Option<&str>,
     ) -> Result<(), WorkspaceError> {
         let _snapshot_write = begin_snapshot_write(&self.inner);
         let _navigation = self
@@ -3477,6 +3500,7 @@ impl Workspace {
             worktree_path,
             generation,
             session_name,
+            tmux_socket_name,
         )?;
         let worktree_key = request.presentation_key();
         let equivalent_tmux_key = equivalent_tmux_presentation_key(&self.inner, &request);
@@ -10566,6 +10590,7 @@ fn capture_kwt_worktree_request(
     worktree_path: &str,
     generation: Option<&str>,
     session_name: &str,
+    tmux_socket_name: Option<&str>,
 ) -> Result<AttachRequest, WorkspaceError> {
     if host_id != "wsl"
         || inner
@@ -10616,6 +10641,7 @@ fn capture_kwt_worktree_request(
                     worktree.path == worktree_path
                         && worktree.generation.as_deref() == generation
                         && worktree.session_name == session_name
+                        && worktree.tmux_socket_name.as_deref() == tmux_socket_name
                 })
             })
             .ok_or_else(|| {
@@ -16080,6 +16106,7 @@ mod tests {
             "/work/project/topic",
             Some("g7"),
             "project-topic",
+            None,
         )
         .expect("KWT identity grants repair-or-open authority");
         assert!(matches!(request.target, AttachTarget::Worktree { .. }));
@@ -16094,6 +16121,7 @@ mod tests {
             "/work/project/pr-17",
             Some("g8"),
             "project-pr-17",
+            Some("kwt-pr-a1b2"),
         )
         .expect("KWT identity grants protected attach authority");
         assert!(matches!(
@@ -16107,6 +16135,22 @@ mod tests {
             protected_selection,
             SessionSelection::new("wsl", "Ubuntu", "project-pr-17"),
             "a same-named default-socket session is a different presentation"
+        );
+        assert!(
+            capture_kwt_worktree_request(
+                &workspace.inner,
+                "wsl",
+                "Ubuntu",
+                "project-id",
+                "/repos/project",
+                "project-fingerprint",
+                "/work/project/pr-17",
+                Some("g8"),
+                "project-pr-17",
+                Some("kwt-pr-replaced"),
+            )
+            .is_err(),
+            "a stale protected-socket action cannot open the replacement server"
         );
         assert!(matches!(
             capture_kill_request(&workspace.inner, &protected_selection, 9)
@@ -16125,6 +16169,7 @@ mod tests {
                 "/work/project/topic",
                 Some("stale"),
                 "project-topic",
+                None,
             )
             .is_err()
         );
