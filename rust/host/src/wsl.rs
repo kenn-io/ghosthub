@@ -1280,11 +1280,7 @@ impl<R: CommandRunner> WslHost<R> {
             cancellation,
         )?;
         if output.status != 0 {
-            return Err(classify_command_failure(
-                output.status,
-                &output.stderr,
-                "list KWT branches",
-            ));
+            return Err(classify_kwt_command_failure(&output, "list KWT branches"));
         }
         self.require_runtime(endpoint, runtime, cancellation)?;
         parse_branches(&output.stdout)
@@ -4530,6 +4526,7 @@ mod tests {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
         mutation_timeouts: Arc<Mutex<Vec<Duration>>>,
         mutation_failure: Arc<Mutex<Option<String>>>,
+        branch_failure: Arc<AtomicBool>,
         helper_matches: Arc<AtomicBool>,
     }
 
@@ -4539,8 +4536,21 @@ mod tests {
                 calls: Arc::default(),
                 mutation_timeouts: Arc::default(),
                 mutation_failure: Arc::default(),
+                branch_failure: Arc::new(AtomicBool::new(false)),
                 helper_matches: Arc::new(AtomicBool::new(true)),
             }
+        }
+    }
+
+    impl KwtMutationRunner {
+        fn branch_failure_output(&self, args: &[String]) -> Option<CommandOutput> {
+            (self.branch_failure.load(Ordering::Acquire)
+                && args.windows(2).any(|pair| pair == ["branches", "--json"]))
+            .then(|| CommandOutput {
+                status: 1,
+                stdout: br#"{"error":{"code":"inventory_timeout","message":"branch inventory did not settle","retryable":true}}"#.to_vec(),
+                stderr: Vec::new(),
+            })
         }
     }
 
@@ -4592,6 +4602,9 @@ mod tests {
                     .into_bytes(),
                     stderr: Vec::new(),
                 });
+            }
+            if let Some(output) = self.branch_failure_output(&args) {
+                return Ok(output);
             }
             let stdout = if args.iter().any(|argument| argument == "/usr/bin/cat") {
                 TEST_RUNTIME_OUTPUT.to_vec()
@@ -4845,6 +4858,27 @@ mod tests {
         assert_eq!(
             *runner.mutation_timeouts.lock().expect("mutation timeouts"),
             vec![KWT_MUTATION_TIMEOUT, KWT_MUTATION_TIMEOUT]
+        );
+    }
+
+    #[test]
+    fn kwt_branch_list_preserves_structured_command_failures() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        runner.branch_failure.store(true, Ordering::Release);
+
+        let error = host
+            .list_kwt_branches(
+                &endpoint,
+                &runtime,
+                "/code/widget",
+                &CancellationToken::new(),
+            )
+            .expect_err("structured branch failure");
+
+        assert_eq!(error.kind(), DiagnosticKind::Timeout);
+        assert_eq!(
+            error.to_string(),
+            "branch inventory did not settle Try again."
         );
     }
 
