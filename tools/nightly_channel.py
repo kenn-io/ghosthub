@@ -22,6 +22,7 @@ from xml.etree import ElementTree
 SPARKLE_NAMESPACE = "https://sparkle-project.org/xml-namespaces/sparkle"
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
+ASCII_NUMBER_RE = re.compile(r"[0-9]+\Z")
 IMMUTABLE_CACHE_CONTROL = "public,max-age=31536000,immutable"
 MUTABLE_CACHE_CONTROL = "no-cache"
 DMG_CONTENT_TYPE = "application/x-apple-diskimage"
@@ -419,15 +420,30 @@ class AwsCliObjectStore:
                     [
                         "--delete",
                         f"file://{temp_path}",
+                        "--output",
+                        "json",
                         *self.common_arguments(),
                     ]
                 )
-                subprocess.run(
+                result = subprocess.run(
                     command,
                     check=True,
                     text=True,
                     capture_output=True,
                 )
+                response = json.loads(result.stdout)
+                if not isinstance(response, dict):
+                    raise ValueError("object-store deletion returned invalid JSON")
+                errors = response.get("Errors", [])
+                if not isinstance(errors, list):
+                    raise ValueError("object-store deletion returned invalid Errors")
+                if errors:
+                    first = errors[0] if isinstance(errors[0], dict) else {}
+                    key = first.get("Key", "unknown key")
+                    code = first.get("Code", "unknown error")
+                    raise ValueError(
+                        f"object-store deletion failed for {key}: {code}"
+                    )
             finally:
                 if temp_path is not None:
                     temp_path.unlink(missing_ok=True)
@@ -599,14 +615,14 @@ def cleanup_old_builds(
         parts = key.split("/")
         if len(parts) < 7 or parts[0] != "builds":
             continue
-        if not parts[1].isdigit():
+        if ASCII_NUMBER_RE.fullmatch(parts[1]) is None:
             continue
         build = int(parts[1])
         if (
             parts[2] != "runs"
-            or not parts[3].isdigit()
+            or ASCII_NUMBER_RE.fullmatch(parts[3]) is None
             or parts[4] != "attempts"
-            or not parts[5].isdigit()
+            or ASCII_NUMBER_RE.fullmatch(parts[5]) is None
             or not parts[6]
         ):
             unsafe_builds.add(build)

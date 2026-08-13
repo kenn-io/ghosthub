@@ -151,8 +151,10 @@ print("{PUBLIC_KEY}")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+@pytest.mark.parametrize("same_source_recovery", [False, True])
 def test_nightly_wrapper_uses_an_immutable_attempt_url_without_key_leaks(
     tmp_path,
+    same_source_recovery,
 ):
     repo_root = Path(__file__).resolve().parents[1]
     git_repo, previous_sha, _, source_sha = make_git_history(tmp_path)
@@ -178,7 +180,9 @@ def test_nightly_wrapper_uses_an_immutable_attempt_url_without_key_leaks(
         "RELEASE_DMG_NAME": dmg_name,
         "NIGHTLY_PUBLIC_BASE_URL": "https://nightly-downloads.ghosthub.ai",
         "NIGHTLY_SOURCE_SHA": source_sha,
-        "NIGHTLY_PREVIOUS_SOURCE_SHA": previous_sha,
+        "NIGHTLY_PREVIOUS_SOURCE_SHA": (
+            source_sha if same_source_recovery else previous_sha
+        ),
         "NIGHTLY_BUILD_AT": "2026-08-13T08:00:00Z",
         "NIGHTLY_BUILD_VERSION": "123",
         "NIGHTLY_REPOSITORY_PATH": str(git_repo),

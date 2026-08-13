@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from nightly_channel import (  # noqa: E402
     IMMUTABLE_CACHE_CONTROL,
     MUTABLE_CACHE_CONTROL,
     AppcastPointer,
+    AwsCliObjectStore,
     ChannelManifest,
     PublicationInputs,
     cleanup_old_builds,
@@ -432,3 +434,41 @@ def test_cleanup_keeps_all_attempts_for_thirty_numeric_builds():
         assert f"builds/{build}/runs/7/attempts/2/artifact.dmg" in remaining
     assert "builds/36/runs/7/attempts/1/future.dmg" in remaining
     assert invalid_key in remaining
+
+
+def test_cleanup_refuses_non_ascii_numeric_path_components():
+    store = MemoryObjectStore()
+    unicode_build = "builds/²/runs/7/attempts/1/artifact.dmg"
+    unicode_run = "builds/1/runs/١/attempts/1/artifact.dmg"
+    valid_sibling = "builds/1/runs/7/attempts/1/artifact.dmg"
+    for key in (unicode_build, unicode_run, valid_sibling):
+        store.objects[key] = b"artifact"
+    current = ChannelManifest.from_json(
+        json.dumps(manifest_data(build=35)).encode(), PUBLIC_BASE_URL
+    )
+
+    cleanup_old_builds(store, current, retain_builds=30)
+
+    assert unicode_build in store.objects
+    assert unicode_run in store.objects
+    assert valid_sibling in store.objects
+
+
+def test_aws_delete_reports_per_object_failures(tmp_path, monkeypatch):
+    fake_aws = tmp_path / "aws"
+    fake_aws.write_text(
+        """#!/bin/sh
+printf '%s\\n' '{"Errors":[{"Key":"builds/1/file","Code":"AccessDenied"}]}'
+""",
+        encoding="utf-8",
+    )
+    fake_aws.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    store = AwsCliObjectStore(
+        bucket="nightly",
+        endpoint_url="https://objects.example.test",
+        region="auto",
+    )
+
+    with pytest.raises(ValueError, match="AccessDenied"):
+        store.delete_keys(["builds/1/file"])

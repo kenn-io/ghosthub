@@ -97,8 +97,10 @@ def render_notes(
     if build_time.tzinfo is None:
         raise ValueError("built_at must include a timezone")
 
-    if previous_source_sha is not None and is_ancestor(
-        repo_path, previous_source_sha, source_sha
+    if (
+        previous_source_sha is not None
+        and previous_source_sha != source_sha
+        and is_ancestor(repo_path, previous_source_sha, source_sha)
     ):
         commits = commit_subjects(
             repo_path, f"{previous_source_sha}..{source_sha}"
