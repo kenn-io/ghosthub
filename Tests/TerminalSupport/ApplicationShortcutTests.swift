@@ -136,6 +136,53 @@ struct ApplicationShortcutTests {
     }
 
     @Test(
+        "numbered native tabs reserve Command digits",
+        arguments: [
+            ("cmd+1", "Select Tab 1"),
+            ("cmd+8", "Select Tab 8"),
+            ("cmd+9", "Select Last Tab"),
+        ]
+    )
+    func numberedNativeTabCollision(
+        source: String,
+        owner: String
+    ) throws {
+        let binding = try ApplicationKeyBinding(parsing: source)
+
+        #expect(ApplicationShortcutCatalog.validationMessage(
+            for: binding,
+            action: .selectSibling1,
+            overrides: [:]
+        ) == "Reserved for \(owner).")
+    }
+
+    @Test(
+        "numbered native tab commands never enter the terminal",
+        arguments: [
+            ("1", UInt16(18)),
+            ("2", UInt16(19)),
+            ("3", UInt16(20)),
+            ("4", UInt16(21)),
+            ("5", UInt16(23)),
+            ("6", UInt16(22)),
+            ("7", UInt16(26)),
+            ("8", UInt16(28)),
+            ("9", UInt16(25)),
+        ]
+    )
+    func numberedNativeTabsAreTerminalReserved(
+        character: String,
+        keyCode: UInt16
+    ) {
+        #expect(TerminalApplicationShortcut.isReserved(
+            flags: .command,
+            chars: character,
+            keyCode: keyCode,
+            hasPaneCloseHandler: false
+        ))
+    }
+
+    @Test(
         "standard macOS menu shortcuts remain reserved",
         arguments: [
             ("cmd+z", "Undo"),
