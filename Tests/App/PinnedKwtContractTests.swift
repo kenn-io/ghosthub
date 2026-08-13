@@ -108,6 +108,7 @@ struct PinnedKwtContractTests {
         #expect(primary.path == registered.path)
         #expect(!primary.repository.isEmpty)
         #expect(!primary.sessionName.isEmpty)
+        #expect(primary.sessionName.hasPrefix("kwt-wt-widget-"))
 
         try FileManager.default.moveItem(
             at: repository,
@@ -590,7 +591,7 @@ struct PinnedKwtContractTests {
         let observed = try #require(
             try await inventoryClient.load(from: .local).projects.first
         ).project
-        try await Task.sleep(for: .milliseconds(10))
+        try await Task.sleep(for: .seconds(1))
         _ = try await registry.register(
             projectPath: repository.path,
             on: .local
