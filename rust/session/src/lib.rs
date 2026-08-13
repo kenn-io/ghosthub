@@ -395,6 +395,7 @@ pub struct RepairOrOpenPlan {
     program: OsString,
     args: Vec<OsString>,
     target_name: String,
+    readiness_path: String,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -460,11 +461,13 @@ impl RepairOrOpenPlan {
         program: impl Into<OsString>,
         args: Vec<OsString>,
         target_name: impl Into<String>,
+        readiness_path: impl Into<String>,
     ) -> Self {
         Self {
             program: program.into(),
             args,
             target_name: target_name.into(),
+            readiness_path: readiness_path.into(),
         }
     }
 
@@ -481,6 +484,11 @@ impl RepairOrOpenPlan {
     #[must_use]
     pub fn target_name(&self) -> &str {
         &self.target_name
+    }
+
+    #[must_use]
+    pub fn readiness_path(&self) -> &str {
+        &self.readiness_path
     }
 }
 

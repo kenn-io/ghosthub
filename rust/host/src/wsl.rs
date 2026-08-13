@@ -38,6 +38,7 @@ const UNCERTAIN_CLEANUP_SETTLE: Duration = Duration::from_secs(2);
 // same framing before inventory. Delimiters in names therefore stay unambiguous
 // without adding another process crossing.
 const INVENTORY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}\t#{session_attached}\t#{n:session_name}\t#{session_name}";
+const CLIENT_READINESS_FORMAT: &str = "#{client_pid}\t#{pid}\t#{session_id}\t#{session_created}";
 const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}";
 const KILL_IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_kill_identity_mismatch_v1__";
 static ADMISSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -1111,6 +1112,8 @@ impl<R: CommandRunner> WslHost<R> {
         })?;
         let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
         self.require_runtime(endpoint, runtime, cancellation)?;
+        let readiness_path = kwt_client_readiness_path()?;
+        let readiness_staging_path = format!("{readiness_path}.tmp");
         let mut args = pinned_prefix(endpoint);
         append_tmux_environment(
             &mut args,
@@ -1120,6 +1123,12 @@ impl<R: CommandRunner> WslHost<R> {
         );
         args.extend(
             [
+                "/bin/sh",
+                "-c",
+                "umask 077; /usr/bin/printf '%s\\n' \"$$\" > \"$1\" && /usr/bin/mv -T -- \"$1\" \"$2\" && shift 2 && exec \"$@\"",
+                "ghosthub-worktree-client",
+                readiness_staging_path.as_str(),
+                readiness_path.as_str(),
                 helper.as_str(),
                 "open",
                 request.path(),
@@ -1139,7 +1148,90 @@ impl<R: CommandRunner> WslHost<R> {
             self.wsl_executable.as_os_str(),
             args,
             request.session_name(),
+            &readiness_path,
         ))
+    }
+
+    /// Query whether the exact client process launched by a KWT open plan is
+    /// attached to tmux, returning that client's live session identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when WSL restarts, the readiness receipt is
+    /// malformed, or tmux cannot be queried safely.
+    pub fn kwt_client_session_identity(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        readiness_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<SessionIdentity>, HostError> {
+        require_kwt_client_readiness_path(readiness_path)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let receipt = self.run_scrubbed(
+            endpoint,
+            &[
+                "/bin/sh",
+                "-c",
+                "if [ -s \"$1\" ]; then exec /usr/bin/cat -- \"$1\"; fi",
+                "ghosthub-read-worktree-client",
+                readiness_path,
+            ],
+            cancellation,
+        )?;
+        if receipt.status != 0 {
+            return Err(classify_command_failure(
+                receipt.status,
+                &receipt.stderr,
+                "read KWT client readiness",
+            ));
+        }
+        if receipt.stdout.is_empty() {
+            return Ok(None);
+        }
+        let client_pid = parse_kwt_client_pid(&receipt.stdout)?;
+        let output = self.run_tmux_command(
+            endpoint,
+            cancellation,
+            &[
+                "-f",
+                "/dev/null",
+                "list-clients",
+                "-F",
+                CLIENT_READINESS_FORMAT,
+            ],
+        )?;
+        if output.status != 0 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_no_server(&stderr) {
+                return Ok(None);
+            }
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "query KWT tmux client readiness",
+            ));
+        }
+        let matched = parse_kwt_client_identity(&output.stdout, client_pid)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        Ok(matched)
+    }
+
+    pub fn remove_kwt_client_readiness(
+        &self,
+        endpoint: &WslEndpoint,
+        readiness_path: &str,
+        cancellation: &CancellationToken,
+    ) {
+        if require_kwt_client_readiness_path(readiness_path).is_err() {
+            return;
+        }
+        let staging = format!("{readiness_path}.tmp");
+        let _ignored = self.run_scrubbed(
+            endpoint,
+            &["/usr/bin/rm", "-f", "--", readiness_path, &staging],
+            cancellation,
+        );
     }
 
     /// List existing branch candidates for one freshly identified project.
@@ -3835,6 +3927,107 @@ fn helper_nonce() -> Result<String, HostError> {
     Ok(format!("{:032x}", u128::from_ne_bytes(nonce)))
 }
 
+fn kwt_client_readiness_path() -> Result<String, HostError> {
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).map_err(|error| {
+        HostError::new(
+            DiagnosticKind::Transport,
+            format!("generate KWT client readiness name: {error}"),
+        )
+    })?;
+    Ok(format!(
+        "/tmp/.ghosthub-kwt-client-{:032x}",
+        u128::from_ne_bytes(nonce)
+    ))
+}
+
+fn require_kwt_client_readiness_path(path: &str) -> Result<(), HostError> {
+    let Some(nonce) = path.strip_prefix("/tmp/.ghosthub-kwt-client-") else {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT client readiness path was outside Ghosthub's private namespace",
+        ));
+    };
+    if nonce.len() != 32
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT client readiness path had an invalid nonce",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_kwt_client_pid(bytes: &[u8]) -> Result<u32, HostError> {
+    let text = decode(bytes, "KWT client readiness")?.trim();
+    let pid = text.parse::<u32>().map_err(|_| {
+        HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT client readiness contained an invalid process ID",
+        )
+    })?;
+    if pid == 0 || pid.to_string() != text {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT client readiness contained a noncanonical process ID",
+        ));
+    }
+    Ok(pid)
+}
+
+fn parse_kwt_client_identity(
+    bytes: &[u8],
+    client_pid: u32,
+) -> Result<Option<SessionIdentity>, HostError> {
+    let mut matched = None;
+    let client_pid_text = client_pid.to_string();
+    for line in decode(bytes, "KWT tmux client readiness")?.lines() {
+        let mut fields = line.split('\t');
+        if fields.next() != Some(client_pid_text.as_str()) {
+            continue;
+        }
+        let server_pid = fields
+            .next()
+            .and_then(|field| field.parse::<u32>().ok())
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "KWT tmux client readiness had an invalid server PID",
+                )
+            })?;
+        let session_id = fields
+            .next()
+            .filter(|field| is_tmux_session_id(field))
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "KWT tmux client readiness had an invalid session ID",
+                )
+            })?;
+        let created_at = fields
+            .next()
+            .and_then(|field| field.parse::<u64>().ok())
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "KWT tmux client readiness had an invalid creation time",
+                )
+            })?;
+        if fields.next().is_some() || matched.is_some() {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT tmux client readiness was ambiguous",
+            ));
+        }
+        matched = Some(SessionIdentity::new(server_pid, session_id, created_at));
+    }
+    Ok(matched)
+}
+
 fn require_kwt_command(output: &CommandOutput, subject: &str) -> Result<(), HostError> {
     if output.status == 0 {
         Ok(())
@@ -4677,8 +4870,48 @@ mod tests {
             args.iter()
                 .any(|argument| argument == "TERM=xterm-256color")
         );
+        assert!(args.windows(2).any(|args| args == ["/bin/sh", "-c"]));
+        assert!(args.iter().any(|argument| argument.contains("exec \"$@\"")));
+        assert!(
+            plan.readiness_path()
+                .starts_with("/tmp/.ghosthub-kwt-client-")
+        );
+        require_kwt_client_readiness_path(plan.readiness_path())
+            .expect("plan uses a private canonical readiness path");
         assert_eq!(plan.target_name(), "widget-topic");
         assert_eq!(plan.clone(), plan);
+    }
+
+    #[test]
+    fn kwt_client_readiness_paths_are_strictly_scoped() {
+        assert!(
+            require_kwt_client_readiness_path(
+                "/tmp/.ghosthub-kwt-client-0123456789abcdef0123456789abcdef"
+            )
+            .is_ok()
+        );
+        for path in [
+            "/tmp/unrelated",
+            "/tmp/.ghosthub-kwt-client-0123",
+            "/tmp/.ghosthub-kwt-client-0123456789ABCDEF0123456789ABCDEF",
+        ] {
+            assert!(require_kwt_client_readiness_path(path).is_err());
+        }
+    }
+
+    #[test]
+    fn kwt_client_readiness_matches_only_the_recorded_process() {
+        let identity = parse_kwt_client_identity(b"8\t40\t$1\t90\n7\t42\t$3\t99\n", 7)
+            .expect("valid readiness inventory")
+            .expect("recorded client is attached");
+
+        assert_eq!(identity, SessionIdentity::new(42, "$3", 99));
+        assert!(
+            parse_kwt_client_identity(b"8\t40\t$1\t90\n", 7)
+                .expect("unrelated clients are valid")
+                .is_none()
+        );
+        assert!(parse_kwt_client_pid(b"007\n").is_err());
     }
 
     #[test]

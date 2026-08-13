@@ -39,6 +39,18 @@ const HERDR_STARTUP_BACKOFF: [Duration; 8] = [
     Duration::from_secs(1),
     Duration::from_secs(1),
 ];
+const WORKTREE_CLIENT_STARTUP_BACKOFF: [Duration; 10] = [
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+    Duration::from_millis(800),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(2),
+    Duration::from_secs(3),
+    Duration::from_secs(3),
+    Duration::from_secs(3),
+];
 const CREATE_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const CREATE_IDENTITY_MIN_COLUMNS: usize = 120;
 const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -10155,45 +10167,66 @@ fn launch_fresh_worktree_once(
             error.to_string(),
         )))
     })?;
-    if let Err(error) =
-        wait_for_worktree_client_startup(term, cancellation, &HERDR_STARTUP_BACKOFF, || {
+    let readiness_path = plan.readiness_path().to_owned();
+    let client_identity = wait_for_worktree_client_startup(
+        term,
+        cancellation,
+        &WORKTREE_CLIENT_STARTUP_BACKOFF,
+        || {
             worker
                 .startup_status()
                 .map_err(|error| WorkspaceError::new(error.to_string()))
-        })
-    {
-        drop(worker);
-        return Err(match error {
-            WorktreeClientStartupError::RetryWithXterm => WorktreeLaunchError::RetryWithXterm,
-            WorktreeClientStartupError::Failed(error) => {
-                WorktreeLaunchError::Attach(kwt_attachment_failure(fresh, error))
-            }
-        });
-    }
-    let discovered = poll_session_startup("tmux", cancellation, &HERDR_STARTUP_BACKOFF, || {
-        let snapshot = request
-            .host
-            .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
-            .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        if snapshot.endpoint() != &request.endpoint || snapshot.runtime() != &request.runtime {
-            return Err(WorkspaceError::new(
-                "WSL changed while opening the worktree session",
-            ));
+        },
+        || {
+            request
+                .host
+                .kwt_client_session_identity(
+                    fresh.endpoint(),
+                    fresh.runtime(),
+                    &readiness_path,
+                    cancellation,
+                )
+                .map_err(|error| WorkspaceError::new(error.to_string()))
+        },
+    );
+    request.host.remove_kwt_client_readiness(
+        fresh.endpoint(),
+        &readiness_path,
+        &CancellationToken::new(),
+    );
+    let client_identity = match client_identity {
+        Ok(identity) => identity,
+        Err(error) => {
+            drop(worker);
+            return Err(match error {
+                WorktreeClientStartupError::RetryWithXterm => WorktreeLaunchError::RetryWithXterm,
+                WorktreeClientStartupError::Failed(error) => {
+                    WorktreeLaunchError::Attach(kwt_attachment_failure(fresh, error))
+                }
+            });
         }
-        Ok(snapshot
-            .sessions()
-            .iter()
-            .any(|session| session.name() == open.session_name())
-            .then_some(snapshot))
-    })
-    .map_err(|error| WorktreeLaunchError::Attach(AttachFreshError::Host(error)))?;
-    let Some(discovered) = discovered else {
+    };
+    let discovered = request
+        .host
+        .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+        .map_err(|error| WorktreeLaunchError::Attach(kwt_attachment_failure(fresh, error)))?;
+    if discovered.endpoint() != &request.endpoint || discovered.runtime() != &request.runtime {
         drop(worker);
         return Err(WorktreeLaunchError::Attach(kwt_attachment_failure(
             fresh,
-            "KWT attached its client, but the worktree session did not appear in inventory",
+            "WSL changed while opening the worktree session",
         )));
-    };
+    }
+    let identity_matches = discovered.sessions().iter().any(|session| {
+        session.name() == open.session_name() && session.identity() == &client_identity
+    });
+    if !identity_matches {
+        drop(worker);
+        return Err(WorktreeLaunchError::Attach(kwt_attachment_failure(
+            fresh,
+            "KWT attached its client to a session that did not match the worktree inventory",
+        )));
+    }
     Ok((worker, discovered, plan.target_name().to_owned(), geometry))
 }
 
@@ -10208,10 +10241,11 @@ fn wait_for_worktree_client_startup(
     cancellation: &CancellationToken,
     backoff: &[Duration],
     mut observe: impl FnMut() -> Result<TerminalStartup, WorkspaceError>,
-) -> Result<(), WorktreeClientStartupError> {
+    mut readiness: impl FnMut() -> Result<Option<session::SessionIdentity>, WorkspaceError>,
+) -> Result<session::SessionIdentity, WorktreeClientStartupError> {
+    let mut candidate = None;
     for delay in backoff {
         match observe().map_err(WorktreeClientStartupError::Failed)? {
-            TerminalStartup::Confirmed => return Ok(()),
             TerminalStartup::Exited { code, output_tail } => {
                 return classify_kwt_startup_exit(code, &output_tail, term);
             }
@@ -10220,7 +10254,15 @@ fn wait_for_worktree_client_startup(
                     format!("KWT could not open the worktree: {error}"),
                 )));
             }
-            TerminalStartup::Pending => {}
+            TerminalStartup::Confirmed | TerminalStartup::Pending => {}
+        }
+        if let Some(identity) = readiness().map_err(WorktreeClientStartupError::Failed)? {
+            if candidate.as_ref() == Some(&identity) {
+                return Ok(identity);
+            }
+            candidate = Some(identity);
+        } else {
+            candidate = None;
         }
         if cancellation.wait_cancelled(*delay) {
             return Err(WorktreeClientStartupError::Failed(WorkspaceError::new(
@@ -10229,24 +10271,30 @@ fn wait_for_worktree_client_startup(
         }
     }
     match observe().map_err(WorktreeClientStartupError::Failed)? {
-        TerminalStartup::Confirmed => Ok(()),
         TerminalStartup::Exited { code, output_tail } => {
             classify_kwt_startup_exit(code, &output_tail, term)
         }
         TerminalStartup::Failed(error) => Err(WorktreeClientStartupError::Failed(
             WorkspaceError::new(format!("KWT could not open the worktree: {error}")),
         )),
-        TerminalStartup::Pending => Err(WorktreeClientStartupError::Failed(WorkspaceError::new(
-            "KWT worktree client did not establish an attached terminal",
-        ))),
+        TerminalStartup::Confirmed | TerminalStartup::Pending => {
+            if let Some(identity) = readiness().map_err(WorktreeClientStartupError::Failed)?
+                && candidate.as_ref() == Some(&identity)
+            {
+                return Ok(identity);
+            }
+            Err(WorktreeClientStartupError::Failed(WorkspaceError::new(
+                "KWT worktree client did not establish an attached tmux client",
+            )))
+        }
     }
 }
 
-fn classify_kwt_startup_exit(
+fn classify_kwt_startup_exit<T>(
     code: u32,
     output_tail: &str,
     term: AttachTerm,
-) -> Result<(), WorktreeClientStartupError> {
+) -> Result<T, WorktreeClientStartupError> {
     if is_exact_terminfo_startup_failure(output_tail, term) && term == AttachTerm::Xterm256Color {
         return Err(WorktreeClientStartupError::RetryWithXterm);
     }
@@ -11359,6 +11407,7 @@ mod tests {
                     .pop_front()
                     .expect("one observation per startup attempt"))
             },
+            || Ok(None),
         )
         .expect_err("guard rejection must prevent session publication");
 
@@ -11382,6 +11431,7 @@ mod tests {
                 observations += 1;
                 Ok(TerminalStartup::Pending)
             },
+            || Ok(None),
         )
         .expect_err("a same-named session cannot prove client attachment");
 
@@ -11395,18 +11445,45 @@ mod tests {
     #[test]
     fn worktree_startup_retries_only_the_exact_initial_terminfo_failure() {
         let cancellation = CancellationToken::new();
-        let error =
-            wait_for_worktree_client_startup(AttachTerm::Xterm256Color, &cancellation, &[], || {
+        let error = wait_for_worktree_client_startup(
+            AttachTerm::Xterm256Color,
+            &cancellation,
+            &[],
+            || {
                 Ok(TerminalStartup::Exited {
                     code: 1,
                     output_tail:
                         "open terminal failed: missing or unsuitable terminal: xterm-256color\r\n"
                             .to_owned(),
                 })
-            })
-            .expect_err("missing xterm-256color requests the conservative retry");
+            },
+            || Ok(None),
+        )
+        .expect_err("missing xterm-256color requests the conservative retry");
 
         assert!(matches!(error, WorktreeClientStartupError::RetryWithXterm));
+    }
+
+    #[test]
+    fn worktree_startup_uses_stable_tmux_client_identity_without_alt_screen() {
+        let cancellation = CancellationToken::new();
+        let identity = session::SessionIdentity::new(42, "$7", 99);
+        let mut readiness = VecDeque::from([Some(identity.clone()), Some(identity.clone())]);
+
+        let observed = wait_for_worktree_client_startup(
+            AttachTerm::Xterm256Color,
+            &cancellation,
+            &[Duration::ZERO, Duration::ZERO],
+            || Ok(TerminalStartup::Pending),
+            || {
+                Ok(readiness
+                    .pop_front()
+                    .expect("one readiness result per probe"))
+            },
+        )
+        .expect("stable exact tmux client identity proves attachment");
+
+        assert_eq!(observed, identity);
     }
     use std::collections::VecDeque;
     use std::sync::{Barrier, atomic::AtomicUsize, mpsc};
