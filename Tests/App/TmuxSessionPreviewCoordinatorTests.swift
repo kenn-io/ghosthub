@@ -268,6 +268,46 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.captures == [presentation.key])
     }
 
+    @Test("Efficient retries an interrupted capture after sidebar reveal")
+    func efficientRetriesInterruptedCaptureAfterSidebarReveal() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        harness.suspendCaptures = true
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        await harness.waitUntilCaptureSuspends()
+
+        harness.coordinator.setSidebarVisible(false)
+        harness.coordinator.setSidebarVisible(true)
+        for _ in 0 ..< 100 where harness.captures.count < 2 {
+            await Task.yield()
+        }
+
+        #expect(harness.captures == [presentation.key, presentation.key])
+        harness.resumeCapture()
+        await harness.coordinator.waitForPendingWork()
+    }
+
+    @Test("Efficient retries an interrupted capture after app activation")
+    func efficientRetriesInterruptedCaptureAfterApplicationActivation() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        harness.suspendCaptures = true
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        await harness.waitUntilCaptureSuspends()
+
+        harness.coordinator.applicationDidResignActive()
+        harness.coordinator.applicationDidBecomeActive()
+        for _ in 0 ..< 100 where harness.captures.count < 2 {
+            await Task.yield()
+        }
+
+        #expect(harness.captures == [presentation.key, presentation.key])
+        harness.resumeCapture()
+        await harness.coordinator.waitForPendingWork()
+    }
+
     @Test("capture failure preserves the last valid frame")
     func captureFailurePreservesFrame() async {
         let harness = PreviewCoordinatorHarness(mode: .efficient)

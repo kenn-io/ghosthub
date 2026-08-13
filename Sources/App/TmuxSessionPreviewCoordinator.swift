@@ -850,6 +850,14 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     private func invalidateAllEligibility() {
+        if mode == .efficient {
+            deferredEfficientCaptureKeys.formUnion(
+                activeCaptureIDs.keys.filter { key in
+                    expandedKeys.contains(key)
+                        && presentations[key]?.isActive() == true
+                }
+            )
+        }
         presentations.keys.forEach(invalidate)
         invalidateActivationDelay()
     }
