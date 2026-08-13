@@ -114,11 +114,13 @@ private func makeTestTmuxServer(
     tmuxPath: String,
     purpose: String,
     sessions: [String],
+    environment: [String: String] = ProcessInfo.processInfo.environment,
     commandRunner: TestTmuxServer.CommandRunner? = nil
 ) throws -> TestTmuxServer {
     let server = try TestTmuxServer(
         tmuxPath: tmuxPath,
         socket: .runOwned(purpose: purpose),
+        environment: environment,
         commandRunner: commandRunner
     )
     for session in sessions {
@@ -129,39 +131,43 @@ private func makeTestTmuxServer(
 
 private struct TestTmuxLoginShell: Sendable {
     let shell: String
-    let tmuxDirectory: String
+    let environment: [String: String]
 
-    init(shell: String) throws {
+    init(shell: String, environment: [String: String]) throws {
         self.shell = shell
-        tmuxDirectory = try #require(
-            ProcessInfo.processInfo.environment["TMUX_TMPDIR"]
-        )
+        self.environment = environment
+        _ = try #require(environment["TMUX_TMPDIR"])
     }
 
     func run(
         command: String,
         timeout: TimeInterval,
-        captureStandardError: Bool = false
+        captureStandardError: Bool = false,
+        environment: [String: String]? = nil
     ) -> (status: Int32, stdout: String) {
-        AccountCommandRunner.runLoginShell(
+        let environment = environment ?? self.environment
+        let tmuxDirectory = environment["TMUX_TMPDIR"] ?? ""
+        return AccountCommandRunner.runLoginShell(
             shell: shell,
             command: "export TMUX_TMPDIR="
                 + shellQuotedCommandArgument(tmuxDirectory)
                 + "; " + command,
             timeout: timeout,
-            captureStandardError: captureStandardError
+            captureStandardError: captureStandardError,
+            environmentOverrides: ["TMUX_TMPDIR": tmuxDirectory]
         )
     }
 
     func commandRunner() -> TestTmuxServer.CommandRunner {
-        { executable, arguments, timeout in
+        { executable, arguments, timeout, environment in
             let command = ([executable] + arguments)
                 .map(shellQuotedCommandArgument)
                 .joined(separator: " ")
             let result = run(
                 command: command,
                 timeout: timeout,
-                captureStandardError: true
+                captureStandardError: true,
+                environment: environment
             )
             return TestTmuxCommandOutput(
                 status: result.status,
@@ -672,18 +678,24 @@ struct TmuxPaneSplitterTests {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 == profileTmuxDirectory
         )
-        let tmuxLoginShell = try TestTmuxLoginShell(shell: shell.path)
+        let fixtureEnvironment = ProcessInfo.processInfo.environment
+        let tmuxLoginShell = try TestTmuxLoginShell(
+            shell: shell.path,
+            environment: fixtureEnvironment
+        )
         let commandRunner = tmuxLoginShell.commandRunner()
         let targetServer = try makeTestTmuxServer(
             tmuxPath: tmuxPath,
             purpose: "target",
             sessions: ["inherited-target"],
+            environment: fixtureEnvironment,
             commandRunner: commandRunner
         )
         let launcherServer = try makeTestTmuxServer(
             tmuxPath: tmuxPath,
             purpose: "launcher",
             sessions: ["launcher"],
+            environment: fixtureEnvironment,
             commandRunner: commandRunner
         )
         let targetSocketName = targetServer.socketName

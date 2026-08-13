@@ -152,7 +152,7 @@ struct TestTmuxServerTests {
         let server = try TestTmuxServer(
             tmuxPath: "/test/tmux",
             socket: .runOwned(purpose: "runner"),
-            commandRunner: { _, arguments, _ in
+            commandRunner: { _, arguments, _, _ in
                 recorder.record(arguments)
                 return TestTmuxCommandOutput(status: 0, stderr: "")
             }
@@ -165,6 +165,39 @@ struct TestTmuxServerTests {
         #expect(calls.count == 2)
         #expect(calls.first?.contains("new-session") == true)
         #expect(calls.last?.suffix(1) == ["kill-server"])
+    }
+
+    @Test("the default runner uses the validated fixture environment")
+    func defaultRunnerUsesValidatedEnvironment() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "ghosthub-tmux-environment-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tmux = directory.appendingPathComponent("tmux")
+        try """
+        #!/bin/sh
+        test "$GHOSTHUB_TEST_ENVIRONMENT_SENTINEL" = fixture
+        """.write(to: tmux, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: tmux.path
+        )
+        var environment = try wrapperEnvironment()
+        environment["GHOSTHUB_TEST_ENVIRONMENT_SENTINEL"] = "fixture"
+        let server = try TestTmuxServer(
+            tmuxPath: tmux.path,
+            socket: .runOwned(purpose: "environment"),
+            environment: environment
+        )
+
+        try server.createSession("owned")
+        server.stop()
     }
 
     private func wrapperEnvironment() throws -> [String: String] {

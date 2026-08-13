@@ -33,7 +33,8 @@ public final class TestTmuxServer: @unchecked Sendable {
     public typealias CommandRunner = @Sendable (
         _ executable: String,
         _ arguments: [String],
-        _ timeout: TimeInterval
+        _ timeout: TimeInterval,
+        _ environment: [String: String]
     ) throws -> TestTmuxCommandOutput
 
     public enum SocketKind: Sendable {
@@ -47,6 +48,7 @@ public final class TestTmuxServer: @unchecked Sendable {
 
     private let tmuxPath: String
     private let commandRunner: CommandRunner
+    private let environment: [String: String]
     private let lock = NSLock()
     private var stopped = false
 
@@ -59,6 +61,7 @@ public final class TestTmuxServer: @unchecked Sendable {
         let context = try Self.wrapperContext(environment: environment)
         self.tmuxPath = tmuxPath
         self.commandRunner = commandRunner ?? Self.run
+        self.environment = environment
 
         switch socket {
         case let .runOwned(purpose):
@@ -112,7 +115,7 @@ public final class TestTmuxServer: @unchecked Sendable {
         if let command {
             arguments.append(command)
         }
-        let result = try commandRunner(tmuxPath, arguments, 10)
+        let result = try commandRunner(tmuxPath, arguments, 10, environment)
         guard result.status == 0 else {
             throw TestTmuxServerError.commandFailed(
                 arguments: arguments,
@@ -135,7 +138,8 @@ public final class TestTmuxServer: @unchecked Sendable {
         _ = try? commandRunner(
             tmuxPath,
             connectionArguments + ["kill-server"],
-            5
+            5,
+            environment
         )
     }
 
@@ -257,13 +261,15 @@ public final class TestTmuxServer: @unchecked Sendable {
     private static func run(
         executable: String,
         arguments: [String],
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        environment: [String: String]
     ) throws -> TestTmuxCommandOutput {
         let process = Process()
         let stderr = Pipe()
         let completed = DispatchSemaphore(value: 0)
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.environment = environment
         process.standardOutput = FileHandle.nullDevice
         process.standardError = stderr
         process.terminationHandler = { _ in completed.signal() }
