@@ -308,11 +308,16 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     func applicationDidBecomeActive() {
         guard !isApplicationActive else { return }
         isApplicationActive = true
+        guard sceneIsKeyWindow() else { return }
         scheduleParkingReacquisition()
     }
 
     func sceneWindowFocusDidChange(isKey: Bool) {
-        guard isKey, isApplicationActive else { return }
+        guard isApplicationActive else { return }
+        guard isKey else {
+            invalidateActivationDelay()
+            return
+        }
         scheduleParkingReacquisition()
     }
 
@@ -357,6 +362,11 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     private func scheduleParkingReacquisition() {
+        guard mode == .live,
+              isApplicationActive,
+              isSidebarVisible,
+              activationTask == nil
+        else { return }
         invalidateActivationDelay()
         let generation = activationGeneration
         activationTask = Task { @MainActor [weak self] in
@@ -366,8 +376,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             } catch {
                 return
             }
-            guard generation == activationGeneration,
-                  isApplicationActive,
+            guard generation == activationGeneration else { return }
+            activationTask = nil
+            guard isApplicationActive,
                   isSidebarVisible,
                   mode == .live,
                   sceneIsKeyWindow()

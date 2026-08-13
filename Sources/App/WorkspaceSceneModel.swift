@@ -1094,10 +1094,11 @@ final class WorkspaceSceneModel: ObservableObject {
     /// identity) so only the focused window handles them.
     var isFocusedWindow = false {
         didSet {
+            guard isFocusedWindow != oldValue else { return }
             tmuxSessionPreviewCoordinator.sceneWindowFocusDidChange(
                 isKey: isFocusedWindow
             )
-            guard isFocusedWindow, !oldValue else { return }
+            guard isFocusedWindow else { return }
             syncTerminalConfig()
         }
     }

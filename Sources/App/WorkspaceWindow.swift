@@ -857,8 +857,12 @@ struct WorkspaceWindow: View {
                         onActivate: activate
                     ))
                 },
-                tmuxSessionPreviewParkingBuilder: { [sceneModel] in
-                    AnyView(TmuxSessionPreviewParkingView(
+                tmuxSessionPreviewParkingBuilder: {
+                    [sceneModel, settingsStore] in
+                    guard settingsStore.sessionPreviewMode != .off else {
+                        return nil
+                    }
+                    return AnyView(TmuxSessionPreviewParkingView(
                         previewCoordinator:
                         sceneModel.tmuxSessionPreviewCoordinator
                     ))

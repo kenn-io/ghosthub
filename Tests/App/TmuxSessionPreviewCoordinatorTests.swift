@@ -441,6 +441,60 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.parks == [presentation.key])
     }
 
+    @Test("non-Live modes schedule no work during activation")
+    func nonLiveActivationSchedulesNoWork() async {
+        let recorder = PreviewIntervalRecorder()
+        let coordinator = TmuxSessionPreviewCoordinator(
+            mode: .off,
+            budget: LivePreviewBudget(limit: 4),
+            capture: { _, _ in nil },
+            park: { _ in },
+            unpark: { _ in },
+            isKeyWindow: { true },
+            sleep: { duration in
+                await recorder.record(duration)
+            }
+        )
+
+        for mode in [SessionPreviewMode.off, .efficient] {
+            coordinator.setMode(mode)
+            coordinator.applicationDidResignActive()
+            coordinator.applicationDidBecomeActive()
+            coordinator.sceneWindowFocusDidChange(isKey: true)
+            for _ in 0 ..< 10 {
+                await Task.yield()
+            }
+        }
+
+        #expect(await recorder.count == 0)
+    }
+
+    @Test("Live coalesces activation parking work for the key scene")
+    func liveActivationCoalescesParkingWork() async {
+        let recorder = PreviewIntervalRecorder()
+        let coordinator = TmuxSessionPreviewCoordinator(
+            mode: .live,
+            budget: LivePreviewBudget(limit: 4),
+            capture: { _, _ in nil },
+            park: { _ in },
+            unpark: { _ in },
+            isKeyWindow: { true },
+            sleep: { duration in
+                await recorder.record(duration)
+            }
+        )
+        coordinator.applicationDidResignActive()
+
+        coordinator.applicationDidBecomeActive()
+        coordinator.sceneWindowFocusDidChange(isKey: true)
+        coordinator.sceneWindowFocusDidChange(isKey: true)
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
+
+        #expect(await recorder.count == 1)
+    }
+
     @Test("invalidating a suspended capture prevents stale publication")
     func suspendedCaptureCannotPublishAfterOff() async {
         let harness = PreviewCoordinatorHarness(mode: .efficient)
@@ -804,6 +858,7 @@ private actor PreviewIntervalRecorder {
     private var intervals: [Duration] = []
 
     var first: Duration? { intervals.first }
+    var count: Int { intervals.count }
 
     func record(_ duration: Duration) {
         intervals.append(duration)
