@@ -56,8 +56,8 @@ const CREATE_IDENTITY_MIN_COLUMNS: usize = 120;
 const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const KWT_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 const KWT_REFRESH_BUDGET: Duration = Duration::from_secs(30);
-const UNCERTAIN_KWT_CREATION_REFRESH_LIMIT: u8 = 3;
-const UNCERTAIN_KWT_CREATION_LIFETIME: Duration = Duration::from_mins(3);
+const PENDING_KWT_CREATION_REFRESH_LIMIT: u8 = 3;
+const PENDING_KWT_CREATION_LIFETIME: Duration = Duration::from_mins(3);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
@@ -6349,8 +6349,8 @@ struct PendingKwtCreation {
     branch: String,
     navigation_generation: u64,
     baseline: Vec<KwtWorktreeIdentity>,
-    uncertain_refreshes_remaining: Option<u8>,
-    uncertain_deadline: Option<Instant>,
+    refreshes_remaining: u8,
+    deadline: Instant,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -7185,18 +7185,12 @@ fn run_kwt_worktree_create(
     );
     match result {
         Ok(()) => {
-            let pending = pending_kwt_creation(task, branch, navigation_generation, baseline, None);
+            let pending = pending_kwt_creation(task, branch, navigation_generation, baseline);
             remember_pending_kwt_creation(inner, pending.clone());
             reconcile_created_kwt_worktree(inner, task, &pending, true)
         }
         Err(error) if error.kind() == DiagnosticKind::Timeout => {
-            let pending = pending_kwt_creation(
-                task,
-                branch,
-                navigation_generation,
-                baseline,
-                Some(UNCERTAIN_KWT_CREATION_REFRESH_LIMIT),
-            );
+            let pending = pending_kwt_creation(task, branch, navigation_generation, baseline);
             remember_pending_kwt_creation(inner, pending.clone());
             reconcile_created_kwt_worktree(inner, task, &pending, false)
         }
@@ -7269,7 +7263,6 @@ fn pending_kwt_creation(
     branch: &str,
     navigation_generation: u64,
     baseline: Vec<KwtWorktreeIdentity>,
-    uncertain_refreshes_remaining: Option<u8>,
 ) -> PendingKwtCreation {
     PendingKwtCreation {
         endpoint: task.endpoint.clone(),
@@ -7279,9 +7272,8 @@ fn pending_kwt_creation(
         branch: branch.to_owned(),
         navigation_generation,
         baseline,
-        uncertain_refreshes_remaining,
-        uncertain_deadline: uncertain_refreshes_remaining
-            .map(|_| Instant::now() + UNCERTAIN_KWT_CREATION_LIFETIME),
+        refreshes_remaining: PENDING_KWT_CREATION_REFRESH_LIMIT,
+        deadline: Instant::now() + PENDING_KWT_CREATION_LIFETIME,
     }
 }
 
@@ -7431,10 +7423,7 @@ fn resolve_pending_kwt_creations_at(
         if candidate.endpoint != *endpoint {
             return true;
         }
-        if candidate
-            .uncertain_deadline
-            .is_some_and(|deadline| now >= deadline)
-        {
+        if now >= candidate.deadline {
             expired.push((
                 candidate.project_path.clone(),
                 candidate.navigation_generation,
@@ -7443,19 +7432,16 @@ fn resolve_pending_kwt_creations_at(
         } else if let Some(target) = pending_kwt_creation_target(candidate, inventory) {
             resolved.push((target, candidate.navigation_generation));
             false
-        } else if let Some(remaining) = candidate.uncertain_refreshes_remaining.as_mut() {
-            *remaining = remaining.saturating_sub(1);
-            if *remaining == 0 {
-                expired.push((
-                    candidate.project_path.clone(),
-                    candidate.navigation_generation,
-                ));
-                false
-            } else {
-                true
-            }
         } else {
-            true
+            candidate.refreshes_remaining = candidate.refreshes_remaining.saturating_sub(1);
+            if candidate.refreshes_remaining > 0 {
+                return true;
+            }
+            expired.push((
+                candidate.project_path.clone(),
+                candidate.navigation_generation,
+            ));
+            false
         }
     });
     drop(pending);
@@ -7473,7 +7459,7 @@ fn resolve_pending_kwt_creations_at(
             inner,
             WorkspaceEvent::KwtWorktreeCreationExpired {
                 project_path,
-                message: "KWT did not report a newly created worktree after the operation timed out. Refresh the project before trying again."
+                message: "KWT did not report the created worktree before reconciliation expired. Refresh the project before trying again."
                     .to_owned(),
                 navigation_generation,
             },
@@ -10857,8 +10843,8 @@ mod tests {
                 branch: "feature/new".to_owned(),
                 navigation_generation: 41,
                 baseline: Vec::new(),
-                uncertain_refreshes_remaining: None,
-                uncertain_deadline: None,
+                refreshes_remaining: PENDING_KWT_CREATION_REFRESH_LIMIT,
+                deadline: Instant::now() + PENDING_KWT_CREATION_LIFETIME,
             });
         let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
@@ -10894,7 +10880,7 @@ mod tests {
     }
 
     #[test]
-    fn uncertain_creation_ignores_a_preexisting_same_branch_worktree_and_expires() {
+    fn pending_creation_ignores_a_preexisting_same_branch_worktree_and_expires() {
         let workspace =
             Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
         let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
@@ -10915,8 +10901,8 @@ mod tests {
                 branch: "feature/new".to_owned(),
                 navigation_generation: 42,
                 baseline: vec![baseline],
-                uncertain_refreshes_remaining: Some(2),
-                uncertain_deadline: Some(Instant::now() + Duration::from_mins(1)),
+                refreshes_remaining: 2,
+                deadline: Instant::now() + Duration::from_mins(1),
             });
         let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
@@ -10940,7 +10926,7 @@ mod tests {
     }
 
     #[test]
-    fn uncertain_creation_expiry_rejects_a_late_same_branch_worktree() {
+    fn confirmed_creation_expiry_rejects_a_late_same_branch_worktree() {
         let workspace =
             Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
         let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
@@ -10958,8 +10944,8 @@ mod tests {
                 branch: "feature/new".to_owned(),
                 navigation_generation: 43,
                 baseline: Vec::new(),
-                uncertain_refreshes_remaining: Some(3),
-                uncertain_deadline: Some(now),
+                refreshes_remaining: PENDING_KWT_CREATION_REFRESH_LIMIT,
+                deadline: now,
             });
         let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
@@ -10977,6 +10963,13 @@ mod tests {
                 ..
             }]
         ));
+        resolve_pending_kwt_creations_at(
+            &workspace.inner,
+            snapshot.endpoint(),
+            &inventory,
+            now + Duration::from_secs(1),
+        );
+        assert!(workspace.drain_events().0.is_empty());
     }
 
     #[test]
