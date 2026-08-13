@@ -431,7 +431,9 @@ class AwsCliObjectStore:
                     text=True,
                     capture_output=True,
                 )
-                response = json.loads(result.stdout)
+                response = (
+                    json.loads(result.stdout) if result.stdout.strip() else {}
+                )
                 if not isinstance(response, dict):
                     raise ValueError("object-store deletion returned invalid JSON")
                 errors = response.get("Errors", [])
@@ -696,13 +698,28 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    opener: ResponseOpener = urlopen,
+) -> int:
     args = create_parser().parse_args(argv)
     try:
         if args.command == "eligibility":
             public_base_url = public_base_from_channel_url(args.channel_url)
-            published = fetch_manifest(args.channel_url, public_base_url)
-            appcast = fetch_appcast(args.appcast_url)
+            published = fetch_manifest(
+                args.channel_url,
+                public_base_url,
+                opener=opener,
+            )
+            try:
+                appcast = fetch_appcast(args.appcast_url, opener=opener)
+            except ValueError as error:
+                print(
+                    f"Nightly appcast is invalid and will be repaired: {error}",
+                    file=sys.stderr,
+                )
+                appcast = None
             eligible = decide_eligibility(
                 args.source_sha,
                 args.build,

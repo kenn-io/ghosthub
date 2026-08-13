@@ -19,6 +19,7 @@ LIBGHOSTTY_SHARE_DIR ?= $(abspath .build/libghostty/share)
 DIST_ROOT ?= dist
 DEBUG_ROOT ?= $(DIST_ROOT)/debug
 RELEASE_ROOT ?= $(DIST_ROOT)/release
+NIGHTLY_RELEASE_ROOT ?= $(DIST_ROOT)/nightly
 DEBUG_APP_PATH ?= $(DEBUG_ROOT)/$(GHOSTHUB_APP).app
 RELEASE_APP_PATH ?= $(RELEASE_ROOT)/$(GHOSTHUB_APP).app
 RELEASE_BUNDLE_ID ?= com.ghosthub
@@ -446,13 +447,18 @@ release-appcast:
 		./tools/generate_update_appcast.sh
 
 nightly-app:
-	@$(MAKE) release-app RELEASE_CHANNEL=nightly
+	@$(MAKE) release-app \
+		RELEASE_CHANNEL=nightly \
+		RELEASE_ROOT="$(NIGHTLY_RELEASE_ROOT)"
 
 nightly-dmg:
-	@RELEASE_CHANNEL=nightly ./tools/build_release_dmg.sh
+	@RELEASE_CHANNEL=nightly \
+		RELEASE_ROOT="$(NIGHTLY_RELEASE_ROOT)" \
+		./tools/build_release_dmg.sh
 
 nightly-appcast:
-	@./tools/generate_nightly_update_appcast.sh
+	@RELEASE_ROOT="$(NIGHTLY_RELEASE_ROOT)" \
+		./tools/generate_nightly_update_appcast.sh
 
 run-app: debug-app
 	@set -euo pipefail; \

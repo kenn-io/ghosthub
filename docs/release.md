@@ -431,20 +431,30 @@ only the nightly object host and cannot change GitHub's stable release or
 appcast. The approval-gated `release-signing` environment remains the only
 automated path authorized to publish stable updates.
 
-To enroll, back up `~/.ghosthub/`, quit Ghosthub, and install the unlisted DMG:
+To enroll, quit Ghosthub and back up all state shared by the two channels:
+
+- the resolved application-state directory (`~/.ghosthub/` by default);
+- the resolved configuration directory (`~/.config/ghosthub/` by default,
+  including any target selected by `init.toml` or an environment override); and
+- the `com.ghosthub` preferences domain, exported with
+  `defaults export com.ghosthub Ghosthub-preferences.plist`.
+
+Then install the unlisted DMG:
 
 ```text
 https://nightly-downloads.ghosthub.ai/Ghosthub_Nightly_latest_macos_arm64.dmg
 ```
 
-Confirm **Ghosthub Nightly** and the expected date, source revision, and build
-in About before relying on it. To leave the channel, quit the app and reinstall
-the latest stable DMG from ghosthub.ai. Restore the state backup only if the
-nightly changed persisted state incompatibly; the release process does not add
-a downgrade compatibility layer. Loss of the nightly Sparkle key requires a
-manual reinstall. Compromise of that key or of nightly object-store access is
-a nightly release incident; compromise of the shared Apple signing identity
-is an incident for both channels.
+Confirm **Ghosthub Nightly** and the expected date and source revision in About
+before relying on it. To leave the channel, quit the app and reinstall the
+latest stable DMG from ghosthub.ai. Restore the state and configuration
+directories and import the preferences with
+`defaults import com.ghosthub Ghosthub-preferences.plist` only if the nightly
+changed shared state incompatibly; the release process does not add a downgrade
+compatibility layer. Loss of the nightly Sparkle key requires a manual
+reinstall. Compromise of that key or of nightly object-store access is a
+nightly release incident; compromise of the shared Apple signing identity is
+an incident for both channels.
 
 ## Local packaging
 

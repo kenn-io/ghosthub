@@ -22,6 +22,7 @@ from nightly_channel import (  # noqa: E402
     decide_eligibility,
     fetch_appcast,
     fetch_manifest,
+    main as nightly_main,
     publish_nightly,
 )
 
@@ -235,6 +236,44 @@ def test_fetches_validate_remote_metadata_and_only_tolerate_404():
         fetch_appcast(appcast_url, opener=transport_error)
 
 
+def test_eligibility_command_repairs_a_malformed_appcast(tmp_path):
+    manifest_url = f"{PUBLIC_BASE_URL}/channel.json"
+    appcast_url = f"{PUBLIC_BASE_URL}/appcast.xml"
+    output_path = tmp_path / "github-output"
+
+    def opener(url):
+        if url == manifest_url:
+            return Response(json.dumps(manifest_data()).encode())
+        if url == appcast_url:
+            return Response(b"truncated appcast")
+        raise AssertionError(url)
+
+    exit_code = nightly_main(
+        [
+            "eligibility",
+            "--channel-url",
+            manifest_url,
+            "--appcast-url",
+            appcast_url,
+            "--source-sha",
+            SOURCE_99,
+            "--build",
+            "99",
+            "--github-output",
+            str(output_path),
+        ],
+        opener=opener,
+    )
+
+    assert exit_code == 0
+    assert output_path.read_text(encoding="utf-8").splitlines() == [
+        "eligible=true",
+        f"previous_source_sha={SOURCE_99}",
+        "previous_build=99",
+        "build=99",
+    ]
+
+
 @dataclass(frozen=True)
 class Operation:
     kind: str
@@ -440,9 +479,14 @@ def test_cleanup_refuses_non_ascii_numeric_path_components():
     store = MemoryObjectStore()
     unicode_build = "builds/²/runs/7/attempts/1/artifact.dmg"
     unicode_run = "builds/1/runs/١/attempts/1/artifact.dmg"
+    unicode_attempt = "builds/1/runs/7/attempts/١/artifact.dmg"
     valid_sibling = "builds/1/runs/7/attempts/1/artifact.dmg"
-    for key in (unicode_build, unicode_run, valid_sibling):
+    for key in (unicode_build, unicode_run, unicode_attempt, valid_sibling):
         store.objects[key] = b"artifact"
+    for build in range(2, 35):
+        store.objects[
+            f"builds/{build}/runs/7/attempts/1/artifact.dmg"
+        ] = b"artifact"
     current = ChannelManifest.from_json(
         json.dumps(manifest_data(build=35)).encode(), PUBLIC_BASE_URL
     )
@@ -451,7 +495,9 @@ def test_cleanup_refuses_non_ascii_numeric_path_components():
 
     assert unicode_build in store.objects
     assert unicode_run in store.objects
+    assert unicode_attempt in store.objects
     assert valid_sibling in store.objects
+    assert "builds/2/runs/7/attempts/1/artifact.dmg" not in store.objects
 
 
 def test_aws_delete_reports_per_object_failures(tmp_path, monkeypatch):
@@ -472,3 +518,17 @@ printf '%s\\n' '{"Errors":[{"Key":"builds/1/file","Code":"AccessDenied"}]}'
 
     with pytest.raises(ValueError, match="AccessDenied"):
         store.delete_keys(["builds/1/file"])
+
+
+def test_aws_delete_accepts_a_successful_quiet_response(tmp_path, monkeypatch):
+    fake_aws = tmp_path / "aws"
+    fake_aws.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_aws.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    store = AwsCliObjectStore(
+        bucket="nightly",
+        endpoint_url="https://objects.example.test",
+        region="auto",
+    )
+
+    store.delete_keys(["builds/1/file"])
