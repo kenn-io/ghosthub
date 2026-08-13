@@ -278,11 +278,25 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         Self.retainedConditionalThemeWindows.append(window)
         let identity = try XCTUnwrap(view.surfaceIdentity)
 
-        waitUntil {
-            runtime.resolvedTerminalColors(
+        var resolved: TerminalResolvedColors?
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+            resolved = runtime.resolvedTerminalColors(
                 forSurfaceIdentity: identity
-            ) == colors
+            )
+            if resolved == colors {
+                break
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         }
+
+        // Asserted rather than waited on, so a corpus whose colors stop
+        // matching reports both values instead of only a timeout.
+        XCTAssertEqual(
+            resolved,
+            colors,
+            "\(themeName) should resolve to its own declared colors"
+        )
     }
 
     /// The bundled corpus is upstream data, so read the expected colors from
@@ -296,10 +310,13 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
                 },
                 "\(url.lastPathComponent) should declare \(key)"
             )
-            return line
+            let value = line
                 .dropFirst("\(key) = ".count)
                 .trimmingCharacters(in: .whitespaces)
                 .uppercased()
+            // Themes may write a hex color with or without the leading "#";
+            // resolved colors always carry it.
+            return value.hasPrefix("#") ? value : "#\(value)"
         }
         return TerminalResolvedColors(
             foreground: try value(of: "foreground"),
