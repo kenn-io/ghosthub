@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import plistlib
 import shutil
@@ -211,6 +212,7 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
         remote_kwt_source_revision="def456",
+        release_channel=assemble.ReleaseChannel.DEVELOPMENT,
     )
 
     assert built_root == app_root
@@ -293,6 +295,7 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
     assert plist["GhosthubDevelopmentVersion"] == (
         "0.3.0-8-g3c67741-dirty"
     )
+    assert plist["GhosthubReleaseChannel"] == "development"
     assert plist["GhosthubRemoteKwtSourceRevision"] == "def456"
 
 
@@ -338,7 +341,7 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
         remote_kwt_source_revision="def456",
-        include_updates=True,
+        release_channel=assemble.ReleaseChannel.STABLE,
     )
 
     plist = plistlib.loads(
@@ -353,13 +356,148 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
     assert plist["NSHumanReadableCopyright"] == COPYRIGHT_NOTICE
     assert plist["GhosthubKwtVersion"] == "0.1.0"
     assert plist["GhosthubKwtSourceRevision"] == "abc123"
-    assert plist["SUFeedURL"] == assemble.SPARKLE_FEED_URL
-    assert plist["SUPublicEDKey"] == assemble.SPARKLE_PUBLIC_ED_KEY
+    assert plist["GhosthubReleaseChannel"] == "stable"
+    assert plist["SUFeedURL"] == assemble.STABLE_SPARKLE_FEED_URL
+    assert plist["SUPublicEDKey"] == assemble.STABLE_SPARKLE_PUBLIC_ED_KEY
     assert plist["SUEnableAutomaticChecks"] is True
     assert plist["SUAllowsAutomaticUpdates"] is True
     assert plist["SUVerifyUpdateBeforeExtraction"] is True
     assert plist["SURequireSignedFeed"] is True
     assert plist["SUSignedFeedFailureExpirationInterval"] == 0
+
+
+def test_nightly_info_plist_uses_nightly_update_configuration(tmp_path):
+    assemble = load_module()
+    source_bin_dir = tmp_path / "bin"
+    app_binary = make_executable(source_bin_dir / "Ghosthub")
+    app_root = tmp_path / "Ghosthub.app"
+    icon_path = tmp_path / "Ghosthub.icns"
+    icon_path.write_bytes(b"icns")
+    app_license, kwt_binary, kwt_variants_dir, licenses_dir = make_release_inputs(
+        tmp_path,
+        source_bin_dir,
+    )
+    write_bundle(
+        source_bin_dir,
+        "Ghosthub_GhosthubUI.bundle",
+        {"Assets/example.txt": "ui"},
+    )
+    write_bundle(
+        source_bin_dir,
+        "GRDB_GRDB.bundle",
+        {"Info.plist": "grdb"},
+    )
+    nightly_key = base64.b64encode(bytes(range(32))).decode()
+
+    assemble.assemble_app_bundle(
+        source_bin_dir=source_bin_dir,
+        app_binary=app_binary,
+        app_root=app_root,
+        bundle_id="com.ghosthub",
+        display_name="Ghosthub",
+        version="1.2.3",
+        build_version="123",
+        min_macos="26.0",
+        icon_path=icon_path,
+        app_license_path=app_license,
+        kwt_binary=kwt_binary,
+        kwt_variants_dir=kwt_variants_dir,
+        third_party_licenses_dir=licenses_dir,
+        copyright=COPYRIGHT_NOTICE,
+        kwt_version="test",
+        kwt_source_revision="a" * 40,
+        remote_kwt_source_revision="b" * 40,
+        release_channel=assemble.ReleaseChannel.NIGHTLY,
+        nightly_feed_url="https://nightly-downloads.ghosthub.ai/appcast.xml",
+        nightly_public_key=nightly_key,
+        source_revision="c" * 40,
+        build_date="2026-08-13",
+    )
+
+    plist = plistlib.loads(
+        (app_root / "Contents" / "Info.plist").read_bytes()
+    )
+    assert plist["CFBundleIdentifier"] == "com.ghosthub"
+    assert plist["CFBundleDisplayName"] == "Ghosthub Nightly"
+    assert plist["CFBundleName"] == "Ghosthub Nightly"
+    assert plist["CFBundleShortVersionString"] == "1.2.3"
+    assert plist["CFBundleVersion"] == "123"
+    assert plist["GhosthubReleaseChannel"] == "nightly"
+    assert plist["GhosthubSourceRevision"] == "c" * 40
+    assert plist["GhosthubDevelopmentVersion"] == (
+        "Nightly · 2026-08-13 · cccccccc"
+    )
+    assert plist["SUFeedURL"] == (
+        "https://nightly-downloads.ghosthub.ai/appcast.xml"
+    )
+    assert plist["SUPublicEDKey"] == nightly_key
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("nightly_feed_url", "http://nightly.example/appcast.xml"),
+        ("nightly_public_key", "not-base64"),
+        ("source_revision", "abc123"),
+        ("build_date", "August 13, 2026"),
+        ("nightly_feed_url", None),
+        ("nightly_public_key", None),
+        ("source_revision", None),
+        ("build_date", None),
+    ],
+)
+def test_nightly_metadata_rejects_invalid_inputs(field, value):
+    assemble = load_module()
+    inputs = {
+        "nightly_feed_url": "https://nightly-downloads.ghosthub.ai/appcast.xml",
+        "nightly_public_key": base64.b64encode(bytes(range(32))).decode(),
+        "source_revision": "c" * 40,
+        "build_date": "2026-08-13",
+    }
+    inputs[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        assemble.resolve_release_metadata(
+            channel=assemble.ReleaseChannel.NIGHTLY,
+            display_name="Ghosthub",
+            development_version=None,
+            **inputs,
+        )
+
+
+@pytest.mark.parametrize(
+    "channel",
+    [
+        "development",
+        "stable",
+    ],
+)
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("nightly_feed_url", "https://nightly.example/appcast.xml"),
+        ("nightly_public_key", base64.b64encode(bytes(range(32))).decode()),
+        ("source_revision", "c" * 40),
+        ("build_date", "2026-08-13"),
+    ],
+)
+def test_non_nightly_metadata_rejects_nightly_inputs(channel, field, value):
+    assemble = load_module()
+    inputs = {
+        "nightly_feed_url": None,
+        "nightly_public_key": None,
+        "source_revision": None,
+        "build_date": None,
+    }
+    inputs[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        assemble.resolve_release_metadata(
+            channel=assemble.ReleaseChannel(channel),
+            display_name="Ghosthub",
+            development_version=None,
+            **inputs,
+        )
 
 
 def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
@@ -408,6 +546,7 @@ def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
         remote_kwt_source_revision="def456",
+        release_channel=assemble.ReleaseChannel.DEVELOPMENT,
     )
 
     assert not stale_dir.exists()

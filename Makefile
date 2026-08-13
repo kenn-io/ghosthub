@@ -363,6 +363,7 @@ debug-app: ensure-kwt ensure-kwt-variants bootstrap-libghostty
 		--display-name "$(GHOSTHUB_APP)" \
 		--version "$(DEVELOPMENT_APP_VERSION)" \
 		--build-version "$(RELEASE_BUILD_VERSION)" \
+		--release-channel development \
 		--development-version "$(DEVELOPMENT_VERSION_DESCRIPTION)" \
 		--min-macos "$(RELEASE_MIN_MACOS)" \
 		--icon-path "$(APP_ICON_PATH)" \
@@ -398,6 +399,7 @@ release-app: ensure-kwt ensure-kwt-variants build-release
 		--display-name "$(GHOSTHUB_APP)" \
 		--version "$(RELEASE_APP_VERSION)" \
 		--build-version "$(RELEASE_BUILD_VERSION)" \
+		--release-channel stable \
 		--min-macos "$(RELEASE_MIN_MACOS)" \
 		--icon-path "$(APP_ICON_PATH)" \
 		--app-license-path "$(APP_LICENSE_PATH)" \
@@ -408,8 +410,7 @@ release-app: ensure-kwt ensure-kwt-variants build-release
 		--copyright "$(APP_COPYRIGHT)" \
 		--kwt-version "$(KWT_VERSION)" \
 		--kwt-source-revision "$(KWT_SOURCE_REVISION)" \
-		--remote-kwt-source-revision "$(KWT_REF)" \
-		--include-updates >/dev/null; \
+		--remote-kwt-source-revision "$(KWT_REF)" >/dev/null; \
 	printf 'Built release app bundle: %s\n' "$(RELEASE_APP_PATH)"
 
 run-release-app: release-app

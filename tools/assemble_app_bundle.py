@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import plistlib
+import re
 import shutil
 import sys
+from dataclasses import dataclass
+from datetime import date
+from enum import Enum
 from pathlib import Path
+from urllib.parse import urlparse
 
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
@@ -16,10 +22,123 @@ from libghostty_bootstrap import share_tree_problem
 from stage_release_app_bundles import stage_bundles
 
 
-SPARKLE_FEED_URL = (
+STABLE_SPARKLE_FEED_URL = (
     "https://github.com/kenn-io/ghosthub/releases/latest/download/appcast.xml"
 )
-SPARKLE_PUBLIC_ED_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
+STABLE_SPARKLE_PUBLIC_ED_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
+
+
+class ReleaseChannel(str, Enum):
+    DEVELOPMENT = "development"
+    STABLE = "stable"
+    NIGHTLY = "nightly"
+
+
+@dataclass(frozen=True)
+class ReleaseMetadata:
+    display_name: str
+    channel: ReleaseChannel
+    development_version: str | None
+    feed_url: str | None
+    public_key: str | None
+    source_revision: str | None
+
+
+def require_value(field: str, value: str | None) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} is required")
+    return value
+
+
+def reject_present(
+    values: dict[str, str | None],
+    channel: ReleaseChannel,
+) -> None:
+    for field, value in values.items():
+        if value is not None:
+            raise ValueError(f"{field} is not valid for {channel.value}")
+
+
+def require_https_url(field: str, value: str | None) -> str:
+    resolved = require_value(field, value)
+    parsed = urlparse(resolved)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(f"{field} must be an HTTPS URL")
+    return resolved
+
+
+def require_public_key(value: str | None) -> str:
+    resolved = require_value("nightly_public_key", value)
+    try:
+        decoded = base64.b64decode(resolved, validate=True)
+    except ValueError as error:
+        raise ValueError(
+            "nightly_public_key must be valid Base64"
+        ) from error
+    if len(decoded) != 32:
+        raise ValueError("nightly_public_key must decode to 32 bytes")
+    return resolved
+
+
+def require_full_sha(value: str | None) -> str:
+    resolved = require_value("source_revision", value)
+    if FULL_SHA_RE.fullmatch(resolved) is None:
+        raise ValueError("source_revision must be a full lowercase Git SHA")
+    return resolved
+
+
+def resolve_release_metadata(
+    *,
+    channel: ReleaseChannel,
+    display_name: str,
+    development_version: str | None,
+    nightly_feed_url: str | None,
+    nightly_public_key: str | None,
+    source_revision: str | None,
+    build_date: str | None,
+) -> ReleaseMetadata:
+    nightly_inputs = {
+        "nightly_feed_url": nightly_feed_url,
+        "nightly_public_key": nightly_public_key,
+        "source_revision": source_revision,
+        "build_date": build_date,
+    }
+
+    if channel is ReleaseChannel.DEVELOPMENT:
+        reject_present(nightly_inputs, channel)
+        return ReleaseMetadata(
+            display_name, channel, development_version, None, None, None
+        )
+    if channel is ReleaseChannel.STABLE:
+        reject_present(nightly_inputs, channel)
+        return ReleaseMetadata(
+            display_name,
+            channel,
+            None,
+            STABLE_SPARKLE_FEED_URL,
+            STABLE_SPARKLE_PUBLIC_ED_KEY,
+            None,
+        )
+
+    if development_version is not None:
+        raise ValueError("nightly derives its development version")
+    feed = require_https_url("nightly_feed_url", nightly_feed_url)
+    key = require_public_key(nightly_public_key)
+    revision = require_full_sha(source_revision)
+    date_value = require_value("build_date", build_date)
+    try:
+        parsed_date = date.fromisoformat(date_value)
+    except ValueError as error:
+        raise ValueError("build_date must be an ISO date") from error
+    return ReleaseMetadata(
+        f"{display_name} Nightly",
+        channel,
+        f"Nightly · {parsed_date.isoformat()} · {revision[:8]}",
+        feed,
+        key,
+        revision,
+    )
 
 # libghostty locates its resources by climbing from the running executable and
 # looking for compiled terminfo beside them, so both trees must land directly
@@ -47,7 +166,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--display-name", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--build-version", required=True)
+    parser.add_argument(
+        "--release-channel",
+        required=True,
+        choices=[channel.value for channel in ReleaseChannel],
+    )
     parser.add_argument("--development-version")
+    parser.add_argument("--nightly-feed-url")
+    parser.add_argument("--nightly-public-ed-key")
+    parser.add_argument("--source-revision")
+    parser.add_argument("--build-date")
     parser.add_argument("--min-macos", required=True)
     parser.add_argument("--icon-path", required=True, type=Path)
     parser.add_argument("--app-license-path", required=True, type=Path)
@@ -61,11 +189,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kwt-version", required=True)
     parser.add_argument("--kwt-source-revision", required=True)
     parser.add_argument("--remote-kwt-source-revision", required=True)
-    parser.add_argument(
-        "--include-updates",
-        action="store_true",
-        help="Embed the production Sparkle update channel.",
-    )
     return parser.parse_args()
 
 
@@ -89,9 +212,22 @@ def assemble_app_bundle(
     kwt_version: str,
     kwt_source_revision: str,
     remote_kwt_source_revision: str,
+    release_channel: ReleaseChannel,
     development_version: str | None = None,
-    include_updates: bool = False,
+    nightly_feed_url: str | None = None,
+    nightly_public_key: str | None = None,
+    source_revision: str | None = None,
+    build_date: str | None = None,
 ) -> Path:
+    release_metadata = resolve_release_metadata(
+        channel=release_channel,
+        display_name=display_name,
+        development_version=development_version,
+        nightly_feed_url=nightly_feed_url,
+        nightly_public_key=nightly_public_key,
+        source_revision=source_revision,
+        build_date=build_date,
+    )
     if not kwt_binary.is_file() or not kwt_binary.stat().st_mode & 0o111:
         raise ValueError(f"kwt binary is missing or not executable: {kwt_binary}")
     remote_targets = (
@@ -184,12 +320,12 @@ def assemble_app_bundle(
     plist_path = contents_dir / "Info.plist"
     plist = {
         "CFBundleDevelopmentRegion": "en",
-        "CFBundleDisplayName": display_name,
+        "CFBundleDisplayName": release_metadata.display_name,
         "CFBundleExecutable": app_binary.name,
         "CFBundleIconFile": bundled_icon.name,
         "CFBundleIdentifier": bundle_id,
         "CFBundleInfoDictionaryVersion": "6.0",
-        "CFBundleName": display_name,
+        "CFBundleName": release_metadata.display_name,
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": build_version,
@@ -197,19 +333,27 @@ def assemble_app_bundle(
         "GhosthubKwtVersion": kwt_version,
         "GhosthubKwtSourceRevision": kwt_source_revision,
         "GhosthubRemoteKwtSourceRevision": remote_kwt_source_revision,
+        "GhosthubReleaseChannel": release_metadata.channel.value,
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": copyright,
         "NSPrincipalClass": "NSApplication",
     }
-    if development_version:
-        plist["GhosthubDevelopmentVersion"] = development_version
-    if include_updates:
+    if release_metadata.development_version is not None:
+        plist["GhosthubDevelopmentVersion"] = (
+            release_metadata.development_version
+        )
+    if release_metadata.source_revision is not None:
+        plist["GhosthubSourceRevision"] = release_metadata.source_revision
+    if (
+        release_metadata.feed_url is not None
+        and release_metadata.public_key is not None
+    ):
         plist.update(
             {
                 "SUAllowsAutomaticUpdates": True,
                 "SUEnableAutomaticChecks": True,
-                "SUFeedURL": SPARKLE_FEED_URL,
-                "SUPublicEDKey": SPARKLE_PUBLIC_ED_KEY,
+                "SUFeedURL": release_metadata.feed_url,
+                "SUPublicEDKey": release_metadata.public_key,
                 "SURequireSignedFeed": True,
                 # This exact key is declared by Sparkle 2.9.4 as
                 # SUSignedFeedFailureExpirationIntervalKey.
@@ -237,7 +381,12 @@ def main() -> int:
         display_name=args.display_name,
         version=args.version,
         build_version=args.build_version,
+        release_channel=ReleaseChannel(args.release_channel),
         development_version=args.development_version,
+        nightly_feed_url=args.nightly_feed_url,
+        nightly_public_key=args.nightly_public_ed_key,
+        source_revision=args.source_revision,
+        build_date=args.build_date,
         min_macos=args.min_macos,
         icon_path=args.icon_path,
         app_license_path=args.app_license_path,
@@ -249,7 +398,6 @@ def main() -> int:
         kwt_version=args.kwt_version,
         kwt_source_revision=args.kwt_source_revision,
         remote_kwt_source_revision=args.remote_kwt_source_revision,
-        include_updates=args.include_updates,
     )
     print(app_root)
     return 0
