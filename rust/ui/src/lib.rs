@@ -308,6 +308,7 @@ pub struct RootView {
     sidebar_visible: bool,
     new_session: Option<NewSessionDraft>,
     project_dialog: Option<ProjectDialog>,
+    pending_worktree_navigation: Option<u64>,
     session_action_menu: Option<SessionActionMenu>,
     restore_focus: bool,
 }
@@ -318,6 +319,28 @@ struct NewSessionDraft {
     endpoint: String,
     kind: NewSessionKind,
     name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorktreeOpenTarget {
+    host_id: String,
+    endpoint: String,
+    repository: String,
+    project_path: String,
+    registration_fingerprint: String,
+    worktree_path: String,
+    generation: Option<String>,
+    session_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorktreeRemoveTarget {
+    open: WorktreeOpenTarget,
+    project_name: String,
+    branch: String,
+    session_was_running: bool,
+    authority: Option<u64>,
+    operation_id: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -335,7 +358,7 @@ struct SessionActionMenu {
     anchor_y: f32,
 }
 
-const SESSION_ACTION_MENU_WIDTH: f32 = 112.0;
+const SESSION_ACTION_MENU_WIDTH: f32 = 148.0;
 const SESSION_ACTION_MENU_ITEM_HEIGHT: f32 = 26.0;
 const SESSION_ACTION_MENU_VERTICAL_CHROME: f32 = 8.0;
 const SESSION_ACTION_MENU_MARGIN: f32 = 4.0;
@@ -360,15 +383,229 @@ enum ProjectDialog {
         submitting: bool,
         error: Option<String>,
     },
+    NewWorktree {
+        host_id: String,
+        endpoint: String,
+        project_name: String,
+        repository: String,
+        project_path: String,
+        registration_fingerprint: String,
+        branch: String,
+        selected_source: Option<String>,
+        branches: Vec<workspace::KwtBranchItem>,
+        operation_id: Option<u64>,
+        loading: bool,
+        loaded: bool,
+        submitting: bool,
+        error: Option<String>,
+    },
+    RemoveWorktree {
+        target: WorktreeRemoveTarget,
+        submitting: bool,
+        error: Option<String>,
+    },
 }
 
 impl ProjectDialog {
-    const fn action(&self) -> KwtProjectAction {
+    const fn action(&self) -> Option<KwtProjectAction> {
         match self {
-            Self::Add { .. } => KwtProjectAction::Add,
-            Self::Remove { .. } => KwtProjectAction::Remove,
+            Self::Add { .. } => Some(KwtProjectAction::Add),
+            Self::Remove { .. } => Some(KwtProjectAction::Remove),
+            Self::NewWorktree { .. } | Self::RemoveWorktree { .. } => None,
         }
     }
+}
+
+fn kwt_operation_failure_owns_dialog(
+    dialog: Option<&ProjectDialog>,
+    operation_id: u64,
+    project_path: &str,
+    worktree_path: Option<&str>,
+) -> bool {
+    match dialog {
+        Some(ProjectDialog::NewWorktree {
+            project_path: dialog_project,
+            operation_id: dialog_operation,
+            ..
+        }) => {
+            *dialog_operation == Some(operation_id)
+                && dialog_project == project_path
+                && worktree_path.is_none()
+        }
+        Some(ProjectDialog::RemoveWorktree { target, .. }) => {
+            target.operation_id == Some(operation_id)
+                && target.open.project_path == project_path
+                && worktree_path == Some(target.open.worktree_path.as_str())
+        }
+        Some(ProjectDialog::Add { .. } | ProjectDialog::Remove { .. }) | None => false,
+    }
+}
+
+fn apply_worktree_removal_failure(
+    dialog: &mut ProjectDialog,
+    operation_id: u64,
+    project_path: &str,
+    worktree_path: Option<&str>,
+    message: String,
+) -> bool {
+    let ProjectDialog::RemoveWorktree {
+        target,
+        submitting,
+        error,
+    } = dialog
+    else {
+        return false;
+    };
+    if target.open.project_path != project_path
+        || target.operation_id != Some(operation_id)
+        || worktree_path != Some(target.open.worktree_path.as_str())
+    {
+        return false;
+    }
+    *submitting = false;
+    target.authority = None;
+    target.operation_id = None;
+    *error = Some(message);
+    true
+}
+
+fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
+    let ProjectDialog::NewWorktree {
+        branch,
+        selected_source,
+        branches,
+        loaded: true,
+        loading: false,
+        submitting: false,
+        ..
+    } = dialog
+    else {
+        return false;
+    };
+    let normalized = branch.trim();
+    selected_source.is_none()
+        && branches
+            .iter()
+            .filter(|candidate| candidate.name() == normalized)
+            .take(2)
+            .count()
+            > 1
+}
+
+fn visible_kwt_branch_candidates<'a>(
+    branches: &'a [workspace::KwtBranchItem],
+    branch: &str,
+) -> Vec<&'a workspace::KwtBranchItem> {
+    const FUZZY_SUGGESTION_LIMIT: usize = 7;
+
+    let query = branch.trim();
+    let folded_query = query.to_ascii_lowercase();
+    let mut exact = branches
+        .iter()
+        .filter(|candidate| !query.is_empty() && candidate.name() == query)
+        .collect::<Vec<_>>();
+    let fuzzy_limit = FUZZY_SUGGESTION_LIMIT.saturating_sub(exact.len());
+    exact.extend(
+        branches
+            .iter()
+            .filter(|candidate| candidate.name() != query)
+            .filter(|candidate| {
+                folded_query.is_empty()
+                    || candidate
+                        .name()
+                        .to_ascii_lowercase()
+                        .contains(&folded_query)
+                    || candidate
+                        .source()
+                        .to_ascii_lowercase()
+                        .contains(&folded_query)
+            })
+            .take(fuzzy_limit),
+    );
+    exact
+}
+
+fn can_create_worktree(branch: &str, loaded: bool, loading: bool, submitting: bool) -> bool {
+    workspace::is_valid_git_branch_name(branch.trim()) && loaded && !loading && !submitting
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeOpenMode {
+    Disabled,
+    DirectTmux,
+    RepairOrOpen,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WorktreeOpenContext {
+    authority: WorktreeAuthority,
+    socket: WorktreeSocket,
+    session: WorktreeSessionPresence,
+    presentation: WorktreePresentation,
+    host: WorktreeHostAccess,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeAuthority {
+    Generation,
+    Generationless,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeSocket {
+    Default,
+    Custom,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeSessionPresence {
+    Discovered,
+    Absent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreePresentation {
+    ActiveOrRetained,
+    Inactive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeHostAccess {
+    Ready { kwt_available: bool },
+    Unavailable,
+}
+
+const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
+    if matches!(context.presentation, WorktreePresentation::ActiveOrRetained) {
+        return WorktreeOpenMode::DirectTmux;
+    }
+    let WorktreeHostAccess::Ready { kwt_available } = context.host else {
+        return WorktreeOpenMode::Disabled;
+    };
+    if matches!(context.socket, WorktreeSocket::Custom) {
+        return WorktreeOpenMode::Disabled;
+    }
+    if matches!(context.authority, WorktreeAuthority::Generation) && kwt_available {
+        WorktreeOpenMode::RepairOrOpen
+    } else if matches!(context.authority, WorktreeAuthority::Generationless)
+        && matches!(context.session, WorktreeSessionPresence::Discovered)
+    {
+        WorktreeOpenMode::DirectTmux
+    } else {
+        WorktreeOpenMode::Disabled
+    }
+}
+
+fn owns_created_worktree_navigation(
+    pending: Option<u64>,
+    event_generation: u64,
+    workspace_generation_is_current: bool,
+    dialog_project_path: Option<&str>,
+    created_project_path: &str,
+) -> bool {
+    pending == Some(event_generation)
+        && workspace_generation_is_current
+        && dialog_project_path.is_none_or(|path| path == created_project_path)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -696,6 +933,7 @@ impl RootView {
             sidebar_visible: true,
             new_session: None,
             project_dialog: None,
+            pending_worktree_navigation: None,
             session_action_menu: None,
             restore_focus: false,
         };
@@ -759,6 +997,35 @@ impl RootView {
         cx.notify();
     }
 
+    fn select_worktree(
+        &mut self,
+        target: &WorktreeOpenTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self.workspace.open_kwt_worktree(
+            &target.host_id,
+            &target.endpoint,
+            &target.repository,
+            &target.project_path,
+            &target.registration_fingerprint,
+            &target.worktree_path,
+            target.generation.as_deref(),
+            &target.session_name,
+        );
+        if let Err(error) = result {
+            self.diagnostic = Some(error.to_string());
+        } else {
+            self.diagnostic = None;
+            self.observed_presentation_id = None;
+            self.clear_terminal_input();
+            self.paint_cache.clear();
+            self.resize_for_window(window);
+            window.focus(&self.focus);
+        }
+        cx.notify();
+    }
+
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if let Err(error) = self.workspace.refresh() {
             self.diagnostic = Some(error.to_string());
@@ -776,6 +1043,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         self.new_session = Some(NewSessionDraft {
             host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
@@ -800,6 +1068,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         self.project_dialog = Some(ProjectDialog::Add {
             host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
@@ -866,6 +1135,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         self.project_dialog = Some(ProjectDialog::Remove {
             host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
@@ -881,23 +1151,186 @@ impl RootView {
         cx.notify();
     }
 
+    fn open_new_worktree(
+        &mut self,
+        host_id: &str,
+        endpoint: &str,
+        project: &workspace::ProjectItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_worktree_navigation = None;
+        let result = self.workspace.load_kwt_branches(
+            host_id,
+            endpoint,
+            project.repository(),
+            project.path(),
+            project.registration_fingerprint(),
+        );
+        let (operation_id, error) = match result {
+            Ok(operation_id) => (Some(operation_id), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        self.project_dialog = Some(ProjectDialog::NewWorktree {
+            host_id: host_id.to_owned(),
+            endpoint: endpoint.to_owned(),
+            project_name: project.name().to_owned(),
+            repository: project.repository().to_owned(),
+            project_path: project.path().to_owned(),
+            registration_fingerprint: project.registration_fingerprint().to_owned(),
+            branch: String::new(),
+            selected_source: None,
+            branches: Vec::new(),
+            operation_id,
+            loading: operation_id.is_some(),
+            loaded: false,
+            submitting: false,
+            error,
+        });
+        self.diagnostic = None;
+        window.focus(&self.project_focus);
+        cx.notify();
+    }
+
+    fn open_remove_worktree(
+        &mut self,
+        mut target: WorktreeRemoveTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_worktree_navigation = None;
+        let result = if let Some(generation) = target.open.generation.as_deref() {
+            self.workspace.request_kwt_worktree_removal(
+                &target.open.host_id,
+                &target.open.endpoint,
+                &target.open.repository,
+                &target.open.project_path,
+                &target.open.registration_fingerprint,
+                &target.open.worktree_path,
+                generation,
+                &target.open.session_name,
+            )
+        } else {
+            target.authority = None;
+            self.project_dialog = Some(ProjectDialog::RemoveWorktree {
+                target,
+                submitting: false,
+                error: Some("Refresh KWT inventory before removing this worktree.".to_owned()),
+            });
+            self.diagnostic = None;
+            window.focus(&self.project_focus);
+            cx.notify();
+            return;
+        };
+        target.authority = None;
+        let (operation_id, error) = match result {
+            Ok(operation_id) => (Some(operation_id), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        target.operation_id = operation_id;
+        self.project_dialog = Some(ProjectDialog::RemoveWorktree {
+            target,
+            submitting: false,
+            error,
+        });
+        self.diagnostic = None;
+        window.focus(&self.project_focus);
+        cx.notify();
+    }
+
     fn cancel_project_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .project_dialog
             .as_ref()
             .is_some_and(|dialog| match dialog {
                 ProjectDialog::Add { submitting, .. }
-                | ProjectDialog::Remove { submitting, .. } => *submitting,
+                | ProjectDialog::Remove { submitting, .. }
+                | ProjectDialog::NewWorktree { submitting, .. }
+                | ProjectDialog::RemoveWorktree { submitting, .. } => *submitting,
             })
         {
             return;
+        }
+        if matches!(
+            self.project_dialog,
+            Some(ProjectDialog::RemoveWorktree { .. })
+        ) {
+            self.workspace.cancel_kwt_worktree_removal();
         }
         self.project_dialog = None;
         window.focus(&self.focus);
         cx.notify();
     }
 
+    fn set_project_dialog_error(&mut self, message: impl Into<String>) {
+        let Some(dialog) = &mut self.project_dialog else {
+            return;
+        };
+        let error = match dialog {
+            ProjectDialog::Add { error, .. }
+            | ProjectDialog::Remove { error, .. }
+            | ProjectDialog::NewWorktree { error, .. }
+            | ProjectDialog::RemoveWorktree { error, .. } => error,
+        };
+        *error = Some(message.into());
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "dialog submission keeps one exhaustive mapping from UI state to workspace capabilities"
+    )]
     fn submit_project_dialog(&mut self, cx: &mut Context<Self>) {
+        if self
+            .project_dialog
+            .as_ref()
+            .is_some_and(has_ambiguous_worktree_source)
+        {
+            self.set_project_dialog_error("Choose which existing branch to use.");
+            cx.notify();
+            return;
+        }
+        if let Some(open) = self.project_dialog.as_ref().and_then(|dialog| {
+            let ProjectDialog::RemoveWorktree {
+                target,
+                submitting: false,
+                error: Some(_),
+            } = dialog
+            else {
+                return None;
+            };
+            target.authority.is_none().then(|| target.open.clone())
+        }) {
+            let Some(generation) = open.generation.as_deref() else {
+                self.set_project_dialog_error(
+                    "Refresh KWT inventory before removing this worktree.",
+                );
+                cx.notify();
+                return;
+            };
+            match self.workspace.request_kwt_worktree_removal(
+                &open.host_id,
+                &open.endpoint,
+                &open.repository,
+                &open.project_path,
+                &open.registration_fingerprint,
+                &open.worktree_path,
+                generation,
+                &open.session_name,
+            ) {
+                Ok(operation_id) => {
+                    if let Some(ProjectDialog::RemoveWorktree { target, error, .. }) =
+                        &mut self.project_dialog
+                    {
+                        target.operation_id = Some(operation_id);
+                        target.session_was_running = false;
+                        *error = None;
+                    }
+                }
+                Err(error) => self.set_project_dialog_error(error.to_string()),
+            }
+            cx.notify();
+            return;
+        }
         let result = match self.project_dialog.as_ref() {
             Some(ProjectDialog::Add {
                 host_id,
@@ -905,7 +1338,10 @@ impl RootView {
                 path,
                 submitting: false,
                 ..
-            }) => self.workspace.add_kwt_project(host_id, endpoint, path),
+            }) => self
+                .workspace
+                .add_kwt_project(host_id, endpoint, path)
+                .map(|()| None),
             Some(ProjectDialog::Remove {
                 host_id,
                 endpoint,
@@ -914,23 +1350,110 @@ impl RootView {
                 registration_fingerprint,
                 submitting: false,
                 ..
-            }) => self.workspace.remove_kwt_project(
+            }) => self
+                .workspace
+                .remove_kwt_project(
+                    host_id,
+                    endpoint,
+                    repository,
+                    path,
+                    registration_fingerprint,
+                )
+                .map(|()| None),
+            Some(ProjectDialog::NewWorktree {
                 host_id,
                 endpoint,
                 repository,
-                path,
+                project_path,
                 registration_fingerprint,
-            ),
+                branch,
+                selected_source,
+                branches,
+                loaded: true,
+                loading: false,
+                submitting: false,
+                ..
+            }) => {
+                let normalized = branch.trim();
+                let exact = branches
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.name() == normalized
+                            && selected_source
+                                .as_deref()
+                                .is_none_or(|source| source == candidate.source())
+                    })
+                    .collect::<Vec<_>>();
+                self.workspace
+                    .create_kwt_worktree(
+                        host_id,
+                        endpoint,
+                        repository,
+                        project_path,
+                        registration_fingerprint,
+                        normalized,
+                        exact.first().map(|candidate| candidate.source()),
+                        exact.is_empty(),
+                    )
+                    .map(Some)
+            }
+            Some(ProjectDialog::RemoveWorktree {
+                target,
+                submitting: false,
+                ..
+            }) => {
+                let Some(generation) = target.open.generation.as_deref() else {
+                    self.set_project_dialog_error(
+                        "Refresh KWT inventory before removing this worktree.",
+                    );
+                    cx.notify();
+                    return;
+                };
+                let Some(authority) = target.authority else {
+                    self.set_project_dialog_error(
+                        "Wait for Ghosthub to verify the worktree session.",
+                    );
+                    cx.notify();
+                    return;
+                };
+                self.workspace
+                    .remove_kwt_worktree(
+                        &target.open.host_id,
+                        &target.open.endpoint,
+                        &target.open.repository,
+                        &target.open.project_path,
+                        &target.open.registration_fingerprint,
+                        &target.open.worktree_path,
+                        generation,
+                        &target.open.session_name,
+                        authority,
+                    )
+                    .map(|()| None)
+            }
             _ => return,
         };
         match result {
-            Ok(()) => {
+            Ok(navigation_generation) => {
+                if let Some(navigation_generation) = navigation_generation {
+                    self.pending_worktree_navigation = Some(navigation_generation);
+                    if let Some(ProjectDialog::NewWorktree { operation_id, .. }) =
+                        &mut self.project_dialog
+                    {
+                        *operation_id = Some(navigation_generation);
+                    }
+                }
                 if let Some(dialog) = &mut self.project_dialog {
                     match dialog {
                         ProjectDialog::Add {
                             submitting, error, ..
                         }
                         | ProjectDialog::Remove {
+                            submitting, error, ..
+                        }
+                        | ProjectDialog::NewWorktree {
+                            submitting, error, ..
+                        }
+                        | ProjectDialog::RemoveWorktree {
                             submitting, error, ..
                         } => {
                             *submitting = true;
@@ -940,14 +1463,7 @@ impl RootView {
                 }
             }
             Err(error) => {
-                if let Some(dialog) = &mut self.project_dialog {
-                    match dialog {
-                        ProjectDialog::Add { error: inline, .. }
-                        | ProjectDialog::Remove { error: inline, .. } => {
-                            *inline = Some(error.to_string());
-                        }
-                    }
-                }
+                self.set_project_dialog_error(error.to_string());
             }
         }
         cx.notify();
@@ -970,26 +1486,44 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
-        let Some(ProjectDialog::Add {
-            path,
-            submitting: false,
-            error,
-            ..
-        }) = &mut self.project_dialog
-        else {
-            cx.stop_propagation();
+        let Some(dialog) = &mut self.project_dialog else {
             return;
+        };
+        let (value, error) = match dialog {
+            ProjectDialog::Add {
+                path,
+                submitting: false,
+                error,
+                ..
+            } => (path, error),
+            ProjectDialog::NewWorktree {
+                branch,
+                selected_source,
+                submitting: false,
+                error,
+                ..
+            } => {
+                *selected_source = None;
+                (branch, error)
+            }
+            ProjectDialog::Remove { .. }
+            | ProjectDialog::Add { .. }
+            | ProjectDialog::NewWorktree { .. }
+            | ProjectDialog::RemoveWorktree { .. } => {
+                cx.stop_propagation();
+                return;
+            }
         };
         *error = None;
         if is_paste_shortcut(&event.keystroke) {
             if !event.is_held
                 && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
             {
-                path.extend(text.chars().filter(|character| !character.is_control()));
+                value.extend(text.chars().filter(|character| !character.is_control()));
                 cx.notify();
             }
         } else if key == "backspace" {
-            path.pop();
+            value.pop();
             cx.notify();
         } else if !event.keystroke.modifiers.control
             && !event.keystroke.modifiers.alt
@@ -997,7 +1531,7 @@ impl RootView {
             && !event.keystroke.modifiers.function
             && let Some(text) = &event.keystroke.key_char
         {
-            path.extend(text.chars().filter(|character| !character.is_control()));
+            value.extend(text.chars().filter(|character| !character.is_control()));
             cx.notify();
         }
         cx.stop_propagation();
@@ -1117,6 +1651,7 @@ impl RootView {
     }
 
     fn request_session_kill(&mut self, selection: &SessionSelection, cx: &mut Context<Self>) {
+        self.pending_worktree_navigation = None;
         match self.workspace.request_session_kill(selection) {
             Ok(()) => self.diagnostic = None,
             Err(error) => self.diagnostic = Some(error.to_string()),
@@ -1176,6 +1711,7 @@ impl RootView {
         action: workspace::HerdrLifecycleAction,
         cx: &mut Context<Self>,
     ) {
+        self.pending_worktree_navigation = None;
         match self.workspace.request_herdr_lifecycle(selection, action) {
             Ok(()) => self.diagnostic = None,
             Err(error) => self.diagnostic = Some(error.to_string()),
@@ -1231,6 +1767,10 @@ impl RootView {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "workspace events stay in one exhaustive UI-thread dispatch"
+    )]
     fn handle_events(&mut self, cx: &mut Context<Self>) -> bool {
         let (events, may_have_more) = self.workspace.drain_events();
         if may_have_more {
@@ -1262,7 +1802,7 @@ impl RootView {
                     if self
                         .project_dialog
                         .as_ref()
-                        .is_some_and(|dialog| dialog.action() == action)
+                        .is_some_and(|dialog| dialog.action() == Some(action))
                     {
                         self.project_dialog = None;
                         self.restore_focus = true;
@@ -1271,7 +1811,7 @@ impl RootView {
                 }
                 WorkspaceEvent::KwtProjectMutationFailed { action, message } => {
                     if let Some(dialog) = &mut self.project_dialog
-                        && dialog.action() == action
+                        && dialog.action() == Some(action)
                     {
                         match dialog {
                             ProjectDialog::Add {
@@ -1283,9 +1823,221 @@ impl RootView {
                                 *submitting = false;
                                 *error = Some(message);
                             }
+                            ProjectDialog::NewWorktree { .. }
+                            | ProjectDialog::RemoveWorktree { .. } => {}
                         }
                     } else {
                         self.diagnostic = Some(message);
+                    }
+                }
+                WorkspaceEvent::KwtBranchesLoaded {
+                    operation_id,
+                    project_path,
+                    branches,
+                } => {
+                    if let Some(ProjectDialog::NewWorktree {
+                        project_path: dialog_path,
+                        operation_id: dialog_operation,
+                        branches: dialog_branches,
+                        loading,
+                        loaded,
+                        error,
+                        ..
+                    }) = &mut self.project_dialog
+                        && *dialog_path == project_path
+                        && *dialog_operation == Some(operation_id)
+                    {
+                        *dialog_branches = branches;
+                        *loading = false;
+                        *loaded = true;
+                        *error = None;
+                    }
+                }
+                WorkspaceEvent::KwtWorktreeRemovalReady {
+                    project_path,
+                    worktree_path,
+                    authority,
+                    session_was_running,
+                } => {
+                    if let Some(ProjectDialog::RemoveWorktree {
+                        target,
+                        submitting: false,
+                        error,
+                    }) = &mut self.project_dialog
+                        && target.open.project_path == project_path
+                        && target.open.worktree_path == worktree_path
+                        && target.operation_id == Some(authority)
+                    {
+                        target.authority = Some(authority);
+                        target.session_was_running = session_was_running;
+                        *error = None;
+                    }
+                }
+                WorkspaceEvent::KwtWorktreeCreated {
+                    target,
+                    navigation_generation,
+                } => {
+                    let open = WorktreeOpenTarget {
+                        host_id: target.host_id().to_owned(),
+                        endpoint: target.endpoint().to_owned(),
+                        repository: target.repository().to_owned(),
+                        project_path: target.project_path().to_owned(),
+                        registration_fingerprint: target.registration_fingerprint().to_owned(),
+                        worktree_path: target.worktree_path().to_owned(),
+                        generation: target.generation().map(str::to_owned),
+                        session_name: target.session_name().to_owned(),
+                    };
+                    let dialog_project_path = self.project_dialog.as_ref().map(|dialog| {
+                        if let ProjectDialog::NewWorktree { project_path, .. } = dialog {
+                            project_path.as_str()
+                        } else {
+                            ""
+                        }
+                    });
+                    let owns_navigation = owns_created_worktree_navigation(
+                        self.pending_worktree_navigation,
+                        navigation_generation,
+                        self.workspace
+                            .navigation_intent_is_current(navigation_generation),
+                        dialog_project_path,
+                        target.project_path(),
+                    );
+                    if self.pending_worktree_navigation == Some(navigation_generation) {
+                        self.pending_worktree_navigation = None;
+                    }
+                    if !owns_navigation {
+                        self.diagnostic =
+                            Some(format!("Created worktree {}.", target.worktree_path()));
+                        continue;
+                    }
+                    self.project_dialog = None;
+                    self.restore_focus = true;
+                    if let Err(error) = self.workspace.open_kwt_worktree(
+                        &open.host_id,
+                        &open.endpoint,
+                        &open.repository,
+                        &open.project_path,
+                        &open.registration_fingerprint,
+                        &open.worktree_path,
+                        open.generation.as_deref(),
+                        &open.session_name,
+                    ) {
+                        self.diagnostic = Some(error.to_string());
+                    } else {
+                        self.diagnostic = None;
+                        self.observed_presentation_id = None;
+                        self.clear_terminal_input();
+                        self.paint_cache.clear();
+                    }
+                }
+                WorkspaceEvent::KwtWorktreeRemoved {
+                    operation_id,
+                    project_path,
+                    worktree_path,
+                } => {
+                    if self.project_dialog.as_ref().is_some_and(|dialog| {
+                        matches!(
+                            dialog,
+                            ProjectDialog::RemoveWorktree { target, .. }
+                                if target.open.project_path == project_path
+                                    && target.open.worktree_path == worktree_path
+                                    && target.operation_id == Some(operation_id)
+                        )
+                    }) {
+                        self.project_dialog = None;
+                        self.restore_focus = true;
+                    }
+                    self.diagnostic = None;
+                }
+                WorkspaceEvent::KwtWorktreeCreationPending {
+                    project_path,
+                    message,
+                    navigation_generation,
+                } => {
+                    if self.pending_worktree_navigation == Some(navigation_generation)
+                        && self.project_dialog.as_ref().is_some_and(|dialog| {
+                            matches!(
+                                dialog,
+                                ProjectDialog::NewWorktree {
+                                    project_path: dialog_path,
+                                    ..
+                                } if dialog_path == &project_path
+                            )
+                        })
+                    {
+                        self.project_dialog = None;
+                        self.restore_focus = true;
+                    }
+                    self.diagnostic = Some(message);
+                }
+                WorkspaceEvent::KwtWorktreeCreationExpired {
+                    project_path,
+                    message,
+                    navigation_generation,
+                } => {
+                    if self.pending_worktree_navigation == Some(navigation_generation) {
+                        self.pending_worktree_navigation = None;
+                    }
+                    if self.project_dialog.as_ref().is_some_and(|dialog| {
+                        matches!(
+                            dialog,
+                            ProjectDialog::NewWorktree {
+                                project_path: dialog_path,
+                                operation_id: Some(operation_id),
+                                ..
+                            } if dialog_path == &project_path
+                                && *operation_id == navigation_generation
+                        )
+                    }) {
+                        self.project_dialog = None;
+                        self.restore_focus = true;
+                    }
+                    self.diagnostic = Some(message);
+                }
+                WorkspaceEvent::KwtWorktreeOperationFailed {
+                    operation_id,
+                    project_path,
+                    worktree_path,
+                    message,
+                } => {
+                    if !kwt_operation_failure_owns_dialog(
+                        self.project_dialog.as_ref(),
+                        operation_id,
+                        &project_path,
+                        worktree_path.as_deref(),
+                    ) {
+                        continue;
+                    }
+                    if self.project_dialog.as_mut().is_some_and(|dialog| {
+                        apply_worktree_removal_failure(
+                            dialog,
+                            operation_id,
+                            &project_path,
+                            worktree_path.as_deref(),
+                            message.clone(),
+                        )
+                    }) {
+                        continue;
+                    }
+                    match &mut self.project_dialog {
+                        Some(ProjectDialog::NewWorktree {
+                            project_path: dialog_path,
+                            operation_id: dialog_operation,
+                            loading,
+                            loaded,
+                            submitting,
+                            error,
+                            ..
+                        }) if *dialog_path == project_path
+                            && *dialog_operation == Some(operation_id)
+                            && worktree_path.is_none() =>
+                        {
+                            *loading = false;
+                            *loaded = false;
+                            *submitting = false;
+                            *error = Some(message);
+                        }
+                        _ => {}
                     }
                 }
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
@@ -2241,7 +2993,7 @@ impl RootView {
                         )
                         .into_any_element();
                     (
-                        "Add Project",
+                        "Add Project".to_owned(),
                         body,
                         if *submitting {
                             "Adding…"
@@ -2282,11 +3034,177 @@ impl RootView {
                             ))
                             .into_any_element();
                     (
-                        "Remove Project",
+                        "Remove Project".to_owned(),
                         body,
                         if *submitting { "Removing…" } else { "Remove" },
                         *submitting,
                         !*submitting,
+                        error.as_deref(),
+                    )
+                }
+                ProjectDialog::NewWorktree {
+                    project_name,
+                    branch,
+                    selected_source,
+                    branches,
+                    loading,
+                    loaded,
+                    submitting,
+                    error,
+                    ..
+                } => {
+                    let visible = visible_kwt_branch_candidates(branches, branch);
+                    let text = if branch.is_empty() && !focused {
+                        "Branch name".to_owned()
+                    } else if branch.is_empty() {
+                        "▏".to_owned()
+                    } else {
+                        format!("{branch}▏")
+                    };
+                    let mut body = div().m_4().flex().flex_col().gap_2().child(
+                        div()
+                            .id("kwt-worktree-branch-input")
+                            .px_3()
+                            .h(px(38.0))
+                            .flex()
+                            .items_center()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(if focused { 0x4a_8f_cf } else { 0x3a_404c }))
+                            .bg(rgb(0x0f_1218))
+                            .cursor_text()
+                            .text_sm()
+                            .text_color(rgb(if branch.is_empty() && !focused {
+                                0x72_7986
+                            } else {
+                                0xe1_e5ec
+                            }))
+                            .child(text)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                window.focus(&this.project_focus);
+                                cx.notify();
+                            })),
+                    );
+                    if *loading {
+                        body = body.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x8f_96_a3))
+                                .child("Loading branches…"),
+                        );
+                    } else {
+                        let mut candidates = div()
+                            .id("kwt-branch-candidates")
+                            .max_h(px(196.0))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_1();
+                        for (index, candidate) in visible.into_iter().enumerate() {
+                            let name = candidate.name().to_owned();
+                            let source = candidate.source().to_owned();
+                            let selected = branch == &name
+                                && selected_source
+                                    .as_deref()
+                                    .is_some_and(|value| value == source);
+                            let detail = if candidate.is_remote() {
+                                format!("{}  ·  {}", candidate.name(), candidate.source())
+                            } else {
+                                candidate.name().to_owned()
+                            };
+                            candidates = candidates.child(
+                                div()
+                                    .id(("kwt-branch-candidate", index))
+                                    .h(px(28.0))
+                                    .px_2()
+                                    .flex()
+                                    .items_center()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgb(if selected { 0x1d_3f63 } else { 0x13_161c }))
+                                    .text_xs()
+                                    .text_color(rgb(0xc4_c9_d2))
+                                    .hover(|style| style.bg(rgb(0x25_2a34)))
+                                    .child(detail)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if let Some(ProjectDialog::NewWorktree {
+                                            branch,
+                                            selected_source,
+                                            error,
+                                            ..
+                                        }) = &mut this.project_dialog
+                                        {
+                                            branch.clone_from(&name);
+                                            *selected_source = Some(source.clone());
+                                            *error = None;
+                                        }
+                                        window.focus(&this.project_focus);
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                        body = body.child(candidates);
+                    }
+                    (
+                        format!("New worktree · {project_name}"),
+                        body.into_any_element(),
+                        if *submitting { "Creating…" } else { "Create" },
+                        *submitting,
+                        can_create_worktree(branch, *loaded, *loading, *submitting),
+                        error.as_deref(),
+                    )
+                }
+                ProjectDialog::RemoveWorktree {
+                    target,
+                    submitting,
+                    error,
+                } => {
+                    let session_copy = if target.session_was_running {
+                        " Its live tmux session will be terminated first."
+                    } else {
+                        ""
+                    };
+                    let checking = target.authority.is_none() && error.is_none();
+                    let review_again = target.authority.is_none() && error.is_some();
+                    let body = div()
+                        .px_4()
+                        .py_4()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(rgb(0xb6_bcc7))
+                        .child(format!(
+                            "Remove “{}” from {}?{}",
+                            target.branch, target.project_name, session_copy
+                        ))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x8f_96_a3))
+                                .child(target.open.worktree_path.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x8f_96_a3))
+                                .child("The Git branch will be kept."),
+                        )
+                        .into_any_element();
+                    (
+                        "Remove Worktree".to_owned(),
+                        body,
+                        if *submitting {
+                            "Removing…"
+                        } else if checking {
+                            "Checking…"
+                        } else if review_again {
+                            "Review Again"
+                        } else {
+                            "Remove Worktree"
+                        },
+                        *submitting,
+                        (target.authority.is_some() || review_again) && !*submitting,
                         error.as_deref(),
                     )
                 }
@@ -2665,9 +3583,12 @@ impl RootView {
         action: SessionRowAction,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let (id, label, color) = match action {
+        let (id, label, color) = match &action {
             SessionRowAction::Detach => ("session-action-detach", "Detach", 0x87_b9e8),
             SessionRowAction::KillSession => ("session-action-kill", "Kill", 0xd6_747a),
+            SessionRowAction::RemoveWorktree(_) => {
+                ("worktree-action-remove", "Remove Worktree", 0xd6_747a)
+            }
             SessionRowAction::Herdr(HerdrRowAction::Stop) => {
                 ("herdr-action-stop", "Stop", 0xd6_747a)
             }
@@ -2693,9 +3614,12 @@ impl RootView {
             .child(label)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.session_action_menu = None;
-                match action {
+                match &action {
                     SessionRowAction::Detach => this.detach_session(window, cx),
                     SessionRowAction::KillSession => this.request_session_kill(&selection, cx),
+                    SessionRowAction::RemoveWorktree(target) => {
+                        this.open_remove_worktree(target.as_ref().clone(), window, cx);
+                    }
                     SessionRowAction::Herdr(HerdrRowAction::Stop) => this.request_herdr_lifecycle(
                         &selection,
                         workspace::HerdrLifecycleAction::Stop,
@@ -3159,6 +4083,7 @@ impl RootView {
         });
         for (project_index, project) in host.projects().iter().enumerate() {
             let project_for_remove = project.clone();
+            let project_for_create = project.clone();
             let host_id = host.id().to_owned();
             let endpoint = host.endpoint().to_owned();
             let mut row = div()
@@ -3185,6 +4110,34 @@ impl RootView {
                         .truncate()
                         .child(project.name().to_owned()),
                 );
+            if can_remove {
+                let create_host_id = host_id.clone();
+                let create_endpoint = endpoint.clone();
+                row = row.child(
+                    div()
+                        .id(("create-kwt-worktree", project_index))
+                        .size(px(22.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x7f_8794))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_new_worktree(
+                                &create_host_id,
+                                &create_endpoint,
+                                &project_for_create,
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
             if can_remove {
                 row = row.child(
                     div()
@@ -3217,18 +4170,68 @@ impl RootView {
                     SessionSelection::new(host.id(), host.endpoint(), worktree.session_name());
                 let is_active = active.as_ref() == Some(&selection);
                 let is_retained = retained.contains(&selection);
-                let can_open = is_active
-                    || is_retained
-                    || (worktree.session_available()
-                        && !matches!(
-                            host.connection(),
-                            HostConnectionState::Disconnected | HostConnectionState::Unavailable
-                        ));
-                let can_kill = worktree.session_available()
-                    && !matches!(
-                        host.connection(),
-                        HostConnectionState::Disconnected | HostConnectionState::Unavailable
-                    );
+                let has_generation = worktree.generation().is_some();
+                let host_can_attach = !matches!(
+                    host.connection(),
+                    HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                );
+                let open_mode = worktree_open_mode(WorktreeOpenContext {
+                    authority: if has_generation {
+                        WorktreeAuthority::Generation
+                    } else {
+                        WorktreeAuthority::Generationless
+                    },
+                    socket: if worktree.tmux_socket_name().is_some() {
+                        WorktreeSocket::Custom
+                    } else {
+                        WorktreeSocket::Default
+                    },
+                    session: if worktree.session_available() {
+                        WorktreeSessionPresence::Discovered
+                    } else {
+                        WorktreeSessionPresence::Absent
+                    },
+                    presentation: if is_active || is_retained {
+                        WorktreePresentation::ActiveOrRetained
+                    } else {
+                        WorktreePresentation::Inactive
+                    },
+                    host: if host_can_attach {
+                        WorktreeHostAccess::Ready {
+                            kwt_available: host.kwt_available(),
+                        }
+                    } else {
+                        WorktreeHostAccess::Unavailable
+                    },
+                });
+                let can_open = open_mode != WorktreeOpenMode::Disabled;
+                let can_kill = worktree.session_available() && host_can_attach;
+                let open_target = WorktreeOpenTarget {
+                    host_id: host.id().to_owned(),
+                    endpoint: host.endpoint().to_owned(),
+                    repository: project.repository().to_owned(),
+                    project_path: project.path().to_owned(),
+                    registration_fingerprint: project.registration_fingerprint().to_owned(),
+                    worktree_path: worktree.path().to_owned(),
+                    generation: worktree.generation().map(str::to_owned),
+                    session_name: worktree.session_name().to_owned(),
+                };
+                let repair_open_target =
+                    (open_mode == WorktreeOpenMode::RepairOrOpen).then(|| open_target.clone());
+                let remove_target = (!worktree.is_main()
+                    && worktree.generation().is_some()
+                    && worktree.tmux_socket_name().is_none()
+                    && host.connection() == HostConnectionState::Ready
+                    && host.kwt_available()
+                    && host.kwt_diagnostic().is_none())
+                .then(|| WorktreeRemoveTarget {
+                    open: open_target.clone(),
+                    project_name: project.name().to_owned(),
+                    branch: worktree.branch().to_owned(),
+                    session_was_running: worktree.session_available(),
+                    authority: None,
+                    operation_id: None,
+                });
                 tree = tree.child(Self::worktree_row(
                     host_index,
                     project_index,
@@ -3238,6 +4241,8 @@ impl RootView {
                     is_active,
                     can_open,
                     can_kill,
+                    repair_open_target,
+                    remove_target,
                     cx,
                 ));
             }
@@ -3300,6 +4305,8 @@ impl RootView {
                 is_active,
                 can_open,
                 can_kill,
+                None,
+                None,
                 cx,
             ));
         }
@@ -3316,6 +4323,8 @@ impl RootView {
         is_active: bool,
         can_open: bool,
         can_kill: bool,
+        worktree_target: Option<WorktreeOpenTarget>,
+        remove_target: Option<WorktreeRemoveTarget>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let row_group = format!("worktree-actions-{host_index}-{project_index}-{worktree_index}");
@@ -3356,7 +4365,10 @@ impl RootView {
                     .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
                     .child(label),
             );
-        let actions = tmux_row_actions(is_active, can_kill);
+        let mut actions = tmux_row_actions(is_active, can_kill);
+        if let Some(target) = remove_target {
+            actions.push(SessionRowAction::RemoveWorktree(Box::new(target)));
+        }
         if !actions.is_empty() {
             row = row.child(Self::session_action_menu_button(
                 host_index,
@@ -3369,7 +4381,11 @@ impl RootView {
         }
         row.when(can_open, |element| {
             element.on_click(cx.listener(move |this, _, window, cx| {
-                this.select_session(&selection, window, cx);
+                if let Some(target) = &worktree_target {
+                    this.select_worktree(target, window, cx);
+                } else {
+                    this.select_session(&selection, window, cx);
+                }
             }))
         })
         .into_any_element()
@@ -3976,10 +4992,11 @@ enum HerdrRowAction {
     Delete,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum SessionRowAction {
     Detach,
     KillSession,
+    RemoveWorktree(Box<WorktreeRemoveTarget>),
     Herdr(HerdrRowAction),
 }
 
@@ -5155,28 +6172,292 @@ mod tests {
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
-        NewSessionDraft, NewSessionKind, PendingUiInput, QueuedUiInput, SessionRowAction,
-        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
-        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
-        application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
+        NewSessionDraft, NewSessionKind, PendingUiInput, ProjectDialog, QueuedUiInput,
+        SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
+        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
+        WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
+        WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
+        active_session_selection, application_navigation_width, apply_worktree_removal_failure,
+        can_create_worktree, canonical_terminal_key_with, clear_terminal_input_state,
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, herdr_row_actions, herdr_session_menu_actions, host_tree_status,
-        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
-        kill_confirmation_title, named_key, new_session_validation, normalize_cell_width,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_group_visibility, session_row_element_id,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
-        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, workspace_window_title,
+        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
+        herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
+        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
+        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
+        owns_created_worktree_navigation, queued_input_matches_presentation,
+        retained_key_event_with, session_action_menu_position, session_backend_id,
+        session_group_visibility, session_row_element_id, terminal_cell_at_with_offset,
+        terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
+        terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
+        tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates, workspace_window_title,
+        worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
-        KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, ProjectItem,
-        SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
+        KeyEvent, KeyInput, KwtBranchItem, Modifiers, MouseAction, MouseButton, MouseInput,
+        NamedKey, ProjectItem, SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot,
+        WorktreeItem,
     };
+
+    #[test]
+    fn ambiguous_existing_branch_requires_an_explicit_source() {
+        let mut dialog = ProjectDialog::NewWorktree {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            repository: "github.com/acme/widget".to_owned(),
+            project_name: "widget".to_owned(),
+            project_path: "/code/widget".to_owned(),
+            registration_fingerprint: "registration".to_owned(),
+            branch: "topic".to_owned(),
+            selected_source: None,
+            branches: vec![
+                KwtBranchItem::new("topic", "topic", false),
+                KwtBranchItem::new("topic", "origin/topic", true),
+            ],
+            operation_id: Some(1),
+            loading: false,
+            loaded: true,
+            submitting: false,
+            error: None,
+        };
+
+        assert!(has_ambiguous_worktree_source(&dialog));
+        if let ProjectDialog::NewWorktree {
+            selected_source, ..
+        } = &mut dialog
+        {
+            *selected_source = Some("origin/topic".to_owned());
+        }
+        assert!(!has_ambiguous_worktree_source(&dialog));
+    }
+
+    #[test]
+    fn worktree_creation_requires_successful_branch_inventory() {
+        assert!(!can_create_worktree("feature/new", false, false, false));
+        assert!(!can_create_worktree("feature/new", true, true, false));
+        assert!(can_create_worktree("feature/new", true, false, false));
+    }
+
+    #[test]
+    fn generationless_worktrees_attach_only_to_a_live_discovered_tmux_session() {
+        assert_eq!(
+            worktree_open_mode(WorktreeOpenContext {
+                authority: WorktreeAuthority::Generationless,
+                socket: WorktreeSocket::Default,
+                session: WorktreeSessionPresence::Discovered,
+                presentation: WorktreePresentation::Inactive,
+                host: WorktreeHostAccess::Ready {
+                    kwt_available: true,
+                },
+            }),
+            WorktreeOpenMode::DirectTmux
+        );
+        assert_eq!(
+            worktree_open_mode(WorktreeOpenContext {
+                authority: WorktreeAuthority::Generationless,
+                socket: WorktreeSocket::Default,
+                session: WorktreeSessionPresence::Absent,
+                presentation: WorktreePresentation::Inactive,
+                host: WorktreeHostAccess::Ready {
+                    kwt_available: true,
+                },
+            }),
+            WorktreeOpenMode::Disabled
+        );
+        assert_eq!(
+            worktree_open_mode(WorktreeOpenContext {
+                authority: WorktreeAuthority::Generation,
+                socket: WorktreeSocket::Default,
+                session: WorktreeSessionPresence::Absent,
+                presentation: WorktreePresentation::Inactive,
+                host: WorktreeHostAccess::Ready {
+                    kwt_available: true,
+                },
+            }),
+            WorktreeOpenMode::RepairOrOpen
+        );
+    }
+
+    #[test]
+    fn retained_worktrees_reactivate_without_current_host_or_kwt_authority() {
+        for (authority, socket) in [
+            (WorktreeAuthority::Generation, WorktreeSocket::Default),
+            (WorktreeAuthority::Generation, WorktreeSocket::Custom),
+            (WorktreeAuthority::Generationless, WorktreeSocket::Default),
+        ] {
+            assert_eq!(
+                worktree_open_mode(WorktreeOpenContext {
+                    authority,
+                    socket,
+                    session: WorktreeSessionPresence::Absent,
+                    presentation: WorktreePresentation::ActiveOrRetained,
+                    host: WorktreeHostAccess::Unavailable,
+                }),
+                WorktreeOpenMode::DirectTmux
+            );
+        }
+    }
+
+    #[test]
+    fn exact_branch_sources_are_ranked_ahead_of_the_fuzzy_limit() {
+        let mut branches = (0..9)
+            .map(|index| {
+                workspace::KwtBranchItem::new(
+                    format!("topic-{index}"),
+                    format!("origin/topic-{index}"),
+                    true,
+                )
+            })
+            .collect::<Vec<_>>();
+        branches.extend([
+            workspace::KwtBranchItem::new("topic", "topic", false),
+            workspace::KwtBranchItem::new("topic", "origin/topic", true),
+        ]);
+
+        let visible = visible_kwt_branch_candidates(&branches, "topic");
+        let sources = visible
+            .iter()
+            .map(|candidate| candidate.source())
+            .collect::<Vec<_>>();
+
+        assert_eq!(&sources[..2], &["topic", "origin/topic"]);
+        assert_eq!(sources.len(), 7);
+    }
+
+    #[test]
+    fn every_ambiguous_exact_branch_source_remains_selectable() {
+        let branches = (0..10)
+            .map(|index| {
+                workspace::KwtBranchItem::new("topic", format!("remote-{index}/topic"), true)
+            })
+            .collect::<Vec<_>>();
+
+        let visible = visible_kwt_branch_candidates(&branches, "topic");
+
+        assert_eq!(visible.len(), branches.len());
+    }
+
+    #[test]
+    fn worktree_failures_require_the_dialogs_exact_operation_and_target() {
+        let create = ProjectDialog::NewWorktree {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            repository: "github.com/acme/widget".to_owned(),
+            project_name: "widget".to_owned(),
+            project_path: "/code/widget".to_owned(),
+            registration_fingerprint: "registration".to_owned(),
+            branch: "topic".to_owned(),
+            selected_source: None,
+            branches: Vec::new(),
+            operation_id: Some(7),
+            loading: false,
+            loaded: true,
+            submitting: true,
+            error: None,
+        };
+        assert!(kwt_operation_failure_owns_dialog(
+            Some(&create),
+            7,
+            "/code/widget",
+            None,
+        ));
+        assert!(!kwt_operation_failure_owns_dialog(
+            Some(&create),
+            6,
+            "/code/widget",
+            None,
+        ));
+
+        let remove = ProjectDialog::RemoveWorktree {
+            target: WorktreeRemoveTarget {
+                open: WorktreeOpenTarget {
+                    host_id: "wsl".to_owned(),
+                    endpoint: "Ubuntu".to_owned(),
+                    repository: "github.com/acme/widget".to_owned(),
+                    project_path: "/code/widget".to_owned(),
+                    registration_fingerprint: "registration".to_owned(),
+                    worktree_path: "/work/widget/topic".to_owned(),
+                    generation: Some("11111111111111111111111111111111".to_owned()),
+                    session_name: "widget-topic".to_owned(),
+                },
+                project_name: "widget".to_owned(),
+                branch: "topic".to_owned(),
+                session_was_running: false,
+                authority: Some(9),
+                operation_id: Some(9),
+            },
+            submitting: true,
+            error: None,
+        };
+        assert!(kwt_operation_failure_owns_dialog(
+            Some(&remove),
+            9,
+            "/code/widget",
+            Some("/work/widget/topic"),
+        ));
+        assert!(!kwt_operation_failure_owns_dialog(
+            Some(&remove),
+            9,
+            "/code/widget",
+            Some("/work/widget/other"),
+        ));
+
+        let mut failed = remove;
+        assert!(apply_worktree_removal_failure(
+            &mut failed,
+            9,
+            "/code/widget",
+            Some("/work/widget/topic"),
+            "remove failed".to_owned(),
+        ));
+        let ProjectDialog::RemoveWorktree {
+            target,
+            submitting,
+            error,
+        } = failed
+        else {
+            panic!("removal dialog remains active");
+        };
+        assert!(!submitting);
+        assert_eq!(target.authority, None);
+        assert_eq!(target.operation_id, None);
+        assert_eq!(error.as_deref(), Some("remove failed"));
+    }
+
+    #[test]
+    fn delayed_worktree_creation_does_not_override_newer_navigation_or_dialogs() {
+        assert!(owns_created_worktree_navigation(
+            Some(7),
+            7,
+            true,
+            Some("/code/widget"),
+            "/code/widget",
+        ));
+        assert!(!owns_created_worktree_navigation(
+            Some(7),
+            7,
+            false,
+            None,
+            "/code/widget",
+        ));
+        assert!(!owns_created_worktree_navigation(
+            Some(7),
+            7,
+            true,
+            Some("/code/other"),
+            "/code/widget",
+        ));
+        assert!(!owns_created_worktree_navigation(
+            Some(8),
+            7,
+            true,
+            None,
+            "/code/widget",
+        ));
+    }
 
     #[test]
     fn new_session_dialog_matches_the_shipped_name_and_duplicate_rules() {
@@ -5621,7 +6902,7 @@ mod tests {
     fn session_action_menus_open_upward_and_stay_inside_the_viewport() {
         let (left, top) = session_action_menu_position(325.0, 695.0, 1_100.0, 720.0, 4);
 
-        assert!((left - 213.0).abs() <= f32::EPSILON);
+        assert!((left - 177.0).abs() <= f32::EPSILON);
         assert!((top - 580.0).abs() <= f32::EPSILON);
         assert!(top + 112.0 <= 716.0);
 
