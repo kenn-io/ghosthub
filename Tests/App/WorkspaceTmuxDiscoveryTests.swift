@@ -1224,6 +1224,9 @@ struct WorkspaceTmuxDiscoveryTests {
         ))
         previewCoordinator.setExpanded(true, for: key)
 
+        await waitUntilMainActor {
+            events == ["park:second"]
+        }
         #expect(events == ["park:second"])
         #expect(budget.granted.contains(LivePreviewRequestID(
             sceneID: previewCoordinator.sceneID,
@@ -1871,6 +1874,91 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(model.activeBorrowedTmuxSelection == nil)
         #expect(model.activeBorrowedTmuxLaunchMode == nil)
         #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+    }
+
+    @MainActor
+    @Test("selecting an unresolved host captures the outgoing tmux preview")
+    func unresolvedHostSelectionCapturesOutgoingPreview() async throws {
+        let environment = try setupHostEnvironment()
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let active = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "opened"
+        )
+        let unresolvedHost = HostSummary(
+            id: UUID(),
+            configKey: "unresolved-builder",
+            name: "Unresolved Builder",
+            kind: .remote,
+            platform: .linux,
+            preferredTransport: .ssh
+        )
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: active.name,
+            managed: false,
+            windows: [],
+            serverPID: identity.serverPID,
+            sessionID: identity.sessionID,
+            createdAt: identity.createdAt
+        )]
+        snapshot.hosts.append(unresolvedHost)
+        let captures = Counter()
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .efficient,
+            budget: LivePreviewBudget(limit: 4),
+            capture: { _, _ in
+                _ = captures.increment()
+                return TerminalSurfaceSnapshot(
+                    image: NSImage(size: CGSize(width: 32, height: 20)),
+                    captureToken: TerminalSurfaceCaptureToken(
+                        surfaceID: 1,
+                        seed: 1
+                    )
+                )
+            }
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: Self.previewPaneSplitter(
+                identity: identity
+            ),
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        model.openBorrowedTmuxSession(active)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let activeKey = TmuxPreviewKey(
+            hostID: active.hostID,
+            name: active.name,
+            socketName: active.socketName
+        )
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxSessionIsConnected(active)
+                && !previewCoordinator.requiresIdentity(activeKey)
+        }
+        let unresolved = WorkspaceTmuxSessionSelection(
+            hostID: unresolvedHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(unresolved)
+        await previewCoordinator.waitForPendingWork()
+
+        #expect(captures.count == 1)
+        #expect(model.activeBorrowedTmuxSelection == unresolved)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        await model.shutdown()
     }
 
     @MainActor

@@ -8776,6 +8776,7 @@ final class WorkspaceSceneModel: ObservableObject {
               let attachmentHost = CommandHostResolver.resolve(host)
         else {
             if activatesPresentation {
+                prepareActiveTmuxPreviewForDeactivation()
                 activeBorrowedTmuxSelection = selection
                 activeBorrowedTmuxHandle = nil
                 activeBorrowedTmuxLaunchMode = effectiveLaunchMode
@@ -9035,7 +9036,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     guard let self, let presentation,
                           self.retainedTmuxPresentations[key] === presentation
                     else { return }
-                    self.tmuxSessionPreviewCoordinator.presentationDidChange(
+                    self.tmuxSessionPreviewCoordinator.finishDeactivation(
                         key.previewKey
                     )
                 }

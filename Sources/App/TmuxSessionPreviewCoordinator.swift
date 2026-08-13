@@ -103,6 +103,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private var expandedKeys: Set<TmuxPreviewKey> = []
     private var parkedKeys: Set<TmuxPreviewKey> = []
     private var activatingKeys: Set<TmuxPreviewKey> = []
+    private var deactivatingKeys: Set<TmuxPreviewKey> = []
     private var reconnectingKeys: Set<TmuxPreviewKey> = []
     private var unresolvedIdentityKeys: Set<TmuxPreviewKey> = []
     private var unavailableIdentityKeys: Set<TmuxPreviewKey> = []
@@ -207,6 +208,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         if let previous = registeredVersions[key], previous != version,
            !reconnectingKeys.contains(key) {
             previewStates[key]?.clear()
+            deactivatingKeys.remove(key)
             deferredNavigationCaptureKeys.remove(key)
             invalidate(key)
             unparkAndRelease(key)
@@ -269,6 +271,11 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         captureExpandedEfficientActiveIfNeeded(key)
     }
 
+    func finishDeactivation(_ key: TmuxPreviewKey) {
+        deactivatingKeys.remove(key)
+        presentationDidChange(key)
+    }
+
     func setExpanded(_ expanded: Bool, for key: TmuxPreviewKey) {
         guard presentations[key] != nil else { return }
         let changed = expanded
@@ -279,6 +286,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         invalidate(key)
         invalidateActivationDelay()
         if !expanded {
+            deactivatingKeys.remove(key)
             deferredEfficientCaptureKeys.remove(key)
             unparkAndRelease(key)
         }
@@ -297,6 +305,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         let formerlyParked = parkedKeys
         let isLeavingOff = mode == .off
         mode = newMode
+        deactivatingKeys.removeAll()
         invalidateActivationDelay()
         keys.forEach(invalidate)
         liveTask?.cancel()
@@ -417,6 +426,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         expandedKeys.removeAll()
         parkedKeys.removeAll()
         activatingKeys.removeAll()
+        deactivatingKeys.removeAll()
         reconnectingKeys.removeAll()
         unresolvedIdentityKeys.removeAll()
         unavailableIdentityKeys.removeAll()
@@ -467,6 +477,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             completion?()
             return
         }
+        if mode == .live {
+            deactivatingKeys.insert(key)
+        }
         if mode == .efficient,
            isConnected(presentation),
            presentation.identity() == nil,
@@ -491,6 +504,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         cancelPendingActivation()
         invalidate(key)
         invalidateActivationDelay()
+        deactivatingKeys.remove(key)
         activatingKeys.insert(key)
         unparkAndRelease(key)
         isInvokingActivation = true
@@ -506,6 +520,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         guard presentations[key] != nil else { return }
         invalidate(key)
         invalidateActivationDelay()
+        deactivatingKeys.remove(key)
         reconnectingKeys.insert(key)
         unparkAndRelease(key)
         switch reason {
@@ -740,6 +755,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 
         for key in presentations.keys {
             guard let presentation = presentations[key] else { continue }
+            if deactivatingKeys.contains(key) {
+                continue
+            }
             let eligible = expandedKeys.contains(key)
                 && isConnected(presentation)
                 && presentation.identity() != nil
@@ -760,7 +778,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                   expandedKeys.contains(key),
                   !presentation.isActive(),
                   !activatingKeys.contains(key),
+                  !deactivatingKeys.contains(key),
                   !reconnectingKeys.contains(key),
+                  !parkingBlockedKeys.contains(key),
                   isConnected(presentation),
                   presentation.identity() != nil
             else { continue }
@@ -852,7 +872,8 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             .filter { $0.sceneID == sceneID }
         lastGranted = granted
         for request in lost {
-            if activatingKeys.contains(request.presentation) {
+            if activatingKeys.contains(request.presentation)
+                || deactivatingKeys.contains(request.presentation) {
                 continue
             }
             invalidate(request.presentation)
@@ -880,6 +901,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                 }
             )
         }
+        deactivatingKeys.removeAll()
         presentations.keys.forEach(invalidate)
         invalidateActivationDelay()
     }

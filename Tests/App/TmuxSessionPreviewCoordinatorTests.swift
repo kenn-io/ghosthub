@@ -930,6 +930,36 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.budget.granted.isEmpty)
     }
 
+    @Test("Live parks an outgoing presentation after its final capture")
+    func liveHandoffDefersOutgoingParking() async {
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        harness.suspendCaptures = true
+        harness.parkShouldFail = true
+        let outgoing = harness.presentation(index: 0, isActive: true)
+        let incoming = harness.presentation(index: 1, isActive: false)
+        harness.coordinator.register(outgoing)
+        harness.coordinator.register(incoming)
+        harness.coordinator.setExpanded(true, for: outgoing.key)
+
+        harness.coordinator.prepareToActivate(incoming.key) {
+            harness.coordinator.captureBeforeDeactivation(outgoing.key) {
+                harness.parkShouldFail = false
+                harness.coordinator.finishDeactivation(outgoing.key)
+            }
+            harness.setActive(false, for: outgoing.key)
+            harness.setActive(true, for: incoming.key)
+        }
+        await harness.waitUntilCaptureSuspends()
+
+        #expect(harness.parkAttempts == 0)
+
+        harness.resumeCapture()
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.parkAttempts == 1)
+        #expect(harness.parks == [outgoing.key])
+    }
+
     @Test("Off activation bypasses preview state work")
     func offActivationBypassesPreviewStateWork() {
         let harness = PreviewCoordinatorHarness(mode: .off)
