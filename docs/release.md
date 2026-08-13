@@ -31,10 +31,19 @@ binary path deliberately, but the default never embeds the system kwt.
 same pin. Before either debug or release packaging, every variant is checked
 for its expected Mach-O/ELF/PE architecture and embedded pinned revision.
 
+Packaging also stages libghostty's own emitted resources: the bundled Ghostty
+theme corpus and shell integration at `Contents/Resources/ghostty`, and the
+compiled `xterm-ghostty` terminfo database at `Contents/Resources/terminfo`.
+libghostty locates them by climbing from the running executable and matching
+compiled terminfo, so both trees must keep those exact names and positions.
+Assembly fails rather than shipping a bundle whose themes would silently
+resolve only against a user's `~/.config/ghostty/themes`.
+
 Every packaged app also carries Ghosthub's AGPL-3.0 license and all notices in
 the repository's `LICENSES` directory under `Contents/Resources/Licenses`.
 `LICENSES/THIRD-PARTY-NOTICES.md` is the audited inventory for GRDB, Sparkle,
-and the components compiled into libghostty. Embedded libghostty is built with
+the components compiled into libghostty, and the resources the bundle
+redistributes verbatim, including the iTerm2-Color-Schemes theme corpus. Embedded libghostty is built with
 internationalization disabled, so its otherwise static GNU libintl/gettext
 dependency is not part of Ghosthub's app binary or release obligations.
 

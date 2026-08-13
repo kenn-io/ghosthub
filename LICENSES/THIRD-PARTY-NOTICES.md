@@ -34,6 +34,12 @@ revisions and is copied verbatim into `Ghosthub.app/Contents/Resources/Licenses`
 | uucode and generated Unicode data | `uucode-MIT.txt`, `uucode-Bjoern-Hoehrmann-MIT.txt`, `Unicode-Data.txt` |
 | Symbols Nerd Font | `Symbols-Nerd-Font-MIT.txt` |
 | JetBrains Mono | `JetBrains-Mono-OFL-1.1.txt` |
+| iTerm2-Color-Schemes theme corpus | `iTerm2-Color-Schemes-MIT.txt` |
+
+The bundled Ghostty themes are the iTerm2-Color-Schemes collection, which
+Ghosthub redistributes unmodified. That collection is MIT licensed; the
+copyright and license for each individual theme belong to that theme's
+author, as stated in `iTerm2-Color-Schemes-MIT.txt`.
 
 Portions of this software are copyright © 2023 The FreeType Project
 (www.freetype.org). All rights reserved.
