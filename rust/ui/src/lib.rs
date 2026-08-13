@@ -549,11 +549,7 @@ enum WorktreeHostAccess {
 
 const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
     if matches!(context.presentation, WorktreePresentation::ActiveOrRetained) {
-        return if matches!(context.authority, WorktreeAuthority::Generation) {
-            WorktreeOpenMode::RepairOrOpen
-        } else {
-            WorktreeOpenMode::DirectTmux
-        };
+        return WorktreeOpenMode::DirectTmux;
     }
     let WorktreeHostAccess::Ready { kwt_available } = context.host else {
         return WorktreeOpenMode::Disabled;
@@ -6210,6 +6206,26 @@ mod tests {
             }),
             WorktreeOpenMode::RepairOrOpen
         );
+    }
+
+    #[test]
+    fn retained_worktrees_reactivate_without_current_host_or_kwt_authority() {
+        for (authority, socket) in [
+            (WorktreeAuthority::Generation, WorktreeSocket::Default),
+            (WorktreeAuthority::Generation, WorktreeSocket::Custom),
+            (WorktreeAuthority::Generationless, WorktreeSocket::Default),
+        ] {
+            assert_eq!(
+                worktree_open_mode(WorktreeOpenContext {
+                    authority,
+                    socket,
+                    session: WorktreeSessionPresence::Absent,
+                    presentation: WorktreePresentation::ActiveOrRetained,
+                    host: WorktreeHostAccess::Unavailable,
+                }),
+                WorktreeOpenMode::DirectTmux
+            );
+        }
     }
 
     #[test]

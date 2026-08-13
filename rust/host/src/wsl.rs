@@ -1233,24 +1233,7 @@ impl<R: CommandRunner> WslHost<R> {
         if output.status == 0 {
             Ok(())
         } else {
-            Err(HostError::new(
-                if output.status == 127 {
-                    DiagnosticKind::ExecutableNotFound
-                } else {
-                    DiagnosticKind::Transport
-                },
-                parse_command_failure(&output.stdout).map_or_else(
-                    || {
-                        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-                        if detail.is_empty() {
-                            "KWT could not create the worktree".to_owned()
-                        } else {
-                            detail
-                        }
-                    },
-                    |failure| friendly_kwt_failure(&failure),
-                ),
-            ))
+            Err(classify_kwt_command_failure(&output, "create KWT worktree"))
         }
     }
 
@@ -1293,24 +1276,7 @@ impl<R: CommandRunner> WslHost<R> {
         if output.status == 0 {
             Ok(())
         } else {
-            Err(HostError::new(
-                if output.status == 127 {
-                    DiagnosticKind::ExecutableNotFound
-                } else {
-                    DiagnosticKind::Transport
-                },
-                parse_command_failure(&output.stdout).map_or_else(
-                    || {
-                        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-                        if detail.is_empty() {
-                            "KWT could not remove the worktree".to_owned()
-                        } else {
-                            detail
-                        }
-                    },
-                    |failure| friendly_kwt_failure(&failure),
-                ),
-            ))
+            Err(classify_kwt_command_failure(&output, "remove KWT worktree"))
         }
     }
 
@@ -3896,6 +3862,9 @@ fn require_kwt_project_command(output: &CommandOutput, subject: &str) -> Result<
 }
 
 fn classify_kwt_command_failure(output: &CommandOutput, subject: &str) -> HostError {
+    if output.status == 127 {
+        return classify_command_failure(output.status, &output.stderr, subject);
+    }
     let Some(failure) = parse_command_failure(&output.stdout) else {
         return classify_command_failure(output.status, &output.stderr, subject);
     };
@@ -4280,6 +4249,7 @@ mod tests {
     struct KwtMutationRunner {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
         mutation_timeouts: Arc<Mutex<Vec<Duration>>>,
+        mutation_failure: Arc<Mutex<Option<String>>>,
         helper_matches: Arc<AtomicBool>,
     }
 
@@ -4288,6 +4258,7 @@ mod tests {
             Self {
                 calls: Arc::default(),
                 mutation_timeouts: Arc::default(),
+                mutation_failure: Arc::default(),
                 helper_matches: Arc::new(AtomicBool::new(true)),
             }
         }
@@ -4305,11 +4276,11 @@ mod tests {
                 .iter()
                 .map(|argument| argument.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
-            if (args.iter().any(|argument| argument == "add")
+            let is_worktree_mutation = (args.iter().any(|argument| argument == "add")
                 && args.iter().any(|argument| argument == "--no-launch"))
                 || (args.iter().any(|argument| argument == "remove")
-                    && args.iter().any(|argument| argument == "--if-generation"))
-            {
+                    && args.iter().any(|argument| argument == "--if-generation"));
+            if is_worktree_mutation {
                 self.mutation_timeouts
                     .lock()
                     .expect("mutation timeouts")
@@ -4323,6 +4294,22 @@ mod tests {
                 return Ok(CommandOutput {
                     status: 1,
                     stdout: br#"{"error":{"code":"registration_changed","message":"the project registration changed before the operation began","retryable":true}}"#.to_vec(),
+                    stderr: Vec::new(),
+                });
+            }
+            if is_worktree_mutation
+                && let Some(code) = self
+                    .mutation_failure
+                    .lock()
+                    .expect("mutation failure")
+                    .clone()
+            {
+                return Ok(CommandOutput {
+                    status: 1,
+                    stdout: format!(
+                        r#"{{"error":{{"code":"{code}","message":"KWT inventory did not settle","retryable":true}}}}"#
+                    )
+                    .into_bytes(),
                     stderr: Vec::new(),
                 });
             }
@@ -4574,6 +4561,43 @@ mod tests {
             *runner.mutation_timeouts.lock().expect("mutation timeouts"),
             vec![KWT_MUTATION_TIMEOUT, KWT_MUTATION_TIMEOUT]
         );
+    }
+
+    #[test]
+    fn kwt_worktree_mutations_preserve_structured_inventory_timeouts() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        *runner.mutation_failure.lock().expect("mutation failure") =
+            Some("inventory_timeout".to_owned());
+        let cancellation = CancellationToken::new();
+
+        let create_error = host
+            .create_kwt_worktree(
+                &endpoint,
+                &runtime,
+                &KwtWorktreeCreate::new(
+                    "/code/widget",
+                    "github.com/acme/widget",
+                    "opaque-registration",
+                    "feature/ready",
+                    Some("origin/feature/ready".to_owned()),
+                    false,
+                ),
+                &cancellation,
+            )
+            .expect_err("uncertain create must remain a timeout");
+        let remove_error = host
+            .remove_kwt_worktree(
+                &endpoint,
+                &runtime,
+                "/code/widget",
+                "/work/widget/feature-ready",
+                "0123456789abcdef0123456789abcdef",
+                &cancellation,
+            )
+            .expect_err("uncertain removal must remain a timeout");
+
+        assert_eq!(create_error.kind(), DiagnosticKind::Timeout);
+        assert_eq!(remove_error.kind(), DiagnosticKind::Timeout);
     }
 
     #[test]
