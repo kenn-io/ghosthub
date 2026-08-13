@@ -102,6 +102,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private var previewStates: [TmuxPreviewKey: TmuxSessionPreviewState<NSImage>] = [:]
     private var expandedKeys: Set<TmuxPreviewKey> = []
     private var parkedKeys: Set<TmuxPreviewKey> = []
+    private var parkedSurfaces: [TmuxPreviewKey: TerminalSurfaceView] = [:]
     private var activatingKeys: Set<TmuxPreviewKey> = []
     private var deactivatingKeys: Set<TmuxPreviewKey> = []
     private var reconnectingKeys: Set<TmuxPreviewKey> = []
@@ -436,6 +437,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         viewStates.removeAll()
         expandedKeys.removeAll()
         parkedKeys.removeAll()
+        parkedSurfaces.removeAll()
         activatingKeys.removeAll()
         deactivatingKeys.removeAll()
         reconnectingKeys.removeAll()
@@ -836,17 +838,18 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                   let surface = presentation.surface()
             else { return }
             try host.park(surface)
+            parkedSurfaces[key] = surface
         }
         parkedKeys.insert(key)
         publish(key)
     }
 
     private func unparkAndRelease(_ key: TmuxPreviewKey) {
-        if parkedKeys.remove(key) != nil,
-           let presentation = presentations[key] {
-            if let injectedUnpark {
+        let parkedSurface = parkedSurfaces.removeValue(forKey: key)
+        if parkedKeys.remove(key) != nil {
+            if let injectedUnpark, let presentation = presentations[key] {
                 injectedUnpark(presentation)
-            } else if let surface = presentation.surface() {
+            } else if let surface = parkedSurface {
                 parkingHost?.unpark(surface)
             }
         }

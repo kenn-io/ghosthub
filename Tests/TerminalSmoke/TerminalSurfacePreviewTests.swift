@@ -445,6 +445,60 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertFalse(host.contains(view))
     }
 
+    func testPreviewRemovalUnparksAfterNativeSurfaceLookupIsRemoved() throws {
+        let surface = try makeSurface()
+        surface.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+        let root = NSView(frame: surface.frame)
+        let window = NSWindow(
+            contentRect: root.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = root
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        let parkingHost = LivePreviewParkingHost(frame: root.bounds)
+        root.addSubview(parkingHost)
+        let key = TmuxPreviewKey(
+            hostID: UUID(),
+            name: "removed-native-surface",
+            socketName: nil
+        )
+        var nativeSurface: TerminalSurfaceView? = surface
+        let coordinator = TmuxSessionPreviewCoordinator(
+            mode: .live,
+            budget: LivePreviewBudget(limit: 1),
+            capture: { _, _ in nil }
+        )
+        coordinator.installParkingHost(parkingHost)
+        coordinator.register(.init(
+            key: key,
+            surface: { nativeSurface },
+            handleID: { UUID() },
+            generation: { nil },
+            identity: {
+                TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$1",
+                    createdAt: "1000"
+                )
+            },
+            connectionState: { .connected },
+            isActive: { false },
+            activate: {}
+        ))
+        coordinator.setExpanded(true, for: key)
+        XCTAssertTrue(parkingHost.contains(surface))
+
+        nativeSurface = nil
+        coordinator.remove(key, reason: .close)
+
+        XCTAssertFalse(parkingHost.contains(surface))
+        XCTAssertNil(surface.superview)
+        XCTAssertFalse(surface.isParkedForPreview)
+    }
+
     func testPreviewActivationUnparksBeforeTheNormalTmuxMount() async throws {
         let surface = try makeSurface()
         surface.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
