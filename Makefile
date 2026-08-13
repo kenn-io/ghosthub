@@ -22,6 +22,11 @@ RELEASE_ROOT ?= $(DIST_ROOT)/release
 DEBUG_APP_PATH ?= $(DEBUG_ROOT)/$(GHOSTHUB_APP).app
 RELEASE_APP_PATH ?= $(RELEASE_ROOT)/$(GHOSTHUB_APP).app
 RELEASE_BUNDLE_ID ?= com.ghosthub
+RELEASE_CHANNEL ?= stable
+NIGHTLY_SPARKLE_FEED_URL ?=
+NIGHTLY_SPARKLE_PUBLIC_ED_KEY ?=
+NIGHTLY_SOURCE_REVISION ?=
+NIGHTLY_BUILD_DATE ?=
 DEBUG_BUNDLE_ID ?= $(RELEASE_BUNDLE_ID).debug
 RELEASE_VERSION_FILE ?= RELEASE_VERSION
 RELEASE_APP_VERSION ?= $(shell tr -d '[:space:]' < "$(RELEASE_VERSION_FILE)")
@@ -59,7 +64,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -96,6 +101,12 @@ help:
 		'      Package a release Ghosthub.app bundle under $(RELEASE_ROOT).' \
 		'  make release-dmg' \
 		'      Build a release DMG. If Apple signing/notary env vars are set, it signs and notarizes it.' \
+		'  make nightly-app' \
+		'      Package the release-optimized app with the nightly display name, feed, and key.' \
+		'  make nightly-dmg' \
+		'      Build a nightly DMG through the release signing and notarization path.' \
+		'  make nightly-appcast' \
+		'      Generate the nightly appcast for the current workflow run and attempt.' \
 		'  make run-release-app' \
 		'      Build and open the packaged release Ghosthub.app bundle.' \
 		'  make run-app' \
@@ -391,7 +402,7 @@ release-app: ensure-kwt ensure-kwt-variants build-release
 	bin_dir="$$($(SWIFT) build --configuration release --show-bin-path)"; \
 	app_bin="$$bin_dir/$(GHOSTHUB_APP)"; \
 	app_root="$(RELEASE_APP_PATH)"; \
-	$(UV) run --frozen $(PYTHON) tools/assemble_app_bundle.py \
+	assemble_arguments=($(UV) run --frozen $(PYTHON) tools/assemble_app_bundle.py \
 		--source-bin-dir "$$bin_dir" \
 		--app-root "$$app_root" \
 		--app-binary "$$app_bin" \
@@ -399,7 +410,7 @@ release-app: ensure-kwt ensure-kwt-variants build-release
 		--display-name "$(GHOSTHUB_APP)" \
 		--version "$(RELEASE_APP_VERSION)" \
 		--build-version "$(RELEASE_BUILD_VERSION)" \
-		--release-channel stable \
+		--release-channel "$(RELEASE_CHANNEL)" \
 		--min-macos "$(RELEASE_MIN_MACOS)" \
 		--icon-path "$(APP_ICON_PATH)" \
 		--app-license-path "$(APP_LICENSE_PATH)" \
@@ -410,7 +421,16 @@ release-app: ensure-kwt ensure-kwt-variants build-release
 		--copyright "$(APP_COPYRIGHT)" \
 		--kwt-version "$(KWT_VERSION)" \
 		--kwt-source-revision "$(KWT_SOURCE_REVISION)" \
-		--remote-kwt-source-revision "$(KWT_REF)" >/dev/null; \
+		--remote-kwt-source-revision "$(KWT_REF)"); \
+	if [[ "$(RELEASE_CHANNEL)" == "nightly" ]]; then \
+		assemble_arguments+=( \
+			--nightly-feed-url "$(NIGHTLY_SPARKLE_FEED_URL)" \
+			--nightly-public-ed-key "$(NIGHTLY_SPARKLE_PUBLIC_ED_KEY)" \
+			--source-revision "$(NIGHTLY_SOURCE_REVISION)" \
+			--build-date "$(NIGHTLY_BUILD_DATE)" \
+		); \
+	fi; \
+	"$${assemble_arguments[@]}" >/dev/null; \
 	printf 'Built release app bundle: %s\n' "$(RELEASE_APP_PATH)"
 
 run-release-app: release-app
@@ -424,6 +444,15 @@ release-dmg:
 release-appcast:
 	@RELEASE_APP_VERSION="$(RELEASE_APP_VERSION)" \
 		./tools/generate_update_appcast.sh
+
+nightly-app:
+	@$(MAKE) release-app RELEASE_CHANNEL=nightly
+
+nightly-dmg:
+	@RELEASE_CHANNEL=nightly ./tools/build_release_dmg.sh
+
+nightly-appcast:
+	@./tools/generate_nightly_update_appcast.sh
 
 run-app: debug-app
 	@set -euo pipefail; \
