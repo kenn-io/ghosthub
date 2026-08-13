@@ -36,23 +36,27 @@ extension LibghosttySurfaceRuntimeCallbacks {
 // MARK: - Mock Libghostty Layout
 
 struct MockLibghosttyLayout {
+    /// Where the emitted libghostty `share` tree sits under the layout root.
+    enum SharePrefix: String {
+        case repoLocalBootstrap = ".build/libghostty/share"
+        case packagedAppBundle = "Contents/Resources"
+    }
+
     let root: URL
     let resources: URL
     let tempDir: TempDirectoryFixture
 
-    static func create() throws -> MockLibghosttyLayout {
+    static func create(
+        share: SharePrefix = .repoLocalBootstrap
+    ) throws -> MockLibghosttyLayout {
         let tempDir = try TempDirectoryFixture()
         let root = tempDir.url
-        let resources = root
-            .appendingPathComponent(
-                ".build/libghostty/source/zig-out/share/ghostty",
-                isDirectory: true
-            )
-        let terminfo = root
-            .appendingPathComponent(
-                ".build/libghostty/source/zig-out/share/terminfo/78",
-                isDirectory: true
-            )
+        let shareRoot = root
+            .appendingPathComponent(share.rawValue, isDirectory: true)
+        let resources = shareRoot
+            .appendingPathComponent("ghostty", isDirectory: true)
+        let terminfo = shareRoot
+            .appendingPathComponent("terminfo/78", isDirectory: true)
 
         try FileManager.default.createDirectory(
             at: resources,

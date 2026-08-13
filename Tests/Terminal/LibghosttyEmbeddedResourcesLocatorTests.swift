@@ -4,10 +4,11 @@ import Testing
 
 struct LibghosttyEmbeddedResourcesLocatorTests {
     private func assertResolvesToLayoutResources(
+        share: MockLibghosttyLayout.SharePrefix = .repoLocalBootstrap,
         executablePath: (MockLibghosttyLayout) -> String,
         currentDirectoryPath: (MockLibghosttyLayout) -> String
     ) throws {
-        let layout = try MockLibghosttyLayout.create()
+        let layout = try MockLibghosttyLayout.create(share: share)
 
         let resolved =
             LibghosttyEmbeddedResourcesLocator.resolveResourcesDirectory(
@@ -39,5 +40,74 @@ struct LibghosttyEmbeddedResourcesLocatorTests {
             },
             currentDirectoryPath: { $0.root.path }
         )
+    }
+
+    @Test("resolveResourcesDirectory finds the packaged app bundle layout")
+    func resolveResourcesDirectoryFindsPackagedAppBundleLayout() throws {
+        try assertResolvesToLayoutResources(
+            share: .packagedAppBundle,
+            executablePath: { layout in
+                layout.root.appendingPathComponent(
+                    "Contents/MacOS/Ghosthub",
+                    isDirectory: false
+                ).path
+            },
+            currentDirectoryPath: { _ in "/tmp" }
+        )
+    }
+
+    @Test("Ghosthub's own resources override an inherited Ghostty.app path")
+    func ownResourcesOverrideInheritedGhosttyPath() throws {
+        let layout = try MockLibghosttyLayout.create(share: .packagedAppBundle)
+
+        let resolved = LibghosttyEmbeddedResourcesLocator
+            .effectiveResourcesDirectory(
+                executablePath: layout.root.appendingPathComponent(
+                    "Contents/MacOS/Ghosthub",
+                    isDirectory: false
+                ).path,
+                currentDirectoryPath: "/tmp",
+                inheritedResourcesPath:
+                "/Applications/Ghostty.app/Contents/Resources/ghostty"
+            )
+
+        #expect(resolved == layout.resources)
+    }
+
+    @Test("an inherited path is used only when Ghosthub ships no resources")
+    func inheritedPathIsUsedOnlyWithoutOwnResources() {
+        let inherited = "/Applications/Ghostty.app/Contents/Resources/ghostty"
+
+        let resolved = LibghosttyEmbeddedResourcesLocator
+            .effectiveResourcesDirectory(
+                executablePath: "/Applications/Ghosthub.app/Contents/MacOS/Ghosthub",
+                currentDirectoryPath: "/tmp",
+                inheritedResourcesPath: inherited
+            )
+
+        #expect(resolved == URL(fileURLWithPath: inherited, isDirectory: true))
+    }
+
+    @Test("resolveResourcesDirectory ignores a layout without compiled terminfo")
+    func resolveResourcesDirectoryIgnoresLayoutWithoutTerminfo() throws {
+        let layout = try MockLibghosttyLayout.create(share: .packagedAppBundle)
+        try FileManager.default.removeItem(
+            at: layout.root.appendingPathComponent(
+                "Contents/Resources/terminfo",
+                isDirectory: true
+            )
+        )
+
+        let resolved =
+            LibghosttyEmbeddedResourcesLocator.resolveResourcesDirectory(
+                executablePath: layout.root
+                    .appendingPathComponent(
+                        "Contents/MacOS/Ghosthub",
+                        isDirectory: false
+                    ).path,
+                currentDirectoryPath: "/tmp"
+            )
+
+        #expect(resolved == nil)
     }
 }

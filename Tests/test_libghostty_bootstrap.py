@@ -73,7 +73,7 @@ def test_render_build_command_uses_repo_bootstrap_flags(
         "-Dapp-runtime=none",
         "-Demit-xcframework=true",
         "-Demit-macos-app=false",
-        "-Demit-themes=false",
+        "-Demit-themes=true",
         "-Di18n=false",
         "-Dsentry=false",
         "-Doptimize=Debug",
@@ -268,6 +268,7 @@ def test_artifact_state_flags_archive_missing_ghostty_api(tmp_path: Path) -> Non
     artifacts.header_path.parent.mkdir(parents=True)
     artifacts.header_path.write_text("// header\n")
     artifacts.modulemap_path.write_text("module GhosttyKit {}\n")
+    _write_share_tree(artifacts.share_path)
     metadata = bootstrap.VendorMetadata(
         source="https://example.com/ghostty.git",
         tag="v0.0.0",
@@ -1365,6 +1366,121 @@ def test_artifact_state_reports_stale_manifest(
     )
 
 
+def test_artifact_state_reports_pruned_resources_despite_current_manifest(
+    repo: Repo,
+) -> None:
+    # A manifest flag cannot tell a variant that still has its resources from
+    # one whose share tree was pruned, so the tree itself is the check.
+    _write_artifacts(repo.paths.cached_artifacts, repo.metadata)
+    assert (
+        bootstrap.artifact_state_message(
+            repo.paths.cached_artifacts, repo.metadata, "native", "Debug"
+        )
+        is None
+    )
+    shutil.rmtree(repo.paths.cached_artifacts.share_path)
+
+    message = bootstrap.artifact_state_message(
+        repo.paths.cached_artifacts,
+        repo.metadata,
+        "native",
+        "Debug",
+    )
+
+    assert message is not None
+    assert "libghostty resources are incomplete" in message
+
+
+def test_artifact_state_reports_a_missing_theme_corpus(repo: Repo) -> None:
+    _write_artifacts(repo.paths.cached_artifacts, repo.metadata)
+    shutil.rmtree(
+        repo.paths.cached_artifacts.share_path.joinpath(
+            *bootstrap.THEMES_RELATIVE_PATH
+        )
+    )
+
+    message = bootstrap.artifact_state_message(
+        repo.paths.cached_artifacts,
+        repo.metadata,
+        "native",
+        "Debug",
+    )
+
+    assert message is not None
+    assert "theme corpus" in message
+
+
+def test_share_tree_problem_accepts_a_complete_tree(tmp_path: Path) -> None:
+    assert bootstrap.share_tree_problem(_write_share_tree(tmp_path)) is None
+
+
+def _empty_theme_corpus(share_root: Path) -> None:
+    for theme in share_root.joinpath(*bootstrap.THEMES_RELATIVE_PATH).iterdir():
+        theme.unlink()
+
+
+def _replace_theme_corpus_with_a_file(share_root: Path) -> None:
+    themes = share_root.joinpath(*bootstrap.THEMES_RELATIVE_PATH)
+    shutil.rmtree(themes)
+    themes.write_text("not a directory\n")
+
+
+def _replace_terminfo_sentinel_with_a_directory(share_root: Path) -> None:
+    terminfo = share_root.joinpath(*bootstrap.TERMINFO_RELATIVE_PATH)
+    terminfo.unlink()
+    terminfo.mkdir()
+
+
+@pytest.mark.parametrize(
+    ("corrupt", "reason"),
+    [
+        pytest.param(_empty_theme_corpus, "empty", id="empty-themes"),
+        pytest.param(
+            _replace_theme_corpus_with_a_file, "missing", id="themes-not-a-directory"
+        ),
+        pytest.param(
+            _replace_terminfo_sentinel_with_a_directory,
+            "terminfo",
+            id="terminfo-not-a-file",
+        ),
+    ],
+)
+def test_share_tree_problem_rejects_an_unusable_tree(
+    tmp_path: Path,
+    corrupt: Callable[[Path], None],
+    reason: str,
+) -> None:
+    # Existence alone is not enough: an empty corpus resolves no theme name,
+    # and the terminfo sentinel is what libghostty matches when it climbs.
+    share_root = _write_share_tree(tmp_path)
+    corrupt(share_root)
+
+    problem = bootstrap.share_tree_problem(share_root)
+
+    assert problem is not None
+    assert reason in problem
+
+
+def test_ensure_emitted_resources_accepts_a_complete_build(repo: Repo) -> None:
+    _write_share_tree(
+        Path(repo.paths.source_checkout_root, *bootstrap.EMITTED_SHARE_RELATIVE_PATH)
+    )
+
+    bootstrap.ensure_emitted_resources(repo.paths)
+
+
+def test_ensure_emitted_resources_rejects_an_incomplete_build(repo: Repo) -> None:
+    share_root = _write_share_tree(
+        Path(repo.paths.source_checkout_root, *bootstrap.EMITTED_SHARE_RELATIVE_PATH)
+    )
+    shutil.rmtree(share_root.joinpath(*bootstrap.THEMES_RELATIVE_PATH))
+
+    with pytest.raises(bootstrap.BootstrapError) as raised:
+        bootstrap.ensure_emitted_resources(repo.paths)
+
+    assert "iTerm2-Color-Schemes" in str(raised.value)
+
+
 def test_ensure_source_checkout_initializes_local_cache_and_fetches_pinned_commit(
     repo: Repo,
 ) -> None:
@@ -1783,10 +1899,24 @@ def _write_artifacts(
 
     artifacts.root.mkdir(parents=True, exist_ok=True)
     artifacts.xcframework_path.mkdir(parents=True)
+    _write_share_tree(artifacts.share_path)
     artifacts.header_path.parent.mkdir(parents=True, exist_ok=True)
     artifacts.header_path.write_text("// header\n")
     artifacts.modulemap_path.write_text("module GhosttyKit {}\n")
     artifacts.manifest_path.write_text(json.dumps(manifest))
+
+
+def _write_share_tree(share_root: Path) -> Path:
+    themes = share_root.joinpath(*bootstrap.THEMES_RELATIVE_PATH)
+    themes.mkdir(parents=True)
+    (themes / "Catppuccin Macchiato").write_text("background = #24273a\n")
+    share_root.joinpath(*bootstrap.SHELL_INTEGRATION_RELATIVE_PATH).mkdir(
+        parents=True
+    )
+    terminfo = share_root.joinpath(*bootstrap.TERMINFO_RELATIVE_PATH)
+    terminfo.parent.mkdir(parents=True)
+    terminfo.write_bytes(b"")
+    return share_root
 
 
 def _create_repo_layout(repo_root: Path) -> bootstrap.VendorMetadata:

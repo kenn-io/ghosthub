@@ -23,6 +23,18 @@ configuration does not affect Ghosthub.
 Ghosthub reloads terminal configuration after the file changes. Use
 ++shift+cmd+comma++ to request a reload immediately.
 
+## Terminal themes
+
+Ghostty's built-in color schemes ship with Ghosthub, so `theme` accepts any of
+their names directly:
+
+```text
+theme = Catppuccin Macchiato
+```
+
+Conditional light and dark themes, and paths to your own theme files, work the
+same way.
+
 ## Shell startup
 
 For local shells, Ghosthub preserves libghostty's normal macOS login-shell and

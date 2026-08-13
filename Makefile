@@ -13,6 +13,9 @@ LIBGHOSTTY_GIT ?=
 LIBGHOSTTY_XCRUN ?=
 LIBGHOSTTY_XCFRAMEWORK_TARGET ?= aarch64
 LIBGHOSTTY_OPTIMIZE ?= Debug
+# Themes, shell integration, and terminfo staged by the libghostty bootstrap.
+# Bundles copy this tree into Contents/Resources.
+LIBGHOSTTY_SHARE_DIR ?= $(abspath .build/libghostty/share)
 DIST_ROOT ?= dist
 DEBUG_ROOT ?= $(DIST_ROOT)/debug
 RELEASE_ROOT ?= $(DIST_ROOT)/release
@@ -366,6 +369,7 @@ debug-app: ensure-kwt ensure-kwt-variants bootstrap-libghostty
 		--app-license-path "$(APP_LICENSE_PATH)" \
 		--kwt-binary "$$kwt_bin" \
 		--kwt-variants-dir "$(KWT_VARIANTS_DIR)" \
+		--libghostty-share-dir "$(LIBGHOSTTY_SHARE_DIR)" \
 		--third-party-licenses-dir "$(THIRD_PARTY_LICENSES_DIR)" \
 		--copyright "$(APP_COPYRIGHT)" \
 		--kwt-version "$(KWT_VERSION)" \
@@ -399,6 +403,7 @@ release-app: ensure-kwt ensure-kwt-variants build-release
 		--app-license-path "$(APP_LICENSE_PATH)" \
 		--kwt-binary "$$kwt_bin" \
 		--kwt-variants-dir "$(KWT_VARIANTS_DIR)" \
+		--libghostty-share-dir "$(LIBGHOSTTY_SHARE_DIR)" \
 		--third-party-licenses-dir "$(THIRD_PARTY_LICENSES_DIR)" \
 		--copyright "$(APP_COPYRIGHT)" \
 		--kwt-version "$(KWT_VERSION)" \
