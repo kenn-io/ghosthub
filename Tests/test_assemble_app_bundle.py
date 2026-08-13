@@ -402,6 +402,7 @@ def test_nightly_info_plist_uses_nightly_update_configuration(tmp_path):
         app_license_path=app_license,
         kwt_binary=kwt_binary,
         kwt_variants_dir=kwt_variants_dir,
+        libghostty_share_dir=make_libghostty_share_dir(tmp_path),
         third_party_licenses_dir=licenses_dir,
         copyright=COPYRIGHT_NOTICE,
         kwt_version="test",
@@ -619,6 +620,7 @@ def test_assemble_app_bundle_rejects_an_unusable_share_dir(tmp_path, corrupt):
             kwt_version="0.1.0",
             kwt_source_revision="abc123",
             remote_kwt_source_revision="def456",
+            release_channel=assemble.ReleaseChannel.STABLE,
         )
 
     assert not app_root.exists()
