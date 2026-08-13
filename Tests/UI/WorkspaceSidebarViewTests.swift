@@ -2,6 +2,7 @@ import Foundation
 import GhosthubSettings
 import GhosthubTestSupport
 import GhosthubWorkspace
+import SwiftUI
 import Testing
 @testable import GhosthubUI
 
@@ -65,6 +66,42 @@ struct WorkspaceSidebarViewTests {
             previewableSessionIDs: [sessionID],
             expansion: state
         ))
+    }
+
+    @MainActor
+    @Test("collapsing an ancestor releases an expanded tmux preview")
+    func ancestorCollapseReleasesExpandedTmuxPreview() {
+        let hostID = UUID()
+        let session = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "opened"
+        )
+        var mountedStates: [Bool] = []
+        let preview = AnyView(
+            Color.clear
+                .frame(height: 40)
+                .modifier(TmuxSessionPreviewMountModifier(
+                    session: session,
+                    onExpanded: { _, expanded in
+                        mountedStates.append(expanded)
+                    }
+                ))
+        )
+        let hostingView = hostView(preview)
+
+        #expect(mountedStates.last == true)
+
+        hostingView.rootView = AnyView(EmptyView())
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        #expect(mountedStates.last == false)
+
+        hostingView.rootView = preview
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        #expect(mountedStates.last == true)
     }
 
     @MainActor

@@ -50,6 +50,20 @@ enum TmuxSessionPreviewRowPresentation {
     }
 }
 
+struct TmuxSessionPreviewMountModifier: ViewModifier {
+    let session: WorkspaceTmuxSessionSelection
+    let onExpanded: (WorkspaceTmuxSessionSelection, Bool) -> Void
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            onExpanded(session, true)
+        }
+        .onDisappear {
+            onExpanded(session, false)
+        }
+    }
+}
+
 struct WorkspaceSessionActionPresentation: Equatable {
     static let controlWidth: CGFloat = 30
 
@@ -1705,9 +1719,10 @@ struct WorkspaceSidebarView: View {
                         }
                     ) {
                     preview
-                        .onAppear {
-                            onTmuxSessionPreviewExpanded(tmuxSession, true)
-                        }
+                        .modifier(TmuxSessionPreviewMountModifier(
+                            session: tmuxSession,
+                            onExpanded: onTmuxSessionPreviewExpanded
+                        ))
                         .padding(.leading, 18)
                         .padding(.trailing, 8)
                         .accessibilityIdentifier(
