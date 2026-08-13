@@ -88,6 +88,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 
     private let budget: LivePreviewBudget
     private let capture: Capture
+    private let finalCapture: Capture
     private let injectedPark: Park?
     private let injectedUnpark: Unpark?
     private let injectedIsKeyWindow: (() -> Bool)?
@@ -141,15 +142,31 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         self.mode = mode
         self.budget = budget
         let resolvedSnapshotter = snapshotter ?? TerminalSurfaceSnapshotter()
-        self.capture = capture ?? { presentation, previousCaptureToken in
-            guard let surface = presentation.surface() else {
-                throw TerminalSurfaceSnapshotError.missingIOSurface
+        if let capture {
+            self.capture = capture
+            finalCapture = capture
+        } else {
+            self.capture = { presentation, previousCaptureToken in
+                guard let surface = presentation.surface() else {
+                    throw TerminalSurfaceSnapshotError.missingIOSurface
+                }
+                return try await resolvedSnapshotter.snapshot(
+                    of: surface,
+                    outputWidth: 320,
+                    previousCaptureToken: previousCaptureToken
+                )
             }
-            return try await resolvedSnapshotter.snapshot(
-                of: surface,
-                outputWidth: 320,
-                previousCaptureToken: previousCaptureToken
-            )
+            finalCapture = { presentation, previousCaptureToken in
+                guard let surface = presentation.surface() else {
+                    throw TerminalSurfaceSnapshotError.missingIOSurface
+                }
+                return try await resolvedSnapshotter.snapshot(
+                    of: surface,
+                    outputWidth: 320,
+                    previousCaptureToken: previousCaptureToken,
+                    coalescesInFlight: false
+                )
+            }
         }
         injectedPark = park
         injectedUnpark = unpark
@@ -555,18 +572,25 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         let previousToken = previewStates[key]?.visibleFrame?.captureToken
         let operationID = UUID()
         activeCaptureIDs[key] = operationID
+        let captureOperation = switch reason {
+        case .scheduled: capture
+        case .navigationAway, .finalBeforeUnpark: finalCapture
+        }
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                if let snapshot = try await capture(presentation, previousToken),
-                   await presentation.refreshIdentity() == identity,
-                   captureCanPublish(
-                       key,
-                       presentationVersion: presentationVersion,
-                       identity: identity,
-                       generation: captureGeneration,
-                       reason: reason
-                   ) {
+                if let snapshot = try await captureOperation(
+                    presentation,
+                    previousToken
+                ),
+                    await presentation.refreshIdentity() == identity,
+                    captureCanPublish(
+                        key,
+                        presentationVersion: presentationVersion,
+                        identity: identity,
+                        generation: captureGeneration,
+                        reason: reason
+                    ) {
                     previewStates[key]?.recordCapture(
                         image: snapshot.image,
                         capturedAt: now(),
@@ -625,7 +649,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                 && parkedKeys.contains(key)
                 && isGranted(key)
         case .navigationAway:
-            guard isApplicationActive, isSidebarVisible else { return false }
+            guard isApplicationActive else { return false }
             return mode == .efficient || expandedKeys.contains(key)
         case .finalBeforeUnpark:
             return mode == .efficient && parkedKeys.contains(key)

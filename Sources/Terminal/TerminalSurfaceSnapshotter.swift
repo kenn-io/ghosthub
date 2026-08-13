@@ -87,7 +87,8 @@ public final class TerminalSurfaceSnapshotter {
     public func snapshot(
         of surface: TerminalSurfaceView,
         outputWidth: CGFloat,
-        previousCaptureToken: TerminalSurfaceCaptureToken?
+        previousCaptureToken: TerminalSurfaceCaptureToken?,
+        coalescesInFlight: Bool = true
     ) async throws -> TerminalSurfaceSnapshot? {
         guard outputWidth.isFinite, outputWidth > 0 else {
             throw TerminalSurfaceSnapshotError.invalidOutputSize
@@ -112,7 +113,7 @@ public final class TerminalSurfaceSnapshotter {
             height: pixelSize.height,
             previousCaptureToken: previousCaptureToken
         )
-        if let pending = inFlight[requestKey] {
+        if coalescesInFlight, let pending = inFlight[requestKey] {
             guard let rendered = try await pending.value else { return nil }
             return Self.snapshot(from: rendered, pixelSize: pixelSize)
         }
@@ -132,8 +133,14 @@ public final class TerminalSurfaceSnapshotter {
         let task = Task.detached(priority: .utility) {
             try Self.makeSnapshot(source: source)
         }
-        inFlight[requestKey] = task
-        defer { inFlight.removeValue(forKey: requestKey) }
+        if coalescesInFlight {
+            inFlight[requestKey] = task
+        }
+        defer {
+            if coalescesInFlight {
+                inFlight.removeValue(forKey: requestKey)
+            }
+        }
         guard let rendered = try await task.value else { return nil }
         return Self.snapshot(from: rendered, pixelSize: pixelSize)
     }

@@ -155,6 +155,61 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         )
     }
 
+    func testFreshSnapshotBypassesAnInFlightCoalescedRequest() async throws {
+        let view = try makeSurface()
+        let ioSurface = try makeIOSurface()
+        view.layer?.contents = ioSurface
+        let surfaceID = IOSurfaceGetID(ioSurface)
+        let firstReadStarted = expectation(description: "first capture started")
+        let freshReadStarted = expectation(description: "fresh capture started")
+        let releaseFirstRead = DispatchSemaphore(value: 0)
+        let tokenReads = OSAllocatedUnfairLock(initialState: 0)
+        let snapshotter = TerminalSurfaceSnapshotter(captureToken: { _ in
+            let read = tokenReads.withLock { reads in
+                reads += 1
+                return reads
+            }
+            if read == 1 {
+                firstReadStarted.fulfill()
+                releaseFirstRead.wait()
+                return TerminalSurfaceCaptureToken(
+                    surfaceID: surfaceID,
+                    seed: 1
+                )
+            }
+            if read == 2 {
+                freshReadStarted.fulfill()
+            }
+            return TerminalSurfaceCaptureToken(
+                surfaceID: surfaceID,
+                seed: 2
+            )
+        })
+        let first = Task {
+            try await snapshotter.snapshot(
+                of: view,
+                outputWidth: 320,
+                previousCaptureToken: nil
+            )
+        }
+        await fulfillment(of: [firstReadStarted], timeout: 1)
+        defer { first.cancel() }
+
+        let fresh = Task {
+            try await snapshotter.snapshot(
+                of: view,
+                outputWidth: 320,
+                previousCaptureToken: nil,
+                coalescesInFlight: false
+            )
+        }
+        await fulfillment(of: [freshReadStarted], timeout: 1)
+        releaseFirstRead.signal()
+        let snapshot = try await fresh.value
+
+        XCTAssertEqual(snapshot?.captureToken.seed, 2)
+    }
+
     func testSnapshotRejectsMissingContentsWithoutMutatingSurface() async throws {
         let view = try makeSurface()
         view.layer?.contents = nil

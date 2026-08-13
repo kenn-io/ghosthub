@@ -1441,7 +1441,11 @@ struct WorkspaceTmuxDiscoveryTests {
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
         previewCoordinator.setExpanded(true, for: key)
-        await previewCoordinator.waitForPendingWork()
+        await waitUntilMainActor {
+            captures.count == 1
+                && previewCoordinator.viewState(for: key)?.placeholder
+                == .unavailable
+        }
 
         #expect(captures.count == 1)
         #expect(previewCoordinator.viewState(for: key)?.image == nil)

@@ -198,6 +198,22 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test("Efficient captures navigation away while the sidebar is hidden")
+    func efficientCapturesNavigationAwayWithHiddenSidebar() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setSidebarVisible(false)
+
+        harness.coordinator.captureBeforeDeactivation(presentation.key)
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [presentation.key])
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.image != nil
+        )
+    }
+
     @Test("Efficient resolves identity for a collapsed active session")
     func efficientResolvesCollapsedActiveIdentity() {
         let harness = PreviewCoordinatorHarness(mode: .efficient)
