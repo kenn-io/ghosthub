@@ -501,6 +501,77 @@ fn can_create_worktree(branch: &str, loaded: bool, loading: bool, submitting: bo
     workspace::is_valid_git_branch_name(branch.trim()) && loaded && !loading && !submitting
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeOpenMode {
+    Disabled,
+    DirectTmux,
+    RepairOrOpen,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WorktreeOpenContext {
+    authority: WorktreeAuthority,
+    socket: WorktreeSocket,
+    session: WorktreeSessionPresence,
+    presentation: WorktreePresentation,
+    host: WorktreeHostAccess,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeAuthority {
+    Generation,
+    Generationless,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeSocket {
+    Default,
+    Custom,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeSessionPresence {
+    Discovered,
+    Absent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreePresentation {
+    ActiveOrRetained,
+    Inactive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeHostAccess {
+    Ready { kwt_available: bool },
+    Unavailable,
+}
+
+const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
+    if matches!(context.presentation, WorktreePresentation::ActiveOrRetained) {
+        return if matches!(context.authority, WorktreeAuthority::Generation) {
+            WorktreeOpenMode::RepairOrOpen
+        } else {
+            WorktreeOpenMode::DirectTmux
+        };
+    }
+    let WorktreeHostAccess::Ready { kwt_available } = context.host else {
+        return WorktreeOpenMode::Disabled;
+    };
+    if matches!(context.socket, WorktreeSocket::Custom) {
+        return WorktreeOpenMode::Disabled;
+    }
+    if matches!(context.authority, WorktreeAuthority::Generation) && kwt_available {
+        WorktreeOpenMode::RepairOrOpen
+    } else if matches!(context.authority, WorktreeAuthority::Generationless)
+        && matches!(context.session, WorktreeSessionPresence::Discovered)
+    {
+        WorktreeOpenMode::DirectTmux
+    } else {
+        WorktreeOpenMode::Disabled
+    }
+}
+
 fn owns_created_worktree_navigation(
     pending: Option<u64>,
     event_generation: u64,
@@ -1828,6 +1899,30 @@ impl RootView {
                             )
                         })
                     {
+                        self.project_dialog = None;
+                        self.restore_focus = true;
+                    }
+                    self.diagnostic = Some(message);
+                }
+                WorkspaceEvent::KwtWorktreeCreationExpired {
+                    project_path,
+                    message,
+                    navigation_generation,
+                } => {
+                    if self.pending_worktree_navigation == Some(navigation_generation) {
+                        self.pending_worktree_navigation = None;
+                    }
+                    if self.project_dialog.as_ref().is_some_and(|dialog| {
+                        matches!(
+                            dialog,
+                            ProjectDialog::NewWorktree {
+                                project_path: dialog_path,
+                                operation_id: Some(operation_id),
+                                ..
+                            } if dialog_path == &project_path
+                                && *operation_id == navigation_generation
+                        )
+                    }) {
                         self.project_dialog = None;
                         self.restore_focus = true;
                     }
@@ -4007,19 +4102,42 @@ impl RootView {
                     SessionSelection::new(host.id(), host.endpoint(), worktree.session_name());
                 let is_active = active.as_ref() == Some(&selection);
                 let is_retained = retained.contains(&selection);
-                let can_open = is_active
-                    || is_retained
-                    || (worktree.tmux_socket_name().is_none()
-                        && host.kwt_available()
-                        && !matches!(
-                            host.connection(),
-                            HostConnectionState::Disconnected | HostConnectionState::Unavailable
-                        ));
-                let can_kill = worktree.session_available()
-                    && !matches!(
-                        host.connection(),
-                        HostConnectionState::Disconnected | HostConnectionState::Unavailable
-                    );
+                let has_generation = worktree.generation().is_some();
+                let host_can_attach = !matches!(
+                    host.connection(),
+                    HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                );
+                let open_mode = worktree_open_mode(WorktreeOpenContext {
+                    authority: if has_generation {
+                        WorktreeAuthority::Generation
+                    } else {
+                        WorktreeAuthority::Generationless
+                    },
+                    socket: if worktree.tmux_socket_name().is_some() {
+                        WorktreeSocket::Custom
+                    } else {
+                        WorktreeSocket::Default
+                    },
+                    session: if worktree.session_available() {
+                        WorktreeSessionPresence::Discovered
+                    } else {
+                        WorktreeSessionPresence::Absent
+                    },
+                    presentation: if is_active || is_retained {
+                        WorktreePresentation::ActiveOrRetained
+                    } else {
+                        WorktreePresentation::Inactive
+                    },
+                    host: if host_can_attach {
+                        WorktreeHostAccess::Ready {
+                            kwt_available: host.kwt_available(),
+                        }
+                    } else {
+                        WorktreeHostAccess::Unavailable
+                    },
+                });
+                let can_open = open_mode != WorktreeOpenMode::Disabled;
+                let can_kill = worktree.session_available() && host_can_attach;
                 let open_target = WorktreeOpenTarget {
                     host_id: host.id().to_owned(),
                     endpoint: host.endpoint().to_owned(),
@@ -4030,6 +4148,8 @@ impl RootView {
                     generation: worktree.generation().map(str::to_owned),
                     session_name: worktree.session_name().to_owned(),
                 };
+                let repair_open_target =
+                    (open_mode == WorktreeOpenMode::RepairOrOpen).then(|| open_target.clone());
                 let remove_target = (!worktree.is_main()
                     && worktree.generation().is_some()
                     && worktree.tmux_socket_name().is_none()
@@ -4053,7 +4173,7 @@ impl RootView {
                     is_active,
                     can_open,
                     can_kill,
-                    Some(open_target),
+                    repair_open_target,
                     remove_target,
                     cx,
                 ));
@@ -5986,20 +6106,22 @@ mod tests {
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
         NewSessionDraft, NewSessionKind, PendingUiInput, ProjectDialog, QueuedUiInput,
         SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
-        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeOpenTarget,
-        WorktreeRemoveTarget, active_session_selection, application_navigation_width,
-        can_create_worktree, canonical_terminal_key_with, clear_terminal_input_state,
-        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
-        herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
-        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
-        owns_created_worktree_navigation, queued_input_matches_presentation,
-        retained_key_event_with, session_action_menu_position, session_backend_id,
-        session_group_visibility, session_row_element_id, terminal_cell_at_with_offset,
-        terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
-        terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
-        tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates, workspace_window_title,
+        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
+        WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
+        WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
+        active_session_selection, application_navigation_width, can_create_worktree,
+        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
+        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
+        host_tree_status, input_queue_has_capacity, is_toggle_sidebar_shortcut,
+        kill_confirmation_description, kill_confirmation_title, kwt_operation_failure_owns_dialog,
+        named_key, new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
+        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
+        session_backend_id, session_group_visibility, session_row_element_id,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
+        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates,
+        workspace_window_title, worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -6048,6 +6170,46 @@ mod tests {
         assert!(!can_create_worktree("feature/new", false, false, false));
         assert!(!can_create_worktree("feature/new", true, true, false));
         assert!(can_create_worktree("feature/new", true, false, false));
+    }
+
+    #[test]
+    fn generationless_worktrees_attach_only_to_a_live_discovered_tmux_session() {
+        assert_eq!(
+            worktree_open_mode(WorktreeOpenContext {
+                authority: WorktreeAuthority::Generationless,
+                socket: WorktreeSocket::Default,
+                session: WorktreeSessionPresence::Discovered,
+                presentation: WorktreePresentation::Inactive,
+                host: WorktreeHostAccess::Ready {
+                    kwt_available: true,
+                },
+            }),
+            WorktreeOpenMode::DirectTmux
+        );
+        assert_eq!(
+            worktree_open_mode(WorktreeOpenContext {
+                authority: WorktreeAuthority::Generationless,
+                socket: WorktreeSocket::Default,
+                session: WorktreeSessionPresence::Absent,
+                presentation: WorktreePresentation::Inactive,
+                host: WorktreeHostAccess::Ready {
+                    kwt_available: true,
+                },
+            }),
+            WorktreeOpenMode::Disabled
+        );
+        assert_eq!(
+            worktree_open_mode(WorktreeOpenContext {
+                authority: WorktreeAuthority::Generation,
+                socket: WorktreeSocket::Default,
+                session: WorktreeSessionPresence::Absent,
+                presentation: WorktreePresentation::Inactive,
+                host: WorktreeHostAccess::Ready {
+                    kwt_available: true,
+                },
+            }),
+            WorktreeOpenMode::RepairOrOpen
+        );
     }
 
     #[test]

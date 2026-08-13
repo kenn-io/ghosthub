@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use config::TerminalAppearance;
 use host::{
@@ -44,6 +44,8 @@ const CREATE_IDENTITY_MIN_COLUMNS: usize = 120;
 const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const KWT_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 const KWT_REFRESH_BUDGET: Duration = Duration::from_secs(30);
+const UNCERTAIN_KWT_CREATION_REFRESH_LIMIT: u8 = 3;
+const UNCERTAIN_KWT_CREATION_LIFETIME: Duration = Duration::from_mins(3);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
@@ -838,6 +840,11 @@ pub enum WorkspaceEvent {
         worktree_path: String,
     },
     KwtWorktreeCreationPending {
+        project_path: String,
+        message: String,
+        navigation_generation: u64,
+    },
+    KwtWorktreeCreationExpired {
         project_path: String,
         message: String,
         navigation_generation: u64,
@@ -6326,6 +6333,15 @@ struct PendingKwtCreation {
     registration_fingerprint: String,
     branch: String,
     navigation_generation: u64,
+    baseline: Vec<KwtWorktreeIdentity>,
+    uncertain_refreshes_remaining: Option<u8>,
+    uncertain_deadline: Option<Instant>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct KwtWorktreeIdentity {
+    path: String,
+    generation: Option<String>,
 }
 
 #[derive(Default)]
@@ -7145,6 +7161,22 @@ fn run_kwt_worktree_create(
     creates_branch: bool,
     navigation_generation: u64,
 ) -> bool {
+    let baseline = match capture_kwt_creation_baseline(task) {
+        Ok(baseline) => baseline,
+        Err(error) => {
+            publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtWorktreeOperationFailed {
+                    operation_id: task.operation_id,
+                    project_path: task.project_path.clone(),
+                    worktree_path: None,
+                    message: error.to_string(),
+                },
+            );
+            return false;
+        }
+    };
     let result = task.host.create_kwt_worktree(
         &task.endpoint,
         &task.runtime,
@@ -7160,12 +7192,20 @@ fn run_kwt_worktree_create(
     );
     match result {
         Ok(()) => {
-            remember_pending_kwt_creation(inner, task, branch, navigation_generation);
-            reconcile_created_kwt_worktree(inner, task, branch, navigation_generation, true)
+            let pending = pending_kwt_creation(task, branch, navigation_generation, baseline, None);
+            remember_pending_kwt_creation(inner, pending.clone());
+            reconcile_created_kwt_worktree(inner, task, &pending, true)
         }
         Err(error) if error.kind() == DiagnosticKind::Timeout => {
-            remember_pending_kwt_creation(inner, task, branch, navigation_generation);
-            reconcile_created_kwt_worktree(inner, task, branch, navigation_generation, false)
+            let pending = pending_kwt_creation(
+                task,
+                branch,
+                navigation_generation,
+                baseline,
+                Some(UNCERTAIN_KWT_CREATION_REFRESH_LIMIT),
+            );
+            remember_pending_kwt_creation(inner, pending.clone());
+            reconcile_created_kwt_worktree(inner, task, &pending, false)
         }
         Err(error) => {
             publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
@@ -7183,11 +7223,79 @@ fn run_kwt_worktree_create(
     }
 }
 
-fn reconcile_created_kwt_worktree(
-    inner: &Arc<Inner>,
+fn capture_kwt_creation_baseline(
+    task: &KwtWorktreeTask,
+) -> Result<Vec<KwtWorktreeIdentity>, WorkspaceError> {
+    let inventory = task
+        .host
+        .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?
+        .ok_or_else(|| WorkspaceError::new("KWT is no longer available on this host"))?;
+    let project = inventory
+        .projects()
+        .iter()
+        .find(|project| {
+            project.project().repository() == task.repository
+                && project.project().path() == task.project_path
+                && project.project().registration_fingerprint() == task.registration_fingerprint
+        })
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "the selected project changed; refresh it before creating a worktree",
+            )
+        })?;
+    Ok(project
+        .worktrees()
+        .iter()
+        .map(kwt_worktree_identity)
+        .collect())
+}
+
+fn kwt_worktree_identity(worktree: &host::KwtWorktree) -> KwtWorktreeIdentity {
+    KwtWorktreeIdentity {
+        path: worktree.path().to_owned(),
+        generation: worktree.generation().map(str::to_owned),
+    }
+}
+
+fn kwt_identity_was_in_baseline(
+    baseline: &[KwtWorktreeIdentity],
+    worktree: &host::KwtWorktree,
+) -> bool {
+    baseline.iter().any(|identity| {
+        identity.path == worktree.path()
+            || identity
+                .generation
+                .as_deref()
+                .is_some_and(|generation| worktree.generation() == Some(generation))
+    })
+}
+
+fn pending_kwt_creation(
     task: &KwtWorktreeTask,
     branch: &str,
     navigation_generation: u64,
+    baseline: Vec<KwtWorktreeIdentity>,
+    uncertain_refreshes_remaining: Option<u8>,
+) -> PendingKwtCreation {
+    PendingKwtCreation {
+        endpoint: task.endpoint.clone(),
+        repository: task.repository.clone(),
+        project_path: task.project_path.clone(),
+        registration_fingerprint: task.registration_fingerprint.clone(),
+        branch: branch.to_owned(),
+        navigation_generation,
+        baseline,
+        uncertain_refreshes_remaining,
+        uncertain_deadline: uncertain_refreshes_remaining
+            .map(|_| Instant::now() + UNCERTAIN_KWT_CREATION_LIFETIME),
+    }
+}
+
+fn reconcile_created_kwt_worktree(
+    inner: &Arc<Inner>,
+    task: &KwtWorktreeTask,
+    pending: &PendingKwtCreation,
     mutation_confirmed: bool,
 ) -> bool {
     match task
@@ -7195,8 +7303,7 @@ fn reconcile_created_kwt_worktree(
         .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation)
     {
         Ok(Some(inventory)) => {
-            let target =
-                created_kwt_worktree_target(task, branch, navigation_generation, &inventory);
+            let target = pending_kwt_creation_target(pending, &inventory);
             publish_kwt_inventory(
                 inner,
                 task.generation,
@@ -7217,7 +7324,7 @@ fn reconcile_created_kwt_worktree(
                             "Worktree creation timed out. Ghosthub will reconcile KWT inventory automatically."
                                 .to_owned()
                         },
-                        navigation_generation,
+                        navigation_generation: pending.navigation_generation,
                     },
                 );
                 true
@@ -7235,7 +7342,7 @@ fn reconcile_created_kwt_worktree(
                         "Worktree creation timed out and KWT inventory is temporarily unavailable. Ghosthub will reconcile it automatically."
                             .to_owned()
                     },
-                    navigation_generation,
+                    navigation_generation: pending.navigation_generation,
                 },
             );
             true
@@ -7259,7 +7366,7 @@ fn reconcile_created_kwt_worktree(
                         "Worktree creation timed out and its result could not be confirmed. Ghosthub will reconcile it automatically."
                             .to_owned()
                     },
-                    navigation_generation,
+                    navigation_generation: pending.navigation_generation,
                 },
             );
             true
@@ -7267,39 +7374,7 @@ fn reconcile_created_kwt_worktree(
     }
 }
 
-fn created_kwt_worktree_target(
-    task: &KwtWorktreeTask,
-    branch: &str,
-    navigation_generation: u64,
-    inventory: &KwtInventory,
-) -> Option<KwtWorktreeTarget> {
-    pending_kwt_creation_target(
-        &PendingKwtCreation {
-            endpoint: task.endpoint.clone(),
-            repository: task.repository.clone(),
-            project_path: task.project_path.clone(),
-            registration_fingerprint: task.registration_fingerprint.clone(),
-            branch: branch.to_owned(),
-            navigation_generation,
-        },
-        inventory,
-    )
-}
-
-fn remember_pending_kwt_creation(
-    inner: &Inner,
-    task: &KwtWorktreeTask,
-    branch: &str,
-    navigation_generation: u64,
-) {
-    let pending = PendingKwtCreation {
-        endpoint: task.endpoint.clone(),
-        repository: task.repository.clone(),
-        project_path: task.project_path.clone(),
-        registration_fingerprint: task.registration_fingerprint.clone(),
-        branch: branch.to_owned(),
-        navigation_generation,
-    };
+fn remember_pending_kwt_creation(inner: &Inner, pending: PendingKwtCreation) {
     let mut creations = inner
         .pending_kwt_creations
         .lock()
@@ -7323,10 +7398,10 @@ fn pending_kwt_creation_target(
             && project.project().path() == pending.project_path
             && project.project().registration_fingerprint() == pending.registration_fingerprint
     })?;
-    let worktree = project
-        .worktrees()
-        .iter()
-        .find(|worktree| worktree.branch() == pending.branch)?;
+    let worktree = project.worktrees().iter().find(|worktree| {
+        worktree.branch() == pending.branch
+            && !kwt_identity_was_in_baseline(&pending.baseline, worktree)
+    })?;
     Some(KwtWorktreeTarget {
         host_id: "wsl".to_owned(),
         endpoint: pending.endpoint.distro().to_owned(),
@@ -7344,18 +7419,48 @@ fn resolve_pending_kwt_creations(
     endpoint: &host::WslEndpoint,
     inventory: &KwtInventory,
 ) {
+    resolve_pending_kwt_creations_at(inner, endpoint, inventory, Instant::now());
+}
+
+fn resolve_pending_kwt_creations_at(
+    inner: &Inner,
+    endpoint: &host::WslEndpoint,
+    inventory: &KwtInventory,
+    now: Instant,
+) {
     let mut resolved = Vec::new();
+    let mut expired = Vec::new();
     let mut pending = inner
         .pending_kwt_creations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    pending.retain(|candidate| {
+    pending.retain_mut(|candidate| {
         if candidate.endpoint != *endpoint {
             return true;
         }
-        if let Some(target) = pending_kwt_creation_target(candidate, inventory) {
+        if candidate
+            .uncertain_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            expired.push((
+                candidate.project_path.clone(),
+                candidate.navigation_generation,
+            ));
+            false
+        } else if let Some(target) = pending_kwt_creation_target(candidate, inventory) {
             resolved.push((target, candidate.navigation_generation));
             false
+        } else if let Some(remaining) = candidate.uncertain_refreshes_remaining.as_mut() {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                expired.push((
+                    candidate.project_path.clone(),
+                    candidate.navigation_generation,
+                ));
+                false
+            } else {
+                true
+            }
         } else {
             true
         }
@@ -7366,6 +7471,17 @@ fn resolve_pending_kwt_creations(
             inner,
             WorkspaceEvent::KwtWorktreeCreated {
                 target,
+                navigation_generation,
+            },
+        );
+    }
+    for (project_path, navigation_generation) in expired {
+        push_operation_event(
+            inner,
+            WorkspaceEvent::KwtWorktreeCreationExpired {
+                project_path,
+                message: "KWT did not report a newly created worktree after the operation timed out. Refresh the project before trying again."
+                    .to_owned(),
                 navigation_generation,
             },
         );
@@ -10711,6 +10827,9 @@ mod tests {
                 registration_fingerprint: "registration".to_owned(),
                 branch: "feature/new".to_owned(),
                 navigation_generation: 41,
+                baseline: Vec::new(),
+                uncertain_refreshes_remaining: None,
+                uncertain_deadline: None,
             });
         let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
@@ -10742,6 +10861,92 @@ mod tests {
                 target,
                 navigation_generation: 41,
             }) if target.worktree_path() == "/work/widget/new"
+        ));
+    }
+
+    #[test]
+    fn uncertain_creation_ignores_a_preexisting_same_branch_worktree_and_expires() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let baseline = KwtWorktreeIdentity {
+            path: "/work/widget/existing".to_owned(),
+            generation: Some("0123456789abcdef0123456789abcdef".to_owned()),
+        };
+        workspace
+            .inner
+            .pending_kwt_creations
+            .lock()
+            .expect("pending creations")
+            .push(PendingKwtCreation {
+                endpoint: snapshot.endpoint().clone(),
+                repository: "github.com/acme/widget".to_owned(),
+                project_path: "/code/widget".to_owned(),
+                registration_fingerprint: "registration".to_owned(),
+                branch: "feature/new".to_owned(),
+                navigation_generation: 42,
+                baseline: vec![baseline],
+                uncertain_refreshes_remaining: Some(2),
+                uncertain_deadline: Some(Instant::now() + Duration::from_mins(1)),
+            });
+        let inventory = KwtInventory::parse(
+            br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
+            br#"[{"path":"/work/widget/existing","branch":"feature/new","commit_hash":"def","is_main":false,"created_at":null,"generation":"fedcba9876543210fedcba9876543210","repository":"github.com/acme/widget","session_name":"widget-existing","tmux_socket_name":null}]"#,
+            b"[]",
+        )
+        .expect("valid KWT inventory");
+
+        resolve_pending_kwt_creations(&workspace.inner, snapshot.endpoint(), &inventory);
+        assert!(workspace.drain_events().0.is_empty());
+        resolve_pending_kwt_creations(&workspace.inner, snapshot.endpoint(), &inventory);
+
+        assert!(matches!(
+            workspace.drain_events().0.as_slice(),
+            [WorkspaceEvent::KwtWorktreeCreationExpired {
+                project_path,
+                navigation_generation: 42,
+                ..
+            }] if project_path == "/code/widget"
+        ));
+    }
+
+    #[test]
+    fn uncertain_creation_expiry_rejects_a_late_same_branch_worktree() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let now = Instant::now();
+        workspace
+            .inner
+            .pending_kwt_creations
+            .lock()
+            .expect("pending creations")
+            .push(PendingKwtCreation {
+                endpoint: snapshot.endpoint().clone(),
+                repository: "github.com/acme/widget".to_owned(),
+                project_path: "/code/widget".to_owned(),
+                registration_fingerprint: "registration".to_owned(),
+                branch: "feature/new".to_owned(),
+                navigation_generation: 43,
+                baseline: Vec::new(),
+                uncertain_refreshes_remaining: Some(3),
+                uncertain_deadline: Some(now),
+            });
+        let inventory = KwtInventory::parse(
+            br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
+            br#"[{"path":"/work/widget/late","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-late","tmux_socket_name":null}]"#,
+            b"[]",
+        )
+        .expect("valid KWT inventory");
+
+        resolve_pending_kwt_creations_at(&workspace.inner, snapshot.endpoint(), &inventory, now);
+
+        assert!(matches!(
+            workspace.drain_events().0.as_slice(),
+            [WorkspaceEvent::KwtWorktreeCreationExpired {
+                navigation_generation: 43,
+                ..
+            }]
         ));
     }
 
