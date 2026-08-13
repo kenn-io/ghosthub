@@ -114,6 +114,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private var isShutDown = false
     private var generations: [TmuxPreviewKey: UInt64] = [:]
     private var activeCaptureIDs: [TmuxPreviewKey: UUID] = [:]
+    private var activeCaptureReasons: [TmuxPreviewKey: CaptureReason] = [:]
+    private var navigationCaptureCompletions:
+        [TmuxPreviewKey: () -> Void] = [:]
     private var pendingTasks: [UUID: Task<Void, Never>] = [:]
     private var liveTask: Task<Void, Never>?
     private var activationTask: Task<Void, Never>?
@@ -210,6 +213,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             previewStates[key]?.clear()
             deactivatingKeys.remove(key)
             deferredNavigationCaptureKeys.remove(key)
+            navigationCaptureCompletions.removeValue(forKey: key)
             invalidate(key)
             unparkAndRelease(key)
         }
@@ -284,10 +288,11 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             : expandedKeys.remove(key) != nil
         guard changed else { return }
         parkingBlockedKeys.remove(key)
+        let navigationCompletion =
+            deferNavigationCaptureForEligibilityInvalidation(key)
         invalidate(key)
         invalidateActivationDelay()
         if !expanded {
-            deactivatingKeys.remove(key)
             deferredEfficientCaptureKeys.remove(key)
             unparkAndRelease(key)
         }
@@ -297,6 +302,8 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         if expanded {
             captureExpandedEfficientActiveIfNeeded(key)
         }
+        navigationCompletion?()
+        retryDeferredNavigationCaptureIfNeeded(key)
     }
 
     func setMode(_ newMode: SessionPreviewMode) {
@@ -306,6 +313,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         let isLeavingOff = mode == .off
         mode = newMode
         deactivatingKeys.removeAll()
+        navigationCaptureCompletions.removeAll()
         invalidateActivationDelay()
         keys.forEach(invalidate)
         liveTask?.cancel()
@@ -362,6 +370,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             reconcileEligibility()
             retryDeferredEfficientCaptures()
         }
+        retryDeferredNavigationCaptures()
         restartLiveTaskIfNeeded()
     }
 
@@ -413,6 +422,8 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         pendingTasks.values.forEach { $0.cancel() }
         pendingTasks.removeAll()
         activeCaptureIDs.removeAll()
+        activeCaptureReasons.removeAll()
+        navigationCaptureCompletions.removeAll()
         isParkingHostChanging = true
         releaseAllParking()
         isParkingHostChanging = false
@@ -479,6 +490,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         }
         if mode != .off, completion != nil {
             deactivatingKeys.insert(key)
+            navigationCaptureCompletions[key] = completion
         }
         if mode == .efficient,
            isConnected(presentation),
@@ -486,6 +498,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
            !unavailableIdentityKeys.contains(key) {
             deferredNavigationCaptureKeys.insert(key)
             requestIdentityIfNeeded(key)
+            navigationCaptureCompletions.removeValue(forKey: key)
             completion?()
             return
         }
@@ -521,6 +534,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         invalidate(key)
         invalidateActivationDelay()
         deactivatingKeys.remove(key)
+        navigationCaptureCompletions.removeValue(forKey: key)
         reconnectingKeys.insert(key)
         unparkAndRelease(key)
         switch reason {
@@ -632,6 +646,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
               let identity = presentation.identity()
         else {
             if let completion, presentations[key] != nil {
+                if reason == .navigationAway {
+                    navigationCaptureCompletions.removeValue(forKey: key)
+                }
                 completion()
             }
             return
@@ -641,6 +658,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         let previousToken = previewStates[key]?.visibleFrame?.captureToken
         let operationID = UUID()
         activeCaptureIDs[key] = operationID
+        activeCaptureReasons[key] = reason
         let captureOperation = switch reason {
         case .scheduled: capture
         case .navigationAway, .finalBeforeUnpark: finalCapture
@@ -675,6 +693,10 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                 }
             }
             if generations[key, default: 0] == captureGeneration {
+                if reason == .navigationAway {
+                    navigationCaptureCompletions.removeValue(forKey: key)
+                    deferredNavigationCaptureKeys.remove(key)
+                }
                 completion?()
             }
             finishTask(operationID, for: key)
@@ -686,6 +708,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         pendingTasks.removeValue(forKey: operationID)
         if activeCaptureIDs[key] == operationID {
             activeCaptureIDs.removeValue(forKey: key)
+            activeCaptureReasons.removeValue(forKey: key)
         }
     }
 
@@ -693,6 +716,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         generations[key, default: 0] &+= 1
         guard let operationID = activeCaptureIDs.removeValue(forKey: key)
         else { return }
+        activeCaptureReasons.removeValue(forKey: key)
         pendingTasks[operationID]?.cancel()
     }
 
@@ -892,6 +916,16 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         }
     }
 
+    private func deferNavigationCaptureForEligibilityInvalidation(
+        _ key: TmuxPreviewKey
+    ) -> (() -> Void)? {
+        guard mode == .efficient,
+              activeCaptureReasons[key] == .navigationAway
+        else { return nil }
+        deferredNavigationCaptureKeys.insert(key)
+        return navigationCaptureCompletions.removeValue(forKey: key)
+    }
+
     private func invalidateAllEligibility() {
         if mode == .efficient {
             deferredEfficientCaptureKeys.formUnion(
@@ -901,9 +935,13 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                 }
             )
         }
-        deactivatingKeys.removeAll()
+        let navigationCompletions = presentations.keys.compactMap { key in
+            deferNavigationCaptureForEligibilityInvalidation(key)
+        }
+        deactivatingKeys.formIntersection(deferredNavigationCaptureKeys)
         presentations.keys.forEach(invalidate)
         invalidateActivationDelay()
+        navigationCompletions.forEach { $0() }
     }
 
     private func invalidateActivationDelay() {

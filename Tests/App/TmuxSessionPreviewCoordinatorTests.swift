@@ -661,6 +661,55 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test(
+        "Efficient retries a navigation capture after eligibility invalidation",
+        arguments: NavigationCaptureInvalidation.allCases
+    )
+    func efficientRetriesNavigationCaptureAfterEligibilityInvalidation(
+        invalidation: NavigationCaptureInvalidation
+    ) async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        await harness.coordinator.waitForPendingWork()
+        harness.captures.removeAll()
+        harness.suspendCaptures = true
+        var didFinishDeactivation = false
+
+        harness.coordinator.captureBeforeDeactivation(
+            presentation.key,
+            completion: {
+                didFinishDeactivation = true
+                harness.coordinator.finishDeactivation(presentation.key)
+            }
+        )
+        await harness.waitUntilCaptureSuspends()
+        harness.setActive(false, for: presentation.key)
+        switch invalidation {
+        case .collapse:
+            harness.coordinator.setExpanded(false, for: presentation.key)
+        case .sidebarHidden:
+            harness.coordinator.setSidebarVisible(false)
+            harness.coordinator.setSidebarVisible(true)
+        case .applicationInactive:
+            harness.coordinator.applicationDidResignActive()
+            harness.coordinator.applicationDidBecomeActive()
+        }
+        for _ in 0 ..< 100 where harness.captures.count < 2 {
+            await Task.yield()
+        }
+        let captureAttempts = harness.captures
+        harness.resumeCapture()
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(captureAttempts == [presentation.key, presentation.key])
+        #expect(didFinishDeactivation)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.image != nil
+        )
+    }
+
     @Test("sidebar hiding and app deactivation release only this scene")
     func visibilityAndActivityReleaseScene() {
         let harness = PreviewCoordinatorHarness(mode: .live)
@@ -1341,6 +1390,12 @@ enum DeferredNavigationDisposition: CaseIterable, Sendable {
 }
 
 enum EfficientExpansionDeferral: CaseIterable, Sendable {
+    case sidebarHidden
+    case applicationInactive
+}
+
+enum NavigationCaptureInvalidation: CaseIterable, Sendable {
+    case collapse
     case sidebarHidden
     case applicationInactive
 }
