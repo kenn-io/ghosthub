@@ -60,6 +60,7 @@ pub struct WslConfig {
     tmux_binary: String,
     tmux_tmpdir: Option<String>,
     kwt_bundle: Option<KwtBundle>,
+    kwt_home: Option<String>,
 }
 
 impl WslConfig {
@@ -81,6 +82,13 @@ impl WslConfig {
     #[must_use]
     pub fn with_kwt_bundle(mut self, bundle: KwtBundle) -> Self {
         self.kwt_bundle = Some(bundle);
+        self
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_kwt_home_for_tests(mut self, path: impl Into<String>) -> Self {
+        self.kwt_home = Some(path.into());
         self
     }
 
@@ -132,6 +140,7 @@ impl WslConfig {
             tmux_binary,
             tmux_tmpdir,
             kwt_bundle: None,
+            kwt_home: None,
         })
     }
 }
@@ -143,6 +152,7 @@ impl Default for WslConfig {
             tmux_binary: DEFAULT_TMUX.to_owned(),
             tmux_tmpdir: None,
             kwt_bundle: None,
+            kwt_home: None,
         }
     }
 }
@@ -1346,8 +1356,21 @@ impl<R: CommandRunner> WslHost<R> {
         project_path: &str,
         worktree_path: &str,
         generation: &str,
+        session_name: &str,
+        live_target: Option<&LiveSessionTarget>,
         cancellation: &CancellationToken,
     ) -> Result<(), HostError> {
+        if let Some(target) = live_target {
+            if target.endpoint() != endpoint
+                || target.runtime() != runtime
+                || target.name() != session_name
+            {
+                return Err(HostError::new(
+                    DiagnosticKind::Transport,
+                    "the confirmed worktree session identity changed",
+                ));
+            }
+        }
         self.require_runtime(endpoint, runtime, cancellation)?;
         let bundle = self.config.kwt_bundle().ok_or_else(|| {
             HostError::new(
@@ -1357,11 +1380,38 @@ impl<R: CommandRunner> WslHost<R> {
         })?;
         let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
         self.require_runtime(endpoint, runtime, cancellation)?;
+        let mut command = vec![
+            "remove".to_owned(),
+            "--if-generation".to_owned(),
+            generation.to_owned(),
+            "--if-session-name".to_owned(),
+            session_name.to_owned(),
+        ];
+        if let Some(target) = live_target {
+            command.extend([
+                "--if-session-server-pid".to_owned(),
+                target.identity().server_pid().to_string(),
+                "--if-session-id".to_owned(),
+                target.identity().session_id().to_owned(),
+                "--if-session-created".to_owned(),
+                target.identity().created_at().to_string(),
+            ]);
+        } else {
+            command.push("--if-session-absent".to_owned());
+        }
+        if let Some(socket_directory) = self.config.tmux_tmpdir.as_deref() {
+            command.extend([
+                "--if-session-socket-directory".to_owned(),
+                socket_directory.to_owned(),
+            ]);
+        }
+        command.push(worktree_path.to_owned());
+        let command = command.iter().map(String::as_str).collect::<Vec<_>>();
         let output = self.run_kwt_mutation_in_directory(
             endpoint,
             &helper,
             project_path,
-            &["remove", "--if-generation", generation, worktree_path],
+            &command,
             cancellation,
         )?;
         self.require_runtime(endpoint, runtime, cancellation)?;
@@ -1387,6 +1437,9 @@ impl<R: CommandRunner> WslHost<R> {
         if let Some(path) = self.config.tmux_tmpdir.as_deref() {
             args.push(OsString::from(format!("TMUX_TMPDIR={path}")));
         }
+        if let Some(path) = self.config.kwt_home.as_deref() {
+            args.push(OsString::from(format!("KWT_HOME={path}")));
+        }
         args.push(OsString::from(helper));
         args.extend(command.iter().map(OsString::from));
         self.run_with_timeout(&args, cancellation, COMMAND_TIMEOUT)
@@ -1406,6 +1459,9 @@ impl<R: CommandRunner> WslHost<R> {
         args.push(OsString::from(directory));
         if let Some(path) = self.config.tmux_tmpdir.as_deref() {
             args.push(OsString::from(format!("TMUX_TMPDIR={path}")));
+        }
+        if let Some(path) = self.config.kwt_home.as_deref() {
+            args.push(OsString::from(format!("KWT_HOME={path}")));
         }
         args.push(OsString::from(helper));
         args.extend(command.iter().map(OsString::from));
@@ -4714,6 +4770,8 @@ mod tests {
             "/code/widget",
             "/work/widget/feature-ready",
             "0123456789abcdef0123456789abcdef",
+            "kwt-workspace-widget-feature-ready",
+            None,
             &cancellation,
         )
         .expect("remove exact worktree while preserving its branch");
@@ -4745,6 +4803,9 @@ mod tests {
                 "remove".to_owned(),
                 "--if-generation".to_owned(),
                 "0123456789abcdef0123456789abcdef".to_owned(),
+                "--if-session-name".to_owned(),
+                "kwt-workspace-widget-feature-ready".to_owned(),
+                "--if-session-absent".to_owned(),
                 "/work/widget/feature-ready".to_owned(),
             ]) && args
                 .windows(2)
@@ -4785,6 +4846,8 @@ mod tests {
                 "/code/widget",
                 "/work/widget/feature-ready",
                 "0123456789abcdef0123456789abcdef",
+                "kwt-workspace-widget-feature-ready",
+                None,
                 &cancellation,
             )
             .expect_err("uncertain removal must remain a timeout");

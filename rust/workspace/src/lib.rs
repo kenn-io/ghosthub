@@ -2863,9 +2863,9 @@ impl Workspace {
     /// Remove one exact non-main KWT worktree while preserving its Git branch.
     ///
     /// The operation revalidates the project, worktree generation, WSL
-    /// runtime, and expected tmux presence off the UI thread. A session that
-    /// was live when confirmation was shown is killed through fresh tmux
-    /// identity authority before KWT removes the checkout.
+    /// runtime, and expected tmux state off the UI thread. KWT validates and
+    /// terminates the confirmed session under the same lifecycle lock used by
+    /// guarded open before it removes the checkout.
     ///
     /// # Errors
     ///
@@ -6837,49 +6837,14 @@ fn run_kwt_worktree_remove(
         return KwtWorktreeOutcome::default();
     }
 
-    if live_target.is_none() {
-        match task.host.session_is_running(
-            &task.endpoint,
-            &task.runtime,
-            session_name,
-            &task.cancellation,
-        ) {
-            Ok(false) => {}
-            Ok(true) => {
-                fail_kwt_worktree_remove(
-                    inner,
-                    task,
-                    "The worktree session started after confirmation. Review the removal again."
-                        .to_owned(),
-                );
-                return KwtWorktreeOutcome::default();
-            }
-            Err(error) => {
-                fail_kwt_worktree_remove(inner, task, error.to_string());
-                return KwtWorktreeOutcome::default();
-            }
-        }
-    }
-
-    let mut session_killed = false;
-    if let Some(target) = live_target {
-        if let Err(error) = task.host.kill_live_session(target, &task.cancellation) {
-            fail_kwt_worktree_remove(inner, task, error.to_string());
-            return KwtWorktreeOutcome::default();
-        }
-        session_killed = true;
-        Workspace {
-            inner: Arc::clone(inner),
-        }
-        .finish_session_kill(target);
-    }
-
     if let Err(error) = task.host.remove_kwt_worktree(
         &task.endpoint,
         &task.runtime,
         &task.project_path,
         worktree_path,
         generation,
+        session_name,
+        live_target,
         &task.cancellation,
     ) {
         if error.kind() == DiagnosticKind::Timeout {
@@ -6888,20 +6853,23 @@ fn run_kwt_worktree_remove(
                 task,
                 worktree_path,
                 generation,
-                session_killed,
+                live_target.is_some(),
             );
         }
         fail_kwt_worktree_remove(inner, task, error.to_string());
-        return KwtWorktreeOutcome {
-            refresh_kwt: false,
-            refresh_tmux: session_killed,
-        };
+        return KwtWorktreeOutcome::default();
+    }
+    if let Some(target) = live_target {
+        Workspace {
+            inner: Arc::clone(inner),
+        }
+        .finish_session_kill(target);
     }
     tombstone_removed_kwt_worktree(inner, task, worktree_path, generation);
 
     KwtWorktreeOutcome {
         refresh_kwt: reconcile_removed_kwt_worktree(inner, task, worktree_path, generation),
-        refresh_tmux: session_killed,
+        refresh_tmux: live_target.is_some(),
     }
 }
 
