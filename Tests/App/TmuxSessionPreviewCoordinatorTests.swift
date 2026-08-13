@@ -143,6 +143,84 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test(
+        "Leaving Off restores connected preview state",
+        arguments: [SessionPreviewMode.efficient, .live]
+    )
+    func leavingOffRestoresConnectedState(mode: SessionPreviewMode) {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setMode(.off)
+
+        harness.coordinator.setMode(mode)
+
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.placeholder
+                == .awaitingFirstFrame
+        )
+    }
+
+    @Test(
+        "Leaving Off restores disconnected preview state",
+        arguments: [SessionPreviewMode.efficient, .live]
+    )
+    func leavingOffRestoresDisconnectedState(mode: SessionPreviewMode) {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.setConnection(
+            .disconnected(reason: "transport ended"),
+            for: presentation.key
+        )
+        harness.coordinator.presentationDidChange(presentation.key)
+        harness.coordinator.setMode(.off)
+
+        harness.coordinator.setMode(mode)
+
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.placeholder
+                == .disconnected
+        )
+    }
+
+    @Test(
+        "Leaving Off restores unavailable preview state",
+        arguments: [SessionPreviewMode.efficient, .live]
+    )
+    func leavingOffRestoresUnavailableState(mode: SessionPreviewMode) {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(
+            presentation,
+            identityIsUnavailable: true
+        )
+        harness.coordinator.setMode(.off)
+
+        harness.coordinator.setMode(mode)
+
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.placeholder
+                == .unavailable
+        )
+    }
+
+    @Test("Efficient captures an expanded active preview when leaving Off")
+    func efficientCapturesExpandedActivePreviewAfterOff() async {
+        let harness = PreviewCoordinatorHarness(mode: .off)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+
+        harness.coordinator.setMode(.efficient)
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [presentation.key])
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.image != nil
+        )
+    }
+
     @Test("capture failure preserves the last valid frame")
     func captureFailurePreservesFrame() async {
         let harness = PreviewCoordinatorHarness(mode: .efficient)
