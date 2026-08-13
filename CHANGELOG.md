@@ -104,7 +104,6 @@ test, and documentation-only changes are omitted.
   correct presentation if removal fails or the worktree moved concurrently.
 - Sidebar transitions resize the terminal smoothly without repeated terminal
   grid reflow.
-||||||| base
 
 ## [0.6.0] - 2026-08-04
 
