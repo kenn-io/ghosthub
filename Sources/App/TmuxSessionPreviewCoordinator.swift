@@ -420,6 +420,10 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         activate: (() -> Void)? = nil
     ) {
         guard let presentation = presentations[key] else { return }
+        guard mode != .off else {
+            (activate ?? presentation.activate)()
+            return
+        }
         cancelPendingActivation()
         invalidate(key)
         invalidateActivationDelay()

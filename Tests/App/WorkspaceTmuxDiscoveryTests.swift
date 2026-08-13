@@ -1158,6 +1158,89 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("retained tmux activation unparks before publishing the active handle")
+    func retainedTmuxActivationUnparksBeforePublishingHandle() async throws {
+        let environment = try setupHostEnvironment()
+        let budget = LivePreviewBudget(limit: 4)
+        weak var model: WorkspaceSceneModel?
+        var events: [String] = []
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .live,
+            budget: budget,
+            capture: { _, _ in nil },
+            park: { _ in
+                events.append(
+                    "park:\(model?.activeBorrowedTmuxSelection?.name ?? "none")"
+                )
+            },
+            unpark: { _ in
+                events.append(
+                    "unpark:\(model?.activeBorrowedTmuxSelection?.name ?? "none")"
+                )
+            }
+        )
+        model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        let first = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "first"
+        )
+        let second = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "second"
+        )
+        model?.openBorrowedTmuxSession(first)
+        let firstHandle = try #require(
+            model?.retainedBorrowedTmuxHandle(for: first)
+        )
+        model?.openBorrowedTmuxSession(second)
+        let key = TmuxPreviewKey(
+            hostID: first.hostID,
+            name: first.name,
+            socketName: first.socketName
+        )
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        previewCoordinator.register(.init(
+            key: key,
+            surface: { nil },
+            handleID: { firstHandle.id },
+            generation: { nil },
+            identity: { identity },
+            connectionState: { .connected },
+            isActive: { model?.activeBorrowedTmuxSelection == first },
+            activate: {}
+        ))
+        previewCoordinator.setExpanded(true, for: key)
+
+        #expect(events == ["park:second"])
+        #expect(budget.granted.contains(LivePreviewRequestID(
+            sceneID: previewCoordinator.sceneID,
+            presentation: key
+        )))
+
+        model?.openBorrowedTmuxSession(first)
+
+        #expect(events == ["park:second", "unpark:second"])
+        #expect(model?.activeBorrowedTmuxSelection == first)
+        #expect(!budget.granted.contains(LivePreviewRequestID(
+            sceneID: previewCoordinator.sceneID,
+            presentation: key
+        )))
+        await model?.shutdown()
+    }
+
+    @MainActor
     @Test("only opened tmux sessions become previewable")
     func onlyOpenedTmuxSessionsBecomePreviewable() async throws {
         let environment = try setupHostEnvironment()

@@ -12,7 +12,7 @@ struct TmuxSessionPreviewTile: View {
 
     var body: some View {
         Button {
-            coordinator.prepareToActivate(key, activate: onActivate)
+            onActivate()
         } label: {
             ZStack(alignment: .bottomLeading) {
                 previewContent

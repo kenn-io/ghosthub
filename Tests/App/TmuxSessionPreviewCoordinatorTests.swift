@@ -609,6 +609,24 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.budget.granted.isEmpty)
     }
 
+    @Test("Off activation bypasses preview state work")
+    func offActivationBypassesPreviewStateWork() {
+        let harness = PreviewCoordinatorHarness(mode: .off)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.events.removeAll()
+        var publications = 0
+        let observation = harness.coordinator.$viewStates
+            .dropFirst()
+            .sink { _ in publications += 1 }
+
+        harness.coordinator.prepareToActivate(presentation.key)
+
+        #expect(harness.events == ["activate:0"])
+        #expect(publications == 0)
+        withExtendedLifetime(observation) {}
+    }
+
     @Test("activation callback cannot cancel its own handoff fence")
     func activationCallbackPreservesHandoffFence() {
         let harness = PreviewCoordinatorHarness(mode: .live)

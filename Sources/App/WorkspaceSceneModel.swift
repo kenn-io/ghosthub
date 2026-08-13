@@ -8928,7 +8928,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     guard let self, let presentation,
                           retainedTmuxPresentations[key] === presentation
                     else { return }
-                    activateTmuxPresentation(presentation)
+                    commitTmuxPresentationActivation(presentation)
                 },
                 ensureIdentity: { [weak self, weak presentation] in
                     guard let self, let presentation else { return }
@@ -9231,6 +9231,21 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func activateTmuxPresentation(
+        _ presentation: RetainedTmuxPresentation
+    ) {
+        let key = TmuxPresentationKey(presentation.selection)
+        tmuxSessionPreviewCoordinator.prepareToActivate(
+            key.previewKey,
+            activate: { [weak self, weak presentation] in
+                guard let self, let presentation,
+                      retainedTmuxPresentations[key] === presentation
+                else { return }
+                commitTmuxPresentationActivation(presentation)
+            }
+        )
+    }
+
+    private func commitTmuxPresentationActivation(
         _ presentation: RetainedTmuxPresentation
     ) {
         if let activeHandle = activeBorrowedTmuxHandle,
