@@ -35,6 +35,7 @@ windows-sys = { version = "=0.61.2", features = [
 
 [dev-dependencies]
 ghosthub-contracts.workspace = true
+portable-pty.workspace = true
 
 [lints]
 workspace = true

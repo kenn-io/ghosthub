@@ -22,7 +22,7 @@ use surface::{
 mod windows_job;
 mod worker;
 
-pub use worker::{TerminalEvent, TerminalWorker, WorkerError};
+pub use worker::{TerminalEvent, TerminalStartup, TerminalWorker, WorkerError};
 
 #[derive(Clone, Debug, Default)]
 struct EventCollector {

@@ -687,12 +687,55 @@ retried. Every KWT command receives the same explicit `TMUX_TMPDIR` as tmux
 discovery and attachment, so project session availability cannot be inferred
 from a different server namespace.
 
+The same serialized KWT lane now owns the first local worktree workflow.
+Each registered project can load `branches --json` from its exact checkout and
+create either a new branch (`add --branch`) or an existing local/remote branch
+(`add`, optionally with `--from`) using `--no-launch`. After creation, Rust
+refreshes authoritative KWT inventory and selects the exact repository,
+worktree path, generation, and computed session name returned by that refresh.
+The `add` invocation carries `--expected-repository` and
+`--expected-registration`; KWT verifies those values against the selected
+checkout while holding its project lifecycle lock before it mutates. A
+replacement registration cannot inherit mutation authority from a cached row.
+If the immediate post-create read is unavailable, Ghosthub retains the pending
+project-and-branch identity and emits the normal created event when a later
+authoritative inventory first resolves it. That event carries the navigation
+generation that requested creation. It opens the worktree only while that
+intent still owns the UI; later navigation or another dialog turns completion
+into a notice instead of dismissing current work or changing presentations.
+The UI thread performs none of those commands and keeps the previous project
+tree visible throughout the operation.
+
+Opening a worktree consumes no one-shot tmux creation authority. The terminal
+launches the revision-pinned helper with the expected repository, registration
+fingerprint, worktree generation, and computed session name. KWT reacquires
+its project lifecycle lock, revalidates every identity, and only then repairs
+or starts the exact tmux session. A separate Ghosthub preflight never grants
+open authority. This is a
+cloneable, deliberately re-runnable RepairOrOpen capability: KWT owns
+probe/repair/bootstrap behavior and tmux continues to own the session. Directly
+discovered unbound sessions remain strictly attach-only.
+Once a worktree client resolves its live default-socket tmux identity, its
+presentation key is normalized to that identity. The same client therefore
+remains reusable when KWT later associates or disassociates the session with a
+project. KWT-only validation failures retain the fresh host inventory and are
+reported on the worktree action rather than disabling other multiplexers.
+
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound
 tmux group. Custom-socket worktrees remain visible as project inventory but do
-not claim a default-socket session with the same name. KWT rows carry display
-identity and exact session names; they do not acquire creation, repair, or
-destruction authority from cached inventory.
+not claim a default-socket session with the same name. Removal is unavailable
+for those worktrees until protected-socket discovery and identity-checked
+termination exist; deleting a checkout must never strand a session Ghosthub
+cannot currently observe. A successful exact removal immediately tombstones
+that path and generation in the cached tree before broader reconciliation, so
+a KWT outage cannot resurrect an openable deleted row. Before the removal
+dialog becomes actionable, a background query captures the exact live tmux
+identity when one exists. Confirmation consumes that authority; if the client
+exits and a same-named replacement starts, identity-checked kill fails closed
+and the user must review the replacement. KWT rows carry display identity and
+exact session names; they do not acquire creation, repair, or destruction
+authority from cached inventory.
 
 The remote helper activation root is a separate cross-controller contract:
 
@@ -1050,16 +1093,17 @@ used as evidence for the Windows ConPTY-to-WSL relay path.
 
 After Slice 1:
 
-1. Local Ghosthub inventory adds pinned bundled kwt, project/worktree
-   inventory, unbound reconciliation, and the full sidebar hierarchy.
-2. Worktree selection adds ordinary/protected RepairOrOpen authority; plain
-   local session creation already ships through CreateOnce in the WSL slice.
-3. Local lifecycle adds project registration, worktree creation, branch/PR
-   import, and deletion; the WSL slice already ships fresh-identity conditional
-   Kill Session for bare sessions.
-4. Remote hosts add OpenSSH diagnostics, managed-helper installation,
+1. Local Ghosthub inventory and ordinary worktree RepairOrOpen now ship with
+   pinned bundled kwt, project/worktree inventory, branch-backed creation,
+   generation-guarded confirmed removal, and unbound reconciliation. Removal
+   preserves the Git branch and terminates a live tmux session only through a
+   freshly captured exact identity.
+2. Local lifecycle adds pull-request import and protected worktree behavior;
+   plain local session creation already ships through CreateOnce in the WSL
+   slice.
+3. Remote hosts add OpenSSH diagnostics, managed-helper installation,
    attach-only transport reconnect, repair/open reconnect, and remote Windows.
-5. Persistence and restoration add the coalescing writer, host settings,
+4. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.
 6. Product completion adds multi-window behavior, Console Panel, settings,

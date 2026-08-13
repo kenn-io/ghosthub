@@ -10,19 +10,26 @@ use model::DiagnosticKind;
 use session::{
     AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform, HerdrAttachPlan,
     HerdrLaunchOnce, HerdrLaunchTarget, HerdrLifecycleAction, HerdrSessionRecord,
-    HerdrSessionState, IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName,
-    VerifiedTmuxBinary, ZellijAttachPlan, ZellijLaunchOnce, ZellijSessionName, ZellijSessionRecord,
-    resolve_tmux_binary,
+    HerdrSessionState, IDENTITY_MISMATCH_MARKER, ProbeObservation, RepairOrOpenPlan,
+    SessionIdentity, SessionName, VerifiedTmuxBinary, ZellijAttachPlan, ZellijLaunchOnce,
+    ZellijSessionName, ZellijSessionRecord, resolve_tmux_binary,
 };
 
 use crate::herdr::{self, ExecutableProbe};
-use crate::kwt::{parse_project_mutation, project_command_error};
+use crate::kwt::{parse_branches, parse_command_failure, parse_project_mutation};
 use crate::zellij;
-use crate::{CancellationToken, CommandOutput, CommandRunner, KwtBundle, KwtInventory, KwtProject};
+use crate::{
+    CancellationToken, CommandOutput, CommandRunner, KwtBranchCandidate, KwtBundle, KwtInventory,
+    KwtProject, KwtWorktreeCreate, KwtWorktreeOpen,
+};
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const DISCOVERY_ATTEMPTS: usize = 2;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+// Worktree creation may fetch a remote branch and both creation and removal
+// may run repository hooks. Keep these background mutations cancellable, but
+// do not apply the short inventory/probe deadline to them.
+const KWT_MUTATION_TIMEOUT: Duration = Duration::from_mins(5);
 const ATTACHMENT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_millis(500);
 const UNCERTAIN_CLEANUP_DELAY: Duration = Duration::from_millis(50);
@@ -31,6 +38,7 @@ const UNCERTAIN_CLEANUP_SETTLE: Duration = Duration::from_secs(2);
 // same framing before inventory. Delimiters in names therefore stay unambiguous
 // without adding another process crossing.
 const INVENTORY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}\t#{session_attached}\t#{n:session_name}\t#{session_name}";
+const CLIENT_READINESS_FORMAT: &str = "#{client_pid}\t#{pid}\t#{session_id}\t#{session_created}";
 const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}";
 const KILL_IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_kill_identity_mismatch_v1__";
 static ADMISSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -52,6 +60,7 @@ pub struct WslConfig {
     tmux_binary: String,
     tmux_tmpdir: Option<String>,
     kwt_bundle: Option<KwtBundle>,
+    kwt_home: Option<String>,
 }
 
 impl WslConfig {
@@ -73,6 +82,13 @@ impl WslConfig {
     #[must_use]
     pub fn with_kwt_bundle(mut self, bundle: KwtBundle) -> Self {
         self.kwt_bundle = Some(bundle);
+        self
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_kwt_home_for_tests(mut self, path: impl Into<String>) -> Self {
+        self.kwt_home = Some(path.into());
         self
     }
 
@@ -124,6 +140,7 @@ impl WslConfig {
             tmux_binary,
             tmux_tmpdir,
             kwt_bundle: None,
+            kwt_home: None,
         })
     }
 }
@@ -135,6 +152,7 @@ impl Default for WslConfig {
             tmux_binary: DEFAULT_TMUX.to_owned(),
             tmux_tmpdir: None,
             kwt_bundle: None,
+            kwt_home: None,
         }
     }
 }
@@ -1076,12 +1094,383 @@ impl<R: CommandRunner> WslHost<R> {
         if output.status == 0 {
             Ok(output)
         } else {
-            Err(classify_command_failure(
+            Err(classify_kwt_command_failure(&output, "read KWT inventory"))
+        }
+    }
+
+    /// Resolve the revision-pinned helper and build a re-runnable ordinary
+    /// client for one exact KWT worktree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the helper cannot be verified for the captured
+    /// WSL runtime.
+    pub fn kwt_repair_or_open_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        request: &KwtWorktreeOpen,
+        term: AttachTerm,
+        cancellation: &CancellationToken,
+    ) -> Result<RepairOrOpenPlan, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let readiness_path = kwt_client_readiness_path()?;
+        let readiness_staging_path = format!("{readiness_path}.tmp");
+        let mut args = pinned_prefix(endpoint);
+        let kwt_home = self
+            .config
+            .kwt_home
+            .as_deref()
+            .map(|path| format!("KWT_HOME={path}"));
+        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        append_tmux_environment(
+            &mut args,
+            Some(term.environment()),
+            self.config.tmux_tmpdir.as_deref(),
+            &extra_environment,
+        );
+        args.extend(
+            [
+                "/bin/sh",
+                "-c",
+                "umask 077; /usr/bin/printf '%s\\n' \"$$\" > \"$1\" && /usr/bin/mv -T -- \"$1\" \"$2\" && shift 2 && exec \"$@\"",
+                "ghosthub-worktree-client",
+                readiness_staging_path.as_str(),
+                readiness_path.as_str(),
+                helper.as_str(),
+                "open",
+                request.path(),
+                "--expected-repository",
+                request.repository(),
+                "--expected-registration",
+                request.registration_fingerprint(),
+                "--expected-generation",
+                request.generation(),
+                "--expected-session",
+                request.session_name(),
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        Ok(RepairOrOpenPlan::worktree(
+            self.wsl_executable.as_os_str(),
+            args,
+            request.session_name(),
+            &readiness_path,
+        ))
+    }
+
+    /// Query whether the exact client process launched by a KWT open plan is
+    /// attached to tmux, returning that client's live session identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when WSL restarts, the readiness receipt is
+    /// malformed, or tmux cannot be queried safely.
+    pub fn kwt_client_session_identity(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        readiness_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<SessionIdentity>, HostError> {
+        require_kwt_client_readiness_path(readiness_path)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let receipt = self.run_scrubbed(
+            endpoint,
+            &[
+                "/bin/sh",
+                "-c",
+                "if [ -s \"$1\" ]; then exec /usr/bin/cat -- \"$1\"; fi",
+                "ghosthub-read-worktree-client",
+                readiness_path,
+            ],
+            cancellation,
+        )?;
+        if receipt.status != 0 {
+            return Err(classify_command_failure(
+                receipt.status,
+                &receipt.stderr,
+                "read KWT client readiness",
+            ));
+        }
+        if receipt.stdout.is_empty() {
+            return Ok(None);
+        }
+        let client_pid = parse_kwt_client_pid(&receipt.stdout)?;
+        let output = self.run_tmux_command(
+            endpoint,
+            cancellation,
+            &[
+                "-f",
+                "/dev/null",
+                "list-clients",
+                "-F",
+                CLIENT_READINESS_FORMAT,
+            ],
+        )?;
+        if output.status != 0 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_no_server(&stderr) {
+                return Ok(None);
+            }
+            return Err(classify_command_failure(
                 output.status,
                 &output.stderr,
-                "read KWT inventory",
-            ))
+                "query KWT tmux client readiness",
+            ));
         }
+        let matched = parse_kwt_client_identity(&output.stdout, client_pid)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        Ok(matched)
+    }
+
+    pub fn remove_kwt_client_readiness(
+        &self,
+        endpoint: &WslEndpoint,
+        readiness_path: &str,
+        cancellation: &CancellationToken,
+    ) {
+        if require_kwt_client_readiness_path(readiness_path).is_err() {
+            return;
+        }
+        let staging = format!("{readiness_path}.tmp");
+        let _ignored = self.run_scrubbed(
+            endpoint,
+            &["/usr/bin/rm", "-f", "--", readiness_path, &staging],
+            cancellation,
+        );
+    }
+
+    /// List existing branch candidates for one freshly identified project.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the project identity is stale, the managed helper
+    /// cannot be verified, or KWT emits malformed machine-readable output.
+    pub fn list_kwt_branches(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<KwtBranchCandidate>, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_kwt_in_directory(
+            endpoint,
+            &helper,
+            project_path,
+            &["branches", "--json"],
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(classify_kwt_command_failure(&output, "list KWT branches"));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        parse_branches(&output.stdout)
+            .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error.to_string()))
+    }
+
+    /// Create one KWT worktree without launching its tmux client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the project identity is stale, helper validation
+    /// fails, or KWT rejects the requested branch operation.
+    pub fn create_kwt_worktree(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        request: &KwtWorktreeCreate,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let mut command = vec!["add"];
+        if request.creates_branch() {
+            command.push("--branch");
+        } else if let Some(source) = request
+            .source()
+            .filter(|source| *source != request.branch())
+        {
+            command.extend(["--from", source]);
+        }
+        command.extend([
+            request.branch(),
+            "--no-launch",
+            "--expected-repository",
+            request.repository(),
+            "--expected-registration",
+            request.registration_fingerprint(),
+        ]);
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_kwt_mutation_in_directory(
+            endpoint,
+            &helper,
+            request.project_path(),
+            &command,
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        if output.status == 0 {
+            Ok(())
+        } else {
+            Err(classify_kwt_command_failure(&output, "create KWT worktree"))
+        }
+    }
+
+    /// Remove one exact KWT worktree while preserving its Git branch.
+    ///
+    /// KWT owns the filesystem and registry mutation. The expected generation
+    /// prevents a stale inventory row from removing a replacement checkout at
+    /// the same path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the WSL runtime changed, helper verification
+    /// fails, or KWT rejects the exact path/generation pair.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "guarded removal keeps every independently captured authority explicit"
+    )]
+    pub fn remove_kwt_worktree(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        project_path: &str,
+        worktree_path: &str,
+        generation: &str,
+        session_name: &str,
+        live_target: Option<&LiveSessionTarget>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        if let Some(target) = live_target
+            && (target.endpoint() != endpoint
+                || target.runtime() != runtime
+                || target.name() != session_name)
+        {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "the confirmed worktree session identity changed",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let mut command = vec![
+            "remove".to_owned(),
+            "--if-generation".to_owned(),
+            generation.to_owned(),
+            "--if-session-name".to_owned(),
+            session_name.to_owned(),
+        ];
+        if let Some(target) = live_target {
+            command.extend([
+                "--if-session-server-pid".to_owned(),
+                target.identity().server_pid().to_string(),
+                "--if-session-id".to_owned(),
+                target.identity().session_id().to_owned(),
+                "--if-session-created".to_owned(),
+                target.identity().created_at().to_string(),
+            ]);
+        } else {
+            command.push("--if-session-absent".to_owned());
+        }
+        if let Some(socket_directory) = self.config.tmux_tmpdir.as_deref() {
+            command.extend([
+                "--if-session-socket-directory".to_owned(),
+                socket_directory.to_owned(),
+            ]);
+        }
+        command.push(worktree_path.to_owned());
+        let command = command.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = self.run_kwt_mutation_in_directory(
+            endpoint,
+            &helper,
+            project_path,
+            &command,
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        if output.status == 0 {
+            Ok(())
+        } else {
+            Err(classify_kwt_command_failure(&output, "remove KWT worktree"))
+        }
+    }
+
+    fn run_kwt_in_directory(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        directory: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        append_scrubbed_environment(&mut args);
+        args.push(OsString::from("--chdir"));
+        args.push(OsString::from(directory));
+        if let Some(path) = self.config.tmux_tmpdir.as_deref() {
+            args.push(OsString::from(format!("TMUX_TMPDIR={path}")));
+        }
+        if let Some(path) = self.config.kwt_home.as_deref() {
+            args.push(OsString::from(format!("KWT_HOME={path}")));
+        }
+        args.push(OsString::from(helper));
+        args.extend(command.iter().map(OsString::from));
+        self.run_with_timeout(&args, cancellation, COMMAND_TIMEOUT)
+    }
+
+    fn run_kwt_mutation_in_directory(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        directory: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        append_scrubbed_environment(&mut args);
+        args.push(OsString::from("--chdir"));
+        args.push(OsString::from(directory));
+        if let Some(path) = self.config.tmux_tmpdir.as_deref() {
+            args.push(OsString::from(format!("TMUX_TMPDIR={path}")));
+        }
+        if let Some(path) = self.config.kwt_home.as_deref() {
+            args.push(OsString::from(format!("KWT_HOME={path}")));
+        }
+        args.push(OsString::from(helper));
+        args.extend(command.iter().map(OsString::from));
+        self.run_with_timeout(&args, cancellation, KWT_MUTATION_TIMEOUT)
     }
 
     fn run_scrubbed(
@@ -1091,7 +1480,18 @@ impl<R: CommandRunner> WslHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
         let mut args = pinned_prefix(endpoint);
-        append_tmux_environment(&mut args, None, self.config.tmux_tmpdir.as_deref(), &[]);
+        let kwt_home = self
+            .config
+            .kwt_home
+            .as_deref()
+            .map(|path| format!("KWT_HOME={path}"));
+        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        append_tmux_environment(
+            &mut args,
+            None,
+            self.config.tmux_tmpdir.as_deref(),
+            &extra_environment,
+        );
         args.extend(command.iter().map(OsString::from));
         self.run(&args, cancellation)
     }
@@ -1104,7 +1504,18 @@ impl<R: CommandRunner> WslHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
         let mut args = pinned_prefix(endpoint);
-        append_tmux_environment(&mut args, None, self.config.tmux_tmpdir.as_deref(), &[]);
+        let kwt_home = self
+            .config
+            .kwt_home
+            .as_deref()
+            .map(|path| format!("KWT_HOME={path}"));
+        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        append_tmux_environment(
+            &mut args,
+            None,
+            self.config.tmux_tmpdir.as_deref(),
+            &extra_environment,
+        );
         args.extend(command.iter().map(OsString::from));
         self.runner
             .run_with_input(
@@ -1744,6 +2155,30 @@ impl<R: CommandRunner> WslHost<R> {
             name: session.name().to_owned(),
             identity: session.identity().clone(),
         })
+    }
+
+    /// Check whether one exact tmux session name is currently present.
+    ///
+    /// The WSL runtime is checked on both sides so a restart cannot turn an
+    /// absence observation into authority over a replacement environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified discovery or runtime error.
+    pub fn session_is_running(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, HostError> {
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        let running = self
+            .discover_sessions(endpoint, cancellation)?
+            .iter()
+            .any(|session| session.name() == name);
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        Ok(running)
     }
 
     /// Kill the exact session identity captured immediately before user
@@ -3142,13 +3577,17 @@ impl<R: CommandRunner> WslHost<R> {
         args: &[OsString],
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
+        self.run_with_timeout(args, cancellation, COMMAND_TIMEOUT)
+    }
+
+    fn run_with_timeout(
+        &self,
+        args: &[OsString],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<CommandOutput, HostError> {
         self.runner
-            .run(
-                self.wsl_executable.as_os_str(),
-                args,
-                cancellation,
-                COMMAND_TIMEOUT,
-            )
+            .run(self.wsl_executable.as_os_str(), args, cancellation, timeout)
             .map_err(|error| {
                 HostError::new(
                     if error.kind() == std::io::ErrorKind::TimedOut {
@@ -3571,6 +4010,107 @@ fn helper_nonce() -> Result<String, HostError> {
     Ok(format!("{:032x}", u128::from_ne_bytes(nonce)))
 }
 
+fn kwt_client_readiness_path() -> Result<String, HostError> {
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).map_err(|error| {
+        HostError::new(
+            DiagnosticKind::Transport,
+            format!("generate KWT client readiness name: {error}"),
+        )
+    })?;
+    Ok(format!(
+        "/tmp/.ghosthub-kwt-client-{:032x}",
+        u128::from_ne_bytes(nonce)
+    ))
+}
+
+fn require_kwt_client_readiness_path(path: &str) -> Result<(), HostError> {
+    let Some(nonce) = path.strip_prefix("/tmp/.ghosthub-kwt-client-") else {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT client readiness path was outside Ghosthub's private namespace",
+        ));
+    };
+    if nonce.len() != 32
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT client readiness path had an invalid nonce",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_kwt_client_pid(bytes: &[u8]) -> Result<u32, HostError> {
+    let text = decode(bytes, "KWT client readiness")?.trim();
+    let pid = text.parse::<u32>().map_err(|_| {
+        HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT client readiness contained an invalid process ID",
+        )
+    })?;
+    if pid == 0 || pid.to_string() != text {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT client readiness contained a noncanonical process ID",
+        ));
+    }
+    Ok(pid)
+}
+
+fn parse_kwt_client_identity(
+    bytes: &[u8],
+    client_pid: u32,
+) -> Result<Option<SessionIdentity>, HostError> {
+    let mut matched = None;
+    let client_pid_text = client_pid.to_string();
+    for line in decode(bytes, "KWT tmux client readiness")?.lines() {
+        let mut fields = line.split('\t');
+        if fields.next() != Some(client_pid_text.as_str()) {
+            continue;
+        }
+        let server_pid = fields
+            .next()
+            .and_then(|field| field.parse::<u32>().ok())
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "KWT tmux client readiness had an invalid server PID",
+                )
+            })?;
+        let session_id = fields
+            .next()
+            .filter(|field| is_tmux_session_id(field))
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "KWT tmux client readiness had an invalid session ID",
+                )
+            })?;
+        let created_at = fields
+            .next()
+            .and_then(|field| field.parse::<u64>().ok())
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "KWT tmux client readiness had an invalid creation time",
+                )
+            })?;
+        if fields.next().is_some() || matched.is_some() {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT tmux client readiness was ambiguous",
+            ));
+        }
+        matched = Some(SessionIdentity::new(server_pid, session_id, created_at));
+    }
+    Ok(matched)
+}
+
 fn require_kwt_command(output: &CommandOutput, subject: &str) -> Result<(), HostError> {
     if output.status == 0 {
         Ok(())
@@ -3587,14 +4127,50 @@ fn require_kwt_project_command(output: &CommandOutput, subject: &str) -> Result<
     if output.status == 0 {
         return Ok(());
     }
-    if let Some(message) = project_command_error(&output.stdout) {
-        return Err(HostError::new(DiagnosticKind::Transport, message));
+    if parse_command_failure(&output.stdout).is_some() {
+        return Err(classify_kwt_command_failure(output, subject));
     }
     Err(classify_command_failure(
         output.status,
         &output.stderr,
         subject,
     ))
+}
+
+fn classify_kwt_command_failure(output: &CommandOutput, subject: &str) -> HostError {
+    if output.status == 127 {
+        return classify_command_failure(output.status, &output.stderr, subject);
+    }
+    let Some(failure) = parse_command_failure(&output.stdout) else {
+        return classify_command_failure(output.status, &output.stderr, subject);
+    };
+    HostError::new(
+        if failure.code() == "inventory_timeout" {
+            DiagnosticKind::Timeout
+        } else {
+            DiagnosticKind::Transport
+        },
+        friendly_kwt_failure(&failure),
+    )
+}
+
+fn friendly_kwt_failure(failure: &crate::kwt::KwtCommandFailure) -> String {
+    match failure.code() {
+        "daemon_start_failed" => {
+            "KWT's background service did not start. Ghosthub will retry automatically.".to_owned()
+        }
+        "daemon_draining" => {
+            "KWT is finishing an update. Ghosthub will retry automatically.".to_owned()
+        }
+        _ => {
+            let retry = if failure.retryable() {
+                " Try again."
+            } else {
+                ""
+            };
+            format!("{}{retry}", failure.message())
+        }
+    }
 }
 
 fn classify_runner_error(error: &std::io::Error) -> HostError {
@@ -3948,6 +4524,9 @@ mod tests {
     #[derive(Clone)]
     struct KwtMutationRunner {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
+        mutation_timeouts: Arc<Mutex<Vec<Duration>>>,
+        mutation_failure: Arc<Mutex<Option<String>>>,
+        branch_failure: Arc<AtomicBool>,
         helper_matches: Arc<AtomicBool>,
     }
 
@@ -3955,8 +4534,23 @@ mod tests {
         fn default() -> Self {
             Self {
                 calls: Arc::default(),
+                mutation_timeouts: Arc::default(),
+                mutation_failure: Arc::default(),
+                branch_failure: Arc::new(AtomicBool::new(false)),
                 helper_matches: Arc::new(AtomicBool::new(true)),
             }
+        }
+    }
+
+    impl KwtMutationRunner {
+        fn branch_failure_output(&self, args: &[String]) -> Option<CommandOutput> {
+            (self.branch_failure.load(Ordering::Acquire)
+                && args.windows(2).any(|pair| pair == ["branches", "--json"]))
+            .then(|| CommandOutput {
+                status: 1,
+                stdout: br#"{"error":{"code":"inventory_timeout","message":"branch inventory did not settle","retryable":true}}"#.to_vec(),
+                stderr: Vec::new(),
+            })
         }
     }
 
@@ -3966,13 +4560,52 @@ mod tests {
             _program: &OsStr,
             args: &[OsString],
             _cancellation: &CancellationToken,
-            _timeout: Duration,
+            timeout: Duration,
         ) -> io::Result<CommandOutput> {
             let args = args
                 .iter()
                 .map(|argument| argument.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
+            let is_worktree_mutation = (args.iter().any(|argument| argument == "add")
+                && args.iter().any(|argument| argument == "--no-launch"))
+                || (args.iter().any(|argument| argument == "remove")
+                    && args.iter().any(|argument| argument == "--if-generation"));
+            if is_worktree_mutation {
+                self.mutation_timeouts
+                    .lock()
+                    .expect("mutation timeouts")
+                    .push(timeout);
+            }
             self.calls.lock().expect("calls").push(args.clone());
+            if args
+                .windows(2)
+                .any(|pair| pair == ["--expected-registration", "replacement-registration"])
+            {
+                return Ok(CommandOutput {
+                    status: 1,
+                    stdout: br#"{"error":{"code":"registration_changed","message":"the project registration changed before the operation began","retryable":true}}"#.to_vec(),
+                    stderr: Vec::new(),
+                });
+            }
+            if is_worktree_mutation
+                && let Some(code) = self
+                    .mutation_failure
+                    .lock()
+                    .expect("mutation failure")
+                    .clone()
+            {
+                return Ok(CommandOutput {
+                    status: 1,
+                    stdout: format!(
+                        r#"{{"error":{{"code":"{code}","message":"KWT inventory did not settle","retryable":true}}}}"#
+                    )
+                    .into_bytes(),
+                    stderr: Vec::new(),
+                });
+            }
+            if let Some(output) = self.branch_failure_output(&args) {
+                return Ok(output);
+            }
             let stdout = if args.iter().any(|argument| argument == "/usr/bin/cat") {
                 TEST_RUNTIME_OUTPUT.to_vec()
             } else if args.iter().any(|argument| argument == "/usr/bin/sha256sum") {
@@ -3995,6 +4628,14 @@ mod tests {
                 br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["projects", "remove"]) {
                 br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
+            } else if args.windows(2).any(|pair| pair == ["branches", "--json"]) {
+                br#"[{"name":"feature/ready","label":"feature/ready","source":"origin/feature/ready","is_current":false,"is_remote":true,"last_commit":{"hash":"abc","message":"ready","author":"A","date":"2026-01-01T00:00:00Z"}}]"#.to_vec()
+            } else if (args.iter().any(|argument| argument == "add")
+                && args.iter().any(|argument| argument == "--no-launch"))
+                || (args.iter().any(|argument| argument == "remove")
+                    && args.iter().any(|argument| argument == "--if-generation"))
+            {
+                Vec::new()
             } else if args.iter().any(|argument| argument == "projects") {
                 br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}]"#.to_vec()
             } else if args.iter().any(|argument| {
@@ -4144,6 +4785,264 @@ mod tests {
     }
 
     #[test]
+    fn kwt_worktree_commands_use_exact_project_directory_and_no_launch() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        let branches = host
+            .list_kwt_branches(&endpoint, &runtime, "/code/widget", &cancellation)
+            .expect("list branch candidates");
+        assert_eq!(branches[0].name(), "feature/ready");
+        assert_eq!(branches[0].source(), "origin/feature/ready");
+        host.create_kwt_worktree(
+            &endpoint,
+            &runtime,
+            &KwtWorktreeCreate::new(
+                "/code/widget",
+                "github.com/acme/widget",
+                "opaque-registration",
+                "feature/ready",
+                Some("origin/feature/ready".to_owned()),
+                false,
+            ),
+            &cancellation,
+        )
+        .expect("create existing remote branch worktree");
+        host.remove_kwt_worktree(
+            &endpoint,
+            &runtime,
+            "/code/widget",
+            "/work/widget/feature-ready",
+            "0123456789abcdef0123456789abcdef",
+            "kwt-workspace-widget-feature-ready",
+            None,
+            &cancellation,
+        )
+        .expect("remove exact worktree while preserving its branch");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.windows(2).any(|pair| pair == ["branches", "--json"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "add".to_owned(),
+                "--from".to_owned(),
+                "origin/feature/ready".to_owned(),
+                "feature/ready".to_owned(),
+                "--no-launch".to_owned(),
+                "--expected-repository".to_owned(),
+                "github.com/acme/widget".to_owned(),
+                "--expected-registration".to_owned(),
+                "opaque-registration".to_owned(),
+            ]) && args
+                .windows(2)
+                .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "remove".to_owned(),
+                "--if-generation".to_owned(),
+                "0123456789abcdef0123456789abcdef".to_owned(),
+                "--if-session-name".to_owned(),
+                "kwt-workspace-widget-feature-ready".to_owned(),
+                "--if-session-absent".to_owned(),
+                "/work/widget/feature-ready".to_owned(),
+            ]) && args
+                .windows(2)
+                .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+        assert_eq!(
+            *runner.mutation_timeouts.lock().expect("mutation timeouts"),
+            vec![KWT_MUTATION_TIMEOUT, KWT_MUTATION_TIMEOUT]
+        );
+    }
+
+    #[test]
+    fn kwt_branch_list_preserves_structured_command_failures() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        runner.branch_failure.store(true, Ordering::Release);
+
+        let error = host
+            .list_kwt_branches(
+                &endpoint,
+                &runtime,
+                "/code/widget",
+                &CancellationToken::new(),
+            )
+            .expect_err("structured branch failure");
+
+        assert_eq!(error.kind(), DiagnosticKind::Timeout);
+        assert_eq!(
+            error.to_string(),
+            "branch inventory did not settle Try again."
+        );
+    }
+
+    #[test]
+    fn kwt_worktree_mutations_preserve_structured_inventory_timeouts() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        *runner.mutation_failure.lock().expect("mutation failure") =
+            Some("inventory_timeout".to_owned());
+        let cancellation = CancellationToken::new();
+
+        let create_error = host
+            .create_kwt_worktree(
+                &endpoint,
+                &runtime,
+                &KwtWorktreeCreate::new(
+                    "/code/widget",
+                    "github.com/acme/widget",
+                    "opaque-registration",
+                    "feature/ready",
+                    Some("origin/feature/ready".to_owned()),
+                    false,
+                ),
+                &cancellation,
+            )
+            .expect_err("uncertain create must remain a timeout");
+        let remove_error = host
+            .remove_kwt_worktree(
+                &endpoint,
+                &runtime,
+                "/code/widget",
+                "/work/widget/feature-ready",
+                "0123456789abcdef0123456789abcdef",
+                "kwt-workspace-widget-feature-ready",
+                None,
+                &cancellation,
+            )
+            .expect_err("uncertain removal must remain a timeout");
+
+        assert_eq!(create_error.kind(), DiagnosticKind::Timeout);
+        assert_eq!(remove_error.kind(), DiagnosticKind::Timeout);
+    }
+
+    #[test]
+    fn kwt_worktree_creation_rejects_a_changed_project_registration_before_add() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let error = host
+            .create_kwt_worktree(
+                &endpoint,
+                &runtime,
+                &KwtWorktreeCreate::new(
+                    "/code/widget",
+                    "github.com/acme/widget",
+                    "replacement-registration",
+                    "feature/ready",
+                    Some("origin/feature/ready".to_owned()),
+                    false,
+                ),
+                &CancellationToken::new(),
+            )
+            .expect_err("a stale project registration must not grant mutation authority");
+
+        assert!(error.to_string().contains("registration changed"));
+        assert!(runner.calls.lock().expect("calls").iter().any(|args| {
+            args.windows(2)
+                .any(|pair| pair == ["--expected-registration", "replacement-registration"])
+        }));
+    }
+
+    #[test]
+    fn kwt_open_plan_is_re_runnable_and_uses_the_pinned_helper() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let plan = host
+            .kwt_repair_or_open_plan(
+                &endpoint,
+                &runtime,
+                &KwtWorktreeOpen::new(
+                    "/work/widget/topic",
+                    "github.com/acme/widget",
+                    "registration-fingerprint",
+                    "0123456789abcdef0123456789abcdef",
+                    "widget-topic",
+                ),
+                AttachTerm::Xterm256Color,
+                &CancellationToken::new(),
+            )
+            .expect("build worktree open plan");
+        let args = plan
+            .args()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert!(args.windows(3).any(|args| {
+            args == [
+                "/home/test/.ghosthub/helpers/kwt/revision/kwt",
+                "open",
+                "/work/widget/topic",
+            ]
+        }));
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--expected-repository", "github.com/acme/widget"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--expected-registration", "registration-fingerprint"] })
+        );
+        assert!(
+            args.windows(2).any(|args| {
+                args == ["--expected-generation", "0123456789abcdef0123456789abcdef"]
+            })
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--expected-session", "widget-topic"])
+        );
+        assert!(
+            args.iter()
+                .any(|argument| argument == "TERM=xterm-256color")
+        );
+        assert!(args.windows(2).any(|args| args == ["/bin/sh", "-c"]));
+        assert!(args.iter().any(|argument| argument.contains("exec \"$@\"")));
+        assert!(
+            plan.readiness_path()
+                .starts_with("/tmp/.ghosthub-kwt-client-")
+        );
+        require_kwt_client_readiness_path(plan.readiness_path())
+            .expect("plan uses a private canonical readiness path");
+        assert_eq!(plan.target_name(), "widget-topic");
+        assert_eq!(plan.clone(), plan);
+    }
+
+    #[test]
+    fn kwt_client_readiness_paths_are_strictly_scoped() {
+        assert!(
+            require_kwt_client_readiness_path(
+                "/tmp/.ghosthub-kwt-client-0123456789abcdef0123456789abcdef"
+            )
+            .is_ok()
+        );
+        for path in [
+            "/tmp/unrelated",
+            "/tmp/.ghosthub-kwt-client-0123",
+            "/tmp/.ghosthub-kwt-client-0123456789ABCDEF0123456789ABCDEF",
+        ] {
+            assert!(require_kwt_client_readiness_path(path).is_err());
+        }
+    }
+
+    #[test]
+    fn kwt_client_readiness_matches_only_the_recorded_process() {
+        let identity = parse_kwt_client_identity(b"8\t40\t$1\t90\n7\t42\t$3\t99\n", 7)
+            .expect("valid readiness inventory")
+            .expect("recorded client is attached");
+
+        assert_eq!(identity, SessionIdentity::new(42, "$3", 99));
+        assert!(
+            parse_kwt_client_identity(b"8\t40\t$1\t90\n", 7)
+                .expect("unrelated clients are valid")
+                .is_none()
+        );
+        assert!(parse_kwt_client_pid(b"007\n").is_err());
+    }
+
+    #[test]
     fn cached_kwt_helper_is_revalidated_and_repaired_before_execution() {
         let (host, runner, endpoint, runtime) = kwt_mutation_host();
         runner.helper_matches.store(false, Ordering::Release);
@@ -4255,6 +5154,26 @@ mod tests {
             assert_eq!(error.kind(), DiagnosticKind::MalformedOutput);
             assert!(error.to_string().contains("this host uses Ubuntu"));
         }
+    }
+
+    #[test]
+    fn kwt_daemon_start_failures_are_actionable_and_hide_internal_cli_context() {
+        let output = CommandOutput {
+            status: 1,
+            stdout: br#"{"error":{"code":"daemon_start_failed","message":"kwt daemon did not become ready","retryable":true}}"#.to_vec(),
+            stderr: b"kwt projects: daemon_start_failed: kwt daemon did not become ready\n"
+                .to_vec(),
+        };
+
+        let error = classify_kwt_command_failure(&output, "read KWT inventory");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(
+            error.to_string(),
+            "KWT's background service did not start. Ghosthub will retry automatically."
+        );
+        assert!(!error.to_string().contains("daemon_start_failed"));
+        assert!(!error.to_string().contains("kwt projects"));
     }
 
     #[test]
