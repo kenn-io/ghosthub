@@ -268,6 +268,37 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.captures == [presentation.key])
     }
 
+    @Test(
+        "Efficient retries an expansion capture when eligibility returns",
+        arguments: EfficientExpansionDeferral.allCases
+    )
+    func efficientRetriesExpandedCapture(
+        deferral: EfficientExpansionDeferral
+    ) async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: true)
+        harness.coordinator.register(presentation)
+        switch deferral {
+        case .sidebarHidden:
+            harness.coordinator.setSidebarVisible(false)
+        case .applicationInactive:
+            harness.coordinator.applicationDidResignActive()
+        }
+
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        #expect(harness.captures.isEmpty)
+
+        switch deferral {
+        case .sidebarHidden:
+            harness.coordinator.setSidebarVisible(true)
+        case .applicationInactive:
+            harness.coordinator.applicationDidBecomeActive()
+        }
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [presentation.key])
+    }
+
     @Test("Efficient retries an interrupted capture after sidebar reveal")
     func efficientRetriesInterruptedCaptureAfterSidebarReveal() async {
         let harness = PreviewCoordinatorHarness(mode: .efficient)
@@ -409,6 +440,67 @@ struct TmuxSessionPreviewCoordinatorTests {
             resolvedPresentation,
             identityIsResolved: true
         )
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [key])
+        #expect(harness.coordinator.viewState(for: key)?.image != nil)
+    }
+
+    @Test("Deferred identity capture starts after deactivation finishes")
+    func deferredIdentityCaptureStartsAfterDeactivation() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let key = TmuxPreviewKey(
+            hostID: UUID(),
+            name: "session-0",
+            socketName: nil
+        )
+        let handleID = UUID()
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        var isActive = false
+        var resolveIdentity: (() -> Void)?
+        let pendingPresentation = TmuxSessionPreviewCoordinator.Presentation(
+            key: key,
+            surface: { nil },
+            handleID: { handleID },
+            generation: { nil },
+            identity: { nil },
+            connectionState: { .connected },
+            isActive: { isActive },
+            activate: {},
+            ensureIdentity: { resolveIdentity?() },
+            refreshIdentity: { nil }
+        )
+        let resolvedPresentation = TmuxSessionPreviewCoordinator.Presentation(
+            key: key,
+            surface: { nil },
+            handleID: { handleID },
+            generation: { nil },
+            identity: { identity },
+            connectionState: { .connected },
+            isActive: { isActive },
+            activate: {},
+            refreshIdentity: { identity }
+        )
+        harness.coordinator.register(
+            pendingPresentation,
+            identityIsResolved: false
+        )
+        isActive = true
+        resolveIdentity = {
+            isActive = false
+            harness.coordinator.register(
+                resolvedPresentation,
+                identityIsResolved: true
+            )
+        }
+
+        harness.coordinator.captureBeforeDeactivation(key) {
+            harness.coordinator.presentationDidChange(key)
+        }
         await harness.coordinator.waitForPendingWork()
 
         #expect(harness.captures == [key])
@@ -1246,6 +1338,11 @@ enum DeferredNavigationDisposition: CaseIterable, Sendable {
     case close
     case replacement
     case unavailable
+}
+
+enum EfficientExpansionDeferral: CaseIterable, Sendable {
+    case sidebarHidden
+    case applicationInactive
 }
 
 private actor PreviewIntervalRecorder {

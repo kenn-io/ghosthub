@@ -20,6 +20,28 @@ struct TmuxSessionPreviewExpansionState: Equatable {
     }
 }
 
+struct TmuxSessionPreviewMountState {
+    private var mountIDsBySessionID: [String: Set<UUID>] = [:]
+
+    mutating func setMounted(
+        _ mounted: Bool,
+        sessionID: String,
+        mountID: UUID
+    ) -> Bool? {
+        let wasMounted = mountIDsBySessionID[sessionID]?.isEmpty == false
+        if mounted {
+            mountIDsBySessionID[sessionID, default: []].insert(mountID)
+        } else {
+            mountIDsBySessionID[sessionID]?.remove(mountID)
+            if mountIDsBySessionID[sessionID]?.isEmpty == true {
+                mountIDsBySessionID.removeValue(forKey: sessionID)
+            }
+        }
+        let isMounted = mountIDsBySessionID[sessionID]?.isEmpty == false
+        return wasMounted == isMounted ? nil : isMounted
+    }
+}
+
 enum TmuxSessionPreviewRowPresentation {
     static let placeholderAspectRatio =
         TerminalPreviewGeometry.placeholderAspectRatio
@@ -51,15 +73,20 @@ enum TmuxSessionPreviewRowPresentation {
 }
 
 struct TmuxSessionPreviewMountModifier: ViewModifier {
+    @State private var mountID = UUID()
     let session: WorkspaceTmuxSessionSelection
-    let onExpanded: (WorkspaceTmuxSessionSelection, Bool) -> Void
+    let onMountChanged: (
+        WorkspaceTmuxSessionSelection,
+        UUID,
+        Bool
+    ) -> Void
 
     func body(content: Content) -> some View {
         content.onAppear {
-            onExpanded(session, true)
+            onMountChanged(session, mountID, true)
         }
         .onDisappear {
-            onExpanded(session, false)
+            onMountChanged(session, mountID, false)
         }
     }
 }
@@ -408,6 +435,7 @@ struct WorkspaceSidebarView: View {
         WorkspaceSidebarReorderIndicator?
     @State private var tmuxPreviewExpansion =
         TmuxSessionPreviewExpansionState()
+    @State private var tmuxPreviewMountState = TmuxSessionPreviewMountState()
     @AppStorage("workspaceSidebarDisclosureStateV2")
     private var disclosureState = ""
     @AppStorage("workspaceSidebarCollapsedItems")
@@ -1721,7 +1749,7 @@ struct WorkspaceSidebarView: View {
                     preview
                         .modifier(TmuxSessionPreviewMountModifier(
                             session: tmuxSession,
-                            onExpanded: onTmuxSessionPreviewExpanded
+                            onMountChanged: tmuxSessionPreviewMountChanged
                         ))
                         .padding(.leading, 18)
                         .padding(.trailing, 8)
@@ -1731,6 +1759,19 @@ struct WorkspaceSidebarView: View {
                 }
             }
         )
+    }
+
+    private func tmuxSessionPreviewMountChanged(
+        _ session: WorkspaceTmuxSessionSelection,
+        mountID: UUID,
+        mounted: Bool
+    ) {
+        guard let expanded = tmuxPreviewMountState.setMounted(
+            mounted,
+            sessionID: session.id,
+            mountID: mountID
+        ) else { return }
+        onTmuxSessionPreviewExpanded(session, expanded)
     }
 
     static func activateTmuxSession(

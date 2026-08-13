@@ -69,39 +69,60 @@ struct WorkspaceSidebarViewTests {
     }
 
     @MainActor
-    @Test("collapsing an ancestor releases an expanded tmux preview")
-    func ancestorCollapseReleasesExpandedTmuxPreview() {
+    @Test("duplicate preview mounts release after their last ancestor collapses")
+    func duplicatePreviewMountsReleaseAfterLastAncestorCollapse() {
         let hostID = UUID()
         let session = WorkspaceTmuxSessionSelection(
             hostID: hostID,
             name: "opened"
         )
+        var mountState = TmuxSessionPreviewMountState()
         var mountedStates: [Bool] = []
-        let preview = AnyView(
+        let onMountChanged: (
+            WorkspaceTmuxSessionSelection,
+            UUID,
+            Bool
+        ) -> Void = { session, mountID, mounted in
+            if let expanded = mountState.setMounted(
+                mounted,
+                sessionID: session.id,
+                mountID: mountID
+            ) {
+                mountedStates.append(expanded)
+            }
+        }
+        let firstPreview = AnyView(
             Color.clear
                 .frame(height: 40)
                 .modifier(TmuxSessionPreviewMountModifier(
                     session: session,
-                    onExpanded: { _, expanded in
-                        mountedStates.append(expanded)
-                    }
+                    onMountChanged: onMountChanged
                 ))
         )
-        let hostingView = hostView(preview)
+        let secondPreview = AnyView(
+            Color.clear
+                .frame(height: 40)
+                .modifier(TmuxSessionPreviewMountModifier(
+                    session: session,
+                    onMountChanged: onMountChanged
+                ))
+        )
+        let firstHostingView = hostView(firstPreview)
+        let secondHostingView = hostView(secondPreview)
 
-        #expect(mountedStates.last == true)
+        #expect(mountedStates == [true])
 
-        hostingView.rootView = AnyView(EmptyView())
-        hostingView.layoutSubtreeIfNeeded()
+        firstHostingView.rootView = AnyView(EmptyView())
+        firstHostingView.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
 
-        #expect(mountedStates.last == false)
+        #expect(mountedStates == [true])
 
-        hostingView.rootView = preview
-        hostingView.layoutSubtreeIfNeeded()
+        secondHostingView.rootView = AnyView(EmptyView())
+        secondHostingView.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
 
-        #expect(mountedStates.last == true)
+        #expect(mountedStates == [true, false])
     }
 
     @MainActor
