@@ -534,6 +534,58 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertFalse(NSWindow.allowsAutomaticWindowTabbing)
     }
 
+    func testAdoptedWorkspaceTabRestoresParentFrameAfterHostingResize() async {
+        let delegate = ApplicationDelegate.forTesting()
+        let parent = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let visibleFrame = NSScreen.screens.first?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        parent.setFrame(
+            NSRect(
+                x: visibleFrame.minX + 40,
+                y: visibleFrame.minY + 40,
+                width: min(1200, visibleFrame.width - 80),
+                height: min(760, visibleFrame.height - 80)
+            ),
+            display: false
+        )
+        parent.tabbingIdentifier = WorkspaceWindowIdentity.tabbingIdentifier
+        let expectedFrame = parent.frame
+        var requestID: UUID?
+        delegate.openWorkspaceWindow = { state in
+            requestID = state.windowID
+        }
+        delegate.requestNewWorkspaceTab(from: parent)
+        let child = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        child.tabbingIdentifier = WorkspaceWindowIdentity.tabbingIdentifier
+
+        delegate.adoptWorkspaceWindowAsTabIfRequested(
+            child,
+            requestID: requestID
+        )
+        child.setFrame(
+            NSRect(x: 80, y: 120, width: 224, height: 200),
+            display: false
+        )
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+
+        XCTAssertEqual(parent.frame, expectedFrame)
+        XCTAssertEqual(child.frame, expectedFrame)
+    }
+
     func testLastWindowClosesWithoutRequestingTermination() {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: true

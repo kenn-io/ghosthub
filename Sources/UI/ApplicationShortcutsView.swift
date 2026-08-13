@@ -11,6 +11,7 @@ enum ApplicationShortcutReference {
     }
 
     static let systemShortcuts = ApplicationShortcutCatalog.fixedShortcuts
+        + ApplicationShortcutCatalog.nativeTabFallbackShortcuts
 }
 
 struct ApplicationShortcutsView: View {

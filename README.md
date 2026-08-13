@@ -208,6 +208,7 @@ page can expose those duplicate session rows.
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> | Open Command Palette |
 | <kbd>⌃</kbd><kbd>Tab</kbd> / <kbd>⌃</kbd><kbd>⇧</kbd><kbd>Tab</kbd> | Select the next / previous local sibling |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>[</kbd> / <kbd>]</kbd> | Select the previous / next native tab |
+| <kbd>⌘</kbd><kbd>1</kbd>–<kbd>8</kbd> / <kbd>⌘</kbd><kbd>9</kbd> | Select a numbered native tab / the last native tab |
 | <kbd>⌘</kbd><kbd>T</kbd> | Open a new workspace tab |
 | <kbd>⌘</kbd><kbd>N</kbd> | Open a new workspace window |
 | <kbd>⌘</kbd><kbd>B</kbd> | Show or hide the sidebar |

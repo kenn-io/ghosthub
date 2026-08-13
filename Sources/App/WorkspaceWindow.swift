@@ -130,6 +130,11 @@ private struct WindowFocusTracker: NSViewRepresentable {
         private var tabObservation: NSKeyValueObservation?
         private weak var applicationDelegate: ApplicationDelegate?
         private let requestID: UUID?
+        private let tabBadgeController = NativeTabBadgeController(
+            shortcuts: SettingsStore.shared.$shortcutPreferences
+                .map(\.resolved)
+                .eraseToAnyPublisher()
+        )
         let titlebarController: CompactWorkspaceTitlebarController
 
         init(
@@ -163,12 +168,14 @@ private struct WindowFocusTracker: NSViewRepresentable {
             window.tabbingIdentifier =
                 WorkspaceWindowIdentity.tabbingIdentifier
             NativeTabCommands.installBracketShortcuts()
+            tabBadgeController.install(on: window)
             tabObservation = window.observe(
                 \.tabbedWindows,
                 options: [.initial, .new]
             ) { [weak self] window, _ in
                 MainActor.assumeIsolated {
                     self?.titlebarController.install(on: window)
+                    self?.tabBadgeController.refresh()
                 }
             }
             applicationDelegate?
@@ -213,6 +220,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
         private func removeObservers() {
             tabObservation?.invalidate()
             tabObservation = nil
+            tabBadgeController.invalidate()
             for observer in observers {
                 NotificationCenter.default
                     .removeObserver(observer)

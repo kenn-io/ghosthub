@@ -106,4 +106,5 @@ public struct ShortcutPreferences: Equatable, Sendable {
         else { return nil }
         return TOMLConfigParser.unquoteTOMLString(raw)
     }
+
 }

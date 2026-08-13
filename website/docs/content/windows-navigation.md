@@ -39,10 +39,14 @@ Press Return to perform the selected action.
 
 - ++cmd+t++ opens a workspace tab in the current window.
 - ++cmd+n++ opens a separate workspace window.
+- ++cmd+1++ through ++cmd+8++ select numbered workspace tabs.
+- ++cmd+9++ selects the last workspace tab.
 
 Each can attach to a different local or remote tmux, Herdr, or Zellij session. Use the macOS
 **Window** menu to move a tab into its own window or merge windows into a native
-tab group.
+tab group. If a numbered shortcut is beyond the end of the current group, it
+selects the group's last tab. The tab bar shows the available numbered
+shortcuts and updates them when you reorder tabs.
 
 ## Close a presentation
 

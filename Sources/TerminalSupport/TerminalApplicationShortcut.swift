@@ -42,14 +42,17 @@ public enum TerminalApplicationShortcut {
         parsing: "cmd+w"
     )
 
-    private static let terminalFixedBindings = Set([
-        "cmd+q",
-        "cmd+,",
-        "cmd+n",
-        "cmd+t",
-        "cmd+w",
-        "cmd+shift+w",
-        "cmd+shift+[",
-        "cmd+shift+]",
-    ].map { try! ApplicationKeyBinding(parsing: $0) })
+    private static let terminalFixedBindings = Set(
+        ([
+            "cmd+q",
+            "cmd+,",
+            "cmd+n",
+            "cmd+t",
+            "cmd+w",
+            "cmd+shift+w",
+            "cmd+shift+[",
+            "cmd+shift+]",
+        ] + (1 ... 9).map { "cmd+\($0)" })
+            .map { try! ApplicationKeyBinding(parsing: $0) }
+    )
 }

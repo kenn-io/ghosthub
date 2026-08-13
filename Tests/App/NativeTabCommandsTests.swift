@@ -1,9 +1,153 @@
 import AppKit
+import GhosthubTerminalSupport
 import Testing
 @testable import GhosthubApp
 
 @MainActor
 struct NativeTabCommandsTests {
+    private final class Window {
+        var group: [Window] = []
+        var hasAttachedSheet = false
+        var isWorkspace = true
+    }
+
+    @Test(
+        "numbered shortcuts match Ghostty tab selection",
+        arguments: [
+            (1, 1, 0),
+            (3, 1, 0),
+            (3, 2, 1),
+            (3, 8, 2),
+            (3, 9, 2),
+        ]
+    )
+    func numberedSelection(
+        windowCount: Int,
+        shortcut: Int,
+        expectedIndex: Int
+    ) {
+        let windows = (0 ..< windowCount).map { _ in Window() }
+        windows.forEach { $0.group = windows }
+
+        let target = NativeTabCommands.target(
+            for: shortcut,
+            candidate: windows[0],
+            isWorkspace: \.isWorkspace,
+            hasAttachedSheet: \.hasAttachedSheet,
+            group: \.group
+        )
+
+        #expect(target === windows[expectedIndex])
+    }
+
+    @Test("numbered shortcuts stay within the candidate window group")
+    func keyWindowGroup() {
+        let firstGroup = (0 ..< 2).map { _ in Window() }
+        let secondGroup = (0 ..< 2).map { _ in Window() }
+        firstGroup.forEach { $0.group = firstGroup }
+        secondGroup.forEach { $0.group = secondGroup }
+
+        let target = NativeTabCommands.target(
+            for: 9,
+            candidate: firstGroup[0],
+            isWorkspace: \.isWorkspace,
+            hasAttachedSheet: \.hasAttachedSheet,
+            group: \.group
+        )
+
+        #expect(target === firstGroup[1])
+    }
+
+    @Test("attached sheets keep native tab selection modal")
+    func attachedSheet() {
+        let window = Window()
+        window.group = [window]
+        window.hasAttachedSheet = true
+
+        let target = NativeTabCommands.target(
+            for: 1,
+            candidate: window,
+            isWorkspace: \.isWorkspace,
+            hasAttachedSheet: \.hasAttachedSheet,
+            group: \.group
+        )
+
+        #expect(target == nil)
+    }
+
+    @Test("numbered shortcuts ignore non-workspace windows")
+    func nonWorkspaceWindow() {
+        let window = Window()
+        window.group = [window]
+        window.isWorkspace = false
+
+        let target = NativeTabCommands.target(
+            for: 1,
+            candidate: window,
+            isWorkspace: \.isWorkspace,
+            hasAttachedSheet: \.hasAttachedSheet,
+            group: \.group
+        )
+
+        #expect(target == nil)
+    }
+
+    @Test("configured application shortcuts supersede numbered tabs")
+    func configuredShortcutWins() throws {
+        let binding = try ApplicationKeyBinding(parsing: "cmd+1")
+        let shortcuts = try ApplicationShortcutCatalog.resolve(overrides: [
+            .selectSibling1: .binding(binding),
+        ])
+
+        #expect(NativeTabCommands.binding(
+            for: 1,
+            claimedBy: shortcuts
+        ) == nil)
+        #expect(NativeTabCommands.binding(
+            for: 2,
+            claimedBy: shortcuts
+        ) == (try ApplicationKeyBinding(parsing: "cmd+2")))
+    }
+
+    @Test("tab shortcut badges follow current native tab order")
+    func shortcutBadges() {
+        let windows = (0 ..< 10).map { _ in NSWindow() }
+
+        NativeTabCommands.refreshBadges(
+            in: windows,
+            availableShortcuts: [2, 3, 4, 5, 6, 7, 8, 9]
+        )
+
+        #expect(badgeText(in: windows[0]) == nil)
+        #expect(badgeText(in: windows[1]) == "⌘2")
+        #expect(badgeText(in: windows[7]) == "⌘8")
+        #expect(badgeText(in: windows[8]) == nil)
+        #expect(badgeText(in: windows[9]) == "⌘9")
+
+        NativeTabCommands.refreshBadges(in: windows.reversed())
+
+        #expect(badgeText(in: windows[9]) == "⌘1")
+        #expect(badgeText(in: windows[1]) == nil)
+        #expect(badgeText(in: windows[0]) == "⌘9")
+    }
+
+    @Test("tab shortcut badges refresh after AppKit reorders tabs")
+    func reorderedShortcutBadges() throws {
+        let windows = (0 ..< 3).map { _ in NSWindow() }
+        windows[0].addTabbedWindow(windows[1], ordered: .above)
+        windows[0].addTabbedWindow(windows[2], ordered: .above)
+        let controller = NativeTabBadgeController()
+        controller.install(on: windows[0])
+        let group = try #require(windows[0].tabGroup)
+        let movedWindow = group.windows[0]
+
+        group.insertWindow(movedWindow, at: group.windows.count - 1)
+
+        #expect(badgeText(in: group.windows[0]) == "⌘1")
+        #expect(badgeText(in: group.windows[1]) == "⌘2")
+        #expect(badgeText(in: group.windows[2]) == "⌘3")
+    }
+
     @Test("native tab commands use fixed bracket shortcuts")
     func bracketShortcuts() {
         let root = NSMenu()
@@ -49,5 +193,9 @@ struct NativeTabCommandsTests {
 
         #expect(item.keyEquivalent == "w")
         #expect(item.keyEquivalentModifierMask == .command)
+    }
+
+    private func badgeText(in window: NSWindow) -> String? {
+        (window.tab.accessoryView as? NSTextField)?.stringValue
     }
 }

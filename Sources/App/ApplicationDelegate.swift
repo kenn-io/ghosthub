@@ -234,9 +234,18 @@ final class ApplicationDelegate: NSObject,
         guard !WorkspaceWindowIdentity.group(containing: parent)
             .contains(where: { $0 === window })
         else { return }
+        let parentFrame = parent.frame
         parent.addTabbedWindow(window, ordered: .above)
         window.makeKeyAndOrderFront(nil)
         NativeTabCommands.installBracketShortcuts()
+        DispatchQueue.main.async { [weak parent, weak window] in
+            guard let parent,
+                  let window,
+                  let group = parent.tabGroup,
+                  group === window.tabGroup
+            else { return }
+            window.setFrame(parentFrame, display: true)
+        }
     }
 
     private func requestWorkspaceWindow(

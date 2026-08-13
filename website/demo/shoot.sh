@@ -392,8 +392,6 @@ prepare_command_tab() {
     demo_input new-tab
     sleep 2
   fi
-  demo_input frame "110,145,1500,820"
-  sleep 1
   palette "$query"
   sleep 3
   demo_input expect-window-title "$(expected_window_title "$query")"
@@ -403,6 +401,8 @@ prepare_command_tab() {
 echo "==> guide: six-tab tmux workspace"
 demo_input new-window
 sleep 2
+demo_input frame "110,145,1500,820"
+sleep 1
 # Palette commands are scoped to the controlled workspace, so tab selection
 # stays independent of every command-center window already on screen.
 prepare_command_tab "fix-reconnect-backoff" false

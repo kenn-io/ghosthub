@@ -17,6 +17,8 @@ Keyboard** to record, clear, or restore a Ghosthub shortcut.
 | Previous sibling | ++ctrl+shift+tab++ |
 | Previous native window tab | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>&#91;</kbd> |
 | Next native window tab | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>&#93;</kbd> |
+| Native window tab 1–8 | <kbd>⌘</kbd><kbd>1</kbd>–<kbd>8</kbd> |
+| Last native window tab | <kbd>⌘</kbd><kbd>9</kbd> |
 
 Sibling navigation is local to what you are currently using:
 
@@ -33,9 +35,12 @@ available, Ghosthub leaves the key event untouched so the active terminal can
 receive it. Stopped Herdr sessions are never started by a navigation shortcut.
 
 Numbered sibling actions 1–9 are available in Settings but are unbound by
-default. Unlike earlier alpha builds, Ghosthub does not capture
-<kbd>⌘</kbd><kbd>1</kbd> through <kbd>⌘</kbd><kbd>9</kbd> or
-<kbd>⌥</kbd><kbd>⌘</kbd><kbd>↑</kbd>/<kbd>↓</kbd> by default.
+default. When those keys are otherwise unbound, <kbd>⌘</kbd><kbd>1</kbd> through
+<kbd>⌘</kbd><kbd>8</kbd> select native tabs and <kbd>⌘</kbd><kbd>9</kbd> selects
+the last native tab. If the requested tab number is beyond the end of a short
+tab group, Ghosthub selects that group's last tab. An explicit Ghosthub
+shortcut assignment takes precedence, so you can use Command-number for
+numbered sibling navigation instead.
 
 ## Other defaults
 
@@ -56,7 +61,9 @@ in menus and the Command Palette but are unbound by default.
 Standard macOS commands are fixed rather than configurable in Ghosthub. These
 include Settings (++cmd+comma++), New Window (++cmd+n++), New Tab (++cmd+t++),
 Close (++cmd+w++), Close Window (++shift+cmd+w++), Quit (++cmd+q++), and the
-usual Edit shortcuts. The Keyboard pane lists them for reference.
+usual Edit shortcuts. Numbered native tabs (++cmd+1++ through ++cmd+9++) are
+fallbacks that yield to explicit Ghosthub shortcut assignments. The Keyboard
+pane lists both groups for reference.
 
 Closing a presentation, window, or the app detaches from tmux, Herdr, or Zellij. It does
 not end the session.
@@ -82,7 +89,7 @@ Shortcut overrides are also stored in
 [keyboard.shortcuts]
 next-sibling = "ctrl+tab"
 previous-sibling = "ctrl+shift+tab"
-select-sibling-1 = "cmd+1"
+select-sibling-1 = "cmd+opt+1"
 split-right = "none"
 ```
 

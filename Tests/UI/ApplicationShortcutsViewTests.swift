@@ -14,7 +14,7 @@ struct ApplicationShortcutsViewTests {
             == Set(ApplicationShortcutCatalog.definitions.map(\.action)))
     }
 
-    @Test("native tab references use only bracket shortcuts")
+    @Test("native tab references expose fixed tab shortcuts")
     func nativeTabReferences() {
         let system = Dictionary(uniqueKeysWithValues:
             ApplicationShortcutReference.systemShortcuts.map {
@@ -22,6 +22,9 @@ struct ApplicationShortcutsViewTests {
             })
         #expect(system["Previous Tab"] == "⇧⌘[")
         #expect(system["Next Tab"] == "⇧⌘]")
+        #expect(system["Select Tab 1"] == "⌘1")
+        #expect(system["Select Tab 8"] == "⌘8")
+        #expect(system["Select Last Tab"] == "⌘9")
         #expect(!system.values.contains("⌃⇥"))
     }
 }

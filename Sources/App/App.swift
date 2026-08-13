@@ -226,6 +226,26 @@ struct GhosthubApp: App {
                     NativeTabCommands.selectNext()
                 }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
+
+                Divider()
+
+                ForEach(1 ... 8, id: \.self) { shortcut in
+                    Button("Select Tab \(shortcut)") {
+                        NativeTabCommands.select(shortcut)
+                    }
+                    .keyboardShortcut(NativeTabCommands.binding(
+                        for: shortcut,
+                        claimedBy: settingsStore.shortcutPreferences.resolved
+                    )?.swiftUI)
+                }
+
+                Button("Select Last Tab") {
+                    NativeTabCommands.select(9)
+                }
+                .keyboardShortcut(NativeTabCommands.binding(
+                    for: 9,
+                    claimedBy: settingsStore.shortcutPreferences.resolved
+                )?.swiftUI)
             }
             #endif
         }
