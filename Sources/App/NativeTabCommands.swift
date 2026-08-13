@@ -4,16 +4,9 @@ import GhosthubTerminalSupport
 @MainActor
 final class NativeTabBadgeController {
     private weak var window: NSWindow?
-    private nonisolated(unsafe) var frameObservers: [NSObjectProtocol] = []
+    private weak var observedGroup: NSWindowTabGroup?
+    private nonisolated(unsafe) var groupObservation: NSKeyValueObservation?
     private var order: [ObjectIdentifier] = []
-    private let group: @MainActor (NSWindow) -> [NSWindow]
-
-    init(
-        group: @escaping @MainActor (NSWindow) -> [NSWindow] =
-            WorkspaceWindowIdentity.group
-    ) {
-        self.group = group
-    }
 
     func install(on window: NSWindow) {
         invalidate()
@@ -23,48 +16,38 @@ final class NativeTabBadgeController {
 
     func refresh() {
         guard let window else { return }
-        let windows = group(window)
+        updateGroupObservation(window.tabGroup)
+        let windows = WorkspaceWindowIdentity.group(containing: window)
         let newOrder = windows.map(ObjectIdentifier.init)
         guard newOrder != order else { return }
         order = newOrder
         NativeTabCommands.refreshBadges(in: windows)
-        updateFrameObservation(in: windows)
     }
 
-    private func updateFrameObservation(in windows: [NSWindow]) {
-        removeFrameObservers()
-        guard windows.count > 1 else { return }
-        frameObservers = windows.compactMap { window in
-            guard let accessoryView = window.tab.accessoryView else {
-                return nil
-            }
-            return NotificationCenter.default.addObserver(
-                forName: NSView.frameDidChangeNotification,
-                object: accessoryView,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.refresh()
-                }
+    private func updateGroupObservation(_ group: NSWindowTabGroup?) {
+        guard observedGroup !== group else { return }
+        groupObservation?.invalidate()
+        observedGroup = group
+        groupObservation = group?.observe(
+            \.windows,
+            options: [.new]
+        ) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                self?.refresh()
             }
         }
-    }
-
-    private nonisolated func removeFrameObservers() {
-        for observer in frameObservers {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        frameObservers = []
     }
 
     func invalidate() {
-        removeFrameObservers()
+        groupObservation?.invalidate()
+        groupObservation = nil
+        observedGroup = nil
         window = nil
         order = []
     }
 
     deinit {
-        removeFrameObservers()
+        groupObservation?.invalidate()
     }
 }
 
@@ -158,7 +141,6 @@ enum NativeTabCommands {
                     ofSize: NSFont.smallSystemFontSize
                 )
                 label.textColor = .labelColor
-                label.postsFrameChangedNotifications = true
                 label.setContentCompressionResistancePriority(
                     .windowSizeStayPut,
                     for: .horizontal

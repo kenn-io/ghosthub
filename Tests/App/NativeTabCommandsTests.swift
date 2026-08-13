@@ -10,14 +10,6 @@ struct NativeTabCommandsTests {
         var isWorkspace = true
     }
 
-    private final class WindowOrder {
-        var windows: [NSWindow]
-
-        init(_ windows: [NSWindow]) {
-            self.windows = windows
-        }
-    }
-
     @Test(
         "numbered shortcuts match Ghostty tab selection",
         arguments: [
@@ -118,23 +110,20 @@ struct NativeTabCommandsTests {
     }
 
     @Test("tab shortcut badges refresh after AppKit reorders tabs")
-    func reorderedShortcutBadges() {
-        let first = NSWindow()
-        let second = NSWindow()
-        let third = NSWindow()
-        let order = WindowOrder([first, second, third])
-        let controller = NativeTabBadgeController { _ in order.windows }
-        controller.install(on: first)
-        order.windows = [second, third, first]
+    func reorderedShortcutBadges() throws {
+        let windows = (0 ..< 3).map { _ in NSWindow() }
+        windows[0].addTabbedWindow(windows[1], ordered: .above)
+        windows[0].addTabbedWindow(windows[2], ordered: .above)
+        let controller = NativeTabBadgeController()
+        controller.install(on: windows[0])
+        let group = try #require(windows[0].tabGroup)
+        let movedWindow = group.windows[0]
 
-        NotificationCenter.default.post(
-            name: NSView.frameDidChangeNotification,
-            object: first.tab.accessoryView
-        )
+        group.insertWindow(movedWindow, at: group.windows.count - 1)
 
-        #expect(badgeText(in: second) == "⌘1")
-        #expect(badgeText(in: third) == "⌘2")
-        #expect(badgeText(in: first) == "⌘3")
+        #expect(badgeText(in: group.windows[0]) == "⌘1")
+        #expect(badgeText(in: group.windows[1]) == "⌘2")
+        #expect(badgeText(in: group.windows[2]) == "⌘3")
     }
 
     @Test("native tab commands use fixed bracket shortcuts")
