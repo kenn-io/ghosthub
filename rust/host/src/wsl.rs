@@ -1125,11 +1125,17 @@ impl<R: CommandRunner> WslHost<R> {
         let readiness_path = kwt_client_readiness_path()?;
         let readiness_staging_path = format!("{readiness_path}.tmp");
         let mut args = pinned_prefix(endpoint);
+        let kwt_home = self
+            .config
+            .kwt_home
+            .as_deref()
+            .map(|path| format!("KWT_HOME={path}"));
+        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
         append_tmux_environment(
             &mut args,
             Some(term.environment()),
             self.config.tmux_tmpdir.as_deref(),
-            &[],
+            &extra_environment,
         );
         args.extend(
             [
@@ -1349,6 +1355,10 @@ impl<R: CommandRunner> WslHost<R> {
     ///
     /// Returns an error when the WSL runtime changed, helper verification
     /// fails, or KWT rejects the exact path/generation pair.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "guarded removal keeps every independently captured authority explicit"
+    )]
     pub fn remove_kwt_worktree(
         &self,
         endpoint: &WslEndpoint,
@@ -1360,16 +1370,15 @@ impl<R: CommandRunner> WslHost<R> {
         live_target: Option<&LiveSessionTarget>,
         cancellation: &CancellationToken,
     ) -> Result<(), HostError> {
-        if let Some(target) = live_target {
-            if target.endpoint() != endpoint
+        if let Some(target) = live_target
+            && (target.endpoint() != endpoint
                 || target.runtime() != runtime
-                || target.name() != session_name
-            {
-                return Err(HostError::new(
-                    DiagnosticKind::Transport,
-                    "the confirmed worktree session identity changed",
-                ));
-            }
+                || target.name() != session_name)
+        {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "the confirmed worktree session identity changed",
+            ));
         }
         self.require_runtime(endpoint, runtime, cancellation)?;
         let bundle = self.config.kwt_bundle().ok_or_else(|| {
@@ -1475,7 +1484,18 @@ impl<R: CommandRunner> WslHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
         let mut args = pinned_prefix(endpoint);
-        append_tmux_environment(&mut args, None, self.config.tmux_tmpdir.as_deref(), &[]);
+        let kwt_home = self
+            .config
+            .kwt_home
+            .as_deref()
+            .map(|path| format!("KWT_HOME={path}"));
+        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        append_tmux_environment(
+            &mut args,
+            None,
+            self.config.tmux_tmpdir.as_deref(),
+            &extra_environment,
+        );
         args.extend(command.iter().map(OsString::from));
         self.run(&args, cancellation)
     }
@@ -1488,7 +1508,18 @@ impl<R: CommandRunner> WslHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
         let mut args = pinned_prefix(endpoint);
-        append_tmux_environment(&mut args, None, self.config.tmux_tmpdir.as_deref(), &[]);
+        let kwt_home = self
+            .config
+            .kwt_home
+            .as_deref()
+            .map(|path| format!("KWT_HOME={path}"));
+        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        append_tmux_environment(
+            &mut args,
+            None,
+            self.config.tmux_tmpdir.as_deref(),
+            &extra_environment,
+        );
         args.extend(command.iter().map(OsString::from));
         self.runner
             .run_with_input(
