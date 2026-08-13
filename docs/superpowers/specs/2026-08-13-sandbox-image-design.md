@@ -97,7 +97,12 @@ pullable. Only protected workflows may publish or promote.
 
 Candidate and production tag immutability is workflow-enforced policy, not a
 GHCR guarantee. A script accepts an existing tag only when it already resolves
-to the requested digest and otherwise fails without replacing it.
+to the requested digest and otherwise fails without replacing it. Every job
+that can publish or retag this package shares the repository-wide
+`sandbox-image-package-writer` concurrency group, queues without cancellation,
+rechecks the target tag immediately before mutation, and resolves it again
+afterward. The lock and final checks close the concurrent-writer race that a
+standalone check-before-write cannot prevent.
 
 The image carries standard OCI source, revision, version, and description
 labels. A candidate's source label, provenance attestation, tag, version, and
@@ -231,26 +236,46 @@ The approved order is:
 1. Vet the exact candidate digest locally.
 2. Prepare `SANDBOX_IMAGE` and its canonical report on a task branch.
 3. Open or update a pull request and push a clean commit containing both.
-4. Dispatch promotion from that exact pushed commit, candidate digest, and
-   requested image version.
-5. CI verifies the digest, candidate tag, source/version identity, provenance,
-   SBOM attestation, committed report binding, and vulnerability dispositions.
+4. Dispatch the promotion workflow from `main`, passing the exact pushed task
+   commit, candidate digest, and requested image version as inputs.
+5. The `main`-pinned workflow and tooling verify that the input commit is the
+   current head of one open pull request targeting `main`, that its source diff
+   contains only `SANDBOX_IMAGE` and the canonical report, and that the digest,
+   candidate tag, source/version identity, provenance, SBOM attestation,
+   committed report binding, and vulnerability dispositions agree. It reads
+   the pin and report from that commit strictly as data; it never checks out or
+   executes task-branch code.
 6. The human performs one protected GitHub environment approval.
-7. The workflow adds `vX.Y.Z` to the already-vetted digest without rebuilding
-   and verifies that it resolves to the digest in `SANDBOX_IMAGE`.
-8. The report-and-pin pull request merges. The merged digest-only pin becomes
+7. After approval, the workflow rechecks that the input commit is still the
+   pull request head, enters the shared package-writer group, rechecks both
+   aliases, adds `vX.Y.Z` to the already-vetted digest without rebuilding, and
+   verifies that it resolves to the digest in `SANDBOX_IMAGE`.
+8. Promotion records required `sandbox-image-promotion` success on that exact
+   pull-request head. The report-and-pin pull request may merge only while that
+   status is required and current; the merged digest-only pin then becomes
    Ghosthub's runtime authority.
+
+A `pull_request_target` gate from `main` records that status as pending for any
+pull request whose complete diff touches `SANDBOX_IMAGE` or a canonical image
+report. It never checks out or executes pull-request code. The promotion
+workflow is the only path that changes the pending status to success after the
+production alias verifies. The same gate records success immediately for
+unrelated pull requests, so making the context a default-branch requirement
+does not add sandbox-image steps to ordinary development. The first production
+promotion must add the context to the default-branch ruleset after its first
+successful status and before the pin merges; subsequent runs verify that
+protection is still active.
 
 Hosted CI cannot rerun the Apple-silicon `Virtualization.framework` runtime
 check. Promotion validates the committed local evidence; it does not claim to
 re-vet runtime behavior.
 
-The production alias may exist briefly before the pin pull request merges. If
-that pull request changes in any material way after promotion, it may not
-reuse or repoint the immutable production alias. The developer advances the
-image version and repeats vetting and promotion. An unmerged production alias
-never becomes Ghosthub runtime authority because `SANDBOX_IMAGE` remains
-unchanged on `main`.
+The production alias may exist briefly before the pin pull request merges. A
+new pull-request commit has no promotion success status and is therefore
+unmergeable. It may not reuse or repoint the immutable production alias; the
+developer advances the image version and repeats vetting and promotion. An
+unmerged production alias never becomes Ghosthub runtime authority because
+`SANDBOX_IMAGE` remains unchanged on `main`.
 
 ### Weekly maintenance
 
@@ -268,8 +293,11 @@ path are tested before the weekly schedule is trusted.
 
 All workflows use SHA-pinned actions, `persist-credentials: false`, minimal
 permissions, and `id-token: write` only in jobs that create attestations. They
-must pass zizmor. Digest authority plus GitHub's signed provenance and SBOM
-attestations is sufficient for version 1; separate cosign signing is deferred.
+must pass zizmor. Privileged promotion always executes the workflow and
+implementation pinned by `main`; the status gate also comes from `main`, and
+task-branch files are inert evidence only. Digest authority plus GitHub's
+signed provenance and SBOM attestations is sufficient for version 1; separate
+cosign signing is deferred.
 
 ## Operator Interface
 
@@ -318,16 +346,18 @@ commit, push, promote, or merge.
 ### `promote`
 
 Require a clean task branch whose exact HEAD is already pushed and contains
-the matching report and pin. Dispatch the protected workflow against that
-commit. The command itself does not approve the environment or merge the pull
-request.
+the matching report and pin. Dispatch the protected workflow from `main` with
+that commit as the evidence input. The command itself does not approve the
+environment, grant the required head status, or merge the pull request.
 
 ### `status`
 
 Report source version, pinned digest, candidate and production aliases,
 attestations, report state, disposition state, weekly-scan state, and whether
 refresh, vetting, promotion, or pin work remains. Once promoted, it requires
-the `vX.Y.Z` alias to resolve to the pinned digest.
+the `vX.Y.Z` alias to resolve to the pinned digest and the default-branch
+ruleset to require `sandbox-image-promotion` on the current pin pull-request
+head until merge.
 
 ### `clean`
 
@@ -378,7 +408,11 @@ promotion can prove that the evidence and current policy agree.
 - An existing tag with the requested digest is idempotent; an existing tag
   with another digest is a hard conflict.
 - Promotion refuses a dirty tree, an unpushed commit, a commit other than the
-  report-and-pin commit, or evidence produced for another digest.
+  current report-and-pin pull-request head, a source diff outside the pin and
+  canonical report, or evidence produced for another digest.
+- Candidate publication and promotion serialize every package mutation,
+  recheck tag state inside the shared lock, and verify the resulting tag before
+  reporting success.
 - Cleanup runs after successful and failed vetting. Unremoved managed residue
   is visible in `status` and removable with `clean`.
 - Unknown provider resources are never adopted or deleted.
@@ -416,11 +450,12 @@ After it merges, its `main` commit publishes the first candidate.
 
 The developer uses the supported lifecycle to vet the candidate, creates a
 task branch containing its report and `SANDBOX_IMAGE`, opens the second pull
-request, and pushes the exact commit. Promotion is dispatched from that task
-branch commit. After the environment approval and production-tag check, the
-pull request merges. This dogfoods the release process on its first use while
-preserving the rule that task work never commits or pushes directly to
-`main`.
+request, and pushes the exact commit. Promotion is dispatched from the trusted
+`main` workflow with the task commit as inert evidence. After environment
+approval, production-tag verification, and the required promotion status on
+that exact pull-request head, the pull request merges. This dogfoods the
+release process on its first use while preserving the rule that task work
+never commits or pushes directly to `main`.
 
 The merged pin unblocks the Apple provider-contract implementation in `3ed9`.
 
@@ -446,6 +481,11 @@ Acceptance requires:
 - A real Stop/Start preserves both the home marker and installed marker
   package.
 - Candidate and production tags resolve to the pinned digest.
+- Candidate and promotion writer jobs use the shared non-canceling package
+  queue, and neither reports success until its alias resolves back to the
+  intended digest.
+- The default-branch ruleset requires `sandbox-image-promotion`; the exact pin
+  pull-request head has success, and a different head does not inherit it.
 - An anonymous pull by digest succeeds.
 - `status` reports a fully promoted, current image.
 - `clean` leaves no managed vetting fixtures.

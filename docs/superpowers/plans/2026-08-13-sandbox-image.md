@@ -4,7 +4,7 @@
 
 **Goal:** Publish and vet the lean Ghosthub-owned Apple sandbox image, then land its exact digest as the build-time runtime authority consumed by later provider work.
 
-**Architecture:** A repository-owned Python CLI owns validation, reports, registry orchestration, and local Apple vetting behind short Make targets. BuildKit produces one `linux/arm64` OCI digest, Trivy 0.73.0 produces the SPDX JSON software bill of materials (SBOM) and vulnerability report, and protected GitHub workflows attest and retag that same digest without rebuilding. The implementation is intentionally split by a merge boundary: changeset one lands the publishing machinery and emits a candidate; changeset two commits the candidate's local vetting report plus the tag-free `SANDBOX_IMAGE` digest and promotes from that exact task-branch commit.
+**Architecture:** A repository-owned Python CLI owns validation, reports, registry orchestration, and local Apple vetting behind short Make targets. BuildKit produces one `linux/arm64` OCI digest, Trivy 0.73.0 produces the SPDX JSON software bill of materials (SBOM) and vulnerability report, and protected GitHub workflows attest and retag that same digest without rebuilding. The implementation is intentionally split by a merge boundary: changeset one lands the publishing machinery and emits a candidate; changeset two commits the candidate's local vetting report plus the tag-free `SANDBOX_IMAGE` digest, then asks the `main`-pinned promotion implementation to consume that exact task-branch commit only as inert evidence.
 
 **Tech Stack:** Python 3.11+, pytest 8.4.1, ruff 0.16.3, ty 0.0.71, Docker Buildx/BuildKit, Ubuntu 26.04 LTS, Trivy 0.73.0, GitHub Container Registry (GHCR), GitHub artifact attestations, Apple `container` 1.2.2, Make, Zensical, zizmor 1.29.0.
 
@@ -18,6 +18,7 @@
 - Use `/bin/sleep infinity` as the inert image command. Apple provider creation supplies `--init`; interactive exec supplies `--user ghosthub`.
 - `SANDBOX_IMAGE` contains only `ghcr.io/kenn-io/ghosthub-sandbox@sha256:<64 lowercase hex>`; no tag or duplicated Swift/workflow literal is runtime authority.
 - Candidate tags are `candidate-<full-source-commit>`, production tags are `vX.Y.Z`, and no `latest` tag exists. The scripts refuse to replace any existing tag that names another digest.
+- Every candidate or production writer uses the same repository-wide `sandbox-image-package-writer` concurrency group with `cancel-in-progress: false` and `queue: max`; it rechecks the target tag inside that lock immediately before mutation and verifies it afterward.
 - GHCR creates the first package as private. After the first candidate publish,
   an organization owner must perform the one-time, irreversible **Change
   visibility → Public** action in package settings. `status` detects private or
@@ -25,6 +26,8 @@
   vetted or pinned until anonymous digest pull succeeds. This bootstrap action
   is separate from the one approval required by each production promotion.
 - Pull requests publish nothing. Only an `images/sandbox/**` change merged to `main` publishes a candidate. Promotion retags the vetted digest and never rebuilds it.
+- Promotion dispatches the workflow from `main`. Its exact task-branch input is data only: no privileged job checks out, imports, sources, or executes code from that commit.
+- A `pull_request_target` gate from `main` sets `sandbox-image-promotion` pending on report/pin pull-request heads and success on unrelated pull-request heads without checking out branch code. Promotion grants success only after the production alias is verified. The context is required by the default-branch ruleset, so a later push has no promotion success and cannot merge while ordinary pull requests remain frictionless.
 - Fixable Critical or High findings block. An unfixed Critical or High requires an unexpired reviewed entry in `images/sandbox/vulnerability-dispositions.json`. Medium and Low remain visible.
 - No lifecycle command commits, pushes, merges, approves an environment, changes app release version, or mutates unrelated provider resources.
 - Provider/registry/scanner behavior is exercised at the live seams. Unit tests cover only Ghosthub-owned parsing, binding, policy, report, and orchestration decisions.
@@ -51,7 +54,7 @@
 - Create `tools/sandbox_image/docker.py`: Buildx and registry command construction.
 - Create `tools/sandbox_image/trivy.py`: pinned Trivy installation, SBOM, scan, and scan parsing.
 - Create `tools/sandbox_image/apple.py`: Apple `container` fixture lifecycle and runtime vetting.
-- Create `tools/sandbox_image/github.py`: attestation verification and exact-commit promotion dispatch.
+- Create `tools/sandbox_image/github.py`: attestation verification, trusted-main promotion dispatch, pull-request-head binding, and exact-head status publication.
 - Create `tools/sandbox_image/report.py`: canonical report creation, loading, and validation.
 - Create `tools/sandbox_image/commands.py`: `check`, `refresh`, `vet`, `pin`, `promote`, `status`, and `clean` orchestration.
 - Create `tools/sandbox_image.py`: stable command-line entry point.
@@ -59,6 +62,7 @@
 - Create `Tests/test_sandbox_image_policy.py`: disposition and tag decisions.
 - Create `Tests/test_sandbox_image_commands.py`: owned command-orchestration behavior.
 - Create `.github/workflows/sandbox-image.yml`: publish-nothing pull-request check and candidate publication.
+- Create `.github/workflows/sandbox-image-promotion-gate.yml`: trusted exact-head promotion status gate.
 - Create `.github/workflows/sandbox-image-promote.yml`: protected exact-digest retag.
 - Create `.github/workflows/sandbox-image-maintenance.yml`: scheduled/manual rescan and drift report.
 - Modify `pyproject.toml`: pin ruff and ty in the development dependency group and configure both.
@@ -602,6 +606,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 `check` builds, runs the real image contract as `ghosthub`, creates SBOM and vulnerability artifacts, and applies policy. `refresh` resolves the current official Ubuntu 26.04 arm64 manifest and a current UTC snapshot, validates both, and edits only the three input files. `status` prints one concise table and exits nonzero only when operator action is required.
 
+Once a production alias exists, `status` also reads the active default-branch
+ruleset and fails with the exact settings URL unless
+`sandbox-image-promotion` is required from GitHub Actions. While a pin pull
+request is open, it reports whether that exact head has promotion success.
+
 - [ ] **Step 6: Add lifecycle and scoped Python quality gates**
 
 Add `.PHONY`, help, and recipes:
@@ -818,9 +827,12 @@ str, version: str) -> None`; `docker.py` exposes `assert_tag_available(tag:
 str, digest: str) -> Literal["create", "already-correct"]`.
 
 Require candidate tag, OCI source/revision/version labels, source commit, and
-manifest digest to agree. The publish path logs into GHCR only inside CI and
-never prints the token. After first publication, `status` reads package
-metadata through `gh api /orgs/kenn-io/packages/container/ghosthub-sandbox`.
+manifest digest to agree. Call `assert_tag_available` once during preflight and
+again inside the writer lock immediately before publication, then resolve the
+published candidate tag and require the registry-reported digest afterward.
+The publish path logs into GHCR only inside CI and never prints the token.
+After first publication, `status` reads package metadata through
+`gh api /orgs/kenn-io/packages/container/ghosthub-sandbox`.
 If visibility is not `public`, it reports a blocked bootstrap state and prints
 `https://github.com/orgs/kenn-io/packages/container/ghosthub-sandbox/settings`.
 The workflow does not attempt to bypass GitHub's owner-controlled,
@@ -854,6 +866,22 @@ permissions:
   id-token: write
   attestations: write
 ```
+
+The publication job, rather than the pull-request check job, uses the same
+cross-workflow writer lock as promotion:
+
+```yaml
+concurrency:
+  group: sandbox-image-package-writer
+  cancel-in-progress: false
+  queue: max
+```
+
+Do not prefix the group with the workflow name: candidate and production
+writers must contend on one repository-wide lock. The tag availability check
+runs again after this job acquires the lock and immediately before the push;
+the job resolves the candidate tag back to the registry-reported digest before
+attesting or succeeding.
 
 It logs into `ghcr.io` with `github.actor` and `GITHUB_TOKEN`, invokes the same Python/Make build path with candidate tag `candidate-${{ github.sha }}`, captures the registry-reported digest, and uses SHA-pinned `actions/attest` twice:
 
@@ -901,6 +929,7 @@ Publish attested sandbox candidates
 ### Task 7: Add Exact-Commit Promotion and Weekly Maintenance
 
 **Files:**
+- Create: `.github/workflows/sandbox-image-promotion-gate.yml`
 - Create: `.github/workflows/sandbox-image-promote.yml`
 - Create: `.github/workflows/sandbox-image-maintenance.yml`
 - Modify: `tools/sandbox_image/github.py`
@@ -910,8 +939,8 @@ Publish attested sandbox candidates
 - Modify: `Makefile`
 
 **Interfaces:**
-- Consumes: a pushed task-branch commit containing matching `SANDBOX_IMAGE` and canonical report, plus `VERSION` and candidate digest.
-- Produces: `vX.Y.Z` alias on that digest and scheduled/manual read-only production-health results.
+- Consumes: a pushed task-branch commit containing matching `SANDBOX_IMAGE` and canonical report, plus `VERSION` and candidate digest, as inert evidence for the `main`-pinned workflow and tooling.
+- Produces: `vX.Y.Z` alias on that digest, required `sandbox-image-promotion` success on the exact pull-request head, and scheduled/manual read-only production-health results.
 
 - [ ] **Step 1: Write failing promotion-preflight tests**
 
@@ -920,11 +949,15 @@ Cover:
 - dirty worktree rejection;
 - detached/default branch rejection;
 - local HEAD not equal to its upstream rejection;
-- workflow ref not equal to exact HEAD rejection;
+- dispatch ref other than `main` rejection;
+- evidence commit not equal to the current head of exactly one open pull request targeting `main` rejection;
+- evidence diff containing anything except `SANDBOX_IMAGE` and its canonical report rejection;
+- promotion-gate path decisions from the pull request's complete changed-file set: pending for a pin or report change, success otherwise;
 - report, pin, version, source commit, candidate digest, and candidate tag mismatch rejection;
 - an existing correct production tag is idempotent;
 - an existing conflicting production tag is never replaced;
-- a post-promotion report/pin commit change requires a new version.
+- a post-promotion report/pin commit change has no promotion status and requires a new version;
+- status success targets the exact evidence commit only after the production tag verifies.
 
 - [ ] **Step 2: Implement `promote` and the promotion workflow**
 
@@ -939,15 +972,53 @@ sandbox-image-promote:
 ```
 
 The command runs local preflight and dispatches
-`sandbox-image-promote.yml --ref <upstream-task-branch>` with explicit
-`commit=<exact-HEAD>`, digest, and version inputs. The workflow first requires
-`github.sha == inputs.commit`, checks out `inputs.commit`, and requires the
-checked-out `HEAD` to match again. A branch movement between preflight and
-dispatch therefore fails instead of promoting different evidence. It then
-verifies all bindings and both attestations before reaching environment
-`sandbox-image-production`. Only the retag job receives `packages: write`; it
-logs into GHCR, refuses conflicts, adds `vX.Y.Z` to the existing digest without
-a build, and resolves the tag back to the pin before succeeding.
+`sandbox-image-promote.yml --ref main` with explicit
+`evidence_commit=<exact-task-HEAD>`, digest, and version inputs. The workflow
+checks out only its triggering `main` commit and executes only that trusted
+Python implementation. It uses the GitHub API and Git object reads to require
+that `evidence_commit` is still the current head of exactly one open pull
+request targeting `main`, that the pull request diff contains exactly
+`SANDBOX_IMAGE` and the canonical report for the input digest, and that the
+two blobs match every identity and policy binding. Never check out, import,
+source, or invoke a path from `evidence_commit`.
+
+The trusted pull-request gate has already recorded
+`sandbox-image-promotion` as pending on `evidence_commit`. After environment
+approval, promotion rechecks the pull-request head and evidence bindings. Only
+the retag job receives `packages: write` and `statuses: write`; it uses the
+same repository-wide lock as candidate publication:
+
+```yaml
+concurrency:
+  group: sandbox-image-package-writer
+  cancel-in-progress: false
+  queue: max
+```
+
+Inside the lock it logs into GHCR, rechecks both candidate and production tag
+state immediately before mutation, refuses conflicts, adds `vX.Y.Z` to the
+existing digest without a build, and resolves both aliases back to the pin.
+Only after those checks pass does it set `sandbox-image-promotion` success on
+the exact `evidence_commit`; failures set that same context to failure. The
+default-branch ruleset requires this status for the report-and-pin pull
+request, so any subsequent push is a new head without promotion success and
+cannot merge. On the first release, configure the required context after the
+first successful promotion status and before merging the pin, binding its
+expected source to GitHub Actions. Later promotion preflight and `status`
+require that protection to remain active.
+
+`.github/workflows/sandbox-image-promotion-gate.yml` uses
+`pull_request_target` and the trusted default-branch workflow definition. Give
+it only `contents: read`, `pull-requests: read`, and `statuses: write`. It
+queries the pull request's complete paginated changed-file list through the
+GitHub API and never checks out or executes pull-request content. If any path is
+`SANDBOX_IMAGE` or below `images/sandbox/reports/`, it sets
+`sandbox-image-promotion` pending on the exact head SHA unless that same SHA
+already carries success; otherwise it sets the context success immediately.
+Preserving success makes close/reopen and other no-new-commit events
+idempotent. This lets the context be required globally without adding a
+sandbox-image action to ordinary pull requests. Promotion is the only trusted
+workflow path that changes a relevant head from pending to success.
 
 - [ ] **Step 3: Implement read-only weekly maintenance**
 
@@ -983,7 +1054,11 @@ make sandbox-image-python-typecheck
 make python-test
 ```
 
-Expected: all pass. Inspect permissions with `rg -n 'permissions:|id-token:|packages:' .github/workflows/sandbox-image*.yml` and confirm the narrow scopes above.
+Expected: all pass. Inspect permissions with
+`rg -n 'permissions:|id-token:|packages:|statuses:|concurrency:|queue:'
+.github/workflows/sandbox-image*.yml` and confirm the narrow scopes and shared
+writer group above. Confirm the promotion workflow dispatch ref is `main` and
+that no command executes a file from the evidence commit.
 
 - [ ] **Step 5: Commit promotion and maintenance**
 
@@ -1190,7 +1265,7 @@ Push the branch and open/update its pull request only with explicit user authori
 
 **Interfaces:**
 - Consumes: exact pushed task-branch HEAD, candidate digest, image `VERSION`, report, pin, and attestations.
-- Produces: workflow-enforced immutable `vX.Y.Z` alias on the pinned digest and one trusted weekly-maintenance run.
+- Produces: workflow-enforced immutable `vX.Y.Z` alias, required promotion status on the exact pin pull-request head, and one trusted weekly-maintenance run.
 
 - [ ] **Step 1: Verify the task branch is promotion-eligible**
 
@@ -1214,9 +1289,26 @@ make sandbox-image-promote \
   VERSION=$(tr -d '[:space:]' < images/sandbox/VERSION)
 ```
 
-Expected: the command dispatches the workflow against exact `HEAD` and prints the single `sandbox-image-production` approval action. Perform that human environment approval. Do not run registry retag commands manually.
+Expected: the command dispatches the trusted workflow from `main`, passes exact
+`HEAD` as inert evidence, and prints the single `sandbox-image-production`
+approval action. Perform that human environment approval. Confirm the workflow
+still identifies exact `HEAD` as the pull request head after approval. Do not
+run registry retag commands manually.
 
-- [ ] **Step 3: Verify production identity and anonymous consumption**
+- [ ] **Step 3: Require the exact-head promotion status**
+
+On the first release, after promotion has reported
+`sandbox-image-promotion` success, add that context to the active
+default-branch ruleset and bind its expected source to GitHub Actions. This is
+a one-time repository setting, not a per-release click. On every release,
+verify the current pull-request head shows that required success before
+continuing; a newer head must remain pending until promoted independently.
+
+Expected: this exact task-branch HEAD is mergeable with respect to
+`sandbox-image-promotion`, while an unrelated pull request receives immediate
+success from the trusted gate and requires no sandbox-image operator action.
+
+- [ ] **Step 4: Verify production identity and anonymous consumption**
 
 After the workflow completes, run:
 
@@ -1228,13 +1320,13 @@ container image pull --platform linux/arm64 "$(tr -d '[:space:]' < SANDBOX_IMAGE
 
 Expected: candidate and `vX.Y.Z` resolve to the pin, both attestations verify, and anonymous digest pull succeeds.
 
-- [ ] **Step 4: Manually dispatch weekly maintenance before trusting the schedule**
+- [ ] **Step 5: Manually dispatch weekly maintenance before trusting the schedule**
 
 Run the repository-owned status/promote tooling's printed workflow command or the documented GitHub UI action for `sandbox-image-maintenance.yml` against the freshly pinned digest. This is the one allowed human workflow dispatch at acceptance; no source mutation occurs.
 
 Expected: the real pinned digest either passes or fails loudly with the documented job summary and retained vulnerability JSON. If an alarm condition is tested synthetically, use a workflow input that alters policy evaluation only; never retag or publish a synthetic image.
 
-- [ ] **Step 5: Run the final changeset-two gate**
+- [ ] **Step 6: Run the final changeset-two gate**
 
 Invoke `superpowers:verification-before-completion`, then run fresh:
 
@@ -1249,12 +1341,18 @@ git diff --check origin/main...HEAD
 git diff --name-only origin/main...HEAD | rg 'docs/superpowers/' && exit 1 || true
 ```
 
-Expected: all gates pass, status reports a fully promoted current image, and no planning artifact is in the pull-request diff.
+Expected: all gates pass, status reports a fully promoted current image and an
+active required promotion context for exact `HEAD`, and no planning artifact
+is in the pull-request diff.
 
-- [ ] **Step 6: Merge the pin pull request through the human review path**
+- [ ] **Step 7: Merge the pin pull request through the human review path**
 
-Do not merge unless the user authorizes it. After merge, verify `main` contains the same `SANDBOX_IMAGE` and report that were promoted. If the pull request changed after promotion, do not merge it under the existing `vX.Y.Z`; advance `VERSION` and repeat Phase B.
+Do not merge unless the user authorizes it. Immediately before merge, require
+`sandbox-image-promotion` success on the current head. After merge, verify
+`main` contains the same `SANDBOX_IMAGE` and report that were promoted. If the
+pull request changed after promotion, do not merge it under the existing
+`vX.Y.Z`; advance `VERSION` and repeat Phase B.
 
-- [ ] **Step 7: Update Kata without closing provider work**
+- [ ] **Step 8: Update Kata without closing provider work**
 
 Comment on `8ems` with the candidate tag/digest, production tag, report path, promotion run, maintenance run, and verification results. Close `8ems` only when both changesets are merged and the production pin is on `main`. Leave `3ed9` open and unblocked for provider implementation; do not mark the sandbox epic complete.
