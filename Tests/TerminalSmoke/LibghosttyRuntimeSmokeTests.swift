@@ -230,6 +230,83 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         }
     }
 
+    func testBundledGhosttyThemeResolvesByName() throws {
+        try skipUnlessLibghosttyReady()
+        let resources = try XCTUnwrap(
+            LibghosttyEmbeddedResourcesLocator.configureEnvironmentIfNeeded(),
+            "The emitted libghostty resources must be discoverable"
+        )
+        let themeName = "Catppuccin Macchiato"
+        let theme = resources
+            .appendingPathComponent("themes", isDirectory: true)
+            .appendingPathComponent(themeName)
+        let colors = try themeColors(at: theme)
+
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "theme = \(themeName)\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        Self.retainedConditionalThemeRuntimes.append(runtime)
+
+        XCTAssertEqual(runtime.phase, .ready)
+        XCTAssertFalse(
+            runtime.diagnostics.contains { $0.contains(themeName) },
+            """
+            A bundled theme name must resolve against the shipped corpus, \
+            not report tried paths: \(runtime.diagnostics)
+            """
+        )
+
+        let coordinator = TerminalSurfaceCoordinator(runtime: runtime)
+        Self.retainedConditionalThemeCoordinators.append(coordinator)
+        let view = try XCTUnwrap(coordinator.surface(
+            for: SurfaceKey.fixture(leafID: UUID()),
+            configuration: TerminalSurfaceConfiguration()
+        ))
+        view.appearance = NSAppearance(named: .aqua)
+        let window = hostInWindow(view)
+        Self.retainedConditionalThemeWindows.append(window)
+        let identity = try XCTUnwrap(view.surfaceIdentity)
+
+        waitUntil {
+            runtime.resolvedTerminalColors(
+                forSurfaceIdentity: identity
+            ) == colors
+        }
+    }
+
+    /// The bundled corpus is upstream data, so read the expected colors from
+    /// the theme itself rather than pinning its palette in the test.
+    private func themeColors(at url: URL) throws -> TerminalResolvedColors {
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        func value(of key: String) throws -> String {
+            let line = try XCTUnwrap(
+                contents.split(separator: "\n").first {
+                    $0.hasPrefix("\(key) = ")
+                },
+                "\(url.lastPathComponent) should declare \(key)"
+            )
+            return line
+                .dropFirst("\(key) = ".count)
+                .trimmingCharacters(in: .whitespaces)
+                .uppercased()
+        }
+        return TerminalResolvedColors(
+            foreground: try value(of: "foreground"),
+            background: try value(of: "background")
+        )
+    }
+
     func testLateSurfaceRegistrationPublishesResolvedColors() throws {
         try skipUnlessLibghosttyReady()
         let (pipeline, tempRoot) = makeIsolatedPipeline()

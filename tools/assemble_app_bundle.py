@@ -12,6 +12,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
+from libghostty_bootstrap import share_tree_problem
 from stage_release_app_bundles import stage_bundles
 
 
@@ -19,6 +20,20 @@ SPARKLE_FEED_URL = (
     "https://github.com/kenn-io/ghosthub/releases/latest/download/appcast.xml"
 )
 SPARKLE_PUBLIC_ED_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
+
+# libghostty locates its resources by climbing from the running executable and
+# looking for compiled terminfo beside them, so both trees must land directly
+# under Contents/Resources with their emitted names. Without `ghostty/themes`
+# every `theme = <name>` resolves only against ~/.config/ghostty/themes.
+LIBGHOSTTY_RESOURCE_TREES = ("ghostty", "terminfo")
+
+
+def resolve_libghostty_resource_trees(share_dir: Path) -> dict[str, Path]:
+    """Validate the emitted libghostty `share` tree before staging it."""
+    problem = share_tree_problem(share_dir)
+    if problem is not None:
+        raise ValueError(f"libghostty share directory is incomplete: {problem}")
+    return {name: share_dir / name for name in LIBGHOSTTY_RESOURCE_TREES}
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--app-license-path", required=True, type=Path)
     parser.add_argument("--kwt-binary", required=True, type=Path)
     parser.add_argument("--kwt-variants-dir", required=True, type=Path)
+    parser.add_argument("--libghostty-share-dir", required=True, type=Path)
     parser.add_argument(
         "--third-party-licenses-dir", required=True, type=Path
     )
@@ -67,6 +83,7 @@ def assemble_app_bundle(
     app_license_path: Path,
     kwt_binary: Path,
     kwt_variants_dir: Path,
+    libghostty_share_dir: Path,
     third_party_licenses_dir: Path,
     copyright: str,
     kwt_version: str,
@@ -97,6 +114,9 @@ def assemble_app_bundle(
             "kwt variants directory is incomplete: "
             + ", ".join(missing_remote_helpers)
         )
+    libghostty_resource_trees = resolve_libghostty_resource_trees(
+        libghostty_share_dir
+    )
     third_party_license_paths = sorted(
         path for path in third_party_licenses_dir.iterdir() if path.is_file()
     )
@@ -140,6 +160,11 @@ def assemble_app_bundle(
         # them non-executable avoids treating foreign ELF and Mach-O payloads
         # as nested app code; the remote installer applies mode 0755.
         destination.chmod(0o644)
+
+    for name, source in libghostty_resource_trees.items():
+        # tic can emit terminfo aliases as symlinks, so preserve links rather
+        # than fanning them out into duplicate sealed resources.
+        shutil.copytree(source, resources_dir / name, symlinks=True)
 
     sparkle_framework = source_bin_dir / "Sparkle.framework"
     if not sparkle_framework.is_dir():
@@ -218,6 +243,7 @@ def main() -> int:
         app_license_path=args.app_license_path,
         kwt_binary=args.kwt_binary,
         kwt_variants_dir=args.kwt_variants_dir,
+        libghostty_share_dir=args.libghostty_share_dir,
         third_party_licenses_dir=args.third_party_licenses_dir,
         copyright=args.copyright,
         kwt_version=args.kwt_version,

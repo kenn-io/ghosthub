@@ -610,6 +610,12 @@ session model and die with the app process.
 - Keep a modest client-local minimum text contrast so inherited ANSI colors
   remain legible on light and dark backgrounds without rewriting shared tmux
   styles. Preserve an explicit user-configured value.
+- Ship libghostty's emitted `share` tree with every build. The bootstrap emits
+  the bundled theme corpus, shell integration, and compiled terminfo; app
+  bundles stage `ghostty/` and `terminfo/` into `Contents/Resources`, and
+  Ghosthub points `GHOSTTY_RESOURCES_DIR` at whichever layout it finds.
+  Without it `theme = <name>` resolves only against a user's own
+  `~/.config/ghostty/themes`.
 - Keep the generated base config independent of tmux themes. Built-in Tmux
   Theme colors or libghostty's effective Follow ghostty.conf colors are applied
   at session creation, through the explicit shared-session override, or by the

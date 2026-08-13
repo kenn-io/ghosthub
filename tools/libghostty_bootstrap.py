@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 22
+GHOSTHUB_BOOTSTRAP_VERSION = 23
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 SOURCE_FETCH_ATTEMPTS = 3
@@ -24,6 +24,40 @@ SOURCE_FETCH_RETRY_DELAY_SECONDS = 5.0
 
 class BootstrapError(RuntimeError):
     pass
+
+
+# libghostty resolves themes, shell integration, and terminfo from a `share`
+# tree it locates by climbing from the running executable. `zig build` emits
+# that tree next to the xcframework; it is then staged as a first-class
+# artifact that both the repo-local dev layout and app bundles read.
+EMITTED_SHARE_RELATIVE_PATH = ("zig-out", "share")
+THEMES_RELATIVE_PATH = ("ghostty", "themes")
+SHELL_INTEGRATION_RELATIVE_PATH = ("ghostty", "shell-integration")
+TERMINFO_RELATIVE_PATH = ("terminfo", "78", "xterm-ghostty")
+
+
+def share_tree_problem(share_root: Path) -> str | None:
+    """Describe why a `share` tree cannot serve libghostty, if it cannot.
+
+    Existence alone is not enough: an empty theme directory resolves no
+    theme names at all, and the terminfo sentinel is what libghostty
+    matches when it climbs for a resources directory.
+    """
+    themes = share_root.joinpath(*THEMES_RELATIVE_PATH)
+    if not themes.is_dir():
+        return f"the bundled theme corpus at {themes} is missing"
+    if not any(themes.iterdir()):
+        return f"the bundled theme corpus at {themes} is empty"
+
+    shell_integration = share_root.joinpath(*SHELL_INTEGRATION_RELATIVE_PATH)
+    if not shell_integration.is_dir():
+        return f"{shell_integration} is missing"
+
+    terminfo = share_root.joinpath(*TERMINFO_RELATIVE_PATH)
+    if not terminfo.is_file():
+        return f"the compiled terminfo entry at {terminfo} is missing"
+
+    return None
 
 
 @dataclass(frozen=True)
@@ -54,6 +88,7 @@ class VendorMetadata:
 class ArtifactPaths:
     root: Path
     xcframework_path: Path
+    share_path: Path
     header_path: Path
     modulemap_path: Path
     manifest_path: Path
@@ -64,6 +99,7 @@ class ArtifactPaths:
         return cls(
             root=root,
             xcframework_path=root / "GhosttyKit.xcframework",
+            share_path=root / "share",
             header_path=include_root / "ghostty.h",
             modulemap_path=include_root / "module.modulemap",
             manifest_path=root / "manifest.json",
@@ -119,7 +155,10 @@ def render_build_command(
         "-Dapp-runtime=none",
         "-Demit-xcframework=true",
         "-Demit-macos-app=false",
-        "-Demit-themes=false",
+        # The bundled iTerm2 theme corpus is the source for `theme = <name>`.
+        # Without it libghostty resolves only user themes under
+        # ~/.config/ghostty/themes.
+        "-Demit-themes=true",
         "-Di18n=false",
         "-Dsentry=false",
         f"-Doptimize={optimize}",
@@ -1481,6 +1520,15 @@ def artifact_state_message(
             "libghostty artifacts were built with different Ghosthub isolation settings. "
             "Re-run `python3 tools/bootstrap_libghostty.py`."
         )
+    # Checked as a tree rather than a manifest flag: artifacts built before
+    # themes were emitted and artifacts whose resources were later pruned are
+    # equally unusable, and only the tree itself distinguishes them.
+    share_problem = share_tree_problem(artifacts.share_path)
+    if share_problem is not None:
+        return (
+            f"libghostty resources are incomplete: {share_problem}. "
+            "Re-run `python3 tools/bootstrap_libghostty.py`."
+        )
 
     # A current manifest can still cover a broken archive: a strict
     # libtool that drops misaligned members produces a fat lib without
@@ -1613,8 +1661,26 @@ def repair_fat_archives(paths: BootstrapPaths) -> None:
             )
 
 
+def ensure_emitted_resources(paths: BootstrapPaths) -> None:
+    """Fail the bootstrap when the build did not emit a usable share tree.
+
+    The theme corpus is a lazy Zig dependency, so a build can otherwise
+    succeed while silently omitting it, and every `theme = <name>` lookup
+    then falls through to the user theme directory.
+    """
+    share_root = Path(paths.source_checkout_root, *EMITTED_SHARE_RELATIVE_PATH)
+    problem = share_tree_problem(share_root)
+    if problem is not None:
+        raise BootstrapError(
+            f"The Ghostty build emitted an unusable resources tree: {problem}. "
+            "Verify network access to the pinned iTerm2-Color-Schemes "
+            "dependency and rerun `python3 tools/bootstrap_libghostty.py`."
+        )
+
+
 def copy_outputs(paths: BootstrapPaths) -> None:
     source_xcframework = paths.source_checkout_root / "macos" / "GhosttyKit.xcframework"
+    source_share = Path(paths.source_checkout_root, *EMITTED_SHARE_RELATIVE_PATH)
     source_header = paths.source_checkout_root / "include" / "ghostty.h"
     source_modulemap = paths.source_checkout_root / "include" / "module.modulemap"
     artifacts = paths.cached_artifacts
@@ -1631,6 +1697,11 @@ def copy_outputs(paths: BootstrapPaths) -> None:
     if artifacts.xcframework_path.exists():
         shutil.rmtree(artifacts.xcframework_path)
     shutil.copytree(source_xcframework, artifacts.xcframework_path)
+    # Cache the resources alongside the library so a pruned or re-cleaned
+    # source checkout cannot leave a "ready" variant without themes.
+    if artifacts.share_path.exists():
+        shutil.rmtree(artifacts.share_path)
+    shutil.copytree(source_share, artifacts.share_path, symlinks=True)
     shutil.copy2(source_header, artifacts.header_path)
     shutil.copy2(source_modulemap, artifacts.modulemap_path)
 
@@ -1645,6 +1716,7 @@ def sync_cached_artifacts_to_staged(paths: BootstrapPaths) -> None:
     (staged.root / "include").mkdir(parents=True, exist_ok=True)
 
     shutil.copytree(cached.xcframework_path, staged.xcframework_path)
+    shutil.copytree(cached.share_path, staged.share_path, symlinks=True)
     shutil.copy2(cached.header_path, staged.header_path)
     shutil.copy2(cached.modulemap_path, staged.modulemap_path)
     shutil.copy2(cached.manifest_path, staged.manifest_path)
@@ -1736,6 +1808,7 @@ def bootstrap(
                 "Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`)."
             ) from error
         repair_fat_archives(paths)
+        ensure_emitted_resources(paths)
         copy_outputs(paths)
         write_manifest(paths, metadata, zig_version, xcframework_target, optimize)
         rebuilt_variant = True

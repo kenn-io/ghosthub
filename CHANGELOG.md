@@ -5,6 +5,13 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Fixed
+
+- Ghostty's built-in color schemes now ship with Ghosthub, so `theme =
+  Catppuccin Macchiato` and every other bundled name resolves without first
+  copying theme files into `~/.config/ghostty/themes`. Bundled shell
+  integration and the `xterm-ghostty` terminfo database ship alongside them.
+
 ## [0.8.2] - 2026-08-11
 
 ### Fixed
@@ -97,6 +104,7 @@ test, and documentation-only changes are omitted.
   correct presentation if removal fails or the worktree moved concurrently.
 - Sidebar transitions resize the terminal smoothly without repeated terminal
   grid reflow.
+||||||| base
 
 ## [0.6.0] - 2026-08-04
 
