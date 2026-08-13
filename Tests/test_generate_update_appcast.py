@@ -14,6 +14,7 @@ TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS_DIR))
 
 from extract_changelog import ChangelogError, extract_release_notes  # noqa: E402
+from verify_update_appcast import verify_appcast  # noqa: E402
 
 
 PUBLIC_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
@@ -112,7 +113,8 @@ assert notes.is_file()
     '<channel><item><enclosure url="'
     + prefix
     + archive.name
-    + '" sparkle:edSignature="signed" /></item></channel></rss>'
+    + '" sparkle:version="123" sparkle:edSignature="signed" />'
+    '</item></channel></rss>'
     '<!-- sparkle-signatures: edSignature: signed-feed -->'
 )
 """,
@@ -143,7 +145,10 @@ def make_release(tmp_path: Path, public_key: str = PUBLIC_KEY) -> dict[str, str]
     contents = app_path / "Contents"
     contents.mkdir(parents=True)
     with (contents / "Info.plist").open("wb") as handle:
-        plistlib.dump({"SUPublicEDKey": public_key}, handle)
+        plistlib.dump(
+            {"CFBundleVersion": "123", "SUPublicEDKey": public_key},
+            handle,
+        )
 
     dmg_name = "Ghosthub_0.1.2_macos_arm64.dmg"
     (release_root / dmg_name).write_bytes(b"dmg")
@@ -179,6 +184,75 @@ def make_release(tmp_path: Path, public_key: str = PUBLIC_KEY) -> dict[str, str]
         "SPARKLE_ED_PRIVATE_KEY": "private-seed",
         "SPARKLE_PUBLIC_ED_KEY": PUBLIC_KEY,
     }
+
+
+def test_verifies_appcast_enclosure_against_the_built_app(tmp_path):
+    info_plist = tmp_path / "Info.plist"
+    with info_plist.open("wb") as handle:
+        plistlib.dump({"CFBundleVersion": "123"}, handle)
+    appcast = tmp_path / "appcast.xml"
+    expected_url = (
+        "https://nightly-downloads.ghosthub.ai/builds/123/runs/7/"
+        "attempts/1/Ghosthub_Nightly.dmg"
+    )
+    appcast.write_text(
+        '<?xml version="1.0"?>'
+        '<rss xmlns:sparkle="https://sparkle-project.org/'
+        'xml-namespaces/sparkle"><channel><item><enclosure '
+        f'url="{expected_url}" sparkle:version="123" '
+        'sparkle:edSignature="signed" /></item></channel></rss>',
+        encoding="utf-8",
+    )
+
+    verify_appcast(appcast, info_plist, expected_url)
+
+
+@pytest.mark.parametrize(
+    ("enclosure", "message"),
+    [
+        (
+            'url="https://nightly-downloads.ghosthub.ai/wrong.dmg" '
+            'sparkle:version="123" sparkle:edSignature="signed"',
+            "URL",
+        ),
+        (
+            'url="https://nightly-downloads.ghosthub.ai/build.dmg" '
+            'sparkle:version="122" sparkle:edSignature="signed"',
+            "CFBundleVersion",
+        ),
+        (
+            'url="https://nightly-downloads.ghosthub.ai/build.dmg" '
+            'sparkle:version="123"',
+            "signature",
+        ),
+        (
+            'url="https://nightly-downloads.ghosthub.ai/build.dmg" '
+            'sparkle:version="123" sparkle:edSignature="signed" />'
+            '<enclosure url="https://nightly-downloads.ghosthub.ai/other.dmg" '
+            'sparkle:version="123" sparkle:edSignature="signed"',
+            "exactly one",
+        ),
+    ],
+)
+def test_rejects_appcast_that_does_not_name_the_built_artifact(
+    tmp_path,
+    enclosure,
+    message,
+):
+    info_plist = tmp_path / "Info.plist"
+    with info_plist.open("wb") as handle:
+        plistlib.dump({"CFBundleVersion": "123"}, handle)
+    appcast = tmp_path / "appcast.xml"
+    expected_url = "https://nightly-downloads.ghosthub.ai/build.dmg"
+    appcast.write_text(
+        '<rss xmlns:sparkle="https://sparkle-project.org/'
+        'xml-namespaces/sparkle"><channel><item><enclosure '
+        f'{enclosure} /></item></channel></rss>',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        verify_appcast(appcast, info_plist, expected_url)
 
 
 def test_generates_signed_appcast_without_exposing_the_private_key(tmp_path):
