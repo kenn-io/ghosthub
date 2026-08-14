@@ -1425,6 +1425,44 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("retryable Herdr surface failure keeps recovering instead of latching")
+    func retryableHerdrSurfaceFailureKeepsRecovering() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in .present }
+        )
+        let herdr = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(herdr)
+        await launchHerdrSurface(model, store: store)
+
+        // Displays vanished between the gate and surface creation. Recovery
+        // must re-arm each time rather than latching after the first failure,
+        // so attempts keep accumulating.
+        store.surface.launchError = HerdrSurfaceLaunchTestError.rejected
+        store.surface.launchFailureIsRetryable = true
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            store.requestedKeys.count >= 3
+        }
+
+        store.surface.launchError = nil
+        store.surface.launchFailureIsRetryable = false
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            model.activeBorrowedHerdrSelection == herdr
+                && !model.herdrReconnectSupervisorIsRunning
+        }
+
+        #expect(model.activeBorrowedHerdrSelection == herdr)
+        await model.shutdown()
+    }
+
     @Test("no active display holds Herdr recovery without probing the host")
     func zeroDisplaysHoldsHerdrRecovery() async throws {
         let environment = try remoteEnvironment()
@@ -1787,4 +1825,10 @@ final class HerdrDiscoveryQueue: @unchecked Sendable {
         callCount += 1
         return results.isEmpty ? .unavailable : results.removeFirst()
     }
+}
+
+private enum HerdrSurfaceLaunchTestError: LocalizedError {
+    case rejected
+
+    var errorDescription: String? { "Surface launch rejected" }
 }

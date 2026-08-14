@@ -616,8 +616,10 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var paneSplitErrorMessage: String?
     var hasEffectiveKeyboardFocus = false
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
-    let launchError: Error?
-    let launchFailureIsRetryable: Bool
+    /// Mutable so a test can fail one attach and let the next succeed, which is
+    /// how a transient surface failure behaves in practice.
+    var launchError: Error?
+    var launchFailureIsRetryable: Bool
     private var closeOnRegistrationCode: UInt32?
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]

@@ -807,6 +807,10 @@ final class WorkspaceSceneModel: ObservableObject {
         var host: CommandHost
         var connection: SSHConnectionArgumentsSnapshot?
         var surfaceExitCode: UInt32?
+        /// The previous attempt could not create a terminal surface, so no
+        /// client ever ran and there is no exit code to inspect. Recovery is
+        /// still legitimate: the transport failure that started it stands.
+        var surfaceLaunchFailed = false
 
         static func == (
             lhs: ActiveZellijReconnectContext,
@@ -817,6 +821,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 && lhs.host == rhs.host
                 && lhs.connection?.cacheKey == rhs.connection?.cacheKey
                 && lhs.surfaceExitCode == rhs.surfaceExitCode
+                && lhs.surfaceLaunchFailed == rhs.surfaceLaunchFailed
         }
     }
     private var activeZellijReconnectContext: ActiveZellijReconnectContext?
@@ -947,6 +952,10 @@ final class WorkspaceSceneModel: ObservableObject {
         var handleID: UUID
         var host: CommandHost
         var surfaceExitCode: UInt32?
+        /// The previous attempt could not create a terminal surface, so no
+        /// client ever ran and there is no exit code to inspect. Recovery is
+        /// still legitimate: the transport failure that started it stands.
+        var surfaceLaunchFailed = false
     }
     private var activeHerdrReconnectContext: ActiveHerdrReconnectContext?
     @Published private(set) var isWorkspaceRestorationPending = false
@@ -9856,6 +9865,19 @@ final class WorkspaceSceneModel: ObservableObject {
             activeHerdrReconnectContext?.surfaceExitCode = nil
             return
         }
+        // Checked before `hasLaunched`: a surface that failed to be created
+        // never launched, so the guard below would drop this transient failure
+        // and the session would latch. See the tmux path.
+        if case .disconnected = state,
+           nativeHerdrSessionCoordinator.attachmentClosure(handle)
+           == .surfaceUnavailable,
+           var context = activeHerdrReconnectContext,
+           context.handleID == handle.id {
+            context.surfaceLaunchFailed = true
+            activeHerdrReconnectContext = context
+            startHerdrReconnect(context)
+            return
+        }
         guard case .disconnected = state,
               nativeHerdrSessionCoordinator.hasLaunched(handle)
         else { return }
@@ -9883,14 +9905,9 @@ final class WorkspaceSceneModel: ObservableObject {
             activeHerdrReconnectContext = context
             startHerdrReconnect(context)
         case .surfaceUnavailable:
-            // Transient: see the tmux path in nativeTmuxStateChanged.
-            guard let context = activeHerdrReconnectContext,
-                  context.handleID == handle.id
-            else {
-                cancelHerdrReconnect()
-                return
-            }
-            startHerdrReconnect(context)
+            // Recoverable failures are re-armed above, before `hasLaunched`.
+            // Reaching here means no matching reconnect context survives.
+            cancelHerdrReconnect()
         case .launchFailed, nil:
             cancelHerdrReconnect()
         }
@@ -9921,6 +9938,18 @@ final class WorkspaceSceneModel: ObservableObject {
             sessionConnectionRecoveryRequest = nil
             scheduleZellijSessionDiscovery()
         case .disconnected:
+            // Checked before `hasLaunched`: a surface that failed to be created
+            // never launched, so the guard below would drop this transient
+            // failure and the session would latch. See the tmux path.
+            if nativeZellijSessionCoordinator.attachmentClosure(handle)
+                == .surfaceUnavailable,
+                var context = activeZellijReconnectContext,
+                context.handleID == handle.id {
+                context.surfaceLaunchFailed = true
+                activeZellijReconnectContext = context
+                startZellijReconnect(context)
+                return
+            }
             guard nativeZellijSessionCoordinator.hasLaunched(handle) else {
                 if let selection = pendingCreatedZellijSessions
                     .removeValue(forKey: handle.id) {
@@ -9963,16 +9992,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 activeZellijReconnectContext = context
                 startZellijReconnect(context)
             case .surfaceUnavailable:
-                // Transient: see the tmux path in nativeTmuxStateChanged.
-                guard let context = activeZellijReconnectContext,
-                      context.handleID == handle.id
-                else {
-                    zellijReconnectSupervisor.cancel()
-                    activeBorrowedZellijRecoveryState = nil
-                    scheduleZellijSessionDiscovery()
-                    return
-                }
-                startZellijReconnect(context)
+                // Recoverable failures are re-armed above, before
+                // `hasLaunched`. Reaching here means no matching reconnect
+                // context survives.
+                fallthrough
             case .launchFailed, nil:
                 if let selection = pendingCreatedZellijSessions
                     .removeValue(forKey: handle.id) {
@@ -10131,7 +10154,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 scheduleZellijSessionDiscovery()
                 return .stop
             }
-            guard context.surfaceExitCode == 255 else {
+            guard context.surfaceExitCode == 255
+                || context.surfaceLaunchFailed
+            else {
                 stopZellijReconnect(
                     "The remote Zellij client exited before it could attach."
                 )
@@ -10424,7 +10449,9 @@ final class WorkspaceSceneModel: ObservableObject {
             // SSH reserves 255 for transport failure, but a client could also choose it.
             // The accepted ambiguity self-corrects because every retry first probes the
             // exact running Herdr session and stops when that session is absent.
-            guard context.surfaceExitCode == 255 else {
+            guard context.surfaceExitCode == 255
+                || context.surfaceLaunchFailed
+            else {
                 stopHerdrReconnectWithUnableToAttach(
                     "The remote Herdr client exited before it could attach."
                 )

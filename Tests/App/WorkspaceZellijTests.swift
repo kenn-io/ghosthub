@@ -1593,6 +1593,67 @@ struct WorkspaceZellijTests {
         await model.shutdown()
     }
 
+    @Test("retryable Zellij surface failure keeps recovering instead of latching")
+    func retryableZellijSurfaceFailureKeepsRecovering() async throws {
+        let database = try WorkspaceDatabase.inMemory()
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: database,
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionDiscovery: { _ in .available(["api"]) },
+            tmuxReconnectIntervals: [.milliseconds(1)],
+            tmuxReconnectProbeDeadline: .seconds(1)
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            store.requestedConfigurations.count == 1
+                && !store.surface.closeObservers.isEmpty
+        }
+
+        // Displays vanished between the gate and surface creation. Recovery
+        // must re-arm each time rather than latching after the first failure,
+        // so attempts keep accumulating.
+        store.surface.launchError = ZellijSurfaceLaunchTestError.rejected
+        store.surface.launchFailureIsRetryable = true
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(store.requestedConfigurations.count >= 3)
+        #expect(model.zellijReconnectSupervisorIsRunning)
+
+        store.surface.launchError = nil
+        store.surface.launchFailureIsRetryable = false
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            model.activeBorrowedZellijSelection == selection
+                && !model.zellijReconnectSupervisorIsRunning
+        }
+
+        #expect(model.activeBorrowedZellijSelection == selection)
+        await model.shutdown()
+    }
+
     @Test("no active display holds Zellij recovery without probing the host")
     func zeroDisplaysHoldsZellijRecovery() async throws {
         let database = try WorkspaceDatabase.inMemory()
@@ -3624,4 +3685,10 @@ struct WorkspaceZellijTests {
             WorkspaceSnapshot(hosts: [host], projects: [], worktrees: [])
         )
     }
+}
+
+private enum ZellijSurfaceLaunchTestError: LocalizedError {
+    case rejected
+
+    var errorDescription: String? { "Surface launch rejected" }
 }
