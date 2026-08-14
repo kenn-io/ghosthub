@@ -30,6 +30,9 @@ use crate::{
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const DISCOVERY_ATTEMPTS: usize = 2;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+// Provider discovery may wait on network and credential helpers. It remains
+// cancellable but must not inherit the short local inventory budget.
+const KWT_PROVIDER_TIMEOUT: Duration = Duration::from_mins(5);
 // Worktree creation may fetch a remote branch and both creation and removal
 // may run repository hooks. Keep these background mutations cancellable, but
 // do not apply the short inventory/probe deadline to them.
@@ -1240,6 +1243,16 @@ impl<R: CommandRunner> WslHost<R> {
                 request.path(),
                 "--project",
                 request.project_path(),
+                "--expected-repository",
+                request.repository(),
+                "--expected-registration",
+                request.registration_fingerprint(),
+                "--expected-generation",
+                request.generation(),
+                "--expected-session",
+                request.session_name(),
+                "--expected-socket",
+                request.tmux_socket_name(),
             ]
             .into_iter()
             .map(OsString::from),
@@ -1461,7 +1474,7 @@ impl<R: CommandRunner> WslHost<R> {
         })?;
         let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
         self.require_runtime(endpoint, runtime, cancellation)?;
-        let output = self.run_kwt_in_directory(
+        let output = self.run_kwt_provider_in_directory(
             endpoint,
             &helper,
             project_path,
@@ -1678,6 +1691,43 @@ impl<R: CommandRunner> WslHost<R> {
         command: &[&str],
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
+        self.run_kwt_in_directory_with_timeout(
+            endpoint,
+            helper,
+            directory,
+            command,
+            cancellation,
+            COMMAND_TIMEOUT,
+        )
+    }
+
+    fn run_kwt_provider_in_directory(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        directory: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        self.run_kwt_in_directory_with_timeout(
+            endpoint,
+            helper,
+            directory,
+            command,
+            cancellation,
+            KWT_PROVIDER_TIMEOUT,
+        )
+    }
+
+    fn run_kwt_in_directory_with_timeout(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        directory: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<CommandOutput, HostError> {
         let mut args = pinned_prefix(endpoint);
         append_scrubbed_environment(&mut args);
         args.push(OsString::from("--chdir"));
@@ -1690,7 +1740,7 @@ impl<R: CommandRunner> WslHost<R> {
         }
         args.push(OsString::from(helper));
         args.extend(command.iter().map(OsString::from));
-        self.run_with_timeout(&args, cancellation, COMMAND_TIMEOUT)
+        self.run_with_timeout(&args, cancellation, timeout)
     }
 
     fn run_kwt_mutation_in_directory(
@@ -4909,6 +4959,7 @@ mod tests {
     struct KwtMutationRunner {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
         mutation_timeouts: Arc<Mutex<Vec<Duration>>>,
+        provider_timeouts: Arc<Mutex<Vec<Duration>>>,
         mutation_failure: Arc<Mutex<Option<String>>>,
         branch_failure: Arc<AtomicBool>,
         helper_matches: Arc<AtomicBool>,
@@ -4919,6 +4970,7 @@ mod tests {
             Self {
                 calls: Arc::default(),
                 mutation_timeouts: Arc::default(),
+                provider_timeouts: Arc::default(),
                 mutation_failure: Arc::default(),
                 branch_failure: Arc::new(AtomicBool::new(false)),
                 helper_matches: Arc::new(AtomicBool::new(true)),
@@ -4962,6 +5014,12 @@ mod tests {
                 self.mutation_timeouts
                     .lock()
                     .expect("mutation timeouts")
+                    .push(timeout);
+            }
+            if args.windows(2).any(|pair| pair == ["pr", "list"]) {
+                self.provider_timeouts
+                    .lock()
+                    .expect("provider timeouts")
                     .push(timeout);
             }
             self.calls.lock().expect("calls").push(args.clone());
@@ -5333,6 +5391,10 @@ mod tests {
                     .windows(2)
                     .any(|pair| pair == ["--project", "/code/widget"])
         }));
+        assert_eq!(
+            *runner.provider_timeouts.lock().expect("provider timeouts"),
+            vec![KWT_PROVIDER_TIMEOUT]
+        );
     }
 
     #[test]
@@ -5520,6 +5582,27 @@ mod tests {
         assert!(
             args.windows(2)
                 .any(|args| args == ["--project", "/code/widget"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--expected-repository", "github.com/acme/widget"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--expected-registration", "registration-fingerprint"] })
+        );
+        assert!(
+            args.windows(2).any(|args| {
+                args == ["--expected-generation", "0123456789abcdef0123456789abcdef"]
+            })
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--expected-session", "widget-pr-17"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--expected-socket", "kwt-pr-a1b2"])
         );
         assert_eq!(plan.target_name(), "widget-pr-17");
         assert!(require_kwt_socket_name("kwt-pr-a1b2").is_ok());

@@ -520,10 +520,13 @@ branch, tmux session name, and isolated tmux socket name. Ghosthub requests a
 durable import without session startup; importing contributor-controlled code
 does not start tmux or execute project layout and bootstrap commands. A
 successful result is presented through kwt's protected attach command. That
-command verifies
-persisted workspace provenance and the current tmux state, creates or repairs
-an inert shell-only session on the workspace-specific server when needed, and
-then executes an ordinary client with environment updates disabled. The user
+command atomically verifies the project identity, registration fingerprint,
+worktree generation, tmux session name, and isolated socket under KWT's project
+lifecycle fence before it creates or repairs an inert shell-only session on the
+workspace-specific server. It then executes an ordinary client with
+environment updates disabled. Provider discovery is user-initiated,
+cancellable, and receives a five-minute network-operation budget rather than
+the 15-second local probe deadline. The user
 may explicitly run project commands after attachment. Other workspaces and
 unbound sessions continue to attach directly to the host's normal tmux server.
 

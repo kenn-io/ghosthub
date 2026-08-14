@@ -82,12 +82,12 @@ The backend is selected behind a capability-shaped TerminalEngine seam:
 bytes in, resize, modes queryable, semantic effects, and Rust-owned paint
 state out. No public crate or UI API presumes the outcome.
 
-The exact kwt revision in repository-root `KWT_REVISION` is
-03dc3dcc2349282cda3cccfd20a9b1a1ebf83a98. That source uses KWT_HOME or the
-fixed $HOME/.config/kwt default. It does not read Ghosthub init.toml,
-config_home, or XDG_CONFIG_HOME. Rust must not reproduce the unsupported
-Ghosthub init.toml scanner. The two existing Swift copies are outside the Rust
-port's scope and are not a prerequisite for Rust path fixtures.
+Repository-root `KWT_REVISION` is the sole source of the exact audited kwt
+revision. That source uses KWT_HOME or the fixed $HOME/.config/kwt default. It
+does not read Ghosthub init.toml, config_home, or XDG_CONFIG_HOME. Rust must not
+reproduce the unsupported Ghosthub init.toml scanner. The two existing Swift
+copies are outside the Rust port's scope and are not a prerequisite for Rust
+path fixtures.
 
 ### Executable bootstrap
 
@@ -762,15 +762,23 @@ inventing worktree authority from the request.
 
 Protected pull-request worktrees use a distinct attachment capability. The
 terminal launches `kwt pr attach` through the resolved argv plan, while the
-workspace verifies the exact project, registration fingerprint, path,
-generation, session name, and socket before and after launch. Readiness is
-confirmed by finding the spawned client PID on that protected socket. A
-protected presentation never aliases or deduplicates with a same-named session
-on the default tmux server. Protected removal uses the same confirmed exact
-kill followed by absence-guarded KWT removal as default-socket worktrees.
+workspace passes the exact project identity, registration fingerprint,
+generation, session name, and socket back to KWT. KWT revalidates that
+authority while holding its project lifecycle fence and before creating or
+repairing the tmux session; the workspace repeats the checks after launch.
+Readiness is confirmed by finding the spawned client PID on that protected
+socket. A protected presentation never aliases or deduplicates with a
+same-named session on the default tmux server. Protected removal uses the same
+confirmed exact kill followed by absence-guarded KWT removal as default-socket
+worktrees.
 KWT's project lifecycle fence serializes that absence check with guarded
 worktree session establishment, so a concurrent reopen prevents checkout
 deletion.
+
+Pull-request candidate discovery is an explicit user action and uses a
+cancellable five-minute provider-operation budget because network and
+credential-provider startup can legitimately exceed the 15-second local probe
+deadline. Closing or superseding the dialog cancels the operation.
 
 The remote helper activation root is a separate cross-controller contract:
 
