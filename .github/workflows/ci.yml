@@ -171,12 +171,13 @@ jobs:
       - name: Run terminal smoke tests
         # Most AppKit/PTY tests are isolated by fixture, so parallel workers
         # shorten the runner exposure window without saturating hosted Macs.
-        # Keep tests marked Pasteboard out of this lane because they mutate
-        # NSPasteboard.general, which is shared across worker processes.
+        # Keep tests that mutate NSPasteboard.general or require the key
+        # application window in the serialized GUI lane below.
         shell: bash
         run: |
-          windowserver_log="$RUNNER_TEMP/windowserver-tests.log"
-          : > "$windowserver_log"
+          gui_test_log="$RUNNER_TEMP/gui-tests.log"
+          gui_test_filter='Clipboard|Paste|TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|CmdVWithoutPaneSinkStaysLocal'
+          : > "$gui_test_log"
           test_workers=2
           if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
             test_workers=8
@@ -185,27 +186,26 @@ jobs:
           sh tools/run_swift_tests.sh \
             swift test --skip-build --disable-swift-testing \
             --filter GhosthubTerminalSmokeTests \
-            --skip 'Clipboard|Paste' \
+            --skip "$gui_test_filter" \
             --parallel --num-workers "$test_workers" \
-            2>&1 | tee -a "$windowserver_log"
+            2>&1 | tee -a "$gui_test_log"
 
-      - name: Run pasteboard terminal smoke tests
+      - name: Run serialized GUI terminal smoke tests
         shell: bash
         run: |
+          gui_test_filter='Clipboard|Paste|TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|CmdVWithoutPaneSinkStaysLocal'
           sh tools/run_swift_tests.sh \
             swift test --skip-build --disable-swift-testing \
-            --filter 'Clipboard|Paste' --no-parallel \
-            2>&1 | tee -a "$RUNNER_TEMP/windowserver-tests.log"
+            --filter "$gui_test_filter" --no-parallel \
+            2>&1 | tee -a "$RUNNER_TEMP/gui-tests.log"
 
-      - name: Verify WindowServer coverage
+      - name: Verify GUI coverage
         shell: bash
         run: |
-          windowserver_log="$RUNNER_TEMP/windowserver-tests.log"
-          skip_count="$(grep -c \
-            'Test skipped - Test requires window server' \
-            "$windowserver_log" || true)"
-          if [[ "$skip_count" -ne 2 ]]; then
-            echo "Expected 2 WindowServer skips; found $skip_count." >&2
+          gui_test_log="$RUNNER_TEMP/gui-tests.log"
+          gui_skip_pattern='Test skipped - .*(window server|AppKit|pasteboard|LaunchServices)'
+          if grep -Ei "$gui_skip_pattern" "$gui_test_log"; then
+            echo "GUI integration tests must not skip required coverage." >&2
             exit 1
           fi
 

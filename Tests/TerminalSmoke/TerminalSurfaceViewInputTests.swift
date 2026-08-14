@@ -312,7 +312,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     private func makeTestWindow(
         contentView: NSView,
         size: CGSize = CGSize(width: 960, height: 640),
-        settleDelay: TimeInterval = 0.25
+        settleDelay: TimeInterval = 0.25,
+        requiresActiveApplication: Bool = false
     ) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
@@ -321,7 +322,18 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             defer: false
         )
         window.contentView = contentView
+        if requiresActiveApplication {
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.unhide(nil)
+            window.orderFrontRegardless()
+        }
         window.makeKeyAndOrderFront(nil)
+        if requiresActiveApplication {
+            NSRunningApplication.current.activate(
+                options: [.activateAllWindows]
+            )
+        }
+        window.displayIfNeeded()
         waitUntil(timeout: 1.0) { window.isKeyWindow }
         RunLoop.main.run(
             until: Date().addingTimeInterval(settleDelay)
@@ -331,10 +343,14 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     private func hostInWindow(
         _ view: TerminalSurfaceView,
-        size: CGSize = CGSize(width: 960, height: 640)
+        size: CGSize = CGSize(width: 960, height: 640),
+        requiresActiveApplication: Bool = false
     ) -> NSWindow {
         let window = makeTestWindow(
-            contentView: view, size: size, settleDelay: 0.1
+            contentView: view,
+            size: size,
+            settleDelay: 0.1,
+            requiresActiveApplication: requiresActiveApplication
         )
         window.makeFirstResponder(view)
         view.focusDidChange(true)
@@ -994,7 +1010,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
-        let window = hostInWindow(view)
+        let window = hostInWindow(view, requiresActiveApplication: true)
         waitUntil(timeout: 2.0) {
             view.window === window
                 && view.focused
@@ -1161,7 +1177,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
-        let window = hostInWindow(view)
+        let window = hostInWindow(view, requiresActiveApplication: true)
         guard window.isKeyWindow else {
             throw XCTSkip(
                 "Test requires window server - skipping in headless environment"
@@ -2419,7 +2435,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         var pastedData: [Data] = []
         view.tmuxPaneInputSink = { sunkData.append($0) }
         view.tmuxPanePasteSink = { pastedData.append($0) }
-        let window = hostInWindow(view)
+        let window = hostInWindow(view, requiresActiveApplication: true)
         waitUntil(timeout: 2.0) {
             view.window === window && view.focused && window.isKeyWindow
         }
@@ -2470,7 +2486,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         var pastedData: [Data] = []
         view.tmuxPaneInputSink = { sunkData.append($0) }
         view.tmuxPanePasteSink = { pastedData.append($0) }
-        let window = hostInWindow(view)
+        let window = hostInWindow(view, requiresActiveApplication: true)
         waitUntil(timeout: 2.0) {
             view.window === window && view.focused && window.isKeyWindow
         }
@@ -2511,7 +2527,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
-        let window = hostInWindow(view)
+        let window = hostInWindow(view, requiresActiveApplication: true)
         waitUntil(timeout: 2.0) {
             view.window === window && view.focused && window.isKeyWindow
         }
