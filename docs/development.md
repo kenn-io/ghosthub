@@ -92,16 +92,23 @@ inventory, host resolution, sidebar, and ordinary tmux attachment contracts.
 
 ## Apple Silicon macOS toolchain
 
-Pull requests invoke the `main`-pinned `.github/workflows/ci.yml`. Canonical
-same-repository pull requests run required validation on GitHub's hosted
-`macos-26` Apple Silicon image and non-blocking validation on the managed public
-macOS runner in parallel. The managed lane requires complete WindowServer GUI
-coverage while it is being stabilized; the hosted lane may skip tests that
-cannot obtain a key window. Canonical `main` pushes, fork pull requests, and
-noncanonical repository copies run only on the hosted image. The workflow
-selects a supported Xcode installation and the exact Zig toolchain required by
-the pinned Ghostty source, then runs the complete available build and test
-gates.
+Pull requests invoke the `main`-pinned `.github/workflows/ci.yml`. The
+`GHOSTHUB_CI_RUNNER_MODE` repository variable selects the validation path for
+canonical same-repository pull requests: `parallel` runs required hosted
+validation beside advisory self-hosted validation, `self-hosted` runs required
+self-hosted validation, and `hosted` runs required hosted validation. An unset
+or invalid value falls back to hosted validation. Canonical `main` pushes, fork
+pull requests, and noncanonical repository copies always run on GitHub's hosted
+`macos-26` Apple Silicon image, independent of the selected mode.
+
+The managed lane requires complete WindowServer GUI coverage. Hosted runners
+explicitly exclude the five terminal smoke tests that require an active key
+window instead of invoking them and accepting a runtime skip; the remaining
+portable terminal and AppKit coverage continues to run there. Running hosted
+validation on every `main` push keeps that path continuously usable as the
+fallback when self-hosted validation is preferred for cost. Both lanes select
+a supported Xcode installation and the exact Zig toolchain required by the
+pinned Ghostty source, then run their complete available build and test gates.
 
 Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target.
 Local bootstrap checks every architecture required by the running Zig
