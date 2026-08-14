@@ -29,9 +29,10 @@ if [[ $# -eq 6 ]]; then
   goarch="$6"
 fi
 stamp="${output}.revision"
-stamp_value="$revision"
+build_identity_schema=2
+stamp_value="${revision} identity=${build_identity_schema}"
 if [[ "$targeted" == true ]]; then
-  stamp_value="${revision} ${goos}/${goarch}"
+  stamp_value="${revision} ${goos}/${goarch} identity=${build_identity_schema}"
 fi
 
 # The stamp records intent; only the binary can say which revision it is.
@@ -119,18 +120,28 @@ else
 fi
 
 mkdir -p "$(dirname "$output")"
+kwt_revision_time="$(
+  TZ=UTC git -C "$source_dir" show -s \
+    --date=format-local:'%Y-%m-%dT%H:%M:%SZ' \
+    --format='%cd' \
+    "$revision"
+)"
+kwt_build_ldflags="-s -w"
+kwt_build_ldflags+=" -X go.kenn.io/kwt/internal/cmd.version=${revision}"
+kwt_build_ldflags+=" -X go.kenn.io/kwt/internal/cmd.commit=${revision}"
+kwt_build_ldflags+=" -X go.kenn.io/kwt/internal/cmd.revisionTime=${kwt_revision_time}"
 (
   cd "$source_dir"
   if [[ "$targeted" == true ]]; then
     CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
       -trimpath \
-      -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=${revision}" \
+      -ldflags "$kwt_build_ldflags" \
       -o "$output" \
       cmd/kwt/main.go
   else
     CGO_ENABLED=0 go build \
       -trimpath \
-      -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=${revision}" \
+      -ldflags "$kwt_build_ldflags" \
       -o "$output" \
       cmd/kwt/main.go
   fi
