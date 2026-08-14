@@ -8,6 +8,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 
 def bootstrap_fixture(tmp_path: Path) -> tuple[Path, str, str, Path]:
     repository = tmp_path / "repository"
@@ -69,13 +71,19 @@ if [ "$#" -eq 3 ] && [ "$1" = "version" ] && [ "$2" = "-m" ]; then
   exit 0
 fi
 output=
-revision=
+version=
+commit=
+revision_time=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -ldflags)
       for value in $2; do
         case "$value" in
-          go.kenn.io/kwt/internal/cmd.version=*) revision="${value#*=}" ;;
+          go.kenn.io/kwt/internal/cmd.version=*) version="${value#*=}" ;;
+          go.kenn.io/kwt/internal/cmd.commit=*) commit="${value#*=}" ;;
+          go.kenn.io/kwt/internal/cmd.revisionTime=*)
+            revision_time="${value#*=}"
+            ;;
         esac
       done
       shift 2
@@ -89,7 +97,28 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-printf '#!/bin/sh\\nprintf "kwt version %%s\\\\n" "%s"\\n' "$revision" >"$output"
+case "${FAKE_KWT_IDENTITY_OMISSION:-}" in
+  version) version=dev ;;
+  revision) commit=none ;;
+  revision_time) revision_time= ;;
+esac
+cat >"$output" <<EOF
+#!/bin/sh
+case "\\$*" in
+  "--version")
+    printf 'kwt version %s\\n' "$version"
+    ;;
+  "daemon start"|"daemon stop")
+    exit 0
+    ;;
+  "daemon status --json")
+    printf '%s\\n' '{"service":"kwt","state":"ready","home":"/tmp/fake-kwt","endpoint":"127.0.0.1:1","pid":1,"version":"$version","revision":"$commit","revision_time":"$revision_time","schema_major":1,"schema_version":"1.6.0","capabilities":[],"started_at":"2026-08-13T18:42:17Z","uptime_seconds":0,"active_work":0,"active_leases":0}'
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+EOF
 chmod +x "$output"
 """
     )
@@ -249,7 +278,7 @@ fi
     )
     assert (
         output.with_suffix(".revision").read_text()
-        == f"{second_revision} identity=2"
+        == f"{second_revision} identity=3"
     )
     assert second_revision in subprocess.run(
         [output, "--version"],
@@ -335,6 +364,43 @@ def test_rebuilds_helper_from_legacy_identity_stamp(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert output.read_text() != stale_helper
+
+
+@pytest.mark.parametrize("targeted", [False, True])
+@pytest.mark.parametrize("omission", ["version", "revision", "revision_time"])
+def test_rejects_helper_without_complete_daemon_identity(
+    tmp_path: Path,
+    omission: str,
+    targeted: bool,
+) -> None:
+    repository, revision, _, fake_bin = bootstrap_fixture(tmp_path)
+    output = tmp_path / "output" / "kwt"
+    command = [
+        "bash",
+        "tools/build_pinned_kwt.sh",
+        str(repository),
+        revision,
+        str(tmp_path / "source"),
+        str(output),
+    ]
+    if targeted:
+        command.extend(["darwin", "arm64"])
+
+    result = subprocess.run(
+        command,
+        cwd=Path(__file__).parents[1],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "FAKE_KWT_IDENTITY_OMISSION": omission,
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert not output.exists()
+    assert not output.with_suffix(".revision").exists()
 
 
 def test_stamps_pinned_source_identity_for_daemon_replacement(

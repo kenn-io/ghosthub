@@ -29,7 +29,7 @@ if [[ $# -eq 6 ]]; then
   goarch="$6"
 fi
 stamp="${output}.revision"
-build_identity_schema=2
+build_identity_schema=3
 stamp_value="${revision} identity=${build_identity_schema}"
 if [[ "$targeted" == true ]]; then
   stamp_value="${revision} ${goos}/${goarch} identity=${build_identity_schema}"
@@ -39,6 +39,57 @@ fi
 reported_version() {
   "$output" --version 2>&1 || true
 }
+
+validate_native_identity() (
+  helper="$1"
+  validation_prefix="${2:-$helper}"
+  validation_root="$(mktemp -d "${validation_prefix}.identity.XXXXXX")"
+  validation_home="${validation_root}/home"
+  validation_kwt_home="${validation_root}/kwt-home"
+  validation_config_home="${validation_root}/config"
+  mkdir -p \
+    "$validation_home" \
+    "$validation_kwt_home" \
+    "$validation_config_home"
+
+  run_isolated_helper() {
+    HOME="$validation_home" \
+      KWT_HOME="$validation_kwt_home" \
+      XDG_CONFIG_HOME="$validation_config_home" \
+      GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_CONFIG_SYSTEM=/dev/null \
+      "$helper" "$@"
+  }
+  daemon_started=false
+  cleanup_validation() {
+    if [[ "$daemon_started" == true ]]; then
+      run_isolated_helper daemon stop >/dev/null 2>&1 || return
+      daemon_started=false
+    fi
+    find "$validation_root" -depth -delete
+  }
+  trap cleanup_validation EXIT
+
+  daemon_started=true
+  run_isolated_helper daemon start >/dev/null
+  identity="$(run_isolated_helper daemon status --json)"
+  if [[ "$identity" != *'"version":"'"$revision"'"'* ]] \
+    || [[ "$identity" != *'"revision":"'"$revision"'"'* ]] \
+    || [[ "$identity" != *'"revision_time":"'"$kwt_revision_time"'"'* ]]; then
+    printf 'Built kwt daemon reports an incomplete pinned identity.\n' >&2
+    printf 'Expected version and revision %s at %s; received %s.\n' \
+      "$revision" "$kwt_revision_time" "${identity:-no daemon status}" >&2
+    return 1
+  fi
+
+  if ! run_isolated_helper daemon stop >/dev/null 2>&1; then
+    printf 'Built kwt validation daemon could not be stopped.\n' >&2
+    return 1
+  fi
+  daemon_started=false
+  find "$validation_root" -depth -delete
+  trap - EXIT
+)
 
 target_metadata_matches() {
   [[ "$targeted" == true && -f "$output" ]] || return 1
@@ -130,41 +181,65 @@ kwt_build_ldflags="-s -w"
 kwt_build_ldflags+=" -X go.kenn.io/kwt/internal/cmd.version=${revision}"
 kwt_build_ldflags+=" -X go.kenn.io/kwt/internal/cmd.commit=${revision}"
 kwt_build_ldflags+=" -X go.kenn.io/kwt/internal/cmd.revisionTime=${kwt_revision_time}"
-(
+build_helper() (
+  helper_output="$1"
+  helper_goos="${2:-}"
+  helper_goarch="${3:-}"
   cd "$source_dir"
-  if [[ "$targeted" == true ]]; then
-    CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+  if [[ -n "$helper_goos" && -n "$helper_goarch" ]]; then
+    CGO_ENABLED=0 GOOS="$helper_goos" GOARCH="$helper_goarch" go build \
       -trimpath \
       -ldflags "$kwt_build_ldflags" \
-      -o "$output" \
+      -o "$helper_output" \
       cmd/kwt/main.go
   else
     CGO_ENABLED=0 go build \
       -trimpath \
       -ldflags "$kwt_build_ldflags" \
-      -o "$output" \
+      -o "$helper_output" \
       cmd/kwt/main.go
   fi
 )
 
-# The linker silently ignores -X for a symbol it cannot find, so an unstamped
-# native binary is the only evidence that kwt has moved its version variable.
-# Every cross-compiled variant uses the same source and linker symbol.
+if [[ "$targeted" == true ]]; then
+  build_helper "$output" "$goos" "$goarch"
+else
+  build_helper "$output"
+fi
+
+# The linker silently ignores -X for a symbol it cannot find. Exercise the
+# native helper's isolated daemon interface before asserting that the cache
+# contains the full replacement identity. Cross-compiled variants first build
+# a native probe from the same source and linker flags, then retain their
+# format-specific validation.
 if [[ "$targeted" == false ]]; then
   chmod 0755 "$output"
-  version_output="$(reported_version)"
-  if [[ "$version_output" != *"$revision"* ]]; then
-    printf 'Built kwt reports %s instead of the pinned revision %s.\n' \
-      "${version_output:-no version output}" "$revision" >&2
-    printf 'Update the -X version symbol in %s to match kwt.\n' "$0" >&2
-    rm -f "$output"
+  if ! validate_native_identity "$output"; then
+    rm -f "$output" "$stamp"
     exit 1
   fi
-elif ! target_metadata_matches; then
-  printf 'Built kwt does not match %s/%s at revision %s.\n' \
-    "$goos" "$goarch" "$revision" >&2
-  rm -f "$output"
-  exit 1
+else
+  if ! target_metadata_matches; then
+    printf 'Built kwt does not match %s/%s at revision %s.\n' \
+      "$goos" "$goarch" "$revision" >&2
+    rm -f "$output" "$stamp"
+    exit 1
+  fi
+
+  native_probe_root="$(mktemp -d "${output}.native.XXXXXX")"
+  native_probe="${native_probe_root}/kwt"
+  cleanup_native_probe() {
+    find "$native_probe_root" -depth -delete
+  }
+  trap cleanup_native_probe EXIT
+  build_helper "$native_probe"
+  chmod 0755 "$native_probe"
+  if ! validate_native_identity "$native_probe" "$output"; then
+    rm -f "$output" "$stamp"
+    exit 1
+  fi
+  cleanup_native_probe
+  trap - EXIT
 fi
 
 printf '%s' "$stamp_value" >"$stamp"
