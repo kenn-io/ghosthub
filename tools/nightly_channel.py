@@ -650,17 +650,17 @@ def publish_nightly(
         inputs.manifest_path,
         inputs.bootstrap_path,
     ]
-    client.create_draft(
-        inputs.release_tag,
-        f"Ghosthub Nightly build {inputs.build}",
-        (
-            "Automated nightly build from "
-            f"https://github.com/kenn-io/ghosthub/commit/{inputs.source_sha}. "
-            "This build is unsupported and may contain regressions."
-        ),
-        assets,
-    )
     try:
+        client.create_draft(
+            inputs.release_tag,
+            f"Ghosthub Nightly build {inputs.build}",
+            (
+                "Automated nightly build from "
+                f"https://github.com/kenn-io/ghosthub/commit/{inputs.source_sha}. "
+                "This build is unsupported and may contain regressions."
+            ),
+            assets,
+        )
         current = fetch_manifest(
             inputs.channel_url,
             inputs.public_base_url,

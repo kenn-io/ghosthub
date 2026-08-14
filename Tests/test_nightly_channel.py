@@ -473,6 +473,27 @@ def test_publication_exposes_complete_assets_in_one_release_transition(tmp_path)
     )
 
 
+def test_failed_draft_upload_removes_the_partial_release(tmp_path):
+    class PartialDraftClient(MemoryReleaseClient):
+        def create_draft(
+            self,
+            tag: str,
+            title: str,
+            notes: str,
+            assets: list[Path],
+        ) -> None:
+            super().create_draft(tag, title, notes, assets)
+            raise RuntimeError("injected asset upload failure")
+
+    client = PartialDraftClient()
+    inputs = make_publication(tmp_path)
+
+    with pytest.raises(RuntimeError, match="asset upload failure"):
+        publish_nightly(client, inputs, opener=manifest_opener(None))
+
+    assert inputs.release_tag not in client.releases
+
+
 def test_older_retry_is_rejected_before_creating_a_release(tmp_path):
     client = MemoryReleaseClient()
     eligibility = ChannelManifest.from_json(
