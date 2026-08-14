@@ -31,6 +31,9 @@ private actor TelemetryTestTransport: TelemetryTransport {
 
     private let rejectsEvents: Bool
     private var capturedEvents: [TelemetryEvent] = []
+    private var eventCountWaiters: [
+        (minimum: Int, continuation: CheckedContinuation<Void, Never>)
+    ] = []
 
     init(rejectsEvents: Bool = false) {
         self.rejectsEvents = rejectsEvents
@@ -38,6 +41,7 @@ private actor TelemetryTestTransport: TelemetryTransport {
 
     func capture(_ event: TelemetryEvent) throws {
         capturedEvents.append(event)
+        resumeEventCountWaiters()
         if rejectsEvents {
             throw TestError.rejected
         }
@@ -46,6 +50,23 @@ private actor TelemetryTestTransport: TelemetryTransport {
     func events() -> [TelemetryEvent] {
         capturedEvents
     }
+
+    func waitUntilEventCount(_ minimum: Int) async {
+        guard capturedEvents.count < minimum else { return }
+        await withCheckedContinuation { continuation in
+            eventCountWaiters.append((minimum, continuation))
+        }
+    }
+
+    private func resumeEventCountWaiters() {
+        let ready = eventCountWaiters.filter {
+            capturedEvents.count >= $0.minimum
+        }
+        eventCountWaiters.removeAll {
+            capturedEvents.count >= $0.minimum
+        }
+        ready.forEach { $0.continuation.resume() }
+    }
 }
 
 private actor TelemetryTestSleeper {
@@ -53,11 +74,15 @@ private actor TelemetryTestSleeper {
     private var continuations: [
         CheckedContinuation<Void, Never>
     ] = []
+    private var pendingCountWaiters: [
+        (minimum: Int, continuation: CheckedContinuation<Void, Never>)
+    ] = []
 
     func sleep(for duration: Duration) async {
         requestedDurations.append(duration)
         await withCheckedContinuation { continuation in
             continuations.append(continuation)
+            resumePendingCountWaiters()
         }
     }
 
@@ -69,8 +94,25 @@ private actor TelemetryTestSleeper {
         requestedDurations
     }
 
+    func waitUntilPendingCount(_ minimum: Int) async {
+        guard continuations.count < minimum else { return }
+        await withCheckedContinuation { continuation in
+            pendingCountWaiters.append((minimum, continuation))
+        }
+    }
+
     func resumeNext() {
         continuations.removeFirst().resume()
+    }
+
+    private func resumePendingCountWaiters() {
+        let ready = pendingCountWaiters.filter {
+            continuations.count >= $0.minimum
+        }
+        pendingCountWaiters.removeAll {
+            continuations.count >= $0.minimum
+        }
+        ready.forEach { $0.continuation.resume() }
     }
 }
 
@@ -300,19 +342,13 @@ struct TelemetryTests {
         )
 
         controller.applicationDidBecomeActive()
-        await waitUntil {
-            let eventCount = await transport.events().count
-            let pendingCount = await sleeper.pendingCount()
-            return eventCount == 1 && pendingCount == 1
-        }
+        await transport.waitUntilEventCount(1)
+        await sleeper.waitUntilPendingCount(1)
 
         date = date.addingTimeInterval(20)
         await sleeper.resumeNext()
-        await waitUntil {
-            let eventCount = await transport.events().count
-            let pendingCount = await sleeper.pendingCount()
-            return eventCount == 2 && pendingCount == 1
-        }
+        await transport.waitUntilEventCount(2)
+        await sleeper.waitUntilPendingCount(1)
 
         #expect(
             await sleeper.durations().first == .seconds(10)
@@ -358,11 +394,8 @@ struct TelemetryTests {
         )
 
         controller.applicationDidBecomeActive()
-        await waitUntil {
-            let eventCount = await transport.events().count
-            let pendingCount = await sleeper.pendingCount()
-            return eventCount == 1 && pendingCount == 1
-        }
+        await transport.waitUntilEventCount(1)
+        await sleeper.waitUntilPendingCount(1)
 
         controller.applicationWillResignActive()
         date = date.addingTimeInterval(20)

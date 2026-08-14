@@ -108,21 +108,17 @@ struct KeyboardNavigationModelTests {
         let hostID = UUID()
         let names = (0 ..< 24).map {
             "session-\($0)-\(String(repeating: "x", count: 48))"
-        }
-        let snapshot = WorkspaceSnapshot.fixture(hosts: [
-            .fixture(
-                id: hostID,
-                tmuxSessions: names.map {
-                    .init(name: $0, managed: false, windows: [])
-                }
-            ),
-        ])
-        let context = KeyboardNavigationContext(snapshot: snapshot)
-        let expected = names.sorted {
+        }.sorted {
             $0.localizedStandardCompare($1) == .orderedAscending
-        }.map {
-            WorkspaceNavigationTarget.tmuxSession(hostID: hostID, name: $0)
         }
+        let rows = names.map { name in
+            WorkspaceSidebarRow(
+                target: .tmuxSession(hostID: hostID, name: name),
+                icon: .tmuxSession,
+                title: name
+            )
+        }
+        let expected = rows.map(\.target)
         let current = expected[expected.count / 2]
 
         let allSucceeded = await withTaskGroup(
@@ -137,9 +133,9 @@ struct KeyboardNavigationModelTests {
                             count: 512 + ((worker + iteration) % 512)
                         )
                         let actual = withExtendedLifetime(noise) {
-                            KeyboardNavigationModel.siblingTargets(
-                                for: current,
-                                in: context
+                            KeyboardNavigationModel.matchingTargets(
+                                in: rows,
+                                currentTarget: current
                             )
                         }
                         guard actual == expected else { return false }

@@ -101,7 +101,7 @@ public enum KeyboardNavigationModel {
         return []
     }
 
-    private static func matchingTargets(
+    static func matchingTargets(
         in rows: [WorkspaceSidebarRow],
         currentTarget: WorkspaceNavigationTarget
     ) -> [WorkspaceNavigationTarget]? {
