@@ -658,10 +658,16 @@ final class TerminalSurfacePreviewTests: XCTestCase {
     private func makeSurface() throws -> TerminalSurfaceView {
         let runtime = retainedRuntime()
         let app = try XCTUnwrap(runtime.unsafeAppHandle)
-        return TerminalSurfaceView(
+        let view = TerminalSurfaceView(
             app: app,
             configuration: TerminalSurfaceConfiguration()
         )
+        _ = try XCTUnwrap(
+            view.surfaceHandle,
+            view.error?.localizedDescription
+                ?? "libghostty surface creation failed"
+        )
+        return view
     }
 
     private func makeIOSurface(
@@ -679,7 +685,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
 
     private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
-            let (pipeline, _) = makeIsolatedPipeline()
+            let (pipeline, _) = makeIsolatedSurfacePipeline()
             try! FileManager.default.createDirectory(
                 at: pipeline.paths.configDirectory,
                 withIntermediateDirectories: true
