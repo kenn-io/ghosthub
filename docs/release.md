@@ -364,6 +364,163 @@ started pull-request check for these automation PRs. This boundary deliberately
 avoids a personal access token, separate GitHub App, or credential in Ghosthub's
 release environment.
 
+## Nightly channel
+
+The nightly channel is an opt-in production build of `main` for early exposure
+to regressions between stable releases. It deliberately keeps the stable
+`com.ghosthub` bundle identifier and app-owned state, so installing Ghosthub
+Nightly replaces a stable installation at the same application path. Its
+`Ghosthub Nightly` display name, About version, feed URL, and Sparkle public key
+are selected at build time. It never creates a tag or GitHub release and is not
+linked from ghosthub.ai or consumed by Homebrew.
+
+`.github/workflows/nightly.yml` runs at 08:00 UTC and exits before allocating a
+macOS runner when the current `main` source revision is already the completed
+channel revision. A manual `workflow_dispatch` with `force: true` rebuilds that
+same source for recovery. Every attempt receives a new immutable URL under:
+
+```text
+builds/<build>/runs/<run>/attempts/<attempt>/
+```
+
+This attempt component is mandatory even for a same-day retry: cached damaged
+bytes are never replaced at an existing immutable URL. Publication uploads the
+immutable DMG and checksums first, then updates `appcast.xml`, the unlisted
+mutable `Ghosthub_Nightly_latest_macos_arm64.dmg` bootstrap pointer, completes
+retention cleanup, and finally updates `channel.json`. The manifest is the
+completion marker and records the source revision, monotonically increasing
+commit-count build number, workflow run and candidate attempt, timestamp,
+immutable DMG URL, and SHA-256. A publish-only job retry reuses that candidate
+attempt's verified artifact and immutable URL instead of substituting the
+retry's newer workflow-attempt number. Eligibility validates both the manifest
+and appcast; a missing, malformed, signature-incomplete, or mismatched appcast
+is repairable even when the source revision has not changed. Cleanup protects
+the build named by the prior manifest until the replacement manifest commits,
+and failed cleanup leaves that prior manifest in place so the next run retries
+publication. Eligibility also fingerprints the prior manifest. Immediately
+before changing mutable objects, publication reads `channel.json` directly
+from object storage and rejects a lower build, a conflicting source revision,
+or any state that differs from the eligibility fingerprint. The final manifest
+write is conditional on the object-store ETag observed by that read, so a
+concurrent channel change fails instead of being overwritten. These fences
+make a delayed retry recoverable rather than allowing it to roll the completed
+channel back; workflow concurrency remains responsible for preventing normal
+publication overlap.
+
+Create a `nightly-signing` GitHub Actions environment with no required
+reviewers and deployment branches restricted to `main`. Store these values as
+environment secrets, never repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_CERTIFICATE` | Base64-encoded Developer ID Application `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | Password used to export the `.p12` |
+| `APPLE_SIGNING_IDENTITY` | Full `Developer ID Application: … (TEAMID)` identity |
+| `APPLE_API_KEY` | App Store Connect API key ID |
+| `APPLE_API_ISSUER` | App Store Connect issuer UUID |
+| `APPLE_API_KEY_CONTENT` | Base64-encoded `.p8` API key |
+| `NIGHTLY_SPARKLE_ED_PRIVATE_KEY` | Nightly-only Sparkle Ed25519 private seed |
+| `NIGHTLY_S3_ACCESS_KEY_ID` | Nightly object-store access key |
+| `NIGHTLY_S3_SECRET_ACCESS_KEY` | Nightly object-store secret key |
+
+Configure these non-secret environment variables:
+
+| Variable | Value |
+| --- | --- |
+| `NIGHTLY_SPARKLE_PUBLIC_ED_KEY` | Public key matching the nightly private seed |
+| `NIGHTLY_S3_ENDPOINT_URL` | S3-compatible API endpoint |
+| `NIGHTLY_S3_REGION` | Object-store region |
+| `NIGHTLY_S3_BUCKET` | Bucket serving `nightly-downloads.ghosthub.ai` |
+
+Keep the nightly Sparkle key, Apple credentials, and object-store credentials
+in the shared Kenn Software LLC 1Password vault. The bucket permits public
+object reads but not listing, and its write credential is scoped to this
+bucket. Serve immutable build objects with a one-year immutable cache policy;
+serve `appcast.xml`, the latest DMG, and `channel.json` with `no-cache`. Add an
+`X-Robots-Tag: noindex, nofollow, noarchive` response header for the public
+host. Cleanup retains the current build and the 29 highest lower numeric build
+prefixes, including every run attempt within each retained build. While a new
+manifest is being committed, the prior manifest's build is also protected and
+may temporarily extend retention by one build. Cleanup ignores non-ASCII or
+structurally unsafe prefixes rather than deleting them.
+
+Stable and nightly have distinct Sparkle keys, but they share the Apple
+Developer ID identity that Sparkle can use for key rotation. The separate
+nightly key is therefore defense in depth. Stable-feed routing and publication
+authority are the hard operational boundary: nightly credentials can write
+only the nightly object host and cannot change GitHub's stable release or
+appcast. The approval-gated `release-signing` environment remains the only
+automated path authorized to publish stable updates.
+
+To enroll, quit Ghosthub and back up all state shared by the two channels:
+
+- the resolved application-state directory (`~/.ghosthub/` by default);
+- the resolved configuration directory (`~/.config/ghosthub/` by default,
+  including any target selected by `init.toml` or an environment override); and
+- the `com.ghosthub` preferences domain, exported with
+  `defaults export com.ghosthub Ghosthub-preferences.plist`.
+
+The latest-DMG URL is a mutable convenience pointer on an object host that is
+not trusted to authorize code. The first install does not pass through
+Sparkle, so verify the DMG and mounted app's Apple Team Identifier before
+copying it. Checking the DMG before mounting also rejects an otherwise valid
+image notarized by another Developer ID:
+
+```bash
+bash <<'SCRIPT'
+set -euo pipefail
+nightly_work="$(mktemp -d -t Ghosthub_Nightly)"
+nightly_dmg="$nightly_work/Ghosthub_Nightly.dmg"
+nightly_mount="$nightly_work/mount"
+mkdir "$nightly_mount"
+cleanup() {
+  hdiutil detach "$nightly_mount" >/dev/null 2>&1 || true
+  rm -f "$nightly_dmg"
+  rmdir "$nightly_mount" >/dev/null 2>&1 || true
+  rmdir "$nightly_work" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+verify_team() {
+  local path="$1"
+  local codesign_output
+  local team_id
+  codesign_output="$(codesign -dv --verbose=4 "$path" 2>&1)"
+  printf '%s\n' "$codesign_output"
+  team_id="$(printf '%s\n' "$codesign_output" | sed -n 's/^TeamIdentifier=//p')"
+  if [[ "$team_id" != "2YMZH84KR8" ]]; then
+    printf 'Refusing code signed by unexpected Apple team: %s\n' "$team_id" >&2
+    exit 1
+  fi
+}
+
+curl --fail --location \
+  --output "$nightly_dmg" \
+  https://nightly-downloads.ghosthub.ai/Ghosthub_Nightly_latest_macos_arm64.dmg
+codesign --verify --strict --verbose=2 "$nightly_dmg"
+verify_team "$nightly_dmg"
+spctl --assess --type open --context context:primary-signature --verbose=2 \
+  "$nightly_dmg"
+hdiutil attach -readonly -nobrowse -mountpoint "$nightly_mount" "$nightly_dmg"
+codesign --verify --deep --strict --verbose=2 "$nightly_mount/Ghosthub.app"
+verify_team "$nightly_mount/Ghosthub.app"
+spctl --assess --type execute --verbose=2 "$nightly_mount/Ghosthub.app"
+open "$nightly_mount"
+read -r -p 'After copying Ghosthub.app to Applications, press Return to unmount: ' _
+SCRIPT
+```
+
+Confirm **Ghosthub Nightly** and the expected date and source revision in About
+before relying on it. To leave the channel, quit the app and reinstall the
+latest stable DMG from ghosthub.ai. Restore the state and configuration
+directories and import the preferences with
+`defaults import com.ghosthub Ghosthub-preferences.plist` only if the nightly
+changed shared state incompatibly; the release process does not add a downgrade
+compatibility layer. Loss of the nightly Sparkle key requires a manual
+reinstall. Compromise of that key or of nightly object-store access is a
+nightly release incident; compromise of the shared Apple signing identity is
+an incident for both channels.
+
 ## Local packaging
 
 Both debug and release app bundles require the local kwt binary and complete
