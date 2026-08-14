@@ -292,7 +292,6 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
         "00000000000000000000000000000000",
         worktree.session_name(),
         None,
-        Some(&target),
         &cancellation,
     );
     assert!(
@@ -305,6 +304,8 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
         "a rejected removal must preserve the exact session"
     );
 
+    host.kill_live_session(&target, &cancellation)
+        .expect("stop the freshly confirmed exact session");
     host.remove_kwt_worktree(
         &endpoint,
         &runtime,
@@ -313,10 +314,9 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
         generation,
         worktree.session_name(),
         None,
-        Some(&target),
         &cancellation,
     )
-    .expect("atomically stop the exact session and remove the worktree");
+    .expect("remove the worktree while the exact session remains absent");
     assert!(
         !host
             .session_is_running(&endpoint, &runtime, worktree.session_name(), &cancellation,)

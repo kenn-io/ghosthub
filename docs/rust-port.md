@@ -737,13 +737,14 @@ tombstones that path and generation in the cached tree before broader
 reconciliation, so a KWT outage cannot resurrect an openable deleted row.
 Before the removal dialog becomes actionable, a background query captures the
 exact live tmux identity and socket when one exists. Confirmation consumes
-that authority and invokes pinned KWT's guarded removal; KWT revalidates the
-project, registration, generation, socket, and exact session identity under its
-lifecycle lock before terminating the session and removing the checkout. If
-the client exits and a same-named replacement starts, removal fails closed and
-the user must review the replacement. KWT rows carry display identity and
-exact session names; they do not acquire creation, repair, or destruction
-authority from cached inventory.
+that authority and terminates only the freshly confirmed tmux identity.
+Ghosthub then invokes pinned KWT's absence-guarded removal; KWT revalidates the
+project, registration, generation, and socket under its lifecycle lock and
+requires the workspace session to remain absent before removing the checkout.
+If the client exits and a same-named replacement starts, either the exact kill
+or KWT's absence guard fails closed and the user must review the replacement.
+KWT rows carry display identity and exact session names; they do not acquire
+creation, repair, or destruction authority from cached inventory.
 
 Pull-request import follows the same ownership boundary. The pinned helper is
 the sole provider API for listing open pull requests and importing one into an
@@ -765,9 +766,11 @@ workspace verifies the exact project, registration fingerprint, path,
 generation, session name, and socket before and after launch. Readiness is
 confirmed by finding the spawned client PID on that protected socket. A
 protected presentation never aliases or deduplicates with a same-named session
-on the default tmux server. Protected removal remains unavailable until KWT can
-atomically validate and terminate the protected session while holding its
-lifecycle lock.
+on the default tmux server. Protected removal uses the same confirmed exact
+kill followed by absence-guarded KWT removal as default-socket worktrees.
+KWT's project lifecycle fence serializes that absence check with guarded
+worktree session establishment, so a concurrent reopen prevents checkout
+deletion.
 
 The remote helper activation root is a separate cross-controller contract:
 

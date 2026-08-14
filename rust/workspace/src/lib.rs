@@ -3133,9 +3133,10 @@ impl Workspace {
     /// Remove one exact non-main KWT worktree while preserving its Git branch.
     ///
     /// The operation revalidates the project, worktree generation, WSL
-    /// runtime, and expected tmux state off the UI thread. KWT validates and
-    /// terminates the confirmed session under the same lifecycle lock used by
-    /// guarded open before it removes the checkout.
+    /// runtime, and expected tmux state off the UI thread. Ghosthub terminates
+    /// a freshly confirmed exact tmux identity first; KWT then requires that
+    /// workspace session to remain absent while it removes the checkout under
+    /// the same lifecycle fence used by guarded open.
     ///
     /// # Errors
     ///
@@ -7406,6 +7407,17 @@ fn run_kwt_worktree_remove(
         return KwtWorktreeOutcome::default();
     }
 
+    if let Some(target) = live_target {
+        if let Err(error) = task.host.kill_live_session(target, &task.cancellation) {
+            fail_kwt_worktree_remove(inner, task, error.to_string());
+            return KwtWorktreeOutcome::default();
+        }
+        Workspace {
+            inner: Arc::clone(inner),
+        }
+        .finish_session_kill(target);
+    }
+
     if let Err(error) = task.host.remove_kwt_worktree(
         &task.endpoint,
         &task.runtime,
@@ -7414,7 +7426,6 @@ fn run_kwt_worktree_remove(
         generation,
         session_name,
         socket_name,
-        live_target,
         &task.cancellation,
     ) {
         if error.kind() == DiagnosticKind::Timeout {
@@ -7428,12 +7439,6 @@ fn run_kwt_worktree_remove(
         }
         fail_kwt_worktree_remove(inner, task, error.to_string());
         return KwtWorktreeOutcome::default();
-    }
-    if let Some(target) = live_target {
-        Workspace {
-            inner: Arc::clone(inner),
-        }
-        .finish_session_kill(target);
     }
     tombstone_removed_kwt_worktree(inner, task, worktree_path, generation);
 

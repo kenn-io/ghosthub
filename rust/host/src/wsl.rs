@@ -1593,11 +1593,14 @@ impl<R: CommandRunner> WslHost<R> {
         }
     }
 
-    /// Remove one exact KWT worktree while preserving its Git branch.
+    /// Remove one exact KWT worktree while preserving its Git branch and
+    /// requiring its workspace session to remain absent.
     ///
     /// KWT owns the filesystem and registry mutation. The expected generation
     /// prevents a stale inventory row from removing a replacement checkout at
-    /// the same path.
+    /// the same path. KWT serializes the absence guard with its session launch
+    /// paths, so callers must terminate any freshly confirmed live identity
+    /// before invoking this operation.
     ///
     /// # Errors
     ///
@@ -1616,20 +1619,8 @@ impl<R: CommandRunner> WslHost<R> {
         generation: &str,
         session_name: &str,
         socket_name: Option<&str>,
-        live_target: Option<&LiveSessionTarget>,
         cancellation: &CancellationToken,
     ) -> Result<(), HostError> {
-        if let Some(target) = live_target
-            && (target.endpoint() != endpoint
-                || target.runtime() != runtime
-                || target.name() != session_name
-                || target.socket_name() != socket_name)
-        {
-            return Err(HostError::new(
-                DiagnosticKind::Transport,
-                "the confirmed worktree session identity changed",
-            ));
-        }
         self.require_runtime(endpoint, runtime, cancellation)?;
         let bundle = self.config.kwt_bundle().ok_or_else(|| {
             HostError::new(
@@ -1645,19 +1636,8 @@ impl<R: CommandRunner> WslHost<R> {
             generation.to_owned(),
             "--if-session-name".to_owned(),
             session_name.to_owned(),
+            "--if-session-absent".to_owned(),
         ];
-        if let Some(target) = live_target {
-            command.extend([
-                "--if-session-server-pid".to_owned(),
-                target.identity().server_pid().to_string(),
-                "--if-session-id".to_owned(),
-                target.identity().session_id().to_owned(),
-                "--if-session-created".to_owned(),
-                target.identity().created_at().to_string(),
-            ]);
-        } else {
-            command.push("--if-session-absent".to_owned());
-        }
         if socket_name.is_none()
             && let Some(socket_directory) = self.config.tmux_tmpdir.as_deref()
         {
@@ -4519,7 +4499,7 @@ fn classify_kwt_command_failure(output: &CommandOutput, subject: &str) -> HostEr
         return classify_command_failure(output.status, &output.stderr, subject);
     }
     let Some(failure) = parse_command_failure(&output.stdout) else {
-        return classify_command_failure(output.status, &output.stderr, subject);
+        return classify_kwt_cli_failure(output.status, &output.stderr, subject);
     };
     HostError::new(
         if failure.code() == "inventory_timeout" {
@@ -4529,6 +4509,33 @@ fn classify_kwt_command_failure(output: &CommandOutput, subject: &str) -> HostEr
         },
         friendly_kwt_failure(&failure),
     )
+}
+
+fn classify_kwt_cli_failure(status: i32, stderr: &[u8], subject: &str) -> HostError {
+    let stderr = String::from_utf8_lossy(stderr);
+    let detail = stderr
+        .lines()
+        .take_while(|line| line.trim() != "Usage:")
+        .collect::<Vec<_>>()
+        .join("\n");
+    let detail = detail
+        .trim()
+        .strip_prefix("Error: ")
+        .unwrap_or(detail.trim());
+    let lower = detail.to_ascii_lowercase();
+    let kind = if status == 127 || lower.contains("no such file") {
+        DiagnosticKind::ExecutableNotFound
+    } else if lower.contains("permission denied") {
+        DiagnosticKind::PermissionDenied
+    } else {
+        DiagnosticKind::Transport
+    };
+    let detail = if detail.is_empty() {
+        format!("command exited with status {status}")
+    } else {
+        detail.to_owned()
+    };
+    HostError::new(kind, format!("{subject}: {detail}"))
 }
 
 fn friendly_kwt_failure(failure: &crate::kwt::KwtCommandFailure) -> String {
@@ -5201,7 +5208,6 @@ mod tests {
             "0123456789abcdef0123456789abcdef",
             "kwt-workspace-widget-feature-ready",
             None,
-            None,
             &cancellation,
         )
         .expect("remove exact worktree while preserving its branch");
@@ -5259,7 +5265,6 @@ mod tests {
             "fedcba9876543210fedcba9876543210",
             "kwt-pr-widget-17",
             Some("kwt-pr-fedcba9876543210"),
-            None,
             &cancellation,
         )
         .expect("remove an absent protected worktree session on its exact socket");
@@ -5381,7 +5386,6 @@ mod tests {
                 "/work/widget/feature-ready",
                 "0123456789abcdef0123456789abcdef",
                 "kwt-workspace-widget-feature-ready",
-                None,
                 None,
                 &cancellation,
             )
@@ -5686,6 +5690,25 @@ mod tests {
         );
         assert!(!error.to_string().contains("daemon_start_failed"));
         assert!(!error.to_string().contains("kwt projects"));
+    }
+
+    #[test]
+    fn kwt_cli_failures_do_not_expose_cobra_usage() {
+        let output = CommandOutput {
+            status: 1,
+            stdout: Vec::new(),
+            stderr: b"Error: stop the session before guarded worktree removal\nUsage:\n  kwt remove [pattern] [flags]\n\nFlags:\n  -h, --help\n"
+                .to_vec(),
+        };
+
+        let error = classify_kwt_command_failure(&output, "remove KWT worktree");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(
+            error.to_string(),
+            "remove KWT worktree: stop the session before guarded worktree removal"
+        );
+        assert!(!error.to_string().contains("Usage:"));
     }
 
     #[test]

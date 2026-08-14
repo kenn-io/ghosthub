@@ -245,9 +245,11 @@ explicit `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery
 and attachment; cached rows never correlate sessions across those server roots.
 Removing a generation-backed worktree on either server type is separately
 confirmed. Ghosthub captures the exact socket and live session identity, when
-present, and delegates one guarded operation to pinned KWT. KWT revalidates
-the project, generation, socket, and session identity under its lifecycle lock
-before terminating the session and removing the checkout.
+present, and terminates only that freshly confirmed tmux identity after
+approval. It then delegates an absence-guarded removal to pinned KWT. KWT
+revalidates the project, generation, and socket under its lifecycle lock and
+refuses removal if the workspace session reappears before deleting the
+checkout.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
