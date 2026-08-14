@@ -381,12 +381,16 @@ builds/<build>/runs/<run>/attempts/<attempt>/
 This attempt component is mandatory even for a same-day retry: cached damaged
 bytes are never replaced at an existing immutable URL. Publication uploads the
 immutable DMG and checksums first, then updates `appcast.xml`, the unlisted
-`Ghosthub_Nightly_latest_macos_arm64.dmg` convenience download, and finally
-`channel.json`. The manifest is the completion marker and records the source
-revision, monotonically increasing commit-count build number, workflow run and
-attempt, timestamp, immutable DMG URL, and SHA-256. Eligibility validates both
-the manifest and appcast; a missing, malformed, or mismatched appcast is
-repairable even when the source revision has not changed.
+`Ghosthub_Nightly_latest_macos_arm64.dmg` convenience download, completes
+retention cleanup, and finally updates `channel.json`. The manifest is the
+completion marker and records the source revision, monotonically increasing
+commit-count build number, workflow run and candidate attempt, timestamp,
+immutable DMG URL, and SHA-256. A publish-only job retry reuses that candidate
+attempt's verified artifact and immutable URL instead of substituting the
+retry's newer workflow-attempt number. Eligibility validates both the manifest
+and appcast; a missing, malformed, or mismatched appcast is repairable even
+when the source revision has not changed, and failed cleanup leaves the prior
+manifest in place so the next run retries publication.
 
 Create a `nightly-signing` GitHub Actions environment with no required
 reviewers and deployment branches restricted to `main`. Store these values as

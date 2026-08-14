@@ -83,6 +83,7 @@ jobs:
     outputs:
       dmg-name: ${{ steps.nightly.outputs.dmg_name }}
       built-at: ${{ steps.nightly.outputs.built_at }}
+      candidate-attempt: ${{ steps.nightly.outputs.candidate_attempt }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -183,6 +184,7 @@ jobs:
           {
             echo "dmg_name=$dmg_name"
             echo "built_at=$built_at"
+            echo "candidate_attempt=$GITHUB_RUN_ATTEMPT"
           } >> "$GITHUB_OUTPUT"
           {
             echo "RELEASE_DMG_NAME=$dmg_name"
@@ -375,7 +377,7 @@ jobs:
       - name: Download verified nightly candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ghosthub-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ghosthub-nightly-${{ github.run_id }}-${{ needs.macos-nightly.outputs.candidate-attempt }}
           path: .dist/nightly
 
       - name: Publish nightly channel
@@ -389,6 +391,7 @@ jobs:
           RELEASE_DMG_NAME: ${{ needs.macos-nightly.outputs.dmg-name }}
           NIGHTLY_BUILD_AT: ${{ needs.macos-nightly.outputs.built-at }}
           NIGHTLY_BUILD_VERSION: ${{ needs.eligibility.outputs.build }}
+          NIGHTLY_CANDIDATE_ATTEMPT: ${{ needs.macos-nightly.outputs.candidate-attempt }}
         shell: bash
         run: |
           aws_version="$(aws --version 2>&1)"
@@ -408,4 +411,4 @@ jobs:
             --build "$NIGHTLY_BUILD_VERSION" \
             --built-at "$NIGHTLY_BUILD_AT" \
             --workflow-run-id "$GITHUB_RUN_ID" \
-            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT"
+            --workflow-run-attempt "$NIGHTLY_CANDIDATE_ATTEMPT"

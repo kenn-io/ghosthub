@@ -593,13 +593,13 @@ def publish_nightly(
         MUTABLE_CACHE_CONTROL,
         DMG_CONTENT_TYPE,
     )
+    cleanup_old_builds(store, manifest, retain_builds=30)
     store.put_bytes(
         "channel.json",
         manifest.to_json(),
         MUTABLE_CACHE_CONTROL,
         JSON_CONTENT_TYPE,
     )
-    cleanup_old_builds(store, manifest, retain_builds=30)
     return manifest
 
 

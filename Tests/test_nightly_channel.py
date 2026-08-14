@@ -391,6 +391,34 @@ def test_publication_advances_mutable_pointers_only_after_immutable_objects(
     ) == manifest
 
 
+def test_cleanup_failure_preserves_the_previous_completion_manifest(tmp_path):
+    class CleanupFailingStore(MemoryObjectStore):
+        def delete_keys(self, keys: list[str]) -> None:
+            raise RuntimeError("injected cleanup failure")
+
+    previous = ChannelManifest.from_json(
+        json.dumps(manifest_data(build=98)).encode(), PUBLIC_BASE_URL
+    )
+    store = CleanupFailingStore()
+    store.objects["channel.json"] = previous.to_json()
+    store.objects["appcast.xml"] = appcast_data(
+        previous.dmg_url, previous.build
+    )
+    for build in range(1, 32):
+        store.objects[
+            f"builds/{build}/runs/7/attempts/1/artifact.dmg"
+        ] = b"artifact"
+
+    with pytest.raises(RuntimeError, match="cleanup failure"):
+        publish_nightly(store, make_publication(tmp_path))
+
+    assert ChannelManifest.from_json(
+        store.objects["channel.json"], PUBLIC_BASE_URL
+    ) == previous
+    advanced_appcast = AppcastPointer.from_xml(store.objects["appcast.xml"])
+    assert advanced_appcast.build == 99
+
+
 def test_failure_before_appcast_leaves_mutable_objects_absent(tmp_path):
     store = MemoryObjectStore(fail_at=3)
 
