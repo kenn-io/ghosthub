@@ -70,8 +70,10 @@ remote matrix pin is recorded independently as
 cannot change the managed remote path. The revision is also included in GitHub
 release notes. Release CI checks out that revision under
 `.release-inputs/kwt-source` and passes the checkout as `KWT_SOURCE_DIR` when
-building the remote variant matrix; the repository slug used by
-`actions/checkout` is never passed to `git clone`. Release CI records the
+building the remote variant matrix. It builds the local release helper through
+`tools/build_pinned_kwt.sh`, so the helper must pass the same explicit identity
+stamping and isolated daemon validation before signing. The repository slug
+used by `actions/checkout` is never passed to `git clone`. Release CI records the
 helper it built from the pin; a local build against a substituted
 `KWT_BINARY_PATH` is recorded as `unpinned` rather than inheriting the pin. Kwt
 is part of Ghosthub's signed code, but Ghosthub invokes only its CLI and never

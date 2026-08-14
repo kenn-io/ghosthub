@@ -155,12 +155,13 @@ jobs:
 
       - name: Build pinned kwt helper
         shell: bash
-        working-directory: .release-inputs/kwt-source
         run: |
           kwt_binary="$RUNNER_TEMP/kwt"
-          go build -trimpath \
-            -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=$KWT_REF" \
-            -o "$kwt_binary" ./cmd/kwt
+          tools/build_pinned_kwt.sh \
+            "https://github.com/$KWT_REPOSITORY.git" \
+            "$KWT_REF" \
+            "$GITHUB_WORKSPACE/.release-inputs/kwt-source" \
+            "$kwt_binary"
           kwt_archs="$(lipo -archs "$kwt_binary")"
           if [[ "$kwt_archs" != "arm64" ]]; then
             echo "Embedded kwt must be an arm64 Mach-O; found: $kwt_archs" >&2
@@ -170,9 +171,6 @@ jobs:
           kwt_reported="$("$kwt_binary" version)"
           echo "$kwt_reported"
           kwt_version="$(printf '%s\n' "$kwt_reported" | sed -n '1s/^kwt version //p')"
-          # Go's VCS stamping usually supplies the revision here and outranks
-          # the -X value; -X covers the case where stamping is unavailable.
-          # Either way the helper must name the revision it was built from.
           if [[ "$kwt_reported" != *"$KWT_REF"* ]]; then
             echo "Embedded kwt does not report the pinned revision $KWT_REF:" >&2
             echo "$kwt_reported" >&2
