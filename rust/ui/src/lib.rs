@@ -475,6 +475,32 @@ fn apply_worktree_removal_failure(
     true
 }
 
+fn apply_new_worktree_failure(
+    dialog: &mut ProjectDialog,
+    operation_id: u64,
+    project_path: &str,
+    message: String,
+) -> bool {
+    let ProjectDialog::NewWorktree {
+        project_path: dialog_path,
+        operation_id: dialog_operation,
+        loading,
+        submitting,
+        error,
+        ..
+    } = dialog
+    else {
+        return false;
+    };
+    if dialog_path != project_path || *dialog_operation != Some(operation_id) {
+        return false;
+    }
+    *loading = false;
+    *submitting = false;
+    *error = Some(message);
+    true
+}
+
 fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
     let ProjectDialog::NewWorktree {
         branch,
@@ -2261,24 +2287,8 @@ impl RootView {
                     }) {
                         continue;
                     }
-                    match &mut self.project_dialog {
-                        Some(ProjectDialog::NewWorktree {
-                            project_path: dialog_path,
-                            operation_id: dialog_operation,
-                            loading,
-                            loaded,
-                            submitting,
-                            error,
-                            ..
-                        }) if *dialog_path == project_path
-                            && *dialog_operation == Some(operation_id) =>
-                        {
-                            *loading = false;
-                            *loaded = false;
-                            *submitting = false;
-                            *error = Some(message);
-                        }
-                        _ => {}
+                    if let Some(dialog) = &mut self.project_dialog {
+                        apply_new_worktree_failure(dialog, operation_id, &project_path, message);
                     }
                 }
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
@@ -6595,20 +6605,21 @@ mod tests {
         TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
         WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
         WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
-        active_session_selection, application_navigation_width, apply_worktree_removal_failure,
-        can_create_worktree, can_kill_worktree, canonical_terminal_key_with,
-        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
-        coalesce_last_resize, coalesce_last_wheel, has_ambiguous_worktree_source,
-        herdr_row_actions, herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
-        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
-        owns_created_worktree_navigation, pull_request_import_selector,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_group_visibility, session_row_element_id,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
-        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates,
-        visible_kwt_pull_requests, workspace_window_title, worktree_open_mode,
+        active_session_selection, application_navigation_width, apply_new_worktree_failure,
+        apply_worktree_removal_failure, can_create_worktree, can_kill_worktree,
+        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
+        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
+        host_tree_status, input_queue_has_capacity, is_toggle_sidebar_shortcut,
+        kill_confirmation_description, kill_confirmation_title, kwt_operation_failure_owns_dialog,
+        named_key, new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
+        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
+        session_action_menu_position, session_backend_id, session_group_visibility,
+        session_row_element_id, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
+        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
+        tree_zellij_sessions, visible_kwt_branch_candidates, visible_kwt_pull_requests,
+        workspace_window_title, worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -6961,6 +6972,50 @@ mod tests {
         assert_eq!(target.authority, None);
         assert_eq!(target.operation_id, None);
         assert_eq!(error.as_deref(), Some("remove failed"));
+    }
+
+    #[test]
+    fn failed_worktree_creation_keeps_loaded_branches_retryable() {
+        let mut dialog = ProjectDialog::NewWorktree {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            repository: "github.com/acme/widget".to_owned(),
+            project_name: "widget".to_owned(),
+            project_path: "/code/widget".to_owned(),
+            registration_fingerprint: "registration".to_owned(),
+            branch: "testing".to_owned(),
+            mode: NewWorktreeMode::Branch,
+            selected_source: None,
+            selected_pull_request: None,
+            branches: Vec::new(),
+            pull_requests: Vec::new(),
+            operation_id: Some(7),
+            loading: false,
+            loaded: true,
+            submitting: true,
+            error: None,
+        };
+
+        assert!(apply_new_worktree_failure(
+            &mut dialog,
+            7,
+            "/code/widget",
+            "branch already exists".to_owned(),
+        ));
+
+        let ProjectDialog::NewWorktree {
+            loaded,
+            submitting,
+            error,
+            ..
+        } = dialog
+        else {
+            panic!("new-worktree dialog remains active");
+        };
+        assert!(loaded, "successful branch inventory remains reusable");
+        assert!(!submitting);
+        assert_eq!(error.as_deref(), Some("branch already exists"));
+        assert!(can_create_worktree("testing2", loaded, false, submitting));
     }
 
     #[test]
