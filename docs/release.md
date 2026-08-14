@@ -28,8 +28,11 @@ caches `KWT_REF` under `.build`, then stages that exact helper into the debug
 app. A developer can override the repository, revision, source directory, or
 binary path deliberately, but the default never embeds the system kwt.
 `bootstrap-kwt-variants` cross-compiles the complete remote matrix from the
-same pin. Before either debug or release packaging, every variant is checked
-for its expected Mach-O/ELF/PE architecture and embedded pinned revision.
+same pin. Each cross-compile retains its Go symbol table but omits debug
+information, then inspects that actual Mach-O, ELF, or PE artifact for the
+exact pinned version, revision, and revision timestamp before caching it.
+Before either debug or release packaging, every variant is also checked for
+its expected architecture and embedded pinned revision.
 
 Packaging also stages libghostty's own emitted resources: the bundled Ghostty
 theme corpus and shell integration at `Contents/Resources/ghostty`, and the

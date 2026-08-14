@@ -278,7 +278,7 @@ fi
     )
     assert (
         output.with_suffix(".revision").read_text()
-        == f"{second_revision} identity=3"
+        == f"{second_revision} identity=4"
     )
     assert second_revision in subprocess.run(
         [output, "--version"],
@@ -403,9 +403,11 @@ def test_rejects_helper_without_complete_daemon_identity(
     assert not output.with_suffix(".revision").exists()
 
 
-def test_stamps_pinned_source_identity_for_daemon_replacement(
+def identity_fixture(
     tmp_path: Path,
-) -> None:
+    *,
+    omit_linux_revision_time: bool = False,
+) -> tuple[Path, str]:
     repository = tmp_path / "repository"
     repository.mkdir()
     subprocess.run(["git", "init", "-q", repository], check=True)
@@ -428,7 +430,6 @@ import \"os\"
 
 var version = \"dev\"
 var commit = \"none\"
-var revisionTime = \"\"
 
 func Execute() {
     _ = json.NewEncoder(os.Stdout).Encode(map[string]string{
@@ -439,6 +440,30 @@ func Execute() {
 }
 """
     )
+    if omit_linux_revision_time:
+        (command.parent / "revision_time_default.go").write_text(
+            """//go:build !linux
+
+package cmd
+
+var revisionTime = ""
+"""
+        )
+        (command.parent / "revision_time_linux.go").write_text(
+            """//go:build linux
+
+package cmd
+
+const revisionTime = ""
+"""
+        )
+    else:
+        (command.parent / "revision_time.go").write_text(
+            """package cmd
+
+var revisionTime = ""
+"""
+        )
     main = repository / "cmd" / "kwt" / "main.go"
     main.parent.mkdir(parents=True)
     main.write_text(
@@ -466,6 +491,13 @@ func main() { cmd.Execute() }
         capture_output=True,
         text=True,
     ).stdout.strip()
+    return repository, revision
+
+
+def test_stamps_pinned_source_identity_for_daemon_replacement(
+    tmp_path: Path,
+) -> None:
+    repository, revision = identity_fixture(tmp_path)
     output = tmp_path / "output" / "kwt"
 
     result = subprocess.run(
@@ -496,3 +528,31 @@ func main() { cmd.Execute() }
         "revision": revision,
         "revision_time": "2026-08-13T18:42:17Z",
     }
+
+
+def test_rejects_target_that_omits_an_identity_symbol(tmp_path: Path) -> None:
+    repository, revision = identity_fixture(
+        tmp_path,
+        omit_linux_revision_time=True,
+    )
+    output = tmp_path / "output" / "kwt"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "tools/build_pinned_kwt.sh",
+            str(repository),
+            revision,
+            str(tmp_path / "source"),
+            str(output),
+            "linux",
+            "arm64",
+        ],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert not output.exists()
+    assert not output.with_suffix(".revision").exists()

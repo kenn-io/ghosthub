@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+project_root="$(dirname "$script_dir")"
+
 locked=false
 if [[ $# -eq 5 && "$5" == "--locked" ]]; then
   locked=true
@@ -29,7 +32,7 @@ if [[ $# -eq 6 ]]; then
   goarch="$6"
 fi
 stamp="${output}.revision"
-build_identity_schema=3
+build_identity_schema=4
 stamp_value="${revision} identity=${build_identity_schema}"
 if [[ "$targeted" == true ]]; then
   stamp_value="${revision} ${goos}/${goarch} identity=${build_identity_schema}"
@@ -129,6 +132,12 @@ command -v go >/dev/null || {
   printf 'Go is required to build the pinned kwt helper.\n' >&2
   exit 1
 }
+if [[ "$targeted" == true ]]; then
+  command -v uv >/dev/null || {
+    printf 'uv is required to validate cross-compiled kwt helpers.\n' >&2
+    exit 1
+  }
+fi
 
 if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
   printf '%s exists but is not a Git checkout; refusing to replace it.\n' \
@@ -177,10 +186,9 @@ kwt_revision_time="$(
     --format='%cd' \
     "$revision"
 )"
-kwt_build_ldflags="-s -w"
-kwt_build_ldflags+=" -X go.kenn.io/kwt/internal/cmd.version=${revision}"
-kwt_build_ldflags+=" -X go.kenn.io/kwt/internal/cmd.commit=${revision}"
-kwt_build_ldflags+=" -X go.kenn.io/kwt/internal/cmd.revisionTime=${kwt_revision_time}"
+kwt_identity_ldflags="-X go.kenn.io/kwt/internal/cmd.version=${revision}"
+kwt_identity_ldflags+=" -X go.kenn.io/kwt/internal/cmd.commit=${revision}"
+kwt_identity_ldflags+=" -X go.kenn.io/kwt/internal/cmd.revisionTime=${kwt_revision_time}"
 build_helper() (
   helper_output="$1"
   helper_goos="${2:-}"
@@ -189,13 +197,13 @@ build_helper() (
   if [[ -n "$helper_goos" && -n "$helper_goarch" ]]; then
     CGO_ENABLED=0 GOOS="$helper_goos" GOARCH="$helper_goarch" go build \
       -trimpath \
-      -ldflags "$kwt_build_ldflags" \
+      -ldflags "-w ${kwt_identity_ldflags}" \
       -o "$helper_output" \
       cmd/kwt/main.go
   else
     CGO_ENABLED=0 go build \
       -trimpath \
-      -ldflags "$kwt_build_ldflags" \
+      -ldflags "-s -w ${kwt_identity_ldflags}" \
       -o "$helper_output" \
       cmd/kwt/main.go
   fi
@@ -207,11 +215,10 @@ else
   build_helper "$output"
 fi
 
-# The linker silently ignores -X for a symbol it cannot find. Exercise the
-# native helper's isolated daemon interface before asserting that the cache
-# contains the full replacement identity. Cross-compiled variants first build
-# a native probe from the same source and linker flags, then retain their
-# format-specific validation.
+# The linker silently ignores -X for a symbol it cannot find. Exercise native
+# helpers through their isolated daemon interface. Cross-compiled helpers keep
+# their Go symbol table (but not DWARF) so all three exact identity values can
+# be inspected in the artifact that will run on the remote host.
 if [[ "$targeted" == false ]]; then
   chmod 0755 "$output"
   if ! validate_native_identity "$output"; then
@@ -226,20 +233,16 @@ else
     exit 1
   fi
 
-  native_probe_root="$(mktemp -d "${output}.native.XXXXXX")"
-  native_probe="${native_probe_root}/kwt"
-  cleanup_native_probe() {
-    find "$native_probe_root" -depth -delete
-  }
-  trap cleanup_native_probe EXIT
-  build_helper "$native_probe"
-  chmod 0755 "$native_probe"
-  if ! validate_native_identity "$native_probe" "$output"; then
+  if ! uv --directory "$project_root" run --frozen python \
+    "$script_dir/validate_kwt_identity.py" \
+    --binary "$output" \
+    --version "$revision" \
+    --revision "$revision" \
+    --revision-time "$kwt_revision_time"; then
+    printf 'Built kwt does not contain the complete pinned identity.\n' >&2
     rm -f "$output" "$stamp"
     exit 1
   fi
-  cleanup_native_probe
-  trap - EXIT
 fi
 
 printf '%s' "$stamp_value" >"$stamp"
