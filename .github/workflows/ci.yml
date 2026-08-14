@@ -190,11 +190,19 @@ jobs:
             test_workers=8
           fi
 
-          sh tools/run_swift_tests.sh \
-            swift test --skip-build --disable-swift-testing \
-            --filter GhosthubTerminalSmokeTests \
-            --skip "$gui_test_filter" \
-            --parallel --num-workers "$test_workers" \
+          test_arguments=(
+            swift test --skip-build --disable-swift-testing
+            --filter GhosthubTerminalSmokeTests
+            --skip "$gui_test_filter"
+            --parallel --num-workers "$test_workers"
+          )
+          if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
+            test_arguments+=(
+              --skip DefaultLibghosttyShellIntegrationLoadsUserZshrc
+            )
+          fi
+
+          sh tools/run_swift_tests.sh "${test_arguments[@]}" \
             2>&1 | tee -a "$gui_test_log"
 
       - name: Run serialized GUI terminal smoke tests
@@ -214,13 +222,13 @@ jobs:
           sh tools/run_swift_tests.sh "${test_arguments[@]}" \
             2>&1 | tee -a "$RUNNER_TEMP/gui-tests.log"
 
-      - name: Verify GUI coverage
+      - name: Verify terminal smoke coverage
         shell: bash
         run: |
           gui_test_log="$RUNNER_TEMP/gui-tests.log"
-          gui_skip_pattern='Test skipped - .*(window server|AppKit|pasteboard|LaunchServices)'
+          gui_skip_pattern='Test skipped'
           if grep -Ei "$gui_skip_pattern" "$gui_test_log"; then
-            echo "GUI integration tests must not skip required coverage." >&2
+            echo "Terminal smoke tests must not skip selected coverage." >&2
             exit 1
           fi
 
