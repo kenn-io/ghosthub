@@ -376,6 +376,16 @@ jobs:
         with:
           enable-cache: false
 
+      - name: Create nightly release token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.NIGHTLY_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.NIGHTLY_RELEASE_APP_PRIVATE_KEY }}
+          owner: kenn-io
+          repositories: ghosthub-nightly
+          permission-contents: write
+
       - name: Download verified nightly candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -384,7 +394,7 @@ jobs:
 
       - name: Publish nightly channel
         env:
-          GH_TOKEN: ${{ secrets.NIGHTLY_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
           RELEASE_DMG_NAME: ${{ needs.macos-nightly.outputs.dmg-name }}
           NIGHTLY_BUILD_AT: ${{ needs.macos-nightly.outputs.built-at }}
           NIGHTLY_BUILD_VERSION: ${{ needs.eligibility.outputs.build }}
@@ -392,10 +402,6 @@ jobs:
           NIGHTLY_PREVIOUS_CHANNEL_VERSION: ${{ needs.eligibility.outputs.previous-channel-version }}
         shell: bash
         run: |
-          if [[ -z "$GH_TOKEN" ]]; then
-            echo "NIGHTLY_RELEASE_TOKEN is required." >&2
-            exit 1
-          fi
           gh --version
           arguments=(
             publish

@@ -403,9 +403,11 @@ a release asset in the canonical repository or change the stable appcast. The
 protected GitHub `release-signing` environment and its independent approval
 policy, the `main`-restricted unattended `nightly-signing` environment, the
 organization-controlled 1Password vault, both Sparkle private keys, the shared
-Apple signing credentials, and the repository-scoped nightly release credential
-are trusted operational components. Loss or suspected disclosure of a signing
-identity or publication credential is a release incident governed by the Kenn
+Apple signing credentials, and the `kenn-dist-update-bot` private key are
+trusted operational components. The workflow mints a short-lived installation
+token restricted to the nightly distribution repository and requests only
+Contents write permission. Loss or suspected disclosure of a signing identity
+or publication credential is a release incident governed by the Kenn
 operations runbook; it is not resolved by silently generating a replacement
 key.
 

@@ -425,22 +425,23 @@ environment secrets, never repository secrets:
 | `APPLE_API_ISSUER` | App Store Connect issuer UUID |
 | `APPLE_API_KEY_CONTENT` | Base64-encoded `.p8` API key |
 | `NIGHTLY_SPARKLE_ED_PRIVATE_KEY` | Nightly-only Sparkle Ed25519 private seed |
-| `NIGHTLY_RELEASE_TOKEN` | Fine-grained token with Contents read/write only for `kenn-io/ghosthub-nightly` |
+| `NIGHTLY_RELEASE_APP_PRIVATE_KEY` | Private key for the `kenn-dist-update-bot` GitHub App |
 
 Configure these non-secret environment variables:
 
 | Variable | Value |
 | --- | --- |
 | `NIGHTLY_SPARKLE_PUBLIC_ED_KEY` | Public key matching the nightly private seed |
+| `NIGHTLY_RELEASE_APP_CLIENT_ID` | Client ID for the `kenn-dist-update-bot` GitHub App |
 
-Keep the nightly Sparkle key, Apple credentials, and release token in the
-shared Kenn Software LLC 1Password vault. The release token must not have
-access to the canonical `kenn-io/ghosthub` repository. Prefer a GitHub App
-installation token with the same repository scope when the workflow has access
-to that app's credentials; a fine-grained personal access token is the initial
-supported credential. GitHub Actions remains disabled in the distribution
-repository because all building, signing, notarization, and publication logic
-lives in `ghosthub/.github/workflows/nightly.yml`.
+Keep the nightly Sparkle key, Apple credentials, and GitHub App private key in
+the shared Kenn Software LLC 1Password vault. Install `kenn-dist-update-bot` on
+`kenn-io/ghosthub-nightly`. The workflow exchanges its private key for a
+short-lived installation token restricted to that repository and requests only
+Contents write permission; no personal access token is supported or required.
+GitHub Actions remains disabled in the distribution repository because all
+building, signing, notarization, and publication logic lives in
+`ghosthub/.github/workflows/nightly.yml`.
 
 Cleanup retains every release attempt for the current build and the 29 highest
 lower numeric builds. It ignores drafts, prereleases, and tags that do not
