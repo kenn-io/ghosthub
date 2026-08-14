@@ -366,6 +366,23 @@ Compromise of a trusted Sparkle private key or the shared Apple signing
 identity is therefore a release incident, not a failure this model claims the
 client can contain.
 
+The first nightly install does not inherit Sparkle authorization. Its mutable
+latest-DMG pointer is only a discovery convenience: before copying the mounted
+app, the operator verifies Gatekeeper acceptance and pins both the DMG and app
+code signatures to Kenn Software's Apple Team Identifier, `2YMZH84KR8`. The
+DMG identity is checked before mounting it. Control of the nightly object host
+plus an unrelated notarized Developer ID therefore cannot authorize a
+bootstrap app. Compromise of Kenn Software's shared Apple signing identity
+remains a release incident under the preceding assumption.
+
+Nightly eligibility treats a feed with either required Sparkle signature
+missing or structurally incomplete as repairable. This check is operational,
+not an authorization decision: verifying an enclosure signature requires the
+archive bytes, while clients verify both the feed and downloaded archive with
+Sparkle. A hostile nightly object host can still suppress or corrupt channel
+metadata and deny nightly-update availability, but cannot turn that metadata
+into an accepted update without a trusted signing identity.
+
 Stable-feed routing and publication authority are the operational boundary
 that protects stable users from nightly automation. The unattended nightly
 environment can write only the nightly object store and cannot create a GitHub
@@ -415,6 +432,8 @@ not security-boundary violations.
 - sandboxing commands the user chooses to run in a terminal pane
 - availability of the network, SSH service, tmux server, or external state
   provider
+- availability of nightly updates after compromise of the nightly object host
+  or its delivery path
 
 The configured-host assumption does not waive the explicit local-capability
 boundaries above. A remote pane that obtains the Mac clipboard through OSC 52,

@@ -185,6 +185,11 @@ key is defense in depth. The private keys live only in 1Password and their
 respective GitHub environments: approval-gated `release-signing` for stable
 and unattended, `main`-restricted `nightly-signing` for nightly.
 
+Manual nightly enrollment bypasses Sparkle, so the mutable latest-DMG URL is
+only a discovery pointer; the operator must verify Gatekeeper acceptance and
+the expected Kenn Software Apple Team Identifier on both the DMG and app before
+the first install.
+
 ### Anonymous Usage Telemetry
 
 Packaged release builds send a single allowlisted `application active` event

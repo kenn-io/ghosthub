@@ -381,16 +381,18 @@ builds/<build>/runs/<run>/attempts/<attempt>/
 This attempt component is mandatory even for a same-day retry: cached damaged
 bytes are never replaced at an existing immutable URL. Publication uploads the
 immutable DMG and checksums first, then updates `appcast.xml`, the unlisted
-`Ghosthub_Nightly_latest_macos_arm64.dmg` convenience download, completes
+mutable `Ghosthub_Nightly_latest_macos_arm64.dmg` bootstrap pointer, completes
 retention cleanup, and finally updates `channel.json`. The manifest is the
 completion marker and records the source revision, monotonically increasing
 commit-count build number, workflow run and candidate attempt, timestamp,
 immutable DMG URL, and SHA-256. A publish-only job retry reuses that candidate
 attempt's verified artifact and immutable URL instead of substituting the
 retry's newer workflow-attempt number. Eligibility validates both the manifest
-and appcast; a missing, malformed, or mismatched appcast is repairable even
-when the source revision has not changed, and failed cleanup leaves the prior
-manifest in place so the next run retries publication.
+and appcast; a missing, malformed, signature-incomplete, or mismatched appcast
+is repairable even when the source revision has not changed. Cleanup protects
+the build named by the prior manifest until the replacement manifest commits,
+and failed cleanup leaves that prior manifest in place so the next run retries
+publication.
 
 Create a `nightly-signing` GitHub Actions environment with no required
 reviewers and deployment branches restricted to `main`. Store these values as
@@ -424,8 +426,10 @@ bucket. Serve immutable build objects with a one-year immutable cache policy;
 serve `appcast.xml`, the latest DMG, and `channel.json` with `no-cache`. Add an
 `X-Robots-Tag: noindex, nofollow, noarchive` response header for the public
 host. Cleanup retains the current build and the 29 highest lower numeric build
-prefixes, including every run attempt within each retained build. It ignores
-non-ASCII or structurally unsafe prefixes rather than deleting them.
+prefixes, including every run attempt within each retained build. While a new
+manifest is being committed, the prior manifest's build is also protected and
+may temporarily extend retention by one build. Cleanup ignores non-ASCII or
+structurally unsafe prefixes rather than deleting them.
 
 Stable and nightly have distinct Sparkle keys, but they share the Apple
 Developer ID identity that Sparkle can use for key rotation. The separate
@@ -443,10 +447,54 @@ To enroll, quit Ghosthub and back up all state shared by the two channels:
 - the `com.ghosthub` preferences domain, exported with
   `defaults export com.ghosthub Ghosthub-preferences.plist`.
 
-Then install the unlisted DMG:
+The latest-DMG URL is a mutable convenience pointer on an object host that is
+not trusted to authorize code. The first install does not pass through
+Sparkle, so verify the DMG and mounted app's Apple Team Identifier before
+copying it. Checking the DMG before mounting also rejects an otherwise valid
+image notarized by another Developer ID:
 
-```text
-https://nightly-downloads.ghosthub.ai/Ghosthub_Nightly_latest_macos_arm64.dmg
+```bash
+bash <<'SCRIPT'
+set -euo pipefail
+nightly_work="$(mktemp -d -t Ghosthub_Nightly)"
+nightly_dmg="$nightly_work/Ghosthub_Nightly.dmg"
+nightly_mount="$nightly_work/mount"
+mkdir "$nightly_mount"
+cleanup() {
+  hdiutil detach "$nightly_mount" >/dev/null 2>&1 || true
+  rm -f "$nightly_dmg"
+  rmdir "$nightly_mount" >/dev/null 2>&1 || true
+  rmdir "$nightly_work" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+verify_team() {
+  local path="$1"
+  local codesign_output
+  local team_id
+  codesign_output="$(codesign -dv --verbose=4 "$path" 2>&1)"
+  printf '%s\n' "$codesign_output"
+  team_id="$(printf '%s\n' "$codesign_output" | sed -n 's/^TeamIdentifier=//p')"
+  if [[ "$team_id" != "2YMZH84KR8" ]]; then
+    printf 'Refusing code signed by unexpected Apple team: %s\n' "$team_id" >&2
+    exit 1
+  fi
+}
+
+curl --fail --location \
+  --output "$nightly_dmg" \
+  https://nightly-downloads.ghosthub.ai/Ghosthub_Nightly_latest_macos_arm64.dmg
+codesign --verify --strict --verbose=2 "$nightly_dmg"
+verify_team "$nightly_dmg"
+spctl --assess --type open --context context:primary-signature --verbose=2 \
+  "$nightly_dmg"
+hdiutil attach -readonly -nobrowse -mountpoint "$nightly_mount" "$nightly_dmg"
+codesign --verify --deep --strict --verbose=2 "$nightly_mount/Ghosthub.app"
+verify_team "$nightly_mount/Ghosthub.app"
+spctl --assess --type execute --verbose=2 "$nightly_mount/Ghosthub.app"
+open "$nightly_mount"
+read -r -p 'After copying Ghosthub.app to Applications, press Return to unmount: ' _
+SCRIPT
 ```
 
 Confirm **Ghosthub Nightly** and the expected date and source revision in About

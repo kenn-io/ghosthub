@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -57,12 +58,37 @@ def manifest_data(
     }
 
 
-def appcast_data(url: str, build: int) -> bytes:
-    return (
+def appcast_data(
+    url: str,
+    build: int,
+    *,
+    include_archive_signature: bool = True,
+    include_feed_signature: bool = True,
+) -> bytes:
+    archive_signature = base64.b64encode(
+        b"archive-signature".ljust(64, b".")
+    ).decode()
+    feed_signature = base64.b64encode(
+        b"feed-signature".ljust(64, b".")
+    ).decode()
+    signature_attribute = (
+        f' sparkle:edSignature="{archive_signature}"'
+        if include_archive_signature
+        else ""
+    )
+    content = (
         '<rss xmlns:sparkle="https://sparkle-project.org/'
         'xml-namespaces/sparkle"><channel><item><enclosure '
-        f'url="{url}" sparkle:version="{build}" />'
+        f'url="{url}" sparkle:version="{build}"{signature_attribute} />'
         '</item></channel></rss>'
+    ).encode()
+    if not include_feed_signature:
+        return content
+    return content + (
+        "<!-- sparkle-signatures:\n"
+        f"edSignature: {feed_signature}\n"
+        f"length: {len(content)}\n"
+        "-->\n"
     ).encode()
 
 
@@ -236,7 +262,27 @@ def test_fetches_validate_remote_metadata_and_only_tolerate_404():
         fetch_appcast(appcast_url, opener=transport_error)
 
 
-def test_eligibility_command_repairs_a_malformed_appcast(tmp_path):
+@pytest.mark.parametrize(
+    "remote_appcast",
+    [
+        b"truncated appcast",
+        appcast_data(
+            str(manifest_data()["dmg_url"]),
+            99,
+            include_archive_signature=False,
+        ),
+        appcast_data(
+            str(manifest_data()["dmg_url"]),
+            99,
+            include_feed_signature=False,
+        ),
+    ],
+    ids=["malformed-xml", "missing-archive-signature", "missing-feed-signature"],
+)
+def test_eligibility_command_repairs_an_incomplete_appcast(
+    tmp_path,
+    remote_appcast,
+):
     manifest_url = f"{PUBLIC_BASE_URL}/channel.json"
     appcast_url = f"{PUBLIC_BASE_URL}/appcast.xml"
     output_path = tmp_path / "github-output"
@@ -245,7 +291,7 @@ def test_eligibility_command_repairs_a_malformed_appcast(tmp_path):
         if url == manifest_url:
             return Response(json.dumps(manifest_data()).encode())
         if url == appcast_url:
-            return Response(b"truncated appcast")
+            return Response(remote_appcast)
         raise AssertionError(url)
 
     exit_code = nightly_main(
@@ -331,6 +377,7 @@ def make_publication(
     build: int = 99,
     run_id: int = 7,
     attempt: int = 1,
+    previous_build: int | None = None,
 ) -> PublicationInputs:
     release_root = tmp_path / f"release-{run_id}-{attempt}"
     release_root.mkdir()
@@ -360,6 +407,7 @@ def make_publication(
         built_at="2026-08-13T08:00:00Z",
         workflow_run_id=run_id,
         workflow_run_attempt=attempt,
+        previous_build=previous_build,
     )
 
 
@@ -417,6 +465,42 @@ def test_cleanup_failure_preserves_the_previous_completion_manifest(tmp_path):
     ) == previous
     advanced_appcast = AppcastPointer.from_xml(store.objects["appcast.xml"])
     assert advanced_appcast.build == 99
+
+
+def test_manifest_failure_preserves_the_authoritative_previous_build(tmp_path):
+    class ManifestFailingStore(MemoryObjectStore):
+        def put_bytes(
+            self,
+            key: str,
+            data: bytes,
+            cache_control: str,
+            content_type: str,
+        ) -> None:
+            if key == "channel.json":
+                raise RuntimeError("injected manifest failure")
+            super().put_bytes(key, data, cache_control, content_type)
+
+    previous = ChannelManifest.from_json(
+        json.dumps(manifest_data(build=1)).encode(), PUBLIC_BASE_URL
+    )
+    previous_dmg_key = "builds/1/runs/7/attempts/1/Ghosthub_Nightly.dmg"
+    store = ManifestFailingStore()
+    store.objects["channel.json"] = previous.to_json()
+    store.objects[previous_dmg_key] = b"authoritative previous DMG"
+    for build in range(2, 32):
+        store.objects[
+            f"builds/{build}/runs/7/attempts/1/partial.dmg"
+        ] = b"partial"
+
+    with pytest.raises(RuntimeError, match="manifest failure"):
+        publish_nightly(
+            store,
+            make_publication(tmp_path, previous_build=previous.build),
+        )
+
+    assert store.objects["channel.json"] == previous.to_json()
+    assert store.objects[previous_dmg_key] == b"authoritative previous DMG"
+    assert "builds/2/runs/7/attempts/1/partial.dmg" not in store.objects
 
 
 def test_failure_before_appcast_leaves_mutable_objects_absent(tmp_path):
@@ -491,7 +575,12 @@ def test_cleanup_keeps_all_attempts_for_thirty_numeric_builds():
         json.dumps(manifest_data(build=35)).encode(), PUBLIC_BASE_URL
     )
 
-    cleanup_old_builds(store, current, retain_builds=30)
+    cleanup_old_builds(
+        store,
+        current,
+        retain_builds=30,
+        protected_builds=set(),
+    )
 
     remaining = set(store.objects)
     assert not any(key.startswith("builds/1/") for key in remaining)
@@ -519,7 +608,12 @@ def test_cleanup_refuses_non_ascii_numeric_path_components():
         json.dumps(manifest_data(build=35)).encode(), PUBLIC_BASE_URL
     )
 
-    cleanup_old_builds(store, current, retain_builds=30)
+    cleanup_old_builds(
+        store,
+        current,
+        retain_builds=30,
+        protected_builds=set(),
+    )
 
     assert unicode_build in store.objects
     assert unicode_run in store.objects

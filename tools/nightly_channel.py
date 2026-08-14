@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -30,6 +32,8 @@ TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
 XML_CONTENT_TYPE = "application/xml"
 JSON_CONTENT_TYPE = "application/json"
 LATEST_DMG_KEY = "Ghosthub_Nightly_latest_macos_arm64.dmg"
+SIGNED_FEED_PREFIX = b"<!-- sparkle-signatures:\n"
+SIGNED_FEED_SUFFIX = b"-->"
 
 
 def require_string(field: str, value: object) -> str:
@@ -77,6 +81,55 @@ def require_https_url(field: str, value: object) -> str:
     if parsed.username is not None or parsed.password is not None:
         raise ValueError(f"{field} must not contain credentials")
     return resolved
+
+
+def require_ed25519_signature(field: str, value: object) -> str:
+    resolved = require_string(field, value)
+    try:
+        decoded = base64.b64decode(resolved, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError(f"{field} must be a base64 Ed25519 signature") from error
+    if len(decoded) != 64:
+        raise ValueError(f"{field} must be a base64 Ed25519 signature")
+    return resolved
+
+
+def signed_feed_content(data: bytes) -> bytes:
+    marker_index = data.rfind(SIGNED_FEED_PREFIX)
+    if marker_index < 0:
+        raise ValueError("appcast is missing its signed-feed signature")
+    marker_end = data.find(SIGNED_FEED_SUFFIX, marker_index)
+    if marker_end < 0 or data[marker_end + len(SIGNED_FEED_SUFFIX) :].strip():
+        raise ValueError("appcast has an incomplete signed-feed signature")
+    try:
+        lines = data[
+            marker_index + len(SIGNED_FEED_PREFIX) : marker_end
+        ].decode("ascii").splitlines()
+    except UnicodeDecodeError as error:
+        raise ValueError("appcast has an invalid signed-feed signature") from error
+
+    signature: str | None = None
+    signed_length: int | None = None
+    for line in lines:
+        if line.startswith("edSignature: "):
+            if signature is not None:
+                raise ValueError("appcast has duplicate signed-feed signatures")
+            signature = require_ed25519_signature(
+                "appcast signed-feed signature",
+                line.removeprefix("edSignature: "),
+            )
+        elif line.startswith("length: "):
+            if signed_length is not None:
+                raise ValueError("appcast has duplicate signed-feed lengths")
+            raw_length = line.removeprefix("length: ")
+            if ASCII_NUMBER_RE.fullmatch(raw_length) is None:
+                raise ValueError("appcast signed-feed length must be an integer")
+            signed_length = int(raw_length)
+
+    content = data[:marker_index]
+    if signature is None or signed_length != len(content):
+        raise ValueError("appcast has an incomplete signed-feed signature")
+    return content
 
 
 @dataclass(frozen=True)
@@ -191,8 +244,9 @@ class AppcastPointer:
 
     @classmethod
     def from_xml(cls, data: bytes) -> AppcastPointer:
+        content = signed_feed_content(data)
         try:
-            root = ElementTree.fromstring(data)
+            root = ElementTree.fromstring(content)
         except ElementTree.ParseError as error:
             raise ValueError("appcast is not valid XML") from error
         enclosures = root.findall(".//enclosure")
@@ -200,6 +254,10 @@ class AppcastPointer:
             raise ValueError("appcast must contain exactly one enclosure")
         enclosure = enclosures[0]
         dmg_url = require_https_url("appcast enclosure URL", enclosure.get("url"))
+        require_ed25519_signature(
+            "appcast enclosure signature",
+            enclosure.get(f"{{{SPARKLE_NAMESPACE}}}edSignature"),
+        )
         raw_build = enclosure.get(f"{{{SPARKLE_NAMESPACE}}}version")
         try:
             build = int(raw_build) if raw_build is not None else 0
@@ -461,6 +519,7 @@ class PublicationInputs:
     built_at: str
     workflow_run_id: int
     workflow_run_attempt: int
+    previous_build: int | None = None
 
     def __post_init__(self) -> None:
         if Path(self.dmg_name).name != self.dmg_name or not self.dmg_name.endswith(
@@ -475,6 +534,10 @@ class PublicationInputs:
         require_positive_integer(
             "workflow_run_attempt", self.workflow_run_attempt
         )
+        if self.previous_build is not None:
+            require_positive_integer("previous_build", self.previous_build)
+            if self.previous_build > self.build:
+                raise ValueError("previous_build cannot exceed build")
 
     @property
     def dmg_path(self) -> Path:
@@ -593,7 +656,15 @@ def publish_nightly(
         MUTABLE_CACHE_CONTROL,
         DMG_CONTENT_TYPE,
     )
-    cleanup_old_builds(store, manifest, retain_builds=30)
+    protected_builds = (
+        {inputs.previous_build} if inputs.previous_build is not None else set()
+    )
+    cleanup_old_builds(
+        store,
+        manifest,
+        retain_builds=30,
+        protected_builds=protected_builds,
+    )
     store.put_bytes(
         "channel.json",
         manifest.to_json(),
@@ -608,6 +679,7 @@ def cleanup_old_builds(
     manifest: ChannelManifest,
     *,
     retain_builds: int,
+    protected_builds: set[int],
 ) -> None:
     retain_builds = require_positive_integer("retain_builds", retain_builds)
     keys = store.list_keys("builds/")
@@ -636,7 +708,12 @@ def cleanup_old_builds(
         reverse=True,
     )
     retained_lower = set(lower_builds[: retain_builds - 1])
-    deletable = set(lower_builds) - retained_lower - unsafe_builds
+    deletable = (
+        set(lower_builds)
+        - retained_lower
+        - unsafe_builds
+        - protected_builds
+    )
     keys_to_delete = sorted(
         key
         for build in deletable
@@ -695,6 +772,7 @@ def create_parser() -> argparse.ArgumentParser:
     publish.add_argument("--built-at", required=True)
     publish.add_argument("--workflow-run-id", required=True, type=int)
     publish.add_argument("--workflow-run-attempt", required=True, type=int)
+    publish.add_argument("--previous-build", type=int)
     return parser
 
 
@@ -751,6 +829,7 @@ def main(
             built_at=args.built_at,
             workflow_run_id=args.workflow_run_id,
             workflow_run_attempt=args.workflow_run_attempt,
+            previous_build=args.previous_build,
         )
         manifest = publish_nightly(store, inputs)
         print(f"Published nightly build {manifest.build}: {manifest.dmg_url}")

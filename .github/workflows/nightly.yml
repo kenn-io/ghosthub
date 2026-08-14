@@ -392,6 +392,7 @@ jobs:
           NIGHTLY_BUILD_AT: ${{ needs.macos-nightly.outputs.built-at }}
           NIGHTLY_BUILD_VERSION: ${{ needs.eligibility.outputs.build }}
           NIGHTLY_CANDIDATE_ATTEMPT: ${{ needs.macos-nightly.outputs.candidate-attempt }}
+          NIGHTLY_PREVIOUS_BUILD: ${{ needs.eligibility.outputs.previous-build }}
         shell: bash
         run: |
           aws_version="$(aws --version 2>&1)"
@@ -400,15 +401,21 @@ jobs:
             echo "Nightly publication requires AWS CLI 2." >&2
             exit 1
           fi
-          uv run --frozen python tools/nightly_channel.py publish \
-            --release-root "$RELEASE_ROOT" \
-            --dmg-name "$RELEASE_DMG_NAME" \
-            --public-base-url "$NIGHTLY_PUBLIC_BASE_URL" \
-            --bucket "$NIGHTLY_S3_BUCKET" \
-            --endpoint-url "$NIGHTLY_S3_ENDPOINT_URL" \
-            --region "$NIGHTLY_S3_REGION" \
-            --source-sha "$GITHUB_SHA" \
-            --build "$NIGHTLY_BUILD_VERSION" \
-            --built-at "$NIGHTLY_BUILD_AT" \
-            --workflow-run-id "$GITHUB_RUN_ID" \
+          arguments=(
+            publish
+            --release-root "$RELEASE_ROOT"
+            --dmg-name "$RELEASE_DMG_NAME"
+            --public-base-url "$NIGHTLY_PUBLIC_BASE_URL"
+            --bucket "$NIGHTLY_S3_BUCKET"
+            --endpoint-url "$NIGHTLY_S3_ENDPOINT_URL"
+            --region "$NIGHTLY_S3_REGION"
+            --source-sha "$GITHUB_SHA"
+            --build "$NIGHTLY_BUILD_VERSION"
+            --built-at "$NIGHTLY_BUILD_AT"
+            --workflow-run-id "$GITHUB_RUN_ID"
             --workflow-run-attempt "$NIGHTLY_CANDIDATE_ATTEMPT"
+          )
+          if [[ -n "$NIGHTLY_PREVIOUS_BUILD" ]]; then
+            arguments+=(--previous-build "$NIGHTLY_PREVIOUS_BUILD")
+          fi
+          uv run --frozen python tools/nightly_channel.py "${arguments[@]}"
