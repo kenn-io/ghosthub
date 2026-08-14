@@ -1,29 +1,7 @@
 #if canImport(AppKit)
 import AppKit
+import GhosthubTerminal
 import GhosthubWorkspace
-
-@MainActor
-private func presentApplicationAlert(
-    _ alert: NSAlert
-) -> NSApplication.ModalResponse {
-    guard let window = NSApp.keyWindow ?? NSApp.mainWindow else {
-        return alert.runModal()
-    }
-
-    var response: NSApplication.ModalResponse?
-    alert.beginSheetModal(for: window) { modalResponse in
-        response = modalResponse
-    }
-
-    while response == nil {
-        _ = RunLoop.current.run(
-            mode: .default,
-            before: Date(timeIntervalSinceNow: 0.01)
-        )
-    }
-
-    return response ?? .abort
-}
 
 @MainActor
 private func presentApplicationAlertAsync(
@@ -31,7 +9,9 @@ private func presentApplicationAlertAsync(
     completion: @escaping (NSApplication.ModalResponse) -> Void
 ) {
     guard let window = NSApp.keyWindow ?? NSApp.mainWindow else {
-        completion(alert.runModal())
+        DispatchQueue.main.async {
+            completion(alert.runModal())
+        }
         return
     }
 
@@ -102,8 +82,6 @@ final class ApplicationDelegate: NSObject,
     NSApplicationDelegate {
     let sshAuthenticationCoordinator = SSHAuthenticationCoordinator()
 
-    var confirmTermination: () -> Bool
-
     var requestTerminationConfirmation: (
         (@escaping (Bool) -> Void) -> Void
     )?
@@ -114,6 +92,12 @@ final class ApplicationDelegate: NSObject,
         NSApplication.shared.terminate(nil)
     }
 
+    var replyToApplicationShouldTerminate: (Bool) -> Void = { confirmed in
+        NSApplication.shared.reply(
+            toApplicationShouldTerminate: confirmed
+        )
+    }
+
     var openWorkspaceWindow: (WorkspaceWindowState) -> Void = { _ in }
 
     private let windowRequests = WorkspaceWindowRequests<NSWindow>()
@@ -121,10 +105,11 @@ final class ApplicationDelegate: NSObject,
     private var restoredWorkspaceWindowCount: Int?
     private(set) var terminationConfirmed = false
     private(set) var terminationConfirmationPending = false
+    private var pendingTerminationDecisions: [(Bool) -> Void] = []
+    private var applicationTerminationRequestPending = false
     private var updaterTerminationAuthorized = false
 
     override init() {
-        confirmTermination = { false }
         super.init()
         NotificationCenter.default.addObserver(
             self,
@@ -132,11 +117,6 @@ final class ApplicationDelegate: NSObject,
             name: NSApplication.didFinishRestoringWindowsNotification,
             object: nil
         )
-        confirmTermination = { [weak self] in
-            guard let self else { return false }
-            return presentApplicationAlert(makeTerminationAlert())
-                == .alertFirstButtonReturn
-        }
     }
 
     deinit {
@@ -256,33 +236,35 @@ final class ApplicationDelegate: NSObject,
         return state
     }
 
-    @discardableResult
-    func prepareUserInitiatedTermination(
-        forceConfirmation: Bool = false
-    ) -> Bool {
-        if terminationConfirmed {
-            return true
-        }
-        guard forceConfirmation || needsConfirmQuit() else {
-            terminationConfirmed = true
-            return true
-        }
-        guard confirmTermination() else {
-            return false
-        }
-        terminationConfirmed = true
-        return true
-    }
-
     func requestUserInitiatedTermination(
         forceConfirmation: Bool = false,
         onConfirm: @escaping () -> Void
+    ) {
+        requestTerminationDecision(
+            forceConfirmation: forceConfirmation
+        ) { confirmed in
+            guard confirmed else { return }
+            onConfirm()
+        }
+    }
+
+    private func requestTerminationDecision(
+        forceConfirmation: Bool = false,
+        onDecision: @escaping (Bool) -> Void
     ) {
         if terminationConfirmed {
             AppLogger.shared.info(
                 "quit: already confirmed, terminating"
             )
-            onConfirm()
+            onDecision(true)
+            return
+        }
+
+        if terminationConfirmationPending {
+            AppLogger.shared.info(
+                "quit: joining pending confirmation"
+            )
+            pendingTerminationDecisions.append(onDecision)
             return
         }
 
@@ -297,40 +279,53 @@ final class ApplicationDelegate: NSObject,
 
         guard forceConfirmation || needs else {
             terminationConfirmed = true
-            onConfirm()
-            return
-        }
-        guard !terminationConfirmationPending else {
-            AppLogger.shared.info(
-                "quit: confirmation already pending"
-            )
+            onDecision(true)
             return
         }
         terminationConfirmationPending = true
+        pendingTerminationDecisions = [onDecision]
+
+        let finish: (Bool) -> Void = { [weak self] confirmed in
+            guard let self else { return }
+            terminationConfirmationPending = false
+            let decisions = pendingTerminationDecisions
+            pendingTerminationDecisions.removeAll()
+            if confirmed {
+                terminationConfirmed = true
+            }
+            decisions.forEach { $0(confirmed) }
+        }
 
         if let requestTerminationConfirmation {
-            requestTerminationConfirmation { [weak self] confirmed in
-                guard let self else { return }
-                terminationConfirmationPending = false
-                guard confirmed else { return }
-                terminationConfirmed = true
-                onConfirm()
-            }
+            requestTerminationConfirmation(finish)
             return
         }
 
-        presentApplicationAlertAsync(makeTerminationAlert()) { [weak self] response in
-            guard let self else { return }
-            terminationConfirmationPending = false
-            guard response == .alertFirstButtonReturn else { return }
-            terminationConfirmed = true
-            onConfirm()
+        presentApplicationAlertAsync(makeTerminationAlert()) { response in
+            finish(response == .alertFirstButtonReturn)
         }
     }
 
     func requestApplicationTermination() {
-        requestUserInitiatedTermination { [weak self] in
-            self?.terminateApplication()
+        guard !applicationTerminationRequestPending else {
+            AppLogger.shared.info(
+                "quit: application termination already requested"
+            )
+            return
+        }
+        applicationTerminationRequestPending = true
+        requestTerminationDecision { [weak self] confirmed in
+            guard let self else { return }
+            applicationTerminationRequestPending = false
+            if confirmed {
+                terminateApplication()
+            }
+        }
+    }
+
+    func bindQuitRequests(from source: ApplicationQuitRequestSource) {
+        source.quitRequestHandler = { [weak self] in
+            self?.requestApplicationTermination()
         }
     }
 
@@ -357,11 +352,17 @@ final class ApplicationDelegate: NSObject,
         if terminationConfirmed {
             return .terminateNow
         }
+        guard needsConfirmQuit() else {
+            terminationConfirmed = true
+            return .terminateNow
+        }
         // Shutdown, restart, logout, and ordinary quit requests intentionally
         // use the same confirmation gate. Only Sparkle receives the narrow
         // one-shot authorization above after the user accepts its relaunch.
-        return prepareUserInitiatedTermination()
-            ? .terminateNow : .terminateCancel
+        requestTerminationDecision { [weak self] confirmed in
+            self?.replyToApplicationShouldTerminate(confirmed)
+        }
+        return .terminateLater
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(

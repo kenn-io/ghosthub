@@ -149,6 +149,7 @@ struct GhosthubApp: App {
                         settingsStore.confirmBeforeQuitting
                     )
                 }
+                appDelegate.bindQuitRequests(from: terminalRuntime)
                 updateController.configureRelaunch(
                     prepareRelaunch: {
                         let states = WindowRegistry.shared
