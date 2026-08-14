@@ -32,6 +32,12 @@ PUBLIC_BASE_URL = "https://nightly-downloads.ghosthub.ai"
 SOURCE_99 = "a" * 40
 SOURCE_100 = "b" * 40
 DIGEST = "c" * 64
+ARCHIVE_SIGNATURE = base64.b64encode(
+    b"archive-signature".ljust(64, b".")
+).decode()
+FEED_SIGNATURE = base64.b64encode(
+    b"feed-signature".ljust(64, b".")
+).decode()
 
 
 def manifest_data(
@@ -58,6 +64,15 @@ def manifest_data(
     }
 
 
+def signed_appcast(content: bytes) -> bytes:
+    return content + (
+        "<!-- sparkle-signatures:\n"
+        f"edSignature: {FEED_SIGNATURE}\n"
+        f"length: {len(content)}\n"
+        "-->\n"
+    ).encode()
+
+
 def appcast_data(
     url: str,
     build: int,
@@ -65,14 +80,8 @@ def appcast_data(
     include_archive_signature: bool = True,
     include_feed_signature: bool = True,
 ) -> bytes:
-    archive_signature = base64.b64encode(
-        b"archive-signature".ljust(64, b".")
-    ).decode()
-    feed_signature = base64.b64encode(
-        b"feed-signature".ljust(64, b".")
-    ).decode()
     signature_attribute = (
-        f' sparkle:edSignature="{archive_signature}"'
+        f' sparkle:edSignature="{ARCHIVE_SIGNATURE}"'
         if include_archive_signature
         else ""
     )
@@ -84,12 +93,7 @@ def appcast_data(
     ).encode()
     if not include_feed_signature:
         return content
-    return content + (
-        "<!-- sparkle-signatures:\n"
-        f"edSignature: {feed_signature}\n"
-        f"length: {len(content)}\n"
-        "-->\n"
-    ).encode()
+    return signed_appcast(content)
 
 
 def test_manifest_and_appcast_describe_the_published_pointer():
@@ -136,27 +140,36 @@ def test_manifest_rejects_invalid_published_metadata(field, value):
 @pytest.mark.parametrize(
     "data",
     [
-        b"not XML",
-        b"<rss><channel /></rss>",
-        (
-            b'<rss xmlns:sparkle="https://sparkle-project.org/'
-            b'xml-namespaces/sparkle"><channel><item>'
-            b'<enclosure url="https://example.test/one.dmg" '
-            b'sparkle:version="1" /><enclosure '
-            b'url="https://example.test/two.dmg" sparkle:version="2" />'
-            b"</item></channel></rss>"
+        signed_appcast(b"not XML"),
+        signed_appcast(b"<rss><channel /></rss>"),
+        signed_appcast(
+            (
+                '<rss xmlns:sparkle="https://sparkle-project.org/'
+                'xml-namespaces/sparkle"><channel><item>'
+                '<enclosure url="https://example.test/one.dmg" '
+                f'sparkle:version="1" sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
+                '<enclosure url="https://example.test/two.dmg" '
+                f'sparkle:version="2" sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
+                "</item></channel></rss>"
+            ).encode()
         ),
-        (
-            b'<rss xmlns:sparkle="https://sparkle-project.org/'
-            b'xml-namespaces/sparkle"><channel><item><enclosure '
-            b'url="http://example.test/build.dmg" sparkle:version="1" />'
-            b"</item></channel></rss>"
+        signed_appcast(
+            (
+                '<rss xmlns:sparkle="https://sparkle-project.org/'
+                'xml-namespaces/sparkle"><channel><item><enclosure '
+                'url="http://example.test/build.dmg" sparkle:version="1" '
+                f'sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
+                "</item></channel></rss>"
+            ).encode()
         ),
-        (
-            b'<rss xmlns:sparkle="https://sparkle-project.org/'
-            b'xml-namespaces/sparkle"><channel><item><enclosure '
-            b'url="https://example.test/build.dmg" sparkle:version="zero" />'
-            b"</item></channel></rss>"
+        signed_appcast(
+            (
+                '<rss xmlns:sparkle="https://sparkle-project.org/'
+                'xml-namespaces/sparkle"><channel><item><enclosure '
+                'url="https://example.test/build.dmg" sparkle:version="zero" '
+                f'sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
+                "</item></channel></rss>"
+            ).encode()
         ),
     ],
 )
