@@ -4218,6 +4218,61 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("recovered surface failure does not excuse a later normal exit")
+    func recoveredSurfaceFailureDoesNotExcuseLaterNormalExit() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let remoteSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(remoteSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        // A transient surface failure, then a successful reconnect.
+        surfaceStore.surface.launchError = SceneSurfaceLaunchError.rejected
+        surfaceStore.surface.launchFailureIsRetryable = true
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor { surfaceStore.requestCount == 2 }
+        surfaceStore.surface.launchError = nil
+        surfaceStore.surface.launchFailureIsRetryable = false
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+        let recoveredRequestCount = surfaceStore.requestCount
+
+        // The client now exits normally. That is not a transport failure, so
+        // it must be reported rather than retried: the earlier transient
+        // failure cannot keep excusing later exits.
+        surfaceStore.surface.closeObservers.values.first?(false, 0)
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(surfaceStore.requestCount == recoveredRequestCount)
+        #expect(model.activeBorrowedTmuxRecoveryState?.isReconnecting != true)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("inactive retained presentation continues automatic recovery")
     func inactivePresentationContinuesAutomaticRecovery() async throws {
         let environment = try setupRemoteTmuxEnvironment()

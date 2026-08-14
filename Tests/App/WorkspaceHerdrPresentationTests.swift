@@ -1463,6 +1463,47 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("recovered Herdr surface failure does not excuse a later exit")
+    func recoveredHerdrSurfaceFailureDoesNotExcuseLaterExit() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in .present }
+        )
+        let herdr = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(herdr)
+        await launchHerdrSurface(model, store: store)
+
+        // A transient surface failure, then a successful reconnect.
+        store.surface.launchError = HerdrSurfaceLaunchTestError.rejected
+        store.surface.launchFailureIsRetryable = true
+        store.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            store.requestedKeys.count >= 2
+        }
+        store.surface.launchError = nil
+        store.surface.launchFailureIsRetryable = false
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            !model.herdrReconnectSupervisorIsRunning
+                && model.activeBorrowedHerdrSelection == herdr
+        }
+        let recoveredCount = store.requestedKeys.count
+
+        // A normal client exit is not a transport failure and must not inherit
+        // the earlier transient failure's licence to retry.
+        store.surface.closeObservers.values.first?(false, 0)
+        try await Task.sleep(for: .milliseconds(150))
+
+        #expect(store.requestedKeys.count == recoveredCount)
+        #expect(!model.herdrReconnectSupervisorIsRunning)
+        await model.shutdown()
+    }
+
     @Test("no active display holds Herdr recovery without probing the host")
     func zeroDisplaysHoldsHerdrRecovery() async throws {
         let environment = try remoteEnvironment()

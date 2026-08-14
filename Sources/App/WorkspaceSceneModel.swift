@@ -9724,6 +9724,10 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.recoveryRequest = nil
             if presentation.reconnectContext?.handleID == handle.id {
                 presentation.reconnectContext?.surfaceExitCode = nil
+                // Belt and braces: relaunch already rebuilds the context, but
+                // clearing here keeps "only the attempt that failed may skip
+                // the exit-code check" true regardless of that path.
+                presentation.reconnectContext?.surfaceLaunchFailed = false
                 startEstablishmentConfirmationIfNeeded(
                     presentation: presentation
                 )
@@ -9863,6 +9867,7 @@ final class WorkspaceSceneModel: ObservableObject {
             activeBorrowedHerdrRecoveryState = nil
             sessionConnectionRecoveryRequest = nil
             activeHerdrReconnectContext?.surfaceExitCode = nil
+            activeHerdrReconnectContext?.surfaceLaunchFailed = false
             return
         }
         // Checked before `hasLaunched`: a surface that failed to be created
@@ -9933,6 +9938,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 context.connection = nativeZellijSessionCoordinator
                     .attachmentConnectionSnapshot(handle)
                 context.surfaceExitCode = nil
+                context.surfaceLaunchFailed = false
                 activeZellijReconnectContext = context
             }
             sessionConnectionRecoveryRequest = nil
