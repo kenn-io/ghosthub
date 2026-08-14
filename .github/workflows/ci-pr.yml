@@ -1,8 +1,8 @@
 name: CI
 
-# The PR dispatcher always calls the main-pinned workflow. Repository admins
-# can opt same-repository PRs into the additional validation lane, while the
-# called workflow keeps fork jobs on GitHub-hosted runners.
+# The PR dispatcher always calls the main-pinned workflow. Same-repository PRs
+# run required hosted validation and non-blocking self-hosted validation in
+# parallel, while the called workflow keeps fork jobs on hosted runners only.
 on:
   pull_request:
 

@@ -20,7 +20,6 @@ jobs:
       matrix:
         include: >-
           ${{ fromJSON(
-            vars.GHOSTHUB_SELF_HOSTED_VALIDATION == 'true' &&
             github.repository == 'kenn-io/ghosthub' &&
             github.event_name == 'pull_request' &&
             github.event.pull_request.head.repo.full_name == github.repository &&
@@ -29,6 +28,7 @@ jobs:
             '[{"lane":"hosted","runner":"macos-26"}]'
           ) }}
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.lane == 'self-hosted' }}
     timeout-minutes: 90
     env:
       # The bootstrap default is intentionally arm64 for developer Macs.
@@ -199,7 +199,8 @@ jobs:
             --filter "$gui_test_filter" --no-parallel \
             2>&1 | tee -a "$RUNNER_TEMP/gui-tests.log"
 
-      - name: Verify GUI coverage
+      - name: Verify self-hosted GUI coverage
+        if: matrix.lane == 'self-hosted'
         shell: bash
         run: |
           gui_test_log="$RUNNER_TEMP/gui-tests.log"

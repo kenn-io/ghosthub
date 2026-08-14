@@ -93,11 +93,15 @@ inventory, host resolution, sidebar, and ordinary tmux attachment contracts.
 ## Apple Silicon macOS toolchain
 
 Pull requests invoke the `main`-pinned `.github/workflows/ci.yml`. Canonical
-`main` pushes and same-repository pull requests run on the managed public macOS
-runner; fork pull requests and noncanonical repository copies fall back to
-GitHub's hosted `macos-26` Apple Silicon image. The workflow selects a supported
-Xcode installation and the exact Zig toolchain required by the pinned Ghostty
-source, then runs the complete build and test gates.
+same-repository pull requests run required validation on GitHub's hosted
+`macos-26` Apple Silicon image and non-blocking validation on the managed public
+macOS runner in parallel. The managed lane requires complete WindowServer GUI
+coverage while it is being stabilized; the hosted lane may skip tests that
+cannot obtain a key window. Canonical `main` pushes, fork pull requests, and
+noncanonical repository copies run only on the hosted image. The workflow
+selects a supported Xcode installation and the exact Zig toolchain required by
+the pinned Ghostty source, then runs the complete available build and test
+gates.
 
 Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target.
 Local bootstrap checks every architecture required by the running Zig
