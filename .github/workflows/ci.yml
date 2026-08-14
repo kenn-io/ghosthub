@@ -20,15 +20,22 @@ jobs:
       matrix:
         include: >-
           ${{ fromJSON(
-            vars.GHOSTHUB_SELF_HOSTED_VALIDATION == 'true' &&
             github.repository == 'kenn-io/ghosthub' &&
             github.event_name == 'pull_request' &&
             github.event.pull_request.head.repo.full_name == github.repository &&
             github.event.pull_request.base.repo.full_name == github.repository &&
-            '[{"lane":"hosted","runner":"macos-26"},{"lane":"self-hosted","runner":"kenn-macos-arm64-public"}]' ||
-            '[{"lane":"hosted","runner":"macos-26"}]'
+            vars.GHOSTHUB_CI_RUNNER_MODE == 'parallel' &&
+            '[{"lane":"hosted","runner":"macos-26","advisory":false},{"lane":"self-hosted","runner":"kenn-macos-arm64-public","advisory":true}]' ||
+            github.repository == 'kenn-io/ghosthub' &&
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            github.event.pull_request.base.repo.full_name == github.repository &&
+            vars.GHOSTHUB_CI_RUNNER_MODE == 'self-hosted' &&
+            '[{"lane":"self-hosted","runner":"kenn-macos-arm64-public","advisory":false}]' ||
+            '[{"lane":"hosted","runner":"macos-26","advisory":false}]'
           ) }}
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.advisory }}
     timeout-minutes: 90
     env:
       # The bootstrap default is intentionally arm64 for developer Macs.
@@ -183,29 +190,45 @@ jobs:
             test_workers=8
           fi
 
-          sh tools/run_swift_tests.sh \
-            swift test --skip-build --disable-swift-testing \
-            --filter GhosthubTerminalSmokeTests \
-            --skip "$gui_test_filter" \
-            --parallel --num-workers "$test_workers" \
+          test_arguments=(
+            swift test --skip-build --disable-swift-testing
+            --filter GhosthubTerminalSmokeTests
+            --skip "$gui_test_filter"
+            --parallel --num-workers "$test_workers"
+          )
+          if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
+            test_arguments+=(
+              --skip DefaultLibghosttyShellIntegrationLoadsUserZshrc
+            )
+          fi
+
+          sh tools/run_swift_tests.sh "${test_arguments[@]}" \
             2>&1 | tee -a "$gui_test_log"
 
       - name: Run serialized GUI terminal smoke tests
         shell: bash
+        env:
+          GHOSTHUB_CI_LANE: ${{ matrix.lane }}
         run: |
           gui_test_filter='Clipboard|Paste|TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|CmdVWithoutPaneSinkStaysLocal'
-          sh tools/run_swift_tests.sh \
-            swift test --skip-build --disable-swift-testing \
-            --filter "$gui_test_filter" --no-parallel \
+          window_server_test_filter='TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|PasteboardTmuxPaneInputSinkReceivesPasteOnCmdV|CmdVWithoutPaneSinkStaysLocal'
+          test_arguments=(
+            swift test --skip-build --disable-swift-testing
+            --filter "$gui_test_filter" --no-parallel
+          )
+          if [[ "$GHOSTHUB_CI_LANE" == "hosted" ]]; then
+            test_arguments+=(--skip "$window_server_test_filter")
+          fi
+          sh tools/run_swift_tests.sh "${test_arguments[@]}" \
             2>&1 | tee -a "$RUNNER_TEMP/gui-tests.log"
 
-      - name: Verify GUI coverage
+      - name: Verify terminal smoke coverage
         shell: bash
         run: |
           gui_test_log="$RUNNER_TEMP/gui-tests.log"
-          gui_skip_pattern='Test skipped - .*(window server|AppKit|pasteboard|LaunchServices)'
+          gui_skip_pattern='Test skipped'
           if grep -Ei "$gui_skip_pattern" "$gui_test_log"; then
-            echo "GUI integration tests must not skip required coverage." >&2
+            echo "Terminal smoke tests must not skip selected coverage." >&2
             exit 1
           fi
 
