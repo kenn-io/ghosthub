@@ -87,7 +87,13 @@ private final class ResolvedColorGenerationTracker: @unchecked Sendable {
 }
 
 @MainActor
-public final class LibghosttyRuntime: ObservableObject {
+public protocol ApplicationQuitRequestSource: AnyObject {
+    var quitRequestHandler: (() -> Void)? { get set }
+}
+
+@MainActor
+public final class LibghosttyRuntime: ObservableObject,
+    ApplicationQuitRequestSource {
     private struct ResolvedColorEntry {
         let colors: TerminalResolvedColors
         let generation: ResolvedColorCallbackGeneration
@@ -129,6 +135,7 @@ public final class LibghosttyRuntime: ObservableObject {
 
     public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
+    public var quitRequestHandler: (() -> Void)?
 
     private let configReloadNoticeSubject =
         PassthroughSubject<LibghosttyConfigReloadNotice?, Never>()
@@ -177,6 +184,11 @@ public final class LibghosttyRuntime: ObservableObject {
         forSurfaceIdentity identity: UInt
     ) -> TerminalResolvedColors? {
         resolvedTerminalColorsBySurface[identity]
+    }
+
+    func requestQuit() {
+        runtimeState.recordAction(.quit)
+        quitRequestHandler?()
     }
 
     var unsafeAppHandle: ghostty_app_t? {
@@ -741,8 +753,7 @@ public final class LibghosttyRuntime: ObservableObject {
         case GHOSTTY_ACTION_QUIT:
             DispatchQueue.main.async {
                 let state = runtime(from: userdataValue)
-                state.runtimeState.recordAction(.quit)
-                NSApplication.shared.terminate(nil)
+                state.requestQuit()
             }
             return true
 
