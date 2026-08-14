@@ -46,46 +46,67 @@ public enum KeyboardNavigationModel {
 
         switch currentTarget {
         case .worktree:
-            for project in sections.flatMap(\.projects) where
-                project.worktreeRows.contains(where: {
-                    $0.target == currentTarget
-                }) {
-                return project.worktreeRows.map(\.target)
+            for section in sections {
+                for project in section.projects {
+                    if let targets = matchingTargets(
+                        in: project.worktreeRows,
+                        currentTarget: currentTarget
+                    ) {
+                        return targets
+                    }
+                }
             }
         case .directoryWorkspace:
-            for section in sections where
-                section.directoryWorkspaceRows.contains(where: {
-                    $0.target == currentTarget
-                }) {
-                return section.directoryWorkspaceRows.map(\.target)
+            for section in sections {
+                if let targets = matchingTargets(
+                    in: section.directoryWorkspaceRows,
+                    currentTarget: currentTarget
+                ) {
+                    return targets
+                }
             }
         case .tmuxSession:
-            for section in sections where
-                section.tmuxSessionRows.contains(where: {
-                    $0.target == currentTarget
-                }) {
-                return section.tmuxSessionRows.map(\.target)
+            for section in sections {
+                if let targets = matchingTargets(
+                    in: section.tmuxSessionRows,
+                    currentTarget: currentTarget
+                ) {
+                    return targets
+                }
             }
         case .herdrSession:
             for section in sections {
                 let running = section.herdrSessionRows.filter {
                     $0.herdrSessionState == .running
                 }
-                if running.contains(where: { $0.target == currentTarget }) {
-                    return running.map(\.target)
+                if let targets = matchingTargets(
+                    in: running,
+                    currentTarget: currentTarget
+                ) {
+                    return targets
                 }
             }
         case .zellijSession:
-            for section in sections where
-                section.zellijSessionRows.contains(where: {
-                    $0.target == currentTarget
-                }) {
-                return section.zellijSessionRows.map(\.target)
+            for section in sections {
+                if let targets = matchingTargets(
+                    in: section.zellijSessionRows,
+                    currentTarget: currentTarget
+                ) {
+                    return targets
+                }
             }
         case .host, .project:
             break
         }
         return []
+    }
+
+    private static func matchingTargets(
+        in rows: [WorkspaceSidebarRow],
+        currentTarget: WorkspaceNavigationTarget
+    ) -> [WorkspaceNavigationTarget]? {
+        let targets = rows.map(\.target)
+        return targets.contains(currentTarget) ? targets : nil
     }
 
     public static func steppedTarget(

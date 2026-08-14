@@ -103,6 +103,59 @@ struct KeyboardNavigationModelTests {
         ])
     }
 
+    @Test("tmux sibling targets stay valid under ten concurrent consumers")
+    func tmuxSiblingTargetsSurviveAllocationPressure() async {
+        let hostID = UUID()
+        let names = (0 ..< 24).map {
+            "session-\($0)-\(String(repeating: "x", count: 48))"
+        }
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(
+                id: hostID,
+                tmuxSessions: names.map {
+                    .init(name: $0, managed: false, windows: [])
+                }
+            ),
+        ])
+        let context = KeyboardNavigationContext(snapshot: snapshot)
+        let expected = names.sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }.map {
+            WorkspaceNavigationTarget.tmuxSession(hostID: hostID, name: $0)
+        }
+        let current = expected[expected.count / 2]
+
+        let allSucceeded = await withTaskGroup(
+            of: Bool.self,
+            returning: Bool.self
+        ) { group in
+            for worker in 0 ..< 10 {
+                group.addTask {
+                    for iteration in 0 ..< 2_000 {
+                        let noise = Array(
+                            repeating: Int32(worker + iteration),
+                            count: 512 + ((worker + iteration) % 512)
+                        )
+                        let actual = withExtendedLifetime(noise) {
+                            KeyboardNavigationModel.siblingTargets(
+                                for: current,
+                                in: context
+                            )
+                        }
+                        guard actual == expected else { return false }
+                    }
+                    return true
+                }
+            }
+            for await succeeded in group where !succeeded {
+                return false
+            }
+            return true
+        }
+
+        #expect(allSucceeded)
+    }
+
     @Test("single, missing, and non-session targets pass through")
     func unavailableTargetsPassThrough() {
         let snapshot = WorkspaceSnapshot.fixture(hosts: [.fixture()])
