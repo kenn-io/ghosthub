@@ -34,6 +34,7 @@ jobs:
       eligible: ${{ steps.channel.outputs.eligible }}
       previous-source-sha: ${{ steps.channel.outputs.previous_source_sha }}
       previous-build: ${{ steps.channel.outputs.previous_build }}
+      previous-channel-version: ${{ steps.channel.outputs.previous_channel_version }}
       build: ${{ steps.channel.outputs.build }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -393,6 +394,7 @@ jobs:
           NIGHTLY_BUILD_VERSION: ${{ needs.eligibility.outputs.build }}
           NIGHTLY_CANDIDATE_ATTEMPT: ${{ needs.macos-nightly.outputs.candidate-attempt }}
           NIGHTLY_PREVIOUS_BUILD: ${{ needs.eligibility.outputs.previous-build }}
+          NIGHTLY_PREVIOUS_CHANNEL_VERSION: ${{ needs.eligibility.outputs.previous-channel-version }}
         shell: bash
         run: |
           aws_version="$(aws --version 2>&1)"
@@ -414,6 +416,7 @@ jobs:
             --built-at "$NIGHTLY_BUILD_AT"
             --workflow-run-id "$GITHUB_RUN_ID"
             --workflow-run-attempt "$NIGHTLY_CANDIDATE_ATTEMPT"
+            --expected-channel-version "$NIGHTLY_PREVIOUS_CHANNEL_VERSION"
           )
           if [[ -n "$NIGHTLY_PREVIOUS_BUILD" ]]; then
             arguments+=(--previous-build "$NIGHTLY_PREVIOUS_BUILD")

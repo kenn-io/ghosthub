@@ -392,7 +392,15 @@ and appcast; a missing, malformed, signature-incomplete, or mismatched appcast
 is repairable even when the source revision has not changed. Cleanup protects
 the build named by the prior manifest until the replacement manifest commits,
 and failed cleanup leaves that prior manifest in place so the next run retries
-publication.
+publication. Eligibility also fingerprints the prior manifest. Immediately
+before changing mutable objects, publication reads `channel.json` directly
+from object storage and rejects a lower build, a conflicting source revision,
+or any state that differs from the eligibility fingerprint. The final manifest
+write is conditional on the object-store ETag observed by that read, so a
+concurrent channel change fails instead of being overwritten. These fences
+make a delayed retry recoverable rather than allowing it to roll the completed
+channel back; workflow concurrency remains responsible for preventing normal
+publication overlap.
 
 Create a `nightly-signing` GitHub Actions environment with no required
 reviewers and deployment branches restricted to `main`. Store these values as

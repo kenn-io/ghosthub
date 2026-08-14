@@ -32,6 +32,7 @@ TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
 XML_CONTENT_TYPE = "application/xml"
 JSON_CONTENT_TYPE = "application/json"
 LATEST_DMG_KEY = "Ghosthub_Nightly_latest_macos_arm64.dmg"
+ABSENT_CHANNEL_VERSION = "absent"
 SIGNED_FEED_PREFIX = b"<!-- sparkle-signatures:\n"
 SIGNED_FEED_SUFFIX = b"-->"
 
@@ -60,6 +61,12 @@ def require_digest(field: str, value: object) -> str:
     if DIGEST_RE.fullmatch(resolved) is None:
         raise ValueError(f"{field} must be a lowercase SHA-256 digest")
     return resolved
+
+
+def require_channel_version(value: object) -> str:
+    if value == ABSENT_CHANNEL_VERSION:
+        return ABSENT_CHANNEL_VERSION
+    return require_digest("expected_channel_version", value)
 
 
 def require_timestamp(field: str, value: object) -> str:
@@ -212,6 +219,12 @@ class ChannelManifest:
         return (json.dumps(payload, sort_keys=True) + "\n").encode()
 
 
+def channel_version(manifest: ChannelManifest | None) -> str:
+    if manifest is None:
+        return ABSENT_CHANNEL_VERSION
+    return hashlib.sha256(manifest.to_json()).hexdigest()
+
+
 def validate_manifest_url(
     dmg_url: str,
     public_base_url: str,
@@ -349,9 +362,26 @@ class ObjectStore(Protocol):
         content_type: str,
     ) -> None: ...
 
+    def get_object(self, key: str) -> StoredObject | None: ...
+
+    def put_bytes_if_unchanged(
+        self,
+        key: str,
+        data: bytes,
+        cache_control: str,
+        content_type: str,
+        expected_etag: str | None,
+    ) -> None: ...
+
     def list_keys(self, prefix: str) -> list[str]: ...
 
     def delete_keys(self, keys: list[str]) -> None: ...
+
+
+@dataclass(frozen=True)
+class StoredObject:
+    data: bytes
+    etag: str
 
 
 class AwsCliObjectStore:
@@ -420,6 +450,99 @@ class AwsCliObjectStore:
                 handle.write(data)
                 temp_path = Path(handle.name)
             self.put_file(key, temp_path, cache_control, content_type)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+    def get_object(self, key: str) -> StoredObject | None:
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as handle:
+                temp_path = Path(handle.name)
+            command = self.base_command("get-object")
+            command.extend(
+                [
+                    "--key",
+                    key,
+                    str(temp_path),
+                    "--output",
+                    "json",
+                    *self.common_arguments(),
+                ]
+            )
+            result = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                if "NoSuchKey" in result.stderr or "Not Found" in result.stderr:
+                    return None
+                raise subprocess.CalledProcessError(
+                    result.returncode,
+                    command,
+                    output=result.stdout,
+                    stderr=result.stderr,
+                )
+            response = json.loads(result.stdout)
+            if not isinstance(response, dict):
+                raise ValueError("object-store read returned invalid JSON")
+            etag = response.get("ETag")
+            if not isinstance(etag, str) or not etag:
+                raise ValueError("object-store read is missing its ETag")
+            return StoredObject(data=temp_path.read_bytes(), etag=etag)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+    def put_bytes_if_unchanged(
+        self,
+        key: str,
+        data: bytes,
+        cache_control: str,
+        content_type: str,
+        expected_etag: str | None,
+    ) -> None:
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as handle:
+                handle.write(data)
+                temp_path = Path(handle.name)
+            command = self.base_command("put-object")
+            command.extend(
+                [
+                    "--key",
+                    key,
+                    "--body",
+                    str(temp_path),
+                    "--content-type",
+                    content_type,
+                    "--cache-control",
+                    cache_control,
+                ]
+            )
+            if expected_etag is None:
+                command.extend(["--if-none-match", "*"])
+            else:
+                command.extend(["--if-match", expected_etag])
+            command.extend(self.common_arguments())
+            result = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                return
+            if "PreconditionFailed" in result.stderr:
+                raise ValueError("nightly channel changed during publication")
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                command,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
         finally:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
@@ -519,6 +642,7 @@ class PublicationInputs:
     built_at: str
     workflow_run_id: int
     workflow_run_attempt: int
+    expected_channel_version: str = ABSENT_CHANNEL_VERSION
     previous_build: int | None = None
 
     def __post_init__(self) -> None:
@@ -534,6 +658,7 @@ class PublicationInputs:
         require_positive_integer(
             "workflow_run_attempt", self.workflow_run_attempt
         )
+        require_channel_version(self.expected_channel_version)
         if self.previous_build is not None:
             require_positive_integer("previous_build", self.previous_build)
             if self.previous_build > self.build:
@@ -644,6 +769,21 @@ def publish_nightly(
         IMMUTABLE_CACHE_CONTROL,
         TEXT_CONTENT_TYPE,
     )
+    published_object = store.get_object("channel.json")
+    published = (
+        ChannelManifest.from_json(published_object.data, inputs.public_base_url)
+        if published_object is not None
+        else None
+    )
+    if published is not None:
+        if manifest.build < published.build:
+            raise ValueError("candidate build is lower than the published build")
+        if manifest.build == published.build and (
+            manifest.source_sha != published.source_sha
+        ):
+            raise ValueError("the published build belongs to a different source")
+    if channel_version(published) != inputs.expected_channel_version:
+        raise ValueError("nightly channel changed since eligibility")
     store.put_file(
         "appcast.xml",
         inputs.appcast_path,
@@ -665,11 +805,12 @@ def publish_nightly(
         retain_builds=30,
         protected_builds=protected_builds,
     )
-    store.put_bytes(
+    store.put_bytes_if_unchanged(
         "channel.json",
         manifest.to_json(),
         MUTABLE_CACHE_CONTROL,
         JSON_CONTENT_TYPE,
+        published_object.etag if published_object is not None else None,
     )
     return manifest
 
@@ -737,6 +878,7 @@ def write_eligibility_outputs(
     eligible: bool,
     source_sha: str | None,
     previous_build: int | None,
+    previous_channel_version: str,
     build: int,
 ) -> None:
     with path.open("a", encoding="utf-8") as handle:
@@ -745,6 +887,7 @@ def write_eligibility_outputs(
         handle.write(
             f"previous_build={previous_build if previous_build is not None else ''}\n"
         )
+        handle.write(f"previous_channel_version={previous_channel_version}\n")
         handle.write(f"build={build}\n")
 
 
@@ -772,6 +915,7 @@ def create_parser() -> argparse.ArgumentParser:
     publish.add_argument("--built-at", required=True)
     publish.add_argument("--workflow-run-id", required=True, type=int)
     publish.add_argument("--workflow-run-attempt", required=True, type=int)
+    publish.add_argument("--expected-channel-version", required=True)
     publish.add_argument("--previous-build", type=int)
     return parser
 
@@ -810,6 +954,7 @@ def main(
                 eligible=eligible,
                 source_sha=(published.source_sha if published else None),
                 previous_build=(published.build if published else None),
+                previous_channel_version=channel_version(published),
                 build=args.build,
             )
             print("Nightly build is eligible." if eligible else "Nightly is current.")
@@ -829,6 +974,7 @@ def main(
             built_at=args.built_at,
             workflow_run_id=args.workflow_run_id,
             workflow_run_attempt=args.workflow_run_attempt,
+            expected_channel_version=args.expected_channel_version,
             previous_build=args.previous_build,
         )
         manifest = publish_nightly(store, inputs)

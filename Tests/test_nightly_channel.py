@@ -19,7 +19,9 @@ from nightly_channel import (  # noqa: E402
     AwsCliObjectStore,
     ChannelManifest,
     PublicationInputs,
+    StoredObject,
     cleanup_old_builds,
+    channel_version,
     decide_eligibility,
     fetch_appcast,
     fetch_manifest,
@@ -325,10 +327,15 @@ def test_eligibility_command_repairs_an_incomplete_appcast(
     )
 
     assert exit_code == 0
+    published = ChannelManifest.from_json(
+        json.dumps(manifest_data()).encode(),
+        PUBLIC_BASE_URL,
+    )
     assert output_path.read_text(encoding="utf-8").splitlines() == [
         "eligible=true",
         f"previous_source_sha={SOURCE_99}",
         "previous_build=99",
+        f"previous_channel_version={channel_version(published)}",
         "build=99",
     ]
 
@@ -374,6 +381,26 @@ class MemoryObjectStore:
         self.record(Operation("put", key, data, cache_control, content_type))
         self.objects[key] = data
 
+    def get_object(self, key: str) -> StoredObject | None:
+        data = self.objects.get(key)
+        if data is None:
+            return None
+        return StoredObject(data=data, etag=hashlib.sha256(data).hexdigest())
+
+    def put_bytes_if_unchanged(
+        self,
+        key: str,
+        data: bytes,
+        cache_control: str,
+        content_type: str,
+        expected_etag: str | None,
+    ) -> None:
+        current = self.get_object(key)
+        current_etag = current.etag if current is not None else None
+        if current_etag != expected_etag:
+            raise ValueError("nightly channel changed during publication")
+        self.put_bytes(key, data, cache_control, content_type)
+
     def list_keys(self, prefix: str) -> list[str]:
         return sorted(key for key in self.objects if key.startswith(prefix))
 
@@ -390,6 +417,7 @@ def make_publication(
     build: int = 99,
     run_id: int = 7,
     attempt: int = 1,
+    expected_manifest: ChannelManifest | None = None,
     previous_build: int | None = None,
 ) -> PublicationInputs:
     release_root = tmp_path / f"release-{run_id}-{attempt}"
@@ -420,6 +448,7 @@ def make_publication(
         built_at="2026-08-13T08:00:00Z",
         workflow_run_id=run_id,
         workflow_run_attempt=attempt,
+        expected_channel_version=channel_version(expected_manifest),
         previous_build=previous_build,
     )
 
@@ -452,6 +481,135 @@ def test_publication_advances_mutable_pointers_only_after_immutable_objects(
     ) == manifest
 
 
+def test_older_publication_retry_cannot_rollback_mutable_pointers(tmp_path):
+    store = MemoryObjectStore()
+    eligibility_manifest = ChannelManifest.from_json(
+        json.dumps(manifest_data(build=98, run_id=6)).encode(),
+        PUBLIC_BASE_URL,
+    )
+    newer = ChannelManifest.from_json(
+        json.dumps(
+            manifest_data(
+                source_sha=SOURCE_100,
+                build=100,
+                run_id=8,
+            )
+        ).encode(),
+        PUBLIC_BASE_URL,
+    )
+    newer_appcast = appcast_data(newer.dmg_url, newer.build)
+    newer_latest_dmg = b"newer signed notarized dmg"
+    store.objects["channel.json"] = newer.to_json()
+    store.objects["appcast.xml"] = newer_appcast
+    store.objects["Ghosthub_Nightly_latest_macos_arm64.dmg"] = newer_latest_dmg
+
+    with pytest.raises(ValueError, match="lower than the published build"):
+        publish_nightly(
+            store,
+            make_publication(
+                tmp_path,
+                build=99,
+                run_id=7,
+                attempt=2,
+                expected_manifest=eligibility_manifest,
+                previous_build=98,
+            ),
+        )
+
+    assert store.objects["channel.json"] == newer.to_json()
+    assert store.objects["appcast.xml"] == newer_appcast
+    assert (
+        store.objects["Ghosthub_Nightly_latest_macos_arm64.dmg"]
+        == newer_latest_dmg
+    )
+
+
+def test_same_build_retry_rejects_a_manifest_changed_since_eligibility(tmp_path):
+    store = MemoryObjectStore()
+    eligibility_manifest = ChannelManifest.from_json(
+        json.dumps(manifest_data(run_id=6)).encode(),
+        PUBLIC_BASE_URL,
+    )
+    newer = ChannelManifest.from_json(
+        json.dumps(manifest_data(run_id=8)).encode(),
+        PUBLIC_BASE_URL,
+    )
+    newer_appcast = appcast_data(newer.dmg_url, newer.build)
+    newer_latest_dmg = b"newer recovery dmg"
+    store.objects["channel.json"] = newer.to_json()
+    store.objects["appcast.xml"] = newer_appcast
+    store.objects["Ghosthub_Nightly_latest_macos_arm64.dmg"] = newer_latest_dmg
+
+    with pytest.raises(ValueError, match="channel changed since eligibility"):
+        publish_nightly(
+            store,
+            make_publication(
+                tmp_path,
+                run_id=7,
+                attempt=2,
+                expected_manifest=eligibility_manifest,
+                previous_build=99,
+            ),
+        )
+
+    assert store.objects["channel.json"] == newer.to_json()
+    assert store.objects["appcast.xml"] == newer_appcast
+    assert (
+        store.objects["Ghosthub_Nightly_latest_macos_arm64.dmg"]
+        == newer_latest_dmg
+    )
+
+
+def test_manifest_commit_rejects_a_concurrent_channel_update(tmp_path):
+    expected = ChannelManifest.from_json(
+        json.dumps(manifest_data(build=98, run_id=6)).encode(),
+        PUBLIC_BASE_URL,
+    )
+    concurrent = ChannelManifest.from_json(
+        json.dumps(
+            manifest_data(
+                source_sha=SOURCE_100,
+                build=100,
+                run_id=8,
+            )
+        ).encode(),
+        PUBLIC_BASE_URL,
+    )
+
+    class RacingStore(MemoryObjectStore):
+        def put_bytes_if_unchanged(
+            self,
+            key: str,
+            data: bytes,
+            cache_control: str,
+            content_type: str,
+            expected_etag: str | None,
+        ) -> None:
+            self.objects[key] = concurrent.to_json()
+            super().put_bytes_if_unchanged(
+                key,
+                data,
+                cache_control,
+                content_type,
+                expected_etag,
+            )
+
+    store = RacingStore()
+    store.objects["channel.json"] = expected.to_json()
+
+    with pytest.raises(ValueError, match="changed during publication"):
+        publish_nightly(
+            store,
+            make_publication(
+                tmp_path,
+                expected_manifest=expected,
+                previous_build=expected.build,
+            ),
+        )
+
+    assert store.objects["channel.json"] == concurrent.to_json()
+
+
 def test_cleanup_failure_preserves_the_previous_completion_manifest(tmp_path):
     class CleanupFailingStore(MemoryObjectStore):
         def delete_keys(self, keys: list[str]) -> None:
@@ -471,7 +629,10 @@ def test_cleanup_failure_preserves_the_previous_completion_manifest(tmp_path):
         ] = b"artifact"
 
     with pytest.raises(RuntimeError, match="cleanup failure"):
-        publish_nightly(store, make_publication(tmp_path))
+        publish_nightly(
+            store,
+            make_publication(tmp_path, expected_manifest=previous),
+        )
 
     assert ChannelManifest.from_json(
         store.objects["channel.json"], PUBLIC_BASE_URL
@@ -508,7 +669,11 @@ def test_manifest_failure_preserves_the_authoritative_previous_build(tmp_path):
     with pytest.raises(RuntimeError, match="manifest failure"):
         publish_nightly(
             store,
-            make_publication(tmp_path, previous_build=previous.build),
+            make_publication(
+                tmp_path,
+                expected_manifest=previous,
+                previous_build=previous.build,
+            ),
         )
 
     assert store.objects["channel.json"] == previous.to_json()
@@ -548,7 +713,11 @@ def test_partial_recovery_is_eligible_and_retries_at_a_fresh_attempt(tmp_path):
     store = MemoryObjectStore(fail_at=5)
     store.objects["channel.json"] = original.to_json()
     store.objects["appcast.xml"] = appcast_data(original.dmg_url, original.build)
-    attempt_two = make_publication(tmp_path, attempt=2)
+    attempt_two = make_publication(
+        tmp_path,
+        attempt=2,
+        expected_manifest=original,
+    )
 
     with pytest.raises(RuntimeError, match="injected"):
         publish_nightly(store, attempt_two)
@@ -567,7 +736,11 @@ def test_partial_recovery_is_eligible_and_retries_at_a_fresh_attempt(tmp_path):
     )
 
     store.fail_at = None
-    attempt_three = make_publication(tmp_path, attempt=3)
+    attempt_three = make_publication(
+        tmp_path,
+        attempt=3,
+        expected_manifest=original,
+    )
     recovered = publish_nightly(store, attempt_three)
 
     assert "/attempts/3/" in recovered.dmg_url

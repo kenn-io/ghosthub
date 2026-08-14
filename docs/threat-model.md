@@ -383,6 +383,16 @@ Sparkle. A hostile nightly object host can still suppress or corrupt channel
 metadata and deny nightly-update availability, but cannot turn that metadata
 into an accepted update without a trusted signing identity.
 
+Nightly publication treats the object store's current manifest and ETag as an
+operational consistency boundary. It rejects candidates that are older than or
+conflict with the directly read manifest, requires that manifest to match the
+state observed by eligibility, and conditionally commits the replacement
+manifest against the directly observed ETag. This prevents delayed or
+out-of-order trusted workflow retries from silently rolling back the completed
+channel. It does not make the object host an update-authority boundary or claim
+availability against a hostile store; Sparkle and Apple signing retain those
+roles and a compromised store can still deny service.
+
 Stable-feed routing and publication authority are the operational boundary
 that protects stable users from nightly automation. The unattended nightly
 environment can write only the nightly object store and cannot create a GitHub
