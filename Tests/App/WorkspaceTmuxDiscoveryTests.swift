@@ -1161,9 +1161,24 @@ struct WorkspaceTmuxDiscoveryTests {
     @Test("retained tmux activation unparks before publishing the active handle")
     func retainedTmuxActivationUnparksBeforePublishingHandle() async throws {
         let environment = try setupHostEnvironment()
+        var snapshot = environment.snapshot
         let budget = LivePreviewBudget(limit: 4)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
         weak var weakModel: WorkspaceSceneModel?
         var events: [String] = []
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: "first",
+            managed: false,
+            windows: [],
+            serverPID: identity.serverPID,
+            sessionID: identity.sessionID,
+            createdAt: identity.createdAt
+        )]
         let previewCoordinator = TmuxSessionPreviewCoordinator(
             mode: .live,
             budget: budget,
@@ -1182,10 +1197,14 @@ struct WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            nativeTmuxPaneSplitter: Self.previewPaneSplitter(
+                identity: identity
+            ),
             sessionPreviewCoordinator: previewCoordinator
         )
         weakModel = model
@@ -1198,31 +1217,18 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "second"
         )
         model.openBorrowedTmuxSession(first)
-        let firstHandle = try #require(
-            model.retainedBorrowedTmuxHandle(for: first)
-        )
-        model.openBorrowedTmuxSession(second)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
         let key = TmuxPreviewKey(
             hostID: first.hostID,
             name: first.name,
             socketName: first.socketName
         )
-        let identity = TmuxSessionIdentity(
-            serverPID: "101",
-            sessionID: "$1",
-            createdAt: "1000"
-        )
-        previewCoordinator.register(.init(
-            key: key,
-            surface: { nil },
-            handleID: { firstHandle.id },
-            generation: { nil },
-            identity: { identity },
-            connectionState: { .connected },
-            isActive: { weakModel?.activeBorrowedTmuxSelection == first },
-            activate: {}
-        ))
         previewCoordinator.setExpanded(true, for: key)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxSessionIsConnected(first)
+                && !previewCoordinator.requiresIdentity(key)
+        }
+        model.openBorrowedTmuxSession(second)
 
         await waitUntilMainActor {
             events == ["park:second"]
