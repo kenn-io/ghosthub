@@ -24,6 +24,28 @@ private actor TelemetryTestStateStore: TelemetryStateStoring {
     }
 }
 
+private func waitForTelemetryCondition(
+    timeout: Duration,
+    pollInterval: Duration = .milliseconds(10),
+    _ condition: @escaping @Sendable () async -> Bool
+) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+        guard !Task.isCancelled else { return false }
+        if await condition() {
+            return true
+        }
+        do {
+            try await Task.sleep(for: pollInterval)
+        } catch {
+            return false
+        }
+    }
+    guard !Task.isCancelled else { return false }
+    return await condition()
+}
+
 private actor TelemetryTestTransport: TelemetryTransport {
     enum TestError: Error {
         case rejected
@@ -45,6 +67,15 @@ private actor TelemetryTestTransport: TelemetryTransport {
 
     func events() -> [TelemetryEvent] {
         capturedEvents
+    }
+
+    func waitUntilEventCount(
+        _ minimum: Int,
+        timeout: Duration = .seconds(30)
+    ) async -> Bool {
+        await waitForTelemetryCondition(timeout: timeout) { [self] in
+            await events().count >= minimum
+        }
     }
 }
 
@@ -69,12 +100,41 @@ private actor TelemetryTestSleeper {
         requestedDurations
     }
 
+    func waitUntilPendingCount(
+        _ minimum: Int,
+        timeout: Duration = .seconds(30)
+    ) async -> Bool {
+        await waitForTelemetryCondition(timeout: timeout) { [self] in
+            await pendingCount() >= minimum
+        }
+    }
+
     func resumeNext() {
         continuations.removeFirst().resume()
     }
 }
 
 struct TelemetryTests {
+    @Test("telemetry waits time out and honor cancellation")
+    func telemetryWaitsAreBounded() async {
+        let transport = TelemetryTestTransport()
+        #expect(await transport.waitUntilEventCount(
+            1,
+            timeout: .milliseconds(10)
+        ) == false)
+
+        let sleeper = TelemetryTestSleeper()
+        let cancelledWait = Task {
+            await sleeper.waitUntilPendingCount(
+                1,
+                timeout: .seconds(10)
+            )
+        }
+        await Task.yield()
+        cancelledWait.cancel()
+        #expect(await cancelledWait.value == false)
+    }
+
     @Test("application activity is anonymous and sent once per UTC day")
     func applicationActivityIsAnonymousAndDaily() async throws {
         let stateStore = TelemetryTestStateStore()
@@ -300,19 +360,13 @@ struct TelemetryTests {
         )
 
         controller.applicationDidBecomeActive()
-        await waitUntil {
-            let eventCount = await transport.events().count
-            let pendingCount = await sleeper.pendingCount()
-            return eventCount == 1 && pendingCount == 1
-        }
+        #expect(await transport.waitUntilEventCount(1))
+        #expect(await sleeper.waitUntilPendingCount(1))
 
         date = date.addingTimeInterval(20)
         await sleeper.resumeNext()
-        await waitUntil {
-            let eventCount = await transport.events().count
-            let pendingCount = await sleeper.pendingCount()
-            return eventCount == 2 && pendingCount == 1
-        }
+        #expect(await transport.waitUntilEventCount(2))
+        #expect(await sleeper.waitUntilPendingCount(1))
 
         #expect(
             await sleeper.durations().first == .seconds(10)
@@ -358,11 +412,8 @@ struct TelemetryTests {
         )
 
         controller.applicationDidBecomeActive()
-        await waitUntil {
-            let eventCount = await transport.events().count
-            let pendingCount = await sleeper.pendingCount()
-            return eventCount == 1 && pendingCount == 1
-        }
+        #expect(await transport.waitUntilEventCount(1))
+        #expect(await sleeper.waitUntilPendingCount(1))
 
         controller.applicationWillResignActive()
         date = date.addingTimeInterval(20)

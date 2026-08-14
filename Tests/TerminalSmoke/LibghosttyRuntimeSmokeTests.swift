@@ -59,7 +59,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
 
     private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
-            let (pipeline, _) = makeIsolatedPipeline()
+            let (pipeline, _) = makeIsolatedSurfacePipeline()
             Self.retainedRuntime = LibghosttyRuntime(pipeline: pipeline)
         }
         return Self.retainedRuntime!
@@ -172,7 +172,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
 
     func testResolvedTerminalColorsFollowSurfaceConditionalTheme() throws {
         try skipUnlessLibghosttyReady()
-        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        let (pipeline, tempRoot) = makeIsolatedSurfacePipeline()
         addTeardownBlock {
             try? FileManager.default.removeItem(at: tempRoot)
         }
@@ -242,7 +242,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
             .appendingPathComponent(themeName)
         let colors = try themeColors(at: theme)
 
-        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        let (pipeline, tempRoot) = makeIsolatedSurfacePipeline()
         addTeardownBlock {
             try? FileManager.default.removeItem(at: tempRoot)
         }
@@ -326,7 +326,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
 
     func testLateSurfaceRegistrationPublishesResolvedColors() throws {
         try skipUnlessLibghosttyReady()
-        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        let (pipeline, tempRoot) = makeIsolatedSurfacePipeline()
         addTeardownBlock {
             try? FileManager.default.removeItem(at: tempRoot)
         }
@@ -374,7 +374,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
 
     func testResolvedTerminalColorsAreSurfaceScopedAndInvalidated() throws {
         try skipUnlessLibghosttyReady()
-        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        let (pipeline, tempRoot) = makeIsolatedSurfacePipeline()
         addTeardownBlock {
             try? FileManager.default.removeItem(at: tempRoot)
         }

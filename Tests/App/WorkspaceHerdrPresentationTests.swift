@@ -1370,9 +1370,11 @@ struct WorkspaceHerdrPresentationTests {
 
         close(false, 9)
 
-        await waitUntilMainActor(timeout: .seconds(1)) {
-            discoveries.callCount == 3
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.hostID)?
+                .herdrSessions.contains(where: { $0.name == "api" }) == false
         }
+        #expect(discoveries.callCount == 3)
         #expect(model.snapshot.host(id: environment.hostID)?
             .herdrSessions.contains(where: { $0.name == "api" }) == false)
         await model.shutdown()

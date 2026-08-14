@@ -148,7 +148,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
-            let (pipeline, _) = makeIsolatedPipeline()
+            let (pipeline, _) = makeIsolatedSurfacePipeline()
             try! FileManager.default.createDirectory(
                 at: pipeline.paths.configDirectory,
                 withIntermediateDirectories: true
@@ -166,7 +166,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     private func runtimeWithTerminalConfig(
         _ contents: String
     ) throws -> LibghosttyRuntime {
-        let (pipeline, _) = makeIsolatedPipeline()
+        let (pipeline, _) = makeIsolatedSurfacePipeline()
         try FileManager.default.createDirectory(
             at: pipeline.paths.configDirectory,
             withIntermediateDirectories: true
@@ -1530,7 +1530,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             )
         }
 
-        let (pipeline, _) = makeIsolatedPipeline()
+        let (pipeline, _) = makeIsolatedSurfacePipeline()
         let runtime = LibghosttyRuntime(pipeline: pipeline)
         Self.transientRuntimes.append(runtime)
         let appHandle = try requireAppHandle(from: runtime)

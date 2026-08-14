@@ -103,6 +103,55 @@ struct KeyboardNavigationModelTests {
         ])
     }
 
+    @Test("tmux sibling targets stay valid under ten concurrent consumers")
+    func tmuxSiblingTargetsSurviveAllocationPressure() async {
+        let hostID = UUID()
+        let names = (0 ..< 24).map {
+            "session-\($0)-\(String(repeating: "x", count: 48))"
+        }.sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        let rows = names.map { name in
+            WorkspaceSidebarRow(
+                target: .tmuxSession(hostID: hostID, name: name),
+                icon: .tmuxSession,
+                title: name
+            )
+        }
+        let expected = rows.map(\.target)
+        let current = expected[expected.count / 2]
+
+        let allSucceeded = await withTaskGroup(
+            of: Bool.self,
+            returning: Bool.self
+        ) { group in
+            for worker in 0 ..< 10 {
+                group.addTask {
+                    for iteration in 0 ..< 2_000 {
+                        let noise = Array(
+                            repeating: Int32(worker + iteration),
+                            count: 512 + ((worker + iteration) % 512)
+                        )
+                        let actual = withExtendedLifetime(noise) {
+                            KeyboardNavigationModel.matchingTargets(
+                                in: rows,
+                                currentTarget: current
+                            )
+                        }
+                        guard actual == expected else { return false }
+                    }
+                    return true
+                }
+            }
+            for await succeeded in group where !succeeded {
+                return false
+            }
+            return true
+        }
+
+        #expect(allSucceeded)
+    }
+
     @Test("single, missing, and non-session targets pass through")
     func unavailableTargetsPassThrough() {
         let snapshot = WorkspaceSnapshot.fixture(hosts: [.fixture()])

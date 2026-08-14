@@ -1063,7 +1063,9 @@ struct WorkspaceRestorationTests {
         configuredHosts.withLock { $0 = [configuredHost] }
         model.refreshHosts()
         discoveryState.withLock { $0.released = true }
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntilMainActor {
+            !model.isWorkspaceRestorationPending
+        }
 
         #expect(!model.isWorkspaceRestorationPending)
         #expect(model.activeBorrowedZellijSelection == nil)

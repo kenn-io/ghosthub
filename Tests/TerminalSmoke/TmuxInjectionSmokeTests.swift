@@ -26,7 +26,7 @@ final class TmuxInjectionSmokeTests: XCTestCase {
 
     private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
-            let (pipeline, _) = makeIsolatedPipeline()
+            let (pipeline, _) = makeIsolatedSurfacePipeline()
             Self.retainedRuntime = LibghosttyRuntime(pipeline: pipeline)
         }
         return Self.retainedRuntime!
