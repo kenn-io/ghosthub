@@ -73,6 +73,17 @@ public final class TerminalSurfaceView: ObservableObject {
     @Published public var error: Error?
     public internal(set) var childExitCode: UInt32?
 
+    /// Mirrors `TerminalSurfaceView.launchFailureIsRetryable`.
+    public var launchFailureIsRetryable: Bool {
+        guard let terminalError = error as? TerminalSurfaceError else {
+            return false
+        }
+        if case .surfaceCreationFailed = terminalError {
+            return true
+        }
+        return false
+    }
+
     public var suppressAutoFocus: Bool = false
     public var onFocusChange: ((Bool) -> Void)?
     public var onPrimaryInteraction: (() -> Void)?

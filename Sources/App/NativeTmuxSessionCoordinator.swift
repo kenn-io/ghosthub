@@ -31,6 +31,9 @@ enum BorrowedTmuxAttachmentClosure: Equatable {
     case detached
     case processExited(code: UInt32?)
     case launchFailed
+    /// The terminal surface could not be created. Transient — no display was
+    /// available to render it — so recovery keeps trying instead of latching.
+    case surfaceUnavailable
 }
 
 private struct NativeTmuxSessionKey: Hashable {
@@ -517,7 +520,12 @@ final class NativeTmuxSessionCoordinator {
             return nil
         }
         if let error = surface.launchError {
-            failSurfaceLaunch(handle, reason: error.localizedDescription)
+            failSurfaceLaunch(
+                handle,
+                reason: error.localizedDescription,
+                closure: surface.launchFailureIsRetryable
+                    ? .surfaceUnavailable : .launchFailed
+            )
             return nil
         }
         if isFirstLaunch, appliesPresentationStyle,
@@ -789,10 +797,17 @@ final class NativeTmuxSessionCoordinator {
 
     private func failSurfaceLaunch(
         _ handle: BorrowedTmuxSessionHandle,
-        reason: String
+        reason: String,
+        closure: BorrowedTmuxAttachmentClosure = .launchFailed
     ) {
+        AppLogger.shared.error(
+            "tmux surface launch failed: \(reason) "
+                + "retryable=\(closure == .surfaceUnavailable) "
+                + "activeDisplays=\(DisplayAvailability.activeCount())",
+            context: "tmux"
+        )
         cancelPaneSplits(handleID: handle.id)
-        attachmentClosures[handle.id] = .launchFailed
+        attachmentClosures[handle.id] = closure
         remoteExitStatusStore.remove(
             attachments.removeValue(forKey: handle.id)?.remoteExitStatusURL
         )

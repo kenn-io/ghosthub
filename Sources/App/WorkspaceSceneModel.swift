@@ -848,6 +848,14 @@ final class WorkspaceSceneModel: ObservableObject {
     var herdrReconnectSupervisorIsRunning: Bool {
         herdrReconnectSupervisor.isRunning
     }
+
+    /// tmux supervisors are per presentation, so unlike Herdr and Zellij this
+    /// reports whether any retained presentation is still recovering.
+    var anyTmuxReconnectSupervisorIsRunning: Bool {
+        retainedTmuxPresentations.values.contains {
+            $0.reconnectSupervisor.isRunning
+        }
+    }
     @Published private(set) var sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest?
     private enum RemoteTmuxEstablishmentPhase: Equatable {
@@ -861,6 +869,10 @@ final class WorkspaceSceneModel: ObservableObject {
         var host: CommandHost
         var phase: RemoteTmuxEstablishmentPhase
         var surfaceExitCode: UInt32?
+        /// The previous attempt could not create a terminal surface, so no
+        /// client ever ran and there is no exit code to inspect. Recovery is
+        /// still legitimate: the transport failure that started it stands.
+        var surfaceLaunchFailed = false
     }
     private struct TmuxPresentationKey: Hashable {
         var hostID: UUID
@@ -1196,6 +1208,9 @@ final class WorkspaceSceneModel: ObservableObject {
     private let tmuxSessionStyler: TmuxSessionStyling
     private let tmuxPresentationStyleProvider:
         (UInt?) -> TmuxPresentationStyle?
+    /// Displays macOS currently reports as active. Zero means nothing can be
+    /// rendered, so an attach cannot succeed; see `DisplayAvailability`.
+    private let activeDisplayCount: @Sendable () -> Int
     private let sshHostProbeRunner: SSHHostProbeRunner
     private let sshAuthenticationCoordinator: SSHAuthenticationCoordinator
     private let sshAuthenticationScopeID = UUID()
@@ -1268,6 +1283,7 @@ final class WorkspaceSceneModel: ObservableObject {
     var childExitCancellable: AnyCancellable?
     var appDidBecomeActiveCancellable: AnyCancellable?
     var appDidResignActiveCancellable: AnyCancellable?
+    var screenParametersCancellable: AnyCancellable?
     var shortcutMonitor: ShortcutMonitor?
     var openTerminalSurfaceCount: Int {
         terminalCoordinator.surfaceEntries().reduce(into: 0) { count, entry in
@@ -1365,6 +1381,9 @@ final class WorkspaceSceneModel: ObservableObject {
         @escaping (UInt?) -> TmuxPresentationStyle? = { _ in nil },
         appliesTmuxPresentationStyleToExistingSessionsProvider:
         @escaping () -> Bool = { false },
+        activeDisplayCount: @escaping @Sendable () -> Int = {
+            DisplayAvailability.activeCount()
+        },
         kwtInventoryLoader: @escaping KwtInventoryLoader = { host in
             try await KwtInventoryClient().load(from: host)
         },
@@ -1709,6 +1728,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.tmuxSessionStyler = tmuxSessionStyler
         self.tmuxPresentationStyleProvider =
             tmuxPresentationStyleProvider
+        self.activeDisplayCount = activeDisplayCount
         self.sshHostProbeRunner = sshHostProbeRunner
         self.sshAuthenticationCoordinator = sshAuthenticationCoordinator
         self.createdSessionDiscoveryDelays =
@@ -2073,6 +2093,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 activityController.startOutputFlushLoop()
                 subscribeChildExitEvents()
                 subscribeAppActivity()
+                subscribeDisplayAvailability()
                 activityController
                     .refreshWorkspaceResourceSummary()
                 installShortcutMonitor()
@@ -2125,6 +2146,7 @@ final class WorkspaceSceneModel: ObservableObject {
         childExitCancellable?.cancel()
         appDidBecomeActiveCancellable?.cancel()
         appDidResignActiveCancellable?.cancel()
+        screenParametersCancellable?.cancel()
         shortcutMonitor?.uninstall()
         // Nil out controller backings so their deinits run now,
         // cancelling detached tasks that could fire closures
@@ -9713,6 +9735,21 @@ final class WorkspaceSceneModel: ObservableObject {
         if case .disconnected = state,
            presentation.recoveryState != nil,
            nativeTmuxSessionCoordinator.attachmentClosure(handle)
+           == .surfaceUnavailable,
+           var context = presentation.reconnectContext,
+           context.handleID == handle.id {
+            // The surface could not be created, which is transient. The
+            // supervisor already stopped when it handed off this relaunch, so
+            // re-arm it; its first act is the display check, so it backs off
+            // rather than spinning on a relaunch that cannot succeed yet.
+            context.surfaceLaunchFailed = true
+            presentation.reconnectContext = context
+            startTmuxReconnect(presentation, context: context)
+            return
+        }
+        if case .disconnected = state,
+           presentation.recoveryState != nil,
+           nativeTmuxSessionCoordinator.attachmentClosure(handle)
            == .launchFailed {
             cancelTmuxReconnect(presentation)
             return
@@ -9845,6 +9882,15 @@ final class WorkspaceSceneModel: ObservableObject {
             context.surfaceExitCode = code
             activeHerdrReconnectContext = context
             startHerdrReconnect(context)
+        case .surfaceUnavailable:
+            // Transient: see the tmux path in nativeTmuxStateChanged.
+            guard let context = activeHerdrReconnectContext,
+                  context.handleID == handle.id
+            else {
+                cancelHerdrReconnect()
+                return
+            }
+            startHerdrReconnect(context)
         case .launchFailed, nil:
             cancelHerdrReconnect()
         }
@@ -9916,6 +9962,17 @@ final class WorkspaceSceneModel: ObservableObject {
                 context.surfaceExitCode = code
                 activeZellijReconnectContext = context
                 startZellijReconnect(context)
+            case .surfaceUnavailable:
+                // Transient: see the tmux path in nativeTmuxStateChanged.
+                guard let context = activeZellijReconnectContext,
+                      context.handleID == handle.id
+                else {
+                    zellijReconnectSupervisor.cancel()
+                    activeBorrowedZellijRecoveryState = nil
+                    scheduleZellijSessionDiscovery()
+                    return
+                }
+                startZellijReconnect(context)
             case .launchFailed, nil:
                 if let selection = pendingCreatedZellijSessions
                     .removeValue(forKey: handle.id) {
@@ -9960,6 +10017,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard activeZellijReconnectContext == context,
               activeBorrowedZellijHandle?.id == context.handleID
         else { return .stop }
+        guard canAttachToDisplay else { return .retry }
         guard let connection = context.connection else {
             stopZellijReconnect(
                 "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
@@ -10328,6 +10386,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard activeHerdrReconnectContext == context,
               activeBorrowedHerdrHandle?.id == context.handleID
         else { return .stop }
+        guard canAttachToDisplay else { return .retry }
         let probe = await validatedHerdrSessionProbe(
             named: context.selection.name,
             on: context.host
@@ -10504,6 +10563,35 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    /// Whether an attach can succeed right now.
+    ///
+    /// libghostty's renderer needs an active display to build the vsync display
+    /// link it creates with every surface, so attaching with none — lid shut, no
+    /// external monitor — always fails. Holding instead of attempting keeps the
+    /// supervisor's backoff intact and stops Ghosthub waking SSH on every dark
+    /// wake while the lid is closed. `subscribeDisplayAvailability()` retries
+    /// the moment a display comes back.
+    private var canAttachToDisplay: Bool {
+        activeDisplayCount() > 0
+    }
+
+    /// Resumes recovery as soon as a display comes back, so a session held by
+    /// `canAttachToDisplay` attaches on lid open instead of waiting out the
+    /// supervisor's remaining delay.
+    func handleDisplayParametersChanged() {
+        guard canAttachToDisplay else { return }
+        for presentation in retainedTmuxPresentations.values
+            where presentation.reconnectSupervisor.isRunning {
+            presentation.reconnectSupervisor.reconnectNow()
+        }
+        if herdrReconnectSupervisor.isRunning {
+            herdrReconnectSupervisor.reconnectNow()
+        }
+        if zellijReconnectSupervisor.isRunning {
+            zellijReconnectSupervisor.reconnectNow()
+        }
+    }
+
     private func attemptTmuxReconnect(
         _ presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext
@@ -10513,6 +10601,7 @@ final class WorkspaceSceneModel: ObservableObject {
               retainedTmuxPresentation(for: presentation.handle)
               === presentation
         else { return .stop }
+        guard canAttachToDisplay else { return .retry }
         let outcome = await tmuxProbeOutcome(
             for: presentation,
             context: context
@@ -10618,7 +10707,9 @@ final class WorkspaceSceneModel: ObservableObject {
         else { return .stop }
         switch outcome {
         case .present:
-            guard context.surfaceExitCode == 255 else {
+            guard context.surfaceExitCode == 255
+                || context.surfaceLaunchFailed
+            else {
                 stopTmuxReconnectWithUnableToAttach(
                     presentation,
                     "The remote tmux client exited before it could attach."

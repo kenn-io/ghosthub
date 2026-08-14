@@ -329,6 +329,7 @@ func makeModel(
     @escaping (UInt?) -> TmuxPresentationStyle? = { _ in nil },
     appliesTmuxPresentationStyleToExistingSessionsProvider:
     @escaping () -> Bool = { false },
+    activeDisplayCount: @escaping @Sendable () -> Int = { 1 },
     kwtInventoryLoader: @escaping WorkspaceSceneModel.KwtInventoryLoader = {
         host in
         try await KwtInventoryClient().load(from: host)
@@ -503,6 +504,7 @@ func makeModel(
         tmuxPresentationStyleProvider: tmuxPresentationStyleProvider,
         appliesTmuxPresentationStyleToExistingSessionsProvider:
         appliesTmuxPresentationStyleToExistingSessionsProvider,
+        activeDisplayCount: activeDisplayCount,
         kwtInventoryLoader: kwtInventoryLoader,
         kwtRemoteProvisioner: kwtRemoteProvisioner,
         kwtWorktreeCreator: kwtWorktreeCreator,
@@ -578,10 +580,12 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
 
     init(
         launchError: Error? = nil,
+        launchFailureIsRetryable: Bool = false,
         closeOnRegistrationCode: UInt32? = nil
     ) {
         surface = RecordingNativeSessionPaneSurface(
             launchError: launchError,
+            launchFailureIsRetryable: launchFailureIsRetryable,
             closeOnRegistrationCode: closeOnRegistrationCode
         )
     }
@@ -613,15 +617,18 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var hasEffectiveKeyboardFocus = false
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     let launchError: Error?
+    let launchFailureIsRetryable: Bool
     private var closeOnRegistrationCode: UInt32?
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
 
     init(
         launchError: Error? = nil,
+        launchFailureIsRetryable: Bool = false,
         closeOnRegistrationCode: UInt32? = nil
     ) {
         self.launchError = launchError
+        self.launchFailureIsRetryable = launchFailureIsRetryable
         self.closeOnRegistrationCode = closeOnRegistrationCode
     }
 

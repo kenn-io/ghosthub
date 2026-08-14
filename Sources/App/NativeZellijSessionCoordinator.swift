@@ -16,6 +16,9 @@ enum BorrowedZellijAttachmentClosure: Equatable {
     case detached
     case processExited(code: UInt32?)
     case launchFailed
+    /// The terminal surface could not be created. Transient — no display was
+    /// available to render it — so recovery keeps trying instead of latching.
+    case surfaceUnavailable
 }
 
 private struct NativeZellijSessionKey: Hashable {
@@ -298,7 +301,12 @@ final class NativeZellijSessionCoordinator {
             return nil
         }
         if let error = surface.launchError {
-            failSurfaceLaunch(handle, reason: error.localizedDescription)
+            failSurfaceLaunch(
+                handle,
+                reason: error.localizedDescription,
+                closure: surface.launchFailureIsRetryable
+                    ? .surfaceUnavailable : .launchFailed
+            )
             return nil
         }
         surface.blocksClipboardReads = attachment.host.isRemote
@@ -326,9 +334,16 @@ final class NativeZellijSessionCoordinator {
 
     private func failSurfaceLaunch(
         _ handle: BorrowedZellijSessionHandle,
-        reason: String
+        reason: String,
+        closure: BorrowedZellijAttachmentClosure = .launchFailed
     ) {
-        attachmentClosures[handle.id] = .launchFailed
+        AppLogger.shared.error(
+            "zellij surface launch failed: \(reason) "
+                + "retryable=\(closure == .surfaceUnavailable) "
+                + "activeDisplays=\(DisplayAvailability.activeCount())",
+            context: "zellij"
+        )
+        attachmentClosures[handle.id] = closure
         remoteExitStatusStore.remove(
             attachments.removeValue(forKey: handle.id)?.remoteExitStatusURL
         )

@@ -1425,6 +1425,47 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("no active display holds Herdr recovery without probing the host")
+    func zeroDisplaysHoldsHerdrRecovery() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let probes = Mutex(0)
+        let displays = Mutex(1)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in
+                probes.withLock { $0 += 1 }
+                return .present
+            },
+            activeDisplayCount: { displays.withLock { $0 } }
+        )
+        let herdr = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(herdr)
+        await launchHerdrSurface(model, store: store)
+        probes.withLock { $0 = 0 }
+
+        displays.withLock { $0 = 0 }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor { model.herdrReconnectSupervisorIsRunning }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(store.requestedKeys.count == 1)
+        #expect(probes.withLock { $0 } == 0)
+        #expect(model.herdrReconnectSupervisorIsRunning)
+
+        displays.withLock { $0 = 1 }
+        model.handleDisplayParametersChanged()
+        await waitUntilMainActor { store.requestedKeys.count == 2 }
+
+        #expect(model.activeBorrowedHerdrSelection == herdr)
+        await model.shutdown()
+    }
+
     @Test("reconnect rejects SSH route drift after its exact probe")
     func remoteTransportRecoveryRejectsRouteDrift() async throws {
         let environment = try remoteEnvironment()
@@ -1682,6 +1723,7 @@ struct WorkspaceHerdrPresentationTests {
         paneSplitCapabilityProvider: @escaping NativeHerdrSessionCoordinator
             .PaneSplitCapabilityProvider = { _, _, _, _ in .success(nil) },
         paneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
+        activeDisplayCount: @escaping @Sendable () -> Int = { 1 },
         createdSessionDiscoveryDelays: [Duration] = [
             .milliseconds(500),
             .seconds(1),
@@ -1706,6 +1748,7 @@ struct WorkspaceHerdrPresentationTests {
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            activeDisplayCount: activeDisplayCount,
             herdrLifecycleCoordinator: coordinator,
             herdrSSHConnectionSnapshotProvider:
             sshConnectionSnapshotProvider,

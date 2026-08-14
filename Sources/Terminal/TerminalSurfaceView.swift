@@ -103,6 +103,22 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         }
     }
 
+    /// True when this surface failed because libghostty could not create it.
+    ///
+    /// That failure is transient: the renderer needs an active display to build
+    /// its vsync display link, so creation fails whenever no display is
+    /// available (lid shut, no external monitor) and succeeds again once one is.
+    /// Callers use this to keep recovering instead of latching.
+    public var launchFailureIsRetryable: Bool {
+        guard let terminalError = error as? TerminalSurfaceError else {
+            return false
+        }
+        if case .surfaceCreationFailed = terminalError {
+            return true
+        }
+        return false
+    }
+
     // MARK: - Internal State
 
     @Published public private(set) var focused: Bool = false
@@ -1844,7 +1860,7 @@ enum TerminalSurfaceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .surfaceCreationFailed:
-            return "ghostty_surface_new returned nil"
+            return "Ghosthub could not create the terminal surface."
         case let .surfaceClosed(processAlive):
             return processAlive
                 ? "Surface closed while process is still running"

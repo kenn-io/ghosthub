@@ -12,6 +12,9 @@ protocol NativeSessionPaneSurfacing: AnyObject {
     var paneSplitErrorMessage: String? { get set }
     var hasEffectiveKeyboardFocus: Bool { get }
     var launchError: Error? { get }
+    /// True when `launchError` describes a transient condition that a later
+    /// attach can recover from, rather than a rejected launch.
+    var launchFailureIsRetryable: Bool { get }
     var childExitCode: UInt32? { get }
     func registerSurfaceCloseObserver(
         id: UUID,
@@ -31,6 +34,8 @@ extension NativeSessionPaneSurfacing {
     }
 
     var hasEffectiveKeyboardFocus: Bool { false }
+
+    var launchFailureIsRetryable: Bool { false }
 }
 
 extension TerminalSurfaceView: NativeSessionPaneSurfacing {

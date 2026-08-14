@@ -36,6 +36,21 @@ extension WorkspaceSceneModel {
         #endif
     }
 
+    /// Displays coming or going changes whether an attach can succeed at all,
+    /// so a session waiting on one retries the moment the lid opens.
+    func subscribeDisplayAvailability() {
+        #if canImport(AppKit)
+        screenParametersCancellable = NotificationCenter.default
+            .publisher(
+                for: NSApplication.didChangeScreenParametersNotification
+            )
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.handleDisplayParametersChanged()
+            }
+        #endif
+    }
+
     func handleApplicationDidBecomeActiveForResourceMonitoring() {
         isAppActive = true
         tmuxSessionPreviewCoordinator.applicationDidBecomeActive()
