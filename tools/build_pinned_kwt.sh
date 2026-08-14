@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+project_root="$(dirname "$script_dir")"
+
 locked=false
 if [[ $# -eq 5 && "$5" == "--locked" ]]; then
   locked=true
@@ -29,15 +32,67 @@ if [[ $# -eq 6 ]]; then
   goarch="$6"
 fi
 stamp="${output}.revision"
-stamp_value="$revision"
+build_identity_schema=4
+stamp_value="${revision} identity=${build_identity_schema}"
 if [[ "$targeted" == true ]]; then
-  stamp_value="${revision} ${goos}/${goarch}"
+  stamp_value="${revision} ${goos}/${goarch} identity=${build_identity_schema}"
 fi
 
 # The stamp records intent; only the binary can say which revision it is.
 reported_version() {
   "$output" --version 2>&1 || true
 }
+
+validate_native_identity() (
+  helper="$1"
+  validation_prefix="${2:-$helper}"
+  validation_root="$(mktemp -d "${validation_prefix}.identity.XXXXXX")"
+  validation_home="${validation_root}/home"
+  validation_kwt_home="${validation_root}/kwt-home"
+  validation_config_home="${validation_root}/config"
+  mkdir -p \
+    "$validation_home" \
+    "$validation_kwt_home" \
+    "$validation_config_home"
+
+  run_isolated_helper() {
+    HOME="$validation_home" \
+      KWT_HOME="$validation_kwt_home" \
+      XDG_CONFIG_HOME="$validation_config_home" \
+      GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_CONFIG_SYSTEM=/dev/null \
+      "$helper" "$@"
+  }
+  daemon_started=false
+  cleanup_validation() {
+    if [[ "$daemon_started" == true ]]; then
+      run_isolated_helper daemon stop >/dev/null 2>&1 || return
+      daemon_started=false
+    fi
+    find "$validation_root" -depth -delete
+  }
+  trap cleanup_validation EXIT
+
+  daemon_started=true
+  run_isolated_helper daemon start >/dev/null
+  identity="$(run_isolated_helper daemon status --json)"
+  if [[ "$identity" != *'"version":"'"$revision"'"'* ]] \
+    || [[ "$identity" != *'"revision":"'"$revision"'"'* ]] \
+    || [[ "$identity" != *'"revision_time":"'"$kwt_revision_time"'"'* ]]; then
+    printf 'Built kwt daemon reports an incomplete pinned identity.\n' >&2
+    printf 'Expected version and revision %s at %s; received %s.\n' \
+      "$revision" "$kwt_revision_time" "${identity:-no daemon status}" >&2
+    return 1
+  fi
+
+  if ! run_isolated_helper daemon stop >/dev/null 2>&1; then
+    printf 'Built kwt validation daemon could not be stopped.\n' >&2
+    return 1
+  fi
+  daemon_started=false
+  find "$validation_root" -depth -delete
+  trap - EXIT
+)
 
 target_metadata_matches() {
   [[ "$targeted" == true && -f "$output" ]] || return 1
@@ -77,6 +132,12 @@ command -v go >/dev/null || {
   printf 'Go is required to build the pinned kwt helper.\n' >&2
   exit 1
 }
+if [[ "$targeted" == true ]]; then
+  command -v uv >/dev/null || {
+    printf 'uv is required to validate cross-compiled kwt helpers.\n' >&2
+    exit 1
+  }
+fi
 
 if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
   printf '%s exists but is not a Git checkout; refusing to replace it.\n' \
@@ -119,41 +180,69 @@ else
 fi
 
 mkdir -p "$(dirname "$output")"
-(
+kwt_revision_time="$(
+  TZ=UTC git -C "$source_dir" show -s \
+    --date=format-local:'%Y-%m-%dT%H:%M:%SZ' \
+    --format='%cd' \
+    "$revision"
+)"
+kwt_identity_ldflags="-X go.kenn.io/kwt/internal/cmd.version=${revision}"
+kwt_identity_ldflags+=" -X go.kenn.io/kwt/internal/cmd.commit=${revision}"
+kwt_identity_ldflags+=" -X go.kenn.io/kwt/internal/cmd.revisionTime=${kwt_revision_time}"
+build_helper() (
+  helper_output="$1"
+  helper_goos="${2:-}"
+  helper_goarch="${3:-}"
   cd "$source_dir"
-  if [[ "$targeted" == true ]]; then
-    CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+  if [[ -n "$helper_goos" && -n "$helper_goarch" ]]; then
+    CGO_ENABLED=0 GOOS="$helper_goos" GOARCH="$helper_goarch" go build \
       -trimpath \
-      -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=${revision}" \
-      -o "$output" \
+      -ldflags "-w ${kwt_identity_ldflags}" \
+      -o "$helper_output" \
       cmd/kwt/main.go
   else
     CGO_ENABLED=0 go build \
       -trimpath \
-      -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=${revision}" \
-      -o "$output" \
+      -ldflags "-s -w ${kwt_identity_ldflags}" \
+      -o "$helper_output" \
       cmd/kwt/main.go
   fi
 )
 
-# The linker silently ignores -X for a symbol it cannot find, so an unstamped
-# native binary is the only evidence that kwt has moved its version variable.
-# Every cross-compiled variant uses the same source and linker symbol.
+if [[ "$targeted" == true ]]; then
+  build_helper "$output" "$goos" "$goarch"
+else
+  build_helper "$output"
+fi
+
+# The linker silently ignores -X for a symbol it cannot find. Exercise native
+# helpers through their isolated daemon interface. Cross-compiled helpers keep
+# their Go symbol table (but not DWARF) so all three exact identity values can
+# be inspected in the artifact that will run on the remote host.
 if [[ "$targeted" == false ]]; then
   chmod 0755 "$output"
-  version_output="$(reported_version)"
-  if [[ "$version_output" != *"$revision"* ]]; then
-    printf 'Built kwt reports %s instead of the pinned revision %s.\n' \
-      "${version_output:-no version output}" "$revision" >&2
-    printf 'Update the -X version symbol in %s to match kwt.\n' "$0" >&2
-    rm -f "$output"
+  if ! validate_native_identity "$output"; then
+    rm -f "$output" "$stamp"
     exit 1
   fi
-elif ! target_metadata_matches; then
-  printf 'Built kwt does not match %s/%s at revision %s.\n' \
-    "$goos" "$goarch" "$revision" >&2
-  rm -f "$output"
-  exit 1
+else
+  if ! target_metadata_matches; then
+    printf 'Built kwt does not match %s/%s at revision %s.\n' \
+      "$goos" "$goarch" "$revision" >&2
+    rm -f "$output" "$stamp"
+    exit 1
+  fi
+
+  if ! uv --directory "$project_root" run --frozen python \
+    "$script_dir/validate_kwt_identity.py" \
+    --binary "$output" \
+    --version "$revision" \
+    --revision "$revision" \
+    --revision-time "$kwt_revision_time"; then
+    printf 'Built kwt does not contain the complete pinned identity.\n' >&2
+    rm -f "$output" "$stamp"
+    exit 1
+  fi
 fi
 
 printf '%s' "$stamp_value" >"$stamp"

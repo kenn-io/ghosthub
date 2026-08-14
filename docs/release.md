@@ -28,8 +28,11 @@ caches `KWT_REF` under `.build`, then stages that exact helper into the debug
 app. A developer can override the repository, revision, source directory, or
 binary path deliberately, but the default never embeds the system kwt.
 `bootstrap-kwt-variants` cross-compiles the complete remote matrix from the
-same pin. Before either debug or release packaging, every variant is checked
-for its expected Mach-O/ELF/PE architecture and embedded pinned revision.
+same pin. Each cross-compile retains its Go symbol table but omits debug
+information, then inspects that actual Mach-O, ELF, or PE artifact for the
+exact pinned version, revision, and revision timestamp before caching it.
+Before either debug or release packaging, every variant is also checked for
+its expected architecture and embedded pinned revision.
 
 Packaging also stages libghostty's own emitted resources: the bundled Ghostty
 theme corpus and shell integration at `Contents/Resources/ghostty`, and the
@@ -67,8 +70,10 @@ remote matrix pin is recorded independently as
 cannot change the managed remote path. The revision is also included in GitHub
 release notes. Release CI checks out that revision under
 `.release-inputs/kwt-source` and passes the checkout as `KWT_SOURCE_DIR` when
-building the remote variant matrix; the repository slug used by
-`actions/checkout` is never passed to `git clone`. Release CI records the
+building the remote variant matrix. It builds the local release helper through
+`tools/build_pinned_kwt.sh`, so the helper must pass the same explicit identity
+stamping and isolated daemon validation before signing. The repository slug
+used by `actions/checkout` is never passed to `git clone`. Release CI records the
 helper it built from the pin; a local build against a substituted
 `KWT_BINARY_PATH` is recorded as `unpinned` rather than inheriting the pin. Kwt
 is part of Ghosthub's signed code, but Ghosthub invokes only its CLI and never
