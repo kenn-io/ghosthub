@@ -185,6 +185,12 @@ key is defense in depth. The private keys live only in 1Password and their
 respective GitHub environments: approval-gated `release-signing` for stable
 and unattended, `main`-restricted `nightly-signing` for nightly.
 
+Stable releases live in the canonical repository. Nightly releases live in the
+separate public `kenn-io/ghosthub-nightly` distribution repository, while the
+canonical repository owns the only build, signing, notarization, and publishing
+workflow. The nightly publishing credential is scoped to that distribution
+repository and cannot alter stable releases.
+
 Manual nightly enrollment bypasses Sparkle, so the mutable latest-DMG URL is
 only a discovery pointer; the operator must verify Gatekeeper acceptance and
 the expected Kenn Software Apple Team Identifier on both the DMG and app before

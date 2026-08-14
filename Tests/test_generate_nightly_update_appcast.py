@@ -178,7 +178,9 @@ def test_nightly_wrapper_uses_an_immutable_attempt_url_without_key_leaks(
         "RELEASE_ROOT": str(release_root),
         "RELEASE_APP_PATH": str(app_path),
         "RELEASE_DMG_NAME": dmg_name,
-        "NIGHTLY_PUBLIC_BASE_URL": "https://nightly-downloads.ghosthub.ai",
+        "NIGHTLY_PUBLIC_BASE_URL": (
+            "https://github.com/kenn-io/ghosthub-nightly/releases"
+        ),
         "NIGHTLY_SOURCE_SHA": source_sha,
         "NIGHTLY_PREVIOUS_SOURCE_SHA": (
             source_sha if same_source_recovery else previous_sha
@@ -209,7 +211,8 @@ def test_nightly_wrapper_uses_an_immutable_attempt_url_without_key_leaks(
         encoding="utf-8"
     )
     assert (
-        "https://nightly-downloads.ghosthub.ai/builds/123/runs/7/attempts/1/"
+        "https://github.com/kenn-io/ghosthub-nightly/releases/download/"
+        "nightly-123-7-1/"
         f"{dmg_name}"
     ) in appcast
     assert source_sha[:8] in notes

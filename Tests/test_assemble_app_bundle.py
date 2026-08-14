@@ -409,7 +409,10 @@ def test_nightly_info_plist_uses_nightly_update_configuration(tmp_path):
         kwt_source_revision="a" * 40,
         remote_kwt_source_revision="b" * 40,
         release_channel=assemble.ReleaseChannel.NIGHTLY,
-        nightly_feed_url="https://nightly-downloads.ghosthub.ai/appcast.xml",
+        nightly_feed_url=(
+            "https://github.com/kenn-io/ghosthub-nightly/releases/"
+            "latest/download/appcast.xml"
+        ),
         nightly_public_key=nightly_key,
         source_revision="c" * 40,
         build_date="2026-08-13",
@@ -429,7 +432,8 @@ def test_nightly_info_plist_uses_nightly_update_configuration(tmp_path):
         "Nightly · 2026-08-13 · cccccccc"
     )
     assert plist["SUFeedURL"] == (
-        "https://nightly-downloads.ghosthub.ai/appcast.xml"
+        "https://github.com/kenn-io/ghosthub-nightly/releases/"
+        "latest/download/appcast.xml"
     )
     assert plist["SUPublicEDKey"] == nightly_key
 
@@ -450,7 +454,10 @@ def test_nightly_info_plist_uses_nightly_update_configuration(tmp_path):
 def test_nightly_metadata_rejects_invalid_inputs(field, value):
     assemble = load_module()
     inputs = {
-        "nightly_feed_url": "https://nightly-downloads.ghosthub.ai/appcast.xml",
+        "nightly_feed_url": (
+            "https://github.com/kenn-io/ghosthub-nightly/releases/"
+            "latest/download/appcast.xml"
+        ),
         "nightly_public_key": base64.b64encode(bytes(range(32))).decode(),
         "source_revision": "c" * 40,
         "build_date": "2026-08-13",

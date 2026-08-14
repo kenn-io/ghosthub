@@ -19,7 +19,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NIGHTLY_PUBLIC_BASE_URL: https://nightly-downloads.ghosthub.ai
+  NIGHTLY_PUBLIC_BASE_URL: https://github.com/kenn-io/ghosthub-nightly/releases
+  NIGHTLY_RELEASE_REPOSITORY: kenn-io/ghosthub-nightly
   RELEASE_ROOT: .dist/nightly
   LIBGHOSTTY_XCFRAMEWORK_TARGET: native
   KWT_REPOSITORY: kenn-io/kwt
@@ -33,7 +34,6 @@ jobs:
     outputs:
       eligible: ${{ steps.channel.outputs.eligible }}
       previous-source-sha: ${{ steps.channel.outputs.previous_source_sha }}
-      previous-build: ${{ steps.channel.outputs.previous_build }}
       previous-channel-version: ${{ steps.channel.outputs.previous_channel_version }}
       build: ${{ steps.channel.outputs.build }}
     steps:
@@ -62,8 +62,8 @@ jobs:
           build="$(git rev-list --count HEAD)"
           arguments=(
             eligibility
-            --channel-url "$NIGHTLY_PUBLIC_BASE_URL/channel.json"
-            --appcast-url "$NIGHTLY_PUBLIC_BASE_URL/appcast.xml"
+            --channel-url "$NIGHTLY_PUBLIC_BASE_URL/latest/download/channel.json"
+            --appcast-url "$NIGHTLY_PUBLIC_BASE_URL/latest/download/appcast.xml"
             --source-sha "$source_sha"
             --build "$build"
             --github-output "$GITHUB_OUTPUT"
@@ -280,7 +280,7 @@ jobs:
       - name: Build signed and notarized nightly DMG
         env:
           RELEASE_CHANNEL: nightly
-          NIGHTLY_SPARKLE_FEED_URL: https://nightly-downloads.ghosthub.ai/appcast.xml
+          NIGHTLY_SPARKLE_FEED_URL: https://github.com/kenn-io/ghosthub-nightly/releases/latest/download/appcast.xml
           NIGHTLY_SPARKLE_PUBLIC_ED_KEY: ${{ vars.NIGHTLY_SPARKLE_PUBLIC_ED_KEY }}
           KWT_SOURCE_DIR: ${{ github.workspace }}/.release-inputs/kwt-source
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -325,9 +325,10 @@ jobs:
           test "$(plutil -extract GhosthubReleaseChannel raw -o - "$plist")" = "nightly"
           test "$(plutil -extract GhosthubSourceRevision raw -o - "$plist")" = "$GITHUB_SHA"
           test "$(plutil -extract CFBundleVersion raw -o - "$plist")" = "$NIGHTLY_BUILD_VERSION"
-          test "$(plutil -extract SUFeedURL raw -o - "$plist")" = "$NIGHTLY_PUBLIC_BASE_URL/appcast.xml"
+          test "$(plutil -extract SUFeedURL raw -o - "$plist")" = "$NIGHTLY_PUBLIC_BASE_URL/latest/download/appcast.xml"
           test "$(plutil -extract SUPublicEDKey raw -o - "$plist")" = "$EXPECTED_PUBLIC_KEY"
-          expected_url="$NIGHTLY_PUBLIC_BASE_URL/builds/$NIGHTLY_BUILD_VERSION/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/$RELEASE_DMG_NAME"
+          release_tag="nightly-$NIGHTLY_BUILD_VERSION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          expected_url="$NIGHTLY_PUBLIC_BASE_URL/download/$release_tag/$RELEASE_DMG_NAME"
           uv run --frozen python "$GITHUB_WORKSPACE/tools/verify_update_appcast.py" \
             --appcast appcast.xml \
             --info-plist "$plist" \
@@ -383,34 +384,25 @@ jobs:
 
       - name: Publish nightly channel
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.NIGHTLY_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.NIGHTLY_S3_SECRET_ACCESS_KEY }}
-          AWS_EC2_METADATA_DISABLED: 'true'
-          NIGHTLY_S3_ENDPOINT_URL: ${{ vars.NIGHTLY_S3_ENDPOINT_URL }}
-          NIGHTLY_S3_REGION: ${{ vars.NIGHTLY_S3_REGION }}
-          NIGHTLY_S3_BUCKET: ${{ vars.NIGHTLY_S3_BUCKET }}
+          GH_TOKEN: ${{ secrets.NIGHTLY_RELEASE_TOKEN }}
           RELEASE_DMG_NAME: ${{ needs.macos-nightly.outputs.dmg-name }}
           NIGHTLY_BUILD_AT: ${{ needs.macos-nightly.outputs.built-at }}
           NIGHTLY_BUILD_VERSION: ${{ needs.eligibility.outputs.build }}
           NIGHTLY_CANDIDATE_ATTEMPT: ${{ needs.macos-nightly.outputs.candidate-attempt }}
-          NIGHTLY_PREVIOUS_BUILD: ${{ needs.eligibility.outputs.previous-build }}
           NIGHTLY_PREVIOUS_CHANNEL_VERSION: ${{ needs.eligibility.outputs.previous-channel-version }}
         shell: bash
         run: |
-          aws_version="$(aws --version 2>&1)"
-          echo "$aws_version"
-          if [[ ! "$aws_version" =~ ^aws-cli/2\. ]]; then
-            echo "Nightly publication requires AWS CLI 2." >&2
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "NIGHTLY_RELEASE_TOKEN is required." >&2
             exit 1
           fi
+          gh --version
           arguments=(
             publish
             --release-root "$RELEASE_ROOT"
             --dmg-name "$RELEASE_DMG_NAME"
             --public-base-url "$NIGHTLY_PUBLIC_BASE_URL"
-            --bucket "$NIGHTLY_S3_BUCKET"
-            --endpoint-url "$NIGHTLY_S3_ENDPOINT_URL"
-            --region "$NIGHTLY_S3_REGION"
+            --release-repository "$NIGHTLY_RELEASE_REPOSITORY"
             --source-sha "$GITHUB_SHA"
             --build "$NIGHTLY_BUILD_VERSION"
             --built-at "$NIGHTLY_BUILD_AT"
@@ -418,7 +410,4 @@ jobs:
             --workflow-run-attempt "$NIGHTLY_CANDIDATE_ATTEMPT"
             --expected-channel-version "$NIGHTLY_PREVIOUS_CHANNEL_VERSION"
           )
-          if [[ -n "$NIGHTLY_PREVIOUS_BUILD" ]]; then
-            arguments+=(--previous-build "$NIGHTLY_PREVIOUS_BUILD")
-          fi
           uv run --frozen python tools/nightly_channel.py "${arguments[@]}"
