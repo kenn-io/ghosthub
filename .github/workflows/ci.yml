@@ -214,8 +214,7 @@ jobs:
           sh tools/run_swift_tests.sh "${test_arguments[@]}" \
             2>&1 | tee -a "$RUNNER_TEMP/gui-tests.log"
 
-      - name: Verify self-hosted GUI coverage
-        if: matrix.lane == 'self-hosted'
+      - name: Verify GUI coverage
         shell: bash
         run: |
           gui_test_log="$RUNNER_TEMP/gui-tests.log"

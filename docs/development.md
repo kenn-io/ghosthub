@@ -104,11 +104,12 @@ pull requests, and noncanonical repository copies always run on GitHub's hosted
 The managed lane requires complete WindowServer GUI coverage. Hosted runners
 explicitly exclude the five terminal smoke tests that require an active key
 window instead of invoking them and accepting a runtime skip; the remaining
-portable terminal and AppKit coverage continues to run there. Running hosted
-validation on every `main` push keeps that path continuously usable as the
-fallback when self-hosted validation is preferred for cost. Both lanes select
-a supported Xcode installation and the exact Zig toolchain required by the
-pinned Ghostty source, then run their complete available build and test gates.
+portable terminal and AppKit coverage continues to run there. Both lanes reject
+any other environment-dependent GUI skip. Running hosted validation on every
+`main` push keeps that path continuously usable as the fallback when self-hosted
+validation is preferred for cost. Both lanes select a supported Xcode
+installation and the exact Zig toolchain required by the pinned Ghostty source,
+then run their complete available build and test gates.
 
 Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target.
 Local bootstrap checks every architecture required by the running Zig
