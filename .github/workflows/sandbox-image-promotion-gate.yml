@@ -341,8 +341,11 @@ jobs:
             jq -er '
               any(.[];
                 .filename == "SANDBOX_IMAGE" or
+                .filename == "tools/sandbox_image/post_approval_policy.jq" or
                 (.filename | startswith("images/sandbox/reports/")) or
                 (.previous_filename? == "SANDBOX_IMAGE") or
+                (.previous_filename? ==
+                  "tools/sandbox_image/post_approval_policy.jq") or
                 (.previous_filename? | strings | startswith("images/sandbox/reports/"))) |
               tostring
             ' "$1"

@@ -285,7 +285,9 @@ structurally audits every proposed workflow, and requires every workflow that
 can reference a credential-bearing environment to remain byte-identical to
 trusted `main`. The audit rejects job-level reusable workflows except the
 exact repository-owned `ci.yml@main` call, and it keeps the merge-signal name,
-trigger, and file byte-identical to trusted `main`.
+trigger, and file byte-identical to trusted `main`. The executable
+post-approval vulnerability policy is part of the same byte-identical authority
+closure, and changing it is promotion-relevant.
 It then rechecks the complete App, environment, ruleset, file, base,
 promotion-run, and freshness authority before the dedicated App authorizes that
 queue SHA. If GitHub cannot run reconciliation, the queue SHA never succeeds
