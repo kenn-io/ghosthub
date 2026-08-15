@@ -4677,6 +4677,58 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("retryable surface failure relaunches an absent workspace")
+    func retryableSurfaceFailureRelaunchesAbsentWorkspace() async throws {
+        let environment = try setupRemoteEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let sessionName = "kwt-ghosthub-main"
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            tmuxReconnectIntervals: [.seconds(10)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        surfaceStore.surface.launchError = SceneSurfaceLaunchError.rejected
+        surfaceStore.surface.launchFailureIsRetryable = true
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxRecoveryState?.isReconnecting == true
+        }
+        model.reconnectActiveTmuxSessionNow()
+        await waitUntilMainActor { surfaceStore.requestCount == 2 }
+
+        surfaceStore.surface.launchError = nil
+        surfaceStore.surface.launchFailureIsRetryable = false
+        model.reconnectActiveTmuxSessionNow()
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 3
+                || model.activeBorrowedTmuxRecoveryState == nil
+        }
+
+        #expect(surfaceStore.requestCount == 3)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        #expect(
+            surfaceStore.lastConfiguration?.command?.contains("'open'")
+                == true
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("resolver timeout remains retryable")
     func resolverTimeoutRemainsRetryable() async throws {
         let discoveries = TmuxDiscoveryResultQueue([

@@ -10762,7 +10762,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 publishActiveState(for: presentation)
                 return .stop
             }
-            guard context.surfaceExitCode == 255 else {
+            guard context.surfaceExitCode == 255
+                || (context.phase == .establishingWorkspace
+                    && context.surfaceLaunchFailed)
+            else {
                 stopTmuxReconnectWithUnableToAttach(
                     presentation,
                     "The remote workspace could not be established."
