@@ -109,6 +109,10 @@ make sandbox-image-authority-audit
 gh workflow run sandbox-image-promotion-gate.yml --ref main
 ```
 
+Until `sandbox-image-authority-configure` completes and publishes its repository
+readiness marker, the publication and promotion-gate workflows skip cleanly.
+Once the marker exists, missing or drifted authority configuration fails closed.
+
 Enabling the rules before their producing workflows exist would deadlock the
 bootstrap pull request. The enable command verifies the inherited pull-request
 policy, then creates or updates a narrow repository-owned ruleset instead of
@@ -166,7 +170,8 @@ checks, scans, and transfers one inert Docker archive plus its evidence to a
 fresh package-writer job. That job never checks out the repository or runs its
 Python, Make targets, dependency configuration, or image source. It validates
 the transferred tag and content identity, exposes the GHCR credential only to
-the pinned login action and fixed Docker push, logs out, then verifies the
+the pinned login action and fixed Docker inspect/push operations, logs out,
+then verifies the
 public object by digest and records provenance and SBOM attestations. The
 repository-wide token can record attestations but cannot write the GHCR
 package. Provenance includes a

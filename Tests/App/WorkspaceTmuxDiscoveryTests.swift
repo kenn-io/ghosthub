@@ -1376,6 +1376,7 @@ struct WorkspaceTmuxDiscoveryTests {
         previewCoordinator.setExpanded(true, for: key)
         await waitUntilMainActor {
             captures.count == 1
+                && previewCoordinator.viewState(for: key)?.image != nil
         }
 
         #expect(identityReads.count == 0)
@@ -4716,7 +4717,7 @@ struct WorkspaceTmuxDiscoveryTests {
         model.reconnectActiveTmuxSessionNow()
         await waitUntilMainActor {
             surfaceStore.requestCount == 3
-                || model.activeBorrowedTmuxRecoveryState == nil
+                && model.activeBorrowedTmuxSessionIsConnected
         }
 
         #expect(surfaceStore.requestCount == 3)
