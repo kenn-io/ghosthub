@@ -44,6 +44,8 @@ struct TerminalMouseEventHandler {
 
     weak var delegate: TerminalMouseEventDelegate?
     private var pressedButtons: [PressedButton] = []
+    private var pointerLocationInWindow: NSPoint?
+    private var pointerIsInside = false
 
     init(delegate: TerminalMouseEventDelegate) {
         self.delegate = delegate
@@ -110,17 +112,18 @@ struct TerminalMouseEventHandler {
         return handled
     }
 
-    func handleMouseEntered(_ event: NSEvent) {
-        guard let delegate,
-              let surface = delegate.surfaceHandle else { return }
-        let pos = delegate.convert(event.locationInWindow, from: nil)
-        let mods = Self.pointerModifiers(event.modifierFlags)
-        Self.mousePositionSender(
-            surface, pos.x, delegate.frame.height - pos.y, mods
+    mutating func handleMouseEntered(_ event: NSEvent) {
+        pointerIsInside = true
+        pointerLocationInWindow = event.locationInWindow
+        sendPointerPosition(
+            event.locationInWindow,
+            modifiers: event.modifierFlags
         )
     }
 
-    func handleMouseExited(_ event: NSEvent) {
+    mutating func handleMouseExited(_ event: NSEvent) {
+        pointerIsInside = false
+        pointerLocationInWindow = nil
         guard let surface = delegate?.surfaceHandle else { return }
         if NSEvent.pressedMouseButtons != 0 {
             return
@@ -129,30 +132,42 @@ struct TerminalMouseEventHandler {
         Self.mousePositionSender(surface, -1, -1, mods)
     }
 
-    func handleMouseMoved(_ event: NSEvent) {
-        guard let delegate,
-              let surface = delegate.surfaceHandle else { return }
-        let pos = delegate.convert(event.locationInWindow, from: nil)
-        let mods = Self.pointerModifiers(event.modifierFlags)
-        Self.mousePositionSender(
-            surface, pos.x, delegate.frame.height - pos.y, mods
+    mutating func handleMouseMoved(_ event: NSEvent) {
+        pointerIsInside = true
+        pointerLocationInWindow = event.locationInWindow
+        sendPointerPosition(
+            event.locationInWindow,
+            modifiers: event.modifierFlags
         )
     }
 
     func handleModifierFlagsChanged(_ event: NSEvent) {
-        handleMouseMoved(event)
+        guard pointerIsInside, let pointerLocationInWindow else { return }
+        sendPointerPosition(
+            pointerLocationInWindow,
+            modifiers: event.modifierFlags
+        )
     }
 
     func handleMouseDragged(_ event: NSEvent) {
-        handleMouseMoved(event)
+        sendPointerPosition(
+            event.locationInWindow,
+            modifiers: event.modifierFlags
+        )
     }
 
     func handleRightMouseDragged(_ event: NSEvent) {
-        handleMouseMoved(event)
+        sendPointerPosition(
+            event.locationInWindow,
+            modifiers: event.modifierFlags
+        )
     }
 
     func handleOtherMouseDragged(_ event: NSEvent) {
-        handleMouseMoved(event)
+        sendPointerPosition(
+            event.locationInWindow,
+            modifiers: event.modifierFlags
+        )
     }
 
     func handleScrollWheel(_ event: NSEvent) {
@@ -191,6 +206,8 @@ struct TerminalMouseEventHandler {
     }
 
     mutating func resetPointerStateForParking() {
+        pointerIsInside = false
+        pointerLocationInWindow = nil
         guard let delegate,
               let surface = delegate.surfaceHandle else { return }
         for pressed in pressedButtons {
@@ -224,6 +241,19 @@ struct TerminalMouseEventHandler {
         _ button: ghostty_input_mouse_button_e
     ) {
         pressedButtons.removeAll { $0.button.rawValue == button.rawValue }
+    }
+
+    private func sendPointerPosition(
+        _ locationInWindow: NSPoint,
+        modifiers: NSEvent.ModifierFlags
+    ) {
+        guard let delegate,
+              let surface = delegate.surfaceHandle else { return }
+        let pos = delegate.convert(locationInWindow, from: nil)
+        let mods = Self.pointerModifiers(modifiers)
+        Self.mousePositionSender(
+            surface, pos.x, delegate.frame.height - pos.y, mods
+        )
     }
 
     private static func pointerModifiers(

@@ -355,7 +355,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let originalPositionSender =
             TerminalMouseEventHandler.mousePositionSender
         var buttonModifiers: [UInt32] = []
-        var positionModifiers: [UInt32] = []
+        var positions: [(Double, Double, UInt32)] = []
         TerminalMouseEventHandler.mouseButtonSender = {
             _, _, button, mods in
             if button.rawValue == GHOSTTY_MOUSE_LEFT.rawValue {
@@ -364,8 +364,8 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             return true
         }
         TerminalMouseEventHandler.mousePositionSender = {
-            _, _, _, mods in
-            positionModifiers.append(mods.rawValue)
+            _, x, y, mods in
+            positions.append((x, y, mods.rawValue))
         }
         defer {
             TerminalMouseEventHandler.mouseButtonSender = originalButtonSender
@@ -375,10 +375,9 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let view = try makeSurface()
         let window = hostInWindow(view)
         defer { window.orderOut(nil) }
-        positionModifiers.removeAll()
         let commandChanged = try XCTUnwrap(NSEvent.keyEvent(
             with: .flagsChanged,
-            location: NSPoint(x: 20, y: 20),
+            location: .zero,
             modifierFlags: [.command],
             timestamp: 0.9,
             windowNumber: window.windowNumber,
@@ -391,7 +390,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let mouseMoved = try XCTUnwrap(NSEvent.mouseEvent(
             with: .mouseMoved,
             location: NSPoint(x: 20, y: 20),
-            modifierFlags: [.command],
+            modifierFlags: [],
             timestamp: 1,
             windowNumber: window.windowNumber,
             context: nil,
@@ -422,15 +421,18 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             pressure: 0
         ))
 
-        view.flagsChanged(with: commandChanged)
         view.mouseEntered(with: mouseMoved)
         view.mouseMoved(with: mouseMoved)
+        positions.removeAll()
+        view.flagsChanged(with: commandChanged)
         view.mouseDown(with: mouseDown)
         view.mouseUp(with: mouseUp)
 
-        XCTAssertEqual(positionModifiers.count, 3)
+        XCTAssertEqual(positions.count, 1)
+        XCTAssertEqual(positions.first?.0, 20)
+        XCTAssertEqual(positions.first?.1, view.frame.height - 20)
         XCTAssertEqual(buttonModifiers.count, 2)
-        for modifier in positionModifiers + buttonModifiers {
+        for modifier in positions.map(\.2) + buttonModifiers {
             XCTAssertNotEqual(
                 modifier & GHOSTTY_MODS_SUPER.rawValue,
                 0

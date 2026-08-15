@@ -583,9 +583,11 @@ mouse bindings. Native Windows/psmux remains unchanged.
 For a Command-modified pointer interaction, Ghosthub adds libghostty's Shift
 override for mouse capture only at the embedded input boundary. Pointer
 movement and Command modifier changes use the same override as the left-button
-events, so link highlighting and activation both bypass tmux. Libghostty
-removes the override before matching its Command link binding, while all other
-tmux mouse input remains native.
+events, so link highlighting and activation both bypass tmux. Modifier changes
+reuse the last tracked in-window pointer position instead of the keyboard
+event's unreliable coordinates. Libghostty removes the override before
+matching its Command link binding, while all other tmux mouse input remains
+native.
 
 Cmd-D and Cmd-Shift-D provide Ghostty-style split-right and split-down actions,
 also exposed in the File menu. A tmux attachment requires tmux 3.4 or newer.

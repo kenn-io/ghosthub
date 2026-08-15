@@ -1168,7 +1168,10 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
-    func testOpenURLActionOwnsCallbackTextBeforeMainDispatch() {
+    func testOpenURLActionOwnsCallbackTextBeforeMainDispatch() throws {
+        try skipUnlessLibghosttyReady()
+        let runtime = retainedRuntime()
+        let appHandle = try XCTUnwrap(runtime.unsafeAppHandle)
         let rawURL = "https://ghosthub.ai/docs/?mouse=command-click"
         let expectedURL = URL(string: rawURL)!
         let bytes = Array(rawURL.utf8CString)
@@ -1188,11 +1191,21 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         }
         defer { LibghosttyRuntime.urlOpener = originalOpener }
 
-        LibghosttyRuntime.handleOpenURL(ghostty_action_open_url_s(
+        var actionValue = ghostty_action_u()
+        actionValue.open_url = ghostty_action_open_url_s(
             kind: GHOSTTY_ACTION_OPEN_URL_KIND_TEXT,
             url: pointer,
             len: UInt(rawURL.utf8.count)
-        ))
+        )
+        let handled = LibghosttyRuntime.handleAction(
+            app: appHandle,
+            target: ghostty_target_s(),
+            action: ghostty_action_s(
+                tag: GHOSTTY_ACTION_OPEN_URL,
+                action: actionValue
+            )
+        )
+        XCTAssertTrue(handled)
 
         for index in bytes.indices {
             pointer[index] = 0
