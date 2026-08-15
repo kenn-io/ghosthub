@@ -123,6 +123,39 @@ struct WorkspaceAccessibilityModelTests {
         )
     }
 
+    @Test("worktree rows announce tmux windows without redundant running text")
+    func worktreeWindowCountDescriptor() {
+        let row = WorkspaceSidebarRow(
+            target: .worktree(UUID()),
+            icon: .worktree,
+            title: "release-work",
+            worktreeStatus: WorktreeRowStatus(
+                diffAdded: nil,
+                diffRemoved: nil,
+                syncAhead: nil,
+                syncBehind: nil,
+                tmuxWindowCount: 3,
+                isRunning: true,
+                isAgentRunning: true,
+                prNumber: nil,
+                prTitle: nil,
+                isDraft: false,
+                checks: nil,
+                showsSecondLine: false
+            )
+        )
+
+        expectAccessibilityDescriptor(
+            WorkspaceAccessibilityModel.descriptor(
+                for: row,
+                isSelected: false
+            ),
+            label: "release-work",
+            value: "3 windows, Agent running",
+            hint: "Select this worktree."
+        )
+    }
+
 }
 
 private func expectAccessibilityDescriptor(

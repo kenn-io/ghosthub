@@ -75,9 +75,15 @@ Kwt supplies the exact canonical tmux session name. Ghosthub creates or repairs
 that session when necessary and then attaches an ordinary tmux client. The
 native window tab and titlebar show the project and worktree names instead of
 that internal session name.
-A status glyph on the worktree row indicates when current discovery confirms
-its tmux session is live, including while Ghosthub is detached. Cached sessions
-do not remain marked live while the host is unreachable.
+The worktree row shows a compact window count. While Ghosthub is connected,
+the count refreshes with the existing background activity check: within about
+five seconds for a working session and twenty seconds for a quiet session.
+This also covers protected sockets. Detached ordinary sessions use the count
+from current discovery. A running or agent glyph remains the fallback when no
+trustworthy count is available, and cached sessions do not remain marked live
+while the host is unreachable.
+
+![Ghosthub showing a compact tmux window count on a worktree row](assets/guide-worktree-window-counts.png)
 
 By default, a live kwt-managed session appears only on its worktree row instead
 of being duplicated under **Tmux Sessions**. Open **Settings → Worktrees** and

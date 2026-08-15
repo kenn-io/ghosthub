@@ -590,9 +590,12 @@ final class WorkspaceSceneModel: ObservableObject {
     private var tmuxReachabilityByHost: [UUID: Bool] = [:]
     private var tmuxLastSeenByHost: [UUID: Date] = [:]
     private var tmuxDiscoveryFailuresByHost: [UUID: String] = [:]
+    private var tmuxFreshHostIDs: Set<UUID> = []
     private var isTmuxDiscoveryLoading = false
     private var inventoryRefreshProgress = WorkspaceInventoryRefreshProgress()
     private var tmuxDiscoveryGeneration = 0
+    private var tmuxDiscoveryObservationSequence: UInt64 = 0
+    private var latestTmuxDiscoveryObservationByHost: [UUID: UInt64] = [:]
     private var tmuxDiscoveryTask: Task<Void, Never>?
     private var herdrDiscoveryEnabled = false
     private var herdrSessionsByHost: [UUID: [HerdrSessionSummary]] = [:]
@@ -713,7 +716,13 @@ final class WorkspaceSceneModel: ObservableObject {
     }
     @Published var preferredActiveSurfaceTarget: WorkspaceTerminalSurfaceTarget?
     @Published private var borrowedTmuxConnectionStates:
-        [UUID: ConnectionState] = [:]
+        [UUID: ConnectionState] = [:] {
+        didSet {
+            refreshConnectedBorrowedTmuxSessionIDs()
+        }
+    }
+    private(set) var connectedBorrowedTmuxSessionIDs:
+        Set<String> = []
     private struct PendingTmuxSessionCreation: Equatable {
         var request: WorkspaceTmuxSessionCreationRequest
         var commandReplayAuthorized: Bool
@@ -1316,6 +1325,9 @@ final class WorkspaceSceneModel: ObservableObject {
     }
     var workingTmuxSessionIDs: Set<String> {
         tmuxSessionActivityController?.workingSessionIDs ?? []
+    }
+    var tmuxWindowCountsBySessionID: [String: Int] {
+        tmuxSessionActivityController?.windowCountsBySessionID ?? [:]
     }
     convenience init(
         terminalRuntime: LibghosttyRuntime = .shared,
@@ -3858,6 +3870,11 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxDiscoveryFailuresByHost = tmuxDiscoveryFailuresByHost.filter {
             retainedHostIDs.contains($0.key)
         }
+        latestTmuxDiscoveryObservationByHost =
+            latestTmuxDiscoveryObservationByHost.filter {
+                retainedHostIDs.contains($0.key)
+            }
+        tmuxFreshHostIDs.formIntersection(retainedHostIDs)
         herdrSessionsByHost = herdrSessionsByHost.filter {
             retainedHerdrHostIDs.contains($0.key)
         }
@@ -3921,6 +3938,7 @@ final class WorkspaceSceneModel: ObservableObject {
             zellijAvailabilityByHost: zellijAvailabilityByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
+            tmuxAuthoritativeHostIDs: tmuxFreshHostIDs,
             to: snapshot
         )
         if overlaid != snapshot {
@@ -3971,6 +3989,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 tmuxLastSeenByHost,
                 hostID: hostID
             ),
+            tmuxAuthoritativeHostIDs: tmuxFreshHostIDs.intersection([hostID]),
             to: snapshot
         )
         if overlaid != snapshot {
@@ -5119,6 +5138,7 @@ final class WorkspaceSceneModel: ObservableObject {
             zellijAvailabilityByHost: zellijAvailabilityByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
+            tmuxAuthoritativeHostIDs: tmuxFreshHostIDs,
             to: source
         )
     }
@@ -5139,7 +5159,13 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func scheduleTmuxSessionDiscovery() {
         guard tmuxDiscoveryEnabled else { return }
-        let targets = Array(inventoryHosts)
+        let targets = inventoryHosts.map { hostID, host in
+            (
+                hostID,
+                host,
+                beginTmuxDiscoveryObservation(hostID: hostID)
+            )
+        }
         tmuxDiscoveryGeneration += 1
         let generation = tmuxDiscoveryGeneration
         tmuxDiscoveryTask?.cancel()
@@ -5149,19 +5175,31 @@ final class WorkspaceSceneModel: ObservableObject {
         let broker = tmuxSessionProbeBroker
         tmuxDiscoveryTask = Task { [weak self] in
             await withTaskGroup(
-                of: (UUID, Result<[DiscoveredTmuxSession], TmuxBinaryError>).self
+                of: (
+                    UUID,
+                    UInt64,
+                    Result<[DiscoveredTmuxSession], TmuxBinaryError>
+                ).self
             ) { group in
-                for (hostID, host) in targets {
+                for (hostID, host, observationSequence) in targets {
                     group.addTask {
-                        await (hostID, broker.sessions(on: host))
+                        await (
+                            hostID,
+                            observationSequence,
+                            broker.sessions(on: host)
+                        )
                     }
                 }
-                for await (hostID, result) in group {
+                for await (hostID, observationSequence, result) in group {
                     guard let self, !Task.isCancelled,
                           generation == self.tmuxDiscoveryGeneration else {
                         group.cancelAll()
                         return
                     }
+                    guard self.isCurrentTmuxDiscoveryObservation(
+                        observationSequence,
+                        hostID: hostID
+                    ) else { continue }
                     self.applyTmuxDiscoveryResult(result, hostID: hostID)
                 }
             }
@@ -5171,6 +5209,20 @@ final class WorkspaceSceneModel: ObservableObject {
             inventoryRefreshProgress.tmuxCompleted = true
             updateWorkspaceInventoryState()
         }
+    }
+
+    private func beginTmuxDiscoveryObservation(hostID: UUID) -> UInt64 {
+        tmuxDiscoveryObservationSequence &+= 1
+        let sequence = tmuxDiscoveryObservationSequence
+        latestTmuxDiscoveryObservationByHost[hostID] = sequence
+        return sequence
+    }
+
+    private func isCurrentTmuxDiscoveryObservation(
+        _ sequence: UInt64,
+        hostID: UUID
+    ) -> Bool {
+        latestTmuxDiscoveryObservationByHost[hostID] == sequence
     }
 
     func startHerdrSessionDiscovery() {
@@ -5539,24 +5591,16 @@ final class WorkspaceSceneModel: ObservableObject {
         hostID: UUID,
         publish: Bool = true
     ) {
-        guard case let .success(discovered) = result else {
-            if case let .failure(error) = result {
-                tmuxReachabilityByHost[hostID] =
-                    !Self.isConfirmedSSHTransportFailure(error)
-                let hostName = snapshot.host(id: hostID)?.name
-                    ?? "Unknown host"
-                tmuxDiscoveryFailuresByHost[hostID] =
-                    "\(hostName): \(error.localizedDescription)"
-            }
+        guard let discovered = recordTmuxDiscoveryState(
+            result,
+            hostID: hostID
+        ) else {
             if publish {
                 applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
                 updateWorkspaceInventoryState()
             }
             return
         }
-        tmuxDiscoveryFailuresByHost.removeValue(forKey: hostID)
-        tmuxReachabilityByHost[hostID] = true
-        tmuxLastSeenByHost[hostID] = Date()
         reconcileEndedTmuxSession(discovered, hostID: hostID)
         tmuxSessionsByHost[hostID] = reconciledTmuxSessions(
             discovered,
@@ -5580,6 +5624,30 @@ final class WorkspaceSceneModel: ObservableObject {
             applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
             updateWorkspaceInventoryState()
             applyDeferredTmuxPresentationsIfReady()
+        }
+    }
+
+    @discardableResult
+    private func recordTmuxDiscoveryState(
+        _ result: Result<[DiscoveredTmuxSession], TmuxBinaryError>,
+        hostID: UUID
+    ) -> [DiscoveredTmuxSession]? {
+        switch result {
+        case let .success(discovered):
+            tmuxDiscoveryFailuresByHost.removeValue(forKey: hostID)
+            tmuxFreshHostIDs.insert(hostID)
+            tmuxReachabilityByHost[hostID] = true
+            tmuxLastSeenByHost[hostID] = Date()
+            return discovered
+        case let .failure(error):
+            tmuxFreshHostIDs.remove(hostID)
+            tmuxReachabilityByHost[hostID] =
+                !Self.isConfirmedSSHTransportFailure(error)
+            let hostName = snapshot.host(id: hostID)?.name
+                ?? "Unknown host"
+            tmuxDiscoveryFailuresByHost[hostID] =
+                "\(hostName): \(error.localizedDescription)"
+            return nil
         }
     }
 
@@ -9324,6 +9392,17 @@ final class WorkspaceSceneModel: ObservableObject {
         Set(retainedTmuxPresentations.keys.map(\.sessionID))
     }
 
+    private func refreshConnectedBorrowedTmuxSessionIDs() {
+        let connected = Set(
+            retainedTmuxPresentations.compactMap { key, presentation in
+                borrowedTmuxConnectionStates[presentation.handle.id] == .connected
+                    ? key.sessionID : nil
+            }
+        )
+        guard connected != connectedBorrowedTmuxSessionIDs else { return }
+        connectedBorrowedTmuxSessionIDs = connected
+    }
+
     func retainedBorrowedTmuxHandle(
         for selection: WorkspaceTmuxSessionSelection
     ) -> BorrowedTmuxSessionHandle? {
@@ -10664,24 +10743,21 @@ final class WorkspaceSceneModel: ObservableObject {
         for presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext
     ) async -> TmuxSessionProbeOutcome {
-        if context.selection.socketName != nil,
-           context.host == .local {
-            do {
-                _ = try await tmuxSessionIdentityReader(
-                    context.selection,
-                    context.host
-                )
-                return .present
-            } catch TmuxSessionKillError.sessionNotRunning {
-                return .absent
-            } catch {
-                return .failure(.sessionContextUnavailable)
-            }
-        }
-        guard case let .ssh(host) = context.host else {
-            return .failure(.sessionContextUnavailable)
-        }
         if context.selection.socketName == nil {
+            let observationSequence = beginTmuxDiscoveryObservation(
+                hostID: context.selection.hostID
+            )
+            var didReconcileObservation = false
+            defer {
+                if !didReconcileObservation,
+                   !isShutDown,
+                   isCurrentTmuxDiscoveryObservation(
+                       observationSequence,
+                       hostID: context.selection.hostID
+                   ) {
+                    scheduleTmuxSessionDiscovery()
+                }
+            }
             let result = await tmuxSessionProbeBroker.sessions(
                 on: context.host
             )
@@ -10703,18 +10779,45 @@ final class WorkspaceSceneModel: ObservableObject {
                case .probeCancelled = error {
                 return .failure(error)
             }
+            guard isCurrentTmuxDiscoveryObservation(
+                observationSequence,
+                hostID: context.selection.hostID
+            ) else {
+                return .failure(.probeCancelled(
+                    shell: context.host.displayName
+                ))
+            }
+            didReconcileObservation = true
             applyTmuxDiscoveryResult(
                 result,
                 hostID: context.selection.hostID
             )
             switch result {
             case let .success(sessions):
-                return sessions.contains { $0.name == context.selection.name }
-                    ? .present
-                    : .absent
+                guard sessions.contains(where: {
+                    $0.name == context.selection.name
+                }) else { return .absent }
+                return .present
             case let .failure(error):
                 return .failure(error)
             }
+        }
+        if context.selection.socketName != nil,
+           context.host == .local {
+            do {
+                _ = try await tmuxSessionIdentityReader(
+                    context.selection,
+                    context.host
+                )
+                return .present
+            } catch TmuxSessionKillError.sessionNotRunning {
+                return .absent
+            } catch {
+                return .failure(.sessionContextUnavailable)
+            }
+        }
+        guard case let .ssh(host) = context.host else {
+            return .failure(.sessionContextUnavailable)
         }
         return await tmuxSessionProbeBroker.session(
             TmuxSessionProbeTarget(
@@ -10723,6 +10826,32 @@ final class WorkspaceSceneModel: ObservableObject {
                 socketName: context.selection.socketName
             )
         )
+    }
+
+    private func confirmPendingTmuxCreation(
+        handleID: UUID,
+        selection: WorkspaceTmuxSessionSelection
+    ) {
+        guard let pending = pendingCreatedTmuxSessions[handleID],
+              Self.sameTmuxSession(pending.selection, selection)
+        else { return }
+        if let key = retainedTmuxPresentationKeysByHandle[handleID],
+           let presentation = retainedTmuxPresentations[key],
+           Self.sameTmuxSession(presentation.selection, selection) {
+            presentation.launchMode = .attach
+            if let context = presentation.reconnectContext,
+               context.handleID == handleID,
+               case .establishingProfile = context.phase {
+                presentation.reconnectContext?.phase = .attachOnly
+                presentation.establishmentConfirmationTask?.cancel()
+                presentation.establishmentConfirmationTask = nil
+            }
+            publishActiveState(for: presentation)
+        }
+        pendingCreatedTmuxSessions.removeValue(forKey: handleID)
+        createdSessionDiscoveryTasks.removeValue(forKey: handleID)?.cancel()
+        exhaustedCreatedTmuxSessionHandles.remove(handleID)
+        endedCreatedTmuxSessionHandles.remove(handleID)
     }
 
     private func reconnectDecision(
@@ -11326,6 +11455,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard let self,
                       pendingCreatedTmuxSessions[handleID] == pending
                 else { return }
+                let observationSequence = beginTmuxDiscoveryObservation(
+                    hostID: pending.selection.hostID
+                )
                 let probe = Task.detached(priority: .utility) {
                     await discovery(host)
                 }
@@ -11337,11 +11469,25 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard !Task.isCancelled,
                       pendingCreatedTmuxSessions[handleID] == pending
                 else { return }
+                guard isCurrentTmuxDiscoveryObservation(
+                    observationSequence,
+                    hostID: pending.selection.hostID
+                ) else {
+                    if index == delays.indices.last {
+                        createdSessionDiscoveryTasks.removeValue(
+                            forKey: handleID
+                        )
+                        exhaustedCreatedTmuxSessionHandles.insert(handleID)
+                        fenceTmuxDiscoveryForCreationReconciliation(host: host)
+                        return
+                    }
+                    continue
+                }
                 switch result {
                 case let .success(discovered):
-                    fenceTmuxDiscoveryForCreationReconciliation(host: host)
-                    tmuxDiscoveryFailuresByHost.removeValue(
-                        forKey: pending.selection.hostID
+                    recordTmuxDiscoveryState(
+                        .success(discovered),
+                        hostID: pending.selection.hostID
                     )
                     let found = discovered.contains {
                         $0.name == pending.selection.name
@@ -11362,6 +11508,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     if found {
                         applyDeferredTmuxPresentationsIfReady()
                     }
+                    fenceTmuxDiscoveryForCreationReconciliation(host: host)
                     if found || isLastAttempt {
                         createdSessionDiscoveryTasks.removeValue(
                             forKey: handleID
@@ -11369,12 +11516,15 @@ final class WorkspaceSceneModel: ObservableObject {
                         return
                     }
                 case let .failure(error):
-                    let hostName = snapshot.host(
-                        id: pending.selection.hostID
-                    )?.name ?? "Unknown host"
-                    tmuxDiscoveryFailuresByHost[pending.selection.hostID] =
-                        "\(hostName): \(error.localizedDescription)"
+                    recordTmuxDiscoveryState(
+                        .failure(error),
+                        hostID: pending.selection.hostID
+                    )
+                    applyRuntimeInventoryOverlayIfNeeded(
+                        hostID: pending.selection.hostID
+                    )
                     updateWorkspaceInventoryState()
+                    fenceTmuxDiscoveryForCreationReconciliation(host: host)
                 }
             }
             guard let self,
@@ -11412,28 +11562,10 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         for (handleID, pending) in pendingForHost {
             if discoveredNames.contains(pending.selection.name) {
-                if let key = retainedTmuxPresentationKeysByHandle[handleID],
-                   let presentation = retainedTmuxPresentations[key],
-                   Self.sameTmuxSession(
-                       presentation.selection,
-                       pending.selection
-                   ) {
-                    presentation.launchMode = .attach
-                    if let context = presentation.reconnectContext,
-                       context.handleID == handleID,
-                       case .establishingProfile = context.phase {
-                        presentation.reconnectContext?.phase = .attachOnly
-                        presentation.establishmentConfirmationTask?.cancel()
-                        presentation.establishmentConfirmationTask = nil
-                    }
-                    publishActiveState(for: presentation)
-                }
-                pendingCreatedTmuxSessions.removeValue(forKey: handleID)
-                createdSessionDiscoveryTasks.removeValue(
-                    forKey: handleID
-                )?.cancel()
-                exhaustedCreatedTmuxSessionHandles.remove(handleID)
-                endedCreatedTmuxSessionHandles.remove(handleID)
+                confirmPendingTmuxCreation(
+                    handleID: handleID,
+                    selection: pending.selection
+                )
             } else if pending.initialCommand == nil,
                       exhaustedCreatedTmuxSessionHandles.contains(handleID),
                       endedCreatedTmuxSessionHandles.contains(handleID) {

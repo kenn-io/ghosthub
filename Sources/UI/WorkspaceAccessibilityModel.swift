@@ -97,10 +97,13 @@ enum WorkspaceAccessibilityModel {
         if let behind = status.syncBehind {
             values.append("\(behind) \(commitLabel(behind)) behind")
         }
-        if status.isRunning {
-            values.append(
-                status.isAgentRunning ? "Agent running" : "Session running"
-            )
+        if let label = status.tmuxWindowLabel {
+            values.append(label)
+        }
+        if status.isRunning, status.isAgentRunning {
+            values.append("Agent running")
+        } else if status.showsGenericRunningIndicator {
+            values.append("Session running")
         }
         if status.showsSecondLine {
             if let number = status.prNumber {

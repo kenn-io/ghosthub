@@ -676,6 +676,8 @@ struct WorkspaceWindow: View {
                 sceneModel.activeBorrowedTmuxSelection,
                 activeTmuxSessionIsConnected:
                 sceneModel.activeBorrowedTmuxSessionIsConnected,
+                connectedTmuxSessionIDs:
+                sceneModel.connectedBorrowedTmuxSessionIDs,
                 activeTmuxSessionCanApplyTheme:
                 sceneModel.canApplyThemeToActiveTmuxSession,
                 availableApplicationShortcuts:
@@ -690,6 +692,8 @@ struct WorkspaceWindow: View {
                 sceneModel.sessionConnectionRecoveryRequest,
                 workingTmuxSessionIDs:
                 sceneModel.workingTmuxSessionIDs,
+                tmuxWindowCountsBySessionID:
+                sceneModel.tmuxWindowCountsBySessionID,
                 previewableTmuxSessionIDs:
                 sceneModel.previewableTmuxSessionIDs,
                 sessionPreviewMode: settingsStore.sessionPreviewMode

@@ -67,9 +67,30 @@ struct TmuxSessionActivityProbeTests {
     func parsesIdentityFencedSample() {
         let output = """
         noisy shell startup
-        GHOSTHUB_TMUX_ACTIVITY_IDENTITY\t1234\t$7\t1720000000\t%2\t120x30
+        GHOSTHUB_TMUX_ACTIVITY_IDENTITY\t1234\t$7\t1720000000\t%2\t120x30\t3
         GHOSTHUB_TMUX_ACTIVITY_CHECKSUM\t8f41a2\t412\t161
-        GHOSTHUB_TMUX_ACTIVITY_IDENTITY\t1234\t$7\t1720000000\t%2\t120x30
+        GHOSTHUB_TMUX_ACTIVITY_IDENTITY\t1234\t$7\t1720000000\t%2\t120x30\t3
+        """
+
+        #expect(
+            TmuxSessionActivityProbe.parse(
+                output,
+                expectedIdentity: activityIdentity
+            ) == .sample(
+                paneID: "%2",
+                dimensions: "120x30",
+                fingerprint: "8f41a2:412:161",
+                windowCount: 3
+            )
+        )
+    }
+
+    @Test("keeps activity when the window count changes during a sample")
+    func changingWindowCountIsNotPublished() {
+        let output = """
+        GHOSTHUB_TMUX_ACTIVITY_IDENTITY\t1234\t$7\t1720000000\t%2\t120x30\t2
+        GHOSTHUB_TMUX_ACTIVITY_CHECKSUM\t8f41a2\t412\t161
+        GHOSTHUB_TMUX_ACTIVITY_IDENTITY\t1234\t$7\t1720000000\t%2\t120x30\t3
         """
 
         #expect(
@@ -782,6 +803,54 @@ private actor ActivitySampleQueue {
 @Suite("Warm tmux session activity")
 @MainActor
 struct TmuxSessionActivityControllerTests {
+    @Test("quiet sessions refresh their window count within twenty seconds")
+    func windowCountCadence() async {
+        let queue = ActivitySampleQueue([
+            .sample(
+                paneID: "%2",
+                dimensions: "120x30",
+                fingerprint: "baseline",
+                windowCount: 1
+            ),
+            .sample(
+                paneID: "%2",
+                dimensions: "120x30",
+                fingerprint: "changed",
+                windowCount: 2
+            ),
+        ])
+        let controller = TmuxSessionActivityController(
+            sampler: { _, _, _ in await queue.next() },
+            workingSampleInterval: 5,
+            quietSampleInterval: 20,
+            automaticallyPolls: false
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "build"
+        )
+        let start = Date(timeIntervalSince1970: 1_720_000_000)
+
+        controller.warm(
+            selection,
+            identity: activityIdentity,
+            on: .local,
+            at: start
+        )
+        await controller.sampleWarmSessions(at: start)
+        #expect(controller.windowCountsBySessionID[selection.id] == 1)
+
+        await controller.sampleWarmSessions(
+            at: start.addingTimeInterval(19)
+        )
+        #expect(controller.windowCountsBySessionID[selection.id] == 1)
+
+        await controller.sampleWarmSessions(
+            at: start.addingTimeInterval(20)
+        )
+        #expect(controller.windowCountsBySessionID[selection.id] == 2)
+    }
+
     @Test("a baseline is quiet and later output becomes temporarily active")
     func outputTransitionLifecycle() async {
         let queue = ActivitySampleQueue([

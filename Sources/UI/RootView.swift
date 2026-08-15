@@ -653,8 +653,12 @@ public struct RootView: View {
             activeZellijSession: activeZellijSession,
             activeTmuxSessionIsConnected:
             display.activeTmuxSessionIsConnected,
+            connectedTmuxSessionIDs:
+            display.connectedTmuxSessionIDs,
             workingTmuxSessionIDs:
             display.workingTmuxSessionIDs,
+            tmuxWindowCountsBySessionID:
+            display.tmuxWindowCountsBySessionID,
             previewableTmuxSessionIDs:
             display.previewableTmuxSessionIDs,
             sessionPreviewMode: display.sessionPreviewMode,
@@ -663,8 +667,11 @@ public struct RootView: View {
             onTmuxSessionPreviewExpanded: { session, expanded in
                 handlers.setTmuxSessionPreviewExpanded?(session, expanded)
             },
-            onOpenTmuxSession: { session in
-                activateTmuxSession(session)
+            onOpenTmuxSession: { session, routeSelection in
+                activateTmuxSession(
+                    session,
+                    selectionBaseline: routeSelection
+                )
             },
             onOpenHerdrSession: { session in
                 activateHerdrSession(session)
@@ -882,15 +889,18 @@ public struct RootView: View {
         }
     }
 
-    private func activateTmuxSession(_ session: WorkspaceTmuxSessionSelection) {
+    private func activateTmuxSession(
+        _ session: WorkspaceTmuxSessionSelection,
+        selectionBaseline: WorkspaceSelection? = nil
+    ) {
         deactivateHerdrSession()
         deactivateZellijSession()
         if activeTmuxSession == session {
-            tmuxSelectionBaseline = selection
+            tmuxSelectionBaseline = selectionBaseline ?? selection
             handlers.openTmuxSession?(session)
             return
         }
-        tmuxSelectionBaseline = selection
+        tmuxSelectionBaseline = selectionBaseline ?? selection
         handlers.openTmuxSession?(session)
     }
 
@@ -967,13 +977,14 @@ public struct RootView: View {
             hostID: host.id,
             name: name
         )
-        selectWorkspace(Self.selectionForHostTmuxSession(
+        let routeSelection = Self.selectionForHostTmuxSession(
             session,
             from: selection,
             in: snapshot,
             visibility: worktreeVisibility
-        ))
-        tmuxSelectionBaseline = selection
+        )
+        selectWorkspace(routeSelection)
+        tmuxSelectionBaseline = routeSelection
         handlers.createTmuxSession?(WorkspaceTmuxSessionCreationRequest(
             selection: session,
             initialCommand: initialCommand
@@ -1692,6 +1703,26 @@ public struct RootView: View {
         return updated
     }
 
+    static func selectionForTmuxCommand(
+        _ session: WorkspaceTmuxSessionSelection,
+        from current: WorkspaceSelection,
+        in snapshot: WorkspaceSnapshot,
+        visibility: WorktreeVisibility
+    ) -> WorkspaceSelection {
+        let target: WorkspaceNavigationTarget
+        if let worktreeID = session.worktreeID {
+            target = .worktree(worktreeID)
+        } else if let directoryWorkspaceID = session.directoryWorkspaceID {
+            target = .directoryWorkspace(directoryWorkspaceID)
+        } else {
+            target = .tmuxSession(hostID: session.hostID, name: session.name)
+        }
+
+        var updated = current
+        updated.select(target, in: snapshot, visibility: visibility)
+        return updated
+    }
+
     private func deactivateTmuxSession() {
         guard let previous = activeTmuxSession else { return }
         tmuxSelectionBaseline = nil
@@ -2033,19 +2064,17 @@ public struct RootView: View {
             guard let host = snapshot.host(id: hostID) else { return }
             addProjectHost = host
         case let .openTmuxSession(tmuxSession):
-            if let worktreeID = tmuxSession.worktreeID {
-                selectWorkspace(.worktree(worktreeID))
-            } else if let directoryID = tmuxSession.directoryWorkspaceID {
-                selectWorkspace(.directoryWorkspace(directoryID))
-            } else {
-                selectWorkspace(Self.selectionForHostTmuxSession(
-                    tmuxSession,
-                    from: selection,
-                    in: snapshot,
-                    visibility: worktreeVisibility
-                ))
-            }
-            activateTmuxSession(tmuxSession)
+            let routeSelection = Self.selectionForTmuxCommand(
+                tmuxSession,
+                from: selection,
+                in: snapshot,
+                visibility: worktreeVisibility
+            )
+            selectWorkspace(routeSelection)
+            activateTmuxSession(
+                tmuxSession,
+                selectionBaseline: routeSelection
+            )
         case let .openHerdrSession(herdrSession):
             selectWorkspace(.herdrSession(
                 hostID: herdrSession.hostID,

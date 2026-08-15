@@ -811,6 +811,7 @@ enum HostInventoryOverlay {
         zellijAvailabilityByHost: [UUID: Bool] = [:],
         tmuxReachabilityByHost: [UUID: Bool] = [:],
         tmuxLastSeenByHost: [UUID: Date] = [:],
+        tmuxAuthoritativeHostIDs: Set<UUID> = [],
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
         let updated = kwtInventoriesByHost.reduce(source) { partial, entry in
@@ -829,6 +830,7 @@ enum HostInventoryOverlay {
             zellijAvailabilityByHost: zellijAvailabilityByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
+            tmuxAuthoritativeHostIDs: tmuxAuthoritativeHostIDs,
             to: updated
         )
     }
@@ -841,6 +843,7 @@ enum HostInventoryOverlay {
         zellijAvailabilityByHost: [UUID: Bool] = [:],
         tmuxReachabilityByHost: [UUID: Bool] = [:],
         tmuxLastSeenByHost: [UUID: Date] = [:],
+        tmuxAuthoritativeHostIDs: Set<UUID> = [],
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
         applyHostState(
@@ -852,6 +855,7 @@ enum HostInventoryOverlay {
             zellijAvailabilityByHost: zellijAvailabilityByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
+            tmuxAuthoritativeHostIDs: tmuxAuthoritativeHostIDs,
             to: source
         )
     }
@@ -865,6 +869,7 @@ enum HostInventoryOverlay {
         zellijAvailabilityByHost: [UUID: Bool],
         tmuxReachabilityByHost: [UUID: Bool],
         tmuxLastSeenByHost: [UUID: Date],
+        tmuxAuthoritativeHostIDs: Set<UUID>,
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
         var updated = source
@@ -910,6 +915,16 @@ enum HostInventoryOverlay {
                     .missingKwtCapability
                 )
             }
+        }
+        let tmuxStateHostIDs = Set(tmuxSessionsByHost.keys)
+            .union(tmuxReachabilityByHost.keys)
+            .union(tmuxAuthoritativeHostIDs)
+        for hostID in tmuxStateHostIDs {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
+            updated.hosts[index].tmuxInventoryIsAuthoritative =
+                tmuxAuthoritativeHostIDs.contains(hostID)
         }
         for (hostID, isReachable) in tmuxReachabilityByHost {
             guard let index = updated.hosts.firstIndex(where: {

@@ -407,6 +407,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     public var remoteCapabilities: RemoteHostCapabilities?
     public var remoteDiagnostics: [RemoteHostDiagnostic]
     public var tmuxSessions: [TmuxSessionSummary]
+    public var tmuxInventoryIsAuthoritative: Bool
     public var herdrSessions: [HerdrSessionSummary]
     public var herdrAvailable: Bool
     public var zellijSessions: [ZellijSessionSummary]
@@ -433,6 +434,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         remoteCapabilities: RemoteHostCapabilities? = nil,
         remoteDiagnostics: [RemoteHostDiagnostic] = [],
         tmuxSessions: [TmuxSessionSummary] = [],
+        tmuxInventoryIsAuthoritative: Bool = false,
         herdrSessions: [HerdrSessionSummary] = [],
         herdrAvailable: Bool = false,
         zellijSessions: [ZellijSessionSummary] = [],
@@ -458,6 +460,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         self.remoteCapabilities = remoteCapabilities
         self.remoteDiagnostics = remoteDiagnostics
         self.tmuxSessions = tmuxSessions
+        self.tmuxInventoryIsAuthoritative = tmuxInventoryIsAuthoritative
         self.herdrSessions = herdrSessions
         self.herdrAvailable = herdrAvailable
         self.zellijSessions = zellijSessions

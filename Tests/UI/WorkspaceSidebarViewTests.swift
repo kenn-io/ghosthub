@@ -126,9 +126,14 @@ struct WorkspaceSidebarViewTests {
     }
 
     @MainActor
-    @Test("preview activation uses the ordinary tmux row route")
-    func previewActivationUsesTmuxRowRoute() {
+    @Test("tmux activation carries its post-click route")
+    func tmuxActivationCarriesPostClickRoute() {
         let hostID = UUID()
+        let project = ProjectSummary.fixture(hostID: hostID)
+        let worktree = WorktreeSummary.fixture(
+            hostID: hostID,
+            projectID: project.id
+        )
         let session = WorkspaceTmuxSessionSelection(
             hostID: hostID,
             name: "opened"
@@ -140,9 +145,14 @@ struct WorkspaceSidebarViewTests {
                     .init(name: session.name, managed: false, windows: []),
                 ]
             ),
-        ])
-        var selection = WorkspaceSelection(selectedHostID: hostID)
+        ], projects: [project], worktrees: [worktree])
+        var selection = WorkspaceSelection(
+            selectedHostID: hostID,
+            selectedProjectID: project.id,
+            selectedWorktreeID: worktree.id
+        )
         var opened: [WorkspaceTmuxSessionSelection] = []
+        var activationRoutes: [WorkspaceSelection] = []
 
         WorkspaceSidebarView.activateTmuxSession(
             session,
@@ -150,13 +160,44 @@ struct WorkspaceSidebarViewTests {
             selection: &selection,
             snapshot: snapshot,
             visibility: .default,
-            onOpen: { opened.append($0) }
+            onOpen: { openedSession, route in
+                opened.append(openedSession)
+                activationRoutes.append(route)
+            }
         )
 
         #expect(opened == [session])
+        #expect(activationRoutes == [selection])
         #expect(selection.selectedHostID == hostID)
         #expect(selection.selectedProjectID == nil)
         #expect(selection.selectedWorktreeID == nil)
+    }
+
+    @MainActor
+    @Test("window count stays as compact as the fallback running glyph")
+    func windowCountIndicatorHeight() {
+        let worktree = WorktreeSummary.fixture()
+        let fallback = WorktreeRowStatus.make(
+            for: worktree,
+            sessions: [],
+            hasLiveTmuxSession: true
+        )
+        let counted = WorktreeRowStatus.make(
+            for: worktree,
+            sessions: [],
+            hasLiveTmuxSession: true,
+            tmuxWindowCount: 3
+        )
+        let fallbackHeight = hostView(
+            WorktreeRowLine(title: "main", status: fallback),
+            size: CGSize(width: 180, height: 32)
+        ).fittingSize.height
+        let countedHeight = hostView(
+            WorktreeRowLine(title: "main", status: counted),
+            size: CGSize(width: 180, height: 32)
+        ).fittingSize.height
+
+        #expect(ceil(countedHeight) == ceil(fallbackHeight))
     }
 
     @Test("section actions target their exact host")

@@ -233,6 +233,31 @@ capture_project_removal() {
   sleep 1
 }
 
+capture_worktree_window_counts() {
+  # Collapse Zellij, then expand Projects and the synthetic ghosthub project.
+  # These disclosure positions are stable at the fixed demo window size.
+  demo_input click "32,489"
+  sleep 0.5
+  demo_input click "32,450"
+  sleep 0.5
+  demo_input click "32,412"
+  sleep 1
+  capture_state guide-worktree-window-counts.png
+  # Restore the initial disclosure state for the remaining guide captures.
+  demo_input click "32,412"
+  sleep 0.5
+  demo_input click "32,450"
+  sleep 0.5
+  demo_input click "32,489"
+  sleep 0.5
+}
+
+if [[ "${GHOSTHUB_DEMO_WORKTREE_COUNTS_ONLY:-}" == "1" ]]; then
+  echo "==> guide: worktree window counts"
+  capture_worktree_window_counts
+  exit 0
+fi
+
 if [[ "${GHOSTHUB_DEMO_PROJECT_REMOVAL_ONLY:-}" == "1" ]]; then
   echo "==> guide: project removal"
   capture_project_removal
@@ -259,6 +284,9 @@ if palette "$unmatched_command" \
   exit 1
 fi
 demo_input escape
+
+echo "==> guide: worktree window counts"
+capture_worktree_window_counts
 
 echo "==> guide: project removal"
 capture_project_removal
@@ -309,6 +337,11 @@ capture_state guide-session-previews.png
 echo "==> guide: remote host settings"
 palette "Open Hosts Settings" true sheet
 sleep 2
+# Bring the Verification actions above the settings toolbar. The Hosts detail
+# is taller than the fixed demo sheet, so its initial top position clips those
+# controls in the capture even though they are available by scrolling.
+demo_input scroll-detail "120"
+sleep 1
 capture_state guide-hosts.png
 dismiss_sheet
 

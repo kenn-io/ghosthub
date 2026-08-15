@@ -21,6 +21,8 @@ public struct WorktreeRowStatus: Equatable, Sendable {
     public var syncAhead: Int?
     /// Commits behind the upstream remote; nil or 0 means omit.
     public var syncBehind: Int?
+    /// Positive default-server tmux window count; nil means omit.
+    public var tmuxWindowCount: Int?
     /// True when any session for this worktree is alive.
     public var isRunning: Bool
     /// True when a running session has `runtimeKind == .agent`.
@@ -36,6 +38,17 @@ public struct WorktreeRowStatus: Equatable, Sendable {
     /// True when a second line (PR info) should be rendered.
     public var showsSecondLine: Bool
 
+    public var tmuxWindowLabel: String? {
+        guard let tmuxWindowCount else { return nil }
+        return tmuxWindowCount == 1
+            ? "1 window"
+            : "\(tmuxWindowCount) windows"
+    }
+
+    public var showsGenericRunningIndicator: Bool {
+        isRunning && !isAgentRunning && tmuxWindowCount == nil
+    }
+
     /// Derives a `WorktreeRowStatus` from a worktree summary and its sessions.
     ///
     /// - Parameters:
@@ -47,12 +60,16 @@ public struct WorktreeRowStatus: Equatable, Sendable {
     public static func make(
         for w: WorktreeSummary,
         sessions: [TerminalSessionSummary],
-        hasLiveTmuxSession: Bool = false
+        hasLiveTmuxSession: Bool = false,
+        tmuxWindowCount: Int? = nil
     ) -> WorktreeRowStatus {
         let added = (w.diffAdded ?? 0) > 0 ? w.diffAdded : nil
         let removed = (w.diffRemoved ?? 0) > 0 ? w.diffRemoved : nil
         let ahead = (w.syncAhead ?? 0) > 0 ? w.syncAhead : nil
         let behind = (w.syncBehind ?? 0) > 0 ? w.syncBehind : nil
+        let windowCount = (tmuxWindowCount ?? 0) > 0
+            ? tmuxWindowCount
+            : nil
         let running = hasLiveTmuxSession || sessions.contains { $0.isAlive }
         let agentRunning = sessions.contains { $0.isAlive && $0.runtimeKind == .agent }
         let checksGlyph = checksGlyph(from: w.checksStatus)
@@ -62,6 +79,7 @@ public struct WorktreeRowStatus: Equatable, Sendable {
             diffRemoved: removed,
             syncAhead: ahead,
             syncBehind: behind,
+            tmuxWindowCount: windowCount,
             isRunning: running,
             isAgentRunning: agentRunning,
             prNumber: w.linkedPullRequestNumber,
