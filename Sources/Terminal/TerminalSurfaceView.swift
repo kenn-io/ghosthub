@@ -103,6 +103,23 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         }
     }
 
+    /// True when libghostty could not create this surface with no active display.
+    ///
+    /// That specific failure is transient: the renderer needs an active display
+    /// to build its vsync display link. Other creation failures may persist, so
+    /// callers must not keep recovering from them indefinitely.
+    public var launchFailureIsRetryable: Bool {
+        guard let terminalError = error as? TerminalSurfaceError else {
+            return false
+        }
+        if case let .surfaceCreationFailed(activeDisplayCount) = terminalError {
+            return DisplayAvailability.surfaceCreationFailureIsRetryable(
+                activeDisplayCount: activeDisplayCount
+            )
+        }
+        return false
+    }
+
     // MARK: - Internal State
 
     @Published public private(set) var focused: Bool = false
@@ -287,7 +304,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             ghostty_surface_new(app, &config)
         }
         guard let surfaceHandle else {
-            error = TerminalSurfaceError.surfaceCreationFailed
+            error = TerminalSurfaceError.surfaceCreationFailed(
+                activeDisplayCount: DisplayAvailability.activeCount()
+            )
             return
         }
         surface = surfaceHandle
@@ -1838,13 +1857,13 @@ private extension TerminalSurfaceView {
 // MARK: - Error
 
 enum TerminalSurfaceError: LocalizedError {
-    case surfaceCreationFailed
+    case surfaceCreationFailed(activeDisplayCount: Int)
     case surfaceClosed(processAlive: Bool)
 
     var errorDescription: String? {
         switch self {
         case .surfaceCreationFailed:
-            return "ghostty_surface_new returned nil"
+            return "Ghosthub could not create the terminal surface."
         case let .surfaceClosed(processAlive):
             return processAlive
                 ? "Surface closed while process is still running"

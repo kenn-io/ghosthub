@@ -807,6 +807,10 @@ final class WorkspaceSceneModel: ObservableObject {
         var host: CommandHost
         var connection: SSHConnectionArgumentsSnapshot?
         var surfaceExitCode: UInt32?
+        /// The previous attempt could not create a terminal surface, so no
+        /// client ever ran and there is no exit code to inspect. Recovery is
+        /// still legitimate: the transport failure that started it stands.
+        var surfaceLaunchFailed = false
 
         static func == (
             lhs: ActiveZellijReconnectContext,
@@ -817,6 +821,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 && lhs.host == rhs.host
                 && lhs.connection?.cacheKey == rhs.connection?.cacheKey
                 && lhs.surfaceExitCode == rhs.surfaceExitCode
+                && lhs.surfaceLaunchFailed == rhs.surfaceLaunchFailed
         }
     }
     private var activeZellijReconnectContext: ActiveZellijReconnectContext?
@@ -848,6 +853,14 @@ final class WorkspaceSceneModel: ObservableObject {
     var herdrReconnectSupervisorIsRunning: Bool {
         herdrReconnectSupervisor.isRunning
     }
+
+    /// tmux supervisors are per presentation, so unlike Herdr and Zellij this
+    /// reports whether any retained presentation is still recovering.
+    var anyTmuxReconnectSupervisorIsRunning: Bool {
+        retainedTmuxPresentations.values.contains {
+            $0.reconnectSupervisor.isRunning
+        }
+    }
     @Published private(set) var sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest?
     private enum RemoteTmuxEstablishmentPhase: Equatable {
@@ -861,6 +874,10 @@ final class WorkspaceSceneModel: ObservableObject {
         var host: CommandHost
         var phase: RemoteTmuxEstablishmentPhase
         var surfaceExitCode: UInt32?
+        /// The previous attempt could not create a terminal surface, so no
+        /// client ever ran and there is no exit code to inspect. Recovery is
+        /// still legitimate: the transport failure that started it stands.
+        var surfaceLaunchFailed = false
     }
     private struct TmuxPresentationKey: Hashable {
         var hostID: UUID
@@ -935,6 +952,10 @@ final class WorkspaceSceneModel: ObservableObject {
         var handleID: UUID
         var host: CommandHost
         var surfaceExitCode: UInt32?
+        /// The previous attempt could not create a terminal surface, so no
+        /// client ever ran and there is no exit code to inspect. Recovery is
+        /// still legitimate: the transport failure that started it stands.
+        var surfaceLaunchFailed = false
     }
     private var activeHerdrReconnectContext: ActiveHerdrReconnectContext?
     @Published private(set) var isWorkspaceRestorationPending = false
@@ -1196,6 +1217,9 @@ final class WorkspaceSceneModel: ObservableObject {
     private let tmuxSessionStyler: TmuxSessionStyling
     private let tmuxPresentationStyleProvider:
         (UInt?) -> TmuxPresentationStyle?
+    /// Displays macOS currently reports as active. Zero means nothing can be
+    /// rendered, so an attach cannot succeed; see `DisplayAvailability`.
+    private let activeDisplayCount: @Sendable () -> Int
     private let sshHostProbeRunner: SSHHostProbeRunner
     private let sshAuthenticationCoordinator: SSHAuthenticationCoordinator
     private let sshAuthenticationScopeID = UUID()
@@ -1268,6 +1292,7 @@ final class WorkspaceSceneModel: ObservableObject {
     var childExitCancellable: AnyCancellable?
     var appDidBecomeActiveCancellable: AnyCancellable?
     var appDidResignActiveCancellable: AnyCancellable?
+    var screenParametersCancellable: AnyCancellable?
     var shortcutMonitor: ShortcutMonitor?
     var openTerminalSurfaceCount: Int {
         terminalCoordinator.surfaceEntries().reduce(into: 0) { count, entry in
@@ -1365,6 +1390,9 @@ final class WorkspaceSceneModel: ObservableObject {
         @escaping (UInt?) -> TmuxPresentationStyle? = { _ in nil },
         appliesTmuxPresentationStyleToExistingSessionsProvider:
         @escaping () -> Bool = { false },
+        activeDisplayCount: @escaping @Sendable () -> Int = {
+            DisplayAvailability.activeCount()
+        },
         kwtInventoryLoader: @escaping KwtInventoryLoader = { host in
             try await KwtInventoryClient().load(from: host)
         },
@@ -1709,6 +1737,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.tmuxSessionStyler = tmuxSessionStyler
         self.tmuxPresentationStyleProvider =
             tmuxPresentationStyleProvider
+        self.activeDisplayCount = activeDisplayCount
         self.sshHostProbeRunner = sshHostProbeRunner
         self.sshAuthenticationCoordinator = sshAuthenticationCoordinator
         self.createdSessionDiscoveryDelays =
@@ -2073,6 +2102,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 activityController.startOutputFlushLoop()
                 subscribeChildExitEvents()
                 subscribeAppActivity()
+                subscribeDisplayAvailability()
                 activityController
                     .refreshWorkspaceResourceSummary()
                 installShortcutMonitor()
@@ -2125,6 +2155,7 @@ final class WorkspaceSceneModel: ObservableObject {
         childExitCancellable?.cancel()
         appDidBecomeActiveCancellable?.cancel()
         appDidResignActiveCancellable?.cancel()
+        screenParametersCancellable?.cancel()
         shortcutMonitor?.uninstall()
         // Nil out controller backings so their deinits run now,
         // cancelling detached tasks that could fire closures
@@ -9693,6 +9724,10 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.recoveryRequest = nil
             if presentation.reconnectContext?.handleID == handle.id {
                 presentation.reconnectContext?.surfaceExitCode = nil
+                // Belt and braces: relaunch already rebuilds the context, but
+                // clearing here keeps "only the attempt that failed may skip
+                // the exit-code check" true regardless of that path.
+                presentation.reconnectContext?.surfaceLaunchFailed = false
                 startEstablishmentConfirmationIfNeeded(
                     presentation: presentation
                 )
@@ -9709,6 +9744,21 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxActivityEnrollmentTasks.removeValue(
                 forKey: handle.id
             )?.cancel()
+        }
+        if case .disconnected = state,
+           presentation.recoveryState != nil,
+           nativeTmuxSessionCoordinator.attachmentClosure(handle)
+           == .surfaceUnavailable,
+           var context = presentation.reconnectContext,
+           context.handleID == handle.id {
+            // The surface could not be created, which is transient. The
+            // supervisor already stopped when it handed off this relaunch, so
+            // re-arm it; its first act is the display check, so it backs off
+            // rather than spinning on a relaunch that cannot succeed yet.
+            context.surfaceLaunchFailed = true
+            presentation.reconnectContext = context
+            startTmuxReconnect(presentation, context: context)
+            return
         }
         if case .disconnected = state,
            presentation.recoveryState != nil,
@@ -9817,17 +9867,29 @@ final class WorkspaceSceneModel: ObservableObject {
             activeBorrowedHerdrRecoveryState = nil
             sessionConnectionRecoveryRequest = nil
             activeHerdrReconnectContext?.surfaceExitCode = nil
+            activeHerdrReconnectContext?.surfaceLaunchFailed = false
             return
         }
-        guard case .disconnected = state,
-              nativeHerdrSessionCoordinator.hasLaunched(handle)
-        else { return }
+        guard case .disconnected = state else { return }
         if suppressedHerdrStops.values.contains(where: {
             $0.selection.hostID == handle.hostID
                 && $0.selection.name == handle.name
         }) {
             return
         }
+        // Checked before `hasLaunched`: a surface that failed to be created
+        // never launched, so the guard below would drop this transient failure
+        // and the session would latch. See the tmux path.
+        if nativeHerdrSessionCoordinator.attachmentClosure(handle)
+            == .surfaceUnavailable,
+            var context = activeHerdrReconnectContext,
+            context.handleID == handle.id {
+            context.surfaceLaunchFailed = true
+            activeHerdrReconnectContext = context
+            startHerdrReconnect(context)
+            return
+        }
+        guard nativeHerdrSessionCoordinator.hasLaunched(handle) else { return }
         switch nativeHerdrSessionCoordinator.attachmentClosure(handle) {
         case .detached:
             cancelHerdrReconnect()
@@ -9845,6 +9907,10 @@ final class WorkspaceSceneModel: ObservableObject {
             context.surfaceExitCode = code
             activeHerdrReconnectContext = context
             startHerdrReconnect(context)
+        case .surfaceUnavailable:
+            // Recoverable failures are re-armed above, before `hasLaunched`.
+            // Reaching here means no matching reconnect context survives.
+            cancelHerdrReconnect()
         case .launchFailed, nil:
             cancelHerdrReconnect()
         }
@@ -9870,11 +9936,24 @@ final class WorkspaceSceneModel: ObservableObject {
                 context.connection = nativeZellijSessionCoordinator
                     .attachmentConnectionSnapshot(handle)
                 context.surfaceExitCode = nil
+                context.surfaceLaunchFailed = false
                 activeZellijReconnectContext = context
             }
             sessionConnectionRecoveryRequest = nil
             scheduleZellijSessionDiscovery()
         case .disconnected:
+            // Checked before `hasLaunched`: a surface that failed to be created
+            // never launched, so the guard below would drop this transient
+            // failure and the session would latch. See the tmux path.
+            if nativeZellijSessionCoordinator.attachmentClosure(handle)
+                == .surfaceUnavailable,
+                var context = activeZellijReconnectContext,
+                context.handleID == handle.id {
+                context.surfaceLaunchFailed = true
+                activeZellijReconnectContext = context
+                startZellijReconnect(context)
+                return
+            }
             guard nativeZellijSessionCoordinator.hasLaunched(handle) else {
                 if let selection = pendingCreatedZellijSessions
                     .removeValue(forKey: handle.id) {
@@ -9916,6 +9995,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 context.surfaceExitCode = code
                 activeZellijReconnectContext = context
                 startZellijReconnect(context)
+            case .surfaceUnavailable:
+                // Recoverable failures are re-armed above, before
+                // `hasLaunched`. Reaching here means no matching reconnect
+                // context survives.
+                fallthrough
             case .launchFailed, nil:
                 if let selection = pendingCreatedZellijSessions
                     .removeValue(forKey: handle.id) {
@@ -9960,6 +10044,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard activeZellijReconnectContext == context,
               activeBorrowedZellijHandle?.id == context.handleID
         else { return .stop }
+        guard canAttachToDisplay else { return .retry }
         guard let connection = context.connection else {
             stopZellijReconnect(
                 "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
@@ -10073,7 +10158,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 scheduleZellijSessionDiscovery()
                 return .stop
             }
-            guard context.surfaceExitCode == 255 else {
+            guard context.surfaceExitCode == 255
+                || context.surfaceLaunchFailed
+            else {
                 stopZellijReconnect(
                     "The remote Zellij client exited before it could attach."
                 )
@@ -10328,6 +10415,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard activeHerdrReconnectContext == context,
               activeBorrowedHerdrHandle?.id == context.handleID
         else { return .stop }
+        guard canAttachToDisplay else { return .retry }
         let probe = await validatedHerdrSessionProbe(
             named: context.selection.name,
             on: context.host
@@ -10365,7 +10453,9 @@ final class WorkspaceSceneModel: ObservableObject {
             // SSH reserves 255 for transport failure, but a client could also choose it.
             // The accepted ambiguity self-corrects because every retry first probes the
             // exact running Herdr session and stops when that session is absent.
-            guard context.surfaceExitCode == 255 else {
+            guard context.surfaceExitCode == 255
+                || context.surfaceLaunchFailed
+            else {
                 stopHerdrReconnectWithUnableToAttach(
                     "The remote Herdr client exited before it could attach."
                 )
@@ -10504,6 +10594,35 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    /// Whether an attach can succeed right now.
+    ///
+    /// libghostty's renderer needs an active display to build the vsync display
+    /// link it creates with every surface, so attaching with none — lid shut, no
+    /// external monitor — always fails. Holding instead of attempting keeps the
+    /// supervisor's backoff intact and stops Ghosthub waking SSH on every dark
+    /// wake while the lid is closed. `subscribeDisplayAvailability()` retries
+    /// the moment a display comes back.
+    private var canAttachToDisplay: Bool {
+        activeDisplayCount() > 0
+    }
+
+    /// Resumes recovery as soon as a display comes back, so a session held by
+    /// `canAttachToDisplay` attaches on lid open instead of waiting out the
+    /// supervisor's remaining delay.
+    func handleDisplayParametersChanged() {
+        guard canAttachToDisplay else { return }
+        for presentation in retainedTmuxPresentations.values
+            where presentation.reconnectSupervisor.isRunning {
+            presentation.reconnectSupervisor.reconnectNow()
+        }
+        if herdrReconnectSupervisor.isRunning {
+            herdrReconnectSupervisor.reconnectNow()
+        }
+        if zellijReconnectSupervisor.isRunning {
+            zellijReconnectSupervisor.reconnectNow()
+        }
+    }
+
     private func attemptTmuxReconnect(
         _ presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext
@@ -10513,6 +10632,7 @@ final class WorkspaceSceneModel: ObservableObject {
               retainedTmuxPresentation(for: presentation.handle)
               === presentation
         else { return .stop }
+        guard canAttachToDisplay else { return .retry }
         let outcome = await tmuxProbeOutcome(
             for: presentation,
             context: context
@@ -10618,7 +10738,9 @@ final class WorkspaceSceneModel: ObservableObject {
         else { return .stop }
         switch outcome {
         case .present:
-            guard context.surfaceExitCode == 255 else {
+            guard context.surfaceExitCode == 255
+                || context.surfaceLaunchFailed
+            else {
                 stopTmuxReconnectWithUnableToAttach(
                     presentation,
                     "The remote tmux client exited before it could attach."
@@ -10640,7 +10762,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 publishActiveState(for: presentation)
                 return .stop
             }
-            guard context.surfaceExitCode == 255 else {
+            guard context.surfaceExitCode == 255
+                || (context.phase == .establishingWorkspace
+                    && context.surfaceLaunchFailed)
+            else {
                 stopTmuxReconnectWithUnableToAttach(
                     presentation,
                     "The remote workspace could not be established."

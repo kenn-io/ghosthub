@@ -16,6 +16,9 @@ enum BorrowedHerdrAttachmentClosure: Equatable {
     case detached
     case processExited(code: UInt32?)
     case launchFailed
+    /// The terminal surface could not be created. Transient — no display was
+    /// available to render it — so recovery keeps trying instead of latching.
+    case surfaceUnavailable
 }
 
 private struct NativeHerdrSessionKey: Hashable {
@@ -369,7 +372,12 @@ final class NativeHerdrSessionCoordinator {
             return nil
         }
         if let error = surface.launchError {
-            failSurfaceLaunch(handle, reason: error.localizedDescription)
+            failSurfaceLaunch(
+                handle,
+                reason: error.localizedDescription,
+                closure: surface.launchFailureIsRetryable
+                    ? .surfaceUnavailable : .launchFailed
+            )
             return nil
         }
         surface.blocksClipboardReads = attachment.host.isRemote
@@ -405,10 +413,17 @@ final class NativeHerdrSessionCoordinator {
 
     private func failSurfaceLaunch(
         _ handle: BorrowedHerdrSessionHandle,
-        reason: String
+        reason: String,
+        closure: BorrowedHerdrAttachmentClosure = .launchFailed
     ) {
+        AppLogger.shared.error(
+            "herdr surface launch failed: \(reason) "
+                + "retryable=\(closure == .surfaceUnavailable) "
+                + "activeDisplays=\(DisplayAvailability.activeCount())",
+            context: "herdr"
+        )
         cancelPaneSplits(handleID: handle.id)
-        attachmentClosures[handle.id] = .launchFailed
+        attachmentClosures[handle.id] = closure
         remoteExitStatusStore.remove(
             attachments.removeValue(forKey: handle.id)?.remoteExitStatusURL
         )

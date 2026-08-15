@@ -26,7 +26,7 @@ enum TerminalFontZoomCommand: Equatable, Sendable {
 }
 
 enum TerminalSurfaceError: LocalizedError {
-    case surfaceCreationFailed
+    case surfaceCreationFailed(activeDisplayCount: Int)
     case surfaceClosed(processAlive: Bool)
 
     var errorDescription: String? {
@@ -72,6 +72,19 @@ public final class TerminalSurfaceView: ObservableObject {
     @Published public private(set) var focused: Bool = false
     @Published public var error: Error?
     public internal(set) var childExitCode: UInt32?
+
+    /// Mirrors `TerminalSurfaceView.launchFailureIsRetryable`.
+    public var launchFailureIsRetryable: Bool {
+        guard let terminalError = error as? TerminalSurfaceError else {
+            return false
+        }
+        if case let .surfaceCreationFailed(activeDisplayCount) = terminalError {
+            return DisplayAvailability.surfaceCreationFailureIsRetryable(
+                activeDisplayCount: activeDisplayCount
+            )
+        }
+        return false
+    }
 
     public var suppressAutoFocus: Bool = false
     public var onFocusChange: ((Bool) -> Void)?

@@ -1,6 +1,7 @@
 import GhosthubTransport
 import Combine
 import Foundation
+import Synchronization
 import GhosthubSettings
 import GhosthubTerminal
 import GhosthubTmux
@@ -4101,6 +4102,177 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("no active display holds recovery without probing the host")
+    func zeroDisplaysHoldsRecoveryUntilDisplayReturns() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let displays = Mutex(1)
+        let probes = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            activeDisplayCount: { displays.withLock { $0 } },
+            tmuxSessionDiscovery: { _ in
+                probes.withLock { $0 += 1 }
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let remoteSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(remoteSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        probes.withLock { $0 = 0 }
+
+        // The lid closes, then the transport dies: recovery must hold rather
+        // than burn its one attempt on a surface that cannot be created.
+        displays.withLock { $0 = 0 }
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxRecoveryState?.isReconnecting == true
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(surfaceStore.requestCount == 1)
+        #expect(probes.withLock { $0 } == 0)
+        #expect(model.anyTmuxReconnectSupervisorIsRunning)
+
+        // The lid opens.
+        displays.withLock { $0 = 1 }
+        model.handleDisplayParametersChanged()
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("retryable surface failure keeps recovering instead of latching")
+    func retryableSurfaceFailureKeepsRecovering() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let remoteSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(remoteSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        // Displays vanished between the gate and surface creation, so the
+        // relaunch fails transiently. Recovery must re-arm, not latch.
+        surfaceStore.surface.launchError = SceneSurfaceLaunchError.rejected
+        surfaceStore.surface.launchFailureIsRetryable = true
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor { surfaceStore.requestCount == 2 }
+
+        // Not latched: recovery stays armed. `isRunning` is deliberately not
+        // asserted — a tmux supervisor stops each time it hands off a relaunch,
+        // so it is false at arbitrary moments while recovery is still healthy.
+        #expect(model.activeBorrowedTmuxRecoveryState?.isReconnecting == true)
+
+        surfaceStore.surface.launchError = nil
+        surfaceStore.surface.launchFailureIsRetryable = false
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("recovered surface failure does not excuse a later normal exit")
+    func recoveredSurfaceFailureDoesNotExcuseLaterNormalExit() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let remoteSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(remoteSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        // A transient surface failure, then a successful reconnect.
+        surfaceStore.surface.launchError = SceneSurfaceLaunchError.rejected
+        surfaceStore.surface.launchFailureIsRetryable = true
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor { surfaceStore.requestCount == 2 }
+        surfaceStore.surface.launchError = nil
+        surfaceStore.surface.launchFailureIsRetryable = false
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+        let recoveredRequestCount = surfaceStore.requestCount
+
+        // The client now exits normally. That is not a transport failure, so
+        // it must be reported rather than retried: the earlier transient
+        // failure cannot keep excusing later exits.
+        surfaceStore.surface.closeObservers.values.first?(false, 0)
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(surfaceStore.requestCount == recoveredRequestCount)
+        #expect(model.activeBorrowedTmuxRecoveryState?.isReconnecting != true)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("inactive retained presentation continues automatic recovery")
     func inactivePresentationContinuesAutomaticRecovery() async throws {
         let environment = try setupRemoteTmuxEnvironment()
@@ -4497,6 +4669,58 @@ struct WorkspaceTmuxDiscoveryTests {
         }
 
         #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
+        #expect(
+            surfaceStore.lastConfiguration?.command?.contains("'open'")
+                == true
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("retryable surface failure relaunches an absent workspace")
+    func retryableSurfaceFailureRelaunchesAbsentWorkspace() async throws {
+        let environment = try setupRemoteEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let sessionName = "kwt-ghosthub-main"
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            tmuxReconnectIntervals: [.seconds(10)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        surfaceStore.surface.launchError = SceneSurfaceLaunchError.rejected
+        surfaceStore.surface.launchFailureIsRetryable = true
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxRecoveryState?.isReconnecting == true
+        }
+        model.reconnectActiveTmuxSessionNow()
+        await waitUntilMainActor { surfaceStore.requestCount == 2 }
+
+        surfaceStore.surface.launchError = nil
+        surfaceStore.surface.launchFailureIsRetryable = false
+        model.reconnectActiveTmuxSessionNow()
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 3
+                || model.activeBorrowedTmuxRecoveryState == nil
+        }
+
+        #expect(surfaceStore.requestCount == 3)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
         #expect(
             surfaceStore.lastConfiguration?.command?.contains("'open'")
                 == true
@@ -9788,6 +10012,7 @@ private struct SceneModelRootHarness: View {
 private final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
     var blocksClipboardReads = false
     var launchError: Error?
+    var launchFailureIsRetryable = false
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
     private(set) var lastObserverID: UUID?

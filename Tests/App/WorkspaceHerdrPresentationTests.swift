@@ -1215,6 +1215,47 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("confirmed Herdr stop suppresses delayed surface recovery")
+    func confirmedStopSuppressesDelayedSurfaceRecovery() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let probes = Mutex(0)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in
+                probes.withLock { $0 += 1 }
+                return .present
+            },
+            coordinator: coordinator
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        let probeCountBeforeStop = probes.withLock { $0 }
+
+        let operation = try #require(coordinator.begin(.stop, key: key))
+        coordinator.willStop(operation)
+        store.surface.launchError = HerdrSurfaceLaunchTestError.rejected
+        store.surface.launchFailureIsRetryable = true
+
+        model.prepareActiveBorrowedHerdrSurface()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(probes.withLock { $0 } == probeCountBeforeStop)
+        #expect(!model.herdrReconnectSupervisorIsRunning)
+        coordinator.finish(operation, outcome: .succeeded)
+        await model.shutdown()
+    }
+
     @Test("manual retry probes the exact running session before attaching")
     func manualRetryRequiresRunningSession() async throws {
         let environment = try environment()
@@ -1421,6 +1462,126 @@ struct WorkspaceHerdrPresentationTests {
         #expect(store.requestedConfigurations.last?.command?.contains(
             "/tmp/frozen-config"
         ) == true)
+        #expect(model.activeBorrowedHerdrSelection == herdr)
+        await model.shutdown()
+    }
+
+    @Test("retryable Herdr surface failure keeps recovering instead of latching")
+    func retryableHerdrSurfaceFailureKeepsRecovering() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in .present }
+        )
+        let herdr = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(herdr)
+        await launchHerdrSurface(model, store: store)
+
+        // Displays vanished between the gate and surface creation. Recovery
+        // must re-arm each time rather than latching after the first failure,
+        // so attempts keep accumulating.
+        store.surface.launchError = HerdrSurfaceLaunchTestError.rejected
+        store.surface.launchFailureIsRetryable = true
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            store.requestedKeys.count >= 3
+        }
+
+        store.surface.launchError = nil
+        store.surface.launchFailureIsRetryable = false
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            model.activeBorrowedHerdrSelection == herdr
+                && !model.herdrReconnectSupervisorIsRunning
+        }
+
+        #expect(model.activeBorrowedHerdrSelection == herdr)
+        await model.shutdown()
+    }
+
+    @Test("recovered Herdr surface failure does not excuse a later exit")
+    func recoveredHerdrSurfaceFailureDoesNotExcuseLaterExit() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in .present }
+        )
+        let herdr = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(herdr)
+        await launchHerdrSurface(model, store: store)
+
+        // A transient surface failure, then a successful reconnect.
+        store.surface.launchError = HerdrSurfaceLaunchTestError.rejected
+        store.surface.launchFailureIsRetryable = true
+        store.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            store.requestedKeys.count >= 2
+        }
+        store.surface.launchError = nil
+        store.surface.launchFailureIsRetryable = false
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            !model.herdrReconnectSupervisorIsRunning
+                && model.activeBorrowedHerdrSelection == herdr
+        }
+        let recoveredCount = store.requestedKeys.count
+
+        // A normal client exit is not a transport failure and must not inherit
+        // the earlier transient failure's licence to retry.
+        store.surface.closeObservers.values.first?(false, 0)
+        try await Task.sleep(for: .milliseconds(150))
+
+        #expect(store.requestedKeys.count == recoveredCount)
+        #expect(!model.herdrReconnectSupervisorIsRunning)
+        await model.shutdown()
+    }
+
+    @Test("no active display holds Herdr recovery without probing the host")
+    func zeroDisplaysHoldsHerdrRecovery() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let probes = Mutex(0)
+        let displays = Mutex(1)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in
+                probes.withLock { $0 += 1 }
+                return .present
+            },
+            activeDisplayCount: { displays.withLock { $0 } }
+        )
+        let herdr = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(herdr)
+        await launchHerdrSurface(model, store: store)
+        probes.withLock { $0 = 0 }
+
+        displays.withLock { $0 = 0 }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor { model.herdrReconnectSupervisorIsRunning }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(store.requestedKeys.count == 1)
+        #expect(probes.withLock { $0 } == 0)
+        #expect(model.herdrReconnectSupervisorIsRunning)
+
+        displays.withLock { $0 = 1 }
+        model.handleDisplayParametersChanged()
+        await waitUntilMainActor { store.requestedKeys.count == 2 }
+
         #expect(model.activeBorrowedHerdrSelection == herdr)
         await model.shutdown()
     }
@@ -1682,6 +1843,7 @@ struct WorkspaceHerdrPresentationTests {
         paneSplitCapabilityProvider: @escaping NativeHerdrSessionCoordinator
             .PaneSplitCapabilityProvider = { _, _, _, _ in .success(nil) },
         paneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
+        activeDisplayCount: @escaping @Sendable () -> Int = { 1 },
         createdSessionDiscoveryDelays: [Duration] = [
             .milliseconds(500),
             .seconds(1),
@@ -1706,6 +1868,7 @@ struct WorkspaceHerdrPresentationTests {
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            activeDisplayCount: activeDisplayCount,
             herdrLifecycleCoordinator: coordinator,
             herdrSSHConnectionSnapshotProvider:
             sshConnectionSnapshotProvider,
@@ -1744,4 +1907,10 @@ final class HerdrDiscoveryQueue: @unchecked Sendable {
         callCount += 1
         return results.isEmpty ? .unavailable : results.removeFirst()
     }
+}
+
+private enum HerdrSurfaceLaunchTestError: LocalizedError {
+    case rejected
+
+    var errorDescription: String? { "Surface launch rejected" }
 }
