@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import stat
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Literal
 
 IMAGE_REPOSITORY = "ghcr.io/kenn-io/ghosthub-sandbox"
@@ -11,6 +13,19 @@ REFERENCE = re.compile(
     r"(?::(?P<tag>candidate-[0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+))?"
     r"@(?P<digest>sha256:[0-9a-f]{64})$"
 )
+
+
+def read_regular_text(path: Path, label: str) -> str:
+    try:
+        mode = path.lstat().st_mode
+    except OSError as error:
+        raise ValueError(f"cannot read {label}: {path}") from error
+    if not stat.S_ISREG(mode):
+        raise ValueError(f"{label} must be a regular file: {path}")
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ValueError(f"cannot read {label}: {path}") from error
 
 
 @dataclass(frozen=True)

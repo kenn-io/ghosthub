@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -121,6 +122,56 @@ class RecordingRunner:
         return CompletedCommand(call, 0, "", "")
 
 
+class EvidenceRunner:
+    def __init__(self, responses: dict[tuple[str, ...], str]) -> None:
+        self.responses = responses
+
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        check: bool = True,
+        capture: bool = True,
+    ) -> CompletedCommand:
+        del check, capture
+        call = tuple(argv)
+        if call not in self.responses:
+            raise AssertionError(f"unexpected command: {call}")
+        return CompletedCommand(call, 0, self.responses[call], "")
+
+
+def test_evidence_reader_rejects_symlink_entry() -> None:
+    commit = "c" * 40
+    path = Path("SANDBOX_IMAGE")
+    tree_endpoint = f"repos/kenn-io/ghosthub/git/trees/{commit}?recursive=1"
+    runner = EvidenceRunner(
+        {
+            ("gh", "api", tree_endpoint): json.dumps(
+                {
+                    "sha": commit,
+                    "url": "https://api.github.com/repos/kenn-io/ghosthub/git/trees/"
+                    + commit,
+                    "tree": [
+                        {
+                            "path": str(path),
+                            "mode": "120000",
+                            "type": "blob",
+                            "sha": "d" * 40,
+                            "size": 13,
+                            "url": "https://api.github.com/repos/kenn-io/ghosthub/git/blobs/"
+                            + "d" * 40,
+                        }
+                    ],
+                    "truncated": False,
+                }
+            ),
+        }
+    )
+
+    with pytest.raises(ValueError, match="regular Git blob"):
+        github._evidence_blob(runner, path, commit)
+
+
 def test_candidate_preparation_builds_scans_and_writes_attestation_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -142,6 +193,7 @@ def test_candidate_preparation_builds_scans_and_writes_attestation_artifacts(
     monkeypatch.setattr(
         github, "verify_image_contract", lambda image, _runner: contracts.append(image)
     )
+
     def fake_scan(_root: Path, archive: Path, _runner: object) -> ScanArtifacts:
         scanned.append(archive)
         return ScanArtifacts(

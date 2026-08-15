@@ -700,6 +700,22 @@ def test_pin_refuses_invalid_report_without_mutation(
     assert not (tmp_path / "SANDBOX_IMAGE").exists()
 
 
+def test_pin_rejects_symlinked_canonical_report(tmp_path: Path) -> None:
+    write_inputs(tmp_path)
+    report = write_report(tmp_path)
+    target = tmp_path / "report-target.json"
+    report.rename(target)
+    report.symlink_to(target)
+    candidate = (
+        "ghcr.io/kenn-io/ghosthub-sandbox:candidate-" + "b" * 40 + "@" + ARM64_DIGEST
+    )
+
+    with pytest.raises(ValueError, match="regular file"):
+        pin_image(tmp_path, candidate)
+
+    assert not (tmp_path / "SANDBOX_IMAGE").exists()
+
+
 def test_pin_reevaluates_report_findings(tmp_path: Path) -> None:
     write_inputs(tmp_path)
     path = write_report(tmp_path)
@@ -2018,14 +2034,47 @@ def test_dispatch_promotion_uses_default_branch_code_and_exact_head(
     assert dispatch in runner.calls
 
 
+def test_dispatch_promotion_rejects_symlinked_pin(tmp_path: Path) -> None:
+    head = "d" * 40
+    image = "ghcr.io/kenn-io/ghosthub-sandbox@" + ARM64_DIGEST
+    target = tmp_path / "pin-target"
+    target.write_text(image + "\n")
+    (tmp_path / "SANDBOX_IMAGE").symlink_to(target)
+    responses = {
+        ("git", "-C", str(tmp_path), "status", "--porcelain"): "",
+        (
+            "git",
+            "-C",
+            str(tmp_path),
+            "symbolic-ref",
+            "--short",
+            "HEAD",
+        ): "sandbox-pin\n",
+        ("git", "-C", str(tmp_path), "rev-parse", "HEAD"): head + "\n",
+        ("git", "-C", str(tmp_path), "rev-parse", "@{upstream}"): head + "\n",
+    }
+
+    with pytest.raises(ValueError, match="regular file"):
+        dispatch_promotion(
+            tmp_path,
+            ImageReference.parse(image),
+            "0.1.0",
+            ScriptedRunner(responses),
+        )
+
+
 def test_trusted_evidence_requires_exact_open_pull_request_diff(tmp_path: Path) -> None:
     write_inputs(tmp_path)
     report_path = write_report(tmp_path)
     report_bytes = report_path.read_bytes()
     commit = "d" * 40
     report_name = report_path.relative_to(tmp_path).as_posix()
+    pin_bytes = ("ghcr.io/kenn-io/ghosthub-sandbox@" + ARM64_DIGEST + "\n").encode()
+    pin_blob = "e" * 40
+    report_blob = "f" * 40
     pulls_endpoint = f"repos/kenn-io/ghosthub/commits/{commit}/pulls"
     files_endpoint = "repos/kenn-io/ghosthub/pulls/42/files?per_page=100"
+    tree_endpoint = f"repos/kenn-io/ghosthub/git/trees/{commit}?recursive=1"
     responses = {
         ("git", "-C", str(tmp_path), "rev-parse", "HEAD"): "a" * 40 + "\n",
         ("gh", "api", pulls_endpoint): json.dumps(
@@ -2041,26 +2090,56 @@ def test_trusted_evidence_requires_exact_open_pull_request_diff(tmp_path: Path) 
         ("gh", "api", "--paginate", "--slurp", files_endpoint): json.dumps(
             [[{"filename": "SANDBOX_IMAGE"}, {"filename": report_name}]]
         ),
-        (
-            "gh",
-            "api",
-            f"repos/kenn-io/ghosthub/contents/SANDBOX_IMAGE?ref={commit}",
-        ): json.dumps(
+        ("gh", "api", tree_endpoint): json.dumps(
             {
+                "sha": "0" * 40,
+                "url": "https://api.github.com/repos/kenn-io/ghosthub/git/trees/"
+                + "0" * 40,
+                "tree": [
+                    {
+                        "path": "SANDBOX_IMAGE",
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": pin_blob,
+                        "size": len(pin_bytes),
+                        "url": "https://api.github.com/repos/kenn-io/ghosthub/git/blobs/"
+                        + pin_blob,
+                    },
+                    {
+                        "path": report_name,
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": report_blob,
+                        "size": len(report_bytes),
+                        "url": "https://api.github.com/repos/kenn-io/ghosthub/git/blobs/"
+                        + report_blob,
+                    },
+                ],
+                "truncated": False,
+            }
+        ),
+        ("gh", "api", f"repos/kenn-io/ghosthub/git/blobs/{pin_blob}"): json.dumps(
+            {
+                "sha": pin_blob,
                 "encoding": "base64",
-                "content": base64.b64encode(
-                    ("ghcr.io/kenn-io/ghosthub-sandbox@" + ARM64_DIGEST + "\n").encode()
-                ).decode(),
+                "content": base64.b64encode(pin_bytes).decode(),
+                "size": len(pin_bytes),
+                "url": "https://api.github.com/repos/kenn-io/ghosthub/git/blobs/"
+                + pin_blob,
             }
         ),
         (
             "gh",
             "api",
-            f"repos/kenn-io/ghosthub/contents/{report_name}?ref={commit}",
+            f"repos/kenn-io/ghosthub/git/blobs/{report_blob}",
         ): json.dumps(
             {
+                "sha": report_blob,
                 "encoding": "base64",
                 "content": base64.b64encode(report_bytes).decode(),
+                "size": len(report_bytes),
+                "url": "https://api.github.com/repos/kenn-io/ghosthub/git/blobs/"
+                + report_blob,
             }
         ),
     }

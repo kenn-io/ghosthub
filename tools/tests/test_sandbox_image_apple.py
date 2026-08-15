@@ -62,6 +62,8 @@ def provider_responses(
         ("Linux", "arm64", "1.2.2"),
         ("Darwin", "x86_64", "1.2.2"),
         ("Darwin", "arm64", "1.2.3"),
+        ("Darwin", "arm64", "1.2.2-beta"),
+        ("Darwin", "arm64", "1.2.2.1"),
     ],
 )
 def test_provider_rejects_unsupported_host_before_create(

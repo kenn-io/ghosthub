@@ -22,7 +22,7 @@ from .docker import (
     resolve_tag,
     verify_image_contract,
 )
-from .model import IMAGE_REPOSITORY, ImageReference
+from .model import IMAGE_REPOSITORY, ImageReference, read_regular_text
 from .policy import evaluate_findings, load_dispositions
 from .process import Runner
 from .report import (
@@ -335,7 +335,7 @@ def dispatch_promotion(
         raise ValueError("promotion version must be X.Y.Z")
     head = local_promotion_head(root, runner)
     pin = ImageReference.parse_runtime_pin(
-        (root / "SANDBOX_IMAGE").read_text(encoding="utf-8").strip()
+        read_regular_text(root / "SANDBOX_IMAGE", "SANDBOX_IMAGE").strip()
     )
     if pin.digest != image.digest:
         raise ValueError("promotion image does not match SANDBOX_IMAGE")
@@ -389,17 +389,54 @@ def list_ruleset_summaries(runner: Runner) -> list[object]:
 
 
 def _evidence_blob(runner: Runner, path: Path, commit: str) -> bytes:
-    endpoint = f"repos/kenn-io/ghosthub/contents/{path.as_posix()}?ref={commit}"
-    payload = _api_json(runner, endpoint)
-    if not isinstance(payload, dict) or payload.get("encoding") != "base64":
+    tree_endpoint = f"repos/kenn-io/ghosthub/git/trees/{commit}?recursive=1"
+    tree_payload = _api_json(runner, tree_endpoint)
+    if (
+        not isinstance(tree_payload, dict)
+        or tree_payload.get("truncated") is not False
+        or not isinstance(tree_payload.get("tree"), list)
+    ):
+        raise ValueError("GitHub evidence tree has an invalid response")
+    matches = [
+        entry
+        for entry in tree_payload["tree"]
+        if isinstance(entry, dict) and entry.get("path") == path.as_posix()
+    ]
+    if len(matches) != 1:
+        raise ValueError("GitHub evidence path is missing or ambiguous")
+    entry = matches[0]
+    blob_sha = entry.get("sha")
+    if (
+        entry.get("type") != "blob"
+        or entry.get("mode") != "100644"
+        or not isinstance(blob_sha, str)
+        or COMMIT_PATTERN.fullmatch(blob_sha) is None
+    ):
+        raise ValueError("GitHub evidence path must be a regular Git blob")
+    payload = _api_json(runner, f"repos/kenn-io/ghosthub/git/blobs/{blob_sha}")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("sha") != blob_sha
+        or payload.get("encoding") != "base64"
+    ):
         raise ValueError("GitHub evidence blob has an invalid response")
     content = payload.get("content")
-    if not isinstance(content, str) or len(content) > 4_000_000:
+    size = payload.get("size")
+    if (
+        not isinstance(content, str)
+        or not isinstance(size, int)
+        or size < 0
+        or size > 3_000_000
+        or len(content) > 4_000_000
+    ):
         raise ValueError("GitHub evidence blob is missing or too large")
     try:
-        return base64.b64decode("".join(content.split()), validate=True)
+        decoded = base64.b64decode("".join(content.split()), validate=True)
     except ValueError as error:
         raise ValueError("GitHub evidence blob is not valid base64") from error
+    if len(decoded) != size:
+        raise ValueError("GitHub evidence blob size does not match")
+    return decoded
 
 
 def verify_production_environment(

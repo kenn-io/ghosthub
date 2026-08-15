@@ -7,7 +7,14 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from .model import IMAGE_REPOSITORY, CheckResult, Disposition, Finding, ImageReference
+from .model import (
+    IMAGE_REPOSITORY,
+    CheckResult,
+    Disposition,
+    Finding,
+    ImageReference,
+    read_regular_text,
+)
 from .policy import evaluate_findings
 
 EXPECTED_ATTESTATIONS = frozenset(
@@ -87,8 +94,8 @@ class VettingReport:
     @classmethod
     def load(cls, path: Path) -> VettingReport:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            payload = json.loads(read_regular_text(path, "sandbox image report"))
+        except json.JSONDecodeError as error:
             raise ValueError(f"cannot load sandbox image report: {path}") from error
         return cls.from_json(payload)
 

@@ -420,11 +420,22 @@ jobs:
           authorize_pr() {
             local number="$1"
             local status_sha="$2"
+            local expected_head_sha="${3:-}"
+            local expected_base_sha="${4:-}"
             if ! load_pr "$number"; then
               return 1
             fi
             local detail="$RUNNER_TEMP/pr-$number.json"
             local files="$RUNNER_TEMP/pr-$number-files.json"
+            local head_sha
+            local base_sha
+            head_sha="$(jq -r '.head.sha' "$detail")"
+            base_sha="$(jq -r '.base.sha' "$detail")"
+            if [[ -n "$expected_head_sha" && "$head_sha" != "$expected_head_sha" ]] ||
+              [[ -n "$expected_base_sha" && "$base_sha" != "$expected_base_sha" ]]; then
+              echo "Pull request $number no longer matches the merge signal; leaving it pending." >&2
+              return 1
+            fi
             local relevance
             if ! relevance="$(relevant_files "$files")"; then
               echo "Pull request $number file relevance is invalid; leaving it pending." >&2
@@ -435,13 +446,9 @@ jobs:
                 'Sandbox image promotion not required'
               return
             fi
-            local head_sha
-            local base_sha
             local run
             local run_id
             local run_created_at
-            head_sha="$(jq -r '.head.sha' "$detail")"
-            base_sha="$(jq -r '.base.sha' "$detail")"
             run="$(promotion_run "$head_sha" "$base_sha")"
             run_id="$(jq -r '.id // ""' <<< "$run")"
             run_created_at="$(jq -r '.created_at // ""' <<< "$run")"
@@ -528,14 +535,23 @@ jobs:
               (.workflow_run.head_branch | startswith("gh-readonly-queue/main/")) and
               (.workflow_run.head_sha | test("^[0-9a-f]{40}$")) and
               (.workflow_run.pull_requests | length) == 1 and
-              .workflow_run.pull_requests[0].base.ref == "main"
+              .workflow_run.pull_requests[0].base.ref == "main" and
+              (.workflow_run.pull_requests[0].base.sha |
+                test("^[0-9a-f]{40}$")) and
+              (.workflow_run.pull_requests[0].head.sha |
+                test("^[0-9a-f]{40}$"))
             ' "$GITHUB_EVENT_PATH" > /dev/null; then
               echo "Merge-group signal identity is invalid." >&2
               exit 1
             fi
             number="$(jq -r '.workflow_run.pull_requests[0].number' \
               "$GITHUB_EVENT_PATH")"
-            if ! authorize_pr "$number" "$merge_sha"; then
+            signal_head_sha="$(jq -r '.workflow_run.pull_requests[0].head.sha' \
+              "$GITHUB_EVENT_PATH")"
+            signal_base_sha="$(jq -r '.workflow_run.pull_requests[0].base.sha' \
+              "$GITHUB_EVENT_PATH")"
+            if ! authorize_pr \
+              "$number" "$merge_sha" "$signal_head_sha" "$signal_base_sha"; then
               echo "Merge group remains pending." >&2
               exit 1
             fi
@@ -562,6 +578,8 @@ jobs:
                 (now - (.created_at | fromdateiso8601) <= 86400) and
                 (.pull_requests | length) == 1 and
                 .pull_requests[0].base.ref == "main" and
+                (.pull_requests[0].base.sha | test("^[0-9a-f]{40}$")) and
+                (.pull_requests[0].head.sha | test("^[0-9a-f]{40}$")) and
                 (.pull_requests[0].number as $number |
                   ($open_numbers | index($number)) != null)
               )] |
@@ -572,11 +590,14 @@ jobs:
               merge_sha="$(jq -r '.head_sha' <<< "$merge_run")"
               merge_created_at="$(jq -r '.created_at' <<< "$merge_run")"
               number="$(jq -r '.pull_requests[0].number' <<< "$merge_run")"
+              signal_head_sha="$(jq -r '.pull_requests[0].head.sha' <<< "$merge_run")"
+              signal_base_sha="$(jq -r '.pull_requests[0].base.sha' <<< "$merge_run")"
               if ! prior_merge_authorization "$merge_sha" "$merge_created_at"; then
                 echo "Merge group $merge_sha remains pending." >&2
                 continue
               fi
-              if ! authorize_pr "$number" "$merge_sha"; then
+              if ! authorize_pr \
+                "$number" "$merge_sha" "$signal_head_sha" "$signal_base_sha"; then
                 echo "Merge group $merge_sha remains pending." >&2
               fi
             done

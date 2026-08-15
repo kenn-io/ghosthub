@@ -32,7 +32,13 @@ from .github import (
     verify_candidate_attestations,
     verify_promotion_evidence,
 )
-from .model import IMAGE_REPOSITORY, CheckResult, Finding, ImageReference
+from .model import (
+    IMAGE_REPOSITORY,
+    CheckResult,
+    Finding,
+    ImageReference,
+    read_regular_text,
+)
 from .policy import evaluate_findings, load_dispositions
 from .process import Runner
 from .report import (
@@ -59,10 +65,7 @@ class ImageStatus:
 
 
 def _read_exact(path: Path, pattern: re.Pattern[str], label: str) -> str:
-    try:
-        value = path.read_text(encoding="utf-8").strip()
-    except OSError as error:
-        raise ValueError(f"cannot read {label}: {path}") from error
+    value = read_regular_text(path, label).strip()
     if pattern.fullmatch(value) is None:
         raise ValueError(f"invalid {label}: {value}")
     return value
@@ -211,7 +214,9 @@ def status_image(root: Path, *, runner: Runner) -> ImageStatus:
         return ImageStatus(
             version, "pending", "pending", "pending", "pending", setup
         )
-    pin = ImageReference.parse_runtime_pin(pin_path.read_text(encoding="utf-8").strip())
+    pin = ImageReference.parse_runtime_pin(
+        read_regular_text(pin_path, "SANDBOX_IMAGE").strip()
+    )
     report = root / "images/sandbox/reports" / f"{pin.digest.replace(':', '-')}.json"
     candidate = "unknown"
     production = "unknown"
@@ -274,7 +279,9 @@ def maintenance_image(root: Path, *, runner: Runner) -> tuple[str, bool]:
     pin_path = root / "SANDBOX_IMAGE"
     if not pin_path.exists():
         return "Sandbox image not initialized", False
-    pin = ImageReference.parse_runtime_pin(pin_path.read_text(encoding="utf-8").strip())
+    pin = ImageReference.parse_runtime_pin(
+        read_regular_text(pin_path, "SANDBOX_IMAGE").strip()
+    )
     report = VettingReport.load(canonical_report_path(root, pin.digest))
     expected = ImageReference.parse(
         f"{pin.repository}:{report.candidate_tag}@{pin.digest}"

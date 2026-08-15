@@ -16,7 +16,9 @@ PURPOSE_LABEL = "io.ghosthub.purpose"
 DIGEST_LABEL = "io.ghosthub.digest"
 VET_PURPOSE = "sandbox-image-vet"
 PROVIDER_VERSION = "1.2.2"
-PROVIDER_PATTERN = re.compile(r"^container CLI version ([0-9]+\.[0-9]+\.[0-9]+)\b")
+PROVIDER_PATTERN = re.compile(
+    r"^container CLI version ([0-9]+\.[0-9]+\.[0-9]+)(?=\s|$)"
+)
 DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 NAME_PATTERN = re.compile(r"ghosthub-vet-[0-9a-f]{12}-[0-9a-f]{6}")
 
