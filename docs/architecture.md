@@ -607,7 +607,20 @@ Ghosthub supplies keepalives. Remote shell commands are one-shot; each retained
 presentation owns its own transport-status-255 recovery, probe scheduling,
 authentication and host-key escalation state, and attach-only client
 replacement. Inactive presentations remain supervised. Tmux owns all windows,
-panes, history, input, rendering, and server-side lifetime.
+panes, history, input, rendering, and server-side lifetime. Ghosthub
+best-effort enables the exact POSIX session's `mouse` option before attachment
+so wheel input reaches tmux copy mode under a vanilla configuration. This is a
+shared session option visible to every client; Ghosthub does not replace tmux's
+mouse bindings. Native Windows/psmux remains unchanged.
+
+For a Command-modified pointer interaction, Ghosthub adds libghostty's Shift
+override for mouse capture only at the embedded input boundary. Pointer
+movement and Command modifier changes use the same override as the left-button
+events, so link highlighting and activation both bypass tmux. Modifier changes
+reuse the last tracked in-window pointer position instead of the keyboard
+event's unreliable coordinates. Libghostty removes the override before
+matching its Command link binding, while all other tmux mouse input remains
+native.
 
 Cmd-D and Cmd-Shift-D provide Ghostty-style split-right and split-down actions,
 also exposed in the File menu. A tmux attachment requires tmux 3.4 or newer.
@@ -667,8 +680,9 @@ terminal defaults and supply the selected foreground and background to existing
 windows in the exact session. Tmux shares the result with every attached client.
 The best-effort styling can never prevent attachment. Native Windows/psmux
 sessions do not offer either shared styling path. Tmux still owns all interaction
-behavior; Ghosthub does not modify its prefix, key tables, mouse mode,
-window/pane commands, history, or layout.
+behavior. Other than enabling its session mouse option for POSIX attachments,
+Ghosthub does not modify its prefix, key tables, mouse bindings, window/pane
+commands, history, or layout.
 
 An explicit New Tmux Session action is the sole boundary where Ghosthub
 creates a bare tmux session itself. For a user-supplied exact name, local

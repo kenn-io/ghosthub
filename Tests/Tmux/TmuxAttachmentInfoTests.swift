@@ -110,8 +110,72 @@ struct TmuxAttachmentInfoTests {
         #expect(CommandHost.local.displayName == "localhost")
     }
 
-    @Test("local attachment leaves tmux presentation unchanged by default")
-    func localAttachCommandLeavesTmuxPresentationUnchanged() {
+    @Test("every POSIX attachment enables tmux mouse handling")
+    func posixAttachmentsEnableTmuxMouseHandling() {
+        let local = TmuxAttachmentInfo(
+            sessionName: "docbank",
+            host: .local
+        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+        let localWorktree = TmuxAttachmentInfo(
+            sessionName: "kwt-docbank",
+            host: .local,
+            workspacePath: "/worktrees/docbank"
+        ).attachCommand(
+            tmuxPath: "/opt/bin/tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+        let localCreate = TmuxAttachmentInfo(
+            sessionName: "new-docbank",
+            host: .local,
+            launchMode: .create
+        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+        let remoteHost = CommandHost.ssh(SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        ))
+        let remote = TmuxAttachmentInfo(
+            sessionName: "docbank",
+            host: remoteHost
+        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+        let remoteWorktree = TmuxAttachmentInfo(
+            sessionName: "kwt-docbank",
+            host: remoteHost,
+            workspacePath: "/worktrees/docbank"
+        ).attachCommand(
+            tmuxPath: "/opt/bin/tmux",
+            remoteKwtCommandPrelude:
+            "ghosthub_kwt_path=\"$HOME/.ghosthub/helpers/kwt/pinned/kwt\"; "
+        )
+        let remoteCreate = TmuxAttachmentInfo(
+            sessionName: "new-docbank",
+            host: remoteHost,
+            launchMode: .create
+        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+        let remoteProfile = TmuxAttachmentInfo(
+            sessionName: "profile-docbank",
+            host: remoteHost,
+            launchMode: .create,
+            initialCommand: "exec codex"
+        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+
+        for command in [
+            local,
+            localWorktree,
+            localCreate,
+            remote,
+            remoteWorktree,
+            remoteCreate,
+            remoteProfile,
+        ] {
+            #expect(command.contains("set-option"))
+            #expect(command.contains("mouse"))
+            #expect(command.contains("on"))
+        }
+    }
+
+    @Test("local attachment otherwise leaves presentation unchanged")
+    func localAttachCommandOtherwiseLeavesPresentationUnchanged() {
         let info = TmuxAttachmentInfo(
             sessionName: "doc bank's work",
             host: .local
@@ -122,7 +186,6 @@ struct TmuxAttachmentInfoTests {
         )
 
         #expect(command.contains("unset TMUX TMUX_PANE"))
-        #expect(!command.contains("set-option"))
         #expect(!command.contains("status-style"))
         #expect(command.contains("exec"))
         #expect(command.contains("attach-session"))
@@ -131,7 +194,6 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("capture-pane"))
         #expect(!command.contains("bind-key"))
         #expect(!command.contains("unbind-key"))
-        #expect(!command.contains("'mouse'"))
     }
 
     @Test("presentation styles target only the exact selected session")
@@ -146,7 +208,7 @@ struct TmuxAttachmentInfoTests {
         ).attachCommand(tmuxPath: "/opt/homebrew/bin/tmux")
 
         #expect(
-            command.components(separatedBy: "=alpha:").count - 1 == 4
+            command.components(separatedBy: "=alpha:").count - 1 == 5
         )
     }
 
@@ -172,15 +234,14 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'fg=#3B4851,bg=#FFFFFF'"))
     }
 
-    @Test("follow-config leaves tmux pane defaults unchanged")
-    func followConfigLeavesPaneDefaultsUnchanged() {
+    @Test("follow-config leaves tmux color defaults unchanged")
+    func followConfigLeavesTmuxColorDefaultsUnchanged() {
         let command = TmuxAttachmentInfo(
             sessionName: "docbank",
             host: .local
         ).attachCommand(tmuxPath: "/opt/homebrew/bin/tmux")
 
         #expect(!command.contains("list-windows"))
-        #expect(!command.contains("set-option"))
         #expect(!command.contains("status-style"))
         #expect(!command.contains("window-style"))
         #expect(!command.contains("window-active-style"))

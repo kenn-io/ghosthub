@@ -115,6 +115,9 @@ public final class LibghosttyRuntime: ObservableObject,
     }
 
     static let osc52ClipboardWriteMIME = "application/x-ghosthub-osc52"
+    static var urlOpener: (URL) -> Bool = { url in
+        NSWorkspace.shared.open(url)
+    }
 
     public static let shared = LibghosttyRuntime(
         pipeline: LibghosttyConfigPipeline(
@@ -739,7 +742,7 @@ public final class LibghosttyRuntime: ObservableObject,
         }
     }
 
-    fileprivate nonisolated static func handleAction(
+    nonisolated static func handleAction(
         app: ghostty_app_t?,
         target: ghostty_target_s,
         action: ghostty_action_s
@@ -838,10 +841,7 @@ public final class LibghosttyRuntime: ObservableObject,
             return true
 
         case GHOSTTY_ACTION_OPEN_URL:
-            let openURLAction = action.action.open_url
-            DispatchQueue.main.async {
-                Self.openURL(openURLAction)
-            }
+            handleOpenURL(action.action.open_url)
             return true
 
         case GHOSTTY_ACTION_NEW_SPLIT:
@@ -1246,9 +1246,22 @@ public final class LibghosttyRuntime: ObservableObject,
         )
     }
 
-    @MainActor
-    private static func openURL(_ value: ghostty_action_open_url_s) {
-        let rawURL = String(cString: value.url)
+    nonisolated static func handleOpenURL(
+        _ value: ghostty_action_open_url_s
+    ) {
+        let rawURL = String(
+            decoding: UnsafeRawBufferPointer(
+                start: value.url,
+                count: Int(value.len)
+            ),
+            as: UTF8.self
+        )
+        DispatchQueue.main.async {
+            openURL(rawURL)
+        }
+    }
+
+    private static func openURL(_ rawURL: String) {
         let url: URL
         if let candidate = URL(string: rawURL), candidate.scheme != nil {
             url = candidate
@@ -1256,7 +1269,7 @@ public final class LibghosttyRuntime: ObservableObject,
             url = URL(fileURLWithPath: rawURL)
         }
 
-        NSWorkspace.shared.open(url)
+        _ = urlOpener(url)
     }
 }
 

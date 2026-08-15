@@ -9,6 +9,8 @@ public enum TmuxAttachmentLaunchMode: String, Codable, Equatable, Sendable {
 
 /// An ordinary tmux client launched inside a libghostty terminal surface.
 /// Tmux owns rendering, windows, panes, history, input, and process lifetime.
+/// Ghosthub enables tmux's session mouse option before presenting the client so
+/// wheel scrolling reaches tmux history without requiring user configuration.
 public struct TmuxAttachmentInfo: Equatable, Sendable {
     public let sessionName: String
     public let host: CommandHost
@@ -174,7 +176,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     kwtPath, "pr", "attach", protectedWorkspacePath,
                 ].map(shellQuotedCommandArgument).joined(separator: " ")
                 commands.append(
-                    kwtAttachWithPresentationCommand(
+                    kwtAttachWithSessionSetupCommand(
                         protectedAttach,
                         tmuxPath: tmuxPath
                     )
@@ -201,12 +203,13 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     // A detached `--start-session` phase is unsafe when the
                     // user's tmux server enables destroy-unattached.
                     commands.append(
-                        kwtAttachWithPresentationCommand(
+                        kwtAttachWithSessionSetupCommand(
                             openWorkspace,
                             tmuxPath: tmuxPath
                         )
                     )
                 } else {
+                    commands.append(mouseSetupCommand(tmuxPath: tmuxPath))
                     commands.append(
                         presentationCommand?.bestEffortCommand(
                             tmuxPath: tmuxPath
@@ -216,6 +219,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 }
             }
         case .attachOnly:
+            commands.append(mouseSetupCommand(tmuxPath: tmuxPath))
             commands.append(
                 presentationCommand?.bestEffortCommand(
                     tmuxPath: tmuxPath
@@ -249,6 +253,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         if let initialCommand, !initialCommand.isEmpty {
             arguments.append(initialCommand)
         }
+        arguments = appendingMouseOption(to: arguments)
         if let presentationCommand {
             arguments = presentationCommand.appendingOptions(to: arguments)
         }
@@ -267,19 +272,22 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     }
 
     /// Kwt establishes or repairs the complete session before starting its
-    /// tmux client. When Ghosthub owns presentation, run kwt as the foreground
-    /// terminal's background child just long enough to observe a client on
-    /// this launch's PTY, then style the finished session and wait on the same
-    /// client process.
+    /// tmux client. Run kwt as the foreground terminal's background child just
+    /// long enough to observe a client on this launch's PTY, then enable mouse
+    /// handling, apply any presentation style, and wait on the same client.
     /// This preserves kwt's atomic create-and-attach path under
     /// `destroy-unattached` while ensuring repair-created windows are included.
-    private func kwtAttachWithPresentationCommand(
+    private func kwtAttachWithSessionSetupCommand(
         _ kwtCommand: String,
         tmuxPath: String
     ) -> String {
-        guard let presentationCommand else {
-            return host.isRemote ? kwtCommand : "exec \(kwtCommand)"
+        var setupCommands = [mouseSetupCommand(tmuxPath: tmuxPath)]
+        if let presentationCommand {
+            setupCommands.append(
+                presentationCommand.bestEffortCommand(tmuxPath: tmuxPath)
+            )
         }
+        let sessionSetup = setupCommands.joined(separator: "; ")
         let listClientTTYs = tmuxArguments(
             tmuxPath,
             "list-clients", "-t", "=\(sessionName)",
@@ -299,7 +307,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 + "[ -n \"$ghosthub_kwt_client_ready\" ] && break; "
                 + "sleep 0.01; done",
             "if [ -n \"$ghosthub_kwt_client_ready\" ]; then "
-                + "\(presentationCommand.bestEffortCommand(tmuxPath: tmuxPath)); fi",
+                + "\(sessionSetup); fi",
             "wait \"$ghosthub_kwt_pid\"",
             "ghosthub_kwt_status=$?",
             "exec 3<&-",
@@ -329,7 +337,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 let kwtAttach = remoteKwtCommandPrelude
                     + "\"$ghosthub_kwt_path\" 'pr' 'attach' "
                     + shellQuotedCommandArgument(protectedWorkspacePath)
-                protectedAttach = kwtAttachWithPresentationCommand(
+                protectedAttach = kwtAttachWithSessionSetupCommand(
                     kwtAttach,
                     tmuxPath: tmuxPath
                 )
@@ -349,6 +357,9 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         var remoteAttachCommands = ["unset TMUX TMUX_PANE"]
         if includesPresentation,
            protectedWorkspacePath == nil || launchMode == .attachOnly {
+            remoteAttachCommands.append(
+                mouseSetupCommand(tmuxPath: tmuxPath)
+            )
             remoteAttachCommands.append(
                 presentationCommand?.bestEffortCommand(
                     tmuxPath: tmuxPath
@@ -395,7 +406,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             let kwtOpen = remoteKwtCommandPrelude
                 + "\"$ghosthub_kwt_path\" 'open' "
                 + shellQuotedCommandArgument(workspacePath)
-            remoteOpen = kwtAttachWithPresentationCommand(
+            remoteOpen = kwtAttachWithSessionSetupCommand(
                 kwtOpen,
                 tmuxPath: tmuxPath
             )
@@ -547,16 +558,18 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     tmuxPath: tmuxPath,
                     workingDirectory: workingDirectory
                 )
+            // Session setup is best effort and must not mask failed creation:
+            // exit with the creation status first, then report success
+            // regardless of mouse or styling outcomes.
+            remoteCreate += " || exit $?; "
+                + mouseSetupCommand(tmuxPath: tmuxPath)
             if let presentationCommand {
-                // Styling is best effort and must not mask a failed creation:
-                // exit with the creation status first, then report success
-                // regardless of styling outcomes.
-                remoteCreate += " || exit $?; "
+                remoteCreate += "; "
                     + presentationCommand.bestEffortCommand(
                         tmuxPath: tmuxPath
                     )
-                    + "; exit 0"
             }
+            remoteCreate += "; exit 0"
             remoteCreate = accountLoginShellCommand(remoteCreate)
         }
         let createOnce = shellCommand(
@@ -598,6 +611,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             "new-session", "-A", "-E", "-s", sessionName
         ) + (workingDirectory.map { ["-c", $0] } ?? [])
         createArguments.append(initialCommand)
+        createArguments = appendingMouseOption(to: createArguments)
         if let presentationCommand {
             createArguments = presentationCommand.appendingOptions(
                 to: createArguments
@@ -636,6 +650,26 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             .map(shellQuotedCommandArgument).joined(separator: " ")
         return "\(hasSession) 2>/dev/null || "
             + "\(createSession) || \(hasSession)"
+    }
+
+    private func appendingMouseOption(to arguments: [String]) -> [String] {
+        arguments + [
+            ";", "set-option", "-t", exactSessionTarget,
+            "mouse", "on",
+        ]
+    }
+
+    private func mouseSetupCommand(tmuxPath: String) -> String {
+        let command = tmuxArguments(
+            tmuxPath,
+            "set-option", "-t", exactSessionTarget,
+            "mouse", "on"
+        ).map(shellQuotedCommandArgument).joined(separator: " ")
+        return "\(command) >/dev/null 2>&1 || :"
+    }
+
+    private var exactSessionTarget: String {
+        "=\(sessionName):"
     }
 
     private func recordedClientTTYCommand(

@@ -1294,6 +1294,11 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         case 0x37, 0x36: mod = GHOSTTY_MODS_SUPER.rawValue
         default: return
         }
+        defer {
+            if mod == GHOSTTY_MODS_SUPER.rawValue {
+                mouseEventHandler.handleModifierFlagsChanged(event)
+            }
+        }
 
         if hasMarkedText() {
             return

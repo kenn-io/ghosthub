@@ -45,6 +45,15 @@ Palette with ++shift+cmd+p++. Ghosthub opens an ordinary local or SSH client
 for the selected backend. Herdr receives the complete terminal and continues
 to own its workspaces, tabs, panes, history, and key bindings.
 
+For POSIX tmux sessions, Ghosthub enables tmux mouse mode on attachment. Wheel
+scrolling therefore opens and navigates tmux copy mode even when the session
+uses tmux's vanilla configuration. Mouse mode is a shared session option, so
+other attached clients see it too; tmux's own mouse bindings remain in charge.
+Native Windows/psmux keeps its existing mouse-reporting limitation.
+
+Hold ++cmd++ while pointing at a highlighted terminal link, then click to open
+it in the default macOS application.
+
 Switching to another host, worktree, or session hides an opened tmux terminal
 without detaching it. Each workspace keeps every tmux session you explicitly
 open connected, and returning to one reuses the same terminal and client.

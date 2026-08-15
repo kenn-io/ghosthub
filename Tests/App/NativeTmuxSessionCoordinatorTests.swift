@@ -445,7 +445,7 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!command.contains("'open'"))
     }
 
-    @Test("ordinary worktree path attaches directly through kwt")
+    @Test("ordinary worktree attachment enables mouse after kwt connects")
     func ordinaryWorktreeUsesKwtAttachment() async throws {
         let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
@@ -475,7 +475,10 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(command.contains("Helpers/kwt"))
         #expect(command.contains("open"))
         #expect(command.contains("/worktrees/widget"))
-        #expect(!command.contains("ghosthub_kwt_pid"))
+        #expect(command.contains("ghosthub_kwt_pid"))
+        #expect(command.contains("'set-option'"))
+        #expect(command.contains("'=kwt-widget-feature:'"))
+        #expect(command.contains("mouse"))
         #expect(!command.contains("@ghosthub_kwt_presentation_ready"))
         #expect(!command.contains("--start-session"))
         #expect(!command.contains("attach-session"))
