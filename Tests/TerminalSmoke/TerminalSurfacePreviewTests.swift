@@ -481,6 +481,120 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         }
     }
 
+    func testLeftMouseGestureKeepsInitialCaptureRouteWhenCommandChanges() throws {
+        let originalButtonSender = TerminalMouseEventHandler.mouseButtonSender
+        let originalPositionSender =
+            TerminalMouseEventHandler.mousePositionSender
+        var buttonEvents: [(UInt32, UInt32)] = []
+        var positionModifiers: [UInt32] = []
+        TerminalMouseEventHandler.mouseButtonSender = {
+            _, action, button, mods in
+            if button.rawValue == GHOSTTY_MOUSE_LEFT.rawValue {
+                buttonEvents.append((action.rawValue, mods.rawValue))
+            }
+            return true
+        }
+        TerminalMouseEventHandler.mousePositionSender = {
+            _, _, _, mods in
+            positionModifiers.append(mods.rawValue)
+        }
+        defer {
+            TerminalMouseEventHandler.mouseButtonSender = originalButtonSender
+            TerminalMouseEventHandler.mousePositionSender =
+                originalPositionSender
+        }
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        let mouseMoved = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [],
+            timestamp: 1,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 0,
+            pressure: 0
+        ))
+        let mouseDown = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [],
+            timestamp: 1.1,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 1,
+            pressure: 1
+        ))
+        let commandChanged = try XCTUnwrap(NSEvent.keyEvent(
+            with: .flagsChanged,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: 1.2,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x37
+        ))
+        let mouseDragged = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDragged,
+            location: NSPoint(x: 40, y: 40),
+            modifierFlags: [.command],
+            timestamp: 1.3,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 3,
+            clickCount: 1,
+            pressure: 1
+        ))
+        let mouseUp = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: NSPoint(x: 40, y: 40),
+            modifierFlags: [.command],
+            timestamp: 1.4,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 4,
+            clickCount: 1,
+            pressure: 0
+        ))
+
+        view.mouseMoved(with: mouseMoved)
+        view.mouseDown(with: mouseDown)
+        positionModifiers.removeAll()
+        view.flagsChanged(with: commandChanged)
+        view.mouseDragged(with: mouseDragged)
+        view.mouseUp(with: mouseUp)
+
+        XCTAssertEqual(buttonEvents.count, 2)
+        XCTAssertEqual(buttonEvents[0].0, GHOSTTY_MOUSE_PRESS.rawValue)
+        XCTAssertEqual(buttonEvents[1].0, GHOSTTY_MOUSE_RELEASE.rawValue)
+        XCTAssertEqual(
+            buttonEvents[0].1 & GHOSTTY_MODS_SHIFT.rawValue,
+            0
+        )
+        XCTAssertEqual(
+            buttonEvents[1].1 & GHOSTTY_MODS_SHIFT.rawValue,
+            0
+        )
+        XCTAssertEqual(
+            buttonEvents[1].1 & GHOSTTY_MODS_SUPER.rawValue,
+            GHOSTTY_MODS_SUPER.rawValue
+        )
+        XCTAssertEqual(positionModifiers.count, 2)
+        for modifiers in positionModifiers {
+            XCTAssertEqual(modifiers & GHOSTTY_MODS_SHIFT.rawValue, 0)
+            XCTAssertEqual(
+                modifiers & GHOSTTY_MODS_SUPER.rawValue,
+                GHOSTTY_MODS_SUPER.rawValue
+            )
+        }
+    }
+
     func testParkingReleasesUnconsumedRightPressWithOriginalModifiers() throws {
         let originalButtonSender = TerminalMouseEventHandler.mouseButtonSender
         var actions: [(UInt32, UInt32, UInt32)] = []

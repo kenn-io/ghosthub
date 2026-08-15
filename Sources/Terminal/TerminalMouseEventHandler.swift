@@ -47,6 +47,7 @@ struct TerminalMouseEventHandler {
     private var pressedButtons: [PressedButton] = []
     private var pointerLocationInWindow: NSPoint?
     private var pointerIsInside = false
+    private var leftGestureBypassesApplicationMouseReporting: Bool?
 
     init(delegate: TerminalMouseEventDelegate) {
         self.delegate = delegate
@@ -55,7 +56,16 @@ struct TerminalMouseEventHandler {
     mutating func handleMouseDown(_ event: NSEvent) {
         delegate?.ensureFirstResponder()
         guard let surface = delegate?.surfaceHandle else { return }
-        let mods = Self.pointerModifiers(event.modifierFlags)
+        let bypassesApplicationMouseReporting =
+            leftGestureBypassesApplicationMouseReporting
+                ?? Self.bypassesApplicationMouseReporting(event.modifierFlags)
+        leftGestureBypassesApplicationMouseReporting =
+            bypassesApplicationMouseReporting
+        let mods = Self.pointerModifiers(
+            event.modifierFlags,
+            bypassesApplicationMouseReporting:
+            bypassesApplicationMouseReporting
+        )
         _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods
         )
@@ -64,8 +74,15 @@ struct TerminalMouseEventHandler {
 
     mutating func handleMouseUp(_ event: NSEvent) {
         delegate?.prevPressureStage = 0
+        let bypassesApplicationMouseReporting =
+            leftGestureBypassesApplicationMouseReporting
+        leftGestureBypassesApplicationMouseReporting = nil
         guard let surface = delegate?.surfaceHandle else { return }
-        let mods = Self.pointerModifiers(event.modifierFlags)
+        let mods = Self.pointerModifiers(
+            event.modifierFlags,
+            bypassesApplicationMouseReporting:
+            bypassesApplicationMouseReporting
+        )
         _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods
         )
@@ -118,7 +135,9 @@ struct TerminalMouseEventHandler {
         pointerLocationInWindow = event.locationInWindow
         sendPointerPosition(
             event.locationInWindow,
-            modifiers: event.modifierFlags
+            modifiers: event.modifierFlags,
+            bypassesApplicationMouseReporting:
+            leftGestureBypassesApplicationMouseReporting
         )
     }
 
@@ -138,7 +157,9 @@ struct TerminalMouseEventHandler {
         pointerLocationInWindow = event.locationInWindow
         sendPointerPosition(
             event.locationInWindow,
-            modifiers: event.modifierFlags
+            modifiers: event.modifierFlags,
+            bypassesApplicationMouseReporting:
+            leftGestureBypassesApplicationMouseReporting
         )
     }
 
@@ -146,12 +167,18 @@ struct TerminalMouseEventHandler {
         guard pointerIsInside, let pointerLocationInWindow else { return }
         sendPointerPosition(
             pointerLocationInWindow,
-            modifiers: event.modifierFlags
+            modifiers: event.modifierFlags,
+            bypassesApplicationMouseReporting:
+            leftGestureBypassesApplicationMouseReporting
         )
     }
 
     mutating func handleMouseDragged(_ event: NSEvent) {
-        handleDraggedPointer(event)
+        handleDraggedPointer(
+            event,
+            bypassesApplicationMouseReporting:
+            leftGestureBypassesApplicationMouseReporting
+        )
     }
 
     mutating func handleRightMouseDragged(_ event: NSEvent) {
@@ -200,6 +227,7 @@ struct TerminalMouseEventHandler {
     mutating func resetPointerStateForParking() {
         pointerIsInside = false
         pointerLocationInWindow = nil
+        leftGestureBypassesApplicationMouseReporting = nil
         guard let delegate,
               let surface = delegate.surfaceHandle else { return }
         for pressed in pressedButtons {
@@ -235,7 +263,10 @@ struct TerminalMouseEventHandler {
         pressedButtons.removeAll { $0.button.rawValue == button.rawValue }
     }
 
-    private mutating func handleDraggedPointer(_ event: NSEvent) {
+    private mutating func handleDraggedPointer(
+        _ event: NSEvent,
+        bypassesApplicationMouseReporting: Bool? = nil
+    ) {
         if let delegate {
             let position = delegate.convert(event.locationInWindow, from: nil)
             pointerIsInside = delegate.bounds.contains(position)
@@ -245,32 +276,53 @@ struct TerminalMouseEventHandler {
         pointerLocationInWindow = pointerIsInside ? event.locationInWindow : nil
         sendPointerPosition(
             event.locationInWindow,
-            modifiers: event.modifierFlags
+            modifiers: event.modifierFlags,
+            bypassesApplicationMouseReporting:
+            bypassesApplicationMouseReporting
         )
     }
 
     private func sendPointerPosition(
         _ locationInWindow: NSPoint,
-        modifiers: NSEvent.ModifierFlags
+        modifiers: NSEvent.ModifierFlags,
+        bypassesApplicationMouseReporting: Bool? = nil
     ) {
         guard let delegate,
               let surface = delegate.surfaceHandle else { return }
         let pos = delegate.convert(locationInWindow, from: nil)
-        let mods = Self.pointerModifiers(modifiers)
+        let mods = Self.pointerModifiers(
+            modifiers,
+            bypassesApplicationMouseReporting:
+            bypassesApplicationMouseReporting
+        )
         Self.mousePositionSender(
             surface, pos.x, delegate.frame.height - pos.y, mods
         )
     }
 
     private static func pointerModifiers(
-        _ modifiers: NSEvent.ModifierFlags
+        _ modifiers: NSEvent.ModifierFlags,
+        bypassesApplicationMouseReporting: Bool? = nil
     ) -> ghostty_input_mods_e {
         var modifiers = modifiers
-        if modifiers.contains(.command) {
+        switch bypassesApplicationMouseReporting {
+        case true:
+            modifiers.insert(.shift)
+        case false:
+            modifiers.remove(.shift)
+        case nil where modifiers.contains(.command):
             // Libghostty uses Shift to bypass application mouse reporting and
             // removes it again before matching the Command link binding.
             modifiers.insert(.shift)
+        case nil:
+            break
         }
         return TerminalInputHelpers.ghosttyMods(modifiers)
+    }
+
+    private static func bypassesApplicationMouseReporting(
+        _ modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        modifiers.contains(.shift) || modifiers.contains(.command)
     }
 }
