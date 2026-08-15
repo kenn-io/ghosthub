@@ -7210,8 +7210,9 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
                 &task.project_path,
                 &task.cancellation,
             ) {
-                Ok(branches) => push_operation_event(
+                Ok(branches) => push_kwt_listing_event(
                     inner,
+                    task,
                     WorkspaceEvent::KwtBranchesLoaded {
                         operation_id: task.operation_id,
                         project_path: task.project_path.clone(),
@@ -7227,8 +7228,9 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
                             .collect(),
                     },
                 ),
-                Err(error) => push_operation_event(
+                Err(error) => push_kwt_listing_event(
                     inner,
+                    task,
                     WorkspaceEvent::KwtWorktreeOperationFailed {
                         operation_id: task.operation_id,
                         project_path: task.project_path.clone(),
@@ -7247,8 +7249,9 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
                 &task.project_path,
                 &task.cancellation,
             ) {
-                Ok(pull_requests) => push_operation_event(
+                Ok(pull_requests) => push_kwt_listing_event(
                     inner,
+                    task,
                     WorkspaceEvent::KwtPullRequestsLoaded {
                         operation_id: task.operation_id,
                         project_path: task.project_path.clone(),
@@ -7258,8 +7261,9 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
                             .collect(),
                     },
                 ),
-                Err(error) => push_operation_event(
+                Err(error) => push_kwt_listing_event(
                     inner,
+                    task,
                     WorkspaceEvent::KwtWorktreeOperationFailed {
                         operation_id: task.operation_id,
                         project_path: task.project_path.clone(),
@@ -8531,6 +8535,22 @@ fn finish_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
         }
     }
     finish_kwt_project_mutation(inner, Some((&task.endpoint, &task.runtime)));
+}
+
+fn push_kwt_listing_event(inner: &Inner, task: &KwtWorktreeTask, event: WorkspaceEvent) {
+    let owns_listing = inner
+        .kwt_worktree_listing
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|listing| {
+            listing.generation == task.generation
+                && listing.operation_id == task.operation_id
+                && !task.cancellation.is_cancelled()
+        });
+    if owns_listing {
+        push_operation_event(inner, event);
+    }
 }
 
 fn push_operation_event(inner: &Inner, event: WorkspaceEvent) {
@@ -12780,19 +12800,28 @@ mod tests {
             .expect("start pull-request listing");
 
         assert!(workspace.cancel_kwt_worktree_listing(first));
+        workspace
+            .inner
+            .navigation_generation
+            .store(first.saturating_sub(1), Ordering::Release);
         let second = workspace
-            .load_kwt_branches(
+            .import_kwt_pull_request(
                 "wsl",
                 "Ubuntu",
                 "project-id",
                 "/repos/project",
                 "project-fingerprint",
+                "17",
             )
-            .expect("replacement listing starts immediately");
+            .expect("replacement import starts immediately");
 
-        assert_ne!(first, second);
+        assert_eq!(first, second, "separate counters can reuse the numeric ID");
         assert_eq!(runtime.work.lock().expect("work queue").len(), 2);
         runtime.run_next_work();
+        assert!(
+            workspace.drain_events().0.is_empty(),
+            "a cancelled listing cannot publish into a newer operation with the same numeric ID"
+        );
         assert!(
             workspace
                 .inner

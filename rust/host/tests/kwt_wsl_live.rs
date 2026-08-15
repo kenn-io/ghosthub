@@ -7,7 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use host::{
-    AttachTerm, CancellationToken, KwtBundle, KwtWorktreeCreate, KwtWorktreeOpen, StdCommandRunner,
+    AttachTerm, CancellationToken, KwtBundle, KwtProtectedWorktreeOpen,
+    KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen, StdCommandRunner,
     SystemWslPresence, WslConfig, WslEndpoint, WslExecutable, WslHost, WslPresence,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -72,14 +73,22 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
     let endpoint = initial.endpoint().clone();
     let runtime = initial.runtime().clone();
     let helper_path = windows_path_in_wsl(&executable, &endpoint, &bundle_path);
-    let _cleanup = TestEnvironment {
+    let cleanup = TestEnvironment {
         executable: executable.clone(),
         endpoint: endpoint.clone(),
         root: root.clone(),
         kwt_home: kwt_home.clone(),
         tmux_tmpdir: tmux_tmpdir.clone(),
         helper_path,
+        protected_sockets: Vec::new(),
     };
+    configure_isolated_worktree_base(
+        &executable,
+        &endpoint,
+        &kwt_home,
+        &cleanup.helper_path,
+        &root,
+    );
 
     run_wsl_ok(
         &executable,
@@ -342,6 +351,252 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
     host.remove_kwt_client_readiness(&endpoint, plan.readiness_path(), &cancellation);
 }
 
+#[test]
+#[ignore = "requires Windows, WSL2, tmux, git, GitHub access, and a staged pinned Linux KWT helper"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the live test keeps one isolated provider import and protected attachment in order"
+)]
+fn pinned_helper_honors_the_pull_request_contract() {
+    let bundle_path = std::env::var_os("GHOSTHUB_KWT_BUNDLE_TEST")
+        .expect("set GHOSTHUB_KWT_BUNDLE_TEST to the staged Linux helper");
+    let digest = std::env::var("GHOSTHUB_KWT_SHA256_TEST")
+        .expect("set GHOSTHUB_KWT_SHA256_TEST to its lowercase digest");
+    assert!(
+        std::env::var("KWT_GITHUB_TOKEN").is_ok_and(|token| !token.trim().is_empty()),
+        "set KWT_GITHUB_TOKEN for the live GitHub provider contract"
+    );
+    assert!(
+        std::env::var("WSLENV").is_ok_and(|value| {
+            value
+                .split(':')
+                .any(|entry| entry.split('/').next() == Some("KWT_GITHUB_TOKEN"))
+        }),
+        "include KWT_GITHUB_TOKEN in WSLENV so the pinned WSL helper can authenticate"
+    );
+
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("host crate is nested under rust/");
+    let revision = fs::read_to_string(repo.join("KWT_REVISION"))
+        .expect("read KWT revision")
+        .trim()
+        .to_owned();
+    let bundle = KwtBundle::new(
+        revision,
+        digest,
+        Arc::<[u8]>::from(fs::read(&bundle_path).expect("read staged helper")),
+    )
+    .expect("valid helper bundle");
+    let executable = SystemWslPresence
+        .resolve()
+        .expect("resolve WSL presence")
+        .expect("WSL is installed");
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_nanos()
+    );
+    let root = format!("/tmp/ghosthub-kwt-pr-live-{nonce}");
+    let kwt_home = format!("{root}/home");
+    let tmux_tmpdir = format!("{root}/tmux");
+    let project_path = format!("{root}/hello-world");
+    let host = WslHost::new(
+        WslConfig::configured(None, "/usr/bin/tmux", Some(tmux_tmpdir.clone()))
+            .expect("valid isolated WSL config")
+            .with_kwt_bundle(bundle)
+            .with_kwt_home_for_tests(&kwt_home),
+        StdCommandRunner,
+        executable.clone(),
+    );
+    let cancellation = CancellationToken::new();
+
+    let initial = host
+        .discover_kwt_current(&cancellation)
+        .expect("install the pinned helper and read isolated KWT inventory");
+    let endpoint = initial.endpoint().clone();
+    let runtime = initial.runtime().clone();
+    let helper_path = windows_path_in_wsl(&executable, &endpoint, &bundle_path);
+    let mut cleanup = TestEnvironment {
+        executable: executable.clone(),
+        endpoint: endpoint.clone(),
+        root: root.clone(),
+        kwt_home: kwt_home.clone(),
+        tmux_tmpdir: tmux_tmpdir.clone(),
+        helper_path,
+        protected_sockets: Vec::new(),
+    };
+    configure_isolated_worktree_base(
+        &executable,
+        &endpoint,
+        &kwt_home,
+        &cleanup.helper_path,
+        &root,
+    );
+
+    run_wsl_ok(
+        &executable,
+        &endpoint,
+        [
+            "/usr/bin/git",
+            "clone",
+            "--quiet",
+            "--filter=blob:none",
+            "--",
+            "https://github.com/octocat/Hello-World.git",
+            project_path.as_str(),
+        ],
+    );
+    let registered = host
+        .register_kwt_project(&endpoint, &runtime, &project_path, &cancellation)
+        .expect("register the isolated public GitHub project");
+    let pull_requests = host
+        .list_kwt_pull_requests(&endpoint, &runtime, &project_path, &cancellation)
+        .expect("discover pull requests through the pinned helper");
+    let candidate = pull_requests
+        .iter()
+        .find(|pull_request| !pull_request.imported())
+        .expect("the public contract repository has an accessible open pull request");
+    let request = KwtPullRequestImportRequest::new(
+        &project_path,
+        registered.repository(),
+        registered.registration_fingerprint(),
+        candidate.url(),
+    );
+    let imported = host
+        .import_kwt_pull_request(&endpoint, &runtime, &request, &cancellation)
+        .expect("import the pull request through the pinned helper");
+    assert!(
+        imported
+            .project_identity()
+            .eq_ignore_ascii_case(registered.repository()),
+        "provider identity must match the registered GitHub repository"
+    );
+    assert_eq!(imported.project_path(), project_path);
+    let imported_again = host
+        .import_kwt_pull_request(&endpoint, &runtime, &request, &cancellation)
+        .expect("repeat the same import idempotently");
+    assert_eq!(
+        imported_again.workspace(),
+        imported.workspace(),
+        "idempotent import must preserve the exact protected workspace identity"
+    );
+
+    let workspace = imported.workspace();
+    let generation = workspace
+        .generation()
+        .expect("imported pull-request workspace has a durable generation");
+    let socket_name = workspace
+        .tmux_socket_name()
+        .expect("imported pull-request workspace has a protected socket");
+    cleanup.protected_sockets.push(socket_name.to_owned());
+    assert!(
+        !host
+            .session_is_running_on_socket(
+                &endpoint,
+                &runtime,
+                socket_name,
+                workspace.session_name(),
+                &cancellation,
+            )
+            .expect("query the protected socket before attachment"),
+        "an import without --start-session must leave its protected session absent"
+    );
+
+    let open = KwtProtectedWorktreeOpen::new(
+        workspace.path(),
+        &project_path,
+        workspace.repository(),
+        registered.registration_fingerprint(),
+        generation,
+        workspace.session_name(),
+        socket_name,
+    );
+    let plan = host
+        .kwt_protected_attach_plan(&endpoint, &runtime, &open, AttachTerm::Xterm, &cancellation)
+        .expect("build the guarded protected attachment plan");
+    let pty = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("open ConPTY for the protected KWT client");
+    let mut reader = pty
+        .master
+        .try_clone_reader()
+        .expect("clone protected KWT client output reader");
+    let mut writer = pty
+        .master
+        .take_writer()
+        .expect("take protected KWT client input writer");
+    let client_output = Arc::new(Mutex::new(Vec::new()));
+    let reader_output = Arc::clone(&client_output);
+    let reader_thread = thread::spawn(move || {
+        let mut chunk = [0_u8; 1024];
+        let mut query_scan = Vec::new();
+        while let Ok(count) = reader.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            query_scan.extend_from_slice(&chunk[..count]);
+            for _ in query_scan.windows(4).filter(|bytes| *bytes == b"\x1b[6n") {
+                writer
+                    .write_all(b"\x1b[1;1R")
+                    .expect("answer terminal cursor-position query");
+                writer.flush().expect("flush terminal response");
+            }
+            if query_scan.len() > 3 {
+                query_scan.drain(..query_scan.len() - 3);
+            }
+            let mut output = reader_output.lock().expect("lock protected client output");
+            let remaining = 16 * 1024_usize - output.len().min(16 * 1024);
+            output.extend_from_slice(&chunk[..count.min(remaining)]);
+        }
+    });
+    let mut command = CommandBuilder::new(plan.program());
+    command.args(plan.args());
+    let mut child = pty
+        .slave
+        .spawn_command(command)
+        .expect("spawn the real protected KWT client through ConPTY");
+    drop(pty.slave);
+
+    let identity = wait_for_exact_protected_client(
+        &host,
+        &endpoint,
+        &runtime,
+        plan.readiness_path(),
+        socket_name,
+        &cancellation,
+        &client_output,
+    );
+    let target = host
+        .capture_live_session_on_socket(
+            &endpoint,
+            &runtime,
+            socket_name,
+            workspace.session_name(),
+            &cancellation,
+        )
+        .expect("capture the repaired protected session identity");
+    assert_eq!(identity, *target.identity());
+
+    host.kill_live_session(&target, &cancellation)
+        .expect("stop the exact protected session");
+    wait_for_child_exit(&mut *child);
+    drop(pty.master);
+    reader_thread
+        .join()
+        .expect("join protected KWT client output reader");
+    host.remove_kwt_client_readiness(&endpoint, plan.readiness_path(), &cancellation);
+}
+
 fn assert_guarded_open_rejected(
     host: &WslHost<StdCommandRunner>,
     endpoint: &WslEndpoint,
@@ -389,6 +644,40 @@ fn wait_for_exact_client(
             let output = output.lock().expect("lock KWT client output").clone();
             panic!(
                 "KWT client did not attach before the deadline; output: {}",
+                String::from_utf8_lossy(&output)
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_for_exact_protected_client(
+    host: &WslHost<StdCommandRunner>,
+    endpoint: &WslEndpoint,
+    runtime: &host::WslRuntimeIdentity,
+    readiness_path: &str,
+    socket_name: &str,
+    cancellation: &CancellationToken,
+    output: &Mutex<Vec<u8>>,
+) -> session::SessionIdentity {
+    let deadline = Instant::now() + READY_TIMEOUT;
+    loop {
+        if let Some(identity) = host
+            .kwt_protected_client_session_identity(
+                endpoint,
+                runtime,
+                readiness_path,
+                socket_name,
+                cancellation,
+            )
+            .expect("query exact protected KWT client readiness")
+        {
+            return identity;
+        }
+        if Instant::now() >= deadline {
+            let output = output.lock().expect("lock protected client output").clone();
+            panic!(
+                "protected KWT client did not attach before the deadline; output: {}",
                 String::from_utf8_lossy(&output)
             );
         }
@@ -460,6 +749,29 @@ struct TestEnvironment {
     kwt_home: String,
     tmux_tmpdir: String,
     helper_path: String,
+    protected_sockets: Vec<String>,
+}
+
+fn configure_isolated_worktree_base(
+    executable: &WslExecutable,
+    endpoint: &WslEndpoint,
+    kwt_home: &str,
+    helper_path: &str,
+    root: &str,
+) {
+    run_wsl_ok(
+        executable,
+        endpoint,
+        [
+            "/usr/bin/env",
+            &format!("KWT_HOME={kwt_home}"),
+            helper_path,
+            "config",
+            "set",
+            "worktree.basedir",
+            &format!("{root}/worktrees"),
+        ],
+    );
 }
 
 impl Drop for TestEnvironment {
@@ -493,7 +805,30 @@ impl Drop for TestEnvironment {
                 "kill-server",
             ],
         );
-        if self.root.starts_with("/tmp/ghosthub-kwt-live-") {
+        for socket_name in &self.protected_sockets {
+            let _ = run_wsl(
+                &self.executable,
+                &self.endpoint,
+                [
+                    "/usr/bin/env",
+                    "-u",
+                    "TMUX",
+                    "-u",
+                    "TMUX_PANE",
+                    "-u",
+                    "TMUX_TMPDIR",
+                    "/usr/bin/tmux",
+                    "-f",
+                    "/dev/null",
+                    "-L",
+                    socket_name.as_str(),
+                    "kill-server",
+                ],
+            );
+        }
+        if self.root.starts_with("/tmp/ghosthub-kwt-live-")
+            || self.root.starts_with("/tmp/ghosthub-kwt-pr-live-")
+        {
             let _ = run_wsl(
                 &self.executable,
                 &self.endpoint,
