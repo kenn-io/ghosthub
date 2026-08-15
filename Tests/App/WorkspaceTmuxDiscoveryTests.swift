@@ -6176,6 +6176,91 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("inactive protected reconnect publishes sidebar running state")
+    func inactiveProtectedReconnectPublishesRunningState() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let worktreeIndex = try #require(snapshot.worktrees.indices.first)
+        snapshot.worktrees[worktreeIndex].tmuxSessionName =
+            "kwt-ghosthub-pr-94"
+        snapshot.worktrees[worktreeIndex].tmuxSocketName = "kwt-pr-94"
+        let worktree = snapshot.worktrees[worktreeIndex]
+        let protected = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let other = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "release-work"
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxExactSessionProbe: { _ in .success(true) },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+
+        model.openBorrowedTmuxSession(protected)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.connectedBorrowedTmuxSessionIDs.contains(protected.id)
+        }
+        let protectedHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: protected)
+        )
+        model.openBorrowedTmuxSession(other)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+                && model.retainedBorrowedTmuxSessionIsConnected(other)
+        }
+
+        var updateCount = 0
+        let updates = model.objectWillChange.sink { updateCount += 1 }
+        let updatesBeforeDisconnect = updateCount
+        surfaceStore.surface.closeObservers[protectedHandle.id]?(false, 255)
+
+        #expect(updateCount > updatesBeforeDisconnect)
+        #expect(!model.connectedBorrowedTmuxSessionIDs.contains(protected.id))
+        let disconnectedRow = try #require(
+            WorkspaceSidebarModel.sections(
+                in: model.snapshot,
+                connectedTmuxSessionIDs:
+                model.connectedBorrowedTmuxSessionIDs
+            ).flatMap(\.projects).flatMap(\.worktreeRows).first {
+                $0.target == .worktree(environment.worktree.id)
+            }
+        )
+        #expect(disconnectedRow.worktreeStatus?.isRunning == false)
+
+        let updatesAfterDisconnect = updateCount
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 3
+                && model.connectedBorrowedTmuxSessionIDs
+                .contains(protected.id)
+                && updateCount > updatesAfterDisconnect
+        }
+        let reconnectedRow = try #require(
+            WorkspaceSidebarModel.sections(
+                in: model.snapshot,
+                connectedTmuxSessionIDs:
+                model.connectedBorrowedTmuxSessionIDs
+            ).flatMap(\.projects).flatMap(\.worktreeRows).first {
+                $0.target == .worktree(environment.worktree.id)
+            }
+        )
+        #expect(reconnectedRow.worktreeStatus?.isRunning == true)
+        #expect(model.activeBorrowedTmuxSelection == other)
+        withExtendedLifetime(updates) {}
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("authentication failure pauses and requests native recovery")
     func authenticationFailureRequestsRecovery() async throws {
         let classification = SSHConnectionFailure.classify(

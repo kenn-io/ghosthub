@@ -715,8 +715,13 @@ final class WorkspaceSceneModel: ObservableObject {
         panelRoutingService.isSidePanelVisible
     }
     @Published var preferredActiveSurfaceTarget: WorkspaceTerminalSurfaceTarget?
-    @Published private var borrowedTmuxConnectionStates:
-        [UUID: ConnectionState] = [:]
+    private var borrowedTmuxConnectionStates: [UUID: ConnectionState] = [:] {
+        didSet {
+            refreshConnectedBorrowedTmuxSessionIDs()
+        }
+    }
+    @Published private(set) var connectedBorrowedTmuxSessionIDs:
+        Set<String> = []
     private struct PendingTmuxSessionCreation: Equatable {
         var request: WorkspaceTmuxSessionCreationRequest
         var commandReplayAuthorized: Bool
@@ -9383,11 +9388,15 @@ final class WorkspaceSceneModel: ObservableObject {
         Set(retainedTmuxPresentations.keys.map(\.sessionID))
     }
 
-    var connectedBorrowedTmuxSessionIDs: Set<String> {
-        Set(retainedTmuxPresentations.compactMap { key, presentation in
-            borrowedTmuxConnectionStates[presentation.handle.id] == .connected
-                ? key.sessionID : nil
-        })
+    private func refreshConnectedBorrowedTmuxSessionIDs() {
+        let connected = Set(
+            retainedTmuxPresentations.compactMap { key, presentation in
+                borrowedTmuxConnectionStates[presentation.handle.id] == .connected
+                    ? key.sessionID : nil
+            }
+        )
+        guard connected != connectedBorrowedTmuxSessionIDs else { return }
+        connectedBorrowedTmuxSessionIDs = connected
     }
 
     func retainedBorrowedTmuxHandle(
