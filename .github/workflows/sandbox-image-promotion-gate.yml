@@ -68,6 +68,13 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
                 "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
                 'Sandbox image merge signal' ]]; then
+            merge_sha="$(jq -r '.workflow_run.head_sha // ""' \
+              "$GITHUB_EVENT_PATH")"
+            if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Merge-group signal SHA is invalid." >&2
+              exit 1
+            fi
+            post_pending "$merge_sha"
             if ! jq -e '
               (.workflow_run.created_at | type == "string") and
               (now - (.workflow_run.created_at | fromdateiso8601) >= 0) and
@@ -77,22 +84,29 @@ jobs:
                 type == "number" and . >= 1 and floor == .) and
               .workflow_run.pull_requests[0].base.ref == "main"
             ' "$GITHUB_EVENT_PATH" > /dev/null; then
-              echo "Ignoring stale or invalid merge-group signal."
-              exit 0
+              echo "Merge-group signal is stale or invalid; authorization remains pending." >&2
+              exit 1
             fi
             number="$(jq -r '.workflow_run.pull_requests[0].number' \
               "$GITHUB_EVENT_PATH")"
-            if ! gh api "repos/kenn-io/ghosthub/pulls/$number" |
-              jq -e '.state == "open" and .base.ref == "main"' > /dev/null; then
-              echo "Ignoring merge-group signal for a closed pull request."
-              exit 0
-            fi
-            merge_sha="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
-            if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "Merge-group signal SHA is invalid." >&2
+            detail="$RUNNER_TEMP/fence-pr-$number.json"
+            if ! gh api "repos/kenn-io/ghosthub/pulls/$number" > "$detail"; then
+              echo "Cannot load pull request $number; authorization remains pending." >&2
               exit 1
             fi
-            post_pending "$merge_sha"
+            if ! jq -e --argjson number "$number" '
+              type == "object" and
+              .number == $number and
+              (.state == "open" or .state == "closed") and
+              .base.ref == "main"
+            ' "$detail" > /dev/null; then
+              echo "Pull request $number metadata is invalid; authorization remains pending." >&2
+              exit 1
+            fi
+            if [[ "$(jq -r '.state' "$detail")" == closed ]]; then
+              echo "Merge-group signal belongs to a closed pull request."
+              exit 0
+            fi
           else
             pulls="$RUNNER_TEMP/pulls.json"
             gh api --paginate --slurp \
@@ -346,6 +360,18 @@ jobs:
               echo "Cannot load pull request $number; leaving it pending." >&2
               return 1
             fi
+            if ! jq -e --argjson number "$number" '
+              type == "object" and
+              .number == $number and
+              (.state == "open" or .state == "closed") and
+              .base.ref == "main"
+            ' "$detail" > /dev/null; then
+              echo "Pull request $number metadata is invalid; leaving it pending." >&2
+              return 1
+            fi
+            if [[ "$(jq -r '.state' "$detail")" == closed ]]; then
+              return 2
+            fi
             if ! gh api --paginate --slurp \
               "repos/kenn-io/ghosthub/pulls/$number/files?per_page=100" \
               | jq '[.[][]]' > "$files"; then
@@ -521,6 +547,13 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
                 "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
                 'Sandbox image merge signal' ]]; then
+            merge_sha="$(jq -r '.workflow_run.head_sha // ""' \
+              "$GITHUB_EVENT_PATH")"
+            if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Merge-group signal SHA is invalid." >&2
+              exit 1
+            fi
+            post_pending "$merge_sha"
             if ! jq -e '
               (.workflow_run.created_at | type == "string") and
               (now - (.workflow_run.created_at | fromdateiso8601) >= 0) and
@@ -530,22 +563,22 @@ jobs:
                 type == "number" and . >= 1 and floor == .) and
               .workflow_run.pull_requests[0].base.ref == "main"
             ' "$GITHUB_EVENT_PATH" > /dev/null; then
-              echo "Ignoring stale or invalid merge-group signal."
-              exit 0
+              echo "Merge-group signal is stale or invalid; authorization remains pending." >&2
+              exit 1
             fi
             number="$(jq -r '.workflow_run.pull_requests[0].number' \
               "$GITHUB_EVENT_PATH")"
-            if ! load_pr "$number"; then
-              echo "Ignoring merge-group signal without an open pull request."
+            load_result=0
+            load_pr "$number" || load_result=$?
+            if [[ "$load_result" == 2 ]]; then
+              echo "Merge-group signal belongs to a closed pull request."
               exit 0
             fi
-            merge_signal=true
-            merge_sha="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
-            if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "Merge-group signal SHA is invalid." >&2
+            if [[ "$load_result" != 0 ]]; then
+              echo "Cannot reconcile merge-group pull request; authorization remains pending." >&2
               exit 1
             fi
-            post_pending "$merge_sha"
+            merge_signal=true
           else
             pulls="$RUNNER_TEMP/pulls.json"
             gh api --paginate --slurp \
