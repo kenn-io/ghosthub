@@ -339,15 +339,15 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             GHOSTTY_MOUSE_RELEASE.rawValue,
         ])
         XCTAssertEqual(pressureStages, [0])
-        XCTAssertEqual(positions.count, 1)
-        XCTAssertEqual(positions.first?.0, -1)
-        XCTAssertEqual(positions.first?.1, -1)
+        XCTAssertEqual(positions.count, 2)
+        XCTAssertEqual(positions.last?.0, -1)
+        XCTAssertEqual(positions.last?.1, -1)
 
         view.setParkedForPreview(false)
         view.mouseMoved(with: event)
 
         XCTAssertFalse(view.trackingAreas.isEmpty)
-        XCTAssertEqual(positions.count, 2)
+        XCTAssertEqual(positions.count, 3)
     }
 
     func testCommandPointerEventsUseLatestDraggedLocation() throws {
@@ -465,9 +465,11 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         view.mouseDown(with: commandMouseDown)
         view.mouseUp(with: commandMouseUp)
 
-        XCTAssertEqual(positions.count, 1)
-        XCTAssertEqual(positions.first?.0, 40)
-        XCTAssertEqual(positions.first?.1, view.frame.height - 40)
+        XCTAssertEqual(positions.count, 2)
+        for position in positions {
+            XCTAssertEqual(position.0, 40)
+            XCTAssertEqual(position.1, view.frame.height - 40)
+        }
         XCTAssertEqual(buttonModifiers.count, 2)
         for modifier in positions.map(\.2) + buttonModifiers {
             XCTAssertNotEqual(
@@ -479,6 +481,61 @@ final class TerminalSurfacePreviewTests: XCTestCase {
                 0
             )
         }
+    }
+
+    func testCommandMouseDownSendsPositionBeforePressWithoutMovement() throws {
+        let originalButtonSender = TerminalMouseEventHandler.mouseButtonSender
+        let originalPositionSender =
+            TerminalMouseEventHandler.mousePositionSender
+        var sequence: [String] = []
+        var position: (Double, Double, UInt32)?
+        TerminalMouseEventHandler.mouseButtonSender = {
+            _, action, button, _ in
+            if action.rawValue == GHOSTTY_MOUSE_PRESS.rawValue,
+               button.rawValue == GHOSTTY_MOUSE_LEFT.rawValue {
+                sequence.append("press")
+            }
+            return true
+        }
+        TerminalMouseEventHandler.mousePositionSender = {
+            _, x, y, mods in
+            sequence.append("position")
+            position = (x, y, mods.rawValue)
+        }
+        defer {
+            TerminalMouseEventHandler.mouseButtonSender = originalButtonSender
+            TerminalMouseEventHandler.mousePositionSender =
+                originalPositionSender
+        }
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        let mouseDown = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 20, y: 30),
+            modifierFlags: [.command],
+            timestamp: 1,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+
+        view.mouseDown(with: mouseDown)
+
+        let sentPosition = try XCTUnwrap(position)
+        XCTAssertEqual(sequence, ["position", "press"])
+        XCTAssertEqual(sentPosition.0, 20)
+        XCTAssertEqual(sentPosition.1, view.frame.height - 30)
+        XCTAssertNotEqual(
+            sentPosition.2 & GHOSTTY_MODS_SUPER.rawValue,
+            0
+        )
+        XCTAssertNotEqual(
+            sentPosition.2 & GHOSTTY_MODS_SHIFT.rawValue,
+            0
+        )
     }
 
     func testLeftMouseGestureKeepsInitialCaptureRouteWhenCommandChanges() throws {

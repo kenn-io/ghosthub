@@ -66,6 +66,14 @@ struct TerminalMouseEventHandler {
             bypassesApplicationMouseReporting:
             bypassesApplicationMouseReporting
         )
+        pointerIsInside = true
+        pointerLocationInWindow = event.locationInWindow
+        sendPointerPosition(
+            event.locationInWindow,
+            modifiers: event.modifierFlags,
+            bypassesApplicationMouseReporting:
+            bypassesApplicationMouseReporting
+        )
         _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods
         )
