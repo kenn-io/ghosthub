@@ -1168,6 +1168,40 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
+    func testOpenURLActionOwnsCallbackTextBeforeMainDispatch() {
+        let rawURL = "https://ghosthub.ai/docs/?mouse=command-click"
+        let expectedURL = URL(string: rawURL)!
+        let bytes = Array(rawURL.utf8CString)
+        let pointer = UnsafeMutablePointer<CChar>.allocate(
+            capacity: bytes.count
+        )
+        for (index, byte) in bytes.enumerated() {
+            pointer[index] = byte
+        }
+        defer { pointer.deallocate() }
+
+        let originalOpener = LibghosttyRuntime.urlOpener
+        var openedURLs: [URL] = []
+        LibghosttyRuntime.urlOpener = { url in
+            openedURLs.append(url)
+            return true
+        }
+        defer { LibghosttyRuntime.urlOpener = originalOpener }
+
+        LibghosttyRuntime.handleOpenURL(ghostty_action_open_url_s(
+            kind: GHOSTTY_ACTION_OPEN_URL_KIND_TEXT,
+            url: pointer,
+            len: UInt(rawURL.utf8.count)
+        ))
+
+        for index in bytes.indices {
+            pointer[index] = 0
+        }
+        waitUntil(timeout: 1) { !openedURLs.isEmpty }
+
+        XCTAssertEqual(openedURLs, [expectedURL])
+    }
+
     func testRemoteClipboardPolicyAllowsCopyAndOSC52Write() throws {
         try skipUnlessLibghosttyReady()
         let runtime = retainedRuntime()

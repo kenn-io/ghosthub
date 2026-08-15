@@ -50,9 +50,16 @@ map, split-tree projection, or Ghosthub tab bar. Tmux owns:
 - windows, panes, layout, focus, and status-line presentation
 - terminal history and alternate-screen state
 - pane processes and session lifetime
-- tmux-native key bindings and mouse behavior
+- tmux-native key bindings and mouse behavior after Ghosthub enables the
+  session-scoped `mouse` option
 
 Ghosthub owns inventory presentation, terminal clients, and connection state.
+Before each POSIX tmux presentation, Ghosthub best-effort enables the exact
+session's `mouse` option. This makes wheel scrolling enter and navigate tmux
+copy mode even when the server started from tmux's vanilla mouse-off default.
+The option is session-scoped, so every attached client sees it; Ghosthub does
+not add or replace mouse bindings. Native Windows/psmux attachment retains its
+documented mouse-reporting limitation and does not receive this setup.
 Each workspace window retains every presentation it explicitly opens, keyed by
 the exact host, tmux socket, and session name. Navigating to another host,
 worktree, or session removes the previous surface from the visible hierarchy
@@ -98,9 +105,9 @@ matching command-palette action apply the selected effective style immediately
 to the connected active workspace tmux attachment without changing the
 persistent preference or reconnecting. Console Panel terminals are not tmux
 session targets. Both paths change shared tmux options, so every attached client
-sees the result. These best-effort style commands do not change tmux interaction:
-prefix and key tables, mouse behavior, windows, panes, history, and layout
-remain untouched.
+sees the result. Apart from enabling the session mouse option during attachment,
+these best-effort style commands do not change tmux interaction: prefix and key
+tables, mouse bindings, windows, panes, history, and layout remain untouched.
 Native Windows attachment leaves psmux's status and message styles user-owned;
 psmux does not preserve tmux's session-scoped rendering for these style resets
 and may apply `reverse` across the client rather than only its status line. The

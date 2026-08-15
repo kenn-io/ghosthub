@@ -4716,7 +4716,7 @@ struct WorkspaceTmuxDiscoveryTests {
         model.reconnectActiveTmuxSessionNow()
         await waitUntilMainActor {
             surfaceStore.requestCount == 3
-                || model.activeBorrowedTmuxRecoveryState == nil
+                && model.activeBorrowedTmuxSessionIsConnected
         }
 
         #expect(surfaceStore.requestCount == 3)
