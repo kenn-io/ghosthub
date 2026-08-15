@@ -250,13 +250,19 @@ managed-helper verification run entirely on the background host lane. A late
 or failed KWT generation keeps the last usable project tree, and a session-only
 refresh updates only worktree session availability. The sidebar treats a
 KWT-owned default-socket tmux session as a project row instead of duplicating
-it in the unbound tmux group; custom-socket worktrees cannot claim a
-same-named default-socket session. When WSL config selects an explicit
-`TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery and
-attachment; cached rows never correlate sessions across those server roots.
-Removing a worktree with its own `tmux_socket_name` is refused until that
-protected socket can be discovered and its live session terminated by fresh
-identity authority.
+it in the unbound tmux group. Active and retained protected-socket
+presentations likewise remain on their worktree row, where a live indicator
+shows that the client exists. A genuinely separate same-named default-socket
+session remains visible as unbound inventory. When WSL config selects an
+explicit `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery
+and attachment; cached rows never correlate sessions across those server roots.
+Removing a generation-backed worktree on either server type is separately
+confirmed. Ghosthub captures the exact socket and live session identity, when
+present, and terminates only that freshly confirmed tmux identity after
+approval. It then delegates an absence-guarded removal to pinned KWT. KWT
+revalidates the project, generation, and socket under its lifecycle lock and
+refuses removal if the workspace session reappears before deleting the
+checkout.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
@@ -575,10 +581,13 @@ branch, tmux session name, and isolated tmux socket name. Ghosthub requests a
 durable import without session startup; importing contributor-controlled code
 does not start tmux or execute project layout and bootstrap commands. A
 successful result is presented through kwt's protected attach command. That
-command verifies
-persisted workspace provenance and the current tmux state, creates or repairs
-an inert shell-only session on the workspace-specific server when needed, and
-then executes an ordinary client with environment updates disabled. The user
+command atomically verifies the project identity, registration fingerprint,
+worktree generation, tmux session name, and isolated socket under KWT's project
+lifecycle fence before it creates or repairs an inert shell-only session on the
+workspace-specific server. It then executes an ordinary client with
+environment updates disabled. Provider discovery is user-initiated,
+cancellable, and receives a five-minute network-operation budget rather than
+the 15-second local probe deadline. The user
 may explicitly run project commands after attachment. Other workspaces and
 unbound sessions continue to attach directly to the host's normal tmux server.
 
