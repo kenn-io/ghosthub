@@ -26,7 +26,7 @@ enum TerminalFontZoomCommand: Equatable, Sendable {
 }
 
 enum TerminalSurfaceError: LocalizedError {
-    case surfaceCreationFailed
+    case surfaceCreationFailed(activeDisplayCount: Int)
     case surfaceClosed(processAlive: Bool)
 
     var errorDescription: String? {
@@ -78,8 +78,10 @@ public final class TerminalSurfaceView: ObservableObject {
         guard let terminalError = error as? TerminalSurfaceError else {
             return false
         }
-        if case .surfaceCreationFailed = terminalError {
-            return true
+        if case let .surfaceCreationFailed(activeDisplayCount) = terminalError {
+            return DisplayAvailability.surfaceCreationFailureIsRetryable(
+                activeDisplayCount: activeDisplayCount
+            )
         }
         return false
     }

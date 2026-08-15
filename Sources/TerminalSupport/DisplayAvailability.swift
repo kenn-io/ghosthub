@@ -15,8 +15,8 @@ import CoreGraphics
 /// This reads the same quantity CoreVideo itself measures rather than
 /// `NSScreen.screens`, so the check matches the precondition that actually
 /// fails.
-enum DisplayAvailability {
-    static func activeCount() -> Int {
+public enum DisplayAvailability {
+    public static func activeCount() -> Int {
         #if canImport(CoreGraphics)
         var count: UInt32 = 0
         guard CGGetActiveDisplayList(0, nil, &count) == .success else {
@@ -28,5 +28,11 @@ enum DisplayAvailability {
         #else
         return 1
         #endif
+    }
+
+    public static func surfaceCreationFailureIsRetryable(
+        activeDisplayCount: Int
+    ) -> Bool {
+        activeDisplayCount == 0
     }
 }

@@ -9870,28 +9870,26 @@ final class WorkspaceSceneModel: ObservableObject {
             activeHerdrReconnectContext?.surfaceLaunchFailed = false
             return
         }
-        // Checked before `hasLaunched`: a surface that failed to be created
-        // never launched, so the guard below would drop this transient failure
-        // and the session would latch. See the tmux path.
-        if case .disconnected = state,
-           nativeHerdrSessionCoordinator.attachmentClosure(handle)
-           == .surfaceUnavailable,
-           var context = activeHerdrReconnectContext,
-           context.handleID == handle.id {
-            context.surfaceLaunchFailed = true
-            activeHerdrReconnectContext = context
-            startHerdrReconnect(context)
-            return
-        }
-        guard case .disconnected = state,
-              nativeHerdrSessionCoordinator.hasLaunched(handle)
-        else { return }
+        guard case .disconnected = state else { return }
         if suppressedHerdrStops.values.contains(where: {
             $0.selection.hostID == handle.hostID
                 && $0.selection.name == handle.name
         }) {
             return
         }
+        // Checked before `hasLaunched`: a surface that failed to be created
+        // never launched, so the guard below would drop this transient failure
+        // and the session would latch. See the tmux path.
+        if nativeHerdrSessionCoordinator.attachmentClosure(handle)
+            == .surfaceUnavailable,
+            var context = activeHerdrReconnectContext,
+            context.handleID == handle.id {
+            context.surfaceLaunchFailed = true
+            activeHerdrReconnectContext = context
+            startHerdrReconnect(context)
+            return
+        }
+        guard nativeHerdrSessionCoordinator.hasLaunched(handle) else { return }
         switch nativeHerdrSessionCoordinator.attachmentClosure(handle) {
         case .detached:
             cancelHerdrReconnect()

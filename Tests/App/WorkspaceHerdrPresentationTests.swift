@@ -1215,6 +1215,47 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("confirmed Herdr stop suppresses delayed surface recovery")
+    func confirmedStopSuppressesDelayedSurfaceRecovery() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let probes = Mutex(0)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in
+                probes.withLock { $0 += 1 }
+                return .present
+            },
+            coordinator: coordinator
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        let probeCountBeforeStop = probes.withLock { $0 }
+
+        let operation = try #require(coordinator.begin(.stop, key: key))
+        coordinator.willStop(operation)
+        store.surface.launchError = HerdrSurfaceLaunchTestError.rejected
+        store.surface.launchFailureIsRetryable = true
+
+        model.prepareActiveBorrowedHerdrSurface()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(probes.withLock { $0 } == probeCountBeforeStop)
+        #expect(!model.herdrReconnectSupervisorIsRunning)
+        coordinator.finish(operation, outcome: .succeeded)
+        await model.shutdown()
+    }
+
     @Test("manual retry probes the exact running session before attaching")
     func manualRetryRequiresRunningSession() async throws {
         let environment = try environment()

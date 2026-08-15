@@ -103,18 +103,19 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         }
     }
 
-    /// True when this surface failed because libghostty could not create it.
+    /// True when libghostty could not create this surface with no active display.
     ///
-    /// That failure is transient: the renderer needs an active display to build
-    /// its vsync display link, so creation fails whenever no display is
-    /// available (lid shut, no external monitor) and succeeds again once one is.
-    /// Callers use this to keep recovering instead of latching.
+    /// That specific failure is transient: the renderer needs an active display
+    /// to build its vsync display link. Other creation failures may persist, so
+    /// callers must not keep recovering from them indefinitely.
     public var launchFailureIsRetryable: Bool {
         guard let terminalError = error as? TerminalSurfaceError else {
             return false
         }
-        if case .surfaceCreationFailed = terminalError {
-            return true
+        if case let .surfaceCreationFailed(activeDisplayCount) = terminalError {
+            return DisplayAvailability.surfaceCreationFailureIsRetryable(
+                activeDisplayCount: activeDisplayCount
+            )
         }
         return false
     }
@@ -303,7 +304,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             ghostty_surface_new(app, &config)
         }
         guard let surfaceHandle else {
-            error = TerminalSurfaceError.surfaceCreationFailed
+            error = TerminalSurfaceError.surfaceCreationFailed(
+                activeDisplayCount: DisplayAvailability.activeCount()
+            )
             return
         }
         surface = surfaceHandle
@@ -1854,7 +1857,7 @@ private extension TerminalSurfaceView {
 // MARK: - Error
 
 enum TerminalSurfaceError: LocalizedError {
-    case surfaceCreationFailed
+    case surfaceCreationFailed(activeDisplayCount: Int)
     case surfaceClosed(processAlive: Bool)
 
     var errorDescription: String? {
