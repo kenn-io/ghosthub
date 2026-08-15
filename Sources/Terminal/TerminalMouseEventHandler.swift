@@ -5,6 +5,7 @@ import GhosttyKit
 protocol TerminalMouseEventDelegate: AnyObject {
     var surfaceHandle: ghostty_surface_t? { get }
     var prevPressureStage: Int { get set }
+    var bounds: NSRect { get }
     var frame: NSRect { get }
     func ensureFirstResponder()
     func convert(_ point: NSPoint, from view: NSView?) -> NSPoint
@@ -149,25 +150,16 @@ struct TerminalMouseEventHandler {
         )
     }
 
-    func handleMouseDragged(_ event: NSEvent) {
-        sendPointerPosition(
-            event.locationInWindow,
-            modifiers: event.modifierFlags
-        )
+    mutating func handleMouseDragged(_ event: NSEvent) {
+        handleDraggedPointer(event)
     }
 
-    func handleRightMouseDragged(_ event: NSEvent) {
-        sendPointerPosition(
-            event.locationInWindow,
-            modifiers: event.modifierFlags
-        )
+    mutating func handleRightMouseDragged(_ event: NSEvent) {
+        handleDraggedPointer(event)
     }
 
-    func handleOtherMouseDragged(_ event: NSEvent) {
-        sendPointerPosition(
-            event.locationInWindow,
-            modifiers: event.modifierFlags
-        )
+    mutating func handleOtherMouseDragged(_ event: NSEvent) {
+        handleDraggedPointer(event)
     }
 
     func handleScrollWheel(_ event: NSEvent) {
@@ -241,6 +233,20 @@ struct TerminalMouseEventHandler {
         _ button: ghostty_input_mouse_button_e
     ) {
         pressedButtons.removeAll { $0.button.rawValue == button.rawValue }
+    }
+
+    private mutating func handleDraggedPointer(_ event: NSEvent) {
+        if let delegate {
+            let position = delegate.convert(event.locationInWindow, from: nil)
+            pointerIsInside = delegate.bounds.contains(position)
+        } else {
+            pointerIsInside = false
+        }
+        pointerLocationInWindow = pointerIsInside ? event.locationInWindow : nil
+        sendPointerPosition(
+            event.locationInWindow,
+            modifiers: event.modifierFlags
+        )
     }
 
     private func sendPointerPosition(
