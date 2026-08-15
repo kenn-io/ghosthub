@@ -4007,6 +4007,41 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("attachment failure publishes its disconnected state")
+    func attachmentFailurePublishesDisconnectedState() async throws {
+        let environment = try setupStandardEnvironment()
+        let resolutionGate = BlockingGate()
+        let resolutionFinished = Mutex(false)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            nativeTmuxPathProvider: {
+                resolutionGate.wait()
+                resolutionFinished.withLock { $0 = true }
+                return .failure(.notFound(shell: "test"))
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { resolutionGate.didStart }
+        var updateCount = 0
+        let updates = model.objectWillChange.sink { updateCount += 1 }
+        resolutionGate.release()
+
+        await waitUntilMainActor {
+            resolutionFinished.withLock { $0 } && updateCount > 0
+        }
+
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        withExtendedLifetime(updates) {}
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("failed remote provisioning removes the optimistic session")
     func failedRemoteProvisioningRemovesOptimisticSession() async throws {
         let environment = try setupRemoteEnvironment()

@@ -715,12 +715,13 @@ final class WorkspaceSceneModel: ObservableObject {
         panelRoutingService.isSidePanelVisible
     }
     @Published var preferredActiveSurfaceTarget: WorkspaceTerminalSurfaceTarget?
-    private var borrowedTmuxConnectionStates: [UUID: ConnectionState] = [:] {
+    @Published private var borrowedTmuxConnectionStates:
+        [UUID: ConnectionState] = [:] {
         didSet {
             refreshConnectedBorrowedTmuxSessionIDs()
         }
     }
-    @Published private(set) var connectedBorrowedTmuxSessionIDs:
+    private(set) var connectedBorrowedTmuxSessionIDs:
         Set<String> = []
     private struct PendingTmuxSessionCreation: Equatable {
         var request: WorkspaceTmuxSessionCreationRequest
