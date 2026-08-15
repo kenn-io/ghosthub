@@ -140,6 +140,33 @@ struct WorktreeRowStatusTests {
         #expect(!s.isAgentRunning)
     }
 
+    @Test func windowCountReplacesGenericRunningIndicatorWithoutAddingLine() {
+        let w = makeWorktree()
+        let plural = WorktreeRowStatus.make(
+            for: w,
+            sessions: [],
+            hasLiveTmuxSession: true,
+            tmuxWindowCount: 3
+        )
+        let singular = WorktreeRowStatus.make(
+            for: w,
+            sessions: [],
+            hasLiveTmuxSession: true,
+            tmuxWindowCount: 1
+        )
+        let fallback = WorktreeRowStatus.make(
+            for: w,
+            sessions: [],
+            hasLiveTmuxSession: true
+        )
+
+        #expect(plural.tmuxWindowLabel == "3 windows")
+        #expect(!plural.showsGenericRunningIndicator)
+        #expect(!plural.showsSecondLine)
+        #expect(singular.tmuxWindowLabel == "1 window")
+        #expect(fallback.showsGenericRunningIndicator)
+    }
+
     @Test func checksFailure() {
         let w = makeWorktree(linkedPR: 7, checks: .failure)
         let s = WorktreeRowStatus.make(for: w, sessions: [])

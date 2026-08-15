@@ -1478,6 +1478,30 @@ struct KwtInventoryClientTests {
         #expect(overlaid.worktrees == [worktree])
     }
 
+    @Test("tmux inventory authority does not require reachability state")
+    func tmuxAuthorityIsIndependentOfReachability() {
+        let hostID = UUID()
+        let stored = WorkspaceSnapshot(
+            hosts: [HostSummary(
+                id: hostID,
+                name: "build-box",
+                kind: .remote,
+                platform: .linux,
+                tmuxInventoryIsAuthoritative: false
+            )],
+            projects: [],
+            worktrees: []
+        )
+
+        let overlaid = HostInventoryOverlay.applyRuntimeSessions(
+            tmuxSessionsByHost: [:],
+            tmuxAuthoritativeHostIDs: [hostID],
+            to: stored
+        )
+
+        #expect(overlaid.hosts[0].tmuxInventoryIsAuthoritative)
+    }
+
     @Test("Herdr inventory overlays only Herdr sessions")
     func herdrInventoryIsAdditive() {
         let hostID = UUID()

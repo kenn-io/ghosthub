@@ -130,6 +130,84 @@ struct WorkspaceWorktreeRemovalActionPresentation: Equatable {
     }
 }
 
+struct WorktreeStatusCluster: View {
+    let status: WorktreeRowStatus
+
+    var body: some View {
+        if hasStatus {
+            HStack(spacing: 3) {
+                if let added = status.diffAdded {
+                    Text("+\(added)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(Color.green)
+                }
+                if let removed = status.diffRemoved {
+                    Text("−\(removed)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(Color.red)
+                }
+                if let ahead = status.syncAhead {
+                    Text("↑\(ahead)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if let behind = status.syncBehind {
+                    Text("↓\(behind)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if status.isRunning, status.isAgentRunning {
+                    Image(systemName: "cpu")
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentColor)
+                }
+                if let count = status.tmuxWindowCount,
+                   let label = status.tmuxWindowLabel {
+                    Label {
+                        Text("\(count)")
+                            .monospacedDigit()
+                    } icon: {
+                        Image(systemName: "rectangle.stack.fill")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(Color.secondary)
+                    .help(label)
+                    .accessibilityHidden(true)
+                } else if status.showsGenericRunningIndicator {
+                    Image(systemName: "play.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Color.secondary)
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    private var hasStatus: Bool {
+        status.diffAdded != nil
+            || status.diffRemoved != nil
+            || status.syncAhead != nil
+            || status.syncBehind != nil
+            || status.isRunning
+    }
+}
+
+struct WorktreeRowLine: View {
+    let title: String
+    let status: WorktreeRowStatus
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+            WorktreeStatusCluster(status: status)
+        }
+    }
+}
+
 enum WorkspaceSidebarRowAction: Hashable {
     case killTmuxSession(WorkspaceTmuxSessionSelection)
     case stopHerdrSession(WorkspaceHerdrSessionSelection)
@@ -390,6 +468,7 @@ struct WorkspaceSidebarView: View {
     let activeHerdrSession: WorkspaceHerdrSessionSelection?
     let activeZellijSession: WorkspaceZellijSessionSelection?
     let activeTmuxSessionIsConnected: Bool
+    let connectedTmuxSessionIDs: Set<String>
     let workingTmuxSessionIDs: Set<String>
     let previewableTmuxSessionIDs: Set<String>
     let sessionPreviewMode: SessionPreviewMode
@@ -397,7 +476,8 @@ struct WorkspaceSidebarView: View {
         ((WorkspaceTmuxSessionSelection, @escaping () -> Void) -> AnyView?)?
     let onTmuxSessionPreviewExpanded:
         (WorkspaceTmuxSessionSelection, Bool) -> Void
-    let onOpenTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
+    let onOpenTmuxSession:
+        (WorkspaceTmuxSessionSelection, WorkspaceSelection) -> Void
     let onOpenHerdrSession: (WorkspaceHerdrSessionSelection) -> Void
     let onOpenZellijSession: (WorkspaceZellijSessionSelection) -> Void
     let pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
@@ -454,6 +534,7 @@ struct WorkspaceSidebarView: View {
         activeHerdrSession: WorkspaceHerdrSessionSelection? = nil,
         activeZellijSession: WorkspaceZellijSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
+        connectedTmuxSessionIDs: Set<String> = [],
         workingTmuxSessionIDs: Set<String> = [],
         previewableTmuxSessionIDs: Set<String> = [],
         sessionPreviewMode: SessionPreviewMode = .off,
@@ -464,8 +545,9 @@ struct WorkspaceSidebarView: View {
             Bool
         ) -> Void = { _, _ in },
         onOpenTmuxSession: @escaping (
-            WorkspaceTmuxSessionSelection
-        ) -> Void = { _ in },
+            WorkspaceTmuxSessionSelection,
+            WorkspaceSelection
+        ) -> Void = { _, _ in },
         onOpenHerdrSession: @escaping (
             WorkspaceHerdrSessionSelection
         ) -> Void = { _ in },
@@ -519,6 +601,7 @@ struct WorkspaceSidebarView: View {
         self.activeHerdrSession = activeHerdrSession
         self.activeZellijSession = activeZellijSession
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
+        self.connectedTmuxSessionIDs = connectedTmuxSessionIDs
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
         self.previewableTmuxSessionIDs = previewableTmuxSessionIDs
         self.sessionPreviewMode = sessionPreviewMode
@@ -561,6 +644,7 @@ struct WorkspaceSidebarView: View {
             in: snapshot,
             visibility: visibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
+            connectedTmuxSessionIDs: connectedTmuxSessionIDs,
             worktreeOrderRawValue: worktreeOrderRawValue,
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
             herdrSessionOrderRawValue: herdrSessionOrderRawValue,
@@ -1125,12 +1209,14 @@ struct WorkspaceSidebarView: View {
                    let worktree = snapshot.worktree(id: worktreeID),
                    let tmuxSelection = WorkspaceSidebarModel
                    .tmuxSessionSelection(for: worktree) {
-                    selection.select(
-                        row.target,
-                        in: snapshot,
-                        visibility: visibility
+                    Self.activateTmuxSession(
+                        tmuxSelection,
+                        rowTarget: row.target,
+                        selection: &selection,
+                        snapshot: snapshot,
+                        visibility: visibility,
+                        onOpen: onOpenTmuxSession
                     )
-                    onOpenTmuxSession(tmuxSelection)
                     return
                 }
                 if case let .directoryWorkspace(directoryWorkspaceID) =
@@ -1138,15 +1224,15 @@ struct WorkspaceSidebarView: View {
                     let workspace = snapshot.directoryWorkspace(
                         id: directoryWorkspaceID
                     ) {
-                    selection.select(
-                        row.target,
-                        in: snapshot,
-                        visibility: visibility
-                    )
-                    onOpenTmuxSession(
+                    Self.activateTmuxSession(
                         WorkspaceSidebarModel.tmuxSessionSelection(
                             for: workspace
-                        )
+                        ),
+                        rowTarget: row.target,
+                        selection: &selection,
+                        snapshot: snapshot,
+                        visibility: visibility,
+                        onOpen: onOpenTmuxSession
                     )
                     return
                 }
@@ -1780,14 +1866,14 @@ struct WorkspaceSidebarView: View {
         selection: inout WorkspaceSelection,
         snapshot: WorkspaceSnapshot,
         visibility: WorktreeVisibility,
-        onOpen: (WorkspaceTmuxSessionSelection) -> Void
+        onOpen: (WorkspaceTmuxSessionSelection, WorkspaceSelection) -> Void
     ) {
         selection.select(
             rowTarget,
             in: snapshot,
             visibility: visibility
         )
-        onOpen(tmuxSession)
+        onOpen(tmuxSession, selection)
     }
 
     private func reorderableRow<Content: View>(
@@ -2291,66 +2377,10 @@ struct WorkspaceSidebarView: View {
         status: WorktreeRowStatus
     ) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 0)
-                worktreeStatusCluster(status)
-            }
+            WorktreeRowLine(title: title, status: status)
             worktreePRLine(status)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Trailing status cluster: diff, sync, and running indicator.
-    @ViewBuilder
-    private func worktreeStatusCluster(_ status: WorktreeRowStatus) -> some View {
-        if hasStatusCluster(status) {
-            HStack(spacing: 3) {
-                if let added = status.diffAdded {
-                    Text("+\(added)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(Color.green)
-                }
-                if let removed = status.diffRemoved {
-                    Text("−\(removed)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(Color.red)
-                }
-                if let ahead = status.syncAhead {
-                    Text("↑\(ahead)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                if let behind = status.syncBehind {
-                    Text("↓\(behind)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                if status.isRunning {
-                    Image(
-                        systemName: status.isAgentRunning
-                            ? "cpu" : "play.circle.fill"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(
-                        status.isAgentRunning
-                            ? Color.accentColor : Color.secondary
-                    )
-                }
-            }
-            .fixedSize()
-        }
-    }
-
-    private func hasStatusCluster(_ status: WorktreeRowStatus) -> Bool {
-        status.diffAdded != nil
-            || status.diffRemoved != nil
-            || status.syncAhead != nil
-            || status.syncBehind != nil
-            || status.isRunning
     }
 
     /// Second line: PR number + truncated title, draft badge, CI glyph.

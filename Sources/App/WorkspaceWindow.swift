@@ -676,6 +676,8 @@ struct WorkspaceWindow: View {
                 sceneModel.activeBorrowedTmuxSelection,
                 activeTmuxSessionIsConnected:
                 sceneModel.activeBorrowedTmuxSessionIsConnected,
+                connectedTmuxSessionIDs:
+                sceneModel.connectedBorrowedTmuxSessionIDs,
                 activeTmuxSessionCanApplyTheme:
                 sceneModel.canApplyThemeToActiveTmuxSession,
                 availableApplicationShortcuts:

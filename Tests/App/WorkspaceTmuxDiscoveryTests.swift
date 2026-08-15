@@ -98,6 +98,519 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @Test("failed tmux refresh hides a retained worktree window count")
+    @MainActor
+    func failedTmuxRefreshHidesRetainedWorktreeWindowCount() async throws {
+        let environment = try setupStandardEnvironment()
+        let sessionName = "kwt-wt-ghosthub-main-12345678"
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        let discoveries = TmuxDiscoveryResultQueue([
+            .success([
+                DiscoveredTmuxSession(
+                    name: sessionName,
+                    windowCount: 3,
+                    createdAt: "1721552400",
+                    managed: true
+                ),
+            ]),
+            .failure(.shellFailed(status: 1)),
+        ])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            tmuxSessionDiscovery: { _ in discoveries.removeFirst() }
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            WorkspaceSidebarModel.sections(in: model.snapshot)[0]
+                .projects[0].worktreeRows[0]
+                .worktreeStatus?.tmuxWindowCount == 3
+        }
+
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            discoveries.count == 2
+                && WorkspaceSidebarModel.sections(in: model.snapshot)[0]
+                .projects[0].worktreeRows[0]
+                .worktreeStatus?.tmuxWindowCount == nil
+        }
+
+        let host = try #require(model.snapshot.host(id: environment.host.id))
+        #expect(host.lastKnownReachable)
+        #expect(host.tmuxSessions.first?.windows.count == 3)
+        #expect(
+            WorkspaceSidebarModel.sections(in: model.snapshot)[0]
+                .projects[0].worktreeRows[0]
+                .worktreeStatus?.tmuxWindowCount == nil
+        )
+        await model.shutdown()
+    }
+
+    @Test("failed creation reconciliation hides a retained worktree window count")
+    @MainActor
+    func failedCreationReconciliationHidesRetainedWorktreeWindowCount()
+        async throws {
+        let environment = try setupStandardEnvironment()
+        let sessionName = "kwt-wt-project-main-12345678"
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        let discoveries = Counter()
+        let rediscoveryGate = BlockingGate()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        defer { rediscoveryGate.release() }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                switch discoveries.increment() {
+                case 1:
+                    return .success([
+                        DiscoveredTmuxSession(
+                            name: sessionName,
+                            windowCount: 3,
+                            createdAt: "1721552400",
+                            managed: true
+                        ),
+                    ])
+                case 2:
+                    return .failure(.shellFailed(status: 1))
+                default:
+                    rediscoveryGate.wait()
+                    return .failure(.shellFailed(status: 1))
+                }
+            },
+            createdSessionDiscoveryDelays: [.zero]
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            WorkspaceSidebarModel.sections(in: model.snapshot)[0]
+                .projects[0].worktreeRows[0]
+                .worktreeStatus?.tmuxWindowCount == 3
+        }
+
+        model.createTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "release-work"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { rediscoveryGate.didStart }
+
+        #expect(
+            WorkspaceSidebarModel.sections(in: model.snapshot)[0]
+                .projects[0].worktreeRows[0]
+                .worktreeStatus?.tmuxWindowCount == nil
+        )
+        rediscoveryGate.release()
+        await model.shutdown()
+    }
+
+    @Test("successful creation reconciliation restores host discovery state")
+    @MainActor
+    func successfulCreationReconciliationRestoresHostDiscoveryState()
+        async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let discoveries = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                _ = discoveries.increment()
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "created-work",
+                        windowCount: 2,
+                        createdAt: "1721552400",
+                        managed: false
+                    ),
+                ])
+            },
+            createdSessionDiscoveryDelays: [.zero]
+        )
+
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "created-work"
+        )
+        model.createTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            guard discoveries.count == 1,
+                  let host = model.snapshot.host(
+                      id: environment.remoteHost.id
+                  )
+            else { return false }
+            return host.lastSeenAt != nil
+                && host.tmuxInventoryIsAuthoritative
+                && host.tmuxSessions.first(where: {
+                    $0.name == "created-work"
+                })?.windows.count == 2
+        }
+
+        let host = try #require(
+            model.snapshot.host(id: environment.remoteHost.id)
+        )
+        #expect(host.lastKnownReachable)
+        #expect(host.lastSeenAt != nil)
+        #expect(host.tmuxInventoryIsAuthoritative)
+        #expect(host.tmuxSessions.first(where: {
+            $0.name == "created-work"
+        })?.windows.count == 2)
+        await model.shutdown()
+    }
+
+    @Test("failed creation reconciliation marks a lost host offline")
+    @MainActor
+    func failedCreationReconciliationMarksLostHostOffline() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let discoveries = Counter()
+        let transport = SSHConnectionFailure.classify(
+            status: 255,
+            output: "ssh: connect to host host-a.example: Network is unreachable"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                _ = discoveries.increment()
+                return .failure(.sshConnectionFailed(
+                    host: "Host A",
+                    classification: transport
+                ))
+            },
+            createdSessionDiscoveryDelays: [.zero]
+        )
+
+        model.createTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "created-work"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            discoveries.count == 1
+                && model.snapshot.host(id: environment.remoteHost.id)?
+                .lastKnownReachable == false
+        }
+
+        let host = try #require(
+            model.snapshot.host(id: environment.remoteHost.id)
+        )
+        #expect(!host.lastKnownReachable)
+        #expect(!host.tmuxInventoryIsAuthoritative)
+        await model.shutdown()
+    }
+
+    @Test("older creation failure cannot overwrite newer discovery")
+    @MainActor
+    func olderCreationFailureCannotOverwriteNewerDiscovery() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let calls = Counter()
+        let creationGate = BlockingGate()
+        let recoveryGate = BlockingGate()
+        let creationCompleted = Counter()
+        let transport = SSHConnectionFailure.classify(
+            status: 255,
+            output: "ssh: connect to host host-a.example: Network is unreachable"
+        )
+        let newerSession = DiscoveredTmuxSession(
+            name: "newer-session",
+            windowCount: 2,
+            createdAt: "1721552400",
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { host in
+                guard host.isRemote else { return .success([]) }
+                switch calls.increment() {
+                case 1:
+                    creationGate.wait()
+                    _ = creationCompleted.increment()
+                    return .failure(.sshConnectionFailed(
+                        host: "Host A",
+                        classification: transport
+                    ))
+                case 2:
+                    return .success([newerSession])
+                default:
+                    recoveryGate.wait()
+                    return .success([newerSession])
+                }
+            },
+            createdSessionDiscoveryDelays: [.zero]
+        )
+        defer {
+            creationGate.release()
+            recoveryGate.release()
+        }
+
+        model.createTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "created-work"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { creationGate.didStart }
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            guard calls.count >= 2,
+                  let host = model.snapshot.host(
+                      id: environment.remoteHost.id
+                  )
+            else { return false }
+            return host.lastKnownReachable
+                && host.tmuxInventoryIsAuthoritative
+                && host.tmuxSessions.contains { $0.name == newerSession.name }
+        }
+
+        creationGate.release()
+        await waitUntilMainActor {
+            creationCompleted.count == 1
+                && (calls.count >= 3
+                    || model.exhaustedCreatedTmuxSessionCount == 1)
+        }
+
+        let host = try #require(
+            model.snapshot.host(id: environment.remoteHost.id)
+        )
+        #expect(calls.count == 3)
+        #expect(host.lastKnownReachable)
+        #expect(host.tmuxInventoryIsAuthoritative)
+        #expect(host.tmuxSessions.contains { $0.name == newerSession.name })
+
+        recoveryGate.release()
+        await model.shutdown()
+    }
+
+    @Test("older creation failure cannot overwrite newer reconnect")
+    @MainActor
+    func olderCreationFailureCannotOverwriteNewerReconnect() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let calls = Counter()
+        let creationGate = BlockingGate()
+        let creationCompleted = Counter()
+        let transport = SSHConnectionFailure.classify(
+            status: 255,
+            output: "ssh: connect to host host-a.example: Network is unreachable"
+        )
+        let releaseSession = DiscoveredTmuxSession(
+            name: "release-work",
+            windowCount: 2,
+            createdAt: "1721552400",
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { host in
+                guard host.isRemote else { return .success([]) }
+                switch calls.increment() {
+                case 1:
+                    creationGate.wait()
+                    _ = creationCompleted.increment()
+                    return .failure(.sshConnectionFailed(
+                        host: "Host A",
+                        classification: transport
+                    ))
+                default:
+                    return .success([releaseSession])
+                }
+            },
+            createdSessionDiscoveryDelays: [.zero],
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        defer { creationGate.release() }
+
+        model.createTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "created-work"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { creationGate.didStart }
+        let createdObserverIDs = Set(
+            surfaceStore.surface.closeObservers.keys
+        )
+
+        let reconnectSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: releaseSession.name
+        )
+        model.openBorrowedTmuxSession(reconnectSelection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+        let reconnectObserverID = try #require(
+            Set(surfaceStore.surface.closeObservers.keys)
+                .subtracting(createdObserverIDs).first
+        )
+        let reconnectObserver = try #require(
+            surfaceStore.surface.closeObservers[reconnectObserverID]
+        )
+        reconnectObserver(false, 255)
+
+        await waitUntilMainActor {
+            guard calls.count >= 2,
+                  surfaceStore.requestCount == 3,
+                  model.activeBorrowedTmuxSessionIsConnected,
+                  let host = model.snapshot.host(
+                      id: environment.remoteHost.id
+                  )
+            else { return false }
+            return host.lastKnownReachable
+                && host.tmuxInventoryIsAuthoritative
+                && host.tmuxSessions.first(where: {
+                    $0.name == releaseSession.name
+                })?.windows.count == 2
+        }
+
+        creationGate.release()
+        await waitUntilMainActor {
+            creationCompleted.count == 1
+                && model.exhaustedCreatedTmuxSessionCount == 1
+        }
+
+        let host = try #require(
+            model.snapshot.host(id: environment.remoteHost.id)
+        )
+        #expect(host.lastKnownReachable)
+        #expect(host.tmuxInventoryIsAuthoritative)
+        #expect(host.tmuxSessions.first(where: {
+            $0.name == releaseSession.name
+        })?.windows.count == 2)
+        await model.shutdown()
+    }
+
+    @Test("superseded final creation probe triggers cleanup discovery")
+    @MainActor
+    func supersededFinalCreationProbeTriggersCleanupDiscovery() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let calls = Counter()
+        let initialCreationGate = BlockingGate()
+        let finalCreationGate = BlockingGate()
+        let transport = SSHConnectionFailure.classify(
+            status: 255,
+            output: "ssh: connect to host host-a.example: Network is unreachable"
+        )
+        let newerSession = DiscoveredTmuxSession(
+            name: "newer-session",
+            windowCount: 2,
+            createdAt: "1721552400",
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { host in
+                guard host.isRemote else { return .success([]) }
+                switch calls.increment() {
+                case 1:
+                    initialCreationGate.wait()
+                    return .failure(.sshConnectionFailed(
+                        host: "Host A",
+                        classification: transport
+                    ))
+                case 2:
+                    return .failure(.sshConnectionFailed(
+                        host: "Host A",
+                        classification: transport
+                    ))
+                case 3:
+                    finalCreationGate.wait()
+                    return .failure(.sshConnectionFailed(
+                        host: "Host A",
+                        classification: transport
+                    ))
+                default:
+                    return .success([newerSession])
+                }
+            },
+            createdSessionDiscoveryDelays: [.zero]
+        )
+        defer {
+            initialCreationGate.release()
+            finalCreationGate.release()
+        }
+
+        let createdSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "created-work"
+        )
+        model.createTmuxSession(createdSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { initialCreationGate.didStart }
+
+        model.closeBorrowedTmuxSession(createdSelection)
+        await waitUntilMainActor { finalCreationGate.didStart }
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            guard calls.count >= 4,
+                  let host = model.snapshot.host(
+                      id: environment.remoteHost.id
+                  )
+            else { return false }
+            return host.lastKnownReachable
+                && host.tmuxInventoryIsAuthoritative
+                && host.tmuxSessions.contains { $0.name == newerSession.name }
+        }
+
+        finalCreationGate.release()
+        await waitUntilMainActor {
+            calls.count >= 5 && model.pendingCreatedTmuxSessionCount == 0
+        }
+
+        let host = try #require(
+            model.snapshot.host(id: environment.remoteHost.id)
+        )
+        #expect(calls.count >= 5)
+        #expect(model.exhaustedCreatedTmuxSessionCount == 0)
+        #expect(host.lastKnownReachable)
+        #expect(host.tmuxInventoryIsAuthoritative)
+        #expect(host.tmuxSessions.map(\.name) == [newerSession.name])
+
+        await model.shutdown()
+    }
+
     @Test("local tmux inventory publishes while a remote probe is blocked")
     @MainActor
     func localTmuxInventoryPublishesBeforeRemoteCompletes() async throws {
@@ -1133,18 +1646,24 @@ struct WorkspaceTmuxDiscoveryTests {
 
         model.openBorrowedTmuxSession(first)
         await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxSessionIsConnected(first)
+        }
         let firstHandle = try #require(
             model.retainedBorrowedTmuxHandle(for: first)
         )
+        #expect(model.connectedBorrowedTmuxSessionIDs == [first.id])
 
         model.openBorrowedTmuxSession(second)
         await waitUntilMainActor {
             model.prepareActiveBorrowedTmuxSurface()
             return surfaceStore.requestCount == 2
+                && model.retainedBorrowedTmuxSessionIsConnected(second)
         }
         let secondHandle = try #require(
             model.retainedBorrowedTmuxHandle(for: second)
         )
+        #expect(model.connectedBorrowedTmuxSessionIDs == [first.id, second.id])
 
         model.openBorrowedTmuxSession(first)
         model.prepareActiveBorrowedTmuxSurface()
@@ -1153,6 +1672,7 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(model.retainedBorrowedTmuxHandle(for: first) == firstHandle)
         #expect(firstHandle.surfaceID != secondHandle.surfaceID)
         #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+        #expect(model.connectedBorrowedTmuxSessionIDs == [first.id, second.id])
         #expect(surfaceStore.requestCount == 2)
         #expect(surfaceStore.removedKeys.isEmpty)
         await model.shutdown()
@@ -2256,6 +2776,160 @@ struct WorkspaceTmuxDiscoveryTests {
             sessionID: "$8",
             createdAt: "1721552400"
         ))
+    }
+
+    @MainActor
+    @Test("reopening a killed local worktree restores its window count")
+    func reopeningKilledLocalWorktreeRestoresWindowCount() async throws {
+        let environment = try setupStandardEnvironment()
+        let sessionName = "kwt-wt-ghosthub-main-12345678"
+        let runningSession = DiscoveredTmuxSession(
+            name: sessionName,
+            windowCount: 1,
+            serverPID: "31415",
+            sessionID: "$8",
+            createdAt: "1721552400",
+            managed: true
+        )
+        let restartedSession = DiscoveredTmuxSession(
+            name: sessionName,
+            windowCount: 3,
+            serverPID: "31416",
+            sessionID: "$9",
+            createdAt: "1721552500",
+            managed: true
+        )
+        let discoveries = TmuxDiscoveryResultQueue([
+            .success([runningSession]),
+            .success([]),
+            .success([restartedSession]),
+        ])
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
+            tmuxSessionKiller: { _, _, _ in },
+            createdSessionDiscoveryDelays: [.milliseconds(1)]
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            discoveries.count == 1
+                && model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.first?.windows.count == 1
+        }
+        let worktree = try #require(model.snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let request = try await model.prepareTmuxSessionKill(selection)
+
+        try await model.killTmuxSession(request)
+        await waitUntilMainActor {
+            discoveries.count == 2
+                && model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.isEmpty == true
+        }
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            discoveries.count == 3
+                && model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.first?.windows.count == 3
+        }
+
+        let host = try #require(
+            model.snapshot.host(id: environment.host.id)
+        )
+        #expect(host.tmuxInventoryIsAuthoritative)
+        #expect(host.tmuxSessions.first?.name == sessionName)
+        #expect(host.tmuxSessions.first?.windows.count == 3)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("closing a worktree replaces the discovery its probe superseded")
+    func closingWorktreeReplacesSupersededDiscovery() async throws {
+        let environment = try setupStandardEnvironment()
+        let sessionName = "kwt-wt-ghosthub-main-12345678"
+        let attempts = Counter()
+        let blockedRefresh = BlockingGate()
+        let discovered = DiscoveredTmuxSession(
+            name: sessionName,
+            windowCount: 3,
+            createdAt: "1721552500",
+            managed: true
+        )
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: [
+                    TmuxWindowSummary(
+                        id: "0",
+                        index: 0,
+                        name: "editor"
+                    ),
+                ]
+            ),
+        ]
+        snapshot.hosts[0].tmuxInventoryIsAuthoritative = true
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                if attempts.increment() == 1 {
+                    blockedRefresh.wait()
+                }
+                return .success([discovered])
+            },
+            createdSessionDiscoveryDelays: [.zero]
+        )
+        defer { blockedRefresh.release() }
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { blockedRefresh.didStart }
+        let worktree = try #require(model.snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        model.closeBorrowedTmuxSession(selection)
+        blockedRefresh.release()
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            attempts.count >= 2
+                && model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.first?.windows.count == 3
+        }
+
+        #expect(attempts.count == 2)
+        #expect(
+            model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.first?.windows.count == 3
+        )
+        await model.shutdown()
     }
 
     @MainActor
@@ -4814,12 +5488,119 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("creation reconciliation invalidation keeps reconnecting")
-    func creationReconciliationInvalidationKeepsReconnecting() async throws {
+    @Test("superseded reconnect probes stay read-only and retry")
+    func supersededReconnectProbesStayReadOnlyAndRetry() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        var snapshot = environment.snapshot
+        let hostIndex = try #require(snapshot.hosts.firstIndex {
+            $0.id == environment.remoteHost.id
+        })
+        snapshot.hosts[hostIndex].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "release-work",
+                managed: false,
+                windows: [
+                    TmuxWindowSummary(id: "0", index: 0, name: "editor"),
+                    TmuxWindowSummary(id: "1", index: 1, name: "tests"),
+                ]
+            ),
+        ]
+        snapshot.hosts[hostIndex].tmuxInventoryIsAuthoritative = true
+        let attempts = Counter()
+        let reconnectGate = BlockingGate()
+        let creationGate = BlockingGate()
+        let retryGate = BlockingGate()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let discovered = [
+            DiscoveredTmuxSession(
+                name: "release-work",
+                windowCount: 2,
+                createdAt: nil,
+                managed: false
+            ),
+            DiscoveredTmuxSession(
+                name: "created-work",
+                windowCount: 1,
+                createdAt: nil,
+                managed: false
+            ),
+        ]
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                switch attempts.increment() {
+                case 1:
+                    reconnectGate.wait()
+                    return .success([])
+                case 2:
+                    creationGate.wait()
+                    return .success(discovered)
+                default:
+                    retryGate.wait()
+                    return .success(discovered)
+                }
+            },
+            createdSessionDiscoveryDelays: [.zero],
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        defer {
+            reconnectGate.release()
+            creationGate.release()
+            retryGate.release()
+        }
+
+        let reconnectSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(reconnectSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor { reconnectGate.didStart }
+
+        model.createTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "created-work"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { creationGate.didStart }
+
+        reconnectGate.release()
+        await waitUntilMainActor {
+            guard let host = model.snapshot.host(
+                id: environment.remoteHost.id
+            ) else { return false }
+            return attempts.count >= 3
+                || !host.tmuxSessions.contains { $0.name == "release-work" }
+        }
+
+        let host = try #require(
+            model.snapshot.host(id: environment.remoteHost.id)
+        )
+        #expect(attempts.count >= 3)
+        #expect(
+            host.tmuxSessions.first { $0.name == "release-work" }?
+                .windows.count == 2
+        )
+
+        creationGate.release()
+        retryGate.release()
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("older creation result cannot invalidate newer reconnect")
+    func olderCreationResultCannotInvalidateNewerReconnect() async throws {
         let environment = try setupRemoteTmuxEnvironment()
         let attempts = Counter()
         let creationGate = BlockingGate()
-        let reconnectProbe = CancellableProbeState()
+        let reconnectGate = BlockingGate()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
@@ -4827,12 +5608,12 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
-            tmuxSessionDiscovery: { host in
+            tmuxSessionDiscovery: { _ in
                 switch attempts.increment() {
                 case 1:
                     creationGate.wait()
                 case 2:
-                    return reconnectProbe.discover(host)
+                    reconnectGate.wait()
                 default:
                     break
                 }
@@ -4854,7 +5635,10 @@ struct WorkspaceTmuxDiscoveryTests {
             createdSessionDiscoveryDelays: [.seconds(10)],
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
-        defer { creationGate.release() }
+        defer {
+            creationGate.release()
+            reconnectGate.release()
+        }
         let createdSelection = WorkspaceTmuxSessionSelection(
             hostID: environment.remoteHost.id,
             name: "created-work"
@@ -4884,17 +5668,16 @@ struct WorkspaceTmuxDiscoveryTests {
             surfaceStore.surface.closeObservers[reconnectObserverID]
         )
         reconnectObserver(false, 255)
-        await waitUntilMainActor { reconnectProbe.didStart }
+        await waitUntilMainActor { reconnectGate.didStart }
 
         creationGate.release()
+        reconnectGate.release()
 
         await waitUntilMainActor {
-            reconnectProbe.didCancel
-                && attempts.count == 3
-                && surfaceStore.requestCount == 3
+            surfaceStore.requestCount == 3
                 && model.activeBorrowedTmuxSessionIsConnected
         }
-        #expect(attempts.count == 3)
+        #expect(attempts.count == 2)
         #expect(surfaceStore.requestCount == 3)
         #expect(model.activeBorrowedTmuxSessionIsConnected)
         #expect(model.activeBorrowedTmuxRecoveryState == nil)
@@ -5083,11 +5866,20 @@ struct WorkspaceTmuxDiscoveryTests {
     @Test("default-socket absence ends a confirmed session")
     func defaultSocketAbsenceEndsSession() async throws {
         let environment = try setupRemoteTmuxEnvironment()
+        var snapshot = environment.snapshot
+        let hostIndex = try #require(snapshot.hosts.firstIndex {
+            $0.id == environment.remoteHost.id
+        })
+        snapshot.hosts[hostIndex].tmuxSessions[0].windows = [
+            TmuxWindowSummary(id: "0", index: 0, name: "editor"),
+            TmuxWindowSummary(id: "1", index: 1, name: "tests"),
+        ]
+        snapshot.hosts[hostIndex].tmuxInventoryIsAuthoritative = true
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.localHostID,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in .success([]) },
@@ -5104,7 +5896,12 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             model.activeBorrowedTmuxSessionIsConfirmedEnded
         }
+        let host = try #require(
+            model.snapshot.host(id: environment.remoteHost.id)
+        )
         #expect(surfaceStore.requestCount == 1)
+        #expect(host.tmuxInventoryIsAuthoritative)
+        #expect(host.tmuxSessions.isEmpty)
         await model.shutdown()
     }
 

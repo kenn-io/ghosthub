@@ -25,6 +25,7 @@ public struct WorkspaceDisplayState {
     public let suppressesAutomaticWorktreeSessionOpen: Bool
     public let activeTmuxSession: WorkspaceTmuxSessionSelection?
     public let activeTmuxSessionIsConnected: Bool
+    public let connectedTmuxSessionIDs: Set<String>
     public let activeTmuxSessionCanApplyTheme: Bool
     public let availableApplicationShortcuts:
         Set<ApplicationShortcutAction>
@@ -57,6 +58,7 @@ public struct WorkspaceDisplayState {
         suppressesAutomaticWorktreeSessionOpen: Bool = false,
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
+        connectedTmuxSessionIDs: Set<String> = [],
         activeTmuxSessionCanApplyTheme: Bool = false,
         availableApplicationShortcuts:
         Set<ApplicationShortcutAction> = [],
@@ -93,6 +95,7 @@ public struct WorkspaceDisplayState {
         self.activeTmuxSession = activeTmuxSession
         self.activeTmuxSessionIsConnected =
             activeTmuxSessionIsConnected
+        self.connectedTmuxSessionIDs = connectedTmuxSessionIDs
         self.activeTmuxSessionCanApplyTheme =
             activeTmuxSessionCanApplyTheme
         self.availableApplicationShortcuts =

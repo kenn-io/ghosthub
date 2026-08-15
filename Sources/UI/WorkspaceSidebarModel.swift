@@ -461,6 +461,7 @@ public enum WorkspaceSidebarModel {
         in snapshot: WorkspaceSnapshot,
         visibility: WorktreeVisibility = .default,
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
+        connectedTmuxSessionIDs: Set<String> = [],
         worktreeOrderRawValue: String = "",
         tmuxSessionOrderRawValue: String = "",
         herdrSessionOrderRawValue: String = "",
@@ -480,6 +481,11 @@ public enum WorkspaceSidebarModel {
             rawValue: zellijSessionOrderRawValue
         )
         return snapshot.hosts.map { host in
+            let defaultServerSessionsByName = host.tmuxSessions.reduce(
+                into: [String: TmuxSessionSummary]()
+            ) { sessions, session in
+                sessions[session.name] = session
+            }
             // Discovery only lists the host's default tmux server. A
             // protected PR workspace lives on its own socket, so its session
             // name never identifies a discovered session and must not
@@ -510,7 +516,15 @@ public enum WorkspaceSidebarModel {
                         identifiedBy: { $0.id.uuidString }
                     )
                     let rows = worktrees.map { worktree in
-                        worktreeRow(for: worktree, snapshot: snapshot)
+                        worktreeRow(
+                            for: worktree,
+                            snapshot: snapshot,
+                            host: host,
+                            defaultServerSessionsByName:
+                            defaultServerSessionsByName,
+                            connectedTmuxSessionIDs:
+                            connectedTmuxSessionIDs
+                        )
                     }
                     return WorkspaceSidebarProject(
                         project: project,
@@ -662,21 +676,30 @@ public enum WorkspaceSidebarModel {
 
     private static func worktreeRow(
         for worktree: WorktreeSummary,
-        snapshot: WorkspaceSnapshot
+        snapshot: WorkspaceSnapshot,
+        host: HostSummary,
+        defaultServerSessionsByName: [String: TmuxSessionSummary],
+        connectedTmuxSessionIDs: Set<String>
     ) -> WorkspaceSidebarRow {
         let sessions = snapshot.sessions(for: worktree.id)
-        let host = snapshot.host(id: worktree.hostID)
-        let hasLiveTmuxSession = worktree.tmuxSocketName == nil
-            && host?.lastKnownReachable == true
-            && worktree.tmuxSessionName.map { sessionName in
-                host?.tmuxSessions.contains {
-                    $0.name == sessionName
-                } == true
-            } == true
+        let hasConnectedPresentation = tmuxSessionSelection(for: worktree)
+            .map { connectedTmuxSessionIDs.contains($0.id) } == true
+        let tmuxSession = worktree.tmuxSocketName == nil
+            && host.lastKnownReachable
+            && host.tmuxInventoryIsAuthoritative
+            ? worktree.tmuxSessionName.flatMap {
+                defaultServerSessionsByName[$0]
+            }
+            : nil
+        let tmuxWindowCount = tmuxSession.flatMap {
+            $0.windows.isEmpty ? nil : $0.windows.count
+        }
         let status = WorktreeRowStatus.make(
             for: worktree,
             sessions: sessions,
-            hasLiveTmuxSession: hasLiveTmuxSession
+            hasLiveTmuxSession: tmuxSession != nil
+                || hasConnectedPresentation,
+            tmuxWindowCount: tmuxWindowCount
         )
         // The branch/PR lives in the status's second line and the detail
         // card, so worktree rows carry no subtitle. Command-palette search

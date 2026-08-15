@@ -348,7 +348,7 @@ struct WorkspaceSidebarModelTests {
         let remote = HostSummary.fixture(
             name: "Build Box",
             kind: .remote,
-            sshDestination: "wesm@build-box"
+            sshDestination: "user-a@build-box"
         )
 
         let sections = WorkspaceSidebarModel.sections(
@@ -636,7 +636,7 @@ struct WorkspaceSidebarModelTests {
                     id: hostID,
                     name: "Build Box",
                     kind: .remote,
-                    sshDestination: "wesm@build-box",
+                    sshDestination: "user-a@build-box",
                     tmuxSessions: [
                         TmuxSessionSummary(
                             name: "docbank",
@@ -924,6 +924,130 @@ struct WorkspaceSidebarModelTests {
             sections[0].projects[0].worktreeRows[0]
                 .worktreeStatus?.isRunning == false
         )
+    }
+
+    @Test("worktree rows expose only trusted positive tmux window counts")
+    func worktreeWindowCounts() throws {
+        let hostID = UUID()
+        let projectID = UUID()
+        var counted = WorktreeSummary.fixture(
+            hostID: hostID,
+            projectID: projectID,
+            name: "counted"
+        )
+        counted.tmuxSessionName = "kwt-wt-ghosthub-counted-12345678"
+        var protected = WorktreeSummary.fixture(
+            hostID: hostID,
+            projectID: projectID,
+            name: "protected"
+        )
+        protected.tmuxSessionName = "kwt-wt-ghosthub-protected-12345678"
+        protected.tmuxSocketName = "kwt-pr-0123456789abcdef"
+        var empty = WorktreeSummary.fixture(
+            hostID: hostID,
+            projectID: projectID,
+            name: "empty"
+        )
+        empty.tmuxSessionName = "kwt-wt-ghosthub-empty-12345678"
+        var absent = WorktreeSummary.fixture(
+            hostID: hostID,
+            projectID: projectID,
+            name: "absent"
+        )
+        absent.tmuxSessionName = "kwt-wt-ghosthub-absent-12345678"
+        let sessions = [
+            TmuxSessionSummary(
+                name: "kwt-wt-ghosthub-counted-12345678",
+                managed: true,
+                windows: [
+                    .init(id: "@1", index: 0, name: "editor"),
+                    .init(id: "@2", index: 1, name: "tests"),
+                    .init(id: "@3", index: 2, name: "review"),
+                ]
+            ),
+            TmuxSessionSummary(
+                name: "kwt-wt-ghosthub-protected-12345678",
+                managed: false,
+                windows: [
+                    .init(id: "@4", index: 0, name: "unrelated"),
+                ]
+            ),
+            TmuxSessionSummary(
+                name: "kwt-wt-ghosthub-empty-12345678",
+                managed: true,
+                windows: []
+            ),
+        ]
+        let project = ProjectSummary.fixture(id: projectID, hostID: hostID)
+        let worktrees = [counted, protected, empty, absent]
+        let reachable = WorkspaceSidebarModel.sections(
+            in: WorkspaceSnapshot.fixture(
+                hosts: [.fixture(id: hostID, tmuxSessions: sessions)],
+                projects: [project],
+                worktrees: worktrees
+            )
+        )[0]
+        let reachableRows = Dictionary(uniqueKeysWithValues:
+            reachable.projects[0].worktreeRows.map { ($0.title, $0) })
+
+        #expect(try #require(reachableRows["counted"])
+            .worktreeStatus?.tmuxWindowCount == 3)
+        #expect(try #require(reachableRows["protected"])
+            .worktreeStatus?.tmuxWindowCount == nil)
+        #expect(try #require(reachableRows["empty"])
+            .worktreeStatus?.tmuxWindowCount == nil)
+        #expect(try #require(reachableRows["absent"])
+            .worktreeStatus?.tmuxWindowCount == nil)
+
+        let connectedSessionIDs = Set([
+            try #require(
+                WorkspaceSidebarModel.tmuxSessionSelection(for: counted)
+            ).id,
+            try #require(
+                WorkspaceSidebarModel.tmuxSessionSelection(for: protected)
+            ).id,
+        ])
+        let untrusted = WorkspaceSidebarModel.sections(
+            in: WorkspaceSnapshot.fixture(
+                hosts: [
+                    .fixture(
+                        id: hostID,
+                        tmuxSessions: sessions,
+                        tmuxInventoryIsAuthoritative: false
+                    ),
+                ],
+                projects: [project],
+                worktrees: [counted, protected]
+            ),
+            connectedTmuxSessionIDs: connectedSessionIDs
+        )[0]
+        let untrustedRows = Dictionary(uniqueKeysWithValues:
+            untrusted.projects[0].worktreeRows.map { ($0.title, $0) })
+
+        for name in ["counted", "protected"] {
+            let status = try #require(
+                untrustedRows[name]?.worktreeStatus
+            )
+            #expect(status.tmuxWindowCount == nil)
+            #expect(status.isRunning)
+            #expect(status.showsGenericRunningIndicator)
+        }
+
+        let unreachable = WorkspaceSidebarModel.sections(
+            in: WorkspaceSnapshot.fixture(
+                hosts: [
+                    .fixture(
+                        id: hostID,
+                        lastKnownReachable: false,
+                        tmuxSessions: sessions
+                    ),
+                ],
+                projects: [project],
+                worktrees: [counted]
+            )
+        )[0]
+        #expect(unreachable.projects[0].worktreeRows[0]
+            .worktreeStatus?.tmuxWindowCount == nil)
     }
 
     @Test("sidebar model groups active projects and visible worktrees")

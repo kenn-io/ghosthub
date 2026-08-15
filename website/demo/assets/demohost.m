@@ -115,6 +115,48 @@ static BOOL DemoClick(NSPoint point) {
   return DemoClickWindow(DemoRootWindow(), point);
 }
 
+static void DemoFindScrollableViews(NSView *view,
+                                    NSMutableArray<NSScrollView *> *matches) {
+  if ([view isKindOfClass:NSScrollView.class]) {
+    NSScrollView *scrollView = (NSScrollView *)view;
+    NSView *documentView = scrollView.documentView;
+    if (documentView != nil &&
+        NSHeight(documentView.bounds) > NSHeight(scrollView.contentView.bounds)) {
+      [matches addObject:scrollView];
+    }
+  }
+  for (NSView *subview in view.subviews) {
+    DemoFindScrollableViews(subview, matches);
+  }
+}
+
+static BOOL DemoScrollDetail(CGFloat delta) {
+  NSWindow *window = DemoEventWindow();
+  if (window.contentView == nil) return NO;
+
+  NSMutableArray<NSScrollView *> *matches = [NSMutableArray array];
+  DemoFindScrollableViews(window.contentView, matches);
+  NSScrollView *detail = nil;
+  for (NSScrollView *candidate in matches) {
+    if (detail == nil || NSWidth(candidate.bounds) > NSWidth(detail.bounds)) {
+      detail = candidate;
+    }
+  }
+  if (detail == nil) return NO;
+
+  NSClipView *clipView = detail.contentView;
+  NSView *documentView = detail.documentView;
+  CGFloat maximumY = MAX(
+      NSMinY(documentView.bounds),
+      NSMaxY(documentView.bounds) - NSHeight(clipView.bounds));
+  CGFloat desiredY = MIN(
+      maximumY,
+      MAX(NSMinY(documentView.bounds), NSMinY(clipView.bounds) + delta));
+  [clipView scrollToPoint:NSMakePoint(NSMinX(clipView.bounds), desiredY)];
+  [detail reflectScrolledClipView:clipView];
+  return YES;
+}
+
 static NSView *DemoFindViewWithIdentifier(
     NSView *view, NSString *identifier) {
   if ([view.identifier isEqualToString:identifier]) return view;
@@ -797,6 +839,12 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                 success:clicked
                 message:clicked ? @"click sent"
                                 : @"click requires x,y and a workspace window"];
+    } else if ([action isEqualToString:@"scroll-detail"]) {
+      BOOL scrolled = text.length > 0 && DemoScrollDetail(text.doubleValue);
+      [self acknowledge:requestID
+                success:scrolled
+                message:scrolled ? @"detail scrolled"
+                                 : @"scrollable detail was not found"];
     } else if ([action isEqualToString:@"press"]) {
       BOOL pressed =
           text.length > 0 &&
