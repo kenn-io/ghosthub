@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use config::TerminalAppearance;
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
-    HostSnapshot, KwtInventory, LiveSessionTarget, StdCommandRunner, WslConfig, WslExecutable,
-    WslHost, ZellijInventory,
+    HostSnapshot, KwtInventory, KwtPullRequestImportRequest, LiveSessionTarget, StdCommandRunner,
+    WslConfig, WslExecutable, WslHost, ZellijInventory,
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
@@ -7334,11 +7334,16 @@ fn run_kwt_pull_request_import(
     selector: &str,
     navigation_generation: u64,
 ) -> KwtWorktreeOutcome {
+    let request = KwtPullRequestImportRequest::new(
+        &task.project_path,
+        &task.repository,
+        &task.registration_fingerprint,
+        selector,
+    );
     let imported = match task.host.import_kwt_pull_request(
         &task.endpoint,
         &task.runtime,
-        &task.project_path,
-        selector,
+        &request,
         &task.cancellation,
     ) {
         Ok(imported) => imported,

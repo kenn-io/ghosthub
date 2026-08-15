@@ -23,8 +23,8 @@ use crate::kwt::{
 use crate::zellij;
 use crate::{
     CancellationToken, CommandOutput, CommandRunner, KwtBranchCandidate, KwtBundle, KwtInventory,
-    KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport, KwtWorktreeCreate,
-    KwtWorktreeOpen,
+    KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport,
+    KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen,
 };
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
@@ -1514,8 +1514,7 @@ impl<R: CommandRunner> WslHost<R> {
         &self,
         endpoint: &WslEndpoint,
         runtime: &WslRuntimeIdentity,
-        project_path: &str,
-        selector: &str,
+        request: &KwtPullRequestImportRequest,
         cancellation: &CancellationToken,
     ) -> Result<KwtPullRequestImport, HostError> {
         self.require_runtime(endpoint, runtime, cancellation)?;
@@ -1530,13 +1529,17 @@ impl<R: CommandRunner> WslHost<R> {
         let output = self.run_kwt_mutation_in_directory(
             endpoint,
             &helper,
-            project_path,
+            request.project_path(),
             &[
                 "pr",
                 "import",
-                selector,
+                request.selector(),
                 "--project",
-                project_path,
+                request.project_path(),
+                "--expected-repository",
+                request.repository(),
+                "--expected-registration",
+                request.registration_fingerprint(),
                 "--json",
             ],
             cancellation,
@@ -5364,8 +5367,12 @@ mod tests {
             .import_kwt_pull_request(
                 &endpoint,
                 &runtime,
-                "/code/widget",
-                pull_requests[0].id(),
+                &KwtPullRequestImportRequest::new(
+                    "/code/widget",
+                    "github.com/acme/widget",
+                    "opaque-registration",
+                    pull_requests[0].id(),
+                ),
                 &cancellation,
             )
             .expect("import pull request");
@@ -5390,6 +5397,12 @@ mod tests {
                 && args
                     .windows(2)
                     .any(|pair| pair == ["--project", "/code/widget"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--expected-repository", "github.com/acme/widget"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--expected-registration", "opaque-registration"])
         }));
         assert_eq!(
             *runner.provider_timeouts.lock().expect("provider timeouts"),

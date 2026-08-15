@@ -297,12 +297,53 @@ pub struct KwtPullRequestImport {
     session_start_error: Option<serde_json::Value>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KwtPullRequestImportRequest {
+    project_path: String,
+    repository: String,
+    registration_fingerprint: String,
+    selector: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct KwtPullRequestProject {
     identity: String,
     name: String,
     path: String,
+}
+
+impl KwtPullRequestImportRequest {
+    #[must_use]
+    pub fn new(
+        project_path: impl Into<String>,
+        repository: impl Into<String>,
+        registration_fingerprint: impl Into<String>,
+        selector: impl Into<String>,
+    ) -> Self {
+        Self {
+            project_path: project_path.into(),
+            repository: repository.into(),
+            registration_fingerprint: registration_fingerprint.into(),
+            selector: selector.into(),
+        }
+    }
+
+    pub(crate) fn project_path(&self) -> &str {
+        &self.project_path
+    }
+
+    pub(crate) fn repository(&self) -> &str {
+        &self.repository
+    }
+
+    pub(crate) fn registration_fingerprint(&self) -> &str {
+        &self.registration_fingerprint
+    }
+
+    pub(crate) fn selector(&self) -> &str {
+        &self.selector
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
