@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "run_with_timeout.sh"
+SCRIPT = Path(__file__).resolve().parents[1] / "run_with_timeout.sh"
 
 
 def run(seconds: str, *command: str) -> subprocess.CompletedProcess[str]:

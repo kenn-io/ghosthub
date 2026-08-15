@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 COPYRIGHT_NOTICE = (
     "Copyright © 2026 Kenn Software LLC. "
     "Licensed under the GNU AGPL v3.0 or later."
@@ -16,7 +15,7 @@ COPYRIGHT_NOTICE = (
 
 
 def load_module():
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     module_path = repo_root / "tools" / "assemble_app_bundle.py"
     if not module_path.exists():
         pytest.fail(f"Missing expected helper: {module_path}")
@@ -117,7 +116,7 @@ def make_release_inputs(
 
 
 def test_release_license_inventory_covers_compiled_dependencies():
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     licenses_dir = repo_root / "LICENSES"
     required = {
         "THIRD-PARTY-NOTICES.md",

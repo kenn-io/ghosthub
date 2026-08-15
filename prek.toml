@@ -45,6 +45,24 @@ hooks = [
     pass_filenames = false,
     priority = 10,
   },
+  {
+    id = "sandbox-image-python-lint",
+    name = "sandbox image Python lint",
+    language = "system",
+    entry = "make sandbox-image-python-lint",
+    files = "^tools/sandbox_image(\\.py|/.*\\.py)$|^tools/tests/test_sandbox_image_.*\\.py$",
+    pass_filenames = false,
+    priority = 10,
+  },
+  {
+    id = "sandbox-image-python-typecheck",
+    name = "sandbox image Python type check",
+    language = "system",
+    entry = "make sandbox-image-python-typecheck",
+    files = "^tools/sandbox_image(\\.py|/.*\\.py)$|^tools/tests/test_sandbox_image_.*\\.py$",
+    pass_filenames = false,
+    priority = 10,
+  },
 ]
 
 [[repos]]

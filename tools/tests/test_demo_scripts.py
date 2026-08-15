@@ -16,8 +16,7 @@ from pathlib import Path
 
 import pytest
 
-
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).parents[2]
 DEMO = ROOT / "website" / "demo"
 WEBSITE_ASSET_NAMES = (
     "hero.png",

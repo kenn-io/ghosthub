@@ -140,7 +140,7 @@ def test_failed_initial_clone_does_not_block_retry(tmp_path: Path) -> None:
             str(source),
             str(output),
         ],
-        cwd=Path(__file__).parents[1],
+        cwd=Path(__file__).parents[2],
         env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
         capture_output=True,
         text=True,
@@ -158,7 +158,7 @@ def test_failed_initial_clone_does_not_block_retry(tmp_path: Path) -> None:
             str(source),
             str(output),
         ],
-        cwd=Path(__file__).parents[1],
+        cwd=Path(__file__).parents[2],
         env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
         capture_output=True,
         text=True,
@@ -229,7 +229,7 @@ fi
     ]
     first = subprocess.Popen(
         command,
-        cwd=Path(__file__).parents[1],
+        cwd=Path(__file__).parents[2],
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -243,7 +243,7 @@ fi
     command[3] = second_revision
     second = subprocess.Popen(
         command,
-        cwd=Path(__file__).parents[1],
+        cwd=Path(__file__).parents[2],
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -324,7 +324,7 @@ exec "{real_git}" "$@"
                 str(source),
                 str(tmp_path / output_name),
             ],
-            cwd=Path(__file__).parents[1],
+            cwd=Path(__file__).parents[2],
             env=environment,
             capture_output=True,
             text=True,
@@ -356,7 +356,7 @@ def test_rebuilds_helper_from_legacy_identity_stamp(tmp_path: Path) -> None:
             str(tmp_path / "source"),
             str(output),
         ],
-        cwd=Path(__file__).parents[1],
+        cwd=Path(__file__).parents[2],
         env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
         capture_output=True,
         text=True,
@@ -388,7 +388,7 @@ def test_rejects_helper_without_complete_daemon_identity(
 
     result = subprocess.run(
         command,
-        cwd=Path(__file__).parents[1],
+        cwd=Path(__file__).parents[2],
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -509,7 +509,7 @@ def test_stamps_pinned_source_identity_for_daemon_replacement(
             str(tmp_path / "source"),
             str(output),
         ],
-        cwd=Path(__file__).parents[1],
+        cwd=Path(__file__).parents[2],
         capture_output=True,
         text=True,
     )
@@ -548,7 +548,7 @@ def test_rejects_target_that_omits_an_identity_symbol(tmp_path: Path) -> None:
             "linux",
             "arm64",
         ],
-        cwd=Path(__file__).parents[1],
+        cwd=Path(__file__).parents[2],
         capture_output=True,
         text=True,
     )

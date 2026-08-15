@@ -63,6 +63,12 @@ release inputs that must move deliberately:
 - Zig 0.15.2 and its archive checksum
 - immutable revisions for every GitHub Action
 
+Sandbox-capable builds will also consume the root `SANDBOX_IMAGE` file as the
+sole runtime image identity. Packaging reads the tag-free digest from that
+file and embeds it as `GhosthubSandboxImage`; Swift, build scripts, workflows,
+and documentation must not duplicate the digest literal. The provider
+implementation issue `3ed9` owns that packaging boundary.
+
 The embedded kwt revision and release-facing version are written into
 `Info.plist` as `GhosthubKwtSourceRevision` and `GhosthubKwtVersion`. The
 remote matrix pin is recorded independently as
@@ -141,6 +147,70 @@ fail instead of omitting the protected socket marker.
 Session-start safety and configuration failures are non-retryable. Kwt also
 resolves a session-local `default-shell` before falling back to the
 server-global value, so every pane follows the same tmux shell policy.
+
+### Sandbox image release inputs
+
+`images/sandbox/APT_SNAPSHOT`, `Dockerfile`, `UBUNTU_BASE`, `VERSION`,
+`packages.txt`, `tests/image-contract.sh`, and
+`vulnerability-dispositions.json` are reviewed image inputs. Pull requests
+require two no-cache builds with pinned BuildKit and the snapshot-derived
+source epoch to have the same Docker content identity, then scan the image
+without publication credentials. A merge that changes the image source builds
+and checks one local image, publishes one immutable
+`candidate-<full-main-commit>` digest, verifies its content identity against
+that build, then creates GitHub-signed provenance and SPDX SBOM attestations
+from the registry object pulled by digest. The provenance binds a deterministic
+digest of every reviewed image input. Trusted promotion recomputes that digest
+from `main` and rejects older candidates built from different input content.
+The publishing workflow runs only on protected-`main` pushes and has no
+branch-selectable dispatch; manual and pull-request validation remain in a
+separate read-only workflow. Only the seven reviewed inputs trigger candidate
+publication. An intended image change in Python build orchestration or other
+build logic must also bump the image `VERSION` or another reviewed input;
+report-and-pin merges do not publish candidates.
+
+An Apple-silicon developer vets that exact public digest with Apple
+`container` 1.2.2, then commits only its canonical report and the tag-free
+`SANDBOX_IMAGE` pin on a task branch. Promotion is dispatched from trusted
+`main` tooling with the exact pushed task-branch commit as inert evidence. A
+repository-dispatch event fixes both the workflow source and `GITHUB_REF` to
+the default branch; a caller cannot select task-branch code for a package-write
+job. The workflow requires one open pull request whose complete diff is
+exactly the pin and matching report at the trusted `main` revision. It rechecks
+GitHub attestations and image identity, and performs a current vulnerability
+rescan after approval in the protected `sandbox-image-production` environment. It
+adds `vX.Y.Z` to the already tested manifest without rebuilding or wrapping it
+in a new index. Candidate and production aliases are
+workflow-enforced immutable policy; GHCR tag settings are not treated as the
+authority. The `sandbox-image-promotion` status points to a completed
+successful run of the exact trusted promotion workflow for that pull-request
+head. The gate verifies that run through the GitHub API; the status alone is
+not promotion authority. An active no-bypass, no-exclusion default-branch
+ruleset requires the status from a dedicated status-only GitHub App with strict
+checking and a single-entry merge queue. Its key is available only through a
+no-reviewer environment restricted to `main`; no `GITHUB_TOKEN` receives
+status-write or package-write authority. Candidate publication and production
+retagging use a separate package-writer credential available only through
+exact-`main` environments, and the GHCR package does not inherit repository
+Actions access. Trusted promotion and every reconciliation audit the
+environment, parsed workflow authority, app integration ID, and repository
+policy. An organization ruleset requires the merge-signal workflow from this
+repository's `main`, so merge-queue code cannot select its own signal logic.
+Reconciliation fences all open heads before file inspection. The merge queue
+generates a fresh SHA with its own reconciliation lane; trusted-main
+tooling audits the proposed workflow tree without executing it, refuses changes
+to the credential-bearing status workflow, and rechecks promotion and freshness
+before authorizing it. A GitHub or API failure therefore leaves the merge
+blocked. This makes the exact PR head, current `main` base, and a current
+merge-time evaluation part of authorization. Main changes invalidate the
+status, and successful promotion evidence expires after 24 hours.
+
+The scheduled and manually dispatchable maintenance workflow rescans the
+pinned digest with a current vulnerability database, verifies its report,
+dispositions, aliases, and attestations, and reports relevant Ubuntu refresh
+availability. It has no package or repository write authority and fails
+visibly when operator action is required. The complete developer procedure is
+[Sandbox Image Operations](sandbox-image.md).
 
 ## Protected signing environment
 

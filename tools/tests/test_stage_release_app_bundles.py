@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def load_module():
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     module_path = repo_root / "tools" / "stage_release_app_bundles.py"
     spec = importlib.util.spec_from_file_location(
         "stage_release_app_bundles",

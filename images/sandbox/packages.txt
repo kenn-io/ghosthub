@@ -1,0 +1,8 @@
+bash
+ca-certificates
+curl
+git
+openssh-client
+sudo
+unzip
+xz-utils

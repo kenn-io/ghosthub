@@ -2,17 +2,10 @@ import os
 import plistlib
 import stat
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-
-
-TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
-sys.path.insert(0, str(TOOLS_DIR))
-
-from nightly_release_notes import render_notes  # noqa: E402
-
+from nightly_release_notes import render_notes
 
 PUBLIC_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
 
@@ -156,7 +149,7 @@ def test_nightly_wrapper_uses_an_immutable_attempt_url_without_key_leaks(
     tmp_path,
     same_source_recovery,
 ):
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     git_repo, previous_sha, _, source_sha = make_git_history(tmp_path)
     release_root = tmp_path / "release"
     app_path = release_root / "Ghosthub.app"

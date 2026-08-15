@@ -1,0 +1,211 @@
+name: Publish sandbox image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - images/sandbox/APT_SNAPSHOT
+      - images/sandbox/Dockerfile
+      - images/sandbox/UBUNTU_BASE
+      - images/sandbox/VERSION
+      - images/sandbox/packages.txt
+      - images/sandbox/tests/image-contract.sh
+      - images/sandbox/vulnerability-dispositions.json
+
+permissions: {}
+
+concurrency:
+  group: sandbox-image-publish
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Validate sandbox image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          version: '0.9.5'
+          checksum: 2cf10babba653310606f8b49876cfb679928669e7ddaa1fb41fb00ce73e64f66
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: image=docker.io/moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+      - name: Build, test, and scan image
+        run: make sandbox-image-check
+
+  prepare:
+    name: Prepare candidate artifact
+    needs: check
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      archive: ${{ steps.prepare.outputs.archive }}
+      image_version: ${{ steps.prepare.outputs.image_version }}
+      local_content_digest: ${{ steps.prepare.outputs.local_content_digest }}
+      tag: ${{ steps.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          version: '0.9.5'
+          checksum: 2cf10babba653310606f8b49876cfb679928669e7ddaa1fb41fb00ce73e64f66
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: image=docker.io/moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+      - name: Build, test, scan, and prepare evidence
+        id: prepare
+        run: make sandbox-image-prepare-candidate >> "$GITHUB_OUTPUT"
+      - name: Transfer inert publication artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sandbox-image-candidate-${{ github.sha }}
+          path: .dist/sandbox-image
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+
+  publish:
+    name: Publish candidate
+    needs: prepare
+    runs-on: ubuntu-24.04
+    environment: sandbox-image-package-writer
+    permissions:
+      contents: read
+      id-token: write # zizmor: ignore[undocumented-permissions] sign attestations
+      attestations: write # zizmor: ignore[undocumented-permissions] store attestations
+    concurrency:
+      group: sandbox-image-package-writer
+      cancel-in-progress: false
+    steps:
+      - name: Download inert publication artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sandbox-image-candidate-${{ github.sha }}
+          path: .dist/sandbox-image
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: image=docker.io/moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+      - name: Validate artifact and inspect candidate alias
+        id: inspect
+        shell: bash
+        env:
+          ARCHIVE: ${{ needs.prepare.outputs.archive }}
+          CANDIDATE_TAG: ${{ needs.prepare.outputs.tag }}
+          IMAGE_VERSION: ${{ needs.prepare.outputs.image_version }}
+          LOCAL_CONTENT_DIGEST: ${{ needs.prepare.outputs.local_content_digest }}
+        run: |
+          set -euo pipefail
+
+          expected_tag="ghcr.io/kenn-io/ghosthub-sandbox:candidate-$GITHUB_SHA"
+          expected_archive=".dist/sandbox-image/sandbox-image.docker.tar"
+          if [[ "$CANDIDATE_TAG" != "$expected_tag" || \
+                "$ARCHIVE" != "$expected_archive" || \
+                ! "$LOCAL_CONTENT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ || \
+                ! "$IMAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Candidate publication plan is invalid." >&2
+            exit 1
+          fi
+          docker image load --input "$ARCHIVE"
+          actual_content="$(docker image inspect \
+            --format '{{json .Id}}' "$CANDIDATE_TAG" | jq -r .)"
+          if [[ "$actual_content" != "$LOCAL_CONTENT_DIGEST" ]]; then
+            echo "Transferred candidate differs from the prepared image." >&2
+            exit 1
+          fi
+
+          metadata="$RUNNER_TEMP/candidate-metadata.json"
+          diagnostic="$RUNNER_TEMP/candidate-inspect.stderr"
+          if docker buildx imagetools inspect "$CANDIDATE_TAG" \
+            --format '{{json .}}' > "$metadata" 2> "$diagnostic"; then
+            echo "push_required=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$(cat "$diagnostic")" == "ERROR: $CANDIDATE_TAG: not found" ]]; then
+            echo "push_required=true" >> "$GITHUB_OUTPUT"
+          else
+            cat "$diagnostic" >&2
+            exit 1
+          fi
+      - name: Log in to GHCR
+        if: steps.inspect.outputs.push_required == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.SANDBOX_PACKAGE_WRITER_USERNAME }}
+          password: ${{ secrets.SANDBOX_PACKAGE_WRITER_TOKEN }}
+      - name: Publish prepared candidate
+        if: steps.inspect.outputs.push_required == 'true'
+        shell: bash
+        env:
+          CANDIDATE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          diagnostic="$RUNNER_TEMP/candidate-recheck.stderr"
+          if docker buildx imagetools inspect "$CANDIDATE_TAG" \
+            --format '{{json .}}' > /dev/null 2> "$diagnostic"; then
+            echo "Candidate tag appeared during publication approval." >&2
+            exit 1
+          elif [[ "$(cat "$diagnostic")" != "ERROR: $CANDIDATE_TAG: not found" ]]; then
+            cat "$diagnostic" >&2
+            exit 1
+          fi
+          docker push "$CANDIDATE_TAG"
+      - name: Remove registry credentials
+        if: always() && steps.inspect.outputs.push_required == 'true'
+        run: docker logout ghcr.io
+      - name: Verify published digest and identity
+        id: published
+        shell: bash
+        env:
+          CANDIDATE_TAG: ${{ needs.prepare.outputs.tag }}
+          IMAGE_VERSION: ${{ needs.prepare.outputs.image_version }}
+          LOCAL_CONTENT_DIGEST: ${{ needs.prepare.outputs.local_content_digest }}
+        run: |
+          set -euo pipefail
+
+          metadata="$(docker buildx imagetools inspect "$CANDIDATE_TAG" \
+            --format '{{json .}}')"
+          digest="$(jq -er '.manifest.digest | select(test("^sha256:[0-9a-f]{64}$"))' \
+            <<< "$metadata")"
+          canonical="$CANDIDATE_TAG@$digest"
+          docker pull --platform linux/arm64 "$canonical"
+          published_content="$(docker image inspect \
+            --format '{{json .Id}}' "$canonical" | jq -r .)"
+          if [[ "$published_content" != "$LOCAL_CONTENT_DIGEST" ]]; then
+            echo "Published candidate differs from the prepared image." >&2
+            exit 1
+          fi
+          labels="$(docker image inspect --format '{{json .Config.Labels}}' "$canonical")"
+          if ! jq -e --arg source "$GITHUB_SHA" --arg version "$IMAGE_VERSION" '
+            .["org.opencontainers.image.revision"] == $source and
+            .["org.opencontainers.image.version"] == $version
+          ' <<< "$labels" > /dev/null; then
+            echo "Published candidate identity is invalid." >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/kenn-io/ghosthub-sandbox
+          subject-digest: ${{ steps.published.outputs.digest }}
+          predicate-type: https://slsa.dev/provenance/v0.2
+          predicate-path: .dist/sandbox-image/candidate-provenance.json
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/kenn-io/ghosthub-sandbox
+          subject-digest: ${{ steps.published.outputs.digest }}
+          sbom-path: .dist/sandbox-image/sandbox-image.spdx.json
