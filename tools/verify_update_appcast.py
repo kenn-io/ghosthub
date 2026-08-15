@@ -7,7 +7,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 
-SPARKLE_NAMESPACE = "https://sparkle-project.org/xml-namespaces/sparkle"
+SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 
 
 def verify_appcast(
@@ -26,16 +26,22 @@ def verify_appcast(
         raise ValueError("app CFBundleVersion must be a string or integer")
     app_build = str(app_build_value)
 
-    enclosures = ElementTree.parse(appcast_path).findall(".//enclosure")
+    root = ElementTree.parse(appcast_path)
+    items = root.findall(".//item")
+    enclosures = [
+        (item, enclosure)
+        for item in items
+        for enclosure in item.findall("enclosure")
+    ]
     if len(enclosures) != 1:
         raise ValueError("appcast must contain exactly one enclosure")
-    enclosure = enclosures[0]
+    item, enclosure = enclosures[0]
     if enclosure.get("url") != expected_url:
         raise ValueError("appcast enclosure URL does not match the artifact")
     signature = enclosure.get(f"{{{SPARKLE_NAMESPACE}}}edSignature")
     if not signature:
         raise ValueError("appcast enclosure is missing its Sparkle signature")
-    if enclosure.get(f"{{{SPARKLE_NAMESPACE}}}version") != app_build:
+    if item.findtext(f"{{{SPARKLE_NAMESPACE}}}version") != app_build:
         raise ValueError("appcast version does not match CFBundleVersion")
 
 

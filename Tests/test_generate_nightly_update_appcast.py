@@ -124,11 +124,11 @@ assert notes.is_file()
 (release_root / "captured-release-notes.md").write_text(notes.read_text())
 (release_root / "appcast.xml").write_text(
     '<?xml version="1.0"?>'
-    '<rss xmlns:sparkle="https://sparkle-project.org/xml-namespaces/sparkle">'
-    '<channel><item><enclosure url="'
+    '<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">'
+    '<channel><item><sparkle:version>123</sparkle:version><enclosure url="'
     + prefix
     + archive.name
-    + '" sparkle:version="123" sparkle:edSignature="signed" />'
+    + '" sparkle:edSignature="signed" />'
     '</item></channel></rss>'
     '<!-- sparkle-signatures: edSignature: signed-feed -->'
 )

@@ -85,9 +85,10 @@ def appcast_data(
         else ""
     )
     content = (
-        '<rss xmlns:sparkle="https://sparkle-project.org/'
-        'xml-namespaces/sparkle"><channel><item><enclosure '
-        f'url="{url}" sparkle:version="{build}"{signature_attribute} />'
+        '<rss xmlns:sparkle="http://www.andymatuschak.org/'
+        'xml-namespaces/sparkle"><channel><item>'
+        f'<sparkle:version>{build}</sparkle:version><enclosure '
+        f'url="{url}"{signature_attribute} />'
         '</item></channel></rss>'
     ).encode()
     if not include_feed_signature:
@@ -143,29 +144,32 @@ def test_manifest_rejects_invalid_published_metadata(field, value):
         signed_appcast(b"<rss><channel /></rss>"),
         signed_appcast(
             (
-                '<rss xmlns:sparkle="https://sparkle-project.org/'
+                '<rss xmlns:sparkle="http://www.andymatuschak.org/'
                 'xml-namespaces/sparkle"><channel><item>'
+                '<sparkle:version>1</sparkle:version>'
                 '<enclosure url="https://example.test/one.dmg" '
-                f'sparkle:version="1" sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
+                f'sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
                 '<enclosure url="https://example.test/two.dmg" '
-                f'sparkle:version="2" sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
-                "</item></channel></rss>"
-            ).encode()
-        ),
-        signed_appcast(
-            (
-                '<rss xmlns:sparkle="https://sparkle-project.org/'
-                'xml-namespaces/sparkle"><channel><item><enclosure '
-                'url="http://example.test/build.dmg" sparkle:version="1" '
                 f'sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
                 "</item></channel></rss>"
             ).encode()
         ),
         signed_appcast(
             (
-                '<rss xmlns:sparkle="https://sparkle-project.org/'
-                'xml-namespaces/sparkle"><channel><item><enclosure '
-                'url="https://example.test/build.dmg" sparkle:version="zero" '
+                '<rss xmlns:sparkle="http://www.andymatuschak.org/'
+                'xml-namespaces/sparkle"><channel><item>'
+                '<sparkle:version>1</sparkle:version><enclosure '
+                'url="http://example.test/build.dmg" '
+                f'sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
+                "</item></channel></rss>"
+            ).encode()
+        ),
+        signed_appcast(
+            (
+                '<rss xmlns:sparkle="http://www.andymatuschak.org/'
+                'xml-namespaces/sparkle"><channel><item>'
+                '<sparkle:version>zero</sparkle:version><enclosure '
+                'url="https://example.test/build.dmg" '
                 f'sparkle:edSignature="{ARCHIVE_SIGNATURE}" />'
                 "</item></channel></rss>"
             ).encode()

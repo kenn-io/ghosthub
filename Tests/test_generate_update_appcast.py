@@ -109,11 +109,11 @@ assert notes.is_file()
 (release_root / "captured-release-notes.md").write_text(notes.read_text())
 (release_root / "appcast.xml").write_text(
     '<?xml version="1.0"?>'
-    '<rss xmlns:sparkle="https://sparkle-project.org/xml-namespaces/sparkle">'
-    '<channel><item><enclosure url="'
+    '<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">'
+    '<channel><item><sparkle:version>123</sparkle:version><enclosure url="'
     + prefix
     + archive.name
-    + '" sparkle:version="123" sparkle:edSignature="signed" />'
+    + '" sparkle:edSignature="signed" />'
     '</item></channel></rss>'
     '<!-- sparkle-signatures: edSignature: signed-feed -->'
 )
@@ -197,9 +197,10 @@ def test_verifies_appcast_enclosure_against_the_built_app(tmp_path):
     )
     appcast.write_text(
         '<?xml version="1.0"?>'
-        '<rss xmlns:sparkle="https://sparkle-project.org/'
-        'xml-namespaces/sparkle"><channel><item><enclosure '
-        f'url="{expected_url}" sparkle:version="123" '
+        '<rss xmlns:sparkle="http://www.andymatuschak.org/'
+        'xml-namespaces/sparkle"><channel><item>'
+        '<sparkle:version>123</sparkle:version><enclosure '
+        f'url="{expected_url}" '
         'sparkle:edSignature="signed" /></item></channel></rss>',
         encoding="utf-8",
     )
@@ -208,34 +209,38 @@ def test_verifies_appcast_enclosure_against_the_built_app(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("enclosure", "message"),
+    ("version", "enclosure", "message"),
     [
         (
+            "123",
             'url="https://nightly-downloads.ghosthub.ai/wrong.dmg" '
-            'sparkle:version="123" sparkle:edSignature="signed"',
+            'sparkle:edSignature="signed"',
             "URL",
         ),
         (
+            "122",
             'url="https://nightly-downloads.ghosthub.ai/build.dmg" '
-            'sparkle:version="122" sparkle:edSignature="signed"',
+            'sparkle:edSignature="signed"',
             "CFBundleVersion",
         ),
         (
-            'url="https://nightly-downloads.ghosthub.ai/build.dmg" '
-            'sparkle:version="123"',
+            "123",
+            'url="https://nightly-downloads.ghosthub.ai/build.dmg"',
             "signature",
         ),
         (
+            "123",
             'url="https://nightly-downloads.ghosthub.ai/build.dmg" '
-            'sparkle:version="123" sparkle:edSignature="signed" />'
+            'sparkle:edSignature="signed" />'
             '<enclosure url="https://nightly-downloads.ghosthub.ai/other.dmg" '
-            'sparkle:version="123" sparkle:edSignature="signed"',
+            'sparkle:edSignature="signed"',
             "exactly one",
         ),
     ],
 )
 def test_rejects_appcast_that_does_not_name_the_built_artifact(
     tmp_path,
+    version,
     enclosure,
     message,
 ):
@@ -245,8 +250,9 @@ def test_rejects_appcast_that_does_not_name_the_built_artifact(
     appcast = tmp_path / "appcast.xml"
     expected_url = "https://nightly-downloads.ghosthub.ai/build.dmg"
     appcast.write_text(
-        '<rss xmlns:sparkle="https://sparkle-project.org/'
-        'xml-namespaces/sparkle"><channel><item><enclosure '
+        '<rss xmlns:sparkle="http://www.andymatuschak.org/'
+        'xml-namespaces/sparkle"><channel><item>'
+        f'<sparkle:version>{version}</sparkle:version><enclosure '
         f'{enclosure} /></item></channel></rss>',
         encoding="utf-8",
     )
@@ -454,6 +460,12 @@ def test_pinned_generate_appcast_accepts_the_standard_seed_export(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    appcast = (tmp_path / "appcast.xml").read_text()
+    appcast_path = tmp_path / "appcast.xml"
+    appcast = appcast_path.read_text()
     assert "sparkle:edSignature=" in appcast
     assert "<!-- sparkle-signatures:" in appcast
+    verify_appcast(
+        appcast_path,
+        app / "Contents/Info.plist",
+        archive.name,
+    )
