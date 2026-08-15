@@ -2525,6 +2525,7 @@ struct Inner {
     revision: AtomicU64,
     snapshot_writers: AtomicUsize,
     presentation_generation: AtomicU64,
+    operation_sequence: AtomicU64,
     navigation_generation: AtomicU64,
     navigation: Mutex<()>,
     host: Mutex<Option<Published<HostContext>>>,
@@ -2639,6 +2640,7 @@ impl Workspace {
                 revision: AtomicU64::new(snapshot.revision),
                 snapshot_writers: AtomicUsize::new(0),
                 presentation_generation: AtomicU64::new(presentation_generation),
+                operation_sequence: AtomicU64::new(0),
                 navigation_generation: AtomicU64::new(0),
                 navigation: Mutex::new(()),
                 host: Mutex::new(None),
@@ -2716,6 +2718,7 @@ impl Workspace {
                 revision: AtomicU64::new(0),
                 snapshot_writers: AtomicUsize::new(0),
                 presentation_generation: AtomicU64::new(0),
+                operation_sequence: AtomicU64::new(0),
                 navigation_generation: AtomicU64::new(0),
                 navigation: Mutex::new(()),
                 host: Mutex::new(None),
@@ -2777,6 +2780,7 @@ impl Workspace {
                 revision: AtomicU64::new(0),
                 snapshot_writers: AtomicUsize::new(0),
                 presentation_generation: AtomicU64::new(0),
+                operation_sequence: AtomicU64::new(0),
                 navigation_generation: AtomicU64::new(0),
                 navigation: Mutex::new(()),
                 host: Mutex::new(None),
@@ -3069,6 +3073,7 @@ impl Workspace {
         worktree_path: &str,
         generation: &str,
         session_name: &str,
+        tmux_socket_name: Option<&str>,
     ) -> Result<u64, WorkspaceError> {
         if !is_canonical_kwt_generation(generation) {
             return Err(WorkspaceError::new(
@@ -3085,6 +3090,7 @@ impl Workspace {
             worktree_path,
             generation,
             session_name,
+            tmux_socket_name,
         )?;
         let mut pending = self
             .inner
@@ -3972,11 +3978,11 @@ impl Workspace {
     fn begin_navigation(&self) -> u64 {
         invalidate_pending_kill(&self.inner);
         invalidate_pending_herdr_lifecycle(&self.inner);
+        let generation = next_operation_id(&self.inner);
         self.inner
             .navigation_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .checked_add(1)
-            .expect("navigation generation exhausted")
+            .fetch_max(generation, Ordering::AcqRel);
+        generation
     }
 
     #[must_use]
@@ -6914,6 +6920,7 @@ fn capture_kwt_worktree_removal_context(
     worktree_path: &str,
     generation: &str,
     session_name: &str,
+    tmux_socket_name: Option<&str>,
 ) -> Result<
     (
         RuntimeHost,
@@ -6971,6 +6978,7 @@ fn capture_kwt_worktree_removal_context(
                 worktree.path == worktree_path
                     && worktree.generation.as_deref() == Some(generation)
                     && worktree.session_name == session_name
+                    && worktree.tmux_socket_name.as_deref() == tmux_socket_name
             })
         })
         .ok_or_else(|| {
@@ -7133,7 +7141,9 @@ fn reserve_kwt_worktree_operation(
             generation
         };
         let operation_id = match &operation {
-            KwtWorktreeOperation::Branches | KwtWorktreeOperation::PullRequests => generation,
+            KwtWorktreeOperation::Branches | KwtWorktreeOperation::PullRequests => {
+                next_operation_id(inner)
+            }
             KwtWorktreeOperation::ImportPullRequest {
                 navigation_generation,
                 ..
@@ -8538,19 +8548,26 @@ fn finish_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
 }
 
 fn push_kwt_listing_event(inner: &Inner, task: &KwtWorktreeTask, event: WorkspaceEvent) {
-    let owns_listing = inner
+    let active = inner
         .kwt_worktree_listing
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .is_some_and(|listing| {
-            listing.generation == task.generation
-                && listing.operation_id == task.operation_id
-                && !task.cancellation.is_cancelled()
-        });
-    if owns_listing {
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if active.as_ref().is_some_and(|listing| {
+        listing.generation == task.generation
+            && listing.operation_id == task.operation_id
+            && !task.cancellation.is_cancelled()
+    }) {
         push_operation_event(inner, event);
     }
+    drop(active);
+}
+
+fn next_operation_id(inner: &Inner) -> u64 {
+    inner
+        .operation_sequence
+        .fetch_add(1, Ordering::AcqRel)
+        .checked_add(1)
+        .expect("workspace operation sequence exhausted")
 }
 
 fn push_operation_event(inner: &Inner, event: WorkspaceEvent) {
@@ -11762,6 +11779,57 @@ mod tests {
     }
 
     #[test]
+    fn worktree_removal_capture_requires_the_reviewed_tmux_socket() {
+        let (workspace, _runtime) = kwt_worktree_workspace_fixture();
+        let generation = "22222222222222222222222222222222";
+        workspace.inner.hosts.write().expect("hosts")[0].projects[0]
+            .worktrees
+            .push(WorktreeItem::new(
+                "/work/project/protected",
+                "protected",
+                false,
+                Some(generation.to_owned()),
+                "project-protected",
+                Some("kwt-pr-reviewed".to_owned()),
+                false,
+            ));
+
+        let captured = capture_kwt_worktree_removal_context(
+            &workspace.inner,
+            "wsl",
+            "Ubuntu",
+            "project-id",
+            "/repos/project",
+            "project-fingerprint",
+            "/work/project/protected",
+            generation,
+            "project-protected",
+            Some("kwt-pr-reviewed"),
+        )
+        .expect("the reviewed protected socket grants removal capture");
+        assert_eq!(captured.3.as_deref(), Some("kwt-pr-reviewed"));
+
+        workspace.inner.hosts.write().expect("hosts")[0].projects[0].worktrees[1]
+            .tmux_socket_name = Some("kwt-pr-replacement".to_owned());
+        assert!(
+            capture_kwt_worktree_removal_context(
+                &workspace.inner,
+                "wsl",
+                "Ubuntu",
+                "project-id",
+                "/repos/project",
+                "project-fingerprint",
+                "/work/project/protected",
+                generation,
+                "project-protected",
+                Some("kwt-pr-reviewed"),
+            )
+            .is_err(),
+            "a changed protected socket requires a fresh removal confirmation"
+        );
+    }
+
+    #[test]
     fn later_kwt_inventory_resolves_a_pending_created_worktree_once() {
         let workspace =
             Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
@@ -12800,10 +12868,6 @@ mod tests {
             .expect("start pull-request listing");
 
         assert!(workspace.cancel_kwt_worktree_listing(first));
-        workspace
-            .inner
-            .navigation_generation
-            .store(first.saturating_sub(1), Ordering::Release);
         let second = workspace
             .import_kwt_pull_request(
                 "wsl",
@@ -12815,12 +12879,15 @@ mod tests {
             )
             .expect("replacement import starts immediately");
 
-        assert_eq!(first, second, "separate counters can reuse the numeric ID");
+        assert_ne!(
+            first, second,
+            "listing and navigation operations share one unique ID sequence"
+        );
         assert_eq!(runtime.work.lock().expect("work queue").len(), 2);
         runtime.run_next_work();
         assert!(
             workspace.drain_events().0.is_empty(),
-            "a cancelled listing cannot publish into a newer operation with the same numeric ID"
+            "a cancelled listing cannot publish into a newer operation"
         );
         assert!(
             workspace

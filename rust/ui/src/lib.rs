@@ -1332,6 +1332,7 @@ impl RootView {
                 &target.open.worktree_path,
                 generation,
                 &target.open.session_name,
+                target.open.tmux_socket_name.as_deref(),
             )
         } else {
             target.authority = None;
@@ -1512,6 +1513,7 @@ impl RootView {
                 &open.worktree_path,
                 generation,
                 &open.session_name,
+                open.tmux_socket_name.as_deref(),
             ) {
                 Ok(operation_id) => {
                     if let Some(ProjectDialog::RemoveWorktree { target, error, .. }) =
