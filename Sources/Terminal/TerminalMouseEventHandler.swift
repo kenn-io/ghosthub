@@ -52,7 +52,7 @@ struct TerminalMouseEventHandler {
     mutating func handleMouseDown(_ event: NSEvent) {
         delegate?.ensureFirstResponder()
         guard let surface = delegate?.surfaceHandle else { return }
-        let mods = Self.leftButtonModifiers(event.modifierFlags)
+        let mods = Self.pointerModifiers(event.modifierFlags)
         _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods
         )
@@ -62,7 +62,7 @@ struct TerminalMouseEventHandler {
     mutating func handleMouseUp(_ event: NSEvent) {
         delegate?.prevPressureStage = 0
         guard let surface = delegate?.surfaceHandle else { return }
-        let mods = Self.leftButtonModifiers(event.modifierFlags)
+        let mods = Self.pointerModifiers(event.modifierFlags)
         _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods
         )
@@ -114,7 +114,7 @@ struct TerminalMouseEventHandler {
         guard let delegate,
               let surface = delegate.surfaceHandle else { return }
         let pos = delegate.convert(event.locationInWindow, from: nil)
-        let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
+        let mods = Self.pointerModifiers(event.modifierFlags)
         Self.mousePositionSender(
             surface, pos.x, delegate.frame.height - pos.y, mods
         )
@@ -125,7 +125,7 @@ struct TerminalMouseEventHandler {
         if NSEvent.pressedMouseButtons != 0 {
             return
         }
-        let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
+        let mods = Self.pointerModifiers(event.modifierFlags)
         Self.mousePositionSender(surface, -1, -1, mods)
     }
 
@@ -133,10 +133,14 @@ struct TerminalMouseEventHandler {
         guard let delegate,
               let surface = delegate.surfaceHandle else { return }
         let pos = delegate.convert(event.locationInWindow, from: nil)
-        let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
+        let mods = Self.pointerModifiers(event.modifierFlags)
         Self.mousePositionSender(
             surface, pos.x, delegate.frame.height - pos.y, mods
         )
+    }
+
+    func handleModifierFlagsChanged(_ event: NSEvent) {
+        handleMouseMoved(event)
     }
 
     func handleMouseDragged(_ event: NSEvent) {
@@ -222,7 +226,7 @@ struct TerminalMouseEventHandler {
         pressedButtons.removeAll { $0.button.rawValue == button.rawValue }
     }
 
-    private static func leftButtonModifiers(
+    private static func pointerModifiers(
         _ modifiers: NSEvent.ModifierFlags
     ) -> ghostty_input_mods_e {
         var modifiers = modifiers

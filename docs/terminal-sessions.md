@@ -61,9 +61,10 @@ The option is session-scoped, so every attached client sees it; Ghosthub does
 not add or replace mouse bindings. Native Windows/psmux attachment retains its
 documented mouse-reporting limitation and does not receive this setup.
 Command-click remains a macOS terminal action: Ghosthub supplies libghostty's
-Shift mouse-capture override internally for that left click, and libghostty
-removes the override before matching its Command link binding. Tmux therefore
-does not capture link activation, and users do not need to hold Shift.
+Shift mouse-capture override internally for Command-modified pointer movement,
+modifier changes, and the left click. Libghostty removes the override before
+matching its Command link binding. Tmux therefore does not capture link
+highlighting or activation, and users do not need to hold Shift.
 Each workspace window retains every presentation it explicitly opens, keyed by
 the exact host, tmux socket, and session name. Navigating to another host,
 worktree, or session removes the previous surface from the visible hierarchy

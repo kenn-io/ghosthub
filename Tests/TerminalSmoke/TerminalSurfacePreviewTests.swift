@@ -350,22 +350,55 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(positions.count, 2)
     }
 
-    func testCommandClickEscapesApplicationMouseCapture() throws {
+    func testCommandPointerEventsEscapeApplicationMouseCapture() throws {
         let originalButtonSender = TerminalMouseEventHandler.mouseButtonSender
-        var modifiers: [UInt32] = []
+        let originalPositionSender =
+            TerminalMouseEventHandler.mousePositionSender
+        var buttonModifiers: [UInt32] = []
+        var positionModifiers: [UInt32] = []
         TerminalMouseEventHandler.mouseButtonSender = {
             _, _, button, mods in
             if button.rawValue == GHOSTTY_MOUSE_LEFT.rawValue {
-                modifiers.append(mods.rawValue)
+                buttonModifiers.append(mods.rawValue)
             }
             return true
         }
+        TerminalMouseEventHandler.mousePositionSender = {
+            _, _, _, mods in
+            positionModifiers.append(mods.rawValue)
+        }
         defer {
             TerminalMouseEventHandler.mouseButtonSender = originalButtonSender
+            TerminalMouseEventHandler.mousePositionSender =
+                originalPositionSender
         }
         let view = try makeSurface()
         let window = hostInWindow(view)
         defer { window.orderOut(nil) }
+        positionModifiers.removeAll()
+        let commandChanged = try XCTUnwrap(NSEvent.keyEvent(
+            with: .flagsChanged,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [.command],
+            timestamp: 0.9,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x37
+        ))
+        let mouseMoved = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [.command],
+            timestamp: 1,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 0,
+            pressure: 0
+        ))
         let mouseDown = try XCTUnwrap(NSEvent.mouseEvent(
             with: .leftMouseDown,
             location: NSPoint(x: 20, y: 20),
@@ -389,11 +422,15 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             pressure: 0
         ))
 
+        view.flagsChanged(with: commandChanged)
+        view.mouseEntered(with: mouseMoved)
+        view.mouseMoved(with: mouseMoved)
         view.mouseDown(with: mouseDown)
         view.mouseUp(with: mouseUp)
 
-        XCTAssertEqual(modifiers.count, 2)
-        for modifier in modifiers {
+        XCTAssertEqual(positionModifiers.count, 3)
+        XCTAssertEqual(buttonModifiers.count, 2)
+        for modifier in positionModifiers + buttonModifiers {
             XCTAssertNotEqual(
                 modifier & GHOSTTY_MODS_SUPER.rawValue,
                 0
