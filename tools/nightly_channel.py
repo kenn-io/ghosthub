@@ -21,7 +21,7 @@ from urllib.request import urlopen
 from xml.etree import ElementTree
 
 
-SPARKLE_NAMESPACE = "https://sparkle-project.org/xml-namespaces/sparkle"
+SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 ASCII_NUMBER_RE = re.compile(r"[0-9]+\Z")
@@ -258,16 +258,21 @@ class AppcastPointer:
             root = ElementTree.fromstring(content)
         except ElementTree.ParseError as error:
             raise ValueError("appcast is not valid XML") from error
-        enclosures = root.findall(".//enclosure")
+        items = root.findall(".//item")
+        enclosures = [
+            (item, enclosure)
+            for item in items
+            for enclosure in item.findall("enclosure")
+        ]
         if len(enclosures) != 1:
             raise ValueError("appcast must contain exactly one enclosure")
-        enclosure = enclosures[0]
+        item, enclosure = enclosures[0]
         dmg_url = require_https_url("appcast enclosure URL", enclosure.get("url"))
         require_ed25519_signature(
             "appcast enclosure signature",
             enclosure.get(f"{{{SPARKLE_NAMESPACE}}}edSignature"),
         )
-        raw_build = enclosure.get(f"{{{SPARKLE_NAMESPACE}}}version")
+        raw_build = item.findtext(f"{{{SPARKLE_NAMESPACE}}}version")
         try:
             build = int(raw_build) if raw_build is not None else 0
         except ValueError as error:
