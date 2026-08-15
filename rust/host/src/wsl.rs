@@ -16,16 +16,23 @@ use session::{
 };
 
 use crate::herdr::{self, ExecutableProbe};
-use crate::kwt::{parse_branches, parse_command_failure, parse_project_mutation};
+use crate::kwt::{
+    parse_branches, parse_command_failure, parse_project_mutation, parse_pull_request_import,
+    parse_pull_requests,
+};
 use crate::zellij;
 use crate::{
     CancellationToken, CommandOutput, CommandRunner, KwtBranchCandidate, KwtBundle, KwtInventory,
-    KwtProject, KwtWorktreeCreate, KwtWorktreeOpen,
+    KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport,
+    KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen,
 };
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const DISCOVERY_ATTEMPTS: usize = 2;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+// Provider discovery may wait on network and credential helpers. It remains
+// cancellable but must not inherit the short local inventory budget.
+const KWT_PROVIDER_TIMEOUT: Duration = Duration::from_mins(5);
 // Worktree creation may fetch a remote branch and both creation and removal
 // may run repository hooks. Keep these background mutations cancellable, but
 // do not apply the short inventory/probe deadline to them.
@@ -336,6 +343,7 @@ pub struct LiveSessionTarget {
     endpoint: WslEndpoint,
     runtime: WslRuntimeIdentity,
     name: String,
+    socket_name: Option<String>,
     identity: SessionIdentity,
 }
 
@@ -352,6 +360,7 @@ impl LiveSessionTarget {
             endpoint: snapshot.endpoint.clone(),
             runtime: snapshot.runtime.clone(),
             name: name.into(),
+            socket_name: None,
             identity,
         }
     }
@@ -369,6 +378,11 @@ impl LiveSessionTarget {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    #[must_use]
+    pub fn socket_name(&self) -> Option<&str> {
+        self.socket_name.as_deref()
     }
 
     #[must_use]
@@ -1168,6 +1182,89 @@ impl<R: CommandRunner> WslHost<R> {
         ))
     }
 
+    /// Build a re-runnable protected attach for one imported PR workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the helper, runtime, or socket cannot be verified.
+    pub fn kwt_protected_attach_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        request: &KwtProtectedWorktreeOpen,
+        term: AttachTerm,
+        cancellation: &CancellationToken,
+    ) -> Result<RepairOrOpenPlan, HostError> {
+        require_kwt_socket_name(request.tmux_socket_name())?;
+        if request.repository().is_empty()
+            || request.registration_fingerprint().is_empty()
+            || request.generation().is_empty()
+        {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT protected worktree authority was incomplete",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let readiness_path = kwt_client_readiness_path()?;
+        let readiness_staging_path = format!("{readiness_path}.tmp");
+        let mut args = pinned_prefix(endpoint);
+        let kwt_home = self
+            .config
+            .kwt_home
+            .as_deref()
+            .map(|path| format!("KWT_HOME={path}"));
+        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        append_tmux_environment(
+            &mut args,
+            Some(term.environment()),
+            self.config.tmux_tmpdir.as_deref(),
+            &extra_environment,
+        );
+        args.extend(
+            [
+                "/bin/sh",
+                "-c",
+                "umask 077; /usr/bin/printf '%s\\n' \"$$\" > \"$1\" && /usr/bin/mv -T -- \"$1\" \"$2\" && shift 2 && exec \"$@\"",
+                "ghosthub-protected-worktree-client",
+                readiness_staging_path.as_str(),
+                readiness_path.as_str(),
+                helper.as_str(),
+                "pr",
+                "attach",
+                request.path(),
+                "--project",
+                request.project_path(),
+                "--expected-repository",
+                request.repository(),
+                "--expected-registration",
+                request.registration_fingerprint(),
+                "--expected-generation",
+                request.generation(),
+                "--expected-session",
+                request.session_name(),
+                "--expected-socket",
+                request.tmux_socket_name(),
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        Ok(RepairOrOpenPlan::worktree(
+            self.wsl_executable.as_os_str(),
+            args,
+            request.session_name(),
+            &readiness_path,
+        ))
+    }
+
     /// Query whether the exact client process launched by a KWT open plan is
     /// attached to tmux, returning that client's live session identity.
     ///
@@ -1233,6 +1330,74 @@ impl<R: CommandRunner> WslHost<R> {
         Ok(matched)
     }
 
+    /// Query the exact client on a KWT-owned protected tmux socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid socket names, runtime changes, malformed
+    /// receipts, or unsafe tmux output.
+    pub fn kwt_protected_client_session_identity(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        readiness_path: &str,
+        tmux_socket_name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<SessionIdentity>, HostError> {
+        require_kwt_socket_name(tmux_socket_name)?;
+        require_kwt_client_readiness_path(readiness_path)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let receipt = self.run_scrubbed(
+            endpoint,
+            &[
+                "/bin/sh",
+                "-c",
+                "if [ -s \"$1\" ]; then exec /usr/bin/cat -- \"$1\"; fi",
+                "ghosthub-read-protected-worktree-client",
+                readiness_path,
+            ],
+            cancellation,
+        )?;
+        if receipt.status != 0 {
+            return Err(classify_command_failure(
+                receipt.status,
+                &receipt.stderr,
+                "read protected KWT client readiness",
+            ));
+        }
+        if receipt.stdout.is_empty() {
+            return Ok(None);
+        }
+        let client_pid = parse_kwt_client_pid(&receipt.stdout)?;
+        let output = self.run_tmux_command(
+            endpoint,
+            cancellation,
+            &[
+                "-L",
+                tmux_socket_name,
+                "-f",
+                "/dev/null",
+                "list-clients",
+                "-F",
+                CLIENT_READINESS_FORMAT,
+            ],
+        )?;
+        if output.status != 0 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_no_server(&stderr) {
+                return Ok(None);
+            }
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "query protected KWT tmux client readiness",
+            ));
+        }
+        let matched = parse_kwt_client_identity(&output.stdout, client_pid)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        Ok(matched)
+    }
+
     pub fn remove_kwt_client_readiness(
         &self,
         endpoint: &WslEndpoint,
@@ -1285,6 +1450,109 @@ impl<R: CommandRunner> WslHost<R> {
         self.require_runtime(endpoint, runtime, cancellation)?;
         parse_branches(&output.stdout)
             .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error.to_string()))
+    }
+
+    /// List open pull requests through the exact managed KWT helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when project authority is stale, GitHub discovery
+    /// fails, or KWT emits malformed machine-readable output.
+    pub fn list_kwt_pull_requests(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<KwtPullRequest>, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_kwt_provider_in_directory(
+            endpoint,
+            &helper,
+            project_path,
+            &[
+                "pr",
+                "list",
+                "--project",
+                project_path,
+                "--state",
+                "open",
+                "--json",
+            ],
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(classify_kwt_command_failure(
+                &output,
+                "list KWT pull requests",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        parse_pull_requests(&output.stdout)
+            .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error.to_string()))
+    }
+
+    /// Import one provider-owned pull request without starting its session.
+    ///
+    /// KWT owns selector parsing, GitHub access, fetch/checkout hardening, and
+    /// project lifecycle serialization. The response carries the exact
+    /// protected workspace and socket identity used for later attachment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when KWT rejects the selector or project,
+    /// the mutation times out, or the response violates the pinned contract.
+    pub fn import_kwt_pull_request(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        request: &KwtPullRequestImportRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<KwtPullRequestImport, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_kwt_mutation_in_directory(
+            endpoint,
+            &helper,
+            request.project_path(),
+            &[
+                "pr",
+                "import",
+                request.selector(),
+                "--project",
+                request.project_path(),
+                "--expected-repository",
+                request.repository(),
+                "--expected-registration",
+                request.registration_fingerprint(),
+                "--json",
+            ],
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        if output.status != 0 {
+            return Err(classify_kwt_command_failure(
+                &output,
+                "import KWT pull request",
+            ));
+        }
+        parse_pull_request_import(&output.stdout)
+            .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error))
     }
 
     /// Create one KWT worktree without launching its tmux client.
@@ -1341,11 +1609,14 @@ impl<R: CommandRunner> WslHost<R> {
         }
     }
 
-    /// Remove one exact KWT worktree while preserving its Git branch.
+    /// Remove one exact KWT worktree while preserving its Git branch and
+    /// requiring its workspace session to remain absent.
     ///
     /// KWT owns the filesystem and registry mutation. The expected generation
     /// prevents a stale inventory row from removing a replacement checkout at
-    /// the same path.
+    /// the same path. KWT serializes the absence guard with its session launch
+    /// paths, so callers must terminate any freshly confirmed live identity
+    /// before invoking this operation.
     ///
     /// # Errors
     ///
@@ -1363,19 +1634,9 @@ impl<R: CommandRunner> WslHost<R> {
         worktree_path: &str,
         generation: &str,
         session_name: &str,
-        live_target: Option<&LiveSessionTarget>,
+        socket_name: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<(), HostError> {
-        if let Some(target) = live_target
-            && (target.endpoint() != endpoint
-                || target.runtime() != runtime
-                || target.name() != session_name)
-        {
-            return Err(HostError::new(
-                DiagnosticKind::Transport,
-                "the confirmed worktree session identity changed",
-            ));
-        }
         self.require_runtime(endpoint, runtime, cancellation)?;
         let bundle = self.config.kwt_bundle().ok_or_else(|| {
             HostError::new(
@@ -1391,23 +1652,21 @@ impl<R: CommandRunner> WslHost<R> {
             generation.to_owned(),
             "--if-session-name".to_owned(),
             session_name.to_owned(),
+            "--if-session-absent".to_owned(),
         ];
-        if let Some(target) = live_target {
-            command.extend([
-                "--if-session-server-pid".to_owned(),
-                target.identity().server_pid().to_string(),
-                "--if-session-id".to_owned(),
-                target.identity().session_id().to_owned(),
-                "--if-session-created".to_owned(),
-                target.identity().created_at().to_string(),
-            ]);
-        } else {
-            command.push("--if-session-absent".to_owned());
-        }
-        if let Some(socket_directory) = self.config.tmux_tmpdir.as_deref() {
+        if socket_name.is_none()
+            && let Some(socket_directory) = self.config.tmux_tmpdir.as_deref()
+        {
             command.extend([
                 "--if-session-socket-directory".to_owned(),
                 socket_directory.to_owned(),
+            ]);
+        }
+        if let Some(socket_name) = socket_name {
+            require_kwt_socket_name(socket_name)?;
+            command.extend([
+                "--if-session-socket-name".to_owned(),
+                socket_name.to_owned(),
             ]);
         }
         command.push(worktree_path.to_owned());
@@ -1435,6 +1694,43 @@ impl<R: CommandRunner> WslHost<R> {
         command: &[&str],
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
+        self.run_kwt_in_directory_with_timeout(
+            endpoint,
+            helper,
+            directory,
+            command,
+            cancellation,
+            COMMAND_TIMEOUT,
+        )
+    }
+
+    fn run_kwt_provider_in_directory(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        directory: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        self.run_kwt_in_directory_with_timeout(
+            endpoint,
+            helper,
+            directory,
+            command,
+            cancellation,
+            KWT_PROVIDER_TIMEOUT,
+        )
+    }
+
+    fn run_kwt_in_directory_with_timeout(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        directory: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<CommandOutput, HostError> {
         let mut args = pinned_prefix(endpoint);
         append_scrubbed_environment(&mut args);
         args.push(OsString::from("--chdir"));
@@ -1447,7 +1743,7 @@ impl<R: CommandRunner> WslHost<R> {
         }
         args.push(OsString::from(helper));
         args.extend(command.iter().map(OsString::from));
-        self.run_with_timeout(&args, cancellation, COMMAND_TIMEOUT)
+        self.run_with_timeout(&args, cancellation, timeout)
     }
 
     fn run_kwt_mutation_in_directory(
@@ -2153,6 +2449,43 @@ impl<R: CommandRunner> WslHost<R> {
             endpoint: endpoint.clone(),
             runtime: expected_runtime.clone(),
             name: session.name().to_owned(),
+            socket_name: None,
+            identity: session.identity().clone(),
+        })
+    }
+
+    /// Capture fresh destructive authority on one exact named tmux socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when the protected socket, session, or WSL
+    /// runtime changed while authority was being captured.
+    pub fn capture_live_session_on_socket(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        socket_name: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<LiveSessionTarget, HostError> {
+        require_kwt_socket_name(socket_name)?;
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        let sessions = self.discover_sessions_on_socket(endpoint, socket_name, cancellation)?;
+        let session = sessions
+            .into_iter()
+            .find(|session| session.name() == name)
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::Transport,
+                    format!("Session ‘{name}’ is no longer running. Refresh before trying again."),
+                )
+            })?;
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        Ok(LiveSessionTarget {
+            endpoint: endpoint.clone(),
+            runtime: expected_runtime.clone(),
+            name: session.name().to_owned(),
+            socket_name: Some(socket_name.to_owned()),
             identity: session.identity().clone(),
         })
     }
@@ -2181,6 +2514,29 @@ impl<R: CommandRunner> WslHost<R> {
         Ok(running)
     }
 
+    /// Check one exact session on a protected named tmux socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified discovery or runtime error.
+    pub fn session_is_running_on_socket(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        socket_name: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, HostError> {
+        require_kwt_socket_name(socket_name)?;
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        let running = self
+            .discover_sessions_on_socket(endpoint, socket_name, cancellation)?
+            .iter()
+            .any(|session| session.name() == name);
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        Ok(running)
+    }
+
     /// Kill the exact session identity captured immediately before user
     /// confirmation.
     ///
@@ -2202,25 +2558,29 @@ impl<R: CommandRunner> WslHost<R> {
         let condition = tmux_identity_condition(identity);
         let kill = format!("kill-session -t ={}", identity.session_id());
         let mismatch = format!("display-message -p {KILL_IDENTITY_MISMATCH_MARKER}");
-        let output = self.run_tmux_command(
-            &target.endpoint,
-            cancellation,
-            &[
-                "-f",
-                "/dev/null",
-                "if-shell",
-                "-F",
-                "-t",
-                &tmux_target,
-                &condition,
-                &kill,
-                &mismatch,
-            ],
-        )?;
+        let socket_args = target
+            .socket_name()
+            .map_or_else(Vec::new, |socket| vec!["-L", socket]);
+        let mut tmux_args = vec!["-f", "/dev/null"];
+        tmux_args.extend(socket_args);
+        tmux_args.extend([
+            "if-shell",
+            "-F",
+            "-t",
+            tmux_target.as_str(),
+            condition.as_str(),
+            kill.as_str(),
+            mismatch.as_str(),
+        ]);
+        let output = self.run_tmux_command(&target.endpoint, cancellation, &tmux_args)?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if is_no_server(&stderr) || is_missing_session(&stderr) {
-                let sessions = self.discover_sessions(&target.endpoint, cancellation)?;
+                let sessions = if let Some(socket_name) = target.socket_name() {
+                    self.discover_sessions_on_socket(&target.endpoint, socket_name, cancellation)?
+                } else {
+                    self.discover_sessions(&target.endpoint, cancellation)?
+                };
                 self.require_runtime(&target.endpoint, &target.runtime, cancellation)?;
                 if sessions.iter().any(|session| {
                     session.name() == target.name && session.identity() != &target.identity
@@ -2343,6 +2703,39 @@ impl<R: CommandRunner> WslHost<R> {
             .map(OsString::from),
         );
         let output = self.run(&args, cancellation)?;
+        if output.status != 0 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_no_server(&stderr) {
+                return Ok(Vec::new());
+            }
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                &self.config.tmux_binary,
+            ));
+        }
+        parse_inventory(&output.stdout)
+    }
+
+    fn discover_sessions_on_socket(
+        &self,
+        endpoint: &WslEndpoint,
+        socket_name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<DiscoveredSession>, HostError> {
+        let output = self.run_tmux_command(
+            endpoint,
+            cancellation,
+            &[
+                "-f",
+                "/dev/null",
+                "-L",
+                socket_name,
+                "list-sessions",
+                "-F",
+                INVENTORY_FORMAT,
+            ],
+        )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if is_no_server(&stderr) {
@@ -4044,6 +4437,23 @@ fn require_kwt_client_readiness_path(path: &str) -> Result<(), HostError> {
     Ok(())
 }
 
+fn require_kwt_socket_name(name: &str) -> Result<(), HostError> {
+    if name.is_empty()
+        || name.len() > 128
+        || name == "."
+        || name == ".."
+        || name
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || matches!(byte, b'/' | b'\\'))
+    {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "KWT protected tmux socket name was invalid",
+        ));
+    }
+    Ok(())
+}
+
 fn parse_kwt_client_pid(bytes: &[u8]) -> Result<u32, HostError> {
     let text = decode(bytes, "KWT client readiness")?.trim();
     let pid = text.parse::<u32>().map_err(|_| {
@@ -4142,7 +4552,7 @@ fn classify_kwt_command_failure(output: &CommandOutput, subject: &str) -> HostEr
         return classify_command_failure(output.status, &output.stderr, subject);
     }
     let Some(failure) = parse_command_failure(&output.stdout) else {
-        return classify_command_failure(output.status, &output.stderr, subject);
+        return classify_kwt_cli_failure(output.status, &output.stderr, subject);
     };
     HostError::new(
         if failure.code() == "inventory_timeout" {
@@ -4152,6 +4562,33 @@ fn classify_kwt_command_failure(output: &CommandOutput, subject: &str) -> HostEr
         },
         friendly_kwt_failure(&failure),
     )
+}
+
+fn classify_kwt_cli_failure(status: i32, stderr: &[u8], subject: &str) -> HostError {
+    let stderr = String::from_utf8_lossy(stderr);
+    let detail = stderr
+        .lines()
+        .take_while(|line| line.trim() != "Usage:")
+        .collect::<Vec<_>>()
+        .join("\n");
+    let detail = detail
+        .trim()
+        .strip_prefix("Error: ")
+        .unwrap_or(detail.trim());
+    let lower = detail.to_ascii_lowercase();
+    let kind = if status == 127 || lower.contains("no such file") {
+        DiagnosticKind::ExecutableNotFound
+    } else if lower.contains("permission denied") {
+        DiagnosticKind::PermissionDenied
+    } else {
+        DiagnosticKind::Transport
+    };
+    let detail = if detail.is_empty() {
+        format!("command exited with status {status}")
+    } else {
+        detail.to_owned()
+    };
+    HostError::new(kind, format!("{subject}: {detail}"))
 }
 
 fn friendly_kwt_failure(failure: &crate::kwt::KwtCommandFailure) -> String {
@@ -4525,6 +4962,7 @@ mod tests {
     struct KwtMutationRunner {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
         mutation_timeouts: Arc<Mutex<Vec<Duration>>>,
+        provider_timeouts: Arc<Mutex<Vec<Duration>>>,
         mutation_failure: Arc<Mutex<Option<String>>>,
         branch_failure: Arc<AtomicBool>,
         helper_matches: Arc<AtomicBool>,
@@ -4535,6 +4973,7 @@ mod tests {
             Self {
                 calls: Arc::default(),
                 mutation_timeouts: Arc::default(),
+                provider_timeouts: Arc::default(),
                 mutation_failure: Arc::default(),
                 branch_failure: Arc::new(AtomicBool::new(false)),
                 helper_matches: Arc::new(AtomicBool::new(true)),
@@ -4555,6 +4994,10 @@ mod tests {
     }
 
     impl CommandRunner for KwtMutationRunner {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "the fake runner keeps its complete argv-to-contract transcript together"
+        )]
         fn run(
             &self,
             _program: &OsStr,
@@ -4574,6 +5017,12 @@ mod tests {
                 self.mutation_timeouts
                     .lock()
                     .expect("mutation timeouts")
+                    .push(timeout);
+            }
+            if args.windows(2).any(|pair| pair == ["pr", "list"]) {
+                self.provider_timeouts
+                    .lock()
+                    .expect("provider timeouts")
                     .push(timeout);
             }
             self.calls.lock().expect("calls").push(args.clone());
@@ -4630,6 +5079,10 @@ mod tests {
                 br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["branches", "--json"]) {
                 br#"[{"name":"feature/ready","label":"feature/ready","source":"origin/feature/ready","is_current":false,"is_remote":true,"last_commit":{"hash":"abc","message":"ready","author":"A","date":"2026-01-01T00:00:00Z"}}]"#.to_vec()
+            } else if args.windows(2).any(|pair| pair == ["pr", "list"]) {
+                br#"{"pull_requests":[{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":false}]}"#.to_vec()
+            } else if args.windows(2).any(|pair| pair == ["pr", "import"]) {
+                br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2"}}"#.to_vec()
             } else if (args.iter().any(|argument| argument == "add")
                 && args.iter().any(|argument| argument == "--no-launch"))
                 || (args.iter().any(|argument| argument == "remove")
@@ -4819,7 +5272,6 @@ mod tests {
             &cancellation,
         )
         .expect("remove exact worktree while preserving its branch");
-
         let calls = runner.calls.lock().expect("calls");
         assert!(calls.iter().any(|args| {
             args.windows(2).any(|pair| pair == ["branches", "--json"])
@@ -4858,6 +5310,103 @@ mod tests {
         assert_eq!(
             *runner.mutation_timeouts.lock().expect("mutation timeouts"),
             vec![KWT_MUTATION_TIMEOUT, KWT_MUTATION_TIMEOUT]
+        );
+    }
+
+    #[test]
+    fn protected_kwt_removal_uses_the_exact_named_socket() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        host.remove_kwt_worktree(
+            &endpoint,
+            &runtime,
+            "/code/widget",
+            "/work/widget/pr-17",
+            "fedcba9876543210fedcba9876543210",
+            "kwt-pr-widget-17",
+            Some("kwt-pr-fedcba9876543210"),
+            &cancellation,
+        )
+        .expect("remove an absent protected worktree session on its exact socket");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "remove".to_owned(),
+                "--if-generation".to_owned(),
+                "fedcba9876543210fedcba9876543210".to_owned(),
+                "--if-session-name".to_owned(),
+                "kwt-pr-widget-17".to_owned(),
+                "--if-session-absent".to_owned(),
+                "--if-session-socket-name".to_owned(),
+                "kwt-pr-fedcba9876543210".to_owned(),
+                "/work/widget/pr-17".to_owned(),
+            ]) && !args
+                .iter()
+                .any(|arg| arg == "--if-session-socket-directory")
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+        assert_eq!(
+            *runner.mutation_timeouts.lock().expect("mutation timeouts"),
+            vec![KWT_MUTATION_TIMEOUT]
+        );
+    }
+
+    #[test]
+    fn kwt_pull_request_commands_keep_provider_logic_inside_the_pinned_helper() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+        let pull_requests = host
+            .list_kwt_pull_requests(&endpoint, &runtime, "/code/widget", &cancellation)
+            .expect("list pull requests");
+        assert_eq!(pull_requests[0].id(), "github:github.com/acme/widget#17");
+        let imported = host
+            .import_kwt_pull_request(
+                &endpoint,
+                &runtime,
+                &KwtPullRequestImportRequest::new(
+                    "/code/widget",
+                    "github.com/acme/widget",
+                    "opaque-registration",
+                    pull_requests[0].id(),
+                ),
+                &cancellation,
+            )
+            .expect("import pull request");
+        assert_eq!(imported.workspace().tmux_socket_name(), Some("kwt-pr-a1b2"));
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.windows(2).any(|pair| pair == ["pr", "list"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--project", "/code/widget"])
+                && args.windows(2).any(|pair| pair == ["--state", "open"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.windows(2).any(|pair| pair == ["pr", "import"])
+                && args
+                    .iter()
+                    .any(|argument| argument == "github:github.com/acme/widget#17")
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--project", "/code/widget"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--expected-repository", "github.com/acme/widget"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--expected-registration", "opaque-registration"])
+        }));
+        assert_eq!(
+            *runner.provider_timeouts.lock().expect("provider timeouts"),
+            vec![KWT_PROVIDER_TIMEOUT]
         );
     }
 
@@ -5008,6 +5557,69 @@ mod tests {
             .expect("plan uses a private canonical readiness path");
         assert_eq!(plan.target_name(), "widget-topic");
         assert_eq!(plan.clone(), plan);
+    }
+
+    #[test]
+    fn protected_kwt_attach_plan_uses_pr_attach_and_exact_socket_authority() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let plan = host
+            .kwt_protected_attach_plan(
+                &endpoint,
+                &runtime,
+                &KwtProtectedWorktreeOpen::new(
+                    "/work/widget/pr-17",
+                    "/code/widget",
+                    "github.com/acme/widget",
+                    "registration-fingerprint",
+                    "0123456789abcdef0123456789abcdef",
+                    "widget-pr-17",
+                    "kwt-pr-a1b2",
+                ),
+                AttachTerm::Xterm256Color,
+                &CancellationToken::new(),
+            )
+            .expect("build protected attach plan");
+        let args = plan
+            .args()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert!(args.windows(4).any(|args| {
+            args == [
+                "/home/test/.ghosthub/helpers/kwt/revision/kwt",
+                "pr",
+                "attach",
+                "/work/widget/pr-17",
+            ]
+        }));
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--project", "/code/widget"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--expected-repository", "github.com/acme/widget"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--expected-registration", "registration-fingerprint"] })
+        );
+        assert!(
+            args.windows(2).any(|args| {
+                args == ["--expected-generation", "0123456789abcdef0123456789abcdef"]
+            })
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--expected-session", "widget-pr-17"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--expected-socket", "kwt-pr-a1b2"])
+        );
+        assert_eq!(plan.target_name(), "widget-pr-17");
+        assert!(require_kwt_socket_name("kwt-pr-a1b2").is_ok());
+        assert!(require_kwt_socket_name("../default").is_err());
     }
 
     #[test]
@@ -5174,6 +5786,25 @@ mod tests {
         );
         assert!(!error.to_string().contains("daemon_start_failed"));
         assert!(!error.to_string().contains("kwt projects"));
+    }
+
+    #[test]
+    fn kwt_cli_failures_do_not_expose_cobra_usage() {
+        let output = CommandOutput {
+            status: 1,
+            stdout: Vec::new(),
+            stderr: b"Error: stop the session before guarded worktree removal\nUsage:\n  kwt remove [pattern] [flags]\n\nFlags:\n  -h, --help\n"
+                .to_vec(),
+        };
+
+        let error = classify_kwt_command_failure(&output, "remove KWT worktree");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(
+            error.to_string(),
+            "remove KWT worktree: stop the session before guarded worktree removal"
+        );
+        assert!(!error.to_string().contains("Usage:"));
     }
 
     #[test]

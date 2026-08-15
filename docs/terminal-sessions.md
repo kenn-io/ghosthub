@@ -531,7 +531,14 @@ while tmux remains authoritative for pane creation and layout. If tmux rejects
 a split, Ghosthub displays its diagnostic over the attachment. Native Windows
 psmux attachments do not offer pane-split actions or intercept these shortcuts.
 Kill Session is exposed separately from presentation only for a session known
-to be running and always requires confirmation.
+to be running and always requires confirmation. For a protected worktree,
+Ghosthub preserves the named socket, path, and generation in navigation state,
+then queries that exact socket for fresh server and session identity before
+showing confirmation. A same-named session on the default server is unrelated
+and can never satisfy or receive the protected action. Opening also requires
+the rendered socket to match fresh KWT inventory. If no current worktree owns
+an active or retained protected presentation's complete identity, Ghosthub
+keeps a fallback session row so that live client remains reachable.
 
 Native Windows creation also supplies the SSH account's process `PATH` through
 psmux's `new-session -e` contract. Psmux otherwise starts detached panes
@@ -686,6 +693,15 @@ and opaque registration fingerprint. This unregisters metadata only:
 repositories, worktrees, and tmux sessions remain untouched. Reads and
 mutations stay off the UI thread, and the last usable project tree remains
 visible while either is in flight.
+
+Removing a generation-backed worktree is a distinct destructive action. The
+confirmation is bound to its exact project, generation, tmux socket, and a
+fresh live session identity or freshly confirmed absence. Pinned KWT
+revalidates those facts under the project lifecycle lock, terminates only the
+confirmed session when necessary, and removes the checkout in the same guarded
+operation. A replaced session or changed socket fails closed and requires new
+confirmation. Closing or detaching a presentation never grants this removal
+authority.
 
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,

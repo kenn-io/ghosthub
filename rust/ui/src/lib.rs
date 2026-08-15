@@ -331,6 +331,7 @@ struct WorktreeOpenTarget {
     worktree_path: String,
     generation: Option<String>,
     session_name: String,
+    tmux_socket_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -391,8 +392,11 @@ enum ProjectDialog {
         project_path: String,
         registration_fingerprint: String,
         branch: String,
+        mode: NewWorktreeMode,
         selected_source: Option<String>,
+        selected_pull_request: Option<String>,
         branches: Vec<workspace::KwtBranchItem>,
+        pull_requests: Vec<workspace::KwtPullRequestItem>,
         operation_id: Option<u64>,
         loading: bool,
         loaded: bool,
@@ -404,6 +408,12 @@ enum ProjectDialog {
         submitting: bool,
         error: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NewWorktreeMode {
+    Branch,
+    PullRequest,
 }
 
 impl ProjectDialog {
@@ -427,11 +437,7 @@ fn kwt_operation_failure_owns_dialog(
             project_path: dialog_project,
             operation_id: dialog_operation,
             ..
-        }) => {
-            *dialog_operation == Some(operation_id)
-                && dialog_project == project_path
-                && worktree_path.is_none()
-        }
+        }) => *dialog_operation == Some(operation_id) && dialog_project == project_path,
         Some(ProjectDialog::RemoveWorktree { target, .. }) => {
             target.operation_id == Some(operation_id)
                 && target.open.project_path == project_path
@@ -469,9 +475,36 @@ fn apply_worktree_removal_failure(
     true
 }
 
+fn apply_new_worktree_failure(
+    dialog: &mut ProjectDialog,
+    operation_id: u64,
+    project_path: &str,
+    message: String,
+) -> bool {
+    let ProjectDialog::NewWorktree {
+        project_path: dialog_path,
+        operation_id: dialog_operation,
+        loading,
+        submitting,
+        error,
+        ..
+    } = dialog
+    else {
+        return false;
+    };
+    if dialog_path != project_path || *dialog_operation != Some(operation_id) {
+        return false;
+    }
+    *loading = false;
+    *submitting = false;
+    *error = Some(message);
+    true
+}
+
 fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
     let ProjectDialog::NewWorktree {
         branch,
+        mode: NewWorktreeMode::Branch,
         selected_source,
         branches,
         loaded: true,
@@ -490,6 +523,58 @@ fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
             .take(2)
             .count()
             > 1
+}
+
+fn visible_kwt_pull_requests<'a>(
+    pull_requests: &'a [workspace::KwtPullRequestItem],
+    query: &str,
+) -> Vec<&'a workspace::KwtPullRequestItem> {
+    let query = query.trim().to_ascii_lowercase();
+    pull_requests
+        .iter()
+        .filter(|pull_request| {
+            query.is_empty()
+                || pull_request.number().to_string() == query
+                || pull_request.id().to_ascii_lowercase().contains(&query)
+                || pull_request.url().to_ascii_lowercase().contains(&query)
+                || pull_request.title().to_ascii_lowercase().contains(&query)
+                || pull_request.author().to_ascii_lowercase().contains(&query)
+                || pull_request
+                    .source_branch()
+                    .to_ascii_lowercase()
+                    .contains(&query)
+        })
+        .collect()
+}
+
+fn pull_request_import_selector(
+    pull_requests: &[workspace::KwtPullRequestItem],
+    query: &str,
+    selected_pull_request: Option<&str>,
+) -> Option<String> {
+    let query = query.trim();
+    if selected_pull_request == Some(query)
+        && pull_requests
+            .iter()
+            .any(|pull_request| pull_request.id() == query)
+    {
+        return Some(query.to_owned());
+    }
+    if pull_requests
+        .iter()
+        .any(|pull_request| pull_request.id() == query)
+    {
+        return Some(query.to_owned());
+    }
+    let number = query.strip_prefix('#').unwrap_or(query);
+    if let Ok(number) = number.parse::<u64>()
+        && number > 0
+    {
+        return Some(number.to_string());
+    }
+    ((query.starts_with("https://") || query.starts_with("http://"))
+        && !query.chars().any(char::is_whitespace))
+    .then(|| query.to_owned())
 }
 
 fn visible_kwt_branch_candidates<'a>(
@@ -570,6 +655,23 @@ enum WorktreePresentation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreeRowPresence {
+    Idle,
+    Live,
+    Active,
+}
+
+impl WorktreeRowPresence {
+    const fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+
+    const fn is_live(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorktreeHostAccess {
     Ready { kwt_available: bool },
     Unavailable,
@@ -582,9 +684,6 @@ const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
     let WorktreeHostAccess::Ready { kwt_available } = context.host else {
         return WorktreeOpenMode::Disabled;
     };
-    if matches!(context.socket, WorktreeSocket::Custom) {
-        return WorktreeOpenMode::Disabled;
-    }
     if matches!(context.authority, WorktreeAuthority::Generation) && kwt_available {
         WorktreeOpenMode::RepairOrOpen
     } else if matches!(context.authority, WorktreeAuthority::Generationless)
@@ -594,6 +693,20 @@ const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
     } else {
         WorktreeOpenMode::Disabled
     }
+}
+
+const fn can_kill_worktree(
+    host_can_attach: bool,
+    socket: WorktreeSocket,
+    session: WorktreeSessionPresence,
+    authority: WorktreeAuthority,
+) -> bool {
+    host_can_attach
+        && if matches!(socket, WorktreeSocket::Custom) {
+            matches!(authority, WorktreeAuthority::Generation)
+        } else {
+            matches!(session, WorktreeSessionPresence::Discovered)
+        }
 }
 
 fn owns_created_worktree_navigation(
@@ -968,7 +1081,13 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.workspace.snapshot();
-        if active_session_selection(snapshot.content()).as_ref() == Some(selection) {
+        if snapshot
+            .active_selection()
+            .cloned()
+            .or_else(|| active_session_selection(snapshot.content()))
+            .as_ref()
+            == Some(selection)
+        {
             if matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
                 window.focus(&self.focus);
             }
@@ -1012,6 +1131,7 @@ impl RootView {
             &target.worktree_path,
             target.generation.as_deref(),
             &target.session_name,
+            target.tmux_socket_name.as_deref(),
         );
         if let Err(error) = result {
             self.diagnostic = Some(error.to_string());
@@ -1179,8 +1299,11 @@ impl RootView {
             project_path: project.path().to_owned(),
             registration_fingerprint: project.registration_fingerprint().to_owned(),
             branch: String::new(),
+            mode: NewWorktreeMode::Branch,
             selected_source: None,
+            selected_pull_request: None,
             branches: Vec::new(),
+            pull_requests: Vec::new(),
             operation_id,
             loading: operation_id.is_some(),
             loaded: false,
@@ -1209,6 +1332,7 @@ impl RootView {
                 &target.open.worktree_path,
                 generation,
                 &target.open.session_name,
+                target.open.tmux_socket_name.as_deref(),
             )
         } else {
             target.authority = None;
@@ -1238,6 +1362,71 @@ impl RootView {
         cx.notify();
     }
 
+    fn switch_new_worktree_mode(&mut self, mode: NewWorktreeMode, cx: &mut Context<Self>) {
+        let Some(ProjectDialog::NewWorktree {
+            host_id,
+            endpoint,
+            repository,
+            project_path,
+            registration_fingerprint,
+            mode: current_mode,
+            branch,
+            selected_source,
+            selected_pull_request,
+            operation_id,
+            loading,
+            loaded,
+            submitting: false,
+            error,
+            ..
+        }) = &mut self.project_dialog
+        else {
+            return;
+        };
+        if *current_mode == mode {
+            return;
+        }
+        if *loading && let Some(active_operation) = operation_id.take() {
+            let _cancelled = self.workspace.cancel_kwt_worktree_listing(active_operation);
+            *loading = false;
+        }
+        *current_mode = mode;
+        branch.clear();
+        *selected_source = None;
+        *selected_pull_request = None;
+        *error = None;
+        let result = match mode {
+            NewWorktreeMode::Branch => self.workspace.load_kwt_branches(
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+            ),
+            NewWorktreeMode::PullRequest => self.workspace.load_kwt_pull_requests(
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+            ),
+        };
+        match result {
+            Ok(id) => {
+                *operation_id = Some(id);
+                *loading = true;
+                *loaded = false;
+            }
+            Err(failure) => {
+                *operation_id = None;
+                *loading = false;
+                *loaded = false;
+                *error = Some(failure.to_string());
+            }
+        }
+        cx.notify();
+    }
+
     fn cancel_project_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .project_dialog
@@ -1256,6 +1445,14 @@ impl RootView {
             Some(ProjectDialog::RemoveWorktree { .. })
         ) {
             self.workspace.cancel_kwt_worktree_removal();
+        }
+        if let Some(ProjectDialog::NewWorktree {
+            operation_id: Some(operation_id),
+            loading: true,
+            ..
+        }) = &self.project_dialog
+        {
+            let _cancelled = self.workspace.cancel_kwt_worktree_listing(*operation_id);
         }
         self.project_dialog = None;
         window.focus(&self.focus);
@@ -1316,6 +1513,7 @@ impl RootView {
                 &open.worktree_path,
                 generation,
                 &open.session_name,
+                open.tmux_socket_name.as_deref(),
             ) {
                 Ok(operation_id) => {
                     if let Some(ProjectDialog::RemoveWorktree { target, error, .. }) =
@@ -1328,6 +1526,28 @@ impl RootView {
                 }
                 Err(error) => self.set_project_dialog_error(error.to_string()),
             }
+            cx.notify();
+            return;
+        }
+        let invalid_pull_request = self.project_dialog.as_ref().is_some_and(|dialog| {
+            let ProjectDialog::NewWorktree {
+                branch,
+                mode: NewWorktreeMode::PullRequest,
+                selected_pull_request,
+                pull_requests,
+                loaded: true,
+                loading: false,
+                submitting: false,
+                ..
+            } = dialog
+            else {
+                return false;
+            };
+            pull_request_import_selector(pull_requests, branch, selected_pull_request.as_deref())
+                .is_none()
+        });
+        if invalid_pull_request {
+            self.set_project_dialog_error("Choose a pull request, or enter its number or URL.");
             cx.notify();
             return;
         }
@@ -1367,6 +1587,7 @@ impl RootView {
                 project_path,
                 registration_fingerprint,
                 branch,
+                mode: NewWorktreeMode::Branch,
                 selected_source,
                 branches,
                 loaded: true,
@@ -1394,6 +1615,38 @@ impl RootView {
                         normalized,
                         exact.first().map(|candidate| candidate.source()),
                         exact.is_empty(),
+                    )
+                    .map(Some)
+            }
+            Some(ProjectDialog::NewWorktree {
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+                branch,
+                mode: NewWorktreeMode::PullRequest,
+                selected_pull_request,
+                pull_requests,
+                loaded: true,
+                loading: false,
+                submitting: false,
+                ..
+            }) => {
+                let selector = pull_request_import_selector(
+                    pull_requests,
+                    branch,
+                    selected_pull_request.as_deref(),
+                )
+                .expect("pull request selector was validated before submission");
+                self.workspace
+                    .import_kwt_pull_request(
+                        host_id,
+                        endpoint,
+                        repository,
+                        project_path,
+                        registration_fingerprint,
+                        &selector,
                     )
                     .map(Some)
             }
@@ -1499,11 +1752,13 @@ impl RootView {
             ProjectDialog::NewWorktree {
                 branch,
                 selected_source,
+                selected_pull_request,
                 submitting: false,
                 error,
                 ..
             } => {
                 *selected_source = None;
+                *selected_pull_request = None;
                 (branch, error)
             }
             ProjectDialog::Remove { .. }
@@ -1837,6 +2092,7 @@ impl RootView {
                 } => {
                     if let Some(ProjectDialog::NewWorktree {
                         project_path: dialog_path,
+                        mode: NewWorktreeMode::Branch,
                         operation_id: dialog_operation,
                         branches: dialog_branches,
                         loading,
@@ -1848,6 +2104,30 @@ impl RootView {
                         && *dialog_operation == Some(operation_id)
                     {
                         *dialog_branches = branches;
+                        *loading = false;
+                        *loaded = true;
+                        *error = None;
+                    }
+                }
+                WorkspaceEvent::KwtPullRequestsLoaded {
+                    operation_id,
+                    project_path,
+                    pull_requests,
+                } => {
+                    if let Some(ProjectDialog::NewWorktree {
+                        project_path: dialog_path,
+                        mode: NewWorktreeMode::PullRequest,
+                        operation_id: dialog_operation,
+                        pull_requests: dialog_pull_requests,
+                        loading,
+                        loaded,
+                        error,
+                        ..
+                    }) = &mut self.project_dialog
+                        && *dialog_path == project_path
+                        && *dialog_operation == Some(operation_id)
+                    {
+                        *dialog_pull_requests = pull_requests;
                         *loading = false;
                         *loaded = true;
                         *error = None;
@@ -1886,6 +2166,7 @@ impl RootView {
                         worktree_path: target.worktree_path().to_owned(),
                         generation: target.generation().map(str::to_owned),
                         session_name: target.session_name().to_owned(),
+                        tmux_socket_name: target.tmux_socket_name().map(str::to_owned),
                     };
                     let dialog_project_path = self.project_dialog.as_ref().map(|dialog| {
                         if let ProjectDialog::NewWorktree { project_path, .. } = dialog {
@@ -1921,6 +2202,7 @@ impl RootView {
                         &open.worktree_path,
                         open.generation.as_deref(),
                         &open.session_name,
+                        open.tmux_socket_name.as_deref(),
                     ) {
                         self.diagnostic = Some(error.to_string());
                     } else {
@@ -2019,25 +2301,8 @@ impl RootView {
                     }) {
                         continue;
                     }
-                    match &mut self.project_dialog {
-                        Some(ProjectDialog::NewWorktree {
-                            project_path: dialog_path,
-                            operation_id: dialog_operation,
-                            loading,
-                            loaded,
-                            submitting,
-                            error,
-                            ..
-                        }) if *dialog_path == project_path
-                            && *dialog_operation == Some(operation_id)
-                            && worktree_path.is_none() =>
-                        {
-                            *loading = false;
-                            *loaded = false;
-                            *submitting = false;
-                            *error = Some(message);
-                        }
-                        _ => {}
+                    if let Some(dialog) = &mut self.project_dialog {
+                        apply_new_worktree_failure(dialog, operation_id, &project_path, message);
                     }
                 }
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
@@ -3045,23 +3310,71 @@ impl RootView {
                 ProjectDialog::NewWorktree {
                     project_name,
                     branch,
+                    mode,
                     selected_source,
+                    selected_pull_request,
                     branches,
+                    pull_requests,
                     loading,
                     loaded,
                     submitting,
                     error,
                     ..
                 } => {
-                    let visible = visible_kwt_branch_candidates(branches, branch);
+                    let visible_branches = visible_kwt_branch_candidates(branches, branch);
+                    let visible_pull_requests = visible_kwt_pull_requests(pull_requests, branch);
                     let text = if branch.is_empty() && !focused {
-                        "Branch name".to_owned()
+                        match mode {
+                            NewWorktreeMode::Branch => "Branch name".to_owned(),
+                            NewWorktreeMode::PullRequest => {
+                                "Pull request number, title, or URL".to_owned()
+                            }
+                        }
                     } else if branch.is_empty() {
                         "▏".to_owned()
                     } else {
                         format!("{branch}▏")
                     };
-                    let mut body = div().m_4().flex().flex_col().gap_2().child(
+                    let tabs = div()
+                        .flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .id("new-worktree-branch-mode")
+                                .px_3()
+                                .py_1()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(rgb(if *mode == NewWorktreeMode::Branch {
+                                    0x25_3549
+                                } else {
+                                    0x13_161c
+                                }))
+                                .text_xs()
+                                .child("Branch")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.switch_new_worktree_mode(NewWorktreeMode::Branch, cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("new-worktree-pr-mode")
+                                .px_3()
+                                .py_1()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(rgb(if *mode == NewWorktreeMode::PullRequest {
+                                    0x25_3549
+                                } else {
+                                    0x13_161c
+                                }))
+                                .text_xs()
+                                .child("Pull Request")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.switch_new_worktree_mode(NewWorktreeMode::PullRequest, cx);
+                                })),
+                        );
+                    let mut body = div().m_4().flex().flex_col().gap_2().child(tabs).child(
                         div()
                             .id("kwt-worktree-branch-input")
                             .px_3()
@@ -3086,13 +3399,13 @@ impl RootView {
                             })),
                     );
                     if *loading {
-                        body = body.child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(0x8f_96_a3))
-                                .child("Loading branches…"),
-                        );
-                    } else {
+                        body = body.child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(
+                            match mode {
+                                NewWorktreeMode::Branch => "Loading branches…",
+                                NewWorktreeMode::PullRequest => "Loading pull requests…",
+                            },
+                        ));
+                    } else if *mode == NewWorktreeMode::Branch {
                         let mut candidates = div()
                             .id("kwt-branch-candidates")
                             .max_h(px(196.0))
@@ -3100,7 +3413,7 @@ impl RootView {
                             .flex()
                             .flex_col()
                             .gap_1();
-                        for (index, candidate) in visible.into_iter().enumerate() {
+                        for (index, candidate) in visible_branches.into_iter().enumerate() {
                             let name = candidate.name().to_owned();
                             let source = candidate.source().to_owned();
                             let selected = branch == &name
@@ -3144,13 +3457,99 @@ impl RootView {
                             );
                         }
                         body = body.child(candidates);
+                    } else {
+                        let mut candidates = div()
+                            .id("kwt-pull-request-candidates")
+                            .max_h(px(240.0))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_1();
+                        for (index, pull_request) in visible_pull_requests.into_iter().enumerate() {
+                            let id = pull_request.id().to_owned();
+                            let selected = selected_pull_request.as_deref() == Some(id.as_str());
+                            let imported = pull_request.imported();
+                            let title = format!(
+                                "#{}  {}{}",
+                                pull_request.number(),
+                                pull_request.title(),
+                                if pull_request.draft() {
+                                    "  ·  draft"
+                                } else {
+                                    ""
+                                }
+                            );
+                            let detail = format!(
+                                "{}  ·  {}",
+                                pull_request.author(),
+                                pull_request.source_branch()
+                            );
+                            candidates = candidates.child(
+                                div()
+                                    .id(("kwt-pull-request-candidate", index))
+                                    .px_2()
+                                    .py_1()
+                                    .flex()
+                                    .flex_col()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgb(if selected { 0x1d_3f63 } else { 0x13_161c }))
+                                    .text_xs()
+                                    .text_color(rgb(0xc4_c9_d2))
+                                    .hover(|style| style.bg(rgb(0x25_2a34)))
+                                    .child(title)
+                                    .child(div().text_color(rgb(0x78_808e)).child(if imported {
+                                        format!("{detail}  ·  imported")
+                                    } else {
+                                        detail
+                                    }))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if let Some(ProjectDialog::NewWorktree {
+                                            branch,
+                                            mode: NewWorktreeMode::PullRequest,
+                                            selected_pull_request,
+                                            error,
+                                            ..
+                                        }) = &mut this.project_dialog
+                                        {
+                                            branch.clone_from(&id);
+                                            *selected_pull_request = Some(id.clone());
+                                            *error = None;
+                                        }
+                                        window.focus(&this.project_focus);
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                        body = body.child(candidates);
                     }
                     (
                         format!("New worktree · {project_name}"),
                         body.into_any_element(),
-                        if *submitting { "Creating…" } else { "Create" },
+                        if *submitting {
+                            "Creating…"
+                        } else if *mode == NewWorktreeMode::PullRequest {
+                            "Import"
+                        } else {
+                            "Create"
+                        },
                         *submitting,
-                        can_create_worktree(branch, *loaded, *loading, *submitting),
+                        match mode {
+                            NewWorktreeMode::Branch => {
+                                can_create_worktree(branch, *loaded, *loading, *submitting)
+                            }
+                            NewWorktreeMode::PullRequest => {
+                                *loaded
+                                    && !*loading
+                                    && !*submitting
+                                    && pull_request_import_selector(
+                                        pull_requests,
+                                        branch,
+                                        selected_pull_request.as_deref(),
+                                    )
+                                    .is_some()
+                            }
+                        },
                         error.as_deref(),
                     )
                 }
@@ -3745,6 +4144,10 @@ impl RootView {
         snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let active = snapshot
+            .active_selection()
+            .cloned()
+            .or_else(|| active_session_selection(snapshot.content()));
         let mut body = div()
             .id("workspace-tree-scroll")
             .flex_1()
@@ -3756,7 +4159,7 @@ impl RootView {
                 host_index,
                 host,
                 snapshot.selected_host() == Some(host.id()),
-                snapshot.content(),
+                active.as_ref(),
                 snapshot.retained_selections(),
                 cx,
             ));
@@ -3793,7 +4196,7 @@ impl RootView {
         host_index: usize,
         host: &HostItem,
         is_selected: bool,
-        content: &WorkspaceContent,
+        active: Option<&SessionSelection>,
         retained: &[SessionSelection],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -3812,9 +4215,9 @@ impl RootView {
             ));
         }
 
-        let sessions = tree_sessions(host, content, retained);
-        let herdr_sessions = tree_herdr_sessions(host, content, retained);
-        let zellij_sessions = tree_zellij_sessions(host, content, retained);
+        let sessions = tree_sessions(host, active, retained);
+        let herdr_sessions = tree_herdr_sessions(host, active, retained);
+        let zellij_sessions = tree_zellij_sessions(host, active, retained);
         let groups = session_group_visibility(host, &herdr_sessions, &zellij_sessions);
         if groups.tmux {
             host_tree = host_tree.child(Self::session_tree(
@@ -3847,8 +4250,7 @@ impl RootView {
             || !host.directory_workspaces().is_empty()
             || host.kwt_diagnostic().is_some()
         {
-            host_tree =
-                host_tree.child(Self::project_tree(host_index, host, content, retained, cx));
+            host_tree = host_tree.child(Self::project_tree(host_index, host, active, retained, cx));
         }
         host_tree.into_any_element()
     }
@@ -4030,11 +4432,10 @@ impl RootView {
     fn project_tree(
         host_index: usize,
         host: &HostItem,
-        content: &WorkspaceContent,
+        active: Option<&SessionSelection>,
         retained: &[SessionSelection],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let active = active_session_selection(content);
         let can_add = host.can_add_kwt_project();
         let can_remove = host.can_remove_kwt_project();
         let mut tree = div().w_full().flex().flex_col().child({
@@ -4166,31 +4567,49 @@ impl RootView {
             }
             tree = tree.child(row);
             for (worktree_index, worktree) in project.worktrees().iter().enumerate() {
-                let selection =
-                    SessionSelection::new(host.id(), host.endpoint(), worktree.session_name());
-                let is_active = active.as_ref() == Some(&selection);
+                let selection = worktree
+                    .tmux_socket_name()
+                    .and_then(|socket| {
+                        worktree.generation().map(|generation| {
+                            SessionSelection::protected_worktree(
+                                host.id(),
+                                host.endpoint(),
+                                worktree.session_name(),
+                                socket,
+                                worktree.path(),
+                                generation,
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        SessionSelection::new(host.id(), host.endpoint(), worktree.session_name())
+                    });
+                let is_active = active == Some(&selection);
                 let is_retained = retained.contains(&selection);
                 let has_generation = worktree.generation().is_some();
                 let host_can_attach = !matches!(
                     host.connection(),
                     HostConnectionState::Disconnected | HostConnectionState::Unavailable
                 );
+                let authority = if has_generation {
+                    WorktreeAuthority::Generation
+                } else {
+                    WorktreeAuthority::Generationless
+                };
+                let socket = if worktree.tmux_socket_name().is_some() {
+                    WorktreeSocket::Custom
+                } else {
+                    WorktreeSocket::Default
+                };
+                let session = if worktree.session_available() {
+                    WorktreeSessionPresence::Discovered
+                } else {
+                    WorktreeSessionPresence::Absent
+                };
                 let open_mode = worktree_open_mode(WorktreeOpenContext {
-                    authority: if has_generation {
-                        WorktreeAuthority::Generation
-                    } else {
-                        WorktreeAuthority::Generationless
-                    },
-                    socket: if worktree.tmux_socket_name().is_some() {
-                        WorktreeSocket::Custom
-                    } else {
-                        WorktreeSocket::Default
-                    },
-                    session: if worktree.session_available() {
-                        WorktreeSessionPresence::Discovered
-                    } else {
-                        WorktreeSessionPresence::Absent
-                    },
+                    authority,
+                    socket,
+                    session,
                     presentation: if is_active || is_retained {
                         WorktreePresentation::ActiveOrRetained
                     } else {
@@ -4205,7 +4624,7 @@ impl RootView {
                     },
                 });
                 let can_open = open_mode != WorktreeOpenMode::Disabled;
-                let can_kill = worktree.session_available() && host_can_attach;
+                let can_kill = can_kill_worktree(host_can_attach, socket, session, authority);
                 let open_target = WorktreeOpenTarget {
                     host_id: host.id().to_owned(),
                     endpoint: host.endpoint().to_owned(),
@@ -4215,12 +4634,12 @@ impl RootView {
                     worktree_path: worktree.path().to_owned(),
                     generation: worktree.generation().map(str::to_owned),
                     session_name: worktree.session_name().to_owned(),
+                    tmux_socket_name: worktree.tmux_socket_name().map(str::to_owned),
                 };
                 let repair_open_target =
                     (open_mode == WorktreeOpenMode::RepairOrOpen).then(|| open_target.clone());
                 let remove_target = (!worktree.is_main()
                     && worktree.generation().is_some()
-                    && worktree.tmux_socket_name().is_none()
                     && host.connection() == HostConnectionState::Ready
                     && host.kwt_available()
                     && host.kwt_diagnostic().is_none())
@@ -4238,7 +4657,13 @@ impl RootView {
                     worktree_index,
                     worktree.branch().to_owned(),
                     selection,
-                    is_active,
+                    if is_active {
+                        WorktreeRowPresence::Active
+                    } else if worktree.session_available() || is_retained {
+                        WorktreeRowPresence::Live
+                    } else {
+                        WorktreeRowPresence::Idle
+                    },
                     can_open,
                     can_kill,
                     repair_open_target,
@@ -4248,11 +4673,7 @@ impl RootView {
             }
         }
         tree.children(Self::directory_workspace_rows(
-            host_index,
-            host,
-            active.as_ref(),
-            retained,
-            cx,
+            host_index, host, active, retained, cx,
         ))
         .into_any_element()
     }
@@ -4302,7 +4723,13 @@ impl RootView {
                 index,
                 workspace.name().to_owned(),
                 selection,
-                is_active,
+                if is_active {
+                    WorktreeRowPresence::Active
+                } else if workspace.session_available() || is_retained {
+                    WorktreeRowPresence::Live
+                } else {
+                    WorktreeRowPresence::Idle
+                },
                 can_open,
                 can_kill,
                 None,
@@ -4320,13 +4747,15 @@ impl RootView {
         worktree_index: usize,
         label: String,
         selection: SessionSelection,
-        is_active: bool,
+        presence: WorktreeRowPresence,
         can_open: bool,
         can_kill: bool,
         worktree_target: Option<WorktreeOpenTarget>,
         remove_target: Option<WorktreeRemoveTarget>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let is_active = presence.is_active();
+        let is_live = presence.is_live();
         let row_group = format!("worktree-actions-{host_index}-{project_index}-{worktree_index}");
         let mut row = div()
             .id((
@@ -4353,8 +4782,14 @@ impl RootView {
                     .w(px(18.0))
                     .flex_none()
                     .text_xs()
-                    .text_color(rgb(if is_active { 0x9d_c7ed } else { 0x7f_8794 }))
-                    .child("◇"),
+                    .text_color(rgb(if is_active {
+                        0x9d_c7ed
+                    } else if is_live {
+                        0x79_c9_a3
+                    } else {
+                        0x7f_8794
+                    }))
+                    .child(if is_live { ">_" } else { "◇" }),
             )
             .child(
                 div()
@@ -5171,13 +5606,22 @@ fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelecti
     }
 }
 
+fn host_owns_worktree_presentation(host: &HostItem, selection: &SessionSelection) -> bool {
+    if selection.tmux_socket_name().is_some() {
+        host.kwt_owns_protected_presentation(selection)
+    } else {
+        selection.host_id() == host.id()
+            && selection.endpoint() == host.endpoint()
+            && host.kwt_owns_default_tmux_session(selection.session())
+    }
+}
+
 fn tree_sessions(
     host: &HostItem,
-    content: &WorkspaceContent,
+    active: Option<&SessionSelection>,
     retained: &[SessionSelection],
 ) -> Vec<TreeSession> {
-    let active = active_session_selection(content);
-    let active_for_host = active.as_ref().filter(|active| {
+    let active_for_host = active.filter(|active| {
         active.host_id() == host.id() && active.kind() == workspace::SessionKind::Tmux
     });
 
@@ -5197,13 +5641,13 @@ fn tree_sessions(
         .filter(|selection| {
             selection.host_id() == host.id()
                 && selection.kind() == workspace::SessionKind::Tmux
-                && !(selection.endpoint() == host.endpoint()
-                    && host.kwt_owns_default_tmux_session(selection.session()))
+                && !host_owns_worktree_presentation(host, selection)
         })
-        .chain(active_for_host.into_iter().filter(|selection| {
-            !(selection.endpoint() == host.endpoint()
-                && host.kwt_owns_default_tmux_session(selection.session()))
-        }))
+        .chain(
+            active_for_host
+                .into_iter()
+                .filter(|selection| !host_owns_worktree_presentation(host, selection)),
+        )
     {
         if !selections
             .iter()
@@ -5220,7 +5664,7 @@ fn tree_sessions(
         .into_iter()
         .map(|(selection, discovered)| {
             let retained = retained.contains(&selection);
-            let is_active = active.as_ref() == Some(&selection);
+            let is_active = active == Some(&selection);
             let can_kill = discovered && host_accepts_actions;
             let state = match (is_active, retained, host_accepts_actions, can_kill) {
                 (true, _, _, true) => TreeSessionState::ActiveKillable,
@@ -5241,11 +5685,10 @@ fn tree_sessions(
 
 fn tree_herdr_sessions(
     host: &HostItem,
-    content: &WorkspaceContent,
+    active: Option<&SessionSelection>,
     retained: &[SessionSelection],
 ) -> Vec<TreeHerdrSession> {
-    let active = active_session_selection(content);
-    let active_for_host = active.as_ref().filter(|selection| {
+    let active_for_host = active.filter(|selection| {
         selection.host_id() == host.id() && selection.kind() == workspace::SessionKind::Herdr
     });
     let mut sessions = host
@@ -5284,7 +5727,7 @@ fn tree_herdr_sessions(
         HostConnectionState::Disconnected | HostConnectionState::Unavailable
     ) && host.herdr_diagnostic().is_none();
     for session in &mut sessions {
-        session.active = active.as_ref() == Some(&session.selection);
+        session.active = active == Some(&session.selection);
         let retained = retained.contains(&session.selection);
         session.access = if session.inventory.is_some() && host_accepts_actions {
             HerdrRowAccess::Mutable
@@ -5299,11 +5742,10 @@ fn tree_herdr_sessions(
 
 fn tree_zellij_sessions(
     host: &HostItem,
-    content: &WorkspaceContent,
+    active: Option<&SessionSelection>,
     retained: &[SessionSelection],
 ) -> Vec<TreeSession> {
-    let active = active_session_selection(content);
-    let active_for_host = active.as_ref().filter(|selection| {
+    let active_for_host = active.filter(|selection| {
         selection.host_id() == host.id() && selection.kind() == workspace::SessionKind::Zellij
     });
     let mut selections = host
@@ -5338,7 +5780,7 @@ fn tree_zellij_sessions(
         .into_iter()
         .map(|(selection, discovered)| {
             let retained = retained.contains(&selection);
-            let is_active = active.as_ref() == Some(&selection);
+            let is_active = active == Some(&selection);
             let can_kill = discovered && host_accepts_actions;
             let state = match (is_active, retained, host_accepts_actions, can_kill) {
                 (true, _, _, true) => TreeSessionState::ActiveKillable,
@@ -6172,34 +6614,35 @@ mod tests {
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
-        NewSessionDraft, NewSessionKind, PendingUiInput, ProjectDialog, QueuedUiInput,
-        SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
-        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
+        NewSessionDraft, NewSessionKind, NewWorktreeMode, PendingUiInput, ProjectDialog,
+        QueuedUiInput, SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer,
+        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
         WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
         WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
-        active_session_selection, application_navigation_width, apply_worktree_removal_failure,
-        can_create_worktree, canonical_terminal_key_with, clear_terminal_input_state,
-        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
-        herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
-        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
-        owns_created_worktree_navigation, queued_input_matches_presentation,
-        retained_key_event_with, session_action_menu_position, session_backend_id,
-        session_group_visibility, session_row_element_id, terminal_cell_at_with_offset,
-        terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
-        terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
-        tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates, workspace_window_title,
-        worktree_open_mode,
+        active_session_selection, application_navigation_width, apply_new_worktree_failure,
+        apply_worktree_removal_failure, can_create_worktree, can_kill_worktree,
+        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
+        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
+        host_tree_status, input_queue_has_capacity, is_toggle_sidebar_shortcut,
+        kill_confirmation_description, kill_confirmation_title, kwt_operation_failure_owns_dialog,
+        named_key, new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
+        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
+        session_action_menu_position, session_backend_id, session_group_visibility,
+        session_row_element_id, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
+        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
+        tree_zellij_sessions, visible_kwt_branch_candidates, visible_kwt_pull_requests,
+        workspace_window_title, worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
-        KeyEvent, KeyInput, KwtBranchItem, Modifiers, MouseAction, MouseButton, MouseInput,
-        NamedKey, ProjectItem, SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot,
-        WorktreeItem,
+        KeyEvent, KeyInput, KwtBranchItem, KwtPullRequestItem, Modifiers, MouseAction, MouseButton,
+        MouseInput, NamedKey, ProjectItem, SessionItem, SessionSelection, WorkspaceContent,
+        WorkspaceSnapshot, WorktreeItem,
     };
 
     #[test]
@@ -6212,11 +6655,14 @@ mod tests {
             project_path: "/code/widget".to_owned(),
             registration_fingerprint: "registration".to_owned(),
             branch: "topic".to_owned(),
+            mode: NewWorktreeMode::Branch,
             selected_source: None,
+            selected_pull_request: None,
             branches: vec![
                 KwtBranchItem::new("topic", "topic", false),
                 KwtBranchItem::new("topic", "origin/topic", true),
             ],
+            pull_requests: Vec::new(),
             operation_id: Some(1),
             loading: false,
             loaded: true,
@@ -6341,6 +6787,111 @@ mod tests {
     }
 
     #[test]
+    fn protected_generation_backed_worktrees_use_kwt_attach() {
+        assert_eq!(
+            worktree_open_mode(WorktreeOpenContext {
+                authority: WorktreeAuthority::Generation,
+                socket: WorktreeSocket::Custom,
+                session: WorktreeSessionPresence::Absent,
+                presentation: WorktreePresentation::Inactive,
+                host: WorktreeHostAccess::Ready {
+                    kwt_available: true,
+                },
+            }),
+            WorktreeOpenMode::RepairOrOpen
+        );
+    }
+
+    #[test]
+    fn protected_worktrees_offer_fresh_named_socket_kill_capture() {
+        assert!(can_kill_worktree(
+            true,
+            WorktreeSocket::Custom,
+            WorktreeSessionPresence::Absent,
+            WorktreeAuthority::Generation,
+        ));
+        assert!(!can_kill_worktree(
+            false,
+            WorktreeSocket::Custom,
+            WorktreeSessionPresence::Absent,
+            WorktreeAuthority::Generation,
+        ));
+        assert!(!can_kill_worktree(
+            true,
+            WorktreeSocket::Custom,
+            WorktreeSessionPresence::Absent,
+            WorktreeAuthority::Generationless,
+        ));
+        assert!(!can_kill_worktree(
+            true,
+            WorktreeSocket::Default,
+            WorktreeSessionPresence::Absent,
+            WorktreeAuthority::Generationless,
+        ));
+    }
+
+    #[test]
+    fn pull_requests_filter_by_provider_owned_fields() {
+        let pull_requests = vec![
+            KwtPullRequestItem::new(
+                "github:github.com/acme/widget#17",
+                17,
+                "https://github.com/acme/widget/pull/17",
+                "Improve rendering",
+                "octocat",
+                "feature/rendering",
+                false,
+                false,
+            ),
+            KwtPullRequestItem::new(
+                "github:github.com/acme/widget#42",
+                42,
+                "https://github.com/acme/widget/pull/42",
+                "Fix startup",
+                "hubot",
+                "fix/startup",
+                true,
+                true,
+            ),
+        ];
+        for query in ["17", "rendering", "octocat", "feature/rendering", "pull/17"] {
+            assert_eq!(
+                visible_kwt_pull_requests(&pull_requests, query),
+                [&pull_requests[0]]
+            );
+        }
+        assert_eq!(
+            visible_kwt_pull_requests(&pull_requests, "42"),
+            [&pull_requests[1]]
+        );
+        assert_eq!(
+            pull_request_import_selector(&pull_requests, "Improve rendering", None),
+            None,
+            "filter text is not an import selector"
+        );
+        assert_eq!(
+            pull_request_import_selector(
+                &pull_requests,
+                "github:github.com/acme/widget#17",
+                Some("github:github.com/acme/widget#17"),
+            ),
+            Some("github:github.com/acme/widget#17".to_owned())
+        );
+        assert_eq!(
+            pull_request_import_selector(&pull_requests, "#42", None),
+            Some("42".to_owned())
+        );
+        assert_eq!(
+            pull_request_import_selector(
+                &pull_requests,
+                " https://github.com/acme/widget/pull/17 ",
+                None,
+            ),
+            Some("https://github.com/acme/widget/pull/17".to_owned())
+        );
+    }
+
+    #[test]
     fn worktree_failures_require_the_dialogs_exact_operation_and_target() {
         let create = ProjectDialog::NewWorktree {
             host_id: "wsl".to_owned(),
@@ -6350,8 +6901,11 @@ mod tests {
             project_path: "/code/widget".to_owned(),
             registration_fingerprint: "registration".to_owned(),
             branch: "topic".to_owned(),
+            mode: NewWorktreeMode::Branch,
             selected_source: None,
+            selected_pull_request: None,
             branches: Vec::new(),
+            pull_requests: Vec::new(),
             operation_id: Some(7),
             loading: false,
             loaded: true,
@@ -6363,6 +6917,12 @@ mod tests {
             7,
             "/code/widget",
             None,
+        ));
+        assert!(kwt_operation_failure_owns_dialog(
+            Some(&create),
+            7,
+            "/code/widget",
+            Some("/work/widget/imported-pr"),
         ));
         assert!(!kwt_operation_failure_owns_dialog(
             Some(&create),
@@ -6382,6 +6942,7 @@ mod tests {
                     worktree_path: "/work/widget/topic".to_owned(),
                     generation: Some("11111111111111111111111111111111".to_owned()),
                     session_name: "widget-topic".to_owned(),
+                    tmux_socket_name: None,
                 },
                 project_name: "widget".to_owned(),
                 branch: "topic".to_owned(),
@@ -6425,6 +6986,50 @@ mod tests {
         assert_eq!(target.authority, None);
         assert_eq!(target.operation_id, None);
         assert_eq!(error.as_deref(), Some("remove failed"));
+    }
+
+    #[test]
+    fn failed_worktree_creation_keeps_loaded_branches_retryable() {
+        let mut dialog = ProjectDialog::NewWorktree {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            repository: "github.com/acme/widget".to_owned(),
+            project_name: "widget".to_owned(),
+            project_path: "/code/widget".to_owned(),
+            registration_fingerprint: "registration".to_owned(),
+            branch: "testing".to_owned(),
+            mode: NewWorktreeMode::Branch,
+            selected_source: None,
+            selected_pull_request: None,
+            branches: Vec::new(),
+            pull_requests: Vec::new(),
+            operation_id: Some(7),
+            loading: false,
+            loaded: true,
+            submitting: true,
+            error: None,
+        };
+
+        assert!(apply_new_worktree_failure(
+            &mut dialog,
+            7,
+            "/code/widget",
+            "branch already exists".to_owned(),
+        ));
+
+        let ProjectDialog::NewWorktree {
+            loaded,
+            submitting,
+            error,
+            ..
+        } = dialog
+        else {
+            panic!("new-worktree dialog remains active");
+        };
+        assert!(loaded, "successful branch inventory remains reusable");
+        assert!(!submitting);
+        assert_eq!(error.as_deref(), Some("branch already exists"));
+        assert!(can_create_worktree("testing2", loaded, false, submitting));
     }
 
     #[test]
@@ -6640,7 +7245,8 @@ mod tests {
                 None,
             );
 
-            let rows = tree_sessions(&host, &terminal, &[]);
+            let active = active_session_selection(&terminal);
+            let rows = tree_sessions(&host, active.as_ref(), &[]);
             assert_eq!(rows.len(), 2);
             assert_eq!(rows[0].selection.session(), "other");
             assert!(!rows[0].state.is_active());
@@ -6701,7 +7307,7 @@ mod tests {
             Vec::new(),
         );
 
-        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|row| row.selection.session() == "scratch"));
@@ -6710,6 +7316,80 @@ mod tests {
                 .any(|row| row.selection.session() == "custom-socket"),
             "a custom-socket worktree cannot claim a default-socket tmux row"
         );
+    }
+
+    #[test]
+    fn active_protected_worktree_is_shown_only_under_its_project() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Ready,
+            vec![
+                SessionItem::new("scratch", 0),
+                SessionItem::new("project-pr-17", 0),
+            ],
+            None,
+        )
+        .with_kwt_inventory(
+            vec![ProjectItem::new(
+                "project-id",
+                "project",
+                "/repos/project",
+                "project-fingerprint",
+                vec![WorktreeItem::new(
+                    "/repos/project-pr",
+                    "pr-17",
+                    false,
+                    Some("0123456789abcdef0123456789abcdef".to_owned()),
+                    "project-pr-17",
+                    Some("kwt-pr-0123456789abcdef".to_owned()),
+                    false,
+                )],
+            )],
+            Vec::new(),
+        );
+        let active = SessionSelection::protected_worktree(
+            "wsl",
+            "Ubuntu",
+            "project-pr-17",
+            "kwt-pr-0123456789abcdef",
+            "/repos/project-pr",
+            "0123456789abcdef0123456789abcdef",
+        );
+        let rows = tree_sessions(&host, Some(&active), &[]);
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.selection.session() == "scratch"));
+        let same_named_default = rows
+            .iter()
+            .find(|row| row.selection.session() == "project-pr-17")
+            .expect("separate default-socket session stays visible");
+        assert!(!same_named_default.state.is_active());
+
+        let changed_inventory =
+            HostItem::wsl("Ubuntu", None, HostConnectionState::Ready, Vec::new(), None)
+                .with_kwt_inventory(
+                    vec![ProjectItem::new(
+                        "project-id",
+                        "project",
+                        "/repos/project",
+                        "project-fingerprint",
+                        vec![WorktreeItem::new(
+                            "/repos/project-pr",
+                            "pr-17",
+                            false,
+                            Some("0123456789abcdef0123456789abcdef".to_owned()),
+                            "project-pr-17",
+                            Some("kwt-pr-replacement".to_owned()),
+                            false,
+                        )],
+                    )],
+                    Vec::new(),
+                );
+        let fallback_rows = tree_sessions(&changed_inventory, Some(&active), &[]);
+        assert_eq!(fallback_rows.len(), 1);
+        assert_eq!(fallback_rows[0].selection, active);
+        assert!(fallback_rows[0].state.is_active());
     }
 
     #[test]
@@ -6750,7 +7430,8 @@ mod tests {
             "retained",
         )];
 
-        let rows = tree_herdr_sessions(&host, &active, &retained);
+        let active = active_session_selection(&active);
+        let rows = tree_herdr_sessions(&host, active.as_ref(), &retained);
 
         assert_eq!(rows.len(), 2);
         assert!(session_group_visibility(&host, &rows, &[]).herdr);
@@ -6781,7 +7462,7 @@ mod tests {
             HerdrSessionState::Stopped,
         )]);
 
-        let rows = tree_herdr_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_herdr_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].selection.session(), "cached");
@@ -6813,7 +7494,8 @@ mod tests {
             "retained",
         )];
 
-        let rows = tree_zellij_sessions(&host, &active, &retained);
+        let active = active_session_selection(&active);
+        let rows = tree_zellij_sessions(&host, active.as_ref(), &retained);
 
         assert_eq!(rows.len(), 2);
         assert!(session_group_visibility(&host, &[], &rows).zellij);
@@ -6836,7 +7518,7 @@ mod tests {
                 "invalid Zellij inventory",
             ));
 
-        let rows = tree_zellij_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_zellij_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].selection.session(), "cached");
@@ -6857,7 +7539,7 @@ mod tests {
                 "invalid Herdr inventory",
             ));
 
-        let rows = tree_herdr_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_herdr_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].access, HerdrRowAccess::Cached);
@@ -6956,7 +7638,8 @@ mod tests {
             None,
         );
 
-        let rows = tree_sessions(&host, &terminal, &[]);
+        let active = active_session_selection(&terminal);
+        let rows = tree_sessions(&host, active.as_ref(), &[]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
         assert!(!rows[0].state.is_active());
@@ -6977,7 +7660,7 @@ mod tests {
         );
         let retained = vec![SessionSelection::new("wsl", "Ubuntu", "demo")];
 
-        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &retained);
+        let rows = tree_sessions(&host, None, &retained);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
@@ -7003,7 +7686,7 @@ mod tests {
             SessionSelection::new("wsl", "Ubuntu", "two"),
         ];
 
-        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &retained);
+        let rows = tree_sessions(&host, None, &retained);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.session(), "one");
@@ -7023,7 +7706,7 @@ mod tests {
             None,
         );
 
-        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &[]);
+        let rows = tree_sessions(&host, None, &[]);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].selection.session(), "cached");
