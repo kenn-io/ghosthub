@@ -332,7 +332,11 @@ sleep 3
 # scratch-row chevron in window coordinates.
 demo_input click "31,746"
 sleep 5
+demo_input expect-text "Live"
 capture_state guide-session-previews.png
+# Keep later settings and palette captures focused on their own workflows.
+demo_input click "31,746"
+sleep 0.5
 
 echo "==> guide: remote host settings"
 palette "Open Hosts Settings" true sheet

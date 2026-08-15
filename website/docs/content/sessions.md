@@ -78,6 +78,11 @@ the session disappears, Herdr becomes unavailable, or the client reports a
 non-transport failure. **Reconnect Now** skips the current delay; host-key or
 authentication problems open the existing connection review flow.
 
+If macOS wakes while no display is active, Ghosthub waits instead of treating
+the missing terminal surface as a permanent attachment failure. Recovery
+resumes when a display becomes available, without replaying a saved tmux
+launch-profile command.
+
 ## Preview opened tmux sessions
 
 Choose **Settings → Terminal → Session previews**, then select **Efficient** or

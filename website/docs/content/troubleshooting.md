@@ -87,6 +87,18 @@ decision. Choose **Review Connection**, complete the native prompt, and let the
 existing presentation resume. **Reconnect Now** performs an immediate retry
 when no review is pending.
 
+## A tmux session preview is unavailable
+
+Preview controls appear only after you open a tmux session in that workspace
+and choose **Efficient** or **Live** under **Settings → Terminal → Session
+previews**. They are not available for Herdr, Zellij, unopened sessions, or
+native Windows/psmux attachments.
+
+On a POSIX host, run `tmux -V`. Verified previews require tmux 3.4 or newer so
+Ghosthub can bind captured pixels to the exact attached client. An older tmux
+session stays fully usable but shows **Preview unavailable** instead of a
+potentially stale or misidentified frame.
+
 ## A project does not appear
 
 For a remote macOS or Linux host, Ghosthub installs its managed kwt helper

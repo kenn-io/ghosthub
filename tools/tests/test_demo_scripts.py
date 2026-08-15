@@ -405,6 +405,20 @@ def test_demo_kwt_projects_include_registration_fingerprints(tmp_path: Path) -> 
     assert all(project.get("registration_fingerprint") for project in projects)
 
 
+def test_demo_kwt_reports_empty_directory_workspace_inventory(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [str(DEMO / "bin/kwt"), "workspace", "list", "--json"],
+        cwd=ROOT,
+        env={**os.environ, "GHOSTHUB_DEMO_SCRATCH": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+
 @pytest.mark.parametrize(
     ("launcher_shell", "launcher_zdotdir"),
     [
