@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "run_swift_tests.sh"
+SCRIPT = Path(__file__).resolve().parents[1] / "run_swift_tests.sh"
 TIMEOUT_SCRIPT = SCRIPT.with_name("run_with_timeout.sh")
 PURGE_SCRIPT = SCRIPT.with_name("purge_test_tmux.sh")
 

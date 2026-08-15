@@ -36,6 +36,7 @@ Ghosthub.app
   ├─ libghostty terminal surfaces
   ├─ local app persistence
   ├─ native tmux, Herdr, and Zellij clients with SSH reconnect
+  ├─ planned local worktree sandboxes through Apple container or Docker sbx
   ├─ bundled kwt for local worktree state
   └─ managed architecture-matched kwt and host tmux over SSH
 ```
@@ -43,4 +44,5 @@ Ghosthub.app
 Start with [Quick Start](quickstart.md), then read
 [Architecture](architecture.md), [Threat Model](threat-model.md), and
 [Terminal Sessions](terminal-sessions.md) before changing runtime, security,
-or terminal behavior.
+or terminal behavior. The accepted sandbox implementation contract is in
+[Worktree Sandboxes](sandboxes.md).

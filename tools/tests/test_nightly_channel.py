@@ -2,18 +2,13 @@ import base64
 import hashlib
 import json
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
 import pytest
-
-TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
-sys.path.insert(0, str(TOOLS_DIR))
-
-import nightly_channel as nightly  # noqa: E402
-from nightly_channel import (  # noqa: E402
+import nightly_channel as nightly
+from nightly_channel import (
     AppcastPointer,
     ChannelManifest,
     PublicationInputs,

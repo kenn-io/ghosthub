@@ -1,0 +1,604 @@
+name: Sandbox image promotion gate
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] trusted main workflow reads API metadata and never executes PR content
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_run:
+    workflows: [Promote sandbox image, Sandbox image merge signal]
+    types: [completed]
+  workflow_dispatch:
+
+permissions: {}
+
+# Pull-request reconciliation is replaceable because every survivor audits every
+# open head. Each merge-group signal has its own lossless authorization lane.
+concurrency:
+  group: >-
+    sandbox-image-promotion-status-writer-${{
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'Sandbox image merge signal' &&
+      github.event.workflow_run.head_sha || 'pull-requests'
+    }}
+  cancel-in-progress: false
+
+jobs:
+  fence:
+    name: Fence promotion authorization
+    if: >-
+      github.repository == 'kenn-io/ghosthub' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: sandbox-image-promotion-status
+    permissions:
+      actions: read # zizmor: ignore[undocumented-permissions] fence prior merge-group authorizations
+      pull-requests: read # zizmor: ignore[undocumented-permissions] enumerate every open main pull request
+    steps:
+      - name: Mint repository-scoped status token
+        id: status-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}
+          owner: kenn-io
+          repositories: ghosthub
+          permission-statuses: write
+      - name: Fence current authorization targets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS_TOKEN: ${{ steps.status-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          post_pending() {
+            GH_TOKEN="$STATUS_TOKEN" gh api --method POST \
+              "repos/kenn-io/ghosthub/statuses/$1" \
+              -f state=pending \
+              -f context=sandbox-image-promotion \
+              -f description='Ghosthub sandbox image promotion pending' \
+              > /dev/null
+          }
+
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
+                "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
+                'Sandbox image merge signal' ]]; then
+            merge_sha="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
+            if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Merge-group signal SHA is invalid." >&2
+              exit 1
+            fi
+            post_pending "$merge_sha"
+          else
+            pulls="$RUNNER_TEMP/pulls.json"
+            gh api --paginate --slurp \
+              'repos/kenn-io/ghosthub/pulls?state=open&base=main&per_page=100' \
+              | jq '[.[][]]' > "$pulls"
+            jq -r '.[].head.sha' "$pulls" | while read -r head_sha; do
+              post_pending "$head_sha"
+            done
+            cutoff="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+            created_filter="$(jq -rn --arg value ">=$cutoff" '$value | @uri')"
+            gh api --paginate --slurp \
+              "repos/kenn-io/ghosthub/actions/workflows/sandbox-image-merge-signal.yml/runs?event=merge_group&created=$created_filter&per_page=100" \
+              | jq -r --slurpfile pulls "$pulls" '
+                  ($pulls[0] | map(.number)) as $open_numbers |
+                  .[].workflow_runs[] |
+                  select(
+                    .path == ".github/workflows/sandbox-image-merge-signal.yml" and
+                    .event == "merge_group" and
+                    (.head_sha | test("^[0-9a-f]{40}$")) and
+                    (.created_at | type == "string") and
+                    (now - (.created_at | fromdateiso8601) >= 0) and
+                    (now - (.created_at | fromdateiso8601) <= 86400) and
+                    (.pull_requests | length) == 1 and
+                    .pull_requests[0].base.ref == "main" and
+                    (.pull_requests[0].number as $number |
+                      ($open_numbers | index($number)) != null)) |
+                  .head_sha' \
+              | sort -u \
+              | while read -r merge_sha; do
+                  post_pending "$merge_sha"
+                done
+          fi
+
+  audit:
+    name: Audit promotion authority
+    if: >-
+      github.repository == 'kenn-io/ghosthub' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: sandbox-image-promotion-status
+    permissions:
+      actions: read # zizmor: ignore[undocumented-permissions] authenticate completed promotion runs
+      contents: read
+      pull-requests: read # zizmor: ignore[undocumented-permissions] inspect authority and proposed merge metadata
+    outputs:
+      production_environment_fingerprint: ${{ steps.production-environment.outputs.fingerprint }}
+    steps:
+      - name: Mint installation-audit token
+        id: audit-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}
+          owner: kenn-io # zizmor: ignore[github-app] full installation scope is audited without status authority
+          permission-actions: read
+          permission-administration: read
+          permission-attestations: read
+          permission-contents: read
+          permission-environments: read
+          permission-pull-requests: read
+      - name: Audit full App installation
+        shell: bash
+        env:
+          AUDIT_TOKEN: ${{ steps.audit-token.outputs.token }}
+          STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+        run: |
+          set -euo pipefail
+
+          installation="$(GH_TOKEN="$AUDIT_TOKEN" gh api /installation)"
+          if ! jq -e --arg app_id "$STATUS_APP_ID" '
+            .app_id == ($app_id | tonumber) and
+            .app_slug == "ghosthub-sandbox-promotion" and
+            .account.login == "kenn-io" and
+            .account.type == "Organization" and
+            .repository_selection == "selected" and
+            .permissions == {
+              actions: "read",
+              administration: "read",
+              attestations: "read",
+              contents: "read",
+              environments: "read",
+              metadata: "read",
+              pull_requests: "read",
+              statuses: "write"
+            }
+          ' <<< "$installation" > /dev/null; then
+            echo "Promotion-status app identity or permissions drifted." >&2
+            exit 1
+          fi
+          repositories="$(GH_TOKEN="$AUDIT_TOKEN" gh api --paginate --slurp \
+            '/installation/repositories?per_page=100')"
+          if ! jq -e '
+            .[0].total_count == 1 and
+            [.[] | .repositories[] | .full_name] == ["kenn-io/ghosthub"]
+          ' <<< "$repositories" > /dev/null; then
+            echo "Promotion-status app installation scope drifted." >&2
+            exit 1
+          fi
+      - name: Check out trusted authority tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+      - name: Check out proposed merge authority
+        if: >-
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Sandbox image merge signal'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: .dist/proposed-authority
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          version: '0.9.5'
+          checksum: 2cf10babba653310606f8b49876cfb679928669e7ddaa1fb41fb00ce73e64f66
+      - name: Audit complete promotion authority
+        env:
+          GH_TOKEN: ${{ steps.audit-token.outputs.token }}
+          STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+        run: >-
+          uv run --frozen python tools/sandbox_image.py authority-audit
+          --app-id "$STATUS_APP_ID"
+      - name: Audit proposed merge authority
+        if: >-
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Sandbox image merge signal'
+        env:
+          GH_TOKEN: ${{ steps.audit-token.outputs.token }}
+          STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+        run: >-
+          uv run --frozen python tools/sandbox_image.py authority-audit
+          --app-id "$STATUS_APP_ID"
+          --workflow-root .dist/proposed-authority/.github/workflows
+      - name: Record production environment fingerprint
+        id: production-environment
+        shell: bash
+        env:
+          AUDIT_TOKEN: ${{ steps.audit-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          endpoint='repos/kenn-io/ghosthub/environments/sandbox-image-production'
+          environment="$(GH_TOKEN="$AUDIT_TOKEN" gh api "$endpoint")"
+          policies="$(GH_TOKEN="$AUDIT_TOKEN" gh api \
+            "$endpoint/deployment-branch-policies")"
+          variables="$(GH_TOKEN="$AUDIT_TOKEN" gh api "$endpoint/variables")"
+          secrets="$(GH_TOKEN="$AUDIT_TOKEN" gh api "$endpoint/secrets")"
+          canonical="$(jq -cnS \
+            --argjson environment "$environment" \
+            --argjson policies "$policies" \
+            --argjson variables "$variables" \
+            --argjson secrets "$secrets" '
+            {
+              branch_policies: $policies.branch_policies,
+              deployment_branch_policy: $environment.deployment_branch_policy,
+              reviewer_rules: [
+                $environment.protection_rules[] |
+                select(.type == "required_reviewers")
+              ],
+              secrets: ([
+                $secrets.secrets[] |
+                {name, created_at, updated_at}
+              ] | sort_by(.name)),
+              variables: (
+                [$variables.variables[] | {key: .name, value: .value}] |
+                from_entries
+              )
+            }
+          ')"
+          fingerprint="$(printf '%s' "$canonical" | sha256sum | cut -d ' ' -f 1)"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+
+  reconcile:
+    name: Reconcile promotion authorization
+    if: >-
+      always() &&
+      github.repository == 'kenn-io/ghosthub' &&
+      github.ref == 'refs/heads/main'
+    needs: [fence, audit]
+    runs-on: ubuntu-24.04
+    environment: sandbox-image-promotion-status
+    permissions:
+      actions: read # zizmor: ignore[undocumented-permissions] authenticate completed promotion runs
+      pull-requests: read # zizmor: ignore[undocumented-permissions] inspect every open main pull request
+      statuses: read # zizmor: ignore[undocumented-permissions] bind completed promotion to the current production policy
+    steps:
+      - name: Mint repository-scoped status token
+        id: status-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}
+          owner: kenn-io
+          repositories: ghosthub
+          permission-statuses: write
+      - name: Reconcile every open pull request and merge group
+        shell: bash
+        env:
+          AUTHORITY_AUDIT_RESULT: ${{ needs.audit.result }}
+          FENCE_RESULT: ${{ needs.fence.result }}
+          GH_TOKEN: ${{ github.token }}
+          PRODUCTION_ENVIRONMENT_FINGERPRINT: ${{ needs.audit.outputs.production_environment_fingerprint }}
+          STATUS_TOKEN: ${{ steps.status-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          post_status() {
+            local sha="$1"
+            local state="$2"
+            local description="$3"
+            local target_url="${4:-}"
+            local args=(
+              --method POST "repos/kenn-io/ghosthub/statuses/$sha"
+              -f "state=$state"
+              -f context=sandbox-image-promotion
+              -f "description=$description"
+            )
+            if [[ -n "$target_url" ]]; then
+              args+=(-f "target_url=$target_url")
+            fi
+            GH_TOKEN="$STATUS_TOKEN" gh api "${args[@]}" > /dev/null
+          }
+
+          post_pending() {
+            post_status "$1" pending 'Ghosthub sandbox image promotion pending'
+          }
+
+          relevant_files() {
+            jq -er '
+              any(.[];
+                .filename == "SANDBOX_IMAGE" or
+                (.filename | startswith("images/sandbox/reports/")) or
+                (.previous_filename? == "SANDBOX_IMAGE") or
+                (.previous_filename? | strings | startswith("images/sandbox/reports/"))) |
+              tostring
+            ' "$1"
+          }
+
+          load_pr() {
+            local number="$1"
+            if [[ ! "$number" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Pull request number is invalid; leaving it pending." >&2
+              return 1
+            fi
+            local detail="$RUNNER_TEMP/pr-$number.json"
+            local files="$RUNNER_TEMP/pr-$number-files.json"
+            if ! gh api "repos/kenn-io/ghosthub/pulls/$number" > "$detail"; then
+              echo "Cannot load pull request $number; leaving it pending." >&2
+              return 1
+            fi
+            if ! gh api --paginate --slurp \
+              "repos/kenn-io/ghosthub/pulls/$number/files?per_page=100" \
+              | jq '[.[][]]' > "$files"; then
+              echo "Cannot load pull request $number files; leaving it pending." >&2
+              return 1
+            fi
+            local expected_count
+            local actual_count
+            if ! jq -e --argjson number "$number" '
+              type == "object" and
+              .number == $number and
+              .state == "open" and
+              .base.ref == "main" and
+              (.base.sha | type == "string" and test("^[0-9a-f]{40}$")) and
+              (.head.sha | type == "string" and test("^[0-9a-f]{40}$")) and
+              (.changed_files |
+                type == "number" and . >= 0 and floor == .)
+            ' "$detail" > /dev/null; then
+              echo "Pull request $number metadata is invalid; leaving it pending." >&2
+              return 1
+            fi
+            if ! expected_count="$(jq -er '.changed_files' "$detail")"; then
+              echo "Pull request $number file count is invalid; leaving it pending." >&2
+              return 1
+            fi
+            if ! jq -e '
+              type == "array" and
+              all(.[];
+                type == "object" and
+                (.filename | type == "string") and
+                ((has("previous_filename") | not) or
+                  (.previous_filename | type == "string")))
+            ' "$files" > /dev/null; then
+              echo "Pull request $number file metadata is invalid; leaving it pending." >&2
+              return 1
+            fi
+            if ! actual_count="$(jq -er 'length' "$files")"; then
+              echo "Pull request $number file count is invalid; leaving it pending." >&2
+              return 1
+            fi
+            if [[ "$actual_count" != "$expected_count" ]]; then
+              echo "Pull request $number file listing is incomplete; leaving it pending." >&2
+              return 1
+            fi
+          }
+
+          promotion_run() {
+            local head_sha="$1"
+            local base_sha="$2"
+            # Trusted planning admits only evidence valid through this full window.
+            jq -c --arg head "$head_sha" --arg base "$base_sha" '
+              [.[] | select(
+                .path == ".github/workflows/sandbox-image-promote.yml" and
+                .event == "repository_dispatch" and
+                .status == "completed" and
+                .conclusion == "success" and
+                .display_title == ("Promote sandbox image " + $head) and
+                .head_sha == $base and
+                .head_branch == "main" and
+                .head_repository.full_name == "kenn-io/ghosthub" and
+                (now - (.created_at | fromdateiso8601) >= 0) and
+                (now - (.created_at | fromdateiso8601) <= 82800)
+              )] | sort_by(.created_at) | last // {}
+            ' "$RUNNER_TEMP/promotion-runs.json"
+          }
+
+          prior_merge_authorization() {
+            local merge_sha="$1"
+            local merge_created_at="$2"
+            local statuses="$RUNNER_TEMP/merge-$merge_sha-statuses.json"
+            if ! gh api --paginate --slurp \
+              "repos/kenn-io/ghosthub/commits/$merge_sha/statuses?per_page=100" \
+              | jq '[.[][]]' > "$statuses"; then
+              echo "Cannot load prior merge-group authorization." >&2
+              return 1
+            fi
+            jq -e --arg created_at "$merge_created_at" \
+              --arg url_prefix \
+                "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/" '
+              any(.[];
+                .context == "sandbox-image-promotion" and
+                .state == "success" and
+                .creator.login == "ghosthub-sandbox-promotion[bot]" and
+                .creator.type == "Bot" and
+                (.target_url | type == "string" and startswith($url_prefix)) and
+                ((.target_url | ltrimstr($url_prefix)) | test("^[1-9][0-9]*$")) and
+                (.created_at | fromdateiso8601) >=
+                  ($created_at | fromdateiso8601) and
+                (now - (.created_at | fromdateiso8601) >= 0) and
+                (now - (.created_at | fromdateiso8601) <= 86400))
+            ' "$statuses" > /dev/null
+          }
+
+          authorize_pr() {
+            local number="$1"
+            local status_sha="$2"
+            local expected_head_sha="${3:-}"
+            local expected_base_sha="${4:-}"
+            if ! load_pr "$number"; then
+              return 1
+            fi
+            local detail="$RUNNER_TEMP/pr-$number.json"
+            local files="$RUNNER_TEMP/pr-$number-files.json"
+            local head_sha
+            local base_sha
+            head_sha="$(jq -r '.head.sha' "$detail")"
+            base_sha="$(jq -r '.base.sha' "$detail")"
+            if [[ -n "$expected_head_sha" && "$head_sha" != "$expected_head_sha" ]] ||
+              [[ -n "$expected_base_sha" && "$base_sha" != "$expected_base_sha" ]]; then
+              echo "Pull request $number no longer matches the merge signal; leaving it pending." >&2
+              return 1
+            fi
+            local relevance
+            if ! relevance="$(relevant_files "$files")"; then
+              echo "Pull request $number file relevance is invalid; leaving it pending." >&2
+              return 1
+            fi
+            if [[ "$relevance" == false ]]; then
+              post_status "$status_sha" success \
+                'Sandbox image promotion not required'
+              return
+            fi
+            local run
+            local run_id
+            local run_created_at
+            run="$(promotion_run "$head_sha" "$base_sha")"
+            run_id="$(jq -r '.id // ""' <<< "$run")"
+            run_created_at="$(jq -r '.created_at // ""' <<< "$run")"
+            if [[ -z "$run_id" ]]; then
+              return 1
+            fi
+            local policy_statuses="$RUNNER_TEMP/pr-$number-policy-statuses.json"
+            if ! gh api --paginate --slurp \
+              "repos/kenn-io/ghosthub/commits/$head_sha/statuses?per_page=100" \
+              | jq '[.[][]]' > "$policy_statuses"; then
+              echo "Cannot load production policy evidence; leaving it pending." >&2
+              return 1
+            fi
+            if [[ ! "$PRODUCTION_ENVIRONMENT_FINGERPRINT" =~ ^[0-9a-f]{64}$ ]] ||
+              ! jq -e \
+                --arg fingerprint "$PRODUCTION_ENVIRONMENT_FINGERPRINT" \
+                --arg created_at "$run_created_at" \
+                --arg target_url \
+                  "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id" '
+                any(.[];
+                  .context == "sandbox-image-production-policy" and
+                  .state == "success" and
+                  .creator.login == "ghosthub-sandbox-promotion[bot]" and
+                  .creator.type == "Bot" and
+                  .description == ("policy:" + $fingerprint) and
+                  .target_url == $target_url and
+                  (.created_at | fromdateiso8601) >=
+                    ($created_at | fromdateiso8601) and
+                  (now - (.created_at | fromdateiso8601) >= 0) and
+                  (now - (.created_at | fromdateiso8601) <= 82800))
+              ' "$policy_statuses" > /dev/null; then
+              echo "Production policy evidence is stale; leaving it pending." >&2
+              return 1
+            fi
+            post_status "$status_sha" success \
+              'Ghosthub sandbox image promotion' \
+              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id"
+          }
+
+          merge_signal=false
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
+                "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
+                'Sandbox image merge signal' ]]; then
+            merge_signal=true
+            merge_sha="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
+            if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Merge-group signal SHA is invalid." >&2
+              exit 1
+            fi
+            post_pending "$merge_sha"
+          else
+            pulls="$RUNNER_TEMP/pulls.json"
+            gh api --paginate --slurp \
+              'repos/kenn-io/ghosthub/pulls?state=open&base=main&per_page=100' \
+              | jq '[.[][]]' > "$pulls"
+            jq -r '.[].head.sha' "$pulls" | while read -r head_sha; do
+              post_pending "$head_sha"
+            done
+          fi
+
+          if [[ "$FENCE_RESULT" != success || \
+                "$AUTHORITY_AUDIT_RESULT" != success ]]; then
+            echo "Promotion authority audit failed; all targets remain pending." >&2
+            exit 1
+          fi
+
+          gh api --paginate --slurp \
+            'repos/kenn-io/ghosthub/actions/workflows/sandbox-image-promote.yml/runs?event=repository_dispatch&status=completed&per_page=100' \
+            | jq '[.[].workflow_runs[]]' > "$RUNNER_TEMP/promotion-runs.json"
+          if [[ "$merge_signal" == false ]]; then
+            cutoff="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+            created_filter="$(jq -rn --arg value ">=$cutoff" '$value | @uri')"
+            gh api --paginate --slurp \
+              "repos/kenn-io/ghosthub/actions/workflows/sandbox-image-merge-signal.yml/runs?event=merge_group&created=$created_filter&per_page=100" \
+              | jq '[.[].workflow_runs[]]' > "$RUNNER_TEMP/merge-runs.json"
+          fi
+
+          if [[ "$merge_signal" == true ]]; then
+            if ! jq -e '
+              .workflow_run.event == "merge_group" and
+              .workflow_run.conclusion == "success" and
+              .workflow_run.path == ".github/workflows/sandbox-image-merge-signal.yml" and
+              .workflow_run.head_repository.full_name == "kenn-io/ghosthub" and
+              (.workflow_run.head_branch | startswith("gh-readonly-queue/main/")) and
+              (.workflow_run.head_sha | test("^[0-9a-f]{40}$")) and
+              (.workflow_run.pull_requests | length) == 1 and
+              .workflow_run.pull_requests[0].base.ref == "main" and
+              (.workflow_run.pull_requests[0].base.sha |
+                test("^[0-9a-f]{40}$")) and
+              (.workflow_run.pull_requests[0].head.sha |
+                test("^[0-9a-f]{40}$"))
+            ' "$GITHUB_EVENT_PATH" > /dev/null; then
+              echo "Merge-group signal identity is invalid." >&2
+              exit 1
+            fi
+            number="$(jq -r '.workflow_run.pull_requests[0].number' \
+              "$GITHUB_EVENT_PATH")"
+            signal_head_sha="$(jq -r '.workflow_run.pull_requests[0].head.sha' \
+              "$GITHUB_EVENT_PATH")"
+            signal_base_sha="$(jq -r '.workflow_run.pull_requests[0].base.sha' \
+              "$GITHUB_EVENT_PATH")"
+            if ! authorize_pr \
+              "$number" "$merge_sha" "$signal_head_sha" "$signal_base_sha"; then
+              echo "Merge group remains pending." >&2
+              exit 1
+            fi
+          else
+            jq -c '.[]' "$pulls" | while read -r pull; do
+              number="$(jq -r '.number' <<< "$pull")"
+              head_sha="$(jq -r '.head.sha' <<< "$pull")"
+              if ! authorize_pr "$number" "$head_sha"; then
+                echo "Pull request $number remains pending." >&2
+              fi
+            done
+            jq -c --slurpfile pulls "$pulls" '
+              ($pulls[0] | map(.number)) as $open_numbers |
+              [.[] | select(
+                .path == ".github/workflows/sandbox-image-merge-signal.yml" and
+                .event == "merge_group" and
+                .status == "completed" and
+                .conclusion == "success" and
+                .head_repository.full_name == "kenn-io/ghosthub" and
+                (.head_branch | startswith("gh-readonly-queue/main/")) and
+                (.head_sha | test("^[0-9a-f]{40}$")) and
+                (.created_at | type == "string") and
+                (now - (.created_at | fromdateiso8601) >= 0) and
+                (now - (.created_at | fromdateiso8601) <= 86400) and
+                (.pull_requests | length) == 1 and
+                .pull_requests[0].base.ref == "main" and
+                (.pull_requests[0].base.sha | test("^[0-9a-f]{40}$")) and
+                (.pull_requests[0].head.sha | test("^[0-9a-f]{40}$")) and
+                (.pull_requests[0].number as $number |
+                  ($open_numbers | index($number)) != null)
+              )] |
+              sort_by(.created_at) |
+              group_by(.head_sha)[] |
+              last
+            ' "$RUNNER_TEMP/merge-runs.json" | while read -r merge_run; do
+              merge_sha="$(jq -r '.head_sha' <<< "$merge_run")"
+              merge_created_at="$(jq -r '.created_at' <<< "$merge_run")"
+              number="$(jq -r '.pull_requests[0].number' <<< "$merge_run")"
+              signal_head_sha="$(jq -r '.pull_requests[0].head.sha' <<< "$merge_run")"
+              signal_base_sha="$(jq -r '.pull_requests[0].base.sha' <<< "$merge_run")"
+              if ! prior_merge_authorization "$merge_sha" "$merge_created_at"; then
+                echo "Merge group $merge_sha remains pending." >&2
+                continue
+              fi
+              if ! authorize_pr \
+                "$number" "$merge_sha" "$signal_head_sha" "$signal_base_sha"; then
+                echo "Merge group $merge_sha remains pending." >&2
+              fi
+            done
+          fi

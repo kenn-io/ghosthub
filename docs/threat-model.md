@@ -7,8 +7,10 @@ description: Security boundaries and trust assumptions for Ghosthub
 
 This document defines the security claims Ghosthub makes and the assumptions
 used to classify security findings. Ghosthub is a native terminal and tmux/Herdr/Zellij
-control plane for one user across machines that user administers. It is not a
-sandbox or a hardened client for attaching to hostile terminal servers.
+control plane for one user across machines that user administers. Ghosthub is
+not itself a sandbox or a hardened client for attaching to hostile terminal
+servers; its accepted worktree-sandbox design delegates isolation to explicit
+local providers under the narrower boundary below.
 
 ## Assets and Security Goals
 
@@ -345,6 +347,184 @@ prefixes, mouse behavior, windows, panes, layout, history, or process state.
 The separate explicit pane-split shortcuts authorize only creation of one pane
 at a time in the active attachment.
 
+### Worktree sandboxes
+
+The accepted worktree-sandbox design introduces an intentionally narrower
+trust boundary than Ghosthub's ordinary terminals. The selected existing
+worktree and its Git metadata are writable inside a local provider resource so
+edits and commits are shared with the host. The provider is expected to prevent
+direct filesystem access elsewhere on the Mac, subject to the explicit mounts
+and capabilities in [Worktree Sandboxes](sandboxes.md). Ghosthub validates the
+exact worktree generation and manages only resources bound to its persisted
+identity; an unmanaged or same-named replacement is never adopted or deleted.
+
+Apple `container` distinguishes a standard checkout with an in-worktree `.git`
+directory from a linked worktree with a gitfile and distinct common Git mount.
+It pins every writable ancestor of a protected target as a nested mount point,
+then uses read-only-path controls for every effective repository config and
+hook target it can resolve. A linked layout additionally protects its `.git`
+gitfile and worktree-specific `commondir` and `gitdir`; a standard layout pins
+its writable `.git` directory against replacement and has no indirection
+files. Pinning writable ancestors prevents directory rename from replacing
+protected paths. Creation fails closed when the layout or indirection does not
+resolve to the expected relationship, when a required target or ancestor is
+absent, escapes its expected root, has mutable symlink indirection, changes
+during preflight, or cannot be protected, or when a protected file has a
+second hard link. Protected directories receive the same hard-link check for
+every regular file beneath them. This narrows Git-metadata injection but does
+not make shared worktree content safe to execute later on the host.
+
+Direct hook symlinks are resolved. An in-mount intermediate symlink is accepted
+only when its parent is already a protected read-only directory, because
+protecting the symlink path itself does not prevent live unlink and
+replacement. Every in-mount canonical regular-file target is protected, every
+canonical target inside or outside the mounted roots must have exactly one
+hard link, and an invalid chain fails closed. Because Apple mount plans are
+immutable after creation, every Start repeats full preflight and requires its
+canonical result to match the persisted creation plan. A changed layout,
+config/include/hook target, symlink resolution, hard link, or missing target
+blocks Start and requires explicit recreation.
+
+The Apple boundary does not recursively protect interpreters, scripts,
+libraries, or data that an already-protected hook or Git config command refers
+to from the writable worktree. A sandbox can change those shared files, and a
+later host Git command may execute them automatically. The claimed protection
+covers direct Git metadata, direct hook entries, and direct hook symlink
+targets, not their arbitrary transitive runtime dependencies.
+
+Docker sbx has a documented partial boundary. Its standard `.git/hooks`
+directory is mounted read-only as defense in depth, but `.git/config` remains
+writable because sbx 0.38 does not accept file workspaces. The read-only hooks
+directory is not a security barrier: a sandboxed process can set
+`core.hooksPath` into the writable worktree, or configure `core.fsmonitor`,
+`include.path`, and filter, diff, or merge drivers. The sbx boundary therefore
+protects the rest of the Mac from direct sandbox filesystem access but does not
+protect against host-side code execution through this repository's Git
+metadata. A layout-aware hash baseline reports Git indirection, config,
+resolved hook-path, and in-mount direct hook symlink-target drift at detach and
+later reconciliation. Stop and Delete
+fence and terminate provider execution before their final comparison. Detected
+drift and inability to capture or compare the baseline both become independent
+security notices that survive sandbox and worktree deletion until the user
+dismisses them. The warning is neither prevention nor attribution and cannot
+protect a host Git command run before comparison.
+
+Docker sbx also forwards the host SSH agent whenever its daemon has one. In the
+supported 0.38.0 version there is no per-sandbox disable flag or setting;
+removing `SSH_AUTH_SOCK` only from the create command does not remove a socket
+already available to the daemon. Processes inside the sandbox can request
+signatures, authenticate Git-over-SSH, sign commits, or authenticate to other
+SSH services reachable under provider network policy. Private key bytes remain
+in the host agent, but signature and authentication authority is intentionally
+exposed. Ghosthub presents this capability before creation and never describes
+sbx as credentials-off.
+
+For Apple, Ghosthub does not pass `--ssh`, mount a home directory, copy
+credentials, or configure credential helpers. For either provider Ghosthub
+does not manage provider login, secrets, or network policy. Push behavior is
+provider-dependent and never a Ghosthub guarantee; review and push from the
+host is the recommended workflow.
+
+Apple sandbox image authority is the tag-free digest embedded from
+`SANDBOX_IMAGE`, not a mutable registry tag. Candidate provenance and SPDX
+SBOM attestations, the canonical Apple 1.2.2 vetting report, current
+vulnerability dispositions, and the production alias must all bind to that
+same digest before promotion. The protected workflow reads a proposed pin and
+report as inert Git blobs through the GitHub API. Promotion uses a
+repository-dispatch event, whose workflow source and ref are the default
+branch, rather than a caller-selected manual-dispatch ref. Only that trusted
+default-branch job receives the dedicated package-writer credential. No
+repository-wide `GITHUB_TOKEN` receives registry write permission. The local
+developer who
+runs the Apple vet and the protected-environment reviewer are trusted; the report
+does not cryptographically prove that its Apple checks ran, so approval is
+limited to a report the reviewer produced or independently witnessed. CI does
+independently verify the signed provenance and SBOM, image source/version
+labels, a deterministic digest of every reviewed image input from trusted
+`main`, report age, current vulnerability policy, and exact image digest. A
+promotion status is only a pointer: the pull-request gate verifies that its
+target is a recent completed successful run of the trusted promotion workflow
+for that exact head and current trusted-main base, whose retag job crossed the
+protected environment. Run age is measured from immutable creation time, not
+mutable completion time. Planning rejects report evidence or a vulnerability
+disposition that cannot remain valid through the complete 24-hour status
+lifetime, while run authorization ends after 23 hours. It
+also fingerprints the full reviewer, deployment, and branch policy and the
+status-signing environment. The approved runner requires exact matches and an
+unchanged trusted-main workflow authority immediately before registry mutation.
+A no-bypass, no-exclusion
+repository ruleset requires
+that status from a dedicated status-only GitHub App with strict checking and a
+single-entry merge queue. The app private key exists only in a no-reviewer
+environment restricted by an exact branch policy to the `main` branch, never a
+same-named tag. A pinned token action consumes that key; repository Python
+receives only a separately minted read-only installation token and never the
+key or status-write token. The package-writer credential likewise exists only
+in a no-reviewer, exact-`main` environment. Exactly the trusted promotion-gate
+and promotion workflows may reference the status environment, and exactly the
+trusted publisher may reference the package-writer environment, under GitHub's
+case-insensitive environment-name semantics. Only the trusted promotion
+workflow may reference the reviewer-protected production environment, whose
+variable and secret names are exact. Job-level reusable workflows are rejected
+except for the exact repository-owned `ci.yml@main` call. Dynamic environment
+selection is
+rejected, every workflow declares explicit top-level permissions, the job
+refuses non-`main` effective refs, and no
+`GITHUB_TOKEN` has status-write or package-write authority. The GHCR package
+does not inherit repository Actions access, and an organization ruleset pins
+the merge-signal workflow to this repository's `main`. Trusted promotion and
+every reconciliation verify the live environments, parsed workflow authority,
+app integration ID, and ruleset. At the final production-tag mutation boundary,
+trusted promotion authenticates the App owner, slug, permissions, private key,
+and complete single-repository installation scope, then rechecks both required
+rulesets, pull-request evidence, and tag availability immediately before the
+registry write. The completed run records an App-authenticated production
+environment fingerprint and the exact promotion run; reconciliation requires
+both to match current live authority before restoring merge authorization.
+Reconciliation fences all open heads and prior merge-group SHAs before
+inspecting their metadata. At
+merge time, an unprivileged merge-group signal receives a SHA-specific trusted
+reconciliation. Trusted-main tooling audits the proposed workflow tree without
+executing it and refuses any change to a credential-bearing workflow or to the
+merge-signal workflow's name, trigger, or bytes
+before authorizing the queue's fresh synthetic SHA; inability to reconcile
+therefore leaves that SHA blocked rather than preserving an old head status.
+Main changes, a new pin PR head SHA, the immutable promotion-plan deadline, and
+the 24-hour run-age limit invalidate authorization. A
+registry, tag, report, workflow-run, environment, ruleset, or attestation
+disagreement fails closed.
+
+The candidate publisher transfers a tested inert image archive into a fresh
+credentialed job that does not check out or execute repository code. Promotion
+finishes repository-controlled evidence, policy, attestation, and vulnerability
+checks on a read-only runner. Human approval then starts a fresh runner that
+executes only fixed identity, alias, and retag commands. Repository code never
+shares a runner with the status-write token or package-writer credential. These
+controls reduce credential exposure inside the trusted workflow. Reviewed
+`main` remains the trust anchor: this boundary does
+not claim to withstand malicious code that has already passed review and landed
+on `main`. Defending against that stronger adversary would require an external
+immutable publisher or service with an independently governed source tree.
+
+This machinery is a process-integrity boundary against a repository agent or
+fatigued human merging a pin before promotion, not a multi-administrator access
+control system. Removing the gate is an honest future simplification; replacing
+the dedicated app with the repository-wide GitHub Actions identity is not,
+because branch-authored workflows can request that identity.
+The image's non-root
+`ghosthub` account has
+passwordless sudo for ordinary tool installation; it is not an in-VM security
+layer and is never represented as one.
+
+Changing repository source, build scripts, editor configuration, or another
+executable file inside the intentionally shared worktree is in scope for the
+sandbox's work product and outside the claimed filesystem boundary when the
+user later executes that content on the host. A report that bypasses the
+declared mounts or mutates another worktree or unmounted host path remains an
+in-scope sandbox escape. For sbx, host execution reached only through the
+documented repository Git-metadata channel is a product limitation, not an
+escape from the stated boundary.
+
 ### Release distribution
 
 GitHub release hosting and the network paths used to fetch an appcast or DMG
@@ -421,6 +601,8 @@ compromising a trusted component, including:
 - bypassing the user's SSH host identity and authentication policy
 - confusing host, worktree, pane, or session identity in a way that mutates a
   different target
+- allowing a managed sandbox to read or write an undeclared host path, inherit
+  a replacement worktree generation, or mutate an unverified provider resource
 - killing or structurally mutating a tmux session through Ghosthub's ordinary
   presentation, or terminating a session other than the exact target confirmed
   by the user
@@ -444,7 +626,8 @@ not security-boundary violations.
   or unbounded output
 - compromise of the local Mac, user account, SSH agent, shell startup files,
   configuration, or locally installed command-line tools
-- sandboxing commands the user chooses to run in a terminal pane
+- sandboxing commands the user chooses to run in an ordinary terminal pane
+  outside an explicitly managed worktree sandbox
 - availability of the network, SSH service, tmux server, or external state
   provider
 - availability of nightly updates after compromise of the nightly distribution repository

@@ -76,8 +76,10 @@ layer, as subject to direct iteration.
    workflow, build commands, and quality gates).
 2. `docs/architecture.md`: Architecture and Product source of truth.
 3. `docs/threat-model.md`: Security boundaries and trusted-peer assumptions.
-4. `docs/terminal-sessions.md`: Source of truth for terminal ownership, shell startup, and restart semantics.
-5. `docs/release.md`: Signing, notarization, and release process source of truth.
+4. `docs/sandboxes.md`: Accepted provider, identity, lifecycle, terminal, and
+   security contract for worktree-scoped sandboxes.
+5. `docs/terminal-sessions.md`: Source of truth for terminal ownership, shell startup, and restart semantics.
+6. `docs/release.md`: Signing, notarization, and release process source of truth.
 
 ## Non-Negotiable Workflow Rules
 
@@ -181,6 +183,7 @@ parent's checklist.
   strings, ordering, or exact text merely to restate the implementation.
 - Default to Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`) for new tests. Do not add new XCTest suites unless the harness genuinely requires XCTest.
 - Prefer `pytest` for Python tests, run through `uv` and the Makefile targets.
+  All Python tests live in `tools/tests/`. Keep `Tests/` Swift-only.
 - Migrate existing XCTest coverage to Swift Testing whenever you touch a test and the harness allows it, especially for pure-logic and host coverage. Do not churn large stable suites that still need XCTest just to change frameworks.
 - Keep XCTest where the current harness still genuinely needs it, especially AppKit, SwiftUI host lifecycle, libghostty, and other UI/smoke paths that are already working.
 - When migrating repetitive tests, prefer parameterized Swift Testing coverage over copy-pasted single-case methods.
@@ -278,5 +281,5 @@ Use non-interactive shell flags so agents do not hang on prompts: `cp -f`,
 - `Sources/Zellij/`: Native Zellij discovery and attachment command model.
 - `tools/`: Python-based build, bootstrap (including `libghostty`), and
   packaging automation.
-- `Tests/`: Swift and Python test suites. Python tests are in `Tests/test_*.py`;
-  Swift tests are in `Tests/*/`.
+- `Tests/`: Swift test suites.
+- `tools/tests/`: Python tests for build, packaging, and importable tool code.

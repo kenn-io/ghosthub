@@ -1,0 +1,692 @@
+name: Promote sandbox image
+run-name: Promote sandbox image ${{ github.event.client_payload.evidence_commit }}
+
+on:
+  repository_dispatch:
+    types: [sandbox-image-promote]
+
+permissions: {}
+
+jobs:
+  verify:
+    name: Verify inert evidence
+    if: github.repository == 'kenn-io/ghosthub' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read # zizmor: ignore[undocumented-permissions] bind evidence to one open pull request
+    concurrency:
+      group: sandbox-image-promotion-verify-${{ github.event.client_payload.evidence_commit }}
+      cancel-in-progress: true
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVIDENCE_COMMIT: ${{ github.event.client_payload.evidence_commit }}
+      IMAGE_DIGEST: ${{ github.event.client_payload.digest }}
+      IMAGE_VERSION: ${{ github.event.client_payload.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          version: '0.9.5'
+          checksum: 2cf10babba653310606f8b49876cfb679928669e7ddaa1fb41fb00ce73e64f66
+      - name: Verify evidence with trusted main tooling
+        run: >-
+          uv run --frozen python tools/sandbox_image.py verify-promotion
+          --evidence-commit "$EVIDENCE_COMMIT"
+          --digest "$IMAGE_DIGEST"
+          --version "$IMAGE_VERSION"
+
+  plan:
+    name: Prepare approved promotion
+    if: github.repository == 'kenn-io/ghosthub' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-24.04
+    environment: sandbox-image-promotion-status
+    permissions:
+      actions: read # zizmor: ignore[undocumented-permissions] inspect authority and completed workflows
+      attestations: read # zizmor: ignore[undocumented-permissions] verify candidate attestations
+      contents: read
+      pull-requests: read # zizmor: ignore[undocumented-permissions] recheck the evidence pull request
+    concurrency:
+      group: sandbox-image-promotion-plan-${{ github.event.client_payload.evidence_commit }}
+      cancel-in-progress: true
+    env:
+      EVIDENCE_COMMIT: ${{ github.event.client_payload.evidence_commit }}
+      IMAGE_DIGEST: ${{ github.event.client_payload.digest }}
+      IMAGE_VERSION: ${{ github.event.client_payload.version }}
+      SANDBOX_PROMOTION_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+    outputs:
+      action: ${{ steps.prepare.outputs.action }}
+      candidate: ${{ steps.prepare.outputs.candidate }}
+      expires_at: ${{ steps.prepare.outputs.expires_at }}
+      production_environment_fingerprint: ${{ steps.prepare.outputs.production_environment_fingerprint }}
+      production_tag: ${{ steps.prepare.outputs.production_tag }}
+      status_environment_fingerprint: ${{ steps.prepare.outputs.status_environment_fingerprint }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          version: '0.9.5'
+          checksum: 2cf10babba653310606f8b49876cfb679928669e7ddaa1fb41fb00ce73e64f66
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: image=docker.io/moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+      - name: Mint read-only authority token
+        id: audit-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}
+          owner: kenn-io # zizmor: ignore[github-app] audit full installation scope without status authority
+          permission-actions: read
+          permission-administration: read
+          permission-attestations: read
+          permission-contents: read
+          permission-environments: read
+          permission-pull-requests: read
+      - name: Audit App identity and installation
+        shell: bash
+        env:
+          AUDIT_TOKEN: ${{ steps.audit-token.outputs.token }}
+          STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+        run: |
+          set -euo pipefail
+
+          installation="$(GH_TOKEN="$AUDIT_TOKEN" gh api /installation)"
+          if ! jq -e --arg app_id "$STATUS_APP_ID" '
+            .app_id == ($app_id | tonumber) and
+            .app_slug == "ghosthub-sandbox-promotion" and
+            .account.login == "kenn-io" and
+            .account.type == "Organization" and
+            .repository_selection == "selected" and
+            .permissions == {
+              actions: "read",
+              administration: "read",
+              attestations: "read",
+              contents: "read",
+              environments: "read",
+              metadata: "read",
+              pull_requests: "read",
+              statuses: "write"
+            }
+          ' <<< "$installation" > /dev/null; then
+            echo "Promotion App identity or permissions drifted." >&2
+            exit 1
+          fi
+          repositories="$(GH_TOKEN="$AUDIT_TOKEN" gh api --paginate --slurp \
+            '/installation/repositories?per_page=100')"
+          if ! jq -e '
+            .[0].total_count == 1 and
+            [.[] | .repositories[] | .full_name] == ["kenn-io/ghosthub"]
+          ' <<< "$repositories" > /dev/null; then
+            echo "Promotion App installation scope drifted." >&2
+            exit 1
+          fi
+      - name: Recheck evidence and prepare immutable retag
+        id: prepare
+        env:
+          GH_TOKEN: ${{ steps.audit-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          uv run --frozen python tools/sandbox_image.py prepare-promotion \
+            --evidence-commit "$EVIDENCE_COMMIT" \
+            --digest "$IMAGE_DIGEST" \
+            --version "$IMAGE_VERSION" >> "$GITHUB_OUTPUT"
+
+  retag:
+    name: Approve and retag digest
+    if: github.repository == 'kenn-io/ghosthub' && github.ref == 'refs/heads/main'
+    needs: plan
+    runs-on: ubuntu-24.04
+    environment: sandbox-image-production
+    permissions: {}
+    concurrency:
+      group: sandbox-image-package-writer
+      cancel-in-progress: false
+    env:
+      CANDIDATE: ${{ needs.plan.outputs.candidate }}
+      EVIDENCE_COMMIT: ${{ github.event.client_payload.evidence_commit }}
+      IMAGE_DIGEST: ${{ github.event.client_payload.digest }}
+      IMAGE_VERSION: ${{ github.event.client_payload.version }}
+      PLAN_EXPIRES_AT: ${{ needs.plan.outputs.expires_at }}
+      PRODUCTION_ACTION: ${{ needs.plan.outputs.action }}
+      PRODUCTION_ENVIRONMENT_FINGERPRINT: ${{ needs.plan.outputs.production_environment_fingerprint }}
+      PRODUCTION_TAG: ${{ needs.plan.outputs.production_tag }}
+      STATUS_ENVIRONMENT_FINGERPRINT: ${{ needs.plan.outputs.status_environment_fingerprint }}
+    steps:
+      - name: Rescan exact digest after approval
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ || \
+                ! "$CANDIDATE" =~ ^ghcr\.io/kenn-io/ghosthub-sandbox:candidate-[0-9a-f]{40}@$IMAGE_DIGEST$ || \
+                ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Promotion scan inputs are invalid." >&2
+            exit 1
+          fi
+
+          trivy_directory="$RUNNER_TEMP/trivy-0.73.0"
+          trivy_archive="$RUNNER_TEMP/trivy-0.73.0.tar.gz"
+          mkdir -p "$trivy_directory"
+          curl --disable --fail --location --proto '=https' --tlsv1.2 \
+            --silent --show-error --output "$trivy_archive" \
+            'https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz'
+          printf '%s  %s\n' \
+            '2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b' \
+            "$trivy_archive" | sha256sum --check --status
+          tar -xzf "$trivy_archive" -C "$trivy_directory" trivy
+
+          scan="$RUNNER_TEMP/approved-candidate.vulnerabilities.json"
+          "$trivy_directory/trivy" --cache-dir "$RUNNER_TEMP/trivy-cache" image \
+            --scanners vuln --format json --output "$scan" "$CANDIDATE"
+
+          dispositions="$RUNNER_TEMP/vulnerability-dispositions.json"
+          curl --disable --fail --location --proto '=https' --tlsv1.2 \
+            --silent --show-error --output "$dispositions" \
+            "https://raw.githubusercontent.com/kenn-io/ghosthub/$GITHUB_SHA/images/sandbox/vulnerability-dispositions.json"
+          today="$(date -u +%F)"
+          evaluation="$(jq -cn \
+            --arg today "$today" \
+            --slurpfile scan "$scan" \
+            --slurpfile disposition_documents "$dispositions" '
+            def nonempty_string:
+              type == "string" and length > 0;
+            def same_identity($finding; $disposition):
+              $finding.vulnerability_id == $disposition.vulnerability_id and
+              $finding.package == $disposition.package and
+              $finding.result_class == $disposition.result_class and
+              $finding.result_type == $disposition.result_type and
+              $finding.target == $disposition.target;
+
+            if ($scan | length) != 1 or
+               ($disposition_documents | length) != 1 then
+              error("scan or disposition input is not one JSON document")
+            else
+              $scan[0] as $document |
+              $disposition_documents[0] as $dispositions |
+              if ($document | type) != "object" or
+                 ($document.Results | type) != "array" or
+                 (any($document.Results[]; .Class == "os-pkgs") | not) or
+                 (all($document.Results[];
+                   (.Class == "os-pkgs" or .Class == "lang-pkgs") and
+                   (.Type | nonempty_string) and
+                   (.Target | nonempty_string) and
+                   ((.Vulnerabilities // []) | type) == "array" and
+                   all((.Vulnerabilities // [])[];
+                     (.VulnerabilityID | nonempty_string) and
+                     (.PkgName | nonempty_string) and
+                     ((.Severity | ascii_upcase) |
+                       IN("UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL")) and
+                     (.FixedVersion == null or
+                       (.FixedVersion | type) == "string"))) | not) then
+                error("Trivy vulnerability report has an invalid schema")
+              elif ($dispositions | type) != "array" or
+                   (all($dispositions[];
+                     type == "object" and
+                     (keys | sort) == [
+                       "expires", "owner", "package", "rationale",
+                       "result_class", "result_type", "target",
+                       "vulnerability_id"
+                     ] and
+                     all(.[]; type == "string") and
+                     (.vulnerability_id | nonempty_string) and
+                     (.package | nonempty_string) and
+                     (.result_class | IN("os-pkgs", "lang-pkgs")) and
+                     (.result_type | nonempty_string) and
+                     (.target | nonempty_string) and
+                     (.rationale | test("\\S")) and
+                     (.owner | test("\\S")) and
+                     (.expires >= $today) and
+                     (try ((.expires + "T00:00:00Z") |
+                       fromdateiso8601 | type == "number") catch false)) | not) or
+                   ([$dispositions[] | [
+                     .vulnerability_id, .package, .result_class,
+                     .result_type, .target
+                   ]] | length) !=
+                   ([$dispositions[] | [
+                     .vulnerability_id, .package, .result_class,
+                     .result_type, .target
+                   ]] | unique | length) then
+                error("vulnerability dispositions have an invalid schema")
+              else
+                [
+                  $document.Results[] as $result |
+                  ($result.Vulnerabilities // [])[] |
+                  {
+                    vulnerability_id: .VulnerabilityID,
+                    package: .PkgName,
+                    result_class: $result.Class,
+                    result_type: $result.Type,
+                    target: (
+                      if $result.Class == "os-pkgs" then "rootfs"
+                      else $result.Target
+                      end
+                    ),
+                    severity: (.Severity | ascii_upcase),
+                    fixed_version: (.FixedVersion // "")
+                  }
+                ] as $findings |
+                [
+                  $findings[] |
+                  select(.severity == "HIGH" or .severity == "CRITICAL") |
+                  . as $finding |
+                  select(
+                    (.fixed_version | length) > 0 or
+                    (any($dispositions[];
+                      same_identity($finding; .)) | not)
+                  )
+                ] as $blocking |
+                [
+                  $dispositions[] as $disposition |
+                  select(any($findings[];
+                    (.severity == "HIGH" or .severity == "CRITICAL") and
+                    same_identity(.; $disposition)) | not) |
+                  $disposition
+                ] as $unmatched |
+                {
+                  blocking: $blocking,
+                  unmatched_dispositions: $unmatched
+                }
+              end
+            end
+          ')"
+          if ! jq -e '
+            .blocking == [] and .unmatched_dispositions == []
+          ' <<< "$evaluation" > /dev/null; then
+            echo "Post-approval vulnerability policy failed:" >&2
+            jq . <<< "$evaluation" >&2
+            exit 1
+          fi
+          echo "Post-approval vulnerability scan passed for $IMAGE_DIGEST."
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: image=docker.io/moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+      - name: Mint final read-only authority token
+        id: audit-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}
+          owner: kenn-io # zizmor: ignore[github-app] audit full installation scope before registry mutation
+          permission-actions: read
+          permission-administration: read
+          permission-attestations: read
+          permission-contents: read
+          permission-environments: read
+          permission-pull-requests: read
+      - name: Mint production-policy status token
+        id: policy-status-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}
+          owner: kenn-io
+          repositories: ghosthub
+          permission-statuses: write
+      - name: Recheck App identity and installation
+        shell: bash
+        env:
+          AUDIT_TOKEN: ${{ steps.audit-token.outputs.token }}
+          STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+        run: |
+          set -euo pipefail
+
+          installation="$(GH_TOKEN="$AUDIT_TOKEN" gh api /installation)"
+          if ! jq -e --arg app_id "$STATUS_APP_ID" '
+            .app_id == ($app_id | tonumber) and
+            .app_slug == "ghosthub-sandbox-promotion" and
+            .account.login == "kenn-io" and
+            .account.type == "Organization" and
+            .repository_selection == "selected" and
+            .permissions == {
+              actions: "read",
+              administration: "read",
+              attestations: "read",
+              contents: "read",
+              environments: "read",
+              metadata: "read",
+              pull_requests: "read",
+              statuses: "write"
+            }
+          ' <<< "$installation" > /dev/null; then
+            echo "Promotion App identity or permissions drifted." >&2
+            exit 1
+          fi
+          repositories="$(GH_TOKEN="$AUDIT_TOKEN" gh api --paginate --slurp \
+            '/installation/repositories?per_page=100')"
+          if ! jq -e '
+            .[0].total_count == 1 and
+            [.[] | .repositories[] | .full_name] == ["kenn-io/ghosthub"]
+          ' <<< "$repositories" > /dev/null; then
+            echo "Promotion App installation scope drifted." >&2
+            exit 1
+          fi
+      - name: Enforce immutable promotion deadline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$PLAN_EXPIRES_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+            echo "Promotion plan deadline is invalid." >&2
+            exit 1
+          fi
+          deadline_epoch="$(date -u -d "$PLAN_EXPIRES_AT" +%s)"
+          if (( $(date -u +%s) >= deadline_epoch )); then
+            echo "Promotion plan expired during approval; rerun promotion." >&2
+            exit 1
+          fi
+      - name: Recheck production environment
+        shell: bash
+        env:
+          AUDIT_TOKEN: ${{ steps.audit-token.outputs.token }}
+          STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+        run: |
+          set -euo pipefail
+
+          endpoint='repos/kenn-io/ghosthub/environments/sandbox-image-production'
+          environment="$(GH_TOKEN="$AUDIT_TOKEN" gh api "$endpoint")"
+          if ! jq -e '
+            (.protection_rules // []) as $rules |
+            ($rules | type == "array") and
+            any($rules[];
+              .type == "required_reviewers" and
+              (.reviewers | type == "array" and length > 0)) and
+            .deployment_branch_policy == {
+              protected_branches: false,
+              custom_branch_policies: true
+            }
+          ' <<< "$environment" > /dev/null; then
+            echo "Production environment approval policy drifted." >&2
+            exit 1
+          fi
+          policies="$(GH_TOKEN="$AUDIT_TOKEN" gh api \
+            "$endpoint/deployment-branch-policies")"
+          if ! jq -e '
+            .total_count == 1 and
+            (.branch_policies | type == "array" and length == 1) and
+            .branch_policies[0].name == "main" and
+            .branch_policies[0].type == "branch"
+          ' <<< "$policies" > /dev/null; then
+            echo "Production environment branch policy drifted." >&2
+            exit 1
+          fi
+          variables="$(GH_TOKEN="$AUDIT_TOKEN" gh api "$endpoint/variables")"
+          secrets="$(GH_TOKEN="$AUDIT_TOKEN" gh api "$endpoint/secrets")"
+          if ! jq -e --arg app_id "$STATUS_APP_ID" '
+            ([.variables[] | {key: .name, value: .value}] | from_entries) as $values |
+            ($values | keys | sort) == [
+              "SANDBOX_PROMOTION_APP_CLIENT_ID",
+              "SANDBOX_PROMOTION_APP_ID"
+            ] and
+            $values.SANDBOX_PROMOTION_APP_ID == $app_id and
+            ($values.SANDBOX_PROMOTION_APP_CLIENT_ID | type == "string" and length > 0)
+          ' <<< "$variables" > /dev/null ||
+            ! jq -e '
+              [.secrets[].name] | sort == [
+                "SANDBOX_PACKAGE_WRITER_TOKEN",
+                "SANDBOX_PACKAGE_WRITER_USERNAME",
+                "SANDBOX_PROMOTION_APP_PRIVATE_KEY"
+              ]
+            ' <<< "$secrets" > /dev/null; then
+            echo "Production environment credential set drifted." >&2
+            exit 1
+          fi
+          canonical_policy="$(jq -cnS \
+            --argjson environment "$environment" \
+            --argjson policies "$policies" \
+            --argjson variables "$variables" \
+            --argjson secrets "$secrets" '
+            {
+              branch_policies: $policies.branch_policies,
+              deployment_branch_policy: $environment.deployment_branch_policy,
+              reviewer_rules: [
+                $environment.protection_rules[] |
+                select(.type == "required_reviewers")
+              ],
+              secrets: ([
+                $secrets.secrets[] |
+                {name, created_at, updated_at}
+              ] | sort_by(.name)),
+              variables: (
+                [$variables.variables[] | {key: .name, value: .value}] |
+                from_entries
+              )
+            }
+          ')"
+          current_fingerprint="$(printf '%s' "$canonical_policy" \
+            | sha256sum | cut -d ' ' -f 1)"
+          if [[ ! "$PRODUCTION_ENVIRONMENT_FINGERPRINT" =~ ^[0-9a-f]{64}$ || \
+                "$current_fingerprint" != "$PRODUCTION_ENVIRONMENT_FINGERPRINT" ]]; then
+            echo "Production environment changed after planning." >&2
+            exit 1
+          fi
+      - name: Recheck required promotion rulesets
+        shell: bash
+        env:
+          AUDIT_TOKEN: ${{ steps.audit-token.outputs.token }}
+          STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+        run: |
+          set -euo pipefail
+
+          summaries="$(GH_TOKEN="$AUDIT_TOKEN" gh api --paginate --slurp \
+            'repos/kenn-io/ghosthub/rulesets?per_page=100' | jq '[.[][]]')"
+          if ! jq -e '
+            type == "array" and all(.[]; .id | type == "number")
+          ' <<< "$summaries" > /dev/null; then
+            echo "Repository ruleset summaries are invalid." >&2
+            exit 1
+          fi
+          rulesets='[]'
+          while read -r ruleset_id; do
+            detail="$(GH_TOKEN="$AUDIT_TOKEN" gh api \
+              "repos/kenn-io/ghosthub/rulesets/$ruleset_id")"
+            rulesets="$(jq -cn --argjson existing "$rulesets" \
+              --argjson detail "$detail" '$existing + [$detail]')"
+          done < <(jq -r '.[].id' <<< "$summaries")
+          if ! jq -e --argjson app_id "$STATUS_APP_ID" '
+            def default_branch:
+              .target == "branch" and
+              .enforcement == "active" and
+              .bypass_actors == [] and
+              (.conditions.ref_name.include | index("~DEFAULT_BRANCH")) != null and
+              .conditions.ref_name.exclude == [];
+            def promotion_status:
+              default_branch and
+              any(.rules[]?;
+                .type == "required_status_checks" and
+                .parameters.strict_required_status_checks_policy == true and
+                any(.parameters.required_status_checks[]?;
+                  .context == "sandbox-image-promotion" and
+                  .integration_id == $app_id)) and
+              any(.rules[]?; .type == "pull_request") and
+              any(.rules[]?;
+                .type == "merge_queue" and
+                .parameters == {
+                  check_response_timeout_minutes: 60,
+                  grouping_strategy: "ALLGREEN",
+                  max_entries_to_build: 1,
+                  max_entries_to_merge: 1,
+                  merge_method: "SQUASH",
+                  min_entries_to_merge: 1,
+                  min_entries_to_merge_wait_minutes: 0
+                });
+            def merge_signal:
+              default_branch and
+              .source_type == "Organization" and
+              .source == "kenn-io" and
+              any(.rules[]?;
+                .type == "workflows" and
+                any(.parameters.workflows[]?;
+                  .path == ".github/workflows/sandbox-image-merge-signal.yml" and
+                  .ref == "refs/heads/main" and
+                  .repository_id == 1308876468));
+            any(.[]; promotion_status) and any(.[]; merge_signal)
+          ' <<< "$rulesets" > /dev/null; then
+            echo "Required promotion rulesets drifted." >&2
+            exit 1
+          fi
+      - name: Log in to GHCR
+        if: env.PRODUCTION_ACTION == 'create'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.SANDBOX_PACKAGE_WRITER_USERNAME }}
+          password: ${{ secrets.SANDBOX_PACKAGE_WRITER_TOKEN }}
+      - name: Recheck evidence and retag exact digest
+        if: env.PRODUCTION_ACTION == 'create'
+        shell: bash
+        env:
+          AUDIT_TOKEN: ${{ steps.audit-token.outputs.token }}
+          STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+        run: |
+          set -euo pipefail
+
+          expected_production="ghcr.io/kenn-io/ghosthub-sandbox:v$IMAGE_VERSION"
+          if [[ ! "$CANDIDATE" =~ ^ghcr\.io/kenn-io/ghosthub-sandbox:candidate-[0-9a-f]{40}@$IMAGE_DIGEST$ || \
+                "$PRODUCTION_TAG" != "$expected_production" || \
+                ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Promotion plan is invalid." >&2
+            exit 1
+          fi
+
+          pulls="$(GH_TOKEN="$AUDIT_TOKEN" gh api \
+            "repos/kenn-io/ghosthub/commits/$EVIDENCE_COMMIT/pulls")"
+          if ! jq -e --arg head "$EVIDENCE_COMMIT" --arg base "$GITHUB_SHA" '
+            [.[] | select(
+              .state == "open" and
+              .base.ref == "main" and
+              .base.sha == $base and
+              .head.sha == $head
+            )] | length == 1
+          ' <<< "$pulls" > /dev/null; then
+            echo "Promotion evidence no longer targets this main revision." >&2
+            exit 1
+          fi
+          candidate_tag="${CANDIDATE%@*}"
+          candidate_digest="$(docker buildx imagetools inspect "$candidate_tag" \
+            --format '{{json .}}' | jq -er '.manifest.digest')"
+          if [[ "$candidate_digest" != "$IMAGE_DIGEST" ]]; then
+            echo "Candidate alias changed after promotion verification." >&2
+            exit 1
+          fi
+          diagnostic="$RUNNER_TEMP/production-inspect.stderr"
+          if docker buildx imagetools inspect "$PRODUCTION_TAG" \
+            --format '{{json .}}' > /dev/null 2> "$diagnostic"; then
+            echo "Production tag changed during promotion approval." >&2
+            exit 1
+          elif [[ "$(cat "$diagnostic")" != "ERROR: $PRODUCTION_TAG: not found" ]]; then
+            cat "$diagnostic" >&2
+            exit 1
+          fi
+          deadline_epoch="$(date -u -d "$PLAN_EXPIRES_AT" +%s)"
+          if (( $(date -u +%s) >= deadline_epoch )); then
+            echo "Promotion plan expired before registry mutation; rerun promotion." >&2
+            exit 1
+          fi
+          status_endpoint='repos/kenn-io/ghosthub/environments/sandbox-image-promotion-status'
+          status_environment="$(GH_TOKEN="$AUDIT_TOKEN" gh api "$status_endpoint")"
+          if ! jq -e '
+            (.protection_rules // []) as $rules |
+            ($rules | type == "array") and
+            ([$rules[] | .type] == ["branch_policy"]) and
+            .deployment_branch_policy == {
+              protected_branches: false,
+              custom_branch_policies: true
+            }
+          ' <<< "$status_environment" > /dev/null; then
+            echo "Promotion status environment policy drifted." >&2
+            exit 1
+          fi
+          status_policies="$(GH_TOKEN="$AUDIT_TOKEN" gh api \
+            "$status_endpoint/deployment-branch-policies")"
+          if ! jq -e '
+            .total_count == 1 and
+            (.branch_policies | type == "array" and length == 1) and
+            .branch_policies[0].name == "main" and
+            .branch_policies[0].type == "branch"
+          ' <<< "$status_policies" > /dev/null; then
+            echo "Promotion status environment branch policy drifted." >&2
+            exit 1
+          fi
+          status_variables="$(GH_TOKEN="$AUDIT_TOKEN" gh api \
+            "$status_endpoint/variables")"
+          status_secrets="$(GH_TOKEN="$AUDIT_TOKEN" gh api \
+            "$status_endpoint/secrets")"
+          if ! jq -e --arg app_id "$STATUS_APP_ID" '
+            ([.variables[] | {key: .name, value: .value}] | from_entries) as $values |
+            ($values | keys | sort) == [
+              "SANDBOX_PROMOTION_APP_CLIENT_ID",
+              "SANDBOX_PROMOTION_APP_ID"
+            ] and
+            $values.SANDBOX_PROMOTION_APP_ID == $app_id and
+            ($values.SANDBOX_PROMOTION_APP_CLIENT_ID |
+              type == "string" and length > 0)
+          ' <<< "$status_variables" > /dev/null ||
+            ! jq -e '
+              [.secrets[].name] | sort == ["SANDBOX_PROMOTION_APP_PRIVATE_KEY"]
+            ' <<< "$status_secrets" > /dev/null; then
+            echo "Promotion status environment credential set drifted." >&2
+            exit 1
+          fi
+          canonical_status_policy="$(jq -cnS \
+            --argjson environment "$status_environment" \
+            --argjson policies "$status_policies" \
+            --argjson variables "$status_variables" \
+            --argjson secrets "$status_secrets" '
+            {
+              branch_policies: $policies.branch_policies,
+              deployment_branch_policy: $environment.deployment_branch_policy,
+              secrets: ([
+                $secrets.secrets[] |
+                {name, created_at, updated_at}
+              ] | sort_by(.name)),
+              variables: (
+                [$variables.variables[] | {key: .name, value: .value}] |
+                from_entries
+              )
+            }
+          ')"
+          current_status_fingerprint="$(printf '%s' "$canonical_status_policy" \
+            | sha256sum | cut -d ' ' -f 1)"
+          current_main="$(GH_TOKEN="$AUDIT_TOKEN" gh api \
+            'repos/kenn-io/ghosthub/branches/main' --jq '.commit.sha')"
+          if [[ ! "$STATUS_ENVIRONMENT_FINGERPRINT" =~ ^[0-9a-f]{64}$ || \
+                "$current_status_fingerprint" != "$STATUS_ENVIRONMENT_FINGERPRINT" || \
+                "$current_main" != "$GITHUB_SHA" ]]; then
+            echo "Promotion status authority changed after planning." >&2
+            exit 1
+          fi
+          docker buildx imagetools create --prefer-index=false \
+            --tag "$PRODUCTION_TAG" "$CANDIDATE"
+      - name: Remove registry credentials
+        if: always() && env.PRODUCTION_ACTION == 'create'
+        run: docker logout ghcr.io
+      - name: Verify production alias
+        shell: bash
+        run: |
+          set -euo pipefail
+          production_digest="$(docker buildx imagetools inspect "$PRODUCTION_TAG" \
+            --format '{{json .}}' | jq -er '.manifest.digest')"
+          if [[ "$production_digest" != "$IMAGE_DIGEST" ]]; then
+            echo "Production tag does not resolve to the vetted digest." >&2
+            exit 1
+          fi
+      - name: Bind completed promotion to production policy
+        shell: bash
+        env:
+          STATUS_TOKEN: ${{ steps.policy-status-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          GH_TOKEN="$STATUS_TOKEN" gh api --method POST \
+            "repos/kenn-io/ghosthub/statuses/$EVIDENCE_COMMIT" \
+            -f state=success \
+            -f context=sandbox-image-production-policy \
+            -f "description=policy:$PRODUCTION_ENVIRONMENT_FINGERPRINT" \
+            -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            > /dev/null

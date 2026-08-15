@@ -10,13 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
+import libghostty_bootstrap as bootstrap
 import pytest
-
-
-TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
-sys.path.insert(0, str(TOOLS_DIR))
-
-import libghostty_bootstrap as bootstrap  # noqa: E402
 
 SDKLayoutFactory = Callable[[str], tuple[Path, Path, Path, Path]]
 

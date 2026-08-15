@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
-
 from development_version import bundle_versions_from_git_describe
 
 

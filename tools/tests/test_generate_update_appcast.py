@@ -8,14 +8,8 @@ import sys
 from pathlib import Path
 
 import pytest
-
-
-TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
-sys.path.insert(0, str(TOOLS_DIR))
-
-from extract_changelog import ChangelogError, extract_release_notes  # noqa: E402
-from verify_update_appcast import verify_appcast  # noqa: E402
-
+from extract_changelog import ChangelogError, extract_release_notes
+from verify_update_appcast import verify_appcast
 
 PUBLIC_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
 LEGACY_PRIVATE_KEY = bytes(
@@ -262,7 +256,7 @@ def test_rejects_appcast_that_does_not_name_the_built_artifact(
 
 
 def test_generates_signed_appcast_without_exposing_the_private_key(tmp_path):
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [repo_root / "tools" / "generate_update_appcast.sh"],
         cwd=repo_root,
@@ -291,7 +285,7 @@ def test_generates_signed_appcast_without_exposing_the_private_key(tmp_path):
 
 
 def test_rejects_a_public_key_that_does_not_match_the_app(tmp_path):
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [repo_root / "tools" / "generate_update_appcast.sh"],
         cwd=repo_root,
@@ -306,7 +300,7 @@ def test_rejects_a_public_key_that_does_not_match_the_app(tmp_path):
 
 
 def test_rejects_a_private_key_that_does_not_match_the_app(tmp_path):
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     env = make_release(tmp_path)
     env["SPARKLE_ED_PRIVATE_KEY"] = "wrong-private-seed"
     result = subprocess.run(
@@ -323,7 +317,7 @@ def test_rejects_a_private_key_that_does_not_match_the_app(tmp_path):
 
 
 def test_public_key_derivation_matches_the_ed25519_test_vector():
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     seed = bytes.fromhex(
         "9d61b19deffd5a60ba844af492ec2cc4"
         "4449c5697b326919703bac031cae7f60"
@@ -347,7 +341,7 @@ def test_public_key_derivation_matches_the_ed25519_test_vector():
 
 
 def test_public_key_derivation_accepts_sparkles_legacy_export():
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
 
     result = subprocess.run(
         ["swift", repo_root / "tools" / "derive_sparkle_public_key.swift"],
@@ -367,7 +361,7 @@ def test_public_key_derivation_accepts_sparkles_legacy_export():
 
 
 def test_public_key_derivation_rejects_a_mismatched_legacy_pair():
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     mismatched_public_key = bytes(32)
 
     result = subprocess.run(
@@ -387,7 +381,7 @@ def test_public_key_derivation_rejects_a_mismatched_legacy_pair():
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Sparkle tooling targets macOS")
 def test_pinned_generate_appcast_accepts_the_standard_seed_export(tmp_path):
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     generator = (
         repo_root
         / ".build/artifacts/sparkle/Sparkle/bin/generate_appcast"
