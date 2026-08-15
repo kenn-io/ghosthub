@@ -347,8 +347,8 @@ at a time in the active attachment.
 
 ### Release distribution
 
-GitHub release hosting, the nightly object host, and the network paths used to
-fetch an appcast or DMG are not trusted to authorize executable code. Each
+GitHub release hosting and the network paths used to fetch an appcast or DMG
+are not trusted to authorize executable code. Each
 packaged Ghosthub channel requires an HTTPS appcast signed with its embedded
 Sparkle Ed25519 public key and verifies the update archive before extraction.
 Signed-feed failures never expire into Sparkle's rotation fallback. Changing
@@ -370,39 +370,44 @@ The first nightly install does not inherit Sparkle authorization. Its mutable
 latest-DMG pointer is only a discovery convenience: before copying the mounted
 app, the operator verifies Gatekeeper acceptance and pins both the DMG and app
 code signatures to Kenn Software's Apple Team Identifier, `2YMZH84KR8`. The
-DMG identity is checked before mounting it. Control of the nightly object host
-plus an unrelated notarized Developer ID therefore cannot authorize a
-bootstrap app. Compromise of Kenn Software's shared Apple signing identity
+DMG identity is checked before mounting it. Control of the nightly distribution
+repository plus an unrelated notarized Developer ID therefore cannot authorize
+a bootstrap app. Compromise of Kenn Software's shared Apple signing identity
 remains a release incident under the preceding assumption.
 
 Nightly eligibility treats a feed with either required Sparkle signature
 missing or structurally incomplete as repairable. This check is operational,
 not an authorization decision: verifying an enclosure signature requires the
 archive bytes, while clients verify both the feed and downloaded archive with
-Sparkle. A hostile nightly object host can still suppress or corrupt channel
-metadata and deny nightly-update availability, but cannot turn that metadata
-into an accepted update without a trusted signing identity.
+Sparkle. A hostile nightly distribution repository can still suppress or
+corrupt channel metadata and deny nightly-update availability, but cannot turn
+that metadata into an accepted update without a trusted signing identity.
 
-Nightly publication treats the object store's current manifest and ETag as an
-operational consistency boundary. It rejects candidates that are older than or
-conflict with the directly read manifest, requires that manifest to match the
-state observed by eligibility, and conditionally commits the replacement
-manifest against the directly observed ETag. This prevents delayed or
+Nightly publication treats the latest release's manifest as an operational
+consistency boundary. It rejects candidates that are older than or conflict
+with the directly read manifest and requires that manifest to match the state
+observed by eligibility. It uploads the complete candidate as a draft,
+revalidates the public manifest, completes retention, and then publishes and
+marks the draft latest in one release transition. This prevents delayed or
 out-of-order trusted workflow retries from silently rolling back the completed
-channel. It does not make the object host an update-authority boundary or claim
-availability against a hostile store; Sparkle and Apple signing retain those
-roles and a compromised store can still deny service.
+channel and prevents clients from observing a partially uploaded release. It
+does not make GitHub an update-authority boundary or claim availability against
+a hostile host; Sparkle and Apple signing retain those roles and a compromised
+host can still deny service.
 
 Stable-feed routing and publication authority are the operational boundary
 that protects stable users from nightly automation. The unattended nightly
-environment can write only the nightly object store and cannot create a GitHub
-release, replace a stable release asset, or change the stable appcast. The
+environment can create releases only in the separate
+`kenn-io/ghosthub-nightly` distribution repository and cannot create or replace
+a release asset in the canonical repository or change the stable appcast. The
 protected GitHub `release-signing` environment and its independent approval
 policy, the `main`-restricted unattended `nightly-signing` environment, the
 organization-controlled 1Password vault, both Sparkle private keys, the shared
-Apple signing credentials, and the nightly object-store credentials are
-trusted operational components. Loss or suspected disclosure of a signing
-identity or publication credential is a release incident governed by the Kenn
+Apple signing credentials, and the `kenn-dist-update-bot` private key are
+trusted operational components. The workflow mints a short-lived installation
+token restricted to the nightly distribution repository and requests only
+Contents write permission. Loss or suspected disclosure of a signing identity
+or publication credential is a release incident governed by the Kenn
 operations runbook; it is not resolved by silently generating a replacement
 key.
 
@@ -442,7 +447,7 @@ not security-boundary violations.
 - sandboxing commands the user chooses to run in a terminal pane
 - availability of the network, SSH service, tmux server, or external state
   provider
-- availability of nightly updates after compromise of the nightly object host
+- availability of nightly updates after compromise of the nightly distribution repository
   or its delivery path
 
 The configured-host assumption does not waive the explicit local-capability

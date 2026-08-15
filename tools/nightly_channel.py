@@ -8,9 +8,9 @@ import binascii
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -25,16 +25,12 @@ SPARKLE_NAMESPACE = "https://sparkle-project.org/xml-namespaces/sparkle"
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 ASCII_NUMBER_RE = re.compile(r"[0-9]+\Z")
-IMMUTABLE_CACHE_CONTROL = "public,max-age=31536000,immutable"
-MUTABLE_CACHE_CONTROL = "no-cache"
-DMG_CONTENT_TYPE = "application/x-apple-diskimage"
-TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
-XML_CONTENT_TYPE = "application/xml"
-JSON_CONTENT_TYPE = "application/json"
 LATEST_DMG_KEY = "Ghosthub_Nightly_latest_macos_arm64.dmg"
 ABSENT_CHANNEL_VERSION = "absent"
 SIGNED_FEED_PREFIX = b"<!-- sparkle-signatures:\n"
 SIGNED_FEED_SUFFIX = b"-->"
+RELEASE_TAG_RE = re.compile(r"nightly-([0-9]+)-([0-9]+)-([0-9]+)\Z")
+REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 
 
 def require_string(field: str, value: object) -> str:
@@ -238,8 +234,8 @@ def validate_manifest_url(
         raise ValueError("dmg_url must use the configured public_base_url")
     base_path = base.path.rstrip("/")
     expected_prefix = (
-        f"{base_path}/builds/{build}/runs/{workflow_run_id}/attempts/"
-        f"{workflow_run_attempt}/"
+        f"{base_path}/download/"
+        f"nightly-{build}-{workflow_run_id}-{workflow_run_attempt}/"
     )
     if (
         not candidate.path.startswith(expected_prefix)
@@ -345,291 +341,151 @@ def decide_eligibility(
     )
 
 
-class ObjectStore(Protocol):
-    def put_file(
-        self,
-        key: str,
-        path: Path,
-        cache_control: str,
-        content_type: str,
-    ) -> None: ...
-
-    def put_bytes(
-        self,
-        key: str,
-        data: bytes,
-        cache_control: str,
-        content_type: str,
-    ) -> None: ...
-
-    def get_object(self, key: str) -> StoredObject | None: ...
-
-    def put_bytes_if_unchanged(
-        self,
-        key: str,
-        data: bytes,
-        cache_control: str,
-        content_type: str,
-        expected_etag: str | None,
-    ) -> None: ...
-
-    def list_keys(self, prefix: str) -> list[str]: ...
-
-    def delete_keys(self, keys: list[str]) -> None: ...
-
-
 @dataclass(frozen=True)
-class StoredObject:
-    data: bytes
-    etag: str
+class ReleaseInfo:
+    tag: str
+    draft: bool
+    prerelease: bool
 
 
-class AwsCliObjectStore:
-    def __init__(
+class ReleaseClient(Protocol):
+    def get_release(self, tag: str) -> ReleaseInfo | None: ...
+
+    def create_draft(
         self,
-        *,
-        bucket: str,
-        endpoint_url: str,
-        region: str,
-    ) -> None:
-        self.bucket = require_string("bucket", bucket)
-        self.endpoint_url = require_https_url("endpoint_url", endpoint_url)
-        self.region = require_string("region", region)
+        tag: str,
+        title: str,
+        notes: str,
+        assets: list[Path],
+    ) -> None: ...
 
-    def base_command(self, operation: str) -> list[str]:
-        return [
-            "aws",
-            "s3api",
-            operation,
-            "--bucket",
-            self.bucket,
+    def list_releases(self) -> list[ReleaseInfo]: ...
+
+    def publish(self, tag: str) -> None: ...
+
+    def delete(self, tag: str) -> None: ...
+
+
+class GitHubCliReleaseClient:
+    def __init__(self, repository: str) -> None:
+        self.repository = require_string("repository", repository)
+        if REPOSITORY_RE.fullmatch(self.repository) is None:
+            raise ValueError("repository must be a GitHub owner/name")
+
+    @staticmethod
+    def parse_release(value: object) -> ReleaseInfo:
+        if not isinstance(value, dict):
+            raise ValueError("GitHub release response must be an object")
+        tag = require_string("release tag_name", value.get("tag_name"))
+        draft = value.get("draft")
+        prerelease = value.get("prerelease")
+        if not isinstance(draft, bool) or not isinstance(prerelease, bool):
+            raise ValueError("GitHub release response has invalid state")
+        return ReleaseInfo(tag=tag, draft=draft, prerelease=prerelease)
+
+    def get_release(self, tag: str) -> ReleaseInfo | None:
+        tag = require_string("tag", tag)
+        command = [
+            "gh",
+            "api",
+            f"repos/{self.repository}/releases/tags/{tag}",
         ]
-
-    def common_arguments(self) -> list[str]:
-        return [
-            "--endpoint-url",
-            self.endpoint_url,
-            "--region",
-            self.region,
-            "--no-cli-pager",
-        ]
-
-    def put_file(
-        self,
-        key: str,
-        path: Path,
-        cache_control: str,
-        content_type: str,
-    ) -> None:
-        command = self.base_command("put-object")
-        command.extend(
-            [
-                "--key",
-                key,
-                "--body",
-                str(path),
-                "--content-type",
-                content_type,
-                "--cache-control",
-                cache_control,
-                *self.common_arguments(),
-            ]
+        result = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            capture_output=True,
         )
-        subprocess.run(command, check=True, text=True, capture_output=True)
-
-    def put_bytes(
-        self,
-        key: str,
-        data: bytes,
-        cache_control: str,
-        content_type: str,
-    ) -> None:
-        temp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False) as handle:
-                handle.write(data)
-                temp_path = Path(handle.name)
-            self.put_file(key, temp_path, cache_control, content_type)
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
-
-    def get_object(self, key: str) -> StoredObject | None:
-        temp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False) as handle:
-                temp_path = Path(handle.name)
-            command = self.base_command("get-object")
-            command.extend(
-                [
-                    "--key",
-                    key,
-                    str(temp_path),
-                    "--output",
-                    "json",
-                    *self.common_arguments(),
-                ]
-            )
-            result = subprocess.run(
-                command,
-                check=False,
-                text=True,
-                capture_output=True,
-            )
-            if result.returncode != 0:
-                if "NoSuchKey" in result.stderr or "Not Found" in result.stderr:
-                    return None
-                raise subprocess.CalledProcessError(
-                    result.returncode,
-                    command,
-                    output=result.stdout,
-                    stderr=result.stderr,
-                )
-            response = json.loads(result.stdout)
-            if not isinstance(response, dict):
-                raise ValueError("object-store read returned invalid JSON")
-            etag = response.get("ETag")
-            if not isinstance(etag, str) or not etag:
-                raise ValueError("object-store read is missing its ETag")
-            return StoredObject(data=temp_path.read_bytes(), etag=etag)
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
-
-    def put_bytes_if_unchanged(
-        self,
-        key: str,
-        data: bytes,
-        cache_control: str,
-        content_type: str,
-        expected_etag: str | None,
-    ) -> None:
-        temp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False) as handle:
-                handle.write(data)
-                temp_path = Path(handle.name)
-            command = self.base_command("put-object")
-            command.extend(
-                [
-                    "--key",
-                    key,
-                    "--body",
-                    str(temp_path),
-                    "--content-type",
-                    content_type,
-                    "--cache-control",
-                    cache_control,
-                ]
-            )
-            if expected_etag is None:
-                command.extend(["--if-none-match", "*"])
-            else:
-                command.extend(["--if-match", expected_etag])
-            command.extend(self.common_arguments())
-            result = subprocess.run(
-                command,
-                check=False,
-                text=True,
-                capture_output=True,
-            )
-            if result.returncode == 0:
-                return
-            if "PreconditionFailed" in result.stderr:
-                raise ValueError("nightly channel changed during publication")
+        if result.returncode != 0:
+            if "HTTP 404" in result.stderr:
+                return None
             raise subprocess.CalledProcessError(
                 result.returncode,
                 command,
                 output=result.stdout,
                 stderr=result.stderr,
             )
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
+        return self.parse_release(json.loads(result.stdout))
 
-    def list_keys(self, prefix: str) -> list[str]:
-        keys: list[str] = []
-        continuation_token: str | None = None
-        while True:
-            command = self.base_command("list-objects-v2")
-            command.extend(["--prefix", prefix, "--output", "json"])
-            if continuation_token is not None:
-                command.extend(["--continuation-token", continuation_token])
-            command.extend(self.common_arguments())
-            result = subprocess.run(
-                command,
-                check=True,
-                text=True,
-                capture_output=True,
-            )
-            response = json.loads(result.stdout)
-            contents = response.get("Contents", [])
-            if not isinstance(contents, list):
-                raise ValueError("object-store listing has invalid Contents")
-            for item in contents:
-                if not isinstance(item, dict) or not isinstance(
-                    item.get("Key"), str
-                ):
-                    raise ValueError("object-store listing contains an invalid key")
-                keys.append(item["Key"])
-            if not response.get("IsTruncated"):
-                return keys
-            continuation_token = response.get("NextContinuationToken")
-            if not isinstance(continuation_token, str) or not continuation_token:
-                raise ValueError("object-store listing is missing its continuation token")
+    def create_draft(
+        self,
+        tag: str,
+        title: str,
+        notes: str,
+        assets: list[Path],
+    ) -> None:
+        command = [
+            "gh",
+            "release",
+            "create",
+            require_string("tag", tag),
+            "--repo",
+            self.repository,
+            "--draft",
+            "--target",
+            "main",
+            "--title",
+            require_string("title", title),
+            "--notes",
+            require_string("notes", notes),
+            *[str(path) for path in assets],
+        ]
+        subprocess.run(command, check=True, text=True, capture_output=True)
 
-    def delete_keys(self, keys: list[str]) -> None:
-        for start in range(0, len(keys), 1000):
-            batch = keys[start : start + 1000]
-            temp_path: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    delete=False,
-                ) as handle:
-                    json.dump(
-                        {
-                            "Objects": [{"Key": key} for key in batch],
-                            "Quiet": True,
-                        },
-                        handle,
-                    )
-                    temp_path = Path(handle.name)
-                command = self.base_command("delete-objects")
-                command.extend(
-                    [
-                        "--delete",
-                        f"file://{temp_path}",
-                        "--output",
-                        "json",
-                        *self.common_arguments(),
-                    ]
-                )
-                result = subprocess.run(
-                    command,
-                    check=True,
-                    text=True,
-                    capture_output=True,
-                )
-                response = (
-                    json.loads(result.stdout) if result.stdout.strip() else {}
-                )
-                if not isinstance(response, dict):
-                    raise ValueError("object-store deletion returned invalid JSON")
-                errors = response.get("Errors", [])
-                if not isinstance(errors, list):
-                    raise ValueError("object-store deletion returned invalid Errors")
-                if errors:
-                    first = errors[0] if isinstance(errors[0], dict) else {}
-                    key = first.get("Key", "unknown key")
-                    code = first.get("Code", "unknown error")
-                    raise ValueError(
-                        f"object-store deletion failed for {key}: {code}"
-                    )
-            finally:
-                if temp_path is not None:
-                    temp_path.unlink(missing_ok=True)
+    def list_releases(self) -> list[ReleaseInfo]:
+        command = [
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            "--method",
+            "GET",
+            f"repos/{self.repository}/releases",
+            "-f",
+            "per_page=100",
+        ]
+        result = subprocess.run(
+            command,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        pages = json.loads(result.stdout)
+        if not isinstance(pages, list) or any(
+            not isinstance(page, list) for page in pages
+        ):
+            raise ValueError("GitHub release listing must contain pages")
+        return [
+            self.parse_release(release)
+            for page in pages
+            for release in page
+        ]
+
+    def publish(self, tag: str) -> None:
+        command = [
+            "gh",
+            "release",
+            "edit",
+            require_string("tag", tag),
+            "--repo",
+            self.repository,
+            "--draft=false",
+            "--latest",
+        ]
+        subprocess.run(command, check=True, text=True, capture_output=True)
+
+    def delete(self, tag: str) -> None:
+        command = [
+            "gh",
+            "release",
+            "delete",
+            require_string("tag", tag),
+            "--repo",
+            self.repository,
+            "--cleanup-tag",
+            "--yes",
+        ]
+        subprocess.run(command, check=True, text=True, capture_output=True)
 
 
 @dataclass(frozen=True)
@@ -643,7 +499,6 @@ class PublicationInputs:
     workflow_run_id: int
     workflow_run_attempt: int
     expected_channel_version: str = ABSENT_CHANNEL_VERSION
-    previous_build: int | None = None
 
     def __post_init__(self) -> None:
         if Path(self.dmg_name).name != self.dmg_name or not self.dmg_name.endswith(
@@ -659,10 +514,6 @@ class PublicationInputs:
             "workflow_run_attempt", self.workflow_run_attempt
         )
         require_channel_version(self.expected_channel_version)
-        if self.previous_build is not None:
-            require_positive_integer("previous_build", self.previous_build)
-            if self.previous_build > self.build:
-                raise ValueError("previous_build cannot exceed build")
 
     @property
     def dmg_path(self) -> Path:
@@ -681,10 +532,26 @@ class PublicationInputs:
         return self.release_root / "appcast.xml"
 
     @property
+    def manifest_path(self) -> Path:
+        return self.release_root / "channel.json"
+
+    @property
+    def bootstrap_path(self) -> Path:
+        return self.release_root / LATEST_DMG_KEY
+
+    @property
+    def channel_url(self) -> str:
+        return f"{self.public_base_url.rstrip('/')}/latest/download/channel.json"
+
+    @property
     def immutable_prefix(self) -> str:
+        return f"download/{self.release_tag}/"
+
+    @property
+    def release_tag(self) -> str:
         return (
-            f"builds/{self.build}/runs/{self.workflow_run_id}/attempts/"
-            f"{self.workflow_run_attempt}/"
+            f"nightly-{self.build}-{self.workflow_run_id}-"
+            f"{self.workflow_run_attempt}"
         )
 
     @property
@@ -715,8 +582,10 @@ def digest_for_name(path: Path, filename: str) -> str:
 
 
 def publish_nightly(
-    store: ObjectStore,
+    client: ReleaseClient,
     inputs: PublicationInputs,
+    *,
+    opener: ResponseOpener = urlopen,
 ) -> ChannelManifest:
     for path in (
         inputs.dmg_path,
@@ -747,33 +616,10 @@ def publish_nightly(
         dmg_url=inputs.immutable_dmg_url,
         sha256=digest,
     )
-    immutable_dmg_key = f"{inputs.immutable_prefix}{inputs.dmg_name}"
-    immutable_digest_key = f"{inputs.immutable_prefix}{inputs.dmg_name}.sha256"
-    immutable_sums_key = f"{inputs.immutable_prefix}SHA256SUMS"
-
-    store.put_file(
-        immutable_dmg_key,
-        inputs.dmg_path,
-        IMMUTABLE_CACHE_CONTROL,
-        DMG_CONTENT_TYPE,
-    )
-    store.put_file(
-        immutable_digest_key,
-        inputs.digest_path,
-        IMMUTABLE_CACHE_CONTROL,
-        TEXT_CONTENT_TYPE,
-    )
-    store.put_file(
-        immutable_sums_key,
-        inputs.sums_path,
-        IMMUTABLE_CACHE_CONTROL,
-        TEXT_CONTENT_TYPE,
-    )
-    published_object = store.get_object("channel.json")
-    published = (
-        ChannelManifest.from_json(published_object.data, inputs.public_base_url)
-        if published_object is not None
-        else None
+    published = fetch_manifest(
+        inputs.channel_url,
+        inputs.public_base_url,
+        opener=opener,
     )
     if published is not None:
         if manifest.build < published.build:
@@ -782,93 +628,87 @@ def publish_nightly(
             manifest.source_sha != published.source_sha
         ):
             raise ValueError("the published build belongs to a different source")
+
+    existing = client.get_release(inputs.release_tag)
+    if existing is not None:
+        if not existing.draft:
+            if published == manifest:
+                return manifest
+            raise ValueError("nightly release tag is already published")
     if channel_version(published) != inputs.expected_channel_version:
         raise ValueError("nightly channel changed since eligibility")
-    store.put_file(
-        "appcast.xml",
-        inputs.appcast_path,
-        MUTABLE_CACHE_CONTROL,
-        XML_CONTENT_TYPE,
-    )
-    store.put_file(
-        LATEST_DMG_KEY,
+    if existing is not None:
+        client.delete(inputs.release_tag)
+
+    inputs.manifest_path.write_bytes(manifest.to_json())
+    shutil.copyfile(inputs.dmg_path, inputs.bootstrap_path)
+    assets = [
         inputs.dmg_path,
-        MUTABLE_CACHE_CONTROL,
-        DMG_CONTENT_TYPE,
-    )
-    protected_builds = (
-        {inputs.previous_build} if inputs.previous_build is not None else set()
-    )
-    cleanup_old_builds(
-        store,
-        manifest,
-        retain_builds=30,
-        protected_builds=protected_builds,
-    )
-    store.put_bytes_if_unchanged(
-        "channel.json",
-        manifest.to_json(),
-        MUTABLE_CACHE_CONTROL,
-        JSON_CONTENT_TYPE,
-        published_object.etag if published_object is not None else None,
-    )
-    return manifest
+        inputs.digest_path,
+        inputs.sums_path,
+        inputs.appcast_path,
+        inputs.manifest_path,
+        inputs.bootstrap_path,
+    ]
+    try:
+        client.create_draft(
+            inputs.release_tag,
+            f"Ghosthub Nightly build {inputs.build}",
+            (
+                "Automated nightly build from "
+                f"https://github.com/kenn-io/ghosthub/commit/{inputs.source_sha}. "
+                "This build is unsupported and may contain regressions."
+            ),
+            assets,
+        )
+        current = fetch_manifest(
+            inputs.channel_url,
+            inputs.public_base_url,
+            opener=opener,
+        )
+        if channel_version(current) != inputs.expected_channel_version:
+            raise ValueError("nightly channel changed during publication")
+        cleanup_old_releases(client, inputs.build, retain_builds=30)
+        client.publish(inputs.release_tag)
+        return manifest
+    except Exception:
+        candidate = client.get_release(inputs.release_tag)
+        if candidate is not None and candidate.draft:
+            client.delete(inputs.release_tag)
+        raise
 
 
-def cleanup_old_builds(
-    store: ObjectStore,
-    manifest: ChannelManifest,
+def cleanup_old_releases(
+    client: ReleaseClient,
+    candidate_build: int,
     *,
     retain_builds: int,
-    protected_builds: set[int],
 ) -> None:
+    candidate_build = require_positive_integer("candidate_build", candidate_build)
     retain_builds = require_positive_integer("retain_builds", retain_builds)
-    keys = store.list_keys("builds/")
-    valid_keys: dict[int, list[str]] = {}
-    unsafe_builds: set[int] = set()
-    for key in keys:
-        parts = key.split("/")
-        if len(parts) < 7 or parts[0] != "builds":
+    by_build: dict[int, list[str]] = {}
+    for release in client.list_releases():
+        match = RELEASE_TAG_RE.fullmatch(release.tag)
+        if release.draft or release.prerelease or match is None:
             continue
-        if ASCII_NUMBER_RE.fullmatch(parts[1]) is None:
+        build = int(match.group(1))
+        if build >= candidate_build:
             continue
-        build = int(parts[1])
-        if (
-            parts[2] != "runs"
-            or ASCII_NUMBER_RE.fullmatch(parts[3]) is None
-            or parts[4] != "attempts"
-            or ASCII_NUMBER_RE.fullmatch(parts[5]) is None
-            or not parts[6]
-        ):
-            unsafe_builds.add(build)
-            continue
-        valid_keys.setdefault(build, []).append(key)
-
-    lower_builds = sorted(
-        (build for build in valid_keys if build < manifest.build),
-        reverse=True,
-    )
-    retained_lower = set(lower_builds[: retain_builds - 1])
-    deletable = (
-        set(lower_builds)
-        - retained_lower
-        - unsafe_builds
-        - protected_builds
-    )
-    keys_to_delete = sorted(
-        key
-        for build in deletable
-        for key in valid_keys.get(build, [])
-    )
-    if keys_to_delete:
-        store.delete_keys(keys_to_delete)
+        by_build.setdefault(build, []).append(release.tag)
+    retained = set(sorted(by_build, reverse=True)[: retain_builds - 1])
+    for build in sorted(set(by_build) - retained):
+        for tag in sorted(by_build[build]):
+            client.delete(tag)
 
 
 def public_base_from_channel_url(channel_url: str) -> str:
     parsed = urlparse(require_https_url("channel_url", channel_url))
-    if not parsed.path.endswith("/channel.json") or parsed.query or parsed.fragment:
-        raise ValueError("channel_url must end with /channel.json")
-    base_path = parsed.path[: -len("/channel.json")]
+    suffix = "/latest/download/channel.json"
+    if not parsed.path.endswith(suffix) or parsed.query or parsed.fragment:
+        raise ValueError(
+            "channel_url must end with /latest/download/channel.json"
+        )
+    base_path = parsed.path[: -len(suffix)]
     return urlunparse((parsed.scheme, parsed.netloc, base_path, "", "", ""))
 
 
@@ -877,16 +717,12 @@ def write_eligibility_outputs(
     *,
     eligible: bool,
     source_sha: str | None,
-    previous_build: int | None,
     previous_channel_version: str,
     build: int,
 ) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"eligible={str(eligible).lower()}\n")
         handle.write(f"previous_source_sha={source_sha or ''}\n")
-        handle.write(
-            f"previous_build={previous_build if previous_build is not None else ''}\n"
-        )
         handle.write(f"previous_channel_version={previous_channel_version}\n")
         handle.write(f"build={build}\n")
 
@@ -907,16 +743,13 @@ def create_parser() -> argparse.ArgumentParser:
     publish.add_argument("--release-root", required=True, type=Path)
     publish.add_argument("--dmg-name", required=True)
     publish.add_argument("--public-base-url", required=True)
-    publish.add_argument("--bucket", required=True)
-    publish.add_argument("--endpoint-url", required=True)
-    publish.add_argument("--region", required=True)
+    publish.add_argument("--release-repository", required=True)
     publish.add_argument("--source-sha", required=True)
     publish.add_argument("--build", required=True, type=int)
     publish.add_argument("--built-at", required=True)
     publish.add_argument("--workflow-run-id", required=True, type=int)
     publish.add_argument("--workflow-run-attempt", required=True, type=int)
     publish.add_argument("--expected-channel-version", required=True)
-    publish.add_argument("--previous-build", type=int)
     return parser
 
 
@@ -953,18 +786,13 @@ def main(
                 args.github_output,
                 eligible=eligible,
                 source_sha=(published.source_sha if published else None),
-                previous_build=(published.build if published else None),
                 previous_channel_version=channel_version(published),
                 build=args.build,
             )
             print("Nightly build is eligible." if eligible else "Nightly is current.")
             return 0
 
-        store = AwsCliObjectStore(
-            bucket=args.bucket,
-            endpoint_url=args.endpoint_url,
-            region=args.region,
-        )
+        client = GitHubCliReleaseClient(args.release_repository)
         inputs = PublicationInputs(
             release_root=args.release_root,
             dmg_name=args.dmg_name,
@@ -975,9 +803,8 @@ def main(
             workflow_run_id=args.workflow_run_id,
             workflow_run_attempt=args.workflow_run_attempt,
             expected_channel_version=args.expected_channel_version,
-            previous_build=args.previous_build,
         )
-        manifest = publish_nightly(store, inputs)
+        manifest = publish_nightly(client, inputs, opener=opener)
         print(f"Published nightly build {manifest.build}: {manifest.dmg_url}")
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
