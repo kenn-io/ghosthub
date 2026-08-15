@@ -350,6 +350,61 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(positions.count, 2)
     }
 
+    func testCommandClickEscapesApplicationMouseCapture() throws {
+        let originalButtonSender = TerminalMouseEventHandler.mouseButtonSender
+        var modifiers: [UInt32] = []
+        TerminalMouseEventHandler.mouseButtonSender = {
+            _, _, button, mods in
+            if button.rawValue == GHOSTTY_MOUSE_LEFT.rawValue {
+                modifiers.append(mods.rawValue)
+            }
+            return true
+        }
+        defer {
+            TerminalMouseEventHandler.mouseButtonSender = originalButtonSender
+        }
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        let mouseDown = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [.command],
+            timestamp: 1,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 3,
+            clickCount: 1,
+            pressure: 1
+        ))
+        let mouseUp = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [.command],
+            timestamp: 1.1,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 4,
+            clickCount: 1,
+            pressure: 0
+        ))
+
+        view.mouseDown(with: mouseDown)
+        view.mouseUp(with: mouseUp)
+
+        XCTAssertEqual(modifiers.count, 2)
+        for modifier in modifiers {
+            XCTAssertNotEqual(
+                modifier & GHOSTTY_MODS_SUPER.rawValue,
+                0
+            )
+            XCTAssertNotEqual(
+                modifier & GHOSTTY_MODS_SHIFT.rawValue,
+                0
+            )
+        }
+    }
+
     func testParkingReleasesUnconsumedRightPressWithOriginalModifiers() throws {
         let originalButtonSender = TerminalMouseEventHandler.mouseButtonSender
         var actions: [(UInt32, UInt32, UInt32)] = []

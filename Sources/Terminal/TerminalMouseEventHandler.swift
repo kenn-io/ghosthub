@@ -52,7 +52,7 @@ struct TerminalMouseEventHandler {
     mutating func handleMouseDown(_ event: NSEvent) {
         delegate?.ensureFirstResponder()
         guard let surface = delegate?.surfaceHandle else { return }
-        let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
+        let mods = Self.leftButtonModifiers(event.modifierFlags)
         _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods
         )
@@ -62,7 +62,7 @@ struct TerminalMouseEventHandler {
     mutating func handleMouseUp(_ event: NSEvent) {
         delegate?.prevPressureStage = 0
         guard let surface = delegate?.surfaceHandle else { return }
-        let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
+        let mods = Self.leftButtonModifiers(event.modifierFlags)
         _ = Self.mouseButtonSender(
             surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods
         )
@@ -220,5 +220,17 @@ struct TerminalMouseEventHandler {
         _ button: ghostty_input_mouse_button_e
     ) {
         pressedButtons.removeAll { $0.button.rawValue == button.rawValue }
+    }
+
+    private static func leftButtonModifiers(
+        _ modifiers: NSEvent.ModifierFlags
+    ) -> ghostty_input_mods_e {
+        var modifiers = modifiers
+        if modifiers.contains(.command) {
+            // Libghostty uses Shift to bypass application mouse reporting and
+            // removes it again before matching the Command link binding.
+            modifiers.insert(.shift)
+        }
+        return TerminalInputHelpers.ghosttyMods(modifiers)
     }
 }
