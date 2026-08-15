@@ -1573,6 +1573,57 @@ def test_proposed_workflow_audit_rejects_merge_signal_changes(
         )
 
 
+@pytest.mark.parametrize("link_kind", ["workflow-file", "workflow-root", "parent"])
+def test_proposed_workflow_audit_rejects_symlinked_authority(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    trusted = tmp_path / "trusted/.github/workflows"
+    proposed = tmp_path / "proposed/.github/workflows"
+    trusted.mkdir(parents=True)
+    status = (
+        "permissions: {}\njobs:\n"
+        "  reconcile:\n"
+        "    environment: sandbox-image-promotion-status\n"
+    )
+    workflows = {
+        "sandbox-image-promotion-gate.yml": status,
+        "sandbox-image-promote.yml": (
+            status
+            + "  retag:\n"
+            "    environment: sandbox-image-production\n"
+        ),
+        "sandbox-image-publish.yml": (
+            "permissions: {}\njobs:\n"
+            "  publish:\n"
+            "    environment: sandbox-image-package-writer\n"
+        ),
+        "sandbox-image-merge-signal.yml": MERGE_SIGNAL_WORKFLOW,
+    }
+    for name, content in workflows.items():
+        (trusted / name).write_text(content)
+
+    if link_kind == "parent":
+        proposed.parent.parent.mkdir()
+        proposed.parent.symlink_to(trusted.parent, target_is_directory=True)
+    elif link_kind == "workflow-root":
+        proposed.parent.mkdir(parents=True)
+        proposed.symlink_to(trusted, target_is_directory=True)
+    else:
+        proposed.mkdir(parents=True)
+        for name, content in workflows.items():
+            (proposed / name).write_text(content)
+        linked = proposed / "sandbox-image-promotion-gate.yml"
+        linked.unlink()
+        linked.symlink_to(trusted / linked.name)
+
+    with pytest.raises(ValueError, match="symlink"):
+        github_module.verify_promotion_workflows(
+            proposed,
+            trusted_workflow_root=trusted,
+        )
+
+
 @pytest.mark.parametrize(
     "signal",
     [

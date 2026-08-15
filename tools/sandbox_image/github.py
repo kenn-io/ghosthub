@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -561,6 +562,33 @@ def _verify_merge_signal_workflow(value: dict[object, object], path: Path) -> No
         raise ValueError("merge signal workflow identity or trigger is invalid")
 
 
+def _verify_workflow_root(path: Path) -> None:
+    for component in (path.parent, path):
+        try:
+            mode = component.lstat().st_mode
+        except OSError as error:
+            raise ValueError("cannot audit workflow root") from error
+        if stat.S_ISLNK(mode):
+            raise ValueError("workflow path must not contain a symlink")
+        if not stat.S_ISDIR(mode):
+            raise ValueError("workflow path component must be a directory")
+
+
+def _read_regular_workflow(path: Path) -> bytes:
+    try:
+        mode = path.lstat().st_mode
+    except OSError as error:
+        raise ValueError(f"cannot audit workflow: {path.name}") from error
+    if stat.S_ISLNK(mode):
+        raise ValueError(f"workflow must not be a symlink: {path.name}")
+    if not stat.S_ISREG(mode):
+        raise ValueError(f"workflow must be a regular file: {path.name}")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"cannot audit workflow: {path.name}") from error
+
+
 def verify_promotion_workflows(
     workflow_root: Path,
     *,
@@ -569,13 +597,16 @@ def verify_promotion_workflows(
     status_references: set[str] = set()
     package_references: set[str] = set()
     production_references: set[str] = set()
+    _verify_workflow_root(workflow_root)
+    if trusted_workflow_root is not None:
+        _verify_workflow_root(trusted_workflow_root)
     workflow_paths = set(workflow_root.glob("*.yml")) | set(
         workflow_root.glob("*.yaml")
     )
     for path in sorted(workflow_paths):
         try:
-            content = path.read_text(encoding="utf-8")
-        except OSError as error:
+            content = _read_regular_workflow(path).decode("utf-8")
+        except UnicodeDecodeError as error:
             raise ValueError(f"cannot audit workflow: {path.name}") from error
         try:
             workflow = yaml.safe_load(content)
@@ -649,12 +680,12 @@ def verify_promotion_workflows(
             trusted = trusted_workflow_root / name
             proposed = workflow_root / name
             try:
-                if trusted.read_bytes() != proposed.read_bytes():
-                    raise ValueError(
-                        f"trusted {label} workflow changed in proposed tree"
-                    )
-            except OSError as error:
+                trusted_content = _read_regular_workflow(trusted)
+                proposed_content = _read_regular_workflow(proposed)
+            except ValueError as error:
                 raise ValueError(f"cannot compare trusted {label} workflow") from error
+            if trusted_content != proposed_content:
+                raise ValueError(f"trusted {label} workflow changed in proposed tree")
 
 
 def verify_package_writer_environment(runner: Runner) -> None:
