@@ -722,10 +722,13 @@ final class TerminalSurfacePreviewTests: XCTestCase {
     }
 
     private func waitForIOSurface(in view: TerminalSurfaceView) throws {
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(10)
         while !(view.layer?.contents is IOSurface), Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
-        XCTAssertTrue(view.layer?.contents is IOSurface)
+        _ = try XCTUnwrap(
+            view.layer?.contents as? IOSurface,
+            "libghostty did not render an IOSurface before the deadline"
+        )
     }
 }

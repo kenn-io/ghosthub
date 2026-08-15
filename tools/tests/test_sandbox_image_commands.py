@@ -1589,6 +1589,82 @@ def test_proposed_workflow_audit_rejects_merge_signal_changes(
         )
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("identical", None),
+        ("changed", "trusted post-approval policy changed"),
+        ("missing", "cannot audit promotion authority file"),
+        ("symlink", "promotion authority file must be a regular file"),
+        ("directory", "promotion authority file must be a regular file"),
+    ],
+)
+def test_proposed_authority_audit_rejects_policy_tampering(
+    tmp_path: Path,
+    mutation: str,
+    message: str | None,
+) -> None:
+    trusted_root = tmp_path / "trusted"
+    proposed_root = tmp_path / "proposed"
+    status = (
+        "permissions: {}\njobs:\n"
+        "  reconcile:\n"
+        "    environment: sandbox-image-promotion-status\n"
+    )
+    workflows = {
+        "sandbox-image-promotion-gate.yml": status,
+        "sandbox-image-promote.yml": (
+            status
+            + "  retag:\n"
+            "    environment: sandbox-image-production\n"
+        ),
+        "sandbox-image-publish.yml": (
+            "permissions: {}\njobs:\n"
+            "  publish:\n"
+            "    environment: sandbox-image-package-writer\n"
+        ),
+        "sandbox-image-merge-signal.yml": MERGE_SIGNAL_WORKFLOW,
+    }
+    for root in (trusted_root, proposed_root):
+        workflow_root = root / ".github/workflows"
+        workflow_root.mkdir(parents=True)
+        for name, content in workflows.items():
+            (workflow_root / name).write_text(content)
+        policy = root / github_module.POST_APPROVAL_POLICY
+        policy.parent.mkdir(parents=True)
+        policy.write_text("allow\n")
+
+    proposed_policy = proposed_root / github_module.POST_APPROVAL_POLICY
+    if mutation == "changed":
+        proposed_policy.write_text("deny\n")
+    elif mutation == "missing":
+        proposed_policy.unlink()
+    elif mutation == "symlink":
+        proposed_policy.unlink()
+        proposed_policy.symlink_to(
+            trusted_root / github_module.POST_APPROVAL_POLICY
+        )
+    elif mutation == "directory":
+        proposed_policy.unlink()
+        proposed_policy.mkdir()
+
+    if message is None:
+        github_module.verify_promotion_workflows(
+            proposed_root / ".github/workflows",
+            trusted_workflow_root=trusted_root / ".github/workflows",
+            repository_root=proposed_root,
+            trusted_repository_root=trusted_root,
+        )
+    else:
+        with pytest.raises(ValueError, match=message):
+            github_module.verify_promotion_workflows(
+                proposed_root / ".github/workflows",
+                trusted_workflow_root=trusted_root / ".github/workflows",
+                repository_root=proposed_root,
+                trusted_repository_root=trusted_root,
+            )
+
+
 @pytest.mark.parametrize("link_kind", ["workflow-file", "workflow-root", "parent"])
 def test_proposed_workflow_audit_rejects_symlinked_authority(
     tmp_path: Path,

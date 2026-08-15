@@ -56,6 +56,7 @@ REVIEWED_IMAGE_INPUTS = (
 PROMOTION_STATUS_ENVIRONMENT = "sandbox-image-promotion-status"
 PROMOTION_STATUS_WORKFLOW = "sandbox-image-promotion-gate.yml"
 PROMOTION_WORKFLOW = "sandbox-image-promote.yml"
+POST_APPROVAL_POLICY = Path("tools/sandbox_image/post_approval_policy.jq")
 PACKAGE_WRITER_ENVIRONMENT = "sandbox-image-package-writer"
 PACKAGE_WRITER_WORKFLOW = "sandbox-image-publish.yml"
 PRODUCTION_ENVIRONMENT = "sandbox-image-production"
@@ -626,10 +627,38 @@ def _read_regular_workflow(path: Path) -> bytes:
         raise ValueError(f"cannot audit workflow: {path.name}") from error
 
 
+def _read_regular_authority_file(root: Path, relative_path: Path) -> bytes:
+    current = root
+    directories = [root]
+    for part in relative_path.parts[:-1]:
+        current /= part
+        directories.append(current)
+    for directory in directories:
+        try:
+            mode = directory.lstat().st_mode
+        except OSError as error:
+            raise ValueError("cannot audit promotion authority path") from error
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise ValueError("promotion authority path must contain directories")
+    path = current / relative_path.name
+    try:
+        mode = path.lstat().st_mode
+    except OSError as error:
+        raise ValueError("cannot audit promotion authority file") from error
+    if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+        raise ValueError("promotion authority file must be a regular file")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise ValueError("cannot audit promotion authority file") from error
+
+
 def verify_promotion_workflows(
     workflow_root: Path,
     *,
     trusted_workflow_root: Path | None = None,
+    repository_root: Path | None = None,
+    trusted_repository_root: Path | None = None,
 ) -> None:
     status_references: set[str] = set()
     package_references: set[str] = set()
@@ -723,6 +752,23 @@ def verify_promotion_workflows(
                 raise ValueError(f"cannot compare trusted {label} workflow") from error
             if trusted_content != proposed_content:
                 raise ValueError(f"trusted {label} workflow changed in proposed tree")
+        if repository_root is not None or trusted_repository_root is not None:
+            if repository_root is None or trusted_repository_root is None:
+                raise ValueError(
+                    "repository roots are required for proposed authority"
+                )
+            trusted_policy = _read_regular_authority_file(
+                trusted_repository_root,
+                POST_APPROVAL_POLICY,
+            )
+            proposed_policy = _read_regular_authority_file(
+                repository_root,
+                POST_APPROVAL_POLICY,
+            )
+            if trusted_policy != proposed_policy:
+                raise ValueError(
+                    "trusted post-approval policy changed in proposed tree"
+                )
 
 
 def verify_package_writer_environment(runner: Runner) -> None:
@@ -778,6 +824,10 @@ def verify_promotion_status_environment(
     verify_promotion_workflows(
         proposed_workflows,
         trusted_workflow_root=trusted_workflows,
+        repository_root=(
+            workflow_root.parent.parent if workflow_root is not None else None
+        ),
+        trusted_repository_root=(root if workflow_root is not None else None),
     )
 
     endpoint = f"repos/kenn-io/ghosthub/environments/{PROMOTION_STATUS_ENVIRONMENT}"

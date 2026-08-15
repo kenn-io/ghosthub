@@ -442,6 +442,8 @@ def configure_promotion_authority(
             ),
             private_key,
         )
+    verify_promotion_status_environment(root, runner, numeric_id)
+    verify_production_environment(runner, expected_app_id=numeric_id)
     runner.run(
         (
             "gh",
@@ -454,8 +456,6 @@ def configure_promotion_authority(
             CANONICAL_REPOSITORY,
         )
     )
-    verify_promotion_status_environment(root, runner, numeric_id)
-    verify_production_environment(runner, expected_app_id=numeric_id)
 
 
 def enable_promotion_authority(root: Path, runner: SecretRunner) -> int:

@@ -543,6 +543,7 @@ def test_promotion_authority_rotation_updates_both_credential_environments(
         "-----BEGIN " + "PRIVATE KEY-----\nvalue\n-----END " + "PRIVATE KEY-----\n"
     )
     key.write_text(private_key, encoding="utf-8")
+    completion_events: list[str] = []
 
     class Runner:
         def __init__(self) -> None:
@@ -559,6 +560,17 @@ def test_promotion_authority_rotation_updates_both_credential_environments(
             del check, capture
             call = tuple(argv)
             self.calls.append(call)
+            if call == (
+                "gh",
+                "variable",
+                "set",
+                authority.APP_ID_VARIABLE,
+                "--body",
+                "424242",
+                "--repo",
+                "kenn-io/ghosthub",
+            ):
+                completion_events.append("ready")
             if call == (
                 "git",
                 "-C",
@@ -611,10 +623,12 @@ def test_promotion_authority_rotation_updates_both_credential_environments(
     monkeypatch.setattr(
         authority,
         "verify_production_environment",
-        lambda *_args, **_kwargs: None,
+        lambda *_args, **_kwargs: completion_events.append("production"),
     )
     monkeypatch.setattr(
-        authority, "verify_promotion_status_environment", lambda *_args: None
+        authority,
+        "verify_promotion_status_environment",
+        lambda *_args: completion_events.append("status"),
     )
     runner = Runner()
 
@@ -625,6 +639,8 @@ def test_promotion_authority_rotation_updates_both_credential_environments(
         key,
         runner,
     )
+
+    assert completion_events[-3:] == ["status", "production", "ready"]
 
     for environment in (
         "sandbox-image-promotion-status",

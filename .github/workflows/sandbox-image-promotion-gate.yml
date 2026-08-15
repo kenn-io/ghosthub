@@ -31,7 +31,8 @@ jobs:
     name: Fence promotion authorization
     if: >-
       github.repository == 'kenn-io/ghosthub' &&
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' &&
+      vars.SANDBOX_PROMOTION_APP_ID != ''
     runs-on: ubuntu-24.04
     environment: sandbox-image-promotion-status
     permissions:
@@ -67,12 +68,45 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
                 "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
                 'Sandbox image merge signal' ]]; then
-            merge_sha="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
+            merge_sha="$(jq -r '.workflow_run.head_sha // ""' \
+              "$GITHUB_EVENT_PATH")"
             if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
               echo "Merge-group signal SHA is invalid." >&2
               exit 1
             fi
             post_pending "$merge_sha"
+            if ! jq -e '
+              (.workflow_run.created_at | type == "string") and
+              (now - (.workflow_run.created_at | fromdateiso8601) >= 0) and
+              (now - (.workflow_run.created_at | fromdateiso8601) <= 86400) and
+              (.workflow_run.pull_requests | length) == 1 and
+              (.workflow_run.pull_requests[0].number |
+                type == "number" and . >= 1 and floor == .) and
+              .workflow_run.pull_requests[0].base.ref == "main"
+            ' "$GITHUB_EVENT_PATH" > /dev/null; then
+              echo "Merge-group signal is stale or invalid; authorization remains pending." >&2
+              exit 1
+            fi
+            number="$(jq -r '.workflow_run.pull_requests[0].number' \
+              "$GITHUB_EVENT_PATH")"
+            detail="$RUNNER_TEMP/fence-pr-$number.json"
+            if ! gh api "repos/kenn-io/ghosthub/pulls/$number" > "$detail"; then
+              echo "Cannot load pull request $number; authorization remains pending." >&2
+              exit 1
+            fi
+            if ! jq -e --argjson number "$number" '
+              type == "object" and
+              .number == $number and
+              (.state == "open" or .state == "closed") and
+              .base.ref == "main"
+            ' "$detail" > /dev/null; then
+              echo "Pull request $number metadata is invalid; authorization remains pending." >&2
+              exit 1
+            fi
+            if [[ "$(jq -r '.state' "$detail")" == closed ]]; then
+              echo "Merge-group signal belongs to a closed pull request."
+              exit 0
+            fi
           else
             pulls="$RUNNER_TEMP/pulls.json"
             gh api --paginate --slurp \
@@ -110,7 +144,8 @@ jobs:
     name: Audit promotion authority
     if: >-
       github.repository == 'kenn-io/ghosthub' &&
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' &&
+      vars.SANDBOX_PROMOTION_APP_ID != ''
     runs-on: ubuntu-24.04
     environment: sandbox-image-promotion-status
     permissions:
@@ -251,7 +286,8 @@ jobs:
     if: >-
       always() &&
       github.repository == 'kenn-io/ghosthub' &&
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' &&
+      vars.SANDBOX_PROMOTION_APP_ID != ''
     needs: [fence, audit]
     runs-on: ubuntu-24.04
     environment: sandbox-image-promotion-status
@@ -305,8 +341,11 @@ jobs:
             jq -er '
               any(.[];
                 .filename == "SANDBOX_IMAGE" or
+                .filename == "tools/sandbox_image/post_approval_policy.jq" or
                 (.filename | startswith("images/sandbox/reports/")) or
                 (.previous_filename? == "SANDBOX_IMAGE") or
+                (.previous_filename? ==
+                  "tools/sandbox_image/post_approval_policy.jq") or
                 (.previous_filename? | strings | startswith("images/sandbox/reports/"))) |
               tostring
             ' "$1"
@@ -323,6 +362,18 @@ jobs:
             if ! gh api "repos/kenn-io/ghosthub/pulls/$number" > "$detail"; then
               echo "Cannot load pull request $number; leaving it pending." >&2
               return 1
+            fi
+            if ! jq -e --argjson number "$number" '
+              type == "object" and
+              .number == $number and
+              (.state == "open" or .state == "closed") and
+              .base.ref == "main"
+            ' "$detail" > /dev/null; then
+              echo "Pull request $number metadata is invalid; leaving it pending." >&2
+              return 1
+            fi
+            if [[ "$(jq -r '.state' "$detail")" == closed ]]; then
+              return 2
             fi
             if ! gh api --paginate --slurp \
               "repos/kenn-io/ghosthub/pulls/$number/files?per_page=100" \
@@ -408,8 +459,15 @@ jobs:
                 .state == "success" and
                 .creator.login == "ghosthub-sandbox-promotion[bot]" and
                 .creator.type == "Bot" and
-                (.target_url | type == "string" and startswith($url_prefix)) and
-                ((.target_url | ltrimstr($url_prefix)) | test("^[1-9][0-9]*$")) and
+                ((
+                  .description == "Sandbox image promotion not required" and
+                  (.target_url == null or .target_url == "")
+                ) or (
+                  .description == "Ghosthub sandbox image promotion" and
+                  (.target_url | type == "string" and startswith($url_prefix)) and
+                  ((.target_url | ltrimstr($url_prefix)) |
+                    test("^[1-9][0-9]*$"))
+                )) and
                 (.created_at | fromdateiso8601) >=
                   ($created_at | fromdateiso8601) and
                 (now - (.created_at | fromdateiso8601) >= 0) and
@@ -492,13 +550,38 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
                 "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
                 'Sandbox image merge signal' ]]; then
-            merge_signal=true
-            merge_sha="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
+            merge_sha="$(jq -r '.workflow_run.head_sha // ""' \
+              "$GITHUB_EVENT_PATH")"
             if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
               echo "Merge-group signal SHA is invalid." >&2
               exit 1
             fi
             post_pending "$merge_sha"
+            if ! jq -e '
+              (.workflow_run.created_at | type == "string") and
+              (now - (.workflow_run.created_at | fromdateiso8601) >= 0) and
+              (now - (.workflow_run.created_at | fromdateiso8601) <= 86400) and
+              (.workflow_run.pull_requests | length) == 1 and
+              (.workflow_run.pull_requests[0].number |
+                type == "number" and . >= 1 and floor == .) and
+              .workflow_run.pull_requests[0].base.ref == "main"
+            ' "$GITHUB_EVENT_PATH" > /dev/null; then
+              echo "Merge-group signal is stale or invalid; authorization remains pending." >&2
+              exit 1
+            fi
+            number="$(jq -r '.workflow_run.pull_requests[0].number' \
+              "$GITHUB_EVENT_PATH")"
+            load_result=0
+            load_pr "$number" || load_result=$?
+            if [[ "$load_result" == 2 ]]; then
+              echo "Merge-group signal belongs to a closed pull request."
+              exit 0
+            fi
+            if [[ "$load_result" != 0 ]]; then
+              echo "Cannot reconcile merge-group pull request; authorization remains pending." >&2
+              exit 1
+            fi
+            merge_signal=true
           else
             pulls="$RUNNER_TEMP/pulls.json"
             gh api --paginate --slurp \
@@ -534,6 +617,9 @@ jobs:
               .workflow_run.head_repository.full_name == "kenn-io/ghosthub" and
               (.workflow_run.head_branch | startswith("gh-readonly-queue/main/")) and
               (.workflow_run.head_sha | test("^[0-9a-f]{40}$")) and
+              (.workflow_run.created_at | type == "string") and
+              (now - (.workflow_run.created_at | fromdateiso8601) >= 0) and
+              (now - (.workflow_run.created_at | fromdateiso8601) <= 86400) and
               (.workflow_run.pull_requests | length) == 1 and
               .workflow_run.pull_requests[0].base.ref == "main" and
               (.workflow_run.pull_requests[0].base.sha |

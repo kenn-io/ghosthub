@@ -21,6 +21,9 @@ concurrency:
 jobs:
   check:
     name: Validate sandbox image
+    if: >-
+      github.repository == 'kenn-io/ghosthub' &&
+      vars.SANDBOX_PROMOTION_APP_ID != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -99,6 +102,12 @@ jobs:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
           driver-opts: image=docker.io/moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.SANDBOX_PACKAGE_WRITER_USERNAME }}
+          password: ${{ secrets.SANDBOX_PACKAGE_WRITER_TOKEN }}
       - name: Validate artifact and inspect candidate alias
         id: inspect
         shell: bash
@@ -138,13 +147,6 @@ jobs:
             cat "$diagnostic" >&2
             exit 1
           fi
-      - name: Log in to GHCR
-        if: steps.inspect.outputs.push_required == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ secrets.SANDBOX_PACKAGE_WRITER_USERNAME }}
-          password: ${{ secrets.SANDBOX_PACKAGE_WRITER_TOKEN }}
       - name: Publish prepared candidate
         if: steps.inspect.outputs.push_required == 'true'
         shell: bash
@@ -163,7 +165,7 @@ jobs:
           fi
           docker push "$CANDIDATE_TAG"
       - name: Remove registry credentials
-        if: always() && steps.inspect.outputs.push_required == 'true'
+        if: always()
         run: docker logout ghcr.io
       - name: Verify published digest and identity
         id: published
