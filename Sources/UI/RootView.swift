@@ -657,6 +657,8 @@ public struct RootView: View {
             display.connectedTmuxSessionIDs,
             workingTmuxSessionIDs:
             display.workingTmuxSessionIDs,
+            tmuxWindowCountsBySessionID:
+            display.tmuxWindowCountsBySessionID,
             previewableTmuxSessionIDs:
             display.previewableTmuxSessionIDs,
             sessionPreviewMode: display.sessionPreviewMode,

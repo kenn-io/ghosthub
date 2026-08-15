@@ -75,11 +75,13 @@ Kwt supplies the exact canonical tmux session name. Ghosthub creates or repairs
 that session when necessary and then attaches an ordinary tmux client. The
 native window tab and titlebar show the project and worktree names instead of
 that internal session name.
-For an ordinary session, the worktree row shows a compact window count when
-current discovery confirms one or more tmux windows, including while Ghosthub
-is detached. A running or agent glyph remains the fallback when Ghosthub has a
-live presentation but no trustworthy count, such as for a protected socket.
-Cached sessions do not remain marked live while the host is unreachable.
+The worktree row shows a compact window count. While Ghosthub is connected,
+the count refreshes with the existing background activity check: within about
+five seconds for a working session and twenty seconds for a quiet session.
+This also covers protected sockets. Detached ordinary sessions use the count
+from current discovery. A running or agent glyph remains the fallback when no
+trustworthy count is available, and cached sessions do not remain marked live
+while the host is unreachable.
 
 ![Ghosthub showing a compact tmux window count on a worktree row](assets/guide-worktree-window-counts.png)
 

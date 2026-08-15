@@ -470,6 +470,7 @@ struct WorkspaceSidebarView: View {
     let activeTmuxSessionIsConnected: Bool
     let connectedTmuxSessionIDs: Set<String>
     let workingTmuxSessionIDs: Set<String>
+    let tmuxWindowCountsBySessionID: [String: Int]
     let previewableTmuxSessionIDs: Set<String>
     let sessionPreviewMode: SessionPreviewMode
     let tmuxSessionPreviewBuilder:
@@ -536,6 +537,7 @@ struct WorkspaceSidebarView: View {
         activeTmuxSessionIsConnected: Bool = false,
         connectedTmuxSessionIDs: Set<String> = [],
         workingTmuxSessionIDs: Set<String> = [],
+        tmuxWindowCountsBySessionID: [String: Int] = [:],
         previewableTmuxSessionIDs: Set<String> = [],
         sessionPreviewMode: SessionPreviewMode = .off,
         tmuxSessionPreviewBuilder:
@@ -603,6 +605,7 @@ struct WorkspaceSidebarView: View {
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
         self.connectedTmuxSessionIDs = connectedTmuxSessionIDs
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
+        self.tmuxWindowCountsBySessionID = tmuxWindowCountsBySessionID
         self.previewableTmuxSessionIDs = previewableTmuxSessionIDs
         self.sessionPreviewMode = sessionPreviewMode
         self.tmuxSessionPreviewBuilder = tmuxSessionPreviewBuilder
@@ -645,6 +648,7 @@ struct WorkspaceSidebarView: View {
             visibility: visibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             connectedTmuxSessionIDs: connectedTmuxSessionIDs,
+            liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
             worktreeOrderRawValue: worktreeOrderRawValue,
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
             herdrSessionOrderRawValue: herdrSessionOrderRawValue,

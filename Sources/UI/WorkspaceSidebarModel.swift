@@ -462,6 +462,7 @@ public enum WorkspaceSidebarModel {
         visibility: WorktreeVisibility = .default,
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         connectedTmuxSessionIDs: Set<String> = [],
+        liveTmuxWindowCounts: [String: Int] = [:],
         worktreeOrderRawValue: String = "",
         tmuxSessionOrderRawValue: String = "",
         herdrSessionOrderRawValue: String = "",
@@ -523,7 +524,8 @@ public enum WorkspaceSidebarModel {
                             defaultServerSessionsByName:
                             defaultServerSessionsByName,
                             connectedTmuxSessionIDs:
-                            connectedTmuxSessionIDs
+                            connectedTmuxSessionIDs,
+                            liveTmuxWindowCounts: liveTmuxWindowCounts
                         )
                     }
                     return WorkspaceSidebarProject(
@@ -556,7 +558,14 @@ public enum WorkspaceSidebarModel {
                         )
                     }
                 )
-                .map { tmuxSessionRow($0, hostID: host.id) },
+                .map {
+                    tmuxSessionRow(
+                        $0,
+                        hostID: host.id,
+                        connectedTmuxSessionIDs: connectedTmuxSessionIDs,
+                        liveTmuxWindowCounts: liveTmuxWindowCounts
+                    )
+                },
                 herdrSessionRows: herdrSessionOrder.ordered(
                     host.herdrSessions.sorted {
                         $0.name.localizedStandardCompare($1.name)
@@ -653,13 +662,25 @@ public enum WorkspaceSidebarModel {
 
     private static func tmuxSessionRow(
         _ session: TmuxSessionSummary,
-        hostID: UUID
+        hostID: UUID,
+        connectedTmuxSessionIDs: Set<String>,
+        liveTmuxWindowCounts: [String: Int]
     ) -> WorkspaceSidebarRow {
+        let selectionID = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: session.name
+        ).id
+        let liveCount = connectedTmuxSessionIDs.contains(selectionID)
+            ? liveTmuxWindowCounts[selectionID]
+            : nil
+        let windowCount = liveCount ?? (
+            session.windows.isEmpty ? nil : session.windows.count
+        )
         let subtitle: String
-        if !session.windows.isEmpty {
-            subtitle = session.windows.count == 1
+        if let windowCount {
+            subtitle = windowCount == 1
                 ? "1 window"
-                : "\(session.windows.count) windows"
+                : "\(windowCount) windows"
         } else if session.managed {
             subtitle = "Workspace session"
         } else {
@@ -679,11 +700,14 @@ public enum WorkspaceSidebarModel {
         snapshot: WorkspaceSnapshot,
         host: HostSummary,
         defaultServerSessionsByName: [String: TmuxSessionSummary],
-        connectedTmuxSessionIDs: Set<String>
+        connectedTmuxSessionIDs: Set<String>,
+        liveTmuxWindowCounts: [String: Int]
     ) -> WorkspaceSidebarRow {
         let sessions = snapshot.sessions(for: worktree.id)
-        let hasConnectedPresentation = tmuxSessionSelection(for: worktree)
-            .map { connectedTmuxSessionIDs.contains($0.id) } == true
+        let tmuxSelection = tmuxSessionSelection(for: worktree)
+        let hasConnectedPresentation = tmuxSelection.map {
+            connectedTmuxSessionIDs.contains($0.id)
+        } == true
         let tmuxSession = worktree.tmuxSocketName == nil
             && host.lastKnownReachable
             && host.tmuxInventoryIsAuthoritative
@@ -691,8 +715,14 @@ public enum WorkspaceSidebarModel {
                 defaultServerSessionsByName[$0]
             }
             : nil
-        let tmuxWindowCount = tmuxSession.flatMap {
-            $0.windows.isEmpty ? nil : $0.windows.count
+        let tmuxWindowCount = if hasConnectedPresentation,
+                                 let selectionID = tmuxSelection?.id,
+                                 let liveCount = liveTmuxWindowCounts[selectionID] {
+            liveCount
+        } else {
+            tmuxSession.flatMap {
+                $0.windows.isEmpty ? nil : $0.windows.count
+            }
         }
         let status = WorktreeRowStatus.make(
             for: worktree,

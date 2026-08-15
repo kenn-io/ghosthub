@@ -29,10 +29,13 @@ created by Ghosthub or kwt. The four inventories are independent; kwt worktrees 
 remain tmux-backed. Users may hide matching standalone tmux sessions
 from navigation with case-sensitive wildcard patterns; discovery retains the
 complete inventory so a kwt-owned session confirmed by current discovery is
-indicated on its worktree or directory row. An ordinary worktree session shows
-its positive discovered window count in place of the generic running glyph;
-protected sessions and other live presentations retain their running or agent
-glyph when no trustworthy default-server count exists. Cached sessions do not
+indicated on its worktree or directory row. A connected tmux presentation
+overlays its positive, identity-fenced window count without changing session
+presence or discovery authority; the existing background activity sampler
+checks working sessions every five seconds and quiet sessions every twenty
+seconds. Detached ordinary worktree sessions use the positive count from
+current discovery. Other live presentations retain their running or agent
+glyph when no trustworthy count exists. Cached sessions do not
 remain live while a host is unreachable. Kwt-owned sessions are hidden from the separate tmux session
 group by default, with a Worktrees setting that exposes those duplicate
 entries.

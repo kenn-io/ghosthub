@@ -692,6 +692,8 @@ struct WorkspaceWindow: View {
                 sceneModel.sessionConnectionRecoveryRequest,
                 workingTmuxSessionIDs:
                 sceneModel.workingTmuxSessionIDs,
+                tmuxWindowCountsBySessionID:
+                sceneModel.tmuxWindowCountsBySessionID,
                 previewableTmuxSessionIDs:
                 sceneModel.previewableTmuxSessionIDs,
                 sessionPreviewMode: settingsStore.sessionPreviewMode

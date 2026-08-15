@@ -4,7 +4,12 @@ import GhosthubTmux
 import GhosthubUI
 
 enum TmuxSessionActivityProbeResult: Equatable, Sendable {
-    case sample(paneID: String, dimensions: String, fingerprint: String)
+    case sample(
+        paneID: String,
+        dimensions: String,
+        fingerprint: String,
+        windowCount: Int? = nil
+    )
     case ended
     case unavailable
 }
@@ -130,7 +135,7 @@ struct TmuxSessionActivityProbe: Sendable {
         let format = shellQuotedCommandArgument(
             identityMarker
                 + "#{pid}\t#{session_id}\t#{session_created}\t#{pane_id}"
-                + "\t#{pane_width}x#{pane_height}"
+                + "\t#{pane_width}x#{pane_height}\t#{session_windows}"
         )
         let identity = base
             + " display-message -p -t " + target + " " + format
@@ -247,7 +252,7 @@ struct TmuxSessionActivityProbe: Sendable {
         let target = "=\(selection.name):"
         let format = identityMarker
             + "#{pid}\t#{session_id}\t#{session_created}\t#{pane_id}"
-            + "\t#{pane_width}x#{pane_height}"
+            + "\t#{pane_width}x#{pane_height}\t#{session_windows}"
         let identity = powerShellInvocation(
             tmuxPath: tmuxPath,
             arguments: baseArguments + [
@@ -325,7 +330,7 @@ struct TmuxSessionActivityProbe: Sendable {
             exit 0
         }
         $ghosthubActivityFields = $ghosthubActivityIdentity -split "`t"
-        if (($ghosthubActivityFields.Count -lt 6) -or ($ghosthubActivityFields[4] -notmatch '^%\\d+$')) {
+        if (($ghosthubActivityFields.Count -lt 6) -or ($ghosthubActivityFields.Count -gt 7) -or ($ghosthubActivityFields[4] -notmatch '^%\\d+$')) {
             exit 65
         }
         $ghosthubActivityPane = $ghosthubActivityFields[4]
@@ -418,7 +423,10 @@ struct TmuxSessionActivityProbe: Sendable {
                 checksum.byteCount,
                 checksum.historySize,
             ]
-            .joined(separator: ":")
+            .joined(separator: ":"),
+            windowCount: first.1.windowCount.flatMap { count in
+                count == last.1.windowCount ? count : nil
+            }
         )
     }
 
@@ -427,15 +435,16 @@ struct TmuxSessionActivityProbe: Sendable {
     ) -> (
         identity: TmuxSessionIdentity,
         paneID: String,
-        dimensions: String
+        dimensions: String,
+        windowCount: Int?
     )? {
         guard line.hasPrefix(identityMarker) else { return nil }
         let fields = line.dropFirst(identityMarker.count).split(
             separator: "\t",
-            maxSplits: 4,
+            maxSplits: 5,
             omittingEmptySubsequences: false
         )
-        guard fields.count == 5 else { return nil }
+        guard fields.count == 5 || fields.count == 6 else { return nil }
         let identity = TmuxSessionIdentity(
             serverPID: String(fields[0]),
             sessionID: String(fields[1]),
@@ -443,6 +452,9 @@ struct TmuxSessionActivityProbe: Sendable {
         )
         let paneID = String(fields[3])
         let dimensions = String(fields[4])
+        let windowCount = fields.count == 6
+            ? positiveInt(String(fields[5]))
+            : nil
         guard TmuxSessionKiller.isNumericIdentity(identity.serverPID),
               TmuxSessionKiller.isSessionID(identity.sessionID),
               TmuxSessionKiller.isSessionCreatedAt(identity.createdAt),
@@ -452,7 +464,7 @@ struct TmuxSessionActivityProbe: Sendable {
               }),
               isDimensions(dimensions)
         else { return nil }
-        return (identity, paneID, dimensions)
+        return (identity, paneID, dimensions, windowCount)
     }
 
     private static func parseChecksumLine(
@@ -497,6 +509,13 @@ struct TmuxSessionActivityProbe: Sendable {
         !value.isEmpty && value.utf8.allSatisfy { byte in
             byte >= 48 && byte <= 57
         }
+    }
+
+    private static func positiveInt(_ value: String) -> Int? {
+        guard isNumeric(value), let parsed = Int(value), parsed > 0 else {
+            return nil
+        }
+        return parsed
     }
 
     private static func platform(

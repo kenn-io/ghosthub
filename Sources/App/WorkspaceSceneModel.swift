@@ -1326,6 +1326,9 @@ final class WorkspaceSceneModel: ObservableObject {
     var workingTmuxSessionIDs: Set<String> {
         tmuxSessionActivityController?.workingSessionIDs ?? []
     }
+    var tmuxWindowCountsBySessionID: [String: Int] {
+        tmuxSessionActivityController?.windowCountsBySessionID ?? [:]
+    }
     convenience init(
         terminalRuntime: LibghosttyRuntime = .shared,
         sshAuthenticationCoordinator: SSHAuthenticationCoordinator

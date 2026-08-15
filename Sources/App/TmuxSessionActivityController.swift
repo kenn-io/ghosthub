@@ -30,6 +30,7 @@ final class TmuxSessionActivityController: ObservableObject {
     }
 
     @Published private(set) var workingSessionIDs: Set<String> = []
+    @Published private(set) var windowCountsBySessionID: [String: Int] = [:]
 
     /// Session IDs currently enrolled for warm-activity sampling. Warm
     /// enrollment completes asynchronously after identity verification, so
@@ -94,6 +95,7 @@ final class TmuxSessionActivityController: ObservableObject {
         } else {
             inFlightSamples.removeValue(forKey: id)?.task.cancel()
             setWorking(false, sessionID: id)
+            setWindowCount(nil, sessionID: id)
             entries[id] = Entry(
                 selection: selection,
                 identity: identity,
@@ -179,7 +181,7 @@ final class TmuxSessionActivityController: ObservableObject {
               entry.host == host
         else { return }
         switch result {
-        case let .sample(paneID, dimensions, fingerprint):
+        case let .sample(paneID, dimensions, fingerprint, windowCount):
             let previousIsRecent = entry.lastSampledAt.map { sampledAt in
                 startedAt.timeIntervalSince(sampledAt) < activityDuration
             } ?? false
@@ -202,9 +204,13 @@ final class TmuxSessionActivityController: ObservableObject {
                     : quietSampleInterval
             )
             entries[id] = entry
+            if let windowCount {
+                setWindowCount(windowCount, sessionID: id)
+            }
         case .ended:
             entries.removeValue(forKey: id)
             setWorking(false, sessionID: id)
+            setWindowCount(nil, sessionID: id)
         case .unavailable:
             let isWorking = isWorking(entry, at: completedAt)
             setWorking(isWorking, sessionID: id)
@@ -234,6 +240,7 @@ final class TmuxSessionActivityController: ObservableObject {
             inFlightSamples.removeValue(forKey: id)?.task.cancel()
             entries.removeValue(forKey: id)
             setWorking(false, sessionID: id)
+            setWindowCount(nil, sessionID: id)
         }
     }
 
@@ -245,6 +252,11 @@ final class TmuxSessionActivityController: ObservableObject {
             guard workingSessionIDs.contains(sessionID) else { return }
             workingSessionIDs.remove(sessionID)
         }
+    }
+
+    private func setWindowCount(_ count: Int?, sessionID: String) {
+        guard windowCountsBySessionID[sessionID] != count else { return }
+        windowCountsBySessionID[sessionID] = count
     }
 
     private func startPollingIfNeeded() {

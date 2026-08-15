@@ -35,6 +35,7 @@ public struct WorkspaceDisplayState {
     public let sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest?
     public let workingTmuxSessionIDs: Set<String>
+    public let tmuxWindowCountsBySessionID: [String: Int]
     public let previewableTmuxSessionIDs: Set<String>
     public let sessionPreviewMode: SessionPreviewMode
 
@@ -68,6 +69,7 @@ public struct WorkspaceDisplayState {
         sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest? = nil,
         workingTmuxSessionIDs: Set<String> = [],
+        tmuxWindowCountsBySessionID: [String: Int] = [:],
         previewableTmuxSessionIDs: Set<String> = [],
         sessionPreviewMode: SessionPreviewMode = .off
     ) {
@@ -106,6 +108,7 @@ public struct WorkspaceDisplayState {
         self.sessionConnectionRecoveryRequest =
             sessionConnectionRecoveryRequest
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
+        self.tmuxWindowCountsBySessionID = tmuxWindowCountsBySessionID
         self.previewableTmuxSessionIDs = previewableTmuxSessionIDs
         self.sessionPreviewMode = sessionPreviewMode
     }

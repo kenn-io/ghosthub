@@ -1007,6 +1007,20 @@ struct WorkspaceSidebarModelTests {
                 WorkspaceSidebarModel.tmuxSessionSelection(for: protected)
             ).id,
         ])
+        let liveWindowCounts = Dictionary(uniqueKeysWithValues: [
+            (
+                try #require(
+                    WorkspaceSidebarModel.tmuxSessionSelection(for: counted)
+                ).id,
+                4
+            ),
+            (
+                try #require(
+                    WorkspaceSidebarModel.tmuxSessionSelection(for: protected)
+                ).id,
+                2
+            ),
+        ])
         let untrusted = WorkspaceSidebarModel.sections(
             in: WorkspaceSnapshot.fixture(
                 hosts: [
@@ -1019,19 +1033,16 @@ struct WorkspaceSidebarModelTests {
                 projects: [project],
                 worktrees: [counted, protected]
             ),
-            connectedTmuxSessionIDs: connectedSessionIDs
+            connectedTmuxSessionIDs: connectedSessionIDs,
+            liveTmuxWindowCounts: liveWindowCounts
         )[0]
         let untrustedRows = Dictionary(uniqueKeysWithValues:
             untrusted.projects[0].worktreeRows.map { ($0.title, $0) })
 
-        for name in ["counted", "protected"] {
-            let status = try #require(
-                untrustedRows[name]?.worktreeStatus
-            )
-            #expect(status.tmuxWindowCount == nil)
-            #expect(status.isRunning)
-            #expect(status.showsGenericRunningIndicator)
-        }
+        #expect(try #require(untrustedRows["counted"])
+            .worktreeStatus?.tmuxWindowCount == 4)
+        #expect(try #require(untrustedRows["protected"])
+            .worktreeStatus?.tmuxWindowCount == 2)
 
         let unreachable = WorkspaceSidebarModel.sections(
             in: WorkspaceSnapshot.fixture(
