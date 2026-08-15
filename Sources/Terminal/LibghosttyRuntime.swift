@@ -141,6 +141,7 @@ public final class LibghosttyRuntime: ObservableObject,
         PassthroughSubject<LibghosttyConfigReloadNotice?, Never>()
     private let pipeline: LibghosttyConfigPipeline
     private let configMonitorFactory: ConfigMonitorFactory
+    private let urlOpener: @MainActor (URL) -> Void
     private nonisolated let resolvedColorGenerations =
         ResolvedColorGenerationTracker()
     private var resolvedColorEntries: [UInt: ResolvedColorEntry] = [:]
@@ -219,10 +220,14 @@ public final class LibghosttyRuntime: ObservableObject,
     init(
         pipeline: LibghosttyConfigPipeline,
         runtimeState: LibghosttyRuntimeState? = nil,
-        configMonitorFactory: @escaping ConfigMonitorFactory
+        configMonitorFactory: @escaping ConfigMonitorFactory,
+        urlOpener: @escaping @MainActor (URL) -> Void = { url in
+            _ = NSWorkspace.shared.open(url)
+        }
     ) {
         self.pipeline = pipeline
         self.configMonitorFactory = configMonitorFactory
+        self.urlOpener = urlOpener
         self.runtimeState = runtimeState ?? LibghosttyRuntimeState()
         bootstrapStatus = .ready()
         phase = .loadingConfig
@@ -739,7 +744,7 @@ public final class LibghosttyRuntime: ObservableObject,
         }
     }
 
-    fileprivate nonisolated static func handleAction(
+    nonisolated static func handleAction(
         app: ghostty_app_t?,
         target: ghostty_target_s,
         action: ghostty_action_s
@@ -838,9 +843,10 @@ public final class LibghosttyRuntime: ObservableObject,
             return true
 
         case GHOSTTY_ACTION_OPEN_URL:
-            let openURLAction = action.action.open_url
+            let rawURL = String(cString: action.action.open_url.url)
             DispatchQueue.main.async {
-                Self.openURL(openURLAction)
+                let state = runtime(from: userdataValue)
+                state.openURL(rawURL)
             }
             return true
 
@@ -1246,9 +1252,7 @@ public final class LibghosttyRuntime: ObservableObject,
         )
     }
 
-    @MainActor
-    private static func openURL(_ value: ghostty_action_open_url_s) {
-        let rawURL = String(cString: value.url)
+    private func openURL(_ rawURL: String) {
         let url: URL
         if let candidate = URL(string: rawURL), candidate.scheme != nil {
             url = candidate
@@ -1256,7 +1260,7 @@ public final class LibghosttyRuntime: ObservableObject,
             url = URL(fileURLWithPath: rawURL)
         }
 
-        NSWorkspace.shared.open(url)
+        urlOpener(url)
     }
 }
 
