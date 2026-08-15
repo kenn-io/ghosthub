@@ -74,15 +74,31 @@ jobs:
             fi
             post_pending "$merge_sha"
           else
+            pulls="$RUNNER_TEMP/pulls.json"
             gh api --paginate --slurp \
               'repos/kenn-io/ghosthub/pulls?state=open&base=main&per_page=100' \
-              | jq -r '.[][] | .head.sha' | while read -r head_sha; do
+              | jq '[.[][]]' > "$pulls"
+            jq -r '.[].head.sha' "$pulls" | while read -r head_sha; do
               post_pending "$head_sha"
             done
+            cutoff="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+            created_filter="$(jq -rn --arg value ">=$cutoff" '$value | @uri')"
             gh api --paginate --slurp \
-              'repos/kenn-io/ghosthub/actions/workflows/sandbox-image-merge-signal.yml/runs?event=merge_group&per_page=100' \
-              | jq -r '.[].workflow_runs[] |
-                  select(.head_sha | test("^[0-9a-f]{40}$")) |
+              "repos/kenn-io/ghosthub/actions/workflows/sandbox-image-merge-signal.yml/runs?event=merge_group&created=$created_filter&per_page=100" \
+              | jq -r --slurpfile pulls "$pulls" '
+                  ($pulls[0] | map(.number)) as $open_numbers |
+                  .[].workflow_runs[] |
+                  select(
+                    .path == ".github/workflows/sandbox-image-merge-signal.yml" and
+                    .event == "merge_group" and
+                    (.head_sha | test("^[0-9a-f]{40}$")) and
+                    (.created_at | type == "string") and
+                    (now - (.created_at | fromdateiso8601) >= 0) and
+                    (now - (.created_at | fromdateiso8601) <= 86400) and
+                    (.pull_requests | length) == 1 and
+                    .pull_requests[0].base.ref == "main" and
+                    (.pull_requests[0].number as $number |
+                      ($open_numbers | index($number)) != null)) |
                   .head_sha' \
               | sort -u \
               | while read -r merge_sha; do
@@ -496,8 +512,10 @@ jobs:
             'repos/kenn-io/ghosthub/actions/workflows/sandbox-image-promote.yml/runs?event=repository_dispatch&status=completed&per_page=100' \
             | jq '[.[].workflow_runs[]]' > "$RUNNER_TEMP/promotion-runs.json"
           if [[ "$merge_signal" == false ]]; then
+            cutoff="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+            created_filter="$(jq -rn --arg value ">=$cutoff" '$value | @uri')"
             gh api --paginate --slurp \
-              'repos/kenn-io/ghosthub/actions/workflows/sandbox-image-merge-signal.yml/runs?event=merge_group&per_page=100' \
+              "repos/kenn-io/ghosthub/actions/workflows/sandbox-image-merge-signal.yml/runs?event=merge_group&created=$created_filter&per_page=100" \
               | jq '[.[].workflow_runs[]]' > "$RUNNER_TEMP/merge-runs.json"
           fi
 
@@ -529,7 +547,8 @@ jobs:
                 echo "Pull request $number remains pending." >&2
               fi
             done
-            jq -c '
+            jq -c --slurpfile pulls "$pulls" '
+              ($pulls[0] | map(.number)) as $open_numbers |
               [.[] | select(
                 .path == ".github/workflows/sandbox-image-merge-signal.yml" and
                 .event == "merge_group" and
@@ -538,8 +557,13 @@ jobs:
                 .head_repository.full_name == "kenn-io/ghosthub" and
                 (.head_branch | startswith("gh-readonly-queue/main/")) and
                 (.head_sha | test("^[0-9a-f]{40}$")) and
+                (.created_at | type == "string") and
+                (now - (.created_at | fromdateiso8601) >= 0) and
+                (now - (.created_at | fromdateiso8601) <= 86400) and
                 (.pull_requests | length) == 1 and
-                .pull_requests[0].base.ref == "main"
+                .pull_requests[0].base.ref == "main" and
+                (.pull_requests[0].number as $number |
+                  ($open_numbers | index($number)) != null)
               )] |
               sort_by(.created_at) |
               group_by(.head_sha)[] |
