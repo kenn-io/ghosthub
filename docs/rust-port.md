@@ -82,12 +82,12 @@ The backend is selected behind a capability-shaped TerminalEngine seam:
 bytes in, resize, modes queryable, semantic effects, and Rust-owned paint
 state out. No public crate or UI API presumes the outcome.
 
-The exact kwt revision in repository-root `KWT_REVISION` is
-03dc3dcc2349282cda3cccfd20a9b1a1ebf83a98. That source uses KWT_HOME or the
-fixed $HOME/.config/kwt default. It does not read Ghosthub init.toml,
-config_home, or XDG_CONFIG_HOME. Rust must not reproduce the unsupported
-Ghosthub init.toml scanner. The two existing Swift copies are outside the Rust
-port's scope and are not a prerequisite for Rust path fixtures.
+Repository-root `KWT_REVISION` is the sole source of the exact audited kwt
+revision. That source uses KWT_HOME or the fixed $HOME/.config/kwt default. It
+does not read Ghosthub init.toml, config_home, or XDG_CONFIG_HOME. Rust must not
+reproduce the unsupported Ghosthub init.toml scanner. The two existing Swift
+copies are outside the Rust port's scope and are not a prerequisite for Rust
+path fixtures.
 
 ### Executable bootstrap
 
@@ -723,19 +723,62 @@ reported on the worktree action rather than disabling other multiplexers.
 
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound
-tmux group. Custom-socket worktrees remain visible as project inventory but do
-not claim a default-socket session with the same name. Removal is unavailable
-for those worktrees until protected-socket discovery and identity-checked
-termination exist; deleting a checkout must never strand a session Ghosthub
-cannot currently observe. A successful exact removal immediately tombstones
-that path and generation in the cached tree before broader reconciliation, so
-a KWT outage cannot resurrect an openable deleted row. Before the removal
-dialog becomes actionable, a background query captures the exact live tmux
-identity when one exists. Confirmation consumes that authority; if the client
-exits and a same-named replacement starts, identity-checked kill fails closed
-and the user must review the replacement. KWT rows carry display identity and
-exact session names; they do not acquire creation, repair, or destruction
-authority from cached inventory.
+tmux group. Active and retained custom-socket presentations with an exact
+current worktree owner remain accessible only from that row, whose live
+indicator reflects the presentation; they do not claim a genuinely separate
+default-socket session with the same name. Their navigation identity retains
+the socket, worktree path, and generation. A standalone Kill Session action
+queries that named socket for fresh identity before confirmation. Open actions
+revalidate that same socket;
+if current inventory no longer owns the exact presentation, its active or
+retained client remains available as a fallback session row rather than being
+hidden under a replacement worktree. A successful exact removal immediately
+tombstones that path and generation in the cached tree before broader
+reconciliation, so a KWT outage cannot resurrect an openable deleted row.
+Before the removal dialog becomes actionable, a background query captures the
+exact live tmux identity and socket when one exists. Confirmation consumes
+that authority and terminates only the freshly confirmed tmux identity.
+Ghosthub then invokes pinned KWT's absence-guarded removal; KWT revalidates the
+project, registration, generation, and socket under its lifecycle lock and
+requires the workspace session to remain absent before removing the checkout.
+If the client exits and a same-named replacement starts, either the exact kill
+or KWT's absence guard fails closed and the user must review the replacement.
+KWT rows carry display identity and exact session names; they do not acquire
+creation, repair, or destruction authority from cached inventory.
+
+Pull-request import follows the same ownership boundary. The pinned helper is
+the sole provider API for listing open pull requests and importing one into an
+exact registered project. Ghosthub filters KWT's machine-readable title,
+author, branch, number, URL, and draft fields for presentation, but passes the
+selected candidate's opaque KWT selector back unchanged. Typed input is
+accepted only as an exact loaded selector, a pull-request number, or a URL;
+title, author, and branch searches remain filters and cannot be submitted as
+selectors. An import is accepted only when KWT returns
+the expected project path and a protected worktree with a generation, exact
+session name, and nonempty tmux socket name. Ghosthub then refreshes
+authoritative KWT inventory before publishing or opening that worktree; an
+unavailable reconciliation reports scoped completion uncertainty rather than
+inventing worktree authority from the request.
+
+Protected pull-request worktrees use a distinct attachment capability. The
+terminal launches `kwt pr attach` through the resolved argv plan, while the
+workspace passes the exact project identity, registration fingerprint,
+generation, session name, and socket back to KWT. KWT revalidates that
+authority while holding its project lifecycle fence and before creating or
+repairing the tmux session; the workspace repeats the checks after launch.
+Readiness is confirmed by finding the spawned client PID on that protected
+socket. A protected presentation never aliases or deduplicates with a
+same-named session on the default tmux server. Protected removal uses the same
+confirmed exact kill followed by absence-guarded KWT removal as default-socket
+worktrees.
+KWT's project lifecycle fence serializes that absence check with guarded
+worktree session establishment, so a concurrent reopen prevents checkout
+deletion.
+
+Pull-request candidate discovery is an explicit user action and uses a
+cancellable five-minute provider-operation budget because network and
+credential-provider startup can legitimately exceed the 15-second local probe
+deadline. Closing or superseding the dialog cancels the operation.
 
 The remote helper activation root is a separate cross-controller contract:
 
@@ -1098,12 +1141,15 @@ After Slice 1:
    generation-guarded confirmed removal, and unbound reconciliation. Removal
    preserves the Git branch and terminates a live tmux session only through a
    freshly captured exact identity.
-2. Local lifecycle adds pull-request import and protected worktree behavior;
-   plain local session creation already ships through CreateOnce in the WSL
-   slice.
-3. Remote hosts add OpenSSH diagnostics, managed-helper installation,
+2. Local pull-request import and protected worktree attachment now ship through
+   the pinned KWT provider contract and protected socket identity. Plain local
+   session creation already ships through CreateOnce in the WSL slice.
+3. Remaining local work adds host/project settings, Console Panel, and broader
+   command and accessibility surfaces without
+   introducing remote transport.
+4. Remote hosts add OpenSSH diagnostics, managed-helper installation,
    attach-only transport reconnect, repair/open reconnect, and remote Windows.
-4. Persistence and restoration add the coalescing writer, host settings,
+5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.
 6. Product completion adds multi-window behavior, Console Panel, settings,

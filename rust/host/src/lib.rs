@@ -21,7 +21,8 @@ mod zellij;
 
 pub use kwt::{
     KwtBranchCandidate, KwtBundle, KwtDirectoryWorkspace, KwtInventory, KwtProject,
-    KwtProjectInventory, KwtWorktree, KwtWorktreeCreate, KwtWorktreeOpen,
+    KwtProjectInventory, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport,
+    KwtPullRequestImportRequest, KwtWorktree, KwtWorktreeCreate, KwtWorktreeOpen,
     kwt_command_failure_message,
 };
 pub use wsl::{
