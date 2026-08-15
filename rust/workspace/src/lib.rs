@@ -3433,41 +3433,55 @@ impl Workspace {
                     current_runtime.as_ref(),
                     &self.inner.herdr_lifecycle,
                 );
-                WorkspaceSnapshot {
-                    revision,
-                    appearance: self.inner.appearance.clone(),
-                    content: self
-                        .inner
+                // Snapshot fields must be owned before crossing into the
+                // attachment locks. Presentation transitions take attachment
+                // before publishing state, so retaining an RwLock guard here
+                // would invert that order and could deadlock the UI.
+                let content = {
+                    self.inner
                         .state
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone(),
-                    hosts,
-                    selected_host: self
-                        .inner
+                        .clone()
+                };
+                let selected_host = {
+                    self.inner
                         .selected_host
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone(),
-                    notice: self
-                        .inner
+                        .clone()
+                };
+                let notice = {
+                    self.inner
                         .terminal_notice
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone(),
-                    active_selection: self
-                        .inner
+                        .clone()
+                };
+                let active_selection = {
+                    self.inner
                         .attachment
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .active()
-                        .map(|active| active.request.selection()),
-                    retained_selections: self
-                        .inner
+                        .map(|active| active.request.selection())
+                };
+                let retained_selections = {
+                    self.inner
                         .retained_presentations
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .selections(),
+                        .selections()
+                };
+                WorkspaceSnapshot {
+                    revision,
+                    appearance: self.inner.appearance.clone(),
+                    content,
+                    hosts,
+                    selected_host,
+                    notice,
+                    active_selection,
+                    retained_selections,
                 }
             },
         )
