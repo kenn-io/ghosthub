@@ -1382,8 +1382,12 @@ impl RootView {
         else {
             return;
         };
-        if *current_mode == mode || *loading {
+        if *current_mode == mode {
             return;
+        }
+        if *loading && let Some(active_operation) = operation_id.take() {
+            let _cancelled = self.workspace.cancel_kwt_worktree_listing(active_operation);
+            *loading = false;
         }
         *current_mode = mode;
         branch.clear();
@@ -1440,6 +1444,14 @@ impl RootView {
             Some(ProjectDialog::RemoveWorktree { .. })
         ) {
             self.workspace.cancel_kwt_worktree_removal();
+        }
+        if let Some(ProjectDialog::NewWorktree {
+            operation_id: Some(operation_id),
+            loading: true,
+            ..
+        }) = &self.project_dialog
+        {
+            let _cancelled = self.workspace.cancel_kwt_worktree_listing(*operation_id);
         }
         self.project_dialog = None;
         window.focus(&self.focus);

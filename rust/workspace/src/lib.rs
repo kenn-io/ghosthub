@@ -2552,6 +2552,7 @@ struct Inner {
     kwt_discovery_cancel: Mutex<Option<CancellationToken>>,
     kwt_publication: Mutex<()>,
     kwt_mutation_in_flight: AtomicBool,
+    kwt_worktree_listing: Mutex<Option<KwtWorktreeListing>>,
     kwt_removal_generation: AtomicU64,
     pending_kwt_removal: Mutex<Option<PendingKwtRemoval>>,
     pending_kwt_creations: Mutex<Vec<PendingKwtCreation>>,
@@ -2665,6 +2666,7 @@ impl Workspace {
                 kwt_discovery_cancel: Mutex::new(None),
                 kwt_publication: Mutex::new(()),
                 kwt_mutation_in_flight: AtomicBool::new(false),
+                kwt_worktree_listing: Mutex::new(None),
                 kwt_removal_generation: AtomicU64::new(0),
                 pending_kwt_removal: Mutex::new(None),
                 pending_kwt_creations: Mutex::new(Vec::new()),
@@ -2741,6 +2743,7 @@ impl Workspace {
                 kwt_discovery_cancel: Mutex::new(None),
                 kwt_publication: Mutex::new(()),
                 kwt_mutation_in_flight: AtomicBool::new(false),
+                kwt_worktree_listing: Mutex::new(None),
                 kwt_removal_generation: AtomicU64::new(0),
                 pending_kwt_removal: Mutex::new(None),
                 pending_kwt_creations: Mutex::new(Vec::new()),
@@ -2801,6 +2804,7 @@ impl Workspace {
                 kwt_discovery_cancel: Mutex::new(None),
                 kwt_publication: Mutex::new(()),
                 kwt_mutation_in_flight: AtomicBool::new(false),
+                kwt_worktree_listing: Mutex::new(None),
                 kwt_removal_generation: AtomicU64::new(0),
                 pending_kwt_removal: Mutex::new(None),
                 pending_kwt_creations: Mutex::new(Vec::new()),
@@ -3130,6 +3134,48 @@ impl Workspace {
         pending.take();
     }
 
+    /// Cancel the exact branch or pull-request listing owned by a project dialog.
+    ///
+    /// Cancellation invalidates the listing's publication generation and
+    /// releases the KWT operation lane immediately. A late task completion is
+    /// fenced by the removed ownership record and cannot settle a replacement.
+    #[must_use]
+    pub fn cancel_kwt_worktree_listing(&self, operation_id: u64) -> bool {
+        let listing = {
+            let mut active = self
+                .inner
+                .kwt_worktree_listing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if active
+                .as_ref()
+                .is_none_or(|listing| listing.operation_id != operation_id)
+            {
+                return false;
+            }
+            let Some(listing) = active.take() else {
+                return false;
+            };
+            listing
+        };
+        listing.cancellation.cancel();
+        {
+            let _publication = self
+                .inner
+                .kwt_publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _generation = self.inner.kwt_refresh_generation.compare_exchange(
+                listing.generation,
+                listing.generation.saturating_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        finish_kwt_project_mutation(&self.inner, None);
+        true
+    }
+
     /// Remove one exact non-main KWT worktree while preserving its Git branch.
     ///
     /// The operation revalidates the project, worktree generation, WSL
@@ -3212,12 +3258,24 @@ impl Workspace {
             operation,
         )?;
         let operation_id = task.operation_id;
+        if task.is_listing() {
+            *self
+                .inner
+                .kwt_worktree_listing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(KwtWorktreeListing {
+                generation: task.generation,
+                operation_id,
+                cancellation: task.cancellation.clone(),
+            });
+        }
         let task_inner = Arc::clone(&self.inner);
+        let background_task = task.clone();
         if let Err(error) = self.inner.refresh_runtime.spawn(
             "ghosthub-kwt-worktree-operation",
-            Box::new(move || run_kwt_worktree_operation(&task_inner, &task)),
+            Box::new(move || run_kwt_worktree_operation(&task_inner, &background_task)),
         ) {
-            finish_kwt_project_mutation(&self.inner, None);
+            finish_kwt_worktree_operation(&self.inner, &task);
             return Err(WorkspaceError::new(format!(
                 "start KWT worktree operation: {error}"
             )));
@@ -6643,6 +6701,7 @@ enum KwtWorktreeOperation {
     },
 }
 
+#[derive(Clone)]
 struct KwtWorktreeTask {
     host: RuntimeHost,
     endpoint: host::WslEndpoint,
@@ -6654,6 +6713,21 @@ struct KwtWorktreeTask {
     project_path: String,
     registration_fingerprint: String,
     operation: KwtWorktreeOperation,
+}
+
+struct KwtWorktreeListing {
+    generation: u64,
+    operation_id: u64,
+    cancellation: CancellationToken,
+}
+
+impl KwtWorktreeTask {
+    const fn is_listing(&self) -> bool {
+        matches!(
+            self.operation,
+            KwtWorktreeOperation::Branches | KwtWorktreeOperation::PullRequests
+        )
+    }
 }
 
 struct PendingKwtRemoval {
@@ -7234,7 +7308,7 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
             live_target.as_deref(),
         ),
     };
-    finish_kwt_project_mutation(inner, Some((&task.endpoint, &task.runtime)));
+    finish_kwt_worktree_operation(inner, task);
     if outcome.refresh_tmux {
         let workspace = Workspace {
             inner: Arc::clone(inner),
@@ -7269,6 +7343,8 @@ fn run_kwt_pull_request_import(
     ) {
         Ok(imported) => imported,
         Err(error) => {
+            let (outcome, message) =
+                kwt_pull_request_import_failure(error.kind(), &error.to_string());
             publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
             push_operation_event(
                 inner,
@@ -7276,10 +7352,10 @@ fn run_kwt_pull_request_import(
                     operation_id: task.operation_id,
                     project_path: task.project_path.clone(),
                     worktree_path: None,
-                    message: error.to_string(),
+                    message,
                 },
             );
-            return KwtWorktreeOutcome::default();
+            return outcome;
         }
     };
     let workspace = imported.workspace();
@@ -7385,6 +7461,23 @@ fn run_kwt_pull_request_import(
         },
     );
     KwtWorktreeOutcome::default()
+}
+
+fn kwt_pull_request_import_failure(
+    kind: DiagnosticKind,
+    detail: &str,
+) -> (KwtWorktreeOutcome, String) {
+    if kind == DiagnosticKind::Timeout {
+        return (
+            KwtWorktreeOutcome {
+                refresh_kwt: true,
+                refresh_tmux: false,
+            },
+            "Pull-request import timed out and may have completed. Ghosthub will refresh KWT inventory automatically."
+                .to_owned(),
+        );
+    }
+    (KwtWorktreeOutcome::default(), detail.to_owned())
 }
 
 fn run_kwt_worktree_remove(
@@ -8410,6 +8503,29 @@ fn finish_kwt_project_mutation(
         inner.revision.fetch_add(1, Ordering::Release);
     }
     start_initial_kwt_refresh(inner);
+}
+
+fn finish_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
+    if task.is_listing() {
+        let owns_listing = {
+            let mut active = inner
+                .kwt_worktree_listing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if active.as_ref().is_some_and(|listing| {
+                listing.generation == task.generation && listing.operation_id == task.operation_id
+            }) {
+                active.take();
+                true
+            } else {
+                false
+            }
+        };
+        if !owns_listing {
+            return;
+        }
+    }
+    finish_kwt_project_mutation(inner, Some((&task.endpoint, &task.runtime)));
 }
 
 fn push_operation_event(inner: &Inner, event: WorkspaceEvent) {
@@ -12595,6 +12711,103 @@ mod tests {
                 .push_back((delay, cancellation, task));
             Ok(())
         }
+    }
+
+    fn kwt_worktree_workspace_fixture() -> (Workspace, Arc<ManualRefreshRuntime>) {
+        let runtime = Arc::new(ManualRefreshRuntime::default());
+        let bundle =
+            host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid KWT bundle");
+        let config = WslConfig::with_distro("Ubuntu")
+            .expect("valid config")
+            .with_kwt_bundle(bundle);
+        let executable = WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute WSL path");
+        let workspace = Workspace::application_with_services(
+            TerminalAppearance::default(),
+            Some(WslHostSpec::available(config.clone(), executable.clone())),
+            Arc::new(SystemWslDiscovery::new()),
+            runtime.clone(),
+        );
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
+        *workspace.inner.host.lock().expect("published host") = Some(Published::new(
+            HostContext {
+                host: WslHost::new(
+                    config,
+                    Arc::new(StdCommandRunner) as SharedCommandRunner,
+                    executable,
+                ),
+                snapshot: snapshot.clone(),
+            },
+            1,
+        ));
+        set_inventory_state(&workspace.inner, ready_content(&snapshot));
+        workspace
+            .inner
+            .kwt_refresh_generation
+            .store(7, Ordering::Release);
+        let inventory = KwtInventory::parse(
+            br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
+            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"project-id","session_name":"project-main","tmux_socket_name":null}]"#,
+            b"[]",
+        )
+        .expect("valid KWT inventory");
+        publish_kwt_inventory(
+            &workspace.inner,
+            7,
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            &inventory,
+        );
+        (workspace, runtime)
+    }
+
+    #[test]
+    fn cancelling_a_kwt_listing_releases_the_lane_for_its_replacement() {
+        let (workspace, runtime) = kwt_worktree_workspace_fixture();
+        let first = workspace
+            .load_kwt_pull_requests(
+                "wsl",
+                "Ubuntu",
+                "project-id",
+                "/repos/project",
+                "project-fingerprint",
+            )
+            .expect("start pull-request listing");
+
+        assert!(workspace.cancel_kwt_worktree_listing(first));
+        let second = workspace
+            .load_kwt_branches(
+                "wsl",
+                "Ubuntu",
+                "project-id",
+                "/repos/project",
+                "project-fingerprint",
+            )
+            .expect("replacement listing starts immediately");
+
+        assert_ne!(first, second);
+        assert_eq!(runtime.work.lock().expect("work queue").len(), 2);
+        runtime.run_next_work();
+        assert!(
+            workspace
+                .inner
+                .kwt_mutation_in_flight
+                .load(Ordering::Acquire),
+            "the cancelled task cannot settle over its replacement"
+        );
+    }
+
+    #[test]
+    fn pull_request_import_timeout_requests_reconciliation_and_reports_uncertainty() {
+        let (outcome, message) = kwt_pull_request_import_failure(
+            DiagnosticKind::Timeout,
+            "import KWT pull request: inventory_timeout",
+        );
+
+        assert!(outcome.refresh_kwt);
+        assert!(!outcome.refresh_tmux);
+        assert!(message.contains("may have completed"));
+        assert!(message.contains("refresh"));
     }
 
     struct BlockingDiscovery {
