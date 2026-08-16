@@ -66,6 +66,10 @@ struct WorkspaceZellijDescriptor: Codable, Hashable, Sendable {
     var sessionName: String
 }
 
+enum WorkspaceWindowLaunchIntent: Hashable, Sendable {
+    case openWorktree
+}
+
 struct WorkspaceWindowState: Codable, Hashable, Sendable {
     var windowID: UUID
     var navigation: WorkspaceNavigationDescriptor?
@@ -216,6 +220,76 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
     }
 }
 
+enum ProjectWorktreeWindowPlan {
+    static func isAvailable(
+        project: ProjectSummary,
+        host: HostSummary,
+        worktrees: [WorktreeSummary]
+    ) -> Bool {
+        guard !worktrees.isEmpty,
+              !project.isStale,
+              project.hostID == host.id,
+              !host.configKey.trimmingCharacters(
+                  in: .whitespacesAndNewlines
+              ).isEmpty,
+              !project.scopedKey.trimmingCharacters(
+                  in: .whitespacesAndNewlines
+              ).isEmpty
+        else { return false }
+
+        return worktrees.allSatisfy { worktree in
+            worktree.hostID == host.id
+                && worktree.projectID == project.id
+                && !worktree.isStale
+                && WorktreeGeneration.canonical(worktree.generation) != nil
+                && worktree.tmuxSessionName.map {
+                    !$0.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                } == true
+                && (worktree.tmuxSocketName.map {
+                    !$0.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                } ?? true)
+        }
+    }
+
+    static func states(
+        project: ProjectSummary,
+        host: HostSummary,
+        worktrees: [WorktreeSummary]
+    ) -> [WorkspaceWindowState]? {
+        guard isAvailable(
+            project: project,
+            host: host,
+            worktrees: worktrees
+        ) else { return nil }
+
+        return worktrees.map { worktree in
+            let generation = WorktreeGeneration.canonical(
+                worktree.generation
+            )!
+            let sessionName = worktree.tmuxSessionName!
+
+            return WorkspaceWindowState(
+                windowID: UUID(),
+                navigation: WorkspaceNavigationDescriptor(
+                    hostKey: host.configKey,
+                    projectKey: project.scopedKey,
+                    worktreeGeneration: generation
+                ),
+                tmux: WorkspaceTmuxDescriptor(
+                    hostKey: host.configKey,
+                    sessionName: sessionName,
+                    socketName: worktree.tmuxSocketName,
+                    owner: .worktree(generation: generation)
+                )
+            )
+        }
+    }
+}
+
 enum UpdateRelaunchStatePolicy {
     static func replacement(
         presented: WorkspaceWindowState?,
@@ -293,6 +367,7 @@ enum WorkspaceWindowRestorationResolver {
     static func resolve(
         _ state: WorkspaceWindowState,
         in snapshot: WorkspaceSnapshot,
+        launchIntent: WorkspaceWindowLaunchIntent? = nil,
         herdrFreshHostIDs: Set<UUID> = [],
         zellijFreshHostIDs: Set<UUID> = [],
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
@@ -318,6 +393,11 @@ enum WorkspaceWindowRestorationResolver {
         ].filter { $0 }.count
         guard presentationCount <= 1 else {
             return .invalid
+        }
+        if launchIntent == .openWorktree {
+            guard let tmux = state.tmux,
+                  case .worktree = tmux.owner
+            else { return .invalid }
         }
 
         if let tmux = state.tmux {
@@ -442,9 +522,6 @@ enum WorkspaceWindowRestorationResolver {
         guard let tmux = state.tmux else {
             return .ready(selection: selection, presentation: nil)
         }
-        if host.kind == .remote, host.connectionState == .offline {
-            return .pending(selection: selection)
-        }
         let worktreeGeneration: String?
         switch tmux.owner {
         case .unbound:
@@ -492,6 +569,16 @@ enum WorkspaceWindowRestorationResolver {
             worktreeGeneration: worktreeGeneration,
             socketName: tmux.socketName
         )
+
+        if launchIntent == .openWorktree {
+            return .ready(
+                selection: selection,
+                presentation: .tmux(tmuxSelection)
+            )
+        }
+        if host.kind == .remote, host.connectionState == .offline {
+            return .pending(selection: selection)
+        }
 
         if tmux.socketName != nil {
             guard owner != nil

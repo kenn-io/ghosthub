@@ -52,28 +52,61 @@ enum WorkspaceWindowResolver {
 final class WorkspaceWindowRequests<Window: AnyObject> {
     private final class Request {
         weak var parent: Window?
+        let remainingStates: [WorkspaceWindowState]
 
-        init(parent: Window?) {
+        init(
+            parent: Window?,
+            remainingStates: [WorkspaceWindowState]
+        ) {
             self.parent = parent
+            self.remainingStates = remainingStates
         }
     }
 
     private var requests: [UUID: Request] = [:]
 
-    func add(_ id: UUID, parent: Window?) {
-        requests[id] = Request(parent: parent)
+    func add(
+        _ id: UUID,
+        parent: Window?,
+        remainingStates: [WorkspaceWindowState] = []
+    ) {
+        requests[id] = Request(
+            parent: parent,
+            remainingStates: remainingStates
+        )
     }
 
-    func consumeParent(
+    func consume(
         for id: UUID?,
         window: Window
-    ) -> Window? {
+    ) -> (
+        parent: Window?,
+        remainingStates: [WorkspaceWindowState]
+    )? {
         guard let id,
-              let request = requests.removeValue(forKey: id),
-              let parent = request.parent,
-              parent !== window
+              let request = requests.removeValue(forKey: id)
         else { return nil }
-        return parent
+        return (
+            request.parent === window ? nil : request.parent,
+            request.remainingStates
+        )
+    }
+}
+
+final class WorkspaceWindowLaunchIntents {
+    private var intents: [UUID: WorkspaceWindowLaunchIntent] = [:]
+
+    func add(
+        _ intent: WorkspaceWindowLaunchIntent,
+        for windowIDs: [UUID]
+    ) {
+        for windowID in windowIDs {
+            intents[windowID] = intent
+        }
+    }
+
+    func consume(for windowID: UUID) -> WorkspaceWindowLaunchIntent? {
+        intents.removeValue(forKey: windowID)
     }
 }
 
@@ -101,6 +134,7 @@ final class ApplicationDelegate: NSObject,
     var openWorkspaceWindow: (WorkspaceWindowState) -> Void = { _ in }
 
     private let windowRequests = WorkspaceWindowRequests<NSWindow>()
+    private let windowLaunchIntents = WorkspaceWindowLaunchIntents()
     private var windowRestorationFinishedHandler: (Int) -> Void = { _ in }
     private var restoredWorkspaceWindowCount: Int?
     private(set) var terminationConfirmed = false
@@ -201,31 +235,91 @@ final class ApplicationDelegate: NSObject,
         openWorkspaceWindow(requestWorkspaceWindow(parent: parent))
     }
 
+    func requestWorkspaceTabGroup(
+        _ states: [WorkspaceWindowState],
+        launchIntent: WorkspaceWindowLaunchIntent
+    ) {
+        guard let first = states.first else { return }
+        windowLaunchIntents.add(
+            launchIntent,
+            for: states.map(\.windowID)
+        )
+        windowRequests.add(
+            first.windowID,
+            parent: nil,
+            remainingStates: Array(states.dropFirst())
+        )
+        openWorkspaceWindow(first)
+    }
+
+    func consumeWorkspaceWindowLaunchIntent(
+        for windowID: UUID
+    ) -> WorkspaceWindowLaunchIntent? {
+        windowLaunchIntents.consume(for: windowID)
+    }
+
     func adoptWorkspaceWindowAsTabIfRequested(
         _ window: NSWindow,
         requestID: UUID?
     ) {
         guard WorkspaceWindowIdentity.matches(window),
-              let parent = windowRequests.consumeParent(
+              let request = windowRequests.consume(
                   for: requestID,
                   window: window
               )
         else { return }
-        guard !WorkspaceWindowIdentity.group(containing: parent)
-            .contains(where: { $0 === window })
-        else { return }
-        let parentFrame = parent.frame
-        parent.addTabbedWindow(window, ordered: .above)
-        window.makeKeyAndOrderFront(nil)
-        NativeTabCommands.installBracketShortcuts()
-        DispatchQueue.main.async { [weak parent, weak window] in
-            guard let parent,
-                  let window,
-                  let group = parent.tabGroup,
-                  group === window.tabGroup
+        let groupWindow: NSWindow
+        let adoptedParent: NSWindow?
+        let preservedFrame: NSRect?
+        if let parent = request.parent {
+            guard !WorkspaceWindowIdentity.group(containing: parent)
+                .contains(where: { $0 === window })
             else { return }
+            let parentFrame = parent.frame
+            parent.addTabbedWindow(window, ordered: .above)
+            window.makeKeyAndOrderFront(nil)
+            NativeTabCommands.installBracketShortcuts()
             window.setFrame(parentFrame, display: true)
+            groupWindow = parent
+            adoptedParent = parent
+            preservedFrame = parentFrame
+        } else {
+            groupWindow = window
+            adoptedParent = nil
+            preservedFrame = nil
         }
+        DispatchQueue.main.async {
+            [weak self, weak groupWindow, weak window, weak adoptedParent] in
+            guard let self,
+                  let groupWindow,
+                  let window
+            else { return }
+            if let adoptedParent {
+                guard let group = adoptedParent.tabGroup,
+                      group === window.tabGroup
+                else { return }
+                if let preservedFrame {
+                    window.setFrame(preservedFrame, display: true)
+                }
+            }
+            openNextWorkspaceTab(
+                request.remainingStates,
+                parent: groupWindow
+            )
+        }
+    }
+
+    private func openNextWorkspaceTab(
+        _ states: [WorkspaceWindowState],
+        parent: NSWindow
+    ) {
+        guard let next = states.first else { return }
+        windowRequests.add(
+            next.windowID,
+            parent: parent,
+            remainingStates: Array(states.dropFirst())
+        )
+        openWorkspaceWindow(next)
     }
 
     private func requestWorkspaceWindow(

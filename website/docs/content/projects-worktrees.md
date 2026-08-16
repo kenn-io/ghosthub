@@ -76,6 +76,12 @@ that session when necessary and then attaches an ordinary tmux client. The
 native window tab and titlebar show the project and worktree names instead of
 that internal session name. New worktree sessions use kwt's short,
 hash-suffixed naming format so they also remain recognizable in `tmux ls`.
+To put the whole project in one new window, right-click the project and choose
+**Open All Worktrees as Tabs**. Ghosthub opens the visible worktrees in sidebar
+order, creating or repairing each Kwt session as needed. If one scene cannot be
+created, the group stops there instead of opening the remaining worktrees as
+unrelated windows.
+
 The worktree row shows a compact window count. While Ghosthub is connected,
 the count refreshes with the existing background activity check: within about
 five seconds for a working session and twenty seconds for a quiet session.

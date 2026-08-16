@@ -1023,6 +1023,36 @@ struct WorkspaceWindow: View {
                         confirmedHost: host
                     )
                 },
+                openProjectWorktreesAsTabs: {
+                    [applicationDelegate, sceneModel] project, worktrees in
+                    guard let host = sceneModel.snapshot.host(
+                        id: project.hostID
+                    ),
+                        let states = ProjectWorktreeWindowPlan.states(
+                            project: project,
+                            host: host,
+                            worktrees: worktrees
+                        )
+                    else {
+                        sceneModel.refreshWorkspaceInventory()
+                        return
+                    }
+                    applicationDelegate.requestWorkspaceTabGroup(
+                        states,
+                        launchIntent: .openWorktree
+                    )
+                },
+                canOpenProjectWorktreesAsTabs: {
+                    [sceneModel] project, worktrees in
+                    guard let host = sceneModel.snapshot.host(
+                        id: project.hostID
+                    ) else { return false }
+                    return ProjectWorktreeWindowPlan.isAvailable(
+                        project: project,
+                        host: host,
+                        worktrees: worktrees
+                    )
+                },
                 createWorktree: { [sceneModel] request in
                     try await sceneModel.createWorktree(request)
                 },
@@ -1205,7 +1235,7 @@ struct WorkspaceWindow: View {
                 return
             }
             if let restoredState = windowStateBuffer.receive(state) {
-                sceneModel.beginRestoration(restoredState)
+                beginRestoration(restoredState)
             }
         }
         .onAppear {
@@ -1275,8 +1305,16 @@ struct WorkspaceWindow: View {
         _ state: WorkspaceWindowState?
     ) {
         if let state = windowStateBuffer.beginAppearance(with: state) {
-            sceneModel.beginRestoration(state)
+            beginRestoration(state)
         }
+    }
+
+    private func beginRestoration(_ state: WorkspaceWindowState) {
+        sceneModel.beginRestoration(
+            state,
+            launchIntent: applicationDelegate
+                .consumeWorkspaceWindowLaunchIntent(for: state.windowID)
+        )
     }
 
     #if canImport(AppKit)
@@ -1289,7 +1327,7 @@ struct WorkspaceWindow: View {
             windowStateBuffer.prepareToPresent(state)
             windowState = state
         }
-        sceneModel.beginRestoration(state)
+        beginRestoration(state)
         updateRelaunchRestorer.didBeginRestoring(
             windowID: state.windowID
         )

@@ -636,6 +636,67 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertEqual(child.frame, expectedFrame)
     }
 
+    func testWorkspaceTabGroupOpensSequentiallyInProjectOrder() async {
+        let delegate = ApplicationDelegate.forTesting()
+        let firstState = WorkspaceWindowState.fresh()
+        let secondState = WorkspaceWindowState.fresh()
+        let thirdState = WorkspaceWindowState.fresh()
+        var openedStates: [WorkspaceWindowState] = []
+        delegate.openWorkspaceWindow = { state in
+            openedStates.append(state)
+        }
+
+        delegate.requestWorkspaceTabGroup([
+            firstState,
+            secondState,
+            thirdState,
+        ], launchIntent: .openWorktree)
+        XCTAssertEqual(openedStates.map(\.windowID), [firstState.windowID])
+
+        let firstWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        firstWindow.tabbingIdentifier =
+            WorkspaceWindowIdentity.tabbingIdentifier
+        delegate.adoptWorkspaceWindowAsTabIfRequested(
+            firstWindow,
+            requestID: firstState.windowID
+        )
+        await Task.yield()
+
+        XCTAssertEqual(openedStates.map(\.windowID), [
+            firstState.windowID,
+            secondState.windowID,
+        ])
+
+        let secondWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        secondWindow.tabbingIdentifier =
+            WorkspaceWindowIdentity.tabbingIdentifier
+        delegate.adoptWorkspaceWindowAsTabIfRequested(
+            secondWindow,
+            requestID: secondState.windowID
+        )
+        await Task.yield()
+
+        XCTAssertEqual(openedStates.map(\.windowID), [
+            firstState.windowID,
+            secondState.windowID,
+            thirdState.windowID,
+        ])
+        XCTAssertTrue(
+            WorkspaceWindowIdentity.group(containing: firstWindow)
+                .contains(where: { $0 === secondWindow })
+        )
+    }
+
     func testLastWindowClosesWithoutRequestingTermination() {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: true
