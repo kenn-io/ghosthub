@@ -62,6 +62,23 @@ PACKAGE_WRITER_WORKFLOW = "sandbox-image-publish.yml"
 PRODUCTION_ENVIRONMENT = "sandbox-image-production"
 MERGE_SIGNAL_WORKFLOW = ".github/workflows/sandbox-image-merge-signal.yml"
 MERGE_SIGNAL_WORKFLOW_NAME = Path(MERGE_SIGNAL_WORKFLOW).name
+MERGE_SIGNAL_NAME = "Sandbox image merge signal"
+MERGE_SIGNAL_REPOSITORY = "kenn-io/ghosthub-nightly"
+MERGE_SIGNAL_REPOSITORY_ID = 1_334_318_821
+MERGE_SIGNAL_COMMIT = "67ead910ccc186d9ffe543c32721d359b3eea80e"
+# One-time bridge for the reviewed external-authority migration. The follow-up
+# removes this allowlist after these exact workflow bytes reach main.
+MERGE_SIGNAL_TRANSITION_WORKFLOW_DIGESTS = {
+    PROMOTION_STATUS_WORKFLOW: (
+        "146626c9c1c9af80fde30390a9863446a1fa775ccb56a73e516a23c2197aaaa7"
+    ),
+    PROMOTION_WORKFLOW: (
+        "ce76e031de835ffc4a56035cd5d402a5c0eae779926f44bfef7ffa6d5bbbf8b4"
+    ),
+}
+PROMOTION_GATE_REPAIR_DIGEST = (
+    "09a0d39bf4527d2cfec188dcaee522170af3817ab19de5c35d465730bfc60e56"
+)
 ALLOWED_REUSABLE_WORKFLOWS = {
     "kenn-io/ghosthub/.github/workflows/ci.yml@main",
 }
@@ -594,7 +611,7 @@ def _verify_merge_signal_workflow(value: dict[object, object], path: Path) -> No
         return
     trigger = value.get("on", value.get(True))
     if (
-        value.get("name") != "Sandbox image merge signal"
+        value.get("name") != MERGE_SIGNAL_NAME
         or trigger != {"merge_group": {"types": ["checks_requested"]}}
     ):
         raise ValueError("merge signal workflow identity or trigger is invalid")
@@ -737,11 +754,11 @@ def verify_promotion_workflows(
             "production environment must have exactly one trusted workflow"
         )
     if trusted_workflow_root is not None:
+        changed_workflows: dict[str, bytes] = {}
         for name, label in (
             (PROMOTION_STATUS_WORKFLOW, "status"),
             (PROMOTION_WORKFLOW, "promotion"),
             (PACKAGE_WRITER_WORKFLOW, "package writer"),
-            (MERGE_SIGNAL_WORKFLOW_NAME, "merge signal"),
         ):
             trusted = trusted_workflow_root / name
             proposed = workflow_root / name
@@ -751,7 +768,60 @@ def verify_promotion_workflows(
             except ValueError as error:
                 raise ValueError(f"cannot compare trusted {label} workflow") from error
             if trusted_content != proposed_content:
-                raise ValueError(f"trusted {label} workflow changed in proposed tree")
+                changed_workflows[name] = proposed_content
+        proposed_signal = workflow_root / MERGE_SIGNAL_WORKFLOW_NAME
+        signal_removed = not (
+            proposed_signal.exists() or proposed_signal.is_symlink()
+        )
+        gate_repair_matches = False
+        if not signal_removed:
+            trusted_signal = trusted_workflow_root / MERGE_SIGNAL_WORKFLOW_NAME
+            try:
+                trusted_content = _read_regular_workflow(trusted_signal)
+                proposed_content = _read_regular_workflow(proposed_signal)
+            except ValueError as error:
+                raise ValueError(
+                    "cannot compare trusted merge signal workflow"
+                ) from error
+            if trusted_content != proposed_content:
+                raise ValueError(
+                    "trusted merge signal workflow changed in proposed tree"
+                )
+            if changed_workflows:
+                gate_repair_matches = (
+                    set(changed_workflows) == {PROMOTION_STATUS_WORKFLOW}
+                    and hashlib.sha256(
+                        changed_workflows[PROMOTION_STATUS_WORKFLOW]
+                    ).hexdigest()
+                    == PROMOTION_GATE_REPAIR_DIGEST
+                )
+            if changed_workflows and not gate_repair_matches:
+                labels = {
+                    PROMOTION_STATUS_WORKFLOW: "status",
+                    PROMOTION_WORKFLOW: "promotion",
+                    PACKAGE_WRITER_WORKFLOW: "package writer",
+                }
+                changed_name = next(iter(changed_workflows))
+                raise ValueError(
+                    f"trusted {labels[changed_name]} workflow changed in proposed tree"
+                )
+        if changed_workflows or signal_removed:
+            expected_names = set(MERGE_SIGNAL_TRANSITION_WORKFLOW_DIGESTS)
+            signal_transition_matches = (
+                signal_removed and set(changed_workflows) == expected_names
+            )
+            if signal_transition_matches:
+                signal_transition_matches = all(
+                    hashlib.sha256(changed_workflows[name]).hexdigest() == digest
+                    for name, digest in (
+                        MERGE_SIGNAL_TRANSITION_WORKFLOW_DIGESTS.items()
+                    )
+                )
+            if not gate_repair_matches and not signal_transition_matches:
+                raise ValueError(
+                    "protected workflows changed outside the approved "
+                    "merge signal transition"
+                )
         if repository_root is not None or trusted_repository_root is not None:
             if repository_root is None or trusted_repository_root is None:
                 raise ValueError(
@@ -918,14 +988,73 @@ def verify_required_merge_signal(runner: Runner) -> None:
         ruleset = _api_json(
             runner, f"repos/kenn-io/ghosthub/rulesets/{summary['id']}"
         )
-        if _ruleset_requires_merge_signal(ruleset):
+        if _ruleset_requires_external_merge_signal(ruleset):
+            _verify_external_merge_signal_workflow(runner)
+            return
+        if _ruleset_requires_local_merge_signal(ruleset):
             return
     raise ValueError("main must require the trusted merge-signal workflow")
 
 
-def _ruleset_requires_merge_signal(value: object) -> bool:
+def _verify_external_merge_signal_workflow(runner: Runner) -> None:
+    endpoint = (
+        f"repos/{MERGE_SIGNAL_REPOSITORY}/contents/{MERGE_SIGNAL_WORKFLOW}"
+        f"?ref={MERGE_SIGNAL_COMMIT}"
+    )
+    payload = _api_json(runner, endpoint)
+    if (
+        not isinstance(payload, dict)
+        or payload.get("type") != "file"
+        or payload.get("path") != MERGE_SIGNAL_WORKFLOW
+        or payload.get("encoding") != "base64"
+    ):
+        raise ValueError("trusted merge-signal workflow source is invalid")
+    content = payload.get("content")
+    size = payload.get("size")
+    if (
+        not isinstance(content, str)
+        or not isinstance(size, int)
+        or size < 0
+        or size > 64_000
+        or len(content) > 100_000
+    ):
+        raise ValueError("trusted merge-signal workflow source is invalid")
+    try:
+        decoded = base64.b64decode("".join(content.split()), validate=True)
+        text = decoded.decode("utf-8")
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ValueError("trusted merge-signal workflow source is invalid") from error
+    if len(decoded) != size:
+        raise ValueError("trusted merge-signal workflow source is invalid")
+    try:
+        workflow = yaml.safe_load(text)
+    except yaml.YAMLError as error:
+        raise ValueError("trusted merge-signal workflow source is invalid") from error
+    if not isinstance(workflow, dict):
+        raise ValueError("trusted merge-signal workflow source is invalid")
+    if workflow.get("name") != MERGE_SIGNAL_NAME:
+        raise ValueError("trusted merge-signal workflow name is invalid")
+    trigger = workflow.get("on", workflow.get(True))
+    if trigger != {"merge_group": {"types": ["checks_requested"]}}:
+        raise ValueError("trusted merge-signal workflow trigger is invalid")
+    if workflow.get("permissions") != {}:
+        raise ValueError("trusted merge-signal workflow permissions are invalid")
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict) or not jobs:
+        raise ValueError("trusted merge-signal workflow jobs are invalid")
+    for job in jobs.values():
+        if (
+            not isinstance(job, dict)
+            or job.get("environment") is not None
+            or job.get("uses") is not None
+            or job.get("permissions") not in (None, {})
+        ):
+            raise ValueError("trusted merge-signal workflow job authority is invalid")
+
+
+def _ruleset_workflows(value: object) -> list[object] | None:
     if not isinstance(value, dict):
-        return False
+        return None
     conditions = value.get("conditions")
     ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
     rules = value.get("rules")
@@ -940,7 +1069,7 @@ def _ruleset_requires_merge_signal(value: object) -> bool:
         or ref_name.get("exclude") != []
         or not isinstance(rules, list)
     ):
-        return False
+        return None
     for rule in rules:
         if not isinstance(rule, dict) or rule.get("type") != "workflows":
             continue
@@ -948,17 +1077,32 @@ def _ruleset_requires_merge_signal(value: object) -> bool:
         workflows = (
             parameters.get("workflows") if isinstance(parameters, dict) else None
         )
-        if not isinstance(workflows, list):
-            continue
-        if any(
-            isinstance(workflow, dict)
-            and workflow.get("path") == MERGE_SIGNAL_WORKFLOW
-            and workflow.get("ref") == "refs/heads/main"
-            and workflow.get("repository_id") == CANONICAL_REPOSITORY_ID
-            for workflow in workflows
-        ):
-            return True
-    return False
+        if isinstance(workflows, list):
+            return workflows
+    return None
+
+
+def _ruleset_requires_local_merge_signal(value: object) -> bool:
+    workflows = _ruleset_workflows(value)
+    return workflows is not None and any(
+        isinstance(workflow, dict)
+        and workflow.get("path") == MERGE_SIGNAL_WORKFLOW
+        and workflow.get("ref") == "refs/heads/main"
+        and workflow.get("repository_id") == CANONICAL_REPOSITORY_ID
+        for workflow in workflows
+    )
+
+
+def _ruleset_requires_external_merge_signal(value: object) -> bool:
+    workflows = _ruleset_workflows(value)
+    return workflows is not None and any(
+        isinstance(workflow, dict)
+        and workflow.get("path") == MERGE_SIGNAL_WORKFLOW
+        and workflow.get("sha") == MERGE_SIGNAL_COMMIT
+        and workflow.get("ref") in (None, "", MERGE_SIGNAL_COMMIT)
+        and workflow.get("repository_id") == MERGE_SIGNAL_REPOSITORY_ID
+        for workflow in workflows
+    )
 
 
 def _ruleset_requires_promotion_status(

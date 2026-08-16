@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import sys
 from collections.abc import Sequence
@@ -1154,6 +1155,77 @@ def test_required_merge_signal_is_organization_owned_and_pinned_to_main() -> Non
     verify_required_merge_signal(runner)
 
 
+def test_required_merge_signal_accepts_pinned_external_authority() -> None:
+    commit = github_module.MERGE_SIGNAL_COMMIT
+    workflow_content = (
+        "name: Sandbox image merge signal\n"
+        "on:\n"
+        "  merge_group:\n"
+        "    types: [checks_requested]\n"
+        "permissions: {}\n"
+        "jobs:\n"
+        "  signal:\n"
+        "    runs-on: ubuntu-24.04\n"
+        "    steps:\n"
+        "      - run: 'true'\n"
+    )
+    detail = {
+        "source_type": "Organization",
+        "source": "kenn-io",
+        "target": "branch",
+        "enforcement": "active",
+        "bypass_actors": [],
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        "rules": [
+            {
+                "type": "workflows",
+                "parameters": {
+                    "do_not_enforce_on_create": False,
+                    "workflows": [
+                        {
+                            "path": github_module.MERGE_SIGNAL_WORKFLOW,
+                            "ref": commit,
+                            "sha": commit,
+                            "repository_id": (
+                                github_module.MERGE_SIGNAL_REPOSITORY_ID
+                            ),
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    runner = ScriptedRunner(
+        {
+            (
+                "gh",
+                "api",
+                "--paginate",
+                "--slurp",
+                "repos/kenn-io/ghosthub/rulesets?per_page=100",
+            ): json.dumps([[{"id": 42}]]),
+            ("gh", "api", "repos/kenn-io/ghosthub/rulesets/42"): json.dumps(detail),
+            (
+                "gh",
+                "api",
+                "repos/kenn-io/ghosthub-nightly/contents/"
+                ".github/workflows/sandbox-image-merge-signal.yml"
+                f"?ref={commit}",
+            ): json.dumps(
+                {
+                    "type": "file",
+                    "path": github_module.MERGE_SIGNAL_WORKFLOW,
+                    "encoding": "base64",
+                    "size": len(workflow_content.encode()),
+                    "content": base64.b64encode(workflow_content.encode()).decode(),
+                }
+            ),
+        }
+    )
+
+    verify_required_merge_signal(runner)
+
+
 @pytest.mark.parametrize(
     ("source_type", "ref", "repository_id"),
     [
@@ -1549,6 +1621,49 @@ def test_proposed_workflow_audit_rejects_changes_to_the_status_writer(
             proposed,
             trusted_workflow_root=trusted,
         )
+
+
+def test_proposed_workflow_audit_allows_exact_gate_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trusted = tmp_path / "trusted"
+    proposed = tmp_path / "proposed"
+    trusted.mkdir()
+    proposed.mkdir()
+    status = (
+        "permissions: {}\njobs:\n"
+        "  reconcile:\n"
+        "    environment: sandbox-image-promotion-status\n"
+    )
+    repaired_status = status + "    timeout-minutes: 5\n"
+    promotion = (
+        status
+        + "  retag:\n"
+        "    environment: sandbox-image-production\n"
+    )
+    publisher = (
+        "permissions: {}\njobs:\n"
+        "  publish:\n"
+        "    environment: sandbox-image-package-writer\n"
+    )
+    for root in (trusted, proposed):
+        (root / "sandbox-image-promote.yml").write_text(promotion)
+        (root / "sandbox-image-publish.yml").write_text(publisher)
+        (root / "sandbox-image-merge-signal.yml").write_text(
+            MERGE_SIGNAL_WORKFLOW
+        )
+    (trusted / "sandbox-image-promotion-gate.yml").write_text(status)
+    (proposed / "sandbox-image-promotion-gate.yml").write_text(repaired_status)
+    monkeypatch.setattr(
+        github_module,
+        "PROMOTION_GATE_REPAIR_DIGEST",
+        hashlib.sha256(repaired_status.encode()).hexdigest(),
+    )
+
+    github_module.verify_promotion_workflows(
+        proposed,
+        trusted_workflow_root=trusted,
+    )
 
 
 def test_proposed_workflow_audit_rejects_merge_signal_changes(
