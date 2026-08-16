@@ -13,67 +13,6 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
-    private static let probeNonce = "TEST-NONCE"
-
-    private static func previewPaneSplitter(
-        identity: TmuxSessionIdentity
-    ) -> TmuxPaneSplitter {
-        TmuxPaneSplitter { _, _, command in
-            guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY")
-            else { return (0, "") }
-            return (
-                0,
-                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
-                    + "\t\(identity.serverPID)\t789\t321"
-                    + "\t/dev/ttys001\t\(identity.sessionID)"
-                    + "\t\(identity.createdAt)\t%9\n"
-            )
-        }
-    }
-
-    private static func inventory(
-        project: ProjectSummary,
-        worktrees: [WorktreeSummary]
-    ) -> KwtHostInventory {
-        KwtHostInventory(projects: [
-            KwtProjectInventory(
-                project: KwtProjectRecord(
-                    repository: project.scopedKey,
-                    name: project.name,
-                    path: project.rootPath,
-                    lastTouched: nil,
-                    registrationFingerprint:
-                    project.registrationFingerprint
-                ),
-                worktrees: worktrees.map { worktree in
-                    KwtWorktreeRecord(
-                        path: worktree.path,
-                        branch: worktree.branch,
-                        commitHash: "",
-                        isMain: worktree.isPrimary,
-                        createdAt: worktree.createdAt,
-                        generation: worktree.generation,
-                        repository: project.scopedKey,
-                        sessionName: worktree.tmuxSessionName ?? "",
-                        tmuxSocketName: worktree.tmuxSocketName
-                    )
-                },
-                warning: nil
-            ),
-        ])
-    }
-
-    private static func probeOutput(
-        _ lines: [String],
-        startupOutput: String? = nil
-    ) -> String {
-        ([startupOutput].compactMap { $0 }
-            + ["GHOSTHUB_SSH_PROBE_\(probeNonce)_START"]
-            + lines
-            + ["GHOSTHUB_SSH_PROBE_\(probeNonce)_END", ""])
-            .joined(separator: "\n")
-    }
-
     @Test("application activation does not refresh tmux inventory")
     @MainActor
     func applicationActivationDoesNotRefreshTmuxInventory() async throws {
@@ -1723,7 +1662,7 @@ struct WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            nativeTmuxPaneSplitter: Self.previewPaneSplitter(
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport.previewPaneSplitter(
                 identity: identity
             ),
             sessionPreviewCoordinator: previewCoordinator
@@ -1862,7 +1801,7 @@ struct WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            nativeTmuxPaneSplitter: Self.previewPaneSplitter(
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport.previewPaneSplitter(
                 identity: identity
             ),
             tmuxSessionIdentityReader: { _, _ in
@@ -2021,7 +1960,7 @@ struct WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            nativeTmuxPaneSplitter: Self.previewPaneSplitter(
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport.previewPaneSplitter(
                 identity: identity
             ),
             sessionPreviewCoordinator: previewCoordinator
@@ -2459,7 +2398,7 @@ struct WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            nativeTmuxPaneSplitter: Self.previewPaneSplitter(
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport.previewPaneSplitter(
                 identity: identity
             ),
             sessionPreviewCoordinator: previewCoordinator
@@ -4739,17 +4678,6 @@ struct WorkspaceTmuxDiscoveryTests {
                 .tmuxSessions.map(\.name) == ["release-work"]
         )
         await model.shutdown()
-    }
-
-    @MainActor
-    private func launchActiveTmuxSurface(
-        _ model: WorkspaceSceneModel,
-        store: SceneTmuxSurfaceStoreStub
-    ) async {
-        await waitUntilMainActor(timeout: .seconds(15)) {
-            model.prepareActiveBorrowedTmuxSurface()
-            return store.requestCount > 0
-        }
     }
 
     @MainActor
@@ -7410,7 +7338,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 ))
                 return (
                     status: 0,
-                    stdout: Self.probeOutput(
+                    stdout: WorkspaceTmuxTestSupport.probeOutput(
                         [
                             "GHOSTHUB_SSH_REACHED",
                             "GHOSTHUB_TMUX_AVAILABLE",
@@ -7428,7 +7356,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Tmux Only",
             platform: .linux,
             sshDestination: "tmux-only"
-        ), protocolNonce: Self.probeNonce)
+        ), protocolNonce: WorkspaceTmuxTestSupport.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .online)
@@ -7453,7 +7381,7 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: 127,
-                    stdout: Self.probeOutput([
+                    stdout: WorkspaceTmuxTestSupport.probeOutput([
                         "GHOSTHUB_SSH_REACHED",
                         "GHOSTHUB_TMUX_UNAVAILABLE",
                     ]),
@@ -7467,7 +7395,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Host A",
             platform: .linux,
             sshDestination: "user-a@host-a.example"
-        ), protocolNonce: Self.probeNonce)
+        ), protocolNonce: WorkspaceTmuxTestSupport.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .degraded)
@@ -7505,7 +7433,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Offline",
             platform: .linux,
             sshDestination: "offline"
-        ), protocolNonce: Self.probeNonce)
+        ), protocolNonce: WorkspaceTmuxTestSupport.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .offline)
@@ -7533,7 +7461,7 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: status,
-                    stdout: Self.probeOutput([
+                    stdout: WorkspaceTmuxTestSupport.probeOutput([
                         "GHOSTHUB_SSH_REACHED",
                         "GHOSTHUB_TMUX_AVAILABLE",
                     ]),
@@ -7547,7 +7475,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Misconfigured Shell",
             platform: .linux,
             sshDestination: "misconfigured-shell"
-        ), protocolNonce: Self.probeNonce)
+        ), protocolNonce: WorkspaceTmuxTestSupport.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .degraded)
@@ -7582,7 +7510,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Timed Out",
             platform: .linux,
             sshDestination: "timed-out"
-        ), protocolNonce: Self.probeNonce)
+        ), protocolNonce: WorkspaceTmuxTestSupport.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .offline)
@@ -7707,7 +7635,7 @@ struct WorkspaceTmuxDiscoveryTests {
             platform: host.platform,
             sshDestination: "wesm@OFFICE-LINUX:22"
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: environment.snapshot.worktrees
         )
@@ -7864,7 +7792,7 @@ struct WorkspaceTmuxDiscoveryTests {
         coordinator.retireProtectedEndpoints(for: participant)
 
         coordinator.reconcileRetiredProtectedEndpoints(
-            after: Self.inventory(project: project, worktrees: [worktree]),
+            after: WorkspaceTmuxTestSupport.inventory(project: project, worktrees: [worktree]),
             hostID: project.hostID
         )
 
@@ -7900,7 +7828,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             kwtInventoryLoader: { _ in
-                Self.inventory(
+                WorkspaceTmuxTestSupport.inventory(
                     project: project,
                     worktrees: environment.snapshot.worktrees
                 )
@@ -7941,7 +7869,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             kwtInventoryLoader: { _ in
-                Self.inventory(
+                WorkspaceTmuxTestSupport.inventory(
                     project: project,
                     worktrees: environment.snapshot.worktrees
                 )
@@ -7982,7 +7910,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let host = try #require(environment.snapshot.hosts.first)
         var refreshedProject = project
         refreshedProject.registrationFingerprint = "replacement-registration"
-        let refreshedInventory = Self.inventory(
+        let refreshedInventory = WorkspaceTmuxTestSupport.inventory(
             project: refreshedProject,
             worktrees: environment.snapshot.worktrees
         )
@@ -8049,7 +7977,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -8118,7 +8046,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        let currentInventory = Self.inventory(
+        let currentInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -8199,7 +8127,7 @@ struct WorkspaceTmuxDiscoveryTests {
         )
         var divergentSnapshot = removalSnapshot
         divergentSnapshot.worktrees.append(protectedWorktree)
-        let currentInventory = Self.inventory(
+        let currentInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: removalSnapshot.worktrees
         )
@@ -8279,7 +8207,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 for: previousSnapshot.worktrees[0]
             )
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -8351,7 +8279,7 @@ struct WorkspaceTmuxDiscoveryTests {
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
-        let currentInventory = Self.inventory(
+        let currentInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -8417,7 +8345,7 @@ struct WorkspaceTmuxDiscoveryTests {
         snapshot.worktrees.append(omittedWorktree)
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
-        var partialInventory = Self.inventory(
+        var partialInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: [snapshot.worktrees[0]]
         )
@@ -8502,7 +8430,7 @@ struct WorkspaceTmuxDiscoveryTests {
         refreshedWorktree.path = "/tmp/refreshed-protected"
         refreshedWorktree.generation =
             "fedcba9876543210fedcba9876543210"
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: [refreshedWorktree]
         )
@@ -8558,7 +8486,7 @@ struct WorkspaceTmuxDiscoveryTests {
             "fedcba9876543210fedcba9876543210"
         refreshedWorktree.tmuxSessionName = "kwt-ghosthub-refreshed"
         refreshedWorktree.tmuxSocketName = "kwt-refreshed"
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: [refreshedWorktree]
         )
@@ -8614,7 +8542,7 @@ struct WorkspaceTmuxDiscoveryTests {
         var refreshedWorktree = try #require(snapshot.worktrees.first)
         refreshedWorktree.tmuxSessionName = "kwt-ghosthub-refreshed"
         refreshedWorktree.tmuxSocketName = "kwt-refreshed"
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: [refreshedWorktree]
         )
@@ -8715,7 +8643,7 @@ struct WorkspaceTmuxDiscoveryTests {
         snapshot.worktrees = []
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
-        var inventory = Self.inventory(project: project, worktrees: [])
+        var inventory = WorkspaceTmuxTestSupport.inventory(project: project, worktrees: [])
         inventory.projects[0].warning = "worktree lookup failed"
         let warnedInventory = inventory
         let removal = LockedValue<(String, String)?>(nil)
@@ -8764,7 +8692,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -8892,12 +8820,12 @@ struct WorkspaceTmuxDiscoveryTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        var warnedInventory = Self.inventory(
+        var warnedInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: []
         )
         warnedInventory.projects[0].warning = "worktree lookup failed"
-        let authoritativeInventory = Self.inventory(
+        let authoritativeInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -9049,7 +8977,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -9195,7 +9123,7 @@ struct WorkspaceTmuxDiscoveryTests {
             projectPath: project.rootPath,
             host: .local
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -9267,7 +9195,7 @@ struct WorkspaceTmuxDiscoveryTests {
             expectedPath = "/tmp/ghosthub-moved"
             var moved = project
             moved.rootPath = expectedPath
-            inventory = Self.inventory(project: moved, worktrees: [])
+            inventory = WorkspaceTmuxTestSupport.inventory(project: moved, worktrees: [])
         case .replacementAtOriginalPath:
             expectedRepository = "repo:/tmp/ghosthub-replacement"
             expectedPath = project.rootPath
@@ -9424,7 +9352,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let restoringSurfaces = SceneTmuxSurfaceStoreStub()
         let identityReads = Counter()
         let establishmentGate = KillGate()
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -9510,7 +9438,7 @@ struct WorkspaceTmuxDiscoveryTests {
         snapshot.worktrees = []
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
-        let inventory = Self.inventory(project: project, worktrees: [])
+        let inventory = WorkspaceTmuxTestSupport.inventory(project: project, worktrees: [])
         let coordinator = WorktreeMutationCoordinator()
         let inventoryLoads = Counter()
         let removalError = KwtInventoryError.commandFailed(
@@ -9585,7 +9513,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -9862,7 +9790,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -9960,7 +9888,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -10157,7 +10085,7 @@ struct WorkspaceTmuxDiscoveryTests {
         )
         refreshedWorktree.tmuxSessionName = "kwt-ghosthub-pr-94"
         refreshedWorktree.tmuxSocketName = "kwt-pr-94"
-        let refreshedInventory = Self.inventory(
+        let refreshedInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: [refreshedWorktree]
         )
@@ -10210,7 +10138,7 @@ struct WorkspaceTmuxDiscoveryTests {
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         let project = try #require(snapshot.projects.first)
         let confirmedHost = try #require(snapshot.hosts.first)
-        let currentInventory = Self.inventory(
+        let currentInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -10322,7 +10250,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let snapshot = environment.snapshot
         let project = try #require(snapshot.projects.first)
         let confirmedHost = try #require(snapshot.hosts.first)
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -10405,7 +10333,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -10490,7 +10418,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let snapshot = environment.snapshot
         let project = try #require(snapshot.projects.first)
         let confirmedHost = try #require(snapshot.hosts.first)
-        let inventory = Self.inventory(
+        let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -10577,7 +10505,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let snapshot = environment.snapshot
         let project = try #require(snapshot.projects.first)
         let confirmedHost = try #require(snapshot.hosts.first)
-        let currentInventory = Self.inventory(
+        let currentInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: snapshot.worktrees
         )
@@ -10730,7 +10658,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 #expect(!command.contains("command -v"))
                 return (
                     status: 0,
-                    stdout: Self.probeOutput(
+                    stdout: WorkspaceTmuxTestSupport.probeOutput(
                         [
                             "GHOSTHUB_SSH_REACHED",
                             "GHOSTHUB_TMUX_AVAILABLE",
@@ -10748,7 +10676,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "ARM Builder",
             platform: .windows,
             sshDestination: "wesm@arm-builder"
-        ), protocolNonce: Self.probeNonce)
+        ), protocolNonce: WorkspaceTmuxTestSupport.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .online)
@@ -10767,7 +10695,7 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: 127,
-                    stdout: Self.probeOutput([
+                    stdout: WorkspaceTmuxTestSupport.probeOutput([
                         "GHOSTHUB_SSH_REACHED",
                         "GHOSTHUB_TMUX_UNAVAILABLE",
                     ]),
@@ -10781,7 +10709,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "ARM Builder",
             platform: .windows,
             sshDestination: "wesm@arm-builder"
-        ), protocolNonce: Self.probeNonce)
+        ), protocolNonce: WorkspaceTmuxTestSupport.probeNonce)
         let summary = try result.get()
         let diagnostic = try #require(summary.diagnostics.first)
 
@@ -10888,138 +10816,5 @@ struct WorkspaceTmuxDiscoveryTests {
         }
         #expect(model.workspaceInventoryWarning == warning)
         await model.shutdown()
-    }
-}
-
-@MainActor
-private struct SceneModelRootHarness: View {
-    @ObservedObject var model: WorkspaceSceneModel
-    let onOpenTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
-    @State private var selection: WorkspaceSelection
-
-    init(
-        model: WorkspaceSceneModel,
-        onOpenTmuxSession: @escaping (
-            WorkspaceTmuxSessionSelection
-        ) -> Void = { _ in }
-    ) {
-        self.model = model
-        self.onOpenTmuxSession = onOpenTmuxSession
-        _selection = State(initialValue: model.selection)
-    }
-
-    var body: some View {
-        RootView(
-            display: WorkspaceDisplayState(
-                snapshot: model.snapshot,
-                suppressesAutomaticWorktreeSessionOpen:
-                model.suppressesSelectedWorktreeSessionOpen,
-                activeTmuxSession: model.activeBorrowedTmuxSelection,
-                activeTmuxSessionIsConnected:
-                model.activeBorrowedTmuxSessionIsConnected
-            ),
-            handlers: InteractionHandlers(
-                openTmuxSession: onOpenTmuxSession
-            ),
-            selection: $selection
-        )
-    }
-}
-
-@MainActor
-private final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
-    var blocksClipboardReads = false
-    var launchError: Error?
-    var launchFailureIsRetryable = false
-    var childExitCode: UInt32?
-    private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
-    private(set) var lastObserverID: UUID?
-
-    func registerSurfaceCloseObserver(
-        id: UUID,
-        onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
-    ) {
-        closeObservers[id] = onSurfaceClosed
-        lastObserverID = id
-    }
-}
-
-private enum SceneSurfaceLaunchError: LocalizedError {
-    case rejected
-
-    var errorDescription: String? {
-        "The terminal rejected the replacement surface."
-    }
-}
-
-@MainActor
-private final class SceneTmuxSurfaceStoreStub: NativeSessionSurfaceStoring {
-    let surface = SceneTmuxPaneSurfaceStub()
-    var returnsSurface = true
-    private(set) var requestCount = 0
-    private(set) var lastConfiguration: TerminalSurfaceConfiguration?
-    private(set) var requestedKeys: [SurfaceKey] = []
-    private(set) var removedKeys: [SurfaceKey] = []
-    private var retainedKeys: Set<SurfaceKey> = []
-
-    func paneSurface(
-        for key: SurfaceKey,
-        configuration: TerminalSurfaceConfiguration
-    ) -> (any NativeSessionPaneSurfacing)? {
-        guard !retainedKeys.contains(key) else { return surface }
-        retainedKeys.insert(key)
-        requestCount += 1
-        lastConfiguration = configuration
-        requestedKeys.append(key)
-        return returnsSurface ? surface : nil
-    }
-
-    func removeSurface(for key: SurfaceKey) {
-        retainedKeys.remove(key)
-        removedKeys.append(key)
-    }
-}
-
-private final class TmuxDiscoveryResultQueue: @unchecked Sendable {
-    private let lock = NSLock()
-    private var values:
-        [Result<[DiscoveredTmuxSession], TmuxBinaryError>]
-    private var removalCount = 0
-
-    init(_ values: [Result<[DiscoveredTmuxSession], TmuxBinaryError>]) {
-        self.values = values
-    }
-
-    func removeFirst()
-        -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
-        lock.withLock {
-            removalCount += 1
-            return values.removeFirst()
-        }
-    }
-
-    var count: Int {
-        lock.withLock { removalCount }
-    }
-}
-
-private final class TmuxExactProbeResultQueue: @unchecked Sendable {
-    private let lock = NSLock()
-    private var values: [Result<Bool, TmuxBinaryError>]
-    private var removalCount = 0
-
-    init(_ values: [Result<Bool, TmuxBinaryError>]) {
-        self.values = values
-    }
-
-    func removeFirst() -> Result<Bool, TmuxBinaryError> {
-        lock.withLock {
-            removalCount += 1
-            return values.removeFirst()
-        }
-    }
-
-    var count: Int {
-        lock.withLock { removalCount }
     }
 }
