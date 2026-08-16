@@ -153,4 +153,23 @@ jobs:
           echo "Verified $macho_count packaged Mach-O deployment targets."
 
       - name: Run libghostty runtime smoke tests on Sequoia
-        run: make smoke-test LIBGHOSTTY_OPTIMIZE=ReleaseFast
+        shell: bash
+        run: |
+          diagnostic="$RUNNER_TEMP/libghostty-smoke.sample.txt"
+          (
+            sleep 240
+            test_pid="$(pgrep -f 'GhosthubPackageTests.xctest' | head -1 || true)"
+            if [[ -n "$test_pid" ]] && kill -0 "$test_pid" 2>/dev/null; then
+              sample "$test_pid" 5 1 -file "$diagnostic" || true
+              cat "$diagnostic" || true
+              kill -ABRT "$test_pid" 2>/dev/null || true
+            fi
+          ) &
+          diagnostic_pid=$!
+          set +e
+          GHOSTTY_LOG=stderr make smoke-test LIBGHOSTTY_OPTIMIZE=ReleaseFast
+          status=$?
+          set -e
+          kill "$diagnostic_pid" 2>/dev/null || true
+          wait "$diagnostic_pid" 2>/dev/null || true
+          exit "$status"

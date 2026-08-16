@@ -26,7 +26,7 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main')
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 120
     environment:
       name: release-signing
@@ -62,11 +62,16 @@ jobs:
           path: .release-inputs/kwt-source
           persist-credentials: false
 
-      - name: Verify Apple Silicon runner
+      - name: Verify Sequoia Apple Silicon runner
         shell: bash
         run: |
           if [[ "$(uname -m)" != "arm64" ]]; then
             echo "This release requires an Apple Silicon runner; found $(uname -m)." >&2
+            exit 1
+          fi
+          macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+          if [[ "$macos_major" != "15" ]]; then
+            echo "This release requires macOS 15; found $(sw_vers -productVersion)." >&2
             exit 1
           fi
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -115,6 +120,13 @@ jobs:
           tar -xf "$archive" -C "$install_root" --strip-components=1
           echo "$install_root" >> "$GITHUB_PATH"
           echo "LIBGHOSTTY_ZIG=$install_root/zig" >> "$GITHUB_ENV"
+
+      - name: Build libghostty with Xcode 16.4 Metal compiler
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+        run: |
+          xcrun -sdk macosx metal --version
+          make bootstrap-libghostty-release
 
       - name: Derive release metadata
         id: release
