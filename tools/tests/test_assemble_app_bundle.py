@@ -356,7 +356,9 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
     privacy_usage_keys = {
         "NSAppleEventsUsageDescription",
         "NSBluetoothAlwaysUsageDescription",
+        "NSCalendarsFullAccessUsageDescription",
         "NSCalendarsUsageDescription",
+        "NSCalendarsWriteOnlyAccessUsageDescription",
         "NSCameraUsageDescription",
         "NSContactsUsageDescription",
         "NSLocalNetworkUsageDescription",
@@ -364,6 +366,7 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
         "NSMicrophoneUsageDescription",
         "NSMotionUsageDescription",
         "NSPhotoLibraryUsageDescription",
+        "NSRemindersFullAccessUsageDescription",
         "NSRemindersUsageDescription",
         "NSSpeechRecognitionUsageDescription",
         "NSSystemAdministrationUsageDescription",

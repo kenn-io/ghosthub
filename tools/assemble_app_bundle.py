@@ -156,8 +156,16 @@ PRIVACY_USAGE_DESCRIPTIONS = {
     "NSBluetoothAlwaysUsageDescription": (
         "A program running within Ghosthub would like to use Bluetooth."
     ),
+    "NSCalendarsFullAccessUsageDescription": (
+        "A program running within Ghosthub would like full access to your "
+        "Calendar."
+    ),
     "NSCalendarsUsageDescription": (
         "A program running within Ghosthub would like to access your Calendar."
+    ),
+    "NSCalendarsWriteOnlyAccessUsageDescription": (
+        "A program running within Ghosthub would like to add events to your "
+        "Calendar."
     ),
     "NSCameraUsageDescription": (
         "A program running within Ghosthub would like to use the camera."
@@ -180,6 +188,9 @@ PRIVACY_USAGE_DESCRIPTIONS = {
     ),
     "NSPhotoLibraryUsageDescription": (
         "A program running within Ghosthub would like to access your Photo Library."
+    ),
+    "NSRemindersFullAccessUsageDescription": (
+        "A program running within Ghosthub would like full access to your reminders."
     ),
     "NSRemindersUsageDescription": (
         "A program running within Ghosthub would like to access your reminders."
