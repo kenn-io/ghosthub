@@ -15,6 +15,9 @@ on:
 
 permissions: {}
 
+env:
+  MERGE_SIGNAL_PATH: kenn-io/ghosthub-nightly/.github/workflows/sandbox-image-merge-signal.yml@67ead910ccc186d9ffe543c32721d359b3eea80e
+
 # Pull-request reconciliation is replaceable because every survivor audits every
 # open head. Each merge-group signal has its own lossless authorization lane.
 concurrency:
@@ -119,11 +122,12 @@ jobs:
             created_filter="$(jq -rn --arg value ">=$cutoff" '$value | @uri')"
             gh api --paginate --slurp \
               "repos/kenn-io/ghosthub/actions/runs?event=merge_group&created=$created_filter&per_page=100" \
-              | jq -r --slurpfile pulls "$pulls" '
+              | jq -r --arg merge_signal_path "$MERGE_SIGNAL_PATH" \
+                  --slurpfile pulls "$pulls" '
                   ($pulls[0] | map(.number)) as $open_numbers |
                   .[].workflow_runs[] |
                   select(
-                    .path == ".github/workflows/sandbox-image-merge-signal.yml" and
+                    .path == $merge_signal_path and
                     .event == "merge_group" and
                     (.head_sha | test("^[0-9a-f]{40}$")) and
                     (.created_at | type == "string") and
@@ -645,10 +649,10 @@ jobs:
           fi
 
           if [[ "$merge_signal" == true ]]; then
-            if ! jq -e '
+            if ! jq -e --arg merge_signal_path "$MERGE_SIGNAL_PATH" '
               .workflow_run.event == "merge_group" and
               .workflow_run.conclusion == "success" and
-              .workflow_run.path == ".github/workflows/sandbox-image-merge-signal.yml" and
+              .workflow_run.path == $merge_signal_path and
               .workflow_run.head_repository.full_name == "kenn-io/ghosthub" and
               (.workflow_run.head_branch | startswith("gh-readonly-queue/main/")) and
               (.workflow_run.head_sha | test("^[0-9a-f]{40}$")) and
@@ -684,10 +688,11 @@ jobs:
                 echo "Pull request $number remains pending." >&2
               fi
             done
-            jq -c --slurpfile pulls "$pulls" '
+            jq -c --arg merge_signal_path "$MERGE_SIGNAL_PATH" \
+              --slurpfile pulls "$pulls" '
               ($pulls[0] | map(.number)) as $open_numbers |
               [.[] | select(
-                .path == ".github/workflows/sandbox-image-merge-signal.yml" and
+                .path == $merge_signal_path and
                 .event == "merge_group" and
                 .status == "completed" and
                 .conclusion == "success" and
