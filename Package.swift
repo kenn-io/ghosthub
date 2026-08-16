@@ -360,7 +360,7 @@ if hasBootstrappedLibghostty {
 let package = Package(
     name: "Ghosthub",
     platforms: [
-        .macOS(.v26),
+        .macOS(.v15),
     ],
     products: products,
     dependencies: [

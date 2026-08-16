@@ -10,7 +10,7 @@ icon: lucide/rocket
 Ghosthub currently requires:
 
 - an Apple Silicon Mac
-- macOS 26 (Tahoe) or newer
+- macOS 15 (Sequoia) or newer
 - tmux 3.2 or newer for tmux sessions
 - Herdr 0.8.0 or newer for Herdr sessions
 - Zellij 0.44 or newer for Zellij sessions

@@ -5,6 +5,12 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Changed
+
+- Apple Silicon releases now support macOS 15 (Sequoia) and newer, with the
+  packaged application and libghostty runtime checked on a hosted Sequoia
+  runner before release changes merge.
+
 ## [0.9.0] - 2026-08-15
 
 ### Added

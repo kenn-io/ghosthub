@@ -126,6 +126,12 @@ CI builds libghostty with `LIBGHOSTTY_XCFRAMEWORK_TARGET=native`, producing the
 arm64 slice required by both runner paths. The project default remains
 `aarch64` for developer Macs.
 
+The separate macOS compatibility workflow builds the unsigned release bundle
+on GitHub's Apple Silicon `macos-15` image with Xcode 26.0.1. It verifies the
+bundle's declared minimum and every packaged Mach-O deployment target, then
+runs the libghostty runtime smoke suite on Sequoia. This lane protects the
+macOS 15 release floor independently of the primary macOS 26 validation lane.
+
 ## Remote SSH Host Prerequisites
 
 Remote hosts are bootstrapped from the app (Settings → Remote Hosts);
