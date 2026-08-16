@@ -7284,9 +7284,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 surface: { [weak self] in
                     self?.protectedTmuxSurface(handle: handle)
                 },
-                onCloseRequest: {
+                onCloseRequest: { [weak self] in
+                    guard let self else { return }
                     NotificationCenter.default.post(
-                        name: .ghosthubCloseTab, object: nil
+                        name: .ghosthubCloseTab,
+                        object: self
                     )
                 },
                 onRetryRequest: { [weak self] in
@@ -7387,10 +7389,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 surface: { [weak self] in
                     self?.nativeHerdrSessionCoordinator.surface(handle: handle)
                 },
-                onCloseRequest: {
+                onCloseRequest: { [weak self] in
+                    guard let self else { return }
                     NotificationCenter.default.post(
                         name: .ghosthubCloseTab,
-                        object: nil
+                        object: self
                     )
                 },
                 onRetryRequest: { [weak self] in
@@ -7450,10 +7453,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 surface: { [weak self] in
                     self?.nativeZellijSessionCoordinator.surface(handle: handle)
                 },
-                onCloseRequest: {
+                onCloseRequest: { [weak self] in
+                    guard let self else { return }
                     NotificationCenter.default.post(
                         name: .ghosthubCloseTab,
-                        object: nil
+                        object: self
                     )
                 },
                 onRetryRequest: { [weak self] in

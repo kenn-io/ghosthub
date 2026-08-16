@@ -393,9 +393,10 @@ public struct RootView: View {
             ) { _ in handleNewWorktreeNotification() }
             .onReceive(
                 NotificationCenter.default.publisher(
-                    for: .ghosthubCloseTab
+                    for: .ghosthubCloseTab,
+                    object: sidebarToggleTarget
                 )
-            ) { _ in handleCloseTabNotification() }
+            ) { _ in handleCloseTab() }
             .onReceive(
                 NotificationCenter.default.publisher(
                     for: .ghosthubCommandPalette
@@ -2258,11 +2259,6 @@ public struct RootView: View {
     }
 
     // MARK: - Notification handlers
-
-    private func handleCloseTabNotification() {
-        guard controlActiveState == .key else { return }
-        handleCloseTab()
-    }
 
     private func handleNewWorktreeNotification() {
         guard controlActiveState == .key,

@@ -182,10 +182,16 @@ struct FileMenuCommands: Commands {
             Divider()
 
             Button("Close") {
-                NotificationCenter.default.post(
-                    name: .ghosthubCloseTab,
-                    object: nil
-                )
+                if let focusedSceneModel {
+                    NotificationCenter.default.post(
+                        name: .ghosthubCloseTab,
+                        object: focusedSceneModel
+                    )
+                } else {
+                    applicationDelegate.requestWorkspaceTabClose(
+                        NSApplication.shared.keyWindow
+                    )
+                }
             }
             .keyboardShortcut("w")
 

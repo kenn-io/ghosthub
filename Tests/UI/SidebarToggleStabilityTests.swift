@@ -163,6 +163,34 @@ struct SidebarToggleStabilityTests {
         #expect(!second.isCommandPalettePresented)
     }
 
+    @Test("close command detaches only its targeted window")
+    func closeCommandDetachesOnlyTargetedWindow() {
+        let firstTarget = SidebarToggleTarget()
+        let secondTarget = SidebarToggleTarget()
+        let first = StabilityTestEnvironment(
+            sidebarToggleTarget: firstTarget,
+            presentsWindow: false
+        )
+        let second = StabilityTestEnvironment(
+            sidebarToggleTarget: secondTarget,
+            presentsWindow: false
+        )
+        defer {
+            first.close()
+            second.close()
+        }
+
+        NotificationCenter.default.post(
+            name: .ghosthubCloseTab,
+            object: firstTarget
+        )
+        first.settle()
+        second.settle()
+
+        #expect(first.closedSessionNames == ["alpha"])
+        #expect(second.closedSessionNames.isEmpty)
+    }
+
     @Test("right side panel toggle preserves main column view identity")
     func rightSidePanelTogglePreservesMainColumn() {
         let env = SidePanelStabilityTestEnvironment()
@@ -243,6 +271,10 @@ private final class StabilityTestEnvironment {
 
     var terminalResizeDeferrals: [Bool] {
         model.terminalResizeDeferrals
+    }
+
+    var closedSessionNames: [String] {
+        model.closedSessionNames
     }
 
     init(
@@ -389,6 +421,7 @@ private final class StabilityTestModel: ObservableObject {
     @Published var columnVisibility: NavigationSplitViewVisibility = .all
     @Published var isCommandPalettePresented = false
     private(set) var terminalResizeDeferrals: [Bool] = []
+    private(set) var closedSessionNames: [String] = []
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -406,6 +439,13 @@ private final class StabilityTestModel: ObservableObject {
 
     func clearTerminalResizeDeferrals() {
         terminalResizeDeferrals.removeAll()
+    }
+
+    func closeSession(_ session: WorkspaceTmuxSessionSelection) {
+        closedSessionNames.append(session.name)
+        if activeSession == session {
+            activeSession = nil
+        }
     }
 
 }
@@ -435,6 +475,9 @@ private struct StabilityTestHarness: View {
                 tmuxSessionPreviewParkingBuilder: {
                     AnyView(Color.clear)
                 }
+            ),
+            handlers: InteractionHandlers(
+                closeTmuxSession: model.closeSession
             ),
             sidebarToggleTarget: sidebarToggleTarget,
             settingsStore: settingsStore,
