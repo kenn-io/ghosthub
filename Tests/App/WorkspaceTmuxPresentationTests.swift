@@ -591,7 +591,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
-            tmuxReconnectIntervals: [.seconds(10)]
+            tmuxReconnectIntervals: [.seconds(60)]
         )
         let canonical = WorkspaceSidebarModel.tmuxSessionSelection(
             for: directory
