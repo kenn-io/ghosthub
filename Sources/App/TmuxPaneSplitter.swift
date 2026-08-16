@@ -47,6 +47,12 @@ struct TmuxPaneSplitFailure: Error, Equatable, LocalizedError, Sendable {
     var sessionName: String
     var status: Int32
     var diagnostic: String
+    var kind: Kind = .terminal
+
+    enum Kind: Equatable, Sendable {
+        case terminal
+        case atomicGuardChanged
+    }
 
     var errorDescription: String? {
         var description =
@@ -154,7 +160,8 @@ struct TmuxPaneSplitter: Sendable {
                 host: target.host.displayName,
                 sessionName: target.sessionName,
                 status: 75,
-                diagnostic: "The attached tmux session changed."
+                diagnostic: "The attached tmux session changed.",
+                kind: .atomicGuardChanged
             )
         }
         if result.status != 0,

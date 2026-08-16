@@ -863,6 +863,49 @@ struct TmuxPaneSplitterTests {
         #expect(failure == nil)
     }
 
+    @Test("only the atomic guard mismatch is retryable")
+    func atomicGuardMismatchIsRetryable() async {
+        let mismatch = await TmuxPaneSplitter { _, _, command in
+            let prefix = "GHOSTHUB_TMUX_SPLIT_IDENTITY_MISMATCH_"
+            guard let start = command.range(of: prefix)?.lowerBound else {
+                return (1, "missing mismatch marker")
+            }
+            let marker = command[start...].prefix { character in
+                character.isLetter || character.isNumber
+                    || character == "_" || character == "-"
+            }
+            return (0, String(marker) + "\n")
+        }.split(
+            .right,
+            target: TmuxPaneSplitTarget(
+                host: .local,
+                tmuxPath: "/usr/bin/tmux",
+                sessionName: "moving",
+                socketName: nil,
+                sshConnectionArguments: [],
+                expectedIdentity: testSplitClient.sessionIdentity,
+                expectedClient: testSplitClient
+            )
+        )
+        let missingClient = await TmuxPaneSplitter { _, _, _ in
+            (1, "can't find client: /dev/ttys001\n")
+        }.split(
+            .right,
+            target: TmuxPaneSplitTarget(
+                host: .local,
+                tmuxPath: "/usr/bin/tmux",
+                sessionName: "missing",
+                socketName: nil,
+                sshConnectionArguments: [],
+                expectedIdentity: testSplitClient.sessionIdentity,
+                expectedClient: testSplitClient
+            )
+        )
+
+        #expect(mismatch?.kind == .atomicGuardChanged)
+        #expect(missingClient?.kind == .terminal)
+    }
+
     @Test("cancellation removes an installed split hook")
     func cancellationRemovesInstalledHook() async {
         let hookInstalled = LockedValue(false)

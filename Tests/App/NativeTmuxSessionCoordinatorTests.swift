@@ -21,6 +21,15 @@ private func supportedPaneSplitter(
     TmuxPaneSplitter(runner: runner)
 }
 
+private func splitMismatchMarker(in command: String) -> String? {
+    let prefix = "GHOSTHUB_TMUX_SPLIT_IDENTITY_MISMATCH_"
+    guard let start = command.range(of: prefix)?.lowerBound else { return nil }
+    return String(command[start...].prefix { character in
+        character.isLetter || character.isNumber
+            || character == "_" || character == "-"
+    })
+}
+
 @Suite("Native tmux connection identity", .serialized)
 @MainActor
 struct NativeTmuxSessionCoordinatorTests {
@@ -554,7 +563,8 @@ struct NativeTmuxSessionCoordinatorTests {
                 }
                 calls.withLock { $0.append((host, arguments, command)) }
                 return (1, "no space for new pane\n")
-            }
+            },
+            paneSplitErrorDuration: .milliseconds(100)
         )
         var readyCount = 0
         coordinator.onSurfaceReady = { _ in readyCount += 1 }
@@ -601,6 +611,9 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(store.surface.paneSplitErrorMessage?.contains(
             "no space for new pane"
         ) == true)
+        await waitUntilMainActor {
+            store.surface.paneSplitErrorMessage == nil
+        }
     }
 
     @Test("remote tmux path cache follows the frozen SSH route")
@@ -1067,6 +1080,63 @@ struct NativeTmuxSessionCoordinatorTests {
 
         #expect(clientLookups.load() == 3)
         #expect(splitCommands.load().count == 2)
+        #expect(splitCommands.load().last?.contains("'%10'") == true)
+        #expect(store.surface.paneSplitErrorMessage == nil)
+    }
+
+    @Test("an atomic pane movement rereads the client and retries once")
+    func atomicPaneMovementRetriesOnce() async throws {
+        let clientLookups = LockedValue(0)
+        let splitCommands = LockedValue<[String]>([])
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    var lookup = 0
+                    clientLookups.withLock {
+                        $0 += 1
+                        lookup = $0
+                    }
+                    if lookup <= 2 {
+                        return (0, coordinatorSplitClientOutput)
+                    }
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t123\t789\t321"
+                            + "\t/dev/ttys001\t$7\t456\t%10\n"
+                    )
+                }
+                var attempt = 0
+                splitCommands.withLock {
+                    $0.append(command)
+                    attempt = $0.count
+                }
+                if attempt == 1,
+                   let marker = splitMismatchMarker(in: command) {
+                    return (0, marker + "\n")
+                }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "moving-during-split",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { readyCount == 2 }
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
+        handler(.right)
+        await waitUntilMainActor { splitCommands.load().count == 2 }
+
+        #expect(clientLookups.load() == 3)
         #expect(splitCommands.load().last?.contains("'%10'") == true)
         #expect(store.surface.paneSplitErrorMessage == nil)
     }
