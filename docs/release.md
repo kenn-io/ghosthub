@@ -401,11 +401,12 @@ Release binaries target macOS 15.0 and the assembled app declares the same
 minimum through `LSMinimumSystemVersion`. Pull requests and `main` pushes build
 the unsigned release bundle on GitHub's Apple Silicon macOS 15 image, reject
 any packaged Mach-O with a newer deployment target, and run the libghostty
-runtime smoke suite there. Because Xcode 26 distributes its Metal compiler as
-an optional component, that job downloads the Metal toolchain before building
-libghostty and verifies the compiler itself rather than only locating Xcode's
-shim. Signing and notarization remain on the macOS 26 release runner; lowering
-the deployment target does not create a separate Sequoia artifact.
+runtime smoke suite there. Xcode 26's separately downloaded Metal toolchain
+does not activate on the hosted Sequoia image, so that job builds libghostty's
+shaders with Xcode 16.4's bundled Metal compiler before compiling and packaging
+Ghosthub with Xcode 26.0.1. Signing and notarization remain on the macOS 26
+release runner; lowering the deployment target does not create a separate
+Sequoia artifact.
 
 If Apple rejects the submission, the workflow prints the notary response and
 fetches the detailed notarization log before failing. It never publishes an
