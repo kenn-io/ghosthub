@@ -40,6 +40,7 @@ endif
 RELEASE_BUILD_VERSION ?= $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
 RELEASE_MIN_MACOS ?= 26.0
 APP_ICON_PATH ?= Resources/AppIcon/Ghosthub.icns
+APP_ENTITLEMENTS_PATH ?= Resources/Ghosthub.entitlements
 APP_COPYRIGHT ?= Copyright © 2026 Kenn Software LLC. Licensed under the GNU AGPL v3.0 or later.
 APP_LICENSE_PATH ?= LICENSE
 KWT_REPOSITORY ?= https://github.com/kenn-io/kwt.git
@@ -388,7 +389,9 @@ debug-app: ensure-kwt ensure-kwt-variants bootstrap-libghostty
 		--kwt-version "$(KWT_VERSION)" \
 		--kwt-source-revision "$(KWT_SOURCE_REVISION)" \
 		--remote-kwt-source-revision "$(KWT_REF)" >/dev/null; \
-	codesign --force --deep --sign - "$(DEBUG_APP_PATH)" >/dev/null; \
+	codesign --force --deep --options runtime \
+		--entitlements "$(APP_ENTITLEMENTS_PATH)" \
+		--sign - "$(DEBUG_APP_PATH)" >/dev/null; \
 	codesign --verify --deep --strict "$(DEBUG_APP_PATH)"; \
 	printf 'Built debug app bundle: %s\n' "$(DEBUG_APP_PATH)"
 

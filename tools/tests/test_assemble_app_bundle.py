@@ -353,6 +353,29 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
     assert plist["CFBundleVersion"] == "123"
     assert plist["CFBundleIconFile"] == "Ghosthub.icns"
     assert plist["NSHumanReadableCopyright"] == COPYRIGHT_NOTICE
+    privacy_usage_keys = {
+        "NSAppleEventsUsageDescription",
+        "NSBluetoothAlwaysUsageDescription",
+        "NSCalendarsUsageDescription",
+        "NSCameraUsageDescription",
+        "NSContactsUsageDescription",
+        "NSLocalNetworkUsageDescription",
+        "NSLocationUsageDescription",
+        "NSMicrophoneUsageDescription",
+        "NSMotionUsageDescription",
+        "NSPhotoLibraryUsageDescription",
+        "NSRemindersUsageDescription",
+        "NSSpeechRecognitionUsageDescription",
+        "NSSystemAdministrationUsageDescription",
+    }
+    assert privacy_usage_keys <= plist.keys()
+    assert plist["NSPhotoLibraryUsageDescription"] == (
+        "A program running within Ghosthub would like to access your Photo Library."
+    )
+    assert all(
+        plist[key].startswith("A program running within Ghosthub")
+        for key in privacy_usage_keys
+    )
     assert plist["GhosthubKwtVersion"] == "0.1.0"
     assert plist["GhosthubKwtSourceRevision"] == "abc123"
     assert plist["GhosthubReleaseChannel"] == "stable"
