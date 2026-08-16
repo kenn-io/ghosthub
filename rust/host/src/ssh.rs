@@ -1029,6 +1029,16 @@ impl SshLease {
         &self.result
     }
 
+    /// Confirm that the KWT controller still owns this lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified transport failure after the controller exits or
+    /// when its status can no longer be inspected.
+    pub fn ensure_live(&self) -> Result<(), SshError> {
+        self.process.ensure_live()
+    }
+
     /// Release the lease when this is its final owner.
     ///
     /// # Errors
@@ -1080,6 +1090,45 @@ impl LeaseState {
             Ok(())
         }
     }
+
+    fn ensure_live(&self) -> Result<(), SshError> {
+        let mut process = self
+            .process
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(active) = process.as_mut() else {
+            return Err(SshError::new(
+                DiagnosticKind::Transport,
+                "SSH lease controller is no longer active",
+            ));
+        };
+        match active.child.try_wait() {
+            Ok(None) => Ok(()),
+            Ok(Some(_status)) => {
+                let mut exited = process
+                    .take()
+                    .expect("observed lease process remains owned");
+                let error = exited.exit_error("SSH lease controller exited unexpectedly");
+                finish_exited_lease(exited);
+                Err(error)
+            }
+            Err(error) => {
+                let mut failed = process.take().expect("failed lease process remains owned");
+                failed.terminate_and_reap();
+                Err(classify_io_error(error))
+            }
+        }
+    }
+}
+
+fn finish_exited_lease(mut process: LeaseProcess) {
+    let _cleanup = thread::Builder::new()
+        .name("ghosthub-ssh-lease-exit".to_owned())
+        .spawn(move || {
+            process.containment.terminate();
+            process.released = true;
+            process.finish_readers();
+        });
 }
 
 impl Drop for LeaseState {
@@ -1900,6 +1949,54 @@ mod tests {
             "released"
         );
         std::fs::remove_file(marker).expect("remove release marker");
+    }
+
+    #[test]
+    fn acquired_lease_reports_an_unexpected_controller_exit() {
+        let complete = r#"{"operation_id":"op-1","sequence":1,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":["-S","control-path"]}}"#;
+        #[cfg(windows)]
+        let command = CommandPrefix::new(
+            "powershell.exe",
+            [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!("[Console]::Out.WriteLine('{complete}'); exit 23; #"),
+            ]
+            .map(OsString::from)
+            .to_vec(),
+        );
+        #[cfg(not(windows))]
+        let command = CommandPrefix::new(
+            "/bin/sh",
+            vec![
+                "-c".into(),
+                format!("printf '%s\\n' '{complete}'; exit 23").into(),
+            ],
+        );
+        let lease = KwtSshLeaseClient::with_command(command)
+            .acquire(
+                &route(),
+                &CancellationToken::new(),
+                |_| Err(SshError::prompt_cancelled()),
+                |_| {},
+            )
+            .expect("acquire scripted lease before its controller exits");
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let error = loop {
+            match lease.ensure_live() {
+                Ok(()) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(()) => panic!("exited lease remained live"),
+                Err(error) => break error,
+            }
+        };
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert!(error.to_string().contains("controller exited"));
     }
 
     #[test]

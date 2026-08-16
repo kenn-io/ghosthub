@@ -810,7 +810,12 @@ expansion, host-key prompting, authentication prompting, or ControlMaster
 lifecycle. On Windows, the host crate invokes the exact revision-pinned Linux
 controller through system-owned `wsl.exe --distribution <distro> --exec` as
 argv-only `kwt ssh resolve --json`; the matching `/usr/bin/ssh` in that distro
-owns every master and client. The selected distro's OpenSSH configuration,
+owns every master and client. Every controller and SSH command prefix checks
+the captured WSL kernel boot ID and distro PID 1 start time inside that same
+`wsl.exe` invocation before it executes the requested program. A distro restart
+therefore invalidates route resolution, lease acquisition, inventory, refresh,
+and terminal attachment instead of allowing evidence from the prior runtime to
+authorize its replacement. The selected distro's OpenSSH configuration,
 known-hosts files, agents, and credentials are authoritative. There is no
 fallback to native Windows OpenSSH, a masterless KWT lease, or an unguarded
 direct SSH client. The host accepts only projection policy
@@ -832,14 +837,18 @@ A successful lease exposes only generation-bound OpenSSH arguments. The host
 owns the KWT lease process and keeps it alive for as long as any presentation
 uses the connection. Closing the final owner closes stdin and waits a bounded
 interval for release; cancellation or protocol failure terminates the
-controller process. The terminal crate never names KWT, parses a route, or
+controller process. While the host is Ready, workspace event polling checks the
+controller without blocking. An unexpected exit consumes the lease, contains
+remaining descendants off the UI thread, discards the remote runtime context,
+and publishes a host-scoped unavailable diagnostic before another SSH command
+can reuse its arguments. The terminal crate never names KWT, parses a route, or
 answers an SSH prompt. It receives only the resolved client program and argv
 from a later host-built attach plan. On Windows that program is the absolute
-system `wsl.exe`, followed by the selected distro, `--exec /usr/bin/ssh`, the
-reviewed lease arguments, and the remote command. Ghosthub accepts the pinned
-KWT lease result only as an option-only `-F`/`-o`/`-S` prefix, then appends the
-reviewed logical destination exactly once before the remote command. Lease
-authority is runtime-only and is never serialized.
+system `wsl.exe`, followed by the selected distro, the runtime guard,
+`/usr/bin/ssh`, the reviewed lease arguments, and the remote command. Ghosthub
+accepts the pinned KWT lease result only as an option-only `-F`/`-o`/`-S`
+prefix, then appends the reviewed logical destination exactly once before the
+remote command. Lease authority is runtime-only and is never serialized.
 Cancelling or failing a connection refresh discards that host's stale runtime
 context and lease before publishing `Disconnected` or `Unavailable`; retained
 terminal presentations keep only their own explicit lease ownership.

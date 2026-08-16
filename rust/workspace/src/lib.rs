@@ -6816,6 +6816,7 @@ impl Workspace {
             .event_drain
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.monitor_remote_lease_liveness();
         let mut emitted = Vec::new();
         let operation_has_more = self.drain_operation_events(&mut emitted);
         let mut exited = false;
@@ -6933,6 +6934,53 @@ impl Workspace {
             || event_source_may_have_more(retained_processed, local_retained_budget, false)
             || event_source_may_have_more(remote_retained_processed, remote_retained_budget, false);
         (emitted, may_have_more)
+    }
+
+    fn monitor_remote_lease_liveness(&self) {
+        let failed = {
+            let mut entries = self
+                .inner
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            entries
+                .iter_mut()
+                .filter_map(|(host_id, entry)| {
+                    let error = entry
+                        .context
+                        .as_ref()?
+                        .snapshot
+                        .lease()
+                        .ensure_live()
+                        .err()?;
+                    entry.generation = entry.generation.wrapping_add(1).max(1);
+                    if let Some(cancellation) = entry.cancellation.take() {
+                        cancellation.cancel();
+                    }
+                    let context = entry.context.take()?;
+                    Some((host_id.clone(), error, context))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (host_id, error, context) in failed {
+            let stale_presentations = reconcile_remote_presentations(
+                &self.inner,
+                &host_id,
+                context.snapshot.endpoint(),
+                context.snapshot.route_identity(),
+                context.snapshot.lease_generation(),
+                &[],
+            );
+            set_remote_host_state(
+                &self.inner,
+                &host_id,
+                HostConnectionState::Unavailable,
+                None,
+                Some(HostDiagnostic::new(error.kind(), error.to_string())),
+            );
+            drop(stale_presentations);
+            drop(context);
+        }
     }
 
     fn handle_remote_terminal_exit(

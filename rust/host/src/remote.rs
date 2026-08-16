@@ -372,6 +372,10 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         session: &DiscoveredSession,
         term: &str,
     ) -> Result<(AttachPlan, String), RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
         let identity_mismatch_marker = identity_mismatch_marker()?;
         let identity = session.identity();
         let condition = format!(
@@ -418,7 +422,11 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         command: &str,
         cancellation: &CancellationToken,
     ) -> Result<crate::CommandOutput, RemoteTmuxError> {
-        self.runner
+        lease
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let output = self
+            .runner
             .run(
                 self.ssh.program(),
                 &self.ssh.with_arguments(ssh_arguments(
@@ -430,7 +438,11 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 cancellation,
                 COMMAND_TIMEOUT,
             )
-            .map_err(|error| RemoteTmuxError::io(&error))
+            .map_err(|error| RemoteTmuxError::io(&error))?;
+        lease
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        Ok(output)
     }
 }
 
@@ -794,7 +806,66 @@ impl std::error::Error for RemoteTmuxError {}
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+    use std::time::Instant;
+
     use super::*;
+
+    fn exited_lease() -> SshLease {
+        let target = SshTarget::new("host-alias", None, None).expect("target");
+        let route = crate::SshRouteSnapshot::parse(
+            br#"{
+              "logical_target":{"hostname":"host-alias","user":null,"port":null},
+              "targets":[{
+                "logical_target":{"hostname":"host-alias","user":null,"port":null},
+                "effective_target":{"hostname":"host-alias","user":null,"port":null},
+                "display_target":"host-alias","host_key_alias":null,
+                "strict_host_key_checking":"ask",
+                "projection":{"arguments":["-F","/dev/null"],"private_config":[]}
+              }],
+              "route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "projection_policy":"kwt.openssh.projection.v1",
+              "observed_at":"2026-08-15T12:00:00Z"
+            }"#,
+            &target,
+        )
+        .expect("route");
+        let complete = r#"{"operation_id":"op-1","sequence":1,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":["-S","control-path"]}}"#;
+        #[cfg(windows)]
+        let command = CommandPrefix::new(
+            "powershell.exe",
+            [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!("[Console]::Out.WriteLine('{complete}'); exit 23; #"),
+            ]
+            .map(OsString::from)
+            .to_vec(),
+        );
+        #[cfg(not(windows))]
+        let command = CommandPrefix::new(
+            "/bin/sh",
+            vec![
+                "-c".into(),
+                format!("printf '%s\\n' '{complete}'; exit 23").into(),
+            ],
+        );
+        let lease = KwtSshLeaseClient::with_command(command)
+            .acquire(
+                &route,
+                &CancellationToken::new(),
+                |_| Err(crate::SshError::prompt_cancelled()),
+                |_| {},
+            )
+            .expect("acquire lease before scripted exit");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while lease.ensure_live().is_ok() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        lease
+    }
 
     #[test]
     fn remote_command_quotes_every_argument() {
@@ -917,6 +988,40 @@ mod tests {
             ]
             .map(OsString::from)
         );
+    }
+
+    #[test]
+    fn exited_lease_cannot_authorize_a_new_attachment() {
+        let config = RemoteTmuxConfig::new(
+            "ssh:test",
+            "Test",
+            SshTarget::new("host-alias", None, None).expect("target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("config");
+        let host = RemoteTmuxHost::with_commands(
+            config,
+            CommandPrefix::native("controller"),
+            CommandPrefix::native("ssh"),
+            crate::StdCommandRunner,
+        );
+        let session = DiscoveredSession::new("work", SessionIdentity::new(42, "$1", 100), 0);
+        let snapshot = RemoteTmuxSnapshot {
+            endpoint: "host-alias".to_owned(),
+            route_identity: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
+            lease_generation: 7,
+            tmux_binary: "/usr/bin/tmux".to_owned(),
+            sessions: vec![session.clone()],
+            lease: exited_lease(),
+        };
+
+        let error = host
+            .attach_plan(&snapshot, &session, "xterm-256color")
+            .expect_err("exited controller cannot issue stale SSH arguments");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
     }
 
     #[test]

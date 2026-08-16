@@ -49,6 +49,24 @@ const INVENTORY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}\t#{ses
 const CLIENT_READINESS_FORMAT: &str = "#{client_pid}\t#{pid}\t#{session_id}\t#{session_created}";
 const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}";
 const KILL_IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_kill_identity_mismatch_v1__";
+const WSL_RUNTIME_GUARD_SCRIPT: &str = r#"
+expected_boot=$1
+expected_start=$2
+shift 2
+IFS= read -r current_boot < /proc/sys/kernel/random/boot_id || exit 125
+current_start=$(
+    IFS= read -r process_stat < /proc/1/stat || exit 125
+    process_fields=${process_stat##*) }
+    set -- $process_fields
+    [ "$#" -ge 20 ] || exit 125
+    printf '%s' "${20}"
+) || exit 125
+if [ "$current_boot" != "$expected_boot" ] || [ "$current_start" != "$expected_start" ]; then
+    printf '%s\n' 'WSL restarted; reconnect the host' >&2
+    exit 125
+fi
+exec "$@"
+"#;
 static ADMISSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub trait AdmissionAttacher {
@@ -750,9 +768,9 @@ impl<R: CommandRunner> WslHost<R> {
         }
         self.require_runtime(endpoint, runtime, cancellation)?;
 
-        let mut controller_arguments = pinned_prefix(endpoint);
+        let mut controller_arguments = runtime_pinned_prefix(endpoint, runtime);
         controller_arguments.push(OsString::from(helper));
-        let mut ssh_arguments = pinned_prefix(endpoint);
+        let mut ssh_arguments = runtime_pinned_prefix(endpoint, runtime);
         ssh_arguments.push(OsString::from("/usr/bin/ssh"));
         Ok(RemoteTmuxHost::with_commands(
             config,
@@ -4294,6 +4312,19 @@ fn pinned_prefix(endpoint: &WslEndpoint) -> Vec<OsString> {
         .collect()
 }
 
+fn runtime_pinned_prefix(endpoint: &WslEndpoint, runtime: &WslRuntimeIdentity) -> Vec<OsString> {
+    let mut prefix = pinned_prefix(endpoint);
+    prefix.extend([
+        OsString::from("/bin/sh"),
+        OsString::from("-c"),
+        OsString::from(WSL_RUNTIME_GUARD_SCRIPT),
+        OsString::from("ghosthub-wsl-runtime-guard"),
+        OsString::from(runtime.kernel_boot_id()),
+        OsString::from(runtime.init_start_ticks().to_string()),
+    ]);
+    prefix
+}
+
 fn append_scrubbed_environment(args: &mut Vec<OsString>) {
     args.extend(
         [
@@ -5288,6 +5319,12 @@ mod tests {
                 "--distribution",
                 "Ubuntu",
                 "--exec",
+                "/bin/sh",
+                "-c",
+                WSL_RUNTIME_GUARD_SCRIPT,
+                "ghosthub-wsl-runtime-guard",
+                runtime.kernel_boot_id(),
+                &runtime.init_start_ticks().to_string(),
                 &test_kwt_helper_path(),
             ]
             .map(OsString::from)
@@ -5295,7 +5332,19 @@ mod tests {
         assert_eq!(ssh.program(), OsStr::new(r"C:\Windows\System32\wsl.exe"));
         assert_eq!(
             ssh.arguments(),
-            ["--distribution", "Ubuntu", "--exec", "/usr/bin/ssh"].map(OsString::from)
+            [
+                "--distribution",
+                "Ubuntu",
+                "--exec",
+                "/bin/sh",
+                "-c",
+                WSL_RUNTIME_GUARD_SCRIPT,
+                "ghosthub-wsl-runtime-guard",
+                runtime.kernel_boot_id(),
+                &runtime.init_start_ticks().to_string(),
+                "/usr/bin/ssh",
+            ]
+            .map(OsString::from)
         );
     }
 
