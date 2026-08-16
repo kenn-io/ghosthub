@@ -130,6 +130,78 @@ struct WorkspaceWorktreeRemovalActionPresentation: Equatable {
     }
 }
 
+struct WorkspaceProjectRemovalActionPresentation: Equatable {
+    static let controlWidth: CGFloat = 30
+
+    let isVisible: Bool
+    let reservedWidth: CGFloat
+    let hitTargetWidth: CGFloat
+
+    init(
+        isRemovable: Bool,
+        isRowHovered: Bool,
+        isActionHovered: Bool,
+        isFocused: Bool
+    ) {
+        isVisible = isRemovable
+            && (isRowHovered || isActionHovered || isFocused)
+        reservedWidth = isRemovable ? Self.controlWidth : 0
+        hitTargetWidth = isRemovable ? Self.controlWidth : 0
+    }
+}
+
+private struct ProjectRemovalButton: View {
+    let project: ProjectSummary
+    let isRowHovered: Bool
+    let onRemove: (ProjectSummary) -> Void
+
+    @FocusState private var isFocused: Bool
+    @State private var isHovered = false
+
+    var body: some View {
+        let presentation = WorkspaceProjectRemovalActionPresentation(
+            isRemovable: true,
+            isRowHovered: isRowHovered,
+            isActionHovered: isHovered,
+            isFocused: isFocused
+        )
+        Button {
+            onRemove(project)
+        } label: {
+            ZStack {
+                Color.clear
+                if presentation.isVisible {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .frame(
+                width: presentation.hitTargetWidth,
+                height: 30
+            )
+            .background {
+                if presentation.isVisible {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(
+                            Color.primary.opacity(
+                                isHovered ? 0.14 : 0.05
+                            )
+                        )
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .focused($isFocused)
+        .onHover { isHovered = $0 }
+        .help("Remove Project…")
+        .accessibilityLabel(
+            "Remove project \(project.sidebarTitle)"
+        )
+    }
+}
+
 struct WorktreeStatusCluster: View {
     let status: WorktreeRowStatus
 
@@ -513,6 +585,7 @@ struct WorkspaceSidebarView: View {
     @State private var hoveredWorktreeID: UUID?
     @State private var hoveredWorktreeActionID: UUID?
     @State private var worktreeHoverDismissTask: Task<Void, Never>?
+    @State private var hoveredProjectID: UUID?
     @State private var draggedSidebarItem: WorkspaceSidebarDragItem?
     @State private var reorderIndicator:
         WorkspaceSidebarReorderIndicator?
@@ -2110,20 +2183,19 @@ struct WorkspaceSidebarView: View {
             .accessibilityIdentifier("project-actions")
 
             if canRemove {
-                Button {
-                    onRequestRemoveProject(project.project)
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 24, height: 28)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Remove Project…")
-                .accessibilityLabel(
-                    "Remove project \(project.project.sidebarTitle)"
+                ProjectRemovalButton(
+                    project: project.project,
+                    isRowHovered:
+                    hoveredProjectID == project.project.id,
+                    onRemove: onRequestRemoveProject
                 )
+            }
+        }
+        .onHover { isHovered in
+            if isHovered {
+                hoveredProjectID = project.project.id
+            } else if hoveredProjectID == project.project.id {
+                hoveredProjectID = nil
             }
         }
     }
