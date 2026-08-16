@@ -34,7 +34,7 @@ sheet and start again so the confirmation applies to the current host.
 
 ## Remove a project
 
-Hover over a project row and select its trash control, or Control-click the row
+Hover over a project row and select its × control, or Control-click the row
 and choose **Remove Project…**. Then confirm the project and host. Ghosthub asks
 kwt to unregister that project and refreshes inventory. You can remove the
 registration even if its checkout folder has already been deleted. This does

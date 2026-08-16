@@ -368,6 +368,42 @@ struct WorkspaceSidebarModelTests {
         #expect(primary.reservedWidth == 0)
     }
 
+    @Test("project removal appears on hover or keyboard focus")
+    func projectRemovalHoverAndFocusKeepStableHitTarget() {
+        let idle = WorkspaceProjectRemovalActionPresentation(
+            isRemovable: true,
+            isRowHovered: false,
+            isActionHovered: false,
+            isFocused: false
+        )
+        let hovered = WorkspaceProjectRemovalActionPresentation(
+            isRemovable: true,
+            isRowHovered: true,
+            isActionHovered: false,
+            isFocused: false
+        )
+        let focused = WorkspaceProjectRemovalActionPresentation(
+            isRemovable: true,
+            isRowHovered: false,
+            isActionHovered: false,
+            isFocused: true
+        )
+        let unavailable = WorkspaceProjectRemovalActionPresentation(
+            isRemovable: false,
+            isRowHovered: true,
+            isActionHovered: true,
+            isFocused: true
+        )
+
+        #expect(!idle.isVisible)
+        #expect(hovered.isVisible)
+        #expect(focused.isVisible)
+        #expect(!unavailable.isVisible)
+        #expect(idle.reservedWidth == hovered.reservedWidth)
+        #expect(focused.hitTargetWidth >= 28)
+        #expect(unavailable.reservedWidth == 0)
+    }
+
     @Test("hosts remain visible before they have projects or tmux sessions")
     func exposesEmptyHosts() {
         let local = HostSummary.fixture(name: "This Mac")
