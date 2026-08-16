@@ -23,7 +23,6 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 // length-prefixed, so it may contain the separator or any other non-NUL byte.
 const INVENTORY_FORMAT: &str =
     "#{pid}|#{session_id}|#{session_created}|#{session_attached}|#{n:session_name}|#{session_name}";
-const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const TMUX_PATH_MARKER: &str = "GHOSTHUB_TMUX_PATH=";
 const HERDR_INVENTORY_PREFIX: &str = "GHOSTHUB_HERDR_INVENTORY_";
 const ZELLIJ_INVENTORY_PREFIX: &str = "GHOSTHUB_ZELLIJ_INVENTORY_";
@@ -108,7 +107,9 @@ impl RemoteTmuxConfig {
         };
         require_safe("remote host ID", &config.id)?;
         require_safe("remote host name", &config.name)?;
-        require_absolute("remote tmux binary", &config.tmux_binary)?;
+        if !config.tmux_binary.is_empty() {
+            require_absolute("remote tmux binary", &config.tmux_binary)?;
+        }
         if let Some(path) = &config.socket_directory {
             require_absolute("remote tmux socket directory", path)?;
         }
@@ -161,7 +162,7 @@ impl Default for RemoteTmuxConfig {
             id: "ssh:example".to_owned(),
             name: "Remote host".to_owned(),
             target: SshTarget::new("example.invalid", None, None).expect("static SSH target"),
-            tmux_binary: DEFAULT_TMUX.to_owned(),
+            tmux_binary: String::new(),
             socket_directory: None,
         }
     }
@@ -813,7 +814,11 @@ fn account_login_shell_command(command: &str) -> String {
 }
 
 fn tmux_probe_command(configured: &str) -> String {
-    let selection = format!("ghosthub_tmux_path={}", shell_quoted_argument(configured));
+    let selection = if configured.is_empty() {
+        "ghosthub_tmux_path=$(command -v tmux) || exit 127".to_owned()
+    } else {
+        format!("ghosthub_tmux_path={}", shell_quoted_argument(configured))
+    };
     format!(
         "{selection}; test -x \"$ghosthub_tmux_path\" || exit 127; \
          printf '{TMUX_PATH_MARKER}%s\\n' \"$ghosthub_tmux_path\"; \
@@ -1442,11 +1447,20 @@ mod tests {
     }
 
     #[test]
-    fn default_tmux_probe_honors_the_explicit_system_path() {
-        let probe = tmux_probe_command(DEFAULT_TMUX);
+    fn system_tmux_probe_honors_the_explicit_path() {
+        let probe = tmux_probe_command("/usr/bin/tmux");
 
         assert!(!probe.contains("command -v tmux"));
         assert!(probe.contains("ghosthub_tmux_path='/usr/bin/tmux'"));
+        assert!(probe.contains(TMUX_PATH_MARKER));
+    }
+
+    #[test]
+    fn automatic_tmux_probe_uses_the_remote_login_path() {
+        let probe = tmux_probe_command("");
+
+        assert!(probe.contains("command -v tmux"));
+        assert!(probe.contains("test -x \"$ghosthub_tmux_path\""));
         assert!(probe.contains(TMUX_PATH_MARKER));
     }
 

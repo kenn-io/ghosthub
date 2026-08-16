@@ -962,7 +962,7 @@ pub struct ClipboardRead {
     inner: TerminalClipboardRead,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SshHostDraft {
     pub name: String,
     pub hostname: String,
@@ -1001,19 +1001,6 @@ impl From<&SshHostSettings> for SshHostDraft {
                 .map_or_else(String::new, |port| port.to_string()),
             tmux_binary: host.tmux_binary().to_owned(),
             socket_directory: host.socket_directory().unwrap_or_default().to_owned(),
-        }
-    }
-}
-
-impl Default for SshHostDraft {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            hostname: String::new(),
-            user: String::new(),
-            port: String::new(),
-            tmux_binary: "/usr/bin/tmux".to_owned(),
-            socket_directory: String::new(),
         }
     }
 }
@@ -19710,7 +19697,7 @@ mod tests {
             "Studio",
             SshTarget::new("studio.example", Some("deploy".to_owned()), Some(22))
                 .expect("valid target"),
-            "/usr/bin/tmux",
+            "",
             None,
         )
         .expect("valid remote host");

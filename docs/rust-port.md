@@ -859,8 +859,9 @@ Settings shell modeled on the Swift app. The shell owns stable domain
 navigation plus a consistent page header and detail area, so later settings
 panes extend the container rather than replace it. Hosts is the first
 implemented pane: its host list and selected-host editor add, edit, or remove
-a named POSIX SSH endpoint with an optional user and port plus an explicit
-absolute tmux binary and optional absolute `TMUX_TMPDIR`. Saving rewrites only
+a named POSIX SSH endpoint with an optional user and port plus optional
+absolute tmux and `TMUX_TMPDIR` overrides. Tmux, Herdr, and Zellij otherwise
+resolve through the remote account's login environment. Saving rewrites only
 the Rust application configuration. Each configured endpoint appears as a
 disconnected host and connects only after an explicit Connect action; merely
 starting Ghosthub or opening Settings never opens a network connection.
@@ -1160,15 +1161,18 @@ name = "Studio"
 hostname = "studio.example"
 user = "wesm"
 port = 22
-tmux-binary = "/usr/bin/tmux"
+# Optional: otherwise resolved through the remote login environment.
+tmux-binary = "/opt/homebrew/bin/tmux"
 socket-directory = "/run/user/1000/tmux"
 ~~~
 
 Every WSL and terminal field is optional. SSH host name and hostname are
-required, while user, port, and socket directory are optional and the tmux
-binary defaults to `/usr/bin/tmux`. SSH endpoint identity is user, hostname,
-and port; duplicates are rejected. `clipboard-write` governs remote OSC 52
-writes; remote OSC 52 reads remain denied regardless of configuration.
+required, while user, port, tmux path override, and socket directory are
+optional. Ghosthub resolves tmux, Herdr, and Zellij through the remote login
+environment by default; an explicit tmux path remains available for unusual
+installations. SSH endpoint identity is user, hostname, and port; duplicates
+are rejected. `clipboard-write` governs remote OSC 52 writes; remote OSC 52
+reads remain denied regardless of configuration.
 
 Windows manual acceptance requires WSL2 and tmux. Ghosthub can create the first
 session itself; setup remains documented as deterministic commands for tests

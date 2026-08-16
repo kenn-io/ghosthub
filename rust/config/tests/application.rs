@@ -134,6 +134,32 @@ fn ssh_hosts_round_trip_through_the_application_config() {
 }
 
 #[test]
+fn ssh_hosts_discover_tmux_automatically_by_default() {
+    let parsed = ApplicationConfig::from_toml(
+        r#"
+            [[ssh-host]]
+            name = "Studio"
+            hostname = "studio.example"
+        "#,
+    )
+    .expect("parse automatic SSH host");
+
+    assert_eq!(parsed.ssh_hosts()[0].tmux_binary(), "");
+
+    let migrated = ApplicationConfig::from_toml(
+        r#"
+            [[ssh-host]]
+            name = "Studio"
+            hostname = "studio.example"
+            tmux-binary = "/usr/bin/tmux"
+        "#,
+    )
+    .expect("migrate generated Linux default");
+
+    assert_eq!(migrated.ssh_hosts()[0].tmux_binary(), "");
+}
+
+#[test]
 fn saving_over_an_existing_config_replaces_it_without_temporary_files() {
     let root = temporary_root("atomic-replace");
     let roots = roots_at(&root);

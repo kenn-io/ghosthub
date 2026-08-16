@@ -14,6 +14,7 @@ const STATE_HOME: &str = "GHOSTHUB_STATE_HOME";
 const GHOSTHUB_HOME: &str = "GHOSTHUB_HOME";
 const APPLICATION_CONFIG: &str = "config.toml";
 const DEFAULT_TMUX_BINARY: &str = "/usr/bin/tmux";
+const AUTOMATIC_SSH_TMUX_BINARY: &str = "";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WslSettings {
@@ -81,12 +82,13 @@ impl SshHostSettings {
         tmux_binary: impl Into<String>,
         socket_directory: Option<String>,
     ) -> Result<Self, ConfigError> {
+        let tmux_binary = tmux_binary.into();
         let host = Self {
             name: name.into(),
             hostname: hostname.into(),
             user,
             port,
-            tmux_binary: tmux_binary.into(),
+            tmux_binary: normalize_ssh_tmux_binary(&tmux_binary),
             socket_directory,
         };
         host.validate("ssh-host")?;
@@ -104,7 +106,9 @@ impl SshHostSettings {
                 "{prefix}.port must be greater than zero"
             )));
         }
-        require_posix_absolute(&format!("{prefix}.tmux-binary"), &self.tmux_binary)?;
+        if !self.tmux_binary.is_empty() {
+            require_posix_absolute(&format!("{prefix}.tmux-binary"), &self.tmux_binary)?;
+        }
         if let Some(path) = &self.socket_directory {
             require_posix_absolute(&format!("{prefix}.socket-directory"), path)?;
         }
@@ -347,9 +351,9 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
                     hostname: host.hostname,
                     user: host.user,
                     port: host.port,
-                    tmux_binary: host
-                        .tmux_binary
-                        .unwrap_or_else(|| DEFAULT_TMUX_BINARY.to_owned()),
+                    tmux_binary: normalize_ssh_tmux_binary(
+                        host.tmux_binary.as_deref().unwrap_or_default(),
+                    ),
                     socket_directory: host.socket_directory,
                 };
                 host.validate(&format!("ssh-host[{index}]"))?;
@@ -429,7 +433,7 @@ impl From<&ApplicationConfig> for ConfigFile {
                     hostname: host.hostname.clone(),
                     user: host.user.clone(),
                     port: host.port,
-                    tmux_binary: Some(host.tmux_binary.clone()),
+                    tmux_binary: (!host.tmux_binary.is_empty()).then(|| host.tmux_binary.clone()),
                     socket_directory: host.socket_directory.clone(),
                 })
                 .collect(),
@@ -448,6 +452,18 @@ fn validate_unique_ssh_hosts(hosts: &[SshHostSettings]) -> Result<(), ConfigErro
         }
     }
     Ok(())
+}
+
+fn normalize_ssh_tmux_binary(value: &str) -> String {
+    let value = value.trim();
+    if value == DEFAULT_TMUX_BINARY {
+        // Earlier Rust-port builds wrote the Linux system path into every SSH
+        // host. Treat that generated default as automatic discovery so those
+        // hosts work unchanged on Homebrew and other POSIX layouts.
+        AUTOMATIC_SSH_TMUX_BINARY.to_owned()
+    } else {
+        value.to_owned()
+    }
 }
 
 fn require_nonempty(name: &str, value: &str) -> Result<(), ConfigError> {

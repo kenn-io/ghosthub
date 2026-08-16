@@ -4230,7 +4230,7 @@ impl RootView {
             SshField::Name => "Display name",
             SshField::Hostname => "Hostname or SSH alias",
             SshField::User | SshField::Port | SshField::SocketDirectory => "Optional",
-            SshField::TmuxBinary => "/usr/bin/tmux",
+            SshField::TmuxBinary => "Automatic",
         };
         let display = if value.is_empty() {
             if selected { "▏" } else { placeholder }.to_owned()
@@ -4527,7 +4527,7 @@ impl RootView {
                         cx,
                     ))),
             )
-            .child(self.ssh_field_row("Tmux binary", SshField::TmuxBinary, &editor.draft, cx))
+            .child(self.ssh_field_row("Tmux path", SshField::TmuxBinary, &editor.draft, cx))
             .child(self.ssh_field_row(
                 "Tmux socket directory",
                 SshField::SocketDirectory,
@@ -6132,13 +6132,12 @@ impl RootView {
             .rounded_sm()
             .bg(rgb(0x16_1920))
             .flex()
-            .items_center()
+            .items_start()
             .gap_2()
             .child(
                 div()
                     .min_w_0()
                     .flex_1()
-                    .truncate()
                     .text_xs()
                     .text_color(rgb(0x9b_a2ae))
                     .child(message),
@@ -6387,11 +6386,7 @@ impl RootView {
 
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
         if host.connection() == HostConnectionState::Ready {
-            return centered(if host.sessions().is_empty() {
-                "No tmux sessions."
-            } else {
-                "Choose a session to open its terminal."
-            });
+            return centered(host_landing_text(host));
         }
         Self::host_element(host, cx)
     }
@@ -6691,6 +6686,17 @@ fn session_group_visibility(
         zellij: host.zellij_available()
             || !zellij_sessions.is_empty()
             || host.zellij_diagnostic().is_some(),
+    }
+}
+
+fn host_landing_text(host: &HostItem) -> &'static str {
+    if host.sessions().is_empty()
+        && host.herdr_sessions().is_empty()
+        && host.zellij_sessions().is_empty()
+    {
+        "No sessions available."
+    } else {
+        "Choose a session to open its terminal."
     }
 }
 
@@ -7785,16 +7791,17 @@ mod tests {
         canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
         clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
         has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
-        host_header_action, input_queue_has_capacity, is_toggle_sidebar_shortcut,
-        kill_confirmation_description, kill_confirmation_title, kwt_operation_failure_owns_dialog,
-        named_key, new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
-        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
-        session_action_menu_position, session_backend_id, session_group_visibility,
-        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
-        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates,
-        visible_kwt_pull_requests, workspace_window_title, worktree_open_mode,
+        host_header_action, host_landing_text, input_queue_has_capacity,
+        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
+        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
+        owns_created_worktree_navigation, pull_request_import_selector,
+        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
+        session_backend_id, session_group_visibility, session_row_element_id, ssh_host_subtitle,
+        ssh_prompt_input_text, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
+        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
+        tree_zellij_sessions, visible_kwt_branch_candidates, visible_kwt_pull_requests,
+        workspace_window_title, worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -8378,6 +8385,10 @@ mod tests {
         assert!(groups.zellij);
         assert!(herdr[0].access.can_open());
         assert!(zellij[0].state.can_open());
+        assert_eq!(
+            host_landing_text(&host),
+            "Choose a session to open its terminal."
+        );
     }
 
     #[test]
