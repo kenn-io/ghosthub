@@ -56,6 +56,11 @@ final class WorkspaceWindowRequests<Window: AnyObject> {
         let requiredParentMissing: Bool
     }
 
+    struct Cancellation {
+        let requestIDs: [UUID]
+        let windowIDs: [UUID]
+    }
+
     private final class Request {
         weak var parent: Window?
         let requiresParent: Bool
@@ -96,6 +101,24 @@ final class WorkspaceWindowRequests<Window: AnyObject> {
             parent: parent === window ? nil : parent,
             remainingStates: request.remainingStates,
             requiredParentMissing: request.requiresParent && parent == nil
+        )
+    }
+
+    func cancel(requiring parent: Window) -> Cancellation {
+        let requestIDs = requests.compactMap { id, request in
+            request.requiresParent && request.parent === parent ? id : nil
+        }
+        var windowIDs: [UUID] = []
+        for id in requestIDs {
+            guard let request = requests.removeValue(forKey: id) else {
+                continue
+            }
+            windowIDs.append(id)
+            windowIDs.append(contentsOf: request.remainingStates.map(\.windowID))
+        }
+        return Cancellation(
+            requestIDs: requestIDs,
+            windowIDs: windowIDs
         )
     }
 }
@@ -148,6 +171,8 @@ final class ApplicationDelegate: NSObject,
 
     private let windowRequests = WorkspaceWindowRequests<NSWindow>()
     private let windowLaunchIntents = WorkspaceWindowLaunchIntents()
+    private let closedWorkspaceWindows = NSHashTable<NSWindow>.weakObjects()
+    private var cancelledWorkspaceWindowRequestIDs: Set<UUID> = []
     private var windowRestorationFinishedHandler: (Int) -> Void = { _ in }
     private var restoredWorkspaceWindowCount: Int?
     private(set) var terminationConfirmed = false
@@ -164,12 +189,23 @@ final class ApplicationDelegate: NSObject,
             name: NSApplication.didFinishRestoringWindowsNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(workspaceWindowWillClose(_:)),
+            name: NSWindow.willCloseNotification,
+            object: nil
+        )
     }
 
     deinit {
         NotificationCenter.default.removeObserver(
             self,
             name: NSApplication.didFinishRestoringWindowsNotification,
+            object: nil
+        )
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSWindow.willCloseNotification,
             object: nil
         )
     }
@@ -192,6 +228,18 @@ final class ApplicationDelegate: NSObject,
         )
         restoredWorkspaceWindowCount = count
         windowRestorationFinishedHandler(count)
+    }
+
+    @objc func workspaceWindowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              WorkspaceWindowIdentity.matches(window)
+        else { return }
+        closedWorkspaceWindows.add(window)
+        let cancellation = windowRequests.cancel(requiring: window)
+        cancelledWorkspaceWindowRequestIDs.formUnion(
+            cancellation.requestIDs
+        )
+        windowLaunchIntents.remove(for: cancellation.windowIDs)
     }
 
     func applicationDidFinishLaunching(
@@ -275,13 +323,20 @@ final class ApplicationDelegate: NSObject,
         _ window: NSWindow,
         requestID: UUID?
     ) {
-        guard WorkspaceWindowIdentity.matches(window),
-              let request = windowRequests.consume(
-                  for: requestID,
-                  window: window
-              )
+        guard WorkspaceWindowIdentity.matches(window) else { return }
+        if let requestID,
+           cancelledWorkspaceWindowRequestIDs.remove(requestID) != nil {
+            windowLaunchIntents.remove(for: [requestID])
+            window.close()
+            return
+        }
+        guard let request = windowRequests.consume(
+            for: requestID,
+            window: window
+        )
         else { return }
-        if request.requiredParentMissing {
+        if request.requiredParentMissing
+            || request.parent.map(closedWorkspaceWindows.contains) == true {
             windowLaunchIntents.remove(
                 for: requestID.map { [$0] } ?? []
                     + request.remainingStates.map(\.windowID)
@@ -297,7 +352,11 @@ final class ApplicationDelegate: NSObject,
                 .contains(where: { $0 === window })
             else { return }
             let parentFrame = parent.frame
-            parent.addTabbedWindow(window, ordered: .above)
+            if let group = parent.tabGroup {
+                group.insertWindow(window, at: group.windows.count)
+            } else {
+                parent.addTabbedWindow(window, ordered: .above)
+            }
             window.makeKeyAndOrderFront(nil)
             NativeTabCommands.installBracketShortcuts()
             window.setFrame(parentFrame, display: true)
@@ -335,6 +394,10 @@ final class ApplicationDelegate: NSObject,
         parent: NSWindow
     ) {
         guard let next = states.first else { return }
+        guard !closedWorkspaceWindows.contains(parent) else {
+            windowLaunchIntents.remove(for: states.map(\.windowID))
+            return
+        }
         windowRequests.add(
             next.windowID,
             parent: parent,

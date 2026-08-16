@@ -691,10 +691,84 @@ final class ApplicationDelegateTests: XCTestCase {
             secondState.windowID,
             thirdState.windowID,
         ])
+        let thirdWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        thirdWindow.tabbingIdentifier =
+            WorkspaceWindowIdentity.tabbingIdentifier
+        delegate.adoptWorkspaceWindowAsTabIfRequested(
+            thirdWindow,
+            requestID: thirdState.windowID
+        )
+
+        XCTAssertEqual(
+            firstWindow.tabGroup?.windows.map(ObjectIdentifier.init),
+            [firstWindow, secondWindow, thirdWindow].map(ObjectIdentifier.init)
+        )
         XCTAssertTrue(
             WorkspaceWindowIdentity.group(containing: firstWindow)
                 .contains(where: { $0 === secondWindow })
         )
+    }
+
+    func testClosingRetainedTabParentCancelsRemainingGroup() async {
+        let delegate = ApplicationDelegate.forTesting()
+        let firstState = WorkspaceWindowState.fresh()
+        let secondState = WorkspaceWindowState.fresh()
+        let thirdState = WorkspaceWindowState.fresh()
+        var openedStates: [WorkspaceWindowState] = []
+        delegate.openWorkspaceWindow = { state in
+            openedStates.append(state)
+        }
+        delegate.requestWorkspaceTabGroup([
+            firstState,
+            secondState,
+            thirdState,
+        ], launchIntent: .openWorktree)
+        let firstWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        firstWindow.tabbingIdentifier =
+            WorkspaceWindowIdentity.tabbingIdentifier
+        delegate.adoptWorkspaceWindowAsTabIfRequested(
+            firstWindow,
+            requestID: firstState.windowID
+        )
+        await Task.yield()
+        XCTAssertEqual(openedStates.map(\.windowID), [
+            firstState.windowID,
+            secondState.windowID,
+        ])
+
+        NotificationCenter.default.post(
+            name: NSWindow.willCloseNotification,
+            object: firstWindow
+        )
+        let secondWindow = CloseSpyWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        secondWindow.tabbingIdentifier =
+            WorkspaceWindowIdentity.tabbingIdentifier
+        delegate.adoptWorkspaceWindowAsTabIfRequested(
+            secondWindow,
+            requestID: secondState.windowID
+        )
+        await Task.yield()
+
+        XCTAssertEqual(secondWindow.closeCallCount, 1)
+        XCTAssertEqual(openedStates.map(\.windowID), [
+            firstState.windowID,
+            secondState.windowID,
+        ])
     }
 
     func testLastWindowClosesWithoutRequestingTermination() {
