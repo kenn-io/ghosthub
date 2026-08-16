@@ -131,27 +131,7 @@ class AppValidationRunner:
         call = tuple(argv)
         assert token == "installation-token"
         self.authenticated_calls.append((call, input_text, check))
-        if call == ("gh", "api", "/installation"):
-            payload = {
-                "app_id": 424242,
-                "app_slug": self.app_slug,
-                "account": {
-                    "login": self.owner_login,
-                    "type": "Organization",
-                },
-                "repository_selection": "selected",
-                "permissions": {
-                    "actions": "read",
-                    "administration": "read",
-                    "attestations": "read",
-                    "contents": "read",
-                    "environments": "read",
-                    "metadata": "read",
-                    "pull_requests": "read",
-                    "statuses": "write",
-                },
-            }
-        elif call == (
+        if call == (
             "gh",
             "api",
             "--paginate",
@@ -211,11 +191,23 @@ class AppValidationRunner:
             payload = [
                 {
                     "id": 77,
+                    "app_id": self.app_id,
+                    "app_slug": self.app_slug,
                     "account": {
-                        "login": "kenn-io",
+                        "login": self.owner_login,
                         "type": "Organization",
                     },
                     "repository_selection": "selected",
+                    "permissions": {
+                        "actions": "read",
+                        "administration": "read",
+                        "attestations": "read",
+                        "contents": "read",
+                        "environments": "read",
+                        "metadata": "read",
+                        "pull_requests": "read",
+                        "statuses": "write",
+                    },
                 }
             ]
         elif url == "https://api.github.com/app/installations/77/access_tokens":
@@ -455,6 +447,20 @@ def test_promotion_app_key_mints_and_audits_full_installation_token() -> None:
     ]
     assert bearer_calls
     assert all(call[:2] == ("curl", "--disable") for call in bearer_calls)
+    assert [
+        call
+        for call, _input_text, _check in runner.authenticated_calls
+        if call[0] == "gh"
+    ] == [
+        (
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            "/installation/repositories?per_page=100",
+        ),
+        ("gh", "api", "--method", "DELETE", "/installation/token"),
+    ]
 
 
 @pytest.mark.parametrize(

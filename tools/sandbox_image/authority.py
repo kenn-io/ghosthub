@@ -194,21 +194,22 @@ def verify_promotion_app_key(
     )
     if not isinstance(installations, list):
         raise ValueError("promotion app installation list is invalid")
-    account = (
-        installations[0].get("account")
-        if len(installations) == 1 and isinstance(installations[0], dict)
-        else None
-    )
+    installation = installations[0] if len(installations) == 1 else None
+    account = installation.get("account") if isinstance(installation, dict) else None
     if (
         len(installations) != 1
-        or not isinstance(installations[0], dict)
-        or not isinstance(installations[0].get("id"), int)
+        or not isinstance(installation, dict)
+        or not isinstance(installation.get("id"), int)
+        or installation.get("app_id") != app_id
+        or installation.get("app_slug") != APP_SLUG
         or not isinstance(account, dict)
         or account.get("login") != APP_OWNER
         or account.get("type") != "Organization"
+        or installation.get("repository_selection") != "selected"
+        or installation.get("permissions") != APP_PERMISSIONS
     ):
-        raise ValueError("promotion app must have exactly one kenn-io installation")
-    installation_id = installations[0]["id"]
+        raise ValueError("promotion app installation authority drifted")
+    installation_id = installation["id"]
     token_payload = json.dumps(
         {"permissions": {"statuses": "write"}}, separators=(",", ":")
     )
@@ -225,28 +226,6 @@ def verify_promotion_app_key(
         raise ValueError("promotion app did not mint an installation token")
     installation_token = token_response["token"]
     try:
-        installation = _token_api_json(
-            runner,
-            installation_token,
-            ("gh", "api", "/installation"),
-        )
-        installation_account = (
-            installation.get("account") if isinstance(installation, dict) else None
-        )
-        if not isinstance(installation, dict) or any(
-            (
-                installation.get("app_id") != app_id,
-                installation.get("app_slug") != APP_SLUG,
-                not isinstance(installation_account, dict),
-                isinstance(installation_account, dict)
-                and installation_account.get("login") != APP_OWNER,
-                isinstance(installation_account, dict)
-                and installation_account.get("type") != "Organization",
-                installation.get("repository_selection") != "selected",
-                installation.get("permissions") != APP_PERMISSIONS,
-            )
-        ):
-            raise ValueError("promotion app installation authority drifted")
         repository_pages = _token_api_json(
             runner,
             installation_token,
