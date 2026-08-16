@@ -95,6 +95,11 @@ final class NativeTmuxSessionCoordinator {
         var task: Task<Void, Never>
     }
 
+    private struct PaneSplitErrorDismissal {
+        var id: UUID
+        var task: Task<Void, Never>
+    }
+
     private let terminalCoordinator: any NativeSessionSurfaceStoring
     private let tmuxPathProvider:
         @Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>
@@ -110,6 +115,7 @@ final class NativeTmuxSessionCoordinator {
     private let appliesPresentationStyleToExistingSessionsProvider:
         () -> Bool
     private let paneSplitter: TmuxPaneSplitter
+    private let paneSplitErrorDuration: Duration
     private let clientIdentityRetryDelays: [Duration]
     private let sleep: @Sendable (Duration) async throws -> Void
     private let remoteExitStatusStore: RemoteExitStatusStore
@@ -127,6 +133,7 @@ final class NativeTmuxSessionCoordinator {
     private var paneSplitWorkers: [UUID: PaneSplitWorker] = [:]
     private var paneSplitClientBindings: [UUID: PaneSplitClientBinding] = [:]
     private var paneSplitClients: [UUID: TmuxPaneSplitClientIdentity] = [:]
+    private var paneSplitErrorDismissals: [UUID: PaneSplitErrorDismissal] = [:]
     private var previewIdentityRetryHandles: Set<UUID> = []
     private var unavailablePreviewIdentityHandles: Set<UUID> = []
     private var deferredPresentationStyleHandles: Set<UUID> = []
@@ -197,6 +204,7 @@ final class NativeTmuxSessionCoordinator {
                 )
             },
         paneSplitter: TmuxPaneSplitter = TmuxPaneSplitter(),
+        paneSplitErrorDuration: Duration = .seconds(4),
         clientIdentityRetryDelays: [Duration] = [
             .milliseconds(250), .seconds(1),
         ],
@@ -223,6 +231,7 @@ final class NativeTmuxSessionCoordinator {
         self.sshConnectionArgumentsProvider =
             sshConnectionArgumentsProvider
         self.paneSplitter = paneSplitter
+        self.paneSplitErrorDuration = paneSplitErrorDuration
         self.clientIdentityRetryDelays = clientIdentityRetryDelays
         self.sleep = sleep
         remoteExitStatusStore = RemoteExitStatusStore(
@@ -591,12 +600,12 @@ final class NativeTmuxSessionCoordinator {
         attachmentID: UUID
     ) {
         guard let client = paneSplitClients[handle.id] else {
-            surface.paneSplitErrorMessage = TmuxPaneSplitFailure(
+            presentPaneSplitError(TmuxPaneSplitFailure(
                 host: target.host.displayName,
                 sessionName: target.sessionName,
                 status: 75,
                 diagnostic: "The attached tmux client identity is unavailable."
-            ).localizedDescription
+            ), on: surface, handle: handle, attachmentID: attachmentID)
             startPaneSplitClientBinding(
                 target: target,
                 handle: handle,
@@ -667,7 +676,10 @@ final class NativeTmuxSessionCoordinator {
                   launchedHandles.contains(handle.id)
             else { continue }
 
-            request.surface.paneSplitErrorMessage = nil
+            clearPaneSplitError(
+                on: request.surface,
+                handleID: handle.id
+            )
             var target = request.target
             let expectedClient = target.expectedClient
                 ?? paneSplitClients[handle.id]
@@ -684,8 +696,12 @@ final class NativeTmuxSessionCoordinator {
                         status: 75,
                         diagnostic: "The attached tmux session changed."
                     )
-                    request.surface.paneSplitErrorMessage =
-                        failure.localizedDescription
+                    presentPaneSplitError(
+                        failure,
+                        on: request.surface,
+                        handle: handle,
+                        attachmentID: request.attachmentID
+                    )
                     continue
                 }
                 paneSplitClients[handle.id] = client
@@ -696,11 +712,15 @@ final class NativeTmuxSessionCoordinator {
                       paneSplitWorkers[handle.id]?.id == workerID,
                       attachments[handle.id]?.id == request.attachmentID
                 else { return }
-                request.surface.paneSplitErrorMessage =
-                    failure.localizedDescription
+                presentPaneSplitError(
+                    failure,
+                    on: request.surface,
+                    handle: handle,
+                    attachmentID: request.attachmentID
+                )
                 continue
             }
-            let failure = await paneSplitter.split(
+            var failure = await paneSplitter.split(
                 request.shortcut,
                 target: target
             )
@@ -708,10 +728,51 @@ final class NativeTmuxSessionCoordinator {
                   paneSplitWorkers[handle.id]?.id == workerID,
                   attachments[handle.id]?.id == request.attachmentID
             else { return }
-            request.surface.paneSplitErrorMessage = failure?.localizedDescription
+            if failure?.kind == .atomicGuardChanged,
+               let expectedClient = target.expectedClient {
+                switch await paneSplitter.clientIdentity(target: target) {
+                case let .success(client):
+                    guard !Task.isCancelled,
+                          paneSplitWorkers[handle.id]?.id == workerID,
+                          attachments[handle.id]?.id == request.attachmentID
+                    else { return }
+                    guard client.matchesClient(expectedClient) else {
+                        failure = TmuxPaneSplitFailure(
+                            host: target.host.displayName,
+                            sessionName: target.sessionName,
+                            status: 75,
+                            diagnostic: "The attached tmux session changed."
+                        )
+                        break
+                    }
+                    paneSplitClients[handle.id] = client
+                    target.expectedClient = client
+                    failure = await paneSplitter.split(
+                        request.shortcut,
+                        target: target
+                    )
+                    guard !Task.isCancelled,
+                          paneSplitWorkers[handle.id]?.id == workerID,
+                          attachments[handle.id]?.id == request.attachmentID
+                    else { return }
+                case let .failure(identityFailure):
+                    failure = identityFailure
+                }
+            }
             if let failure {
+                presentPaneSplitError(
+                    failure,
+                    on: request.surface,
+                    handle: handle,
+                    attachmentID: request.attachmentID
+                )
                 AppLogger.shared.error(
                     "tmux pane split: \(failure.localizedDescription)"
+                )
+            } else {
+                clearPaneSplitError(
+                    on: request.surface,
+                    handleID: handle.id
                 )
             }
         }
@@ -755,9 +816,11 @@ final class NativeTmuxSessionCoordinator {
                     paneSplitClients[handle.id] = client
                     previewIdentityRetryHandles.remove(handle.id)
                     unavailablePreviewIdentityHandles.remove(handle.id)
-                    terminalCoordinator.paneSurfaceIfPresent(
+                    if let surface = terminalCoordinator.paneSurfaceIfPresent(
                         for: surfaceKey(handle)
-                    )?.paneSplitErrorMessage = nil
+                    ) {
+                        clearPaneSplitError(on: surface, handleID: handle.id)
+                    }
                     onSurfaceReady?(handle)
                     return
                 }
@@ -789,10 +852,48 @@ final class NativeTmuxSessionCoordinator {
     private func cancelPaneSplits(handleID: UUID) {
         paneSplitClientBindings.removeValue(forKey: handleID)?.task.cancel()
         paneSplitWorkers.removeValue(forKey: handleID)?.task.cancel()
+        paneSplitErrorDismissals.removeValue(forKey: handleID)?.task.cancel()
         paneSplitRequests.removeValue(forKey: handleID)
         paneSplitClients.removeValue(forKey: handleID)
         previewIdentityRetryHandles.remove(handleID)
         unavailablePreviewIdentityHandles.remove(handleID)
+    }
+
+    private func presentPaneSplitError(
+        _ failure: TmuxPaneSplitFailure,
+        on surface: any NativeSessionPaneSurfacing,
+        handle: BorrowedTmuxSessionHandle,
+        attachmentID: UUID
+    ) {
+        paneSplitErrorDismissals.removeValue(forKey: handle.id)?.task.cancel()
+        surface.paneSplitErrorMessage = failure.localizedDescription
+        let dismissalID = UUID()
+        let duration = paneSplitErrorDuration
+        let task = Task { [weak self] in
+            do {
+                try await Task.sleep(for: duration)
+            } catch {
+                return
+            }
+            guard let self,
+                  paneSplitErrorDismissals[handle.id]?.id == dismissalID,
+                  attachments[handle.id]?.id == attachmentID
+            else { return }
+            paneSplitErrorDismissals.removeValue(forKey: handle.id)
+            surface.paneSplitErrorMessage = nil
+        }
+        paneSplitErrorDismissals[handle.id] = PaneSplitErrorDismissal(
+            id: dismissalID,
+            task: task
+        )
+    }
+
+    private func clearPaneSplitError(
+        on surface: any NativeSessionPaneSurfacing,
+        handleID: UUID
+    ) {
+        paneSplitErrorDismissals.removeValue(forKey: handleID)?.task.cancel()
+        surface.paneSplitErrorMessage = nil
     }
 
     private func failSurfaceLaunch(
@@ -964,9 +1065,11 @@ final class NativeTmuxSessionCoordinator {
         provisioningTasks.values.forEach { $0.cancel() }
         paneSplitClientBindings.values.forEach { $0.task.cancel() }
         paneSplitWorkers.values.forEach { $0.task.cancel() }
+        paneSplitErrorDismissals.values.forEach { $0.task.cancel() }
         provisioningTasks.removeAll()
         paneSplitClientBindings.removeAll()
         paneSplitWorkers.removeAll()
+        paneSplitErrorDismissals.removeAll()
         paneSplitRequests.removeAll()
         paneSplitClients.removeAll()
         previewIdentityRetryHandles.removeAll()
