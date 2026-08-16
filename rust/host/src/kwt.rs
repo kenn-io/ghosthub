@@ -11,7 +11,7 @@ pub struct KwtBundle {
 }
 
 impl KwtBundle {
-    /// Construct an exact revision-pinned Linux KWT helper bundle.
+    /// Construct an exact revision-pinned KWT helper bundle.
     ///
     /// # Errors
     ///

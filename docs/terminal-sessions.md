@@ -307,6 +307,18 @@ authorized. A terminal worker and PTY own only the disposable client. The WSL
 tmux server owns session lifetime and must survive client close, graceful
 application exit, and forced Ghosthub termination.
 
+The first Rust SSH slice preserves the same boundary for configured POSIX
+hosts: KWT owns route resolution, host-key/authentication prompting, and the
+runtime OpenSSH lease; Host builds an attach-only command for a freshly
+discovered exact tmux identity; Terminal owns only the disposable ConPTY-backed
+client. On Windows, both pinned KWT and OpenSSH run inside the selected WSL
+distro, and Terminal launches an absolute `wsl.exe` relay with fully resolved
+argv. Closing or crashing Ghosthub releases that relay, client, and lease but
+never kills the remote tmux server. Terminating the selected WSL distro ends
+the local lease and presentation, not the remote session. This slice ends the
+presentation on client exit and does not yet implement the reconnect
+supervisor described below.
+
 Launch authority is structural:
 
 - an attach plan is cloneable and cannot create

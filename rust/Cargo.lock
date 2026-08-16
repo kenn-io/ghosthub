@@ -2081,6 +2081,7 @@ dependencies = [
  "ghosthub-contracts",
  "serde",
  "serde_json",
+ "tempfile",
  "toml 1.1.4+spec-1.1.0",
 ]
 
@@ -2100,10 +2101,12 @@ dependencies = [
  "ghosthub-contracts",
  "ghosthub-model",
  "ghosthub-session",
+ "hex",
  "libc",
  "portable-pty",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "windows-sys 0.61.2",
 ]
 

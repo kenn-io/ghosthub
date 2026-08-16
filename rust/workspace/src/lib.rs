@@ -1,16 +1,19 @@
 //! Application workflow and capability boundary for GPUI.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use config::TerminalAppearance;
+use config::{ApplicationConfig, Roots, SshHostSettings, TerminalAppearance};
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
-    HostSnapshot, KwtInventory, KwtPullRequestImportRequest, LiveSessionTarget, StdCommandRunner,
-    WslConfig, WslExecutable, WslHost, ZellijInventory,
+    HostSnapshot, KwtInventory, KwtPullRequestImportRequest, KwtSshExecutable, LiveSessionTarget,
+    RemoteTmuxConfig, RemoteTmuxHost, RemoteTmuxSnapshot, SshExecutable, SshLeasePrompt,
+    SshPromptKind, SshTarget, StdCommandRunner, WslConfig, WslExecutable, WslHost, ZellijInventory,
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
@@ -52,6 +55,7 @@ const WORKTREE_CLIENT_STARTUP_BACKOFF: [Duration; 10] = [
     Duration::from_secs(3),
 ];
 const CREATE_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
+const SSH_PROMPT_TIMEOUT: Duration = Duration::from_mins(5);
 const CREATE_IDENTITY_MIN_COLUMNS: usize = 120;
 const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const KWT_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
@@ -573,6 +577,41 @@ impl HostItem {
     }
 
     #[must_use]
+    pub fn ssh(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        endpoint: impl Into<String>,
+        connection: HostConnectionState,
+        sessions: Vec<SessionItem>,
+        diagnostic: Option<HostDiagnostic>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            endpoint: endpoint.into(),
+            socket_directory: None,
+            connection,
+            sessions,
+            diagnostic,
+            herdr_available: false,
+            herdr_sessions: Vec::new(),
+            herdr_diagnostic: None,
+            zellij_available: false,
+            zellij_sessions: Vec::new(),
+            zellij_diagnostic: None,
+            projects: Vec::new(),
+            directory_workspaces: Vec::new(),
+            kwt_state: KwtState::Unavailable,
+            kwt_diagnostic: None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_ssh(&self) -> bool {
+        self.id.starts_with("ssh:")
+    }
+
+    #[must_use]
     pub fn with_herdr_sessions(mut self, sessions: Vec<HerdrSessionItem>) -> Self {
         self.herdr_available = true;
         self.herdr_sessions = sessions;
@@ -887,6 +926,113 @@ pub struct ClipboardRead {
     inner: TerminalClipboardRead,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SshHostDraft {
+    pub name: String,
+    pub hostname: String,
+    pub user: String,
+    pub port: String,
+    pub tmux_binary: String,
+    pub socket_directory: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfiguredSshHost {
+    id: String,
+    draft: SshHostDraft,
+}
+
+impl ConfiguredSshHost {
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[must_use]
+    pub const fn draft(&self) -> &SshHostDraft {
+        &self.draft
+    }
+}
+
+impl From<&SshHostSettings> for SshHostDraft {
+    fn from(host: &SshHostSettings) -> Self {
+        Self {
+            name: host.name().to_owned(),
+            hostname: host.hostname().to_owned(),
+            user: host.user().unwrap_or_default().to_owned(),
+            port: host
+                .port()
+                .map_or_else(String::new, |port| port.to_string()),
+            tmux_binary: host.tmux_binary().to_owned(),
+            socket_directory: host.socket_directory().unwrap_or_default().to_owned(),
+        }
+    }
+}
+
+impl Default for SshHostDraft {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            hostname: String::new(),
+            user: String::new(),
+            port: String::new(),
+            tmux_binary: "/usr/bin/tmux".to_owned(),
+            socket_directory: String::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SshPromptRequest {
+    host_id: String,
+    generation: u64,
+    prompt: SshLeasePrompt,
+    response: Arc<Mutex<Option<SyncSender<Option<String>>>>>,
+}
+
+impl SshPromptRequest {
+    #[must_use]
+    pub fn host_id(&self) -> &str {
+        &self.host_id
+    }
+
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> SshPromptKind {
+        self.prompt.kind()
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        self.prompt.message()
+    }
+
+    #[must_use]
+    pub fn display_target(&self) -> &str {
+        self.prompt.details().display_target()
+    }
+
+    #[must_use]
+    pub const fn sensitive(&self) -> bool {
+        self.prompt.sensitive()
+    }
+
+    pub fn respond(&self, value: Option<String>) {
+        if let Some(response) = self
+            .response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ignored = response.send(value);
+        }
+    }
+}
+
 impl ClipboardRead {
     #[must_use]
     pub fn respond(&self, text: &str) -> Vec<u8> {
@@ -901,6 +1047,11 @@ pub enum WorkspaceEvent {
     },
     ClipboardRead(ClipboardRead),
     ConfirmPaste,
+    SshPrompt(SshPromptRequest),
+    SshPromptDismissed {
+        host_id: String,
+        generation: u64,
+    },
     KwtProjectMutationFinished {
         action: KwtProjectAction,
     },
@@ -1275,6 +1426,11 @@ impl WslHostSpec {
         }
     }
 
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        self.executable.is_some()
+    }
+
     fn host_item(&self) -> HostItem {
         HostItem::wsl(
             self.config.distro().unwrap_or("Default distro"),
@@ -1292,6 +1448,292 @@ impl WslHostSpec {
 
 type SharedCommandRunner = Arc<dyn CommandRunner>;
 type RuntimeHost = WslHost<SharedCommandRunner>;
+type RuntimeRemoteHost = RemoteTmuxHost<SharedCommandRunner>;
+
+#[derive(Clone)]
+pub struct RemoteHostSpec {
+    config: RemoteTmuxConfig,
+    controller: Option<KwtSshExecutable>,
+    ssh: Option<SshExecutable>,
+    diagnostic: Option<HostDiagnostic>,
+}
+
+impl RemoteHostSpec {
+    #[must_use]
+    pub fn available(
+        config: RemoteTmuxConfig,
+        controller: KwtSshExecutable,
+        ssh: SshExecutable,
+    ) -> Self {
+        Self {
+            config,
+            controller: Some(controller),
+            ssh: Some(ssh),
+            diagnostic: None,
+        }
+    }
+
+    #[must_use]
+    pub fn unavailable(
+        config: RemoteTmuxConfig,
+        kind: DiagnosticKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            config,
+            controller: None,
+            ssh: None,
+            diagnostic: Some(HostDiagnostic::new(kind, message)),
+        }
+    }
+
+    /// Construct a Windows SSH host whose KWT and OpenSSH processes will be
+    /// resolved inside the ready synthetic WSL host at connection time.
+    #[must_use]
+    pub fn wsl(config: RemoteTmuxConfig) -> Self {
+        Self {
+            config,
+            controller: None,
+            ssh: None,
+            diagnostic: None,
+        }
+    }
+
+    fn host_item(&self) -> HostItem {
+        HostItem::ssh(
+            self.config.id(),
+            self.config.name(),
+            self.config.endpoint(),
+            if self.diagnostic.is_some() {
+                HostConnectionState::Unavailable
+            } else {
+                HostConnectionState::Disconnected
+            },
+            Vec::new(),
+            self.diagnostic.clone(),
+        )
+    }
+
+    fn runtime_host(&self, runner: SharedCommandRunner) -> Option<RuntimeRemoteHost> {
+        Some(RemoteTmuxHost::new(
+            self.config.clone(),
+            self.controller.as_ref()?,
+            self.ssh.as_ref()?,
+            runner,
+        ))
+    }
+}
+
+struct RemoteHostContext {
+    host: RuntimeRemoteHost,
+    snapshot: RemoteTmuxSnapshot,
+}
+
+struct RemoteEntry {
+    config: RemoteTmuxConfig,
+    native_host: Option<RuntimeRemoteHost>,
+    context: Option<RemoteHostContext>,
+    cancellation: Option<CancellationToken>,
+    generation: u64,
+}
+
+struct RemoteActive {
+    key: RemotePresentationKey,
+    selection: SessionSelection,
+    worker_generation: u64,
+    lease: host::SshLease,
+    presentation_id: u64,
+    retainable: bool,
+    identity_mismatch_marker: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RemotePresentationKey {
+    host_id: String,
+    endpoint: String,
+    route_identity: String,
+    lease_generation: u64,
+    session_identity: session::SessionIdentity,
+}
+
+struct RemoteRetainedPresentation {
+    active: RemoteActive,
+    worker: TerminalWorker,
+}
+
+struct RemoteRetainedPresentations {
+    entries: Vec<RemoteRetainedPresentation>,
+}
+
+struct RemoteRetainedDrain {
+    emitted: Vec<WorkspaceEvent>,
+    processed: usize,
+    changed: bool,
+}
+
+struct RemotePublishError {
+    error: WorkspaceError,
+    worker: TerminalWorker,
+}
+
+impl RemotePresentationKey {
+    fn reconcile(
+        &mut self,
+        endpoint: &str,
+        route_identity: &str,
+        lease_generation: u64,
+        sessions: &[session::DiscoveredSession],
+    ) -> Option<String> {
+        if self.endpoint != endpoint || self.route_identity != route_identity {
+            return None;
+        }
+        let session = sessions
+            .iter()
+            .find(|session| session.identity() == &self.session_identity)?;
+        self.lease_generation = lease_generation;
+        Some(session.name().to_owned())
+    }
+}
+
+impl RemoteRetainedPresentations {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, presentation: RemoteRetainedPresentation) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.active.key == presentation.active.key)
+        {
+            self.entries.remove(index);
+        }
+        self.entries.push(presentation);
+    }
+
+    fn take(&mut self, key: &RemotePresentationKey) -> Option<RemoteRetainedPresentation> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| &entry.active.key == key)?;
+        Some(self.entries.remove(index))
+    }
+
+    fn take_for_selection(
+        &mut self,
+        selection: &SessionSelection,
+    ) -> Option<RemoteRetainedPresentation> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| &entry.active.selection == selection)?;
+        Some(self.entries.remove(index))
+    }
+
+    fn selections(&self) -> Vec<SessionSelection> {
+        self.entries
+            .iter()
+            .map(|entry| entry.active.selection.clone())
+            .collect()
+    }
+
+    fn remove_host(&mut self, host_id: &str) -> bool {
+        let before = self.entries.len();
+        self.entries
+            .retain(|entry| entry.active.selection.host_id() != host_id);
+        self.entries.len() != before
+    }
+
+    fn reconcile(
+        &mut self,
+        host_id: &str,
+        endpoint: &str,
+        route_identity: &str,
+        lease_generation: u64,
+        sessions: &[session::DiscoveredSession],
+    ) -> Vec<RemoteRetainedPresentation> {
+        let mut stale = Vec::new();
+        let mut index = 0;
+        while index < self.entries.len() {
+            if self.entries[index].active.key.host_id != host_id {
+                index += 1;
+                continue;
+            }
+            let name = self.entries[index].active.key.reconcile(
+                endpoint,
+                route_identity,
+                lease_generation,
+                sessions,
+            );
+            if let Some(name) = name {
+                self.entries[index].active.selection =
+                    SessionSelection::new(host_id, endpoint, name);
+                index += 1;
+            } else {
+                stale.push(self.entries.remove(index));
+            }
+        }
+        stale
+    }
+
+    fn drain_events(&mut self, budget: usize) -> RemoteRetainedDrain {
+        let mut emitted = Vec::new();
+        let mut processed = 0;
+        let mut changed = false;
+        let mut index = 0;
+        while index < self.entries.len() && processed < budget {
+            match self.entries[index].worker.try_event() {
+                Ok(Some(
+                    TerminalEvent::ClipboardWrite { .. } | TerminalEvent::ClipboardRead(_),
+                )) => {
+                    processed += 1;
+                    index += 1;
+                }
+                Ok(Some(TerminalEvent::ConfirmPaste(_))) => {
+                    processed += 1;
+                    let _cancelled = self.entries[index].worker.cancel_paste();
+                    index += 1;
+                }
+                Ok(Some(TerminalEvent::Error(error))) => {
+                    processed += 1;
+                    emitted.push(WorkspaceEvent::Error(error));
+                    index += 1;
+                }
+                Ok(Some(TerminalEvent::Exited { code, output_tail })) => {
+                    processed += 1;
+                    changed = true;
+                    let identity_mismatch_marker =
+                        self.entries[index].active.identity_mismatch_marker.clone();
+                    self.entries.remove(index);
+                    if let Some(error) =
+                        classify_remote_terminal_exit(code, &output_tail, &identity_mismatch_marker)
+                    {
+                        emitted.push(WorkspaceEvent::Error(error));
+                    }
+                }
+                Err(error) => {
+                    processed += 1;
+                    changed = true;
+                    self.entries.remove(index);
+                    emitted.push(WorkspaceEvent::Error(error.to_string()));
+                }
+                Ok(None) => index += 1,
+            }
+        }
+        RemoteRetainedDrain {
+            emitted,
+            processed,
+            changed,
+        }
+    }
+}
+
+struct SettingsState {
+    config: ApplicationConfig,
+    roots: Roots,
+}
 
 struct HostContext {
     host: RuntimeHost,
@@ -2104,9 +2546,13 @@ impl<T> WorkerState<T> {
     }
 
     fn publish(&mut self, worker: T) -> u64 {
+        self.replace(worker).0
+    }
+
+    fn replace(&mut self, worker: T) -> (u64, Option<T>) {
         self.advance_generation();
-        self.worker = Some(worker);
-        self.generation
+        let previous = self.worker.replace(worker);
+        (self.generation, previous)
     }
 
     fn active(&self) -> Option<&T> {
@@ -2120,6 +2566,13 @@ impl<T> WorkerState<T> {
     fn invalidate(&mut self) -> Option<T> {
         self.advance_generation();
         self.worker.take()
+    }
+
+    fn invalidate_if_generation(&mut self, generation: u64) -> Option<T> {
+        if self.generation != generation {
+            return None;
+        }
+        self.invalidate()
     }
 
     const fn generation(&self) -> u64 {
@@ -2529,6 +2982,13 @@ struct Inner {
     navigation_generation: AtomicU64,
     navigation: Mutex<()>,
     host: Mutex<Option<Published<HostContext>>>,
+    remote_hosts: Mutex<HashMap<String, RemoteEntry>>,
+    remote_active: Mutex<Option<RemoteActive>>,
+    remote_retained: Mutex<RemoteRetainedPresentations>,
+    remote_runner: SharedCommandRunner,
+    remote_controller: Option<KwtSshExecutable>,
+    ssh_executable: Option<SshExecutable>,
+    settings: Mutex<Option<SettingsState>>,
     discovery_cancel: Mutex<Option<CancellationToken>>,
     event_drain: Mutex<()>,
     worker: Mutex<WorkerState<TerminalWorker>>,
@@ -2570,6 +3030,294 @@ pub struct Workspace {
 
 struct SnapshotWrite<'a> {
     writers: &'a AtomicUsize,
+}
+
+fn optional_trimmed(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn remote_config(settings: &SshHostSettings) -> Result<RemoteTmuxConfig, WorkspaceError> {
+    let target = SshTarget::new(
+        settings.hostname(),
+        settings.user().map(str::to_owned),
+        settings.port(),
+    )
+    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    RemoteTmuxConfig::new(
+        settings.id(),
+        settings.name(),
+        target,
+        settings.tmux_binary(),
+        settings.socket_directory().map(str::to_owned),
+    )
+    .map_err(|error| WorkspaceError::new(error.to_string()))
+}
+
+fn remote_connection_matches(left: &RemoteTmuxConfig, right: &RemoteTmuxConfig) -> bool {
+    left.id() == right.id()
+        && left.target() == right.target()
+        && left.tmux_binary() == right.tmux_binary()
+        && left.socket_directory() == right.socket_directory()
+}
+
+fn request_ssh_prompt(
+    inner: &Inner,
+    host_id: &str,
+    generation: u64,
+    prompt: &SshLeasePrompt,
+    cancellation: &CancellationToken,
+) -> Result<String, host::SshError> {
+    let wait = prompt.remaining()?.min(SSH_PROMPT_TIMEOUT);
+    if wait.is_zero() {
+        return Err(host::SshError::prompt_cancelled());
+    }
+    let deadline = Instant::now() + wait;
+    let (sender, receiver) = sync_channel(1);
+    let request = SshPromptRequest {
+        host_id: host_id.to_owned(),
+        generation,
+        prompt: prompt.clone(),
+        response: Arc::new(Mutex::new(Some(sender))),
+    };
+    push_operation_event(inner, WorkspaceEvent::SshPrompt(request));
+    inner.revision.fetch_add(1, Ordering::Release);
+    let result = loop {
+        if cancellation.is_cancelled() {
+            break Err(host::SshError::prompt_cancelled());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break Err(host::SshError::prompt_cancelled());
+        }
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            Ok(Some(value)) => break Ok(value),
+            Ok(None) | Err(RecvTimeoutError::Disconnected) => {
+                break Err(host::SshError::prompt_cancelled());
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    };
+    push_operation_event(
+        inner,
+        WorkspaceEvent::SshPromptDismissed {
+            host_id: host_id.to_owned(),
+            generation,
+        },
+    );
+    inner.revision.fetch_add(1, Ordering::Release);
+    result
+}
+
+fn remote_host_for_connection(
+    inner: &Inner,
+    config: RemoteTmuxConfig,
+    native_host: Option<RuntimeRemoteHost>,
+    cancellation: &CancellationToken,
+) -> Result<RuntimeRemoteHost, host::RemoteTmuxError> {
+    if let Some(host) = native_host {
+        return Ok(host);
+    }
+    let (wsl_host, snapshot) = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|context| (context.value.host.clone(), context.value.snapshot.clone()))
+        .ok_or_else(|| {
+            host::RemoteTmuxError::transport("Connect the WSL host before connecting an SSH host")
+        })?;
+    wsl_host
+        .remote_tmux_host(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            config,
+            cancellation,
+        )
+        .map_err(|error| host::RemoteTmuxError::from_host(&error))
+}
+
+fn publish_remote_connection(
+    inner: &Inner,
+    host_id: &str,
+    generation: u64,
+    result: Result<(RuntimeRemoteHost, RemoteTmuxSnapshot), host::RemoteTmuxError>,
+) {
+    let snapshot_write = begin_snapshot_write(inner);
+    let mut stale_presentations = Vec::new();
+    let mut entries = inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(entry) = entries.get_mut(host_id) else {
+        return;
+    };
+    if entry.generation != generation {
+        return;
+    }
+    entry.cancellation = None;
+    match result {
+        Ok((host, snapshot)) => {
+            let endpoint = snapshot.endpoint().to_owned();
+            let route_identity = snapshot.route_identity().to_owned();
+            let lease_generation = snapshot.lease_generation();
+            let discovered_sessions = snapshot.sessions().to_vec();
+            let sessions = snapshot
+                .sessions()
+                .iter()
+                .map(|session| SessionItem::new(session.name(), session.attached_clients()))
+                .collect();
+            entry.context = Some(RemoteHostContext { host, snapshot });
+            drop(entries);
+            stale_presentations = reconcile_remote_presentations(
+                inner,
+                host_id,
+                &endpoint,
+                &route_identity,
+                lease_generation,
+                &discovered_sessions,
+            );
+            set_remote_host_state(
+                inner,
+                host_id,
+                HostConnectionState::Ready,
+                Some(sessions),
+                None,
+            );
+        }
+        Err(error) => {
+            let diagnostic = HostDiagnostic::new(error.kind(), error.to_string());
+            let stale_context = entry.context.take();
+            drop(entries);
+            set_remote_host_state(
+                inner,
+                host_id,
+                HostConnectionState::Unavailable,
+                None,
+                Some(diagnostic),
+            );
+            drop(snapshot_write);
+            drop(stale_context);
+            drop(stale_presentations);
+            return;
+        }
+    }
+    drop(snapshot_write);
+    drop(stale_presentations);
+}
+
+fn reconcile_remote_presentations(
+    inner: &Inner,
+    host_id: &str,
+    endpoint: &str,
+    route_identity: &str,
+    lease_generation: u64,
+    sessions: &[session::DiscoveredSession],
+) -> Vec<RemoteRetainedPresentation> {
+    let _navigation = inner
+        .navigation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let terminal_update = {
+        let mut remote_active = inner
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(active) = remote_active
+            .as_mut()
+            .filter(|active| active.key.host_id == host_id)
+        else {
+            return inner
+                .remote_retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .reconcile(
+                    host_id,
+                    endpoint,
+                    route_identity,
+                    lease_generation,
+                    sessions,
+                );
+        };
+        if let Some(name) =
+            active
+                .key
+                .reconcile(endpoint, route_identity, lease_generation, sessions)
+        {
+            active.retainable = true;
+            let selection = SessionSelection::new(host_id, endpoint, name);
+            if active.selection == selection {
+                None
+            } else {
+                active.selection = selection;
+                let worker = inner
+                    .worker
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if worker.generation() == active.worker_generation {
+                    worker.active().map(|worker| {
+                        (
+                            active.selection.clone(),
+                            active.presentation_id,
+                            worker.surface_handle(),
+                        )
+                    })
+                } else {
+                    None
+                }
+            }
+        } else {
+            active.retainable = false;
+            None
+        }
+    };
+    let stale = inner
+        .remote_retained
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .reconcile(
+            host_id,
+            endpoint,
+            route_identity,
+            lease_generation,
+            sessions,
+        );
+    if let Some((selection, presentation_id, surface)) = terminal_update {
+        set_inner_state(
+            inner,
+            WorkspaceContent::Terminal {
+                host_id: selection.host_id().to_owned(),
+                endpoint: selection.endpoint().to_owned(),
+                session: selection.session().to_owned(),
+                kind: SessionKind::Tmux,
+                presentation_id,
+                surface,
+            },
+        );
+    }
+    stale
+}
+
+fn set_remote_host_state(
+    inner: &Inner,
+    host_id: &str,
+    connection: HostConnectionState,
+    sessions: Option<Vec<SessionItem>>,
+    diagnostic: Option<HostDiagnostic>,
+) {
+    let mut hosts = inner
+        .hosts
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(host) = hosts.iter_mut().find(|host| host.id == host_id) else {
+        return;
+    };
+    host.connection = connection;
+    if let Some(sessions) = sessions {
+        host.sessions = sessions;
+    }
+    host.diagnostic = diagnostic;
+    inner.revision.fetch_add(1, Ordering::Release);
 }
 
 impl Drop for SnapshotWrite<'_> {
@@ -2644,6 +3392,13 @@ impl Workspace {
                 navigation_generation: AtomicU64::new(0),
                 navigation: Mutex::new(()),
                 host: Mutex::new(None),
+                remote_hosts: Mutex::new(HashMap::new()),
+                remote_active: Mutex::new(None),
+                remote_retained: Mutex::new(RemoteRetainedPresentations::new()),
+                remote_runner: Arc::new(StdCommandRunner),
+                remote_controller: None,
+                ssh_executable: None,
+                settings: Mutex::new(None),
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
                 worker: Mutex::new(WorkerState::new()),
@@ -2690,6 +3445,74 @@ impl Workspace {
         )
     }
 
+    /// Build the application workspace with disconnected configured SSH hosts.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the newly constructed workspace unexpectedly has another
+    /// strong owner before composition finishes.
+    #[must_use]
+    pub fn application_with_remote_hosts(
+        appearance: TerminalAppearance,
+        wsl: Option<WslHostSpec>,
+        remote_specs: Vec<RemoteHostSpec>,
+        settings: ApplicationConfig,
+        roots: Roots,
+        controller: Option<KwtSshExecutable>,
+        ssh: Option<SshExecutable>,
+    ) -> Self {
+        let mut workspace = Self::application(appearance, wsl);
+        let inner = Arc::get_mut(&mut workspace.inner)
+            .expect("newly constructed workspace has one strong owner");
+        inner.remote_controller = controller;
+        inner.ssh_executable = ssh;
+        *inner
+            .settings
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SettingsState {
+            config: settings,
+            roots,
+        });
+        let runner = Arc::clone(&inner.remote_runner);
+        let entries = inner
+            .remote_hosts
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hosts = inner
+            .hosts
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for spec in remote_specs {
+            let item = spec.host_item();
+            if spec.diagnostic.is_none() {
+                entries.insert(
+                    item.id().to_owned(),
+                    RemoteEntry {
+                        config: spec.config.clone(),
+                        native_host: spec.runtime_host(Arc::clone(&runner)),
+                        context: None,
+                        cancellation: None,
+                        generation: 0,
+                    },
+                );
+            }
+            hosts.push(item);
+        }
+        if inner
+            .selected_host
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none()
+        {
+            *inner
+                .selected_host
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                hosts.first().map(|host| host.id().to_owned());
+        }
+        workspace
+    }
+
     fn application_with_services(
         appearance: TerminalAppearance,
         wsl: Option<WslHostSpec>,
@@ -2722,6 +3545,13 @@ impl Workspace {
                 navigation_generation: AtomicU64::new(0),
                 navigation: Mutex::new(()),
                 host: Mutex::new(None),
+                remote_hosts: Mutex::new(HashMap::new()),
+                remote_active: Mutex::new(None),
+                remote_retained: Mutex::new(RemoteRetainedPresentations::new()),
+                remote_runner: Arc::new(StdCommandRunner),
+                remote_controller: None,
+                ssh_executable: None,
+                settings: Mutex::new(None),
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
                 worker: Mutex::new(WorkerState::new()),
@@ -2784,6 +3614,13 @@ impl Workspace {
                 navigation_generation: AtomicU64::new(0),
                 navigation: Mutex::new(()),
                 host: Mutex::new(None),
+                remote_hosts: Mutex::new(HashMap::new()),
+                remote_active: Mutex::new(None),
+                remote_retained: Mutex::new(RemoteRetainedPresentations::new()),
+                remote_runner: Arc::new(StdCommandRunner),
+                remote_controller: None,
+                ssh_executable: None,
+                settings: Mutex::new(None),
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
                 worker: Mutex::new(WorkerState::new()),
@@ -2841,6 +3678,459 @@ impl Workspace {
             self.start_refresh(config, executable, RefreshPresentation::Connecting);
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn configured_ssh_hosts(&self) -> Vec<ConfiguredSshHost> {
+        self.inner
+            .settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|settings| {
+                settings
+                    .config
+                    .ssh_hosts()
+                    .iter()
+                    .map(|host| ConfiguredSshHost {
+                        id: host.id(),
+                        draft: host.into(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Persist a new or edited SSH host and publish its disconnected row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid fields, duplicate endpoints, unavailable
+    /// settings storage, or an I/O failure.
+    pub fn save_ssh_host(
+        &self,
+        original_id: Option<&str>,
+        draft: &SshHostDraft,
+    ) -> Result<String, WorkspaceError> {
+        let port =
+            if draft.port.trim().is_empty() {
+                None
+            } else {
+                Some(
+                    draft.port.trim().parse::<u16>().map_err(|_| {
+                        WorkspaceError::new("Port must be a number from 1 to 65535")
+                    })?,
+                )
+            };
+        let host = SshHostSettings::new(
+            draft.name.trim(),
+            draft.hostname.trim(),
+            optional_trimmed(&draft.user),
+            port,
+            draft.tmux_binary.trim(),
+            optional_trimmed(&draft.socket_directory),
+        )
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let id = host.id();
+        {
+            let mut settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let settings = settings
+                .as_mut()
+                .ok_or_else(|| WorkspaceError::new("SSH settings storage is unavailable"))?;
+            let mut hosts = settings.config.ssh_hosts().to_vec();
+            if let Some(original_id) = original_id {
+                let index = hosts
+                    .iter()
+                    .position(|candidate| candidate.id() == original_id)
+                    .ok_or_else(|| WorkspaceError::new("SSH host changed; reopen Settings"))?;
+                hosts[index] = host.clone();
+            } else {
+                hosts.push(host.clone());
+            }
+            let roots = settings.roots.clone();
+            settings
+                .config
+                .replace_ssh_hosts(&roots, hosts)
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        }
+        self.publish_saved_ssh_host(original_id, &host)?;
+        Ok(id)
+    }
+
+    /// Remove one configured SSH host after disconnecting its local clients.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the host changed or configuration cannot be saved.
+    pub fn remove_ssh_host(&self, id: &str) -> Result<(), WorkspaceError> {
+        {
+            let mut settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let settings = settings
+                .as_mut()
+                .ok_or_else(|| WorkspaceError::new("SSH settings storage is unavailable"))?;
+            let mut hosts = settings.config.ssh_hosts().to_vec();
+            let previous_len = hosts.len();
+            hosts.retain(|host| host.id() != id);
+            if hosts.len() == previous_len {
+                return Err(WorkspaceError::new("SSH host changed; reopen Settings"));
+            }
+            let roots = settings.roots.clone();
+            settings
+                .config
+                .replace_ssh_hosts(&roots, hosts)
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        }
+        self.remove_ssh_host_runtime(id);
+        Ok(())
+    }
+
+    /// Select one current host without starting a connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host is no longer configured.
+    pub fn select_host(&self, id: &str) -> Result<(), WorkspaceError> {
+        let exists = self
+            .inner
+            .hosts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|host| host.id() == id);
+        if !exists {
+            return Err(WorkspaceError::new("host is no longer configured"));
+        }
+        *self
+            .inner
+            .selected_host
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id.to_owned());
+        self.inner.revision.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    /// Explicitly connect or refresh one host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host no longer exists or its background task
+    /// cannot be scheduled.
+    pub fn connect_host(&self, id: &str) -> Result<(), WorkspaceError> {
+        self.select_host(id)?;
+        if id == "wsl" {
+            return self.refresh();
+        }
+        let generation = self.inner.operation_sequence.fetch_add(1, Ordering::AcqRel) + 1;
+        let cancellation = CancellationToken::new();
+        let (config, native_host) = {
+            let mut entries = self
+                .inner
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = entries
+                .get_mut(id)
+                .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
+            if let Some(previous) = entry.cancellation.replace(cancellation.clone()) {
+                previous.cancel();
+            }
+            entry.generation = generation;
+            (entry.config.clone(), entry.native_host.clone())
+        };
+        set_remote_host_state(&self.inner, id, HostConnectionState::Connecting, None, None);
+        let inner = Arc::clone(&self.inner);
+        let host_id = id.to_owned();
+        if let Err(error) = self.inner.refresh_runtime.spawn(
+            "ghosthub-ssh-connect",
+            Box::new(move || {
+                let prompt_inner = Arc::clone(&inner);
+                let prompt_host = host_id.clone();
+                let prompt_cancel = cancellation.clone();
+                let result = remote_host_for_connection(&inner, config, native_host, &cancellation)
+                    .and_then(|host| {
+                        host.connect(
+                            &cancellation,
+                            move |prompt| {
+                                request_ssh_prompt(
+                                    &prompt_inner,
+                                    &prompt_host,
+                                    generation,
+                                    prompt,
+                                    &prompt_cancel,
+                                )
+                            },
+                            |_| {},
+                        )
+                        .map(|snapshot| (host, snapshot))
+                    });
+                publish_remote_connection(&inner, &host_id, generation, result);
+            }),
+        ) {
+            let stale_context = self
+                .inner
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_mut(id)
+                .filter(|entry| entry.generation == generation)
+                .and_then(|entry| {
+                    entry.cancellation.take();
+                    entry.context.take()
+                });
+            set_remote_host_state(
+                &self.inner,
+                id,
+                HostConnectionState::Disconnected,
+                None,
+                None,
+            );
+            drop(stale_context);
+            return Err(WorkspaceError::new(format!(
+                "start SSH connection: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn cancel_host_connection(&self, id: &str) -> bool {
+        if id == "wsl" {
+            return self.cancel_refresh();
+        }
+        let cancelled = {
+            let mut entries = self
+                .inner
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            entries.get_mut(id).and_then(|entry| {
+                let cancellation = entry.cancellation.take()?;
+                entry.generation = entry.generation.wrapping_add(1).max(1);
+                Some((cancellation, entry.context.take()))
+            })
+        };
+        if let Some((cancellation, stale_context)) = cancelled {
+            cancellation.cancel();
+            set_remote_host_state(
+                &self.inner,
+                id,
+                HostConnectionState::Disconnected,
+                None,
+                None,
+            );
+            drop(stale_context);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[must_use]
+    pub fn ssh_prompt_is_current(&self, host_id: &str, generation: u64) -> bool {
+        self.inner
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(host_id)
+            .is_some_and(|entry| entry.generation == generation && entry.cancellation.is_some())
+    }
+
+    fn update_ssh_host_metadata(
+        &self,
+        original_id: Option<&str>,
+        config: &RemoteTmuxConfig,
+    ) -> bool {
+        if original_id != Some(config.id()) {
+            return false;
+        }
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        {
+            let mut entries = self
+                .inner
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(entry) = entries
+                .get_mut(config.id())
+                .filter(|entry| remote_connection_matches(&entry.config, config))
+            else {
+                return false;
+            };
+            entry.config = config.clone();
+        }
+        if let Some(item) = self
+            .inner
+            .hosts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter_mut()
+            .find(|item| item.id() == config.id())
+        {
+            config.name().clone_into(&mut item.name);
+            item.endpoint = config.endpoint();
+        }
+        self.inner.revision.fetch_add(1, Ordering::Release);
+        true
+    }
+
+    fn publish_saved_ssh_host(
+        &self,
+        original_id: Option<&str>,
+        settings: &SshHostSettings,
+    ) -> Result<(), WorkspaceError> {
+        let config = remote_config(settings)?;
+        let new_id = config.id().to_owned();
+        if self.update_ssh_host_metadata(original_id, &config) {
+            return Ok(());
+        }
+        let selected_original = original_id.is_some_and(|original_id| {
+            self.inner
+                .selected_host
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_deref()
+                == Some(original_id)
+        });
+        if let Some(original_id) = original_id {
+            self.remove_ssh_host_runtime(original_id);
+        }
+        #[cfg(windows)]
+        let dependencies_available = self
+            .inner
+            .wsl_executable
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        #[cfg(not(windows))]
+        let dependencies_available =
+            self.inner.remote_controller.is_some() && self.inner.ssh_executable.is_some();
+        let item = HostItem::ssh(
+            config.id(),
+            config.name(),
+            config.endpoint(),
+            if dependencies_available {
+                HostConnectionState::Disconnected
+            } else {
+                HostConnectionState::Unavailable
+            },
+            Vec::new(),
+            (!dependencies_available).then(|| {
+                HostDiagnostic::new(
+                    DiagnosticKind::ExecutableNotFound,
+                    "SSH support is unavailable in this build",
+                )
+            }),
+        );
+        #[cfg(windows)]
+        let runtime = None;
+        #[cfg(not(windows))]
+        let runtime = self
+            .inner
+            .remote_controller
+            .as_ref()
+            .zip(self.inner.ssh_executable.as_ref())
+            .map(|(controller, ssh)| {
+                RemoteTmuxHost::new(
+                    config.clone(),
+                    controller,
+                    ssh,
+                    Arc::clone(&self.inner.remote_runner),
+                )
+            });
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        if dependencies_available {
+            self.inner
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    settings.id(),
+                    RemoteEntry {
+                        config,
+                        native_host: runtime,
+                        context: None,
+                        cancellation: None,
+                        generation: 0,
+                    },
+                );
+        }
+        self.inner
+            .hosts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(item);
+        if selected_original {
+            *self
+                .inner
+                .selected_host
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_id);
+        }
+        self.inner.revision.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    fn remove_ssh_host_runtime(&self, id: &str) {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        if let Some(mut entry) = self
+            .inner
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id)
+            && let Some(cancellation) = entry.cancellation.take()
+        {
+            cancellation.cancel();
+        }
+        let active_matches = self
+            .inner
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|active| active.selection.host_id() == id);
+        if active_matches {
+            self.detach();
+        }
+        self.inner
+            .remote_retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove_host(id);
+        self.inner
+            .hosts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|host| host.id() != id);
+        let selected_removed = self
+            .inner
+            .selected_host
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_deref()
+            == Some(id);
+        if selected_removed {
+            *self
+                .inner
+                .selected_host
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = self
+                .inner
+                .hosts
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .first()
+                .map(|host| host.id().to_owned());
+        }
+        self.inner.revision.fetch_add(1, Ordering::Release);
     }
 
     /// Refresh the current WSL inventory without requiring an app restart.
@@ -3459,19 +4749,37 @@ impl Workspace {
                         .clone()
                 };
                 let active_selection = {
-                    self.inner
-                        .attachment
+                    let remote = self
+                        .inner
+                        .remote_active
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .active()
-                        .map(|active| active.request.selection())
+                        .as_ref()
+                        .map(|active| active.selection.clone());
+                    remote.or_else(|| {
+                        self.inner
+                            .attachment
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .active()
+                            .map(|active| active.request.selection())
+                    })
                 };
                 let retained_selections = {
-                    self.inner
+                    let mut selections = self
+                        .inner
                         .retained_presentations
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .selections()
+                        .selections();
+                    selections.extend(
+                        self.inner
+                            .remote_retained
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .selections(),
+                    );
+                    selections
                 };
                 WorkspaceSnapshot {
                     revision,
@@ -3494,6 +4802,21 @@ impl Workspace {
     /// Returns an error if another presentation is active or the requested
     /// session is not in the latest resolved inventory.
     pub fn attach(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
+        if self.is_remote_host(selection.host_id()) {
+            if self
+                .inner
+                .worker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active()
+                .is_some()
+            {
+                return Err(WorkspaceError::new(
+                    "a terminal presentation is already open",
+                ));
+            }
+            return self.switch_session(selection);
+        }
         let _navigation = self
             .inner
             .navigation
@@ -3533,6 +4856,63 @@ impl Workspace {
     /// Returns an error if the requested session is absent from the latest
     /// inventory or the replacement attachment cannot be started.
     pub fn switch_session(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
+        if self.is_remote_host(selection.host_id()) {
+            let _navigation = self
+                .inner
+                .navigation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current_key = self.remote_presentation_key(selection);
+            let active_matches = self
+                .inner
+                .remote_active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|active| {
+                    current_key
+                        .as_ref()
+                        .map_or_else(|| active.selection == *selection, |key| active.key == *key)
+                });
+            if active_matches {
+                self.begin_navigation();
+                return self.refresh_active_remote_selection(selection, current_key.as_ref());
+            }
+            self.begin_navigation();
+            if self.activate_remote_retained(selection, current_key.as_ref())? {
+                return Ok(());
+            }
+            return self.attach_remote(selection);
+        }
+        if self
+            .inner
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
+            let _navigation = self
+                .inner
+                .navigation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (key, request) = self.navigation_target(selection)?;
+            let navigation_generation = self.begin_navigation();
+            self.inner
+                .attachment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .invalidate();
+            if self.activate_retained_over_remote(&key)? {
+                return Ok(());
+            }
+            let Some(request) = request else {
+                return Err(WorkspaceError::new(
+                    "the retained terminal presentation is no longer available",
+                ));
+            };
+            return self.start_attachment_over_remote(request, navigation_generation);
+        }
         let _snapshot_write = begin_snapshot_write(&self.inner);
         let _navigation = self
             .inner
@@ -3540,6 +4920,363 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.switch_session_locked(selection)
+    }
+
+    fn is_remote_host(&self, host_id: &str) -> bool {
+        self.inner
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(host_id)
+    }
+
+    fn remote_presentation_key(
+        &self,
+        selection: &SessionSelection,
+    ) -> Option<RemotePresentationKey> {
+        let entries = self
+            .inner
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let context = entries.get(selection.host_id())?.context.as_ref()?;
+        if context.snapshot.endpoint() != selection.endpoint() {
+            return None;
+        }
+        let session = context
+            .snapshot
+            .sessions()
+            .iter()
+            .find(|session| session.name() == selection.session())?;
+        Some(RemotePresentationKey {
+            host_id: selection.host_id().to_owned(),
+            endpoint: selection.endpoint().to_owned(),
+            route_identity: context.snapshot.route_identity().to_owned(),
+            lease_generation: context.snapshot.lease_generation(),
+            session_identity: session.identity().clone(),
+        })
+    }
+
+    fn refresh_active_remote_selection(
+        &self,
+        selection: &SessionSelection,
+        current_key: Option<&RemotePresentationKey>,
+    ) -> Result<(), WorkspaceError> {
+        self.inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .invalidate();
+        let surface = self
+            .inner
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active()
+            .map(TerminalWorker::surface_handle)
+            .ok_or_else(|| WorkspaceError::new("the active remote presentation is unavailable"))?;
+        let mut remote_active = self
+            .inner
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(active) = remote_active.as_mut() else {
+            return Err(WorkspaceError::new(
+                "the active remote presentation changed while selecting it",
+            ));
+        };
+        if current_key.is_some_and(|key| active.key == *key) && active.selection != *selection {
+            active.selection = selection.clone();
+            set_inner_state(
+                &self.inner,
+                WorkspaceContent::Terminal {
+                    host_id: selection.host_id().to_owned(),
+                    endpoint: selection.endpoint().to_owned(),
+                    session: selection.session().to_owned(),
+                    kind: SessionKind::Tmux,
+                    presentation_id: active.presentation_id,
+                    surface,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn activate_remote_retained(
+        &self,
+        selection: &SessionSelection,
+        current_key: Option<&RemotePresentationKey>,
+    ) -> Result<bool, WorkspaceError> {
+        let presentation = {
+            let mut retained = self
+                .inner
+                .remote_retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            current_key.and_then(|key| retained.take(key)).or_else(|| {
+                current_key
+                    .is_none()
+                    .then(|| retained.take_for_selection(selection))
+                    .flatten()
+            })
+        };
+        let Some(mut presentation) = presentation else {
+            return Ok(false);
+        };
+        if current_key.is_some() {
+            presentation.active.selection = selection.clone();
+        }
+        presentation.worker.set_clipboard_writes_enabled(true);
+        if let Err(error) = publish_remote_worker(
+            &self.inner,
+            presentation.worker,
+            presentation.active.key.clone(),
+            &presentation.active.selection,
+            presentation.active.lease.clone(),
+            presentation.active.presentation_id,
+            presentation.active.identity_mismatch_marker.clone(),
+        ) {
+            let RemotePublishError { error, worker } = *error;
+            presentation.worker = worker;
+            presentation.worker.set_clipboard_writes_enabled(false);
+            self.inner
+                .remote_retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(presentation);
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "remote attachment keeps preparation and the atomic worker swap in one boundary"
+    )]
+    fn attach_remote(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
+        if selection.kind() != SessionKind::Tmux {
+            return Err(WorkspaceError::new(
+                "the first SSH host slice supports tmux sessions only",
+            ));
+        }
+        let (plan, lease, key, identity_mismatch_marker) = {
+            let entries = self
+                .inner
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = entries
+                .get(selection.host_id())
+                .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+            let context = entry.context.as_ref().ok_or_else(|| {
+                WorkspaceError::new("Connect this SSH host before opening a session")
+            })?;
+            if context.snapshot.endpoint() != selection.endpoint() {
+                return Err(WorkspaceError::new(
+                    "SSH endpoint changed; refresh the session selection",
+                ));
+            }
+            let session = context
+                .snapshot
+                .sessions()
+                .iter()
+                .find(|session| session.name() == selection.session())
+                .ok_or_else(|| WorkspaceError::new("session is not in current remote inventory"))?;
+            let (plan, identity_mismatch_marker) = context
+                .host
+                .attach_plan(&context.snapshot, session, "xterm-256color")
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            (
+                plan,
+                context.snapshot.lease().clone(),
+                RemotePresentationKey {
+                    host_id: selection.host_id().to_owned(),
+                    endpoint: selection.endpoint().to_owned(),
+                    route_identity: context.snapshot.route_identity().to_owned(),
+                    lease_generation: context.snapshot.lease_generation(),
+                    session_identity: session.identity().clone(),
+                },
+                identity_mismatch_marker,
+            )
+        };
+        let initial_geometry = *self
+            .inner
+            .terminal_geometry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let worker = TerminalWorker::attach_with_metadata(
+            &plan,
+            initial_geometry.grid,
+            initial_geometry.sequence,
+            initial_geometry.pixels,
+            ClipboardPolicy::remote(self.inner.allow_remote_clipboard_write),
+            default_colors(&self.inner.appearance),
+        )
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let presentation_id = next_presentation_id(&self.inner);
+        publish_remote_worker(
+            &self.inner,
+            worker,
+            key,
+            selection,
+            lease,
+            presentation_id,
+            identity_mismatch_marker,
+        )
+        .map_err(|error| {
+            let RemotePublishError { error, .. } = *error;
+            error
+        })
+    }
+
+    fn start_attachment_over_remote(
+        &self,
+        request: AttachRequest,
+        navigation_generation: u64,
+    ) -> Result<(), WorkspaceError> {
+        let generation = {
+            let mut attachment = self
+                .inner
+                .attachment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self
+                .inner
+                .remote_active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+            {
+                return Err(WorkspaceError::new(
+                    "the remote terminal presentation is no longer active",
+                ));
+            }
+            attachment
+                .reserve_with_fallback(request.clone(), AttachTerm::Xterm256Color, None)
+                .ok_or_else(|| WorkspaceError::new("a terminal presentation is already opening"))?
+        };
+        let inner = Arc::clone(&self.inner);
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-terminal-cross-host-attach".to_owned())
+            .spawn(move || {
+                run_attach_over_remote(
+                    &inner,
+                    &request,
+                    AttachTerm::Xterm256Color,
+                    generation,
+                    navigation_generation,
+                );
+            })
+        {
+            self.inner
+                .attachment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear_if_current(generation);
+            return Err(WorkspaceError::new(format!("start attach task: {error}")));
+        }
+        Ok(())
+    }
+
+    fn activate_retained_over_remote(&self, key: &PresentationKey) -> Result<bool, WorkspaceError> {
+        let Some(presentation) = self
+            .inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take(key)
+        else {
+            return Ok(false);
+        };
+        let snapshot_write = begin_snapshot_write(&self.inner);
+        let mut attachment = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(generation) =
+            reserve_retained_attachment(&mut attachment, &presentation.attachment, None)
+        else {
+            reinsert_retained_presentation(&self.inner, presentation);
+            return Err(WorkspaceError::new(
+                "a terminal presentation is already opening",
+            ));
+        };
+        let geometry = self
+            .inner
+            .terminal_geometry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = presentation.worker.resize_with_metadata(
+            geometry.grid,
+            geometry.sequence,
+            geometry.pixels,
+        ) {
+            attachment.clear_if_current(generation);
+            reinsert_retained_presentation(&self.inner, presentation);
+            return Err(WorkspaceError::from_worker(&error));
+        }
+        let mut remote_active = self
+            .inner
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(active_remote) = remote_active.as_ref() else {
+            attachment.clear_if_current(generation);
+            reinsert_retained_presentation(&self.inner, presentation);
+            return Err(WorkspaceError::new(
+                "the remote terminal presentation is no longer active",
+            ));
+        };
+        let mut workers = self
+            .inner
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if workers.generation() != active_remote.worker_generation {
+            attachment.clear_if_current(generation);
+            reinsert_retained_presentation(&self.inner, presentation);
+            return Err(WorkspaceError::new(
+                "the remote terminal presentation changed while switching",
+            ));
+        }
+        let selection = presentation.attachment.request.selection();
+        let term = presentation.attachment.term;
+        let surface = presentation.worker.surface_handle();
+        let presentation_id = presentation.presentation_id;
+        presentation.worker.set_clipboard_writes_enabled(true);
+        let (_, previous_worker) = workers.replace(presentation.worker);
+        let previous_remote = remote_active.take();
+        clear_pending_paste(&self.inner);
+        set_terminal_notice(&self.inner, term);
+        set_inner_state(
+            &self.inner,
+            WorkspaceContent::Terminal {
+                host_id: selection.host_id().to_owned(),
+                endpoint: selection.endpoint().to_owned(),
+                session: selection.session().to_owned(),
+                kind: selection.kind(),
+                presentation_id,
+                surface,
+            },
+        );
+        drop(workers);
+        drop(remote_active);
+        drop(geometry);
+        drop(attachment);
+        if let (Some(worker), Some(active)) = (previous_worker, previous_remote)
+            && active.retainable
+        {
+            worker.set_clipboard_writes_enabled(false);
+            let _cancelled = worker.cancel_paste();
+            self.inner
+                .remote_retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(RemoteRetainedPresentation { active, worker });
+        }
+        drop(snapshot_write);
+        Ok(true)
     }
 
     /// Open one exact registered KWT worktree through KWT's repair-or-open
@@ -5116,6 +6853,11 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .invalidate();
+        self.inner
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         clear_pending_paste(&self.inner);
         clear_terminal_notice(&self.inner);
         self.inner
@@ -5127,6 +6869,10 @@ impl Workspace {
     }
 
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "event draining keeps active and retained terminal ordering in one boundary"
+    )]
     pub fn drain_events(&self) -> (Vec<WorkspaceEvent>, bool) {
         let _snapshot_write = begin_snapshot_write(&self.inner);
         let _drain = self
@@ -5134,6 +6880,7 @@ impl Workspace {
             .event_drain
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.monitor_remote_lease_liveness();
         let mut emitted = Vec::new();
         let operation_has_more = self.drain_operation_events(&mut emitted);
         let mut exited = false;
@@ -5180,6 +6927,17 @@ impl Workspace {
                     let Some((request, term, generation, fallback)) =
                         self.attachment_for_worker(source_worker_generation)
                     else {
+                        if self.handle_remote_terminal_exit(
+                            source_worker_generation,
+                            self.classify_active_remote_terminal_exit(
+                                source_worker_generation,
+                                code,
+                                &output_tail,
+                            ),
+                            &mut emitted,
+                        ) {
+                            exited = true;
+                        }
                         break;
                     };
                     (retry_term, exit_error) = classify_terminal_exit_event(
@@ -5202,6 +6960,13 @@ impl Workspace {
                     let Some((request, _, generation, fallback)) =
                         self.attachment_for_worker(source_worker_generation)
                     else {
+                        if self.handle_remote_terminal_exit(
+                            source_worker_generation,
+                            Some(error.to_string()),
+                            &mut emitted,
+                        ) {
+                            exited = true;
+                        }
                         break;
                     };
                     exit_error = Some(error.to_string());
@@ -5223,11 +6988,118 @@ impl Workspace {
         }
         let active_processed = processed;
         let retained_budget = retained_event_budget(processed, exited);
-        let retained_processed = self.drain_retained_events(retained_budget, &mut emitted);
+        let remote_retained_budget = retained_budget.div_ceil(2);
+        let local_retained_budget = retained_budget - remote_retained_budget;
+        let retained_processed = self.drain_retained_events(local_retained_budget, &mut emitted);
+        let remote_retained_processed =
+            self.drain_remote_retained_events(remote_retained_budget, &mut emitted);
         let may_have_more = operation_has_more
             || event_source_may_have_more(active_processed, ACTIVE_EVENT_BUDGET, exited)
-            || event_source_may_have_more(retained_processed, retained_budget, false);
+            || event_source_may_have_more(retained_processed, local_retained_budget, false)
+            || event_source_may_have_more(remote_retained_processed, remote_retained_budget, false);
         (emitted, may_have_more)
+    }
+
+    fn monitor_remote_lease_liveness(&self) {
+        let failed = {
+            let mut entries = self
+                .inner
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            entries
+                .iter_mut()
+                .filter_map(|(host_id, entry)| {
+                    let error = entry
+                        .context
+                        .as_ref()?
+                        .snapshot
+                        .lease()
+                        .ensure_live()
+                        .err()?;
+                    entry.generation = entry.generation.wrapping_add(1).max(1);
+                    if let Some(cancellation) = entry.cancellation.take() {
+                        cancellation.cancel();
+                    }
+                    let context = entry.context.take()?;
+                    Some((host_id.clone(), error, context))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (host_id, error, context) in failed {
+            let stale_presentations = reconcile_remote_presentations(
+                &self.inner,
+                &host_id,
+                context.snapshot.endpoint(),
+                context.snapshot.route_identity(),
+                context.snapshot.lease_generation(),
+                &[],
+            );
+            set_remote_host_state(
+                &self.inner,
+                &host_id,
+                HostConnectionState::Unavailable,
+                None,
+                Some(HostDiagnostic::new(error.kind(), error.to_string())),
+            );
+            drop(stale_presentations);
+            drop(context);
+        }
+    }
+
+    fn handle_remote_terminal_exit(
+        &self,
+        worker_generation: u64,
+        error: Option<String>,
+        emitted: &mut Vec<WorkspaceEvent>,
+    ) -> bool {
+        let mut remote_active = self
+            .inner
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if remote_active
+            .as_ref()
+            .is_none_or(|active| active.worker_generation != worker_generation)
+        {
+            return false;
+        }
+        let mut worker = self
+            .inner
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if worker.generation() != worker_generation {
+            return false;
+        }
+        let _closed = worker.invalidate_if_generation(worker_generation);
+        let _active = remote_active.take();
+        drop(worker);
+        drop(remote_active);
+        clear_pending_paste(&self.inner);
+        clear_terminal_notice(&self.inner);
+        self.restore_inventory_state();
+        if let Some(error) = error {
+            emitted.push(WorkspaceEvent::Error(error));
+        }
+        true
+    }
+
+    fn classify_active_remote_terminal_exit(
+        &self,
+        worker_generation: u64,
+        code: u32,
+        output_tail: &str,
+    ) -> Option<String> {
+        let remote_active = self
+            .inner
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = remote_active
+            .as_ref()
+            .filter(|active| active.worker_generation == worker_generation)?;
+        classify_remote_terminal_exit(code, output_tail, &active.identity_mismatch_marker)
     }
 
     fn drain_operation_events(&self, emitted: &mut Vec<WorkspaceEvent>) -> bool {
@@ -5284,10 +7156,38 @@ impl Workspace {
         drain.processed
     }
 
+    fn drain_remote_retained_events(
+        &self,
+        budget: usize,
+        emitted: &mut Vec<WorkspaceEvent>,
+    ) -> usize {
+        let drain = self
+            .inner
+            .remote_retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain_events(budget);
+        if drain.changed {
+            self.inner.revision.fetch_add(1, Ordering::Release);
+        }
+        emitted.extend(drain.emitted);
+        drain.processed
+    }
+
     fn attachment_for_worker(
         &self,
         worker_generation: u64,
     ) -> Option<(AttachRequest, AttachTerm, u64, Option<FallbackAuthority>)> {
+        if self
+            .inner
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|active| active.worker_generation == worker_generation)
+        {
+            return None;
+        }
         let attachment = self
             .inner
             .attachment
@@ -9828,6 +11728,274 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "remote publication keeps the old and new presentation swap atomic"
+)]
+fn publish_remote_worker(
+    inner: &Inner,
+    worker: TerminalWorker,
+    key: RemotePresentationKey,
+    selection: &SessionSelection,
+    lease: host::SshLease,
+    presentation_id: u64,
+    identity_mismatch_marker: String,
+) -> Result<(), Box<RemotePublishError>> {
+    let surface = worker.surface_handle();
+    let snapshot_write = begin_snapshot_write(inner);
+    let mut attachment = inner
+        .attachment
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let geometry = inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Err(error) =
+        worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
+    {
+        return Err(Box::new(RemotePublishError {
+            error: WorkspaceError::from_worker(&error),
+            worker,
+        }));
+    }
+    let previous_presentation_id = match &*inner
+        .state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        WorkspaceContent::Terminal {
+            presentation_id, ..
+        } => Some(*presentation_id),
+        _ => None,
+    };
+    let mut remote_active = inner
+        .remote_active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut workers = inner
+        .worker
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(active) = remote_active.as_ref()
+        && workers.generation() != active.worker_generation
+    {
+        return Err(Box::new(RemotePublishError {
+            error: WorkspaceError::new(
+                "the active remote presentation changed while switching sessions",
+            ),
+            worker,
+        }));
+    }
+    if (remote_active.is_some() || attachment.active().is_some()) && workers.active().is_none() {
+        return Err(Box::new(RemotePublishError {
+            error: WorkspaceError::new("the current terminal presentation is unavailable"),
+            worker,
+        }));
+    }
+    if attachment.active().is_some() && previous_presentation_id.is_none() {
+        return Err(Box::new(RemotePublishError {
+            error: WorkspaceError::new("the current terminal presentation identity is unavailable"),
+            worker,
+        }));
+    }
+
+    let previous_attachment = if remote_active.is_none() {
+        attachment.take_active()
+    } else {
+        attachment.invalidate();
+        None
+    };
+    let (worker_generation, previous_worker) = workers.replace(worker);
+    let previous_remote = remote_active.replace(RemoteActive {
+        key,
+        selection: selection.clone(),
+        worker_generation,
+        lease,
+        presentation_id,
+        retainable: true,
+        identity_mismatch_marker,
+    });
+    clear_pending_paste(inner);
+    clear_terminal_notice(inner);
+    set_inner_state(
+        inner,
+        WorkspaceContent::Terminal {
+            host_id: selection.host_id().to_owned(),
+            endpoint: selection.endpoint().to_owned(),
+            session: selection.session().to_owned(),
+            kind: SessionKind::Tmux,
+            presentation_id,
+            surface,
+        },
+    );
+    drop(workers);
+    drop(remote_active);
+    drop(geometry);
+    drop(attachment);
+
+    match (previous_worker, previous_remote, previous_attachment) {
+        (Some(worker), Some(active), _) if active.retainable => {
+            worker.set_clipboard_writes_enabled(false);
+            let _cancelled = worker.cancel_paste();
+            inner
+                .remote_retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(RemoteRetainedPresentation { active, worker });
+        }
+        (Some(worker), None, Some(attachment)) => {
+            worker.set_clipboard_writes_enabled(false);
+            let _cancelled = worker.cancel_paste();
+            let selection = attachment.request.selection();
+            let key = attachment.request.presentation_key();
+            inner
+                .retained_presentations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(RetainedPresentation {
+                    key,
+                    selection,
+                    attachment,
+                    worker,
+                    presentation_id: previous_presentation_id
+                        .expect("active local presentation identity was checked"),
+                });
+        }
+        _ => {}
+    }
+    drop(snapshot_write);
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "cross-host attachment keeps preparation, authority validation, and swap together"
+)]
+fn run_attach_over_remote(
+    inner: &Inner,
+    request: &AttachRequest,
+    term: AttachTerm,
+    generation: u64,
+    navigation_generation: u64,
+) {
+    let _operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation
+        || !inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_current(generation)
+    {
+        return;
+    }
+    let result = attach_fresh(inner, request, term);
+    let snapshot_write = begin_snapshot_write(inner);
+    let mut attachment = inner
+        .attachment
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation
+        || !attachment.is_current(generation)
+    {
+        return;
+    }
+    let (worker, snapshot, attached_session, initial_geometry, attached_term) = match result {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            attachment.clear_if_current(generation);
+            drop(attachment);
+            let message = match error {
+                AttachFreshError::Host(error) | AttachFreshError::SessionChanged { error, .. } => {
+                    error.to_string()
+                }
+            };
+            push_operation_event(inner, WorkspaceEvent::Error(message));
+            inner.revision.fetch_add(1, Ordering::Release);
+            return;
+        }
+    };
+    if let Some(active) = attachment.active_mut() {
+        normalize_attached_worktree_target(active, &snapshot, &attached_session);
+        active.term = attached_term;
+    }
+    let surface = worker.surface_handle();
+    publish_attach_inventory(inner, request, snapshot);
+    let key = attachment
+        .active()
+        .expect("current attachment was checked")
+        .request
+        .presentation_key();
+    let session = current_inventory_session_name(inner, &key).unwrap_or(attached_session);
+    if let Some(active) = attachment.active_mut() {
+        session.clone_into(&mut active.request.name);
+    }
+    let geometry = inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *geometry != initial_geometry
+        && let Err(error) =
+            worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
+    {
+        attachment.clear_if_current(generation);
+        drop(attachment);
+        push_operation_event(inner, WorkspaceEvent::Error(error.to_string()));
+        inner.revision.fetch_add(1, Ordering::Release);
+        return;
+    }
+    let mut remote_active = inner
+        .remote_active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(active_remote) = remote_active.as_ref() else {
+        attachment.clear_if_current(generation);
+        return;
+    };
+    let mut workers = inner
+        .worker
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if workers.generation() != active_remote.worker_generation {
+        attachment.clear_if_current(generation);
+        return;
+    }
+    let (_, previous_worker) = workers.replace(worker);
+    let previous_remote = remote_active.take();
+    set_terminal_notice(inner, attached_term);
+    let presentation_id = next_presentation_id(inner);
+    set_inner_state(
+        inner,
+        WorkspaceContent::Terminal {
+            host_id: request.host_id.clone(),
+            endpoint: request.endpoint.distro().to_owned(),
+            session,
+            kind: request.target.kind(),
+            presentation_id,
+            surface,
+        },
+    );
+    drop(workers);
+    drop(remote_active);
+    drop(geometry);
+    drop(attachment);
+    if let (Some(worker), Some(active)) = (previous_worker, previous_remote)
+        && active.retainable
+    {
+        worker.set_clipboard_writes_enabled(false);
+        let _cancelled = worker.cancel_paste();
+        inner
+            .remote_retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(RemoteRetainedPresentation { active, worker });
+    }
+    drop(snapshot_write);
+}
+
 fn current_inventory_session_name(inner: &Inner, key: &PresentationKey) -> Option<String> {
     inner
         .host
@@ -11685,6 +13853,31 @@ fn classify_terminal_exit(code: u32, output_tail: &str) -> String {
     format!("tmux client exited with status {code}")
 }
 
+fn classify_remote_terminal_exit(
+    code: u32,
+    output_tail: &str,
+    identity_mismatch_marker: &str,
+) -> Option<String> {
+    let has_identity_mismatch = output_tail
+        .lines()
+        .map(str::trim)
+        .any(|line| line == identity_mismatch_marker);
+    if has_identity_mismatch {
+        return Some(
+            "session identity changed immediately before attachment; refresh and try again"
+                .to_owned(),
+        );
+    }
+    (code != 0).then(|| {
+        let tail = output_tail.trim();
+        if tail.is_empty() {
+            format!("Remote tmux client exited with status {code}")
+        } else {
+            tail.to_owned()
+        }
+    })
+}
+
 fn classify_terminal_exit_event(
     code: u32,
     output_tail: &str,
@@ -13415,6 +15608,26 @@ mod tests {
     }
 
     #[test]
+    fn remote_identity_mismatch_tolerates_preceding_login_shell_noise() {
+        let marker = "GHOSTHUB_REMOTE_IDENTITY_MISMATCH_deadbeef";
+        let output =
+            format!("Welcome to the remote host\r\n{marker}\r\nlogout\r\nConnection closed.\r\n");
+
+        let diagnostic = classify_remote_terminal_exit(0, &output, marker)
+            .expect("the attachment-specific marker is authoritative");
+
+        assert!(diagnostic.contains("session identity changed"));
+    }
+
+    #[test]
+    fn remote_output_that_only_mentions_the_marker_is_not_authoritative() {
+        let marker = "GHOSTHUB_REMOTE_IDENTITY_MISMATCH_deadbeef";
+        let output = format!("shell output: {marker}\r\nordinary logout\r\n");
+
+        assert_eq!(classify_remote_terminal_exit(0, &output, marker), None);
+    }
+
+    #[test]
     fn initial_exact_terminfo_failure_retries_with_xterm() {
         let (retry_term, diagnostic) = classify_terminal_exit_event(
             1,
@@ -14584,6 +16797,41 @@ mod tests {
             drain.join().expect("drain thread"),
             Some(("new", published_generation))
         );
+    }
+
+    #[test]
+    fn stale_remote_exit_generation_cannot_invalidate_a_replacement_worker() {
+        let mut worker = WorkerState::new();
+        let exited_generation = worker.publish("remote client");
+        let replacement_generation = worker.publish("local replacement");
+
+        assert_eq!(worker.invalidate_if_generation(exited_generation), None);
+        assert_eq!(worker.active(), Some(&"local replacement"));
+        assert_eq!(worker.generation(), replacement_generation);
+    }
+
+    #[test]
+    fn remote_presentation_identity_survives_only_a_same_route_lease_renewal() {
+        let identity = session::SessionIdentity::new(42, "$1", 100);
+        let mut key = RemotePresentationKey {
+            host_id: "ssh:studio".to_owned(),
+            endpoint: "studio.example".to_owned(),
+            route_identity: "route-a".to_owned(),
+            lease_generation: 7,
+            session_identity: identity.clone(),
+        };
+        let sessions = vec![session::DiscoveredSession::new("renamed", identity, 1)];
+
+        assert_eq!(
+            key.reconcile("studio.example", "route-a", 8, &sessions),
+            Some("renamed".to_owned())
+        );
+        assert_eq!(key.lease_generation, 8);
+        assert_eq!(
+            key.reconcile("studio.example", "route-b", 9, &sessions),
+            None
+        );
+        assert_eq!(key.lease_generation, 8);
     }
 
     #[test]
@@ -17125,6 +19373,190 @@ mod tests {
                 .expect("timeout diagnostic")
                 .kind(),
             DiagnosticKind::Timeout
+        );
+    }
+
+    #[test]
+    fn cancelled_remote_connection_cannot_publish_a_late_failure() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Connecting,
+                Vec::new(),
+                None,
+            )],
+        ));
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid remote host");
+        let cancellation = CancellationToken::new();
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                "ssh:studio".to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: None,
+                    context: None,
+                    cancellation: Some(cancellation.clone()),
+                    generation: 7,
+                },
+            );
+
+        assert!(workspace.cancel_host_connection("ssh:studio"));
+        assert!(cancellation.is_cancelled());
+        publish_remote_connection(
+            &workspace.inner,
+            "ssh:studio",
+            7,
+            Err(host::RemoteTmuxError::transport("late transport failure")),
+        );
+
+        let snapshot = workspace.snapshot();
+        assert_eq!(
+            snapshot.hosts()[0].connection(),
+            HostConnectionState::Disconnected
+        );
+        assert!(snapshot.hosts()[0].diagnostic().is_none());
+    }
+
+    #[test]
+    fn display_only_ssh_host_edits_preserve_runtime_and_selection() {
+        let config = RemoteTmuxConfig::new(
+            "ssh:deploy@studio.example:22",
+            "Studio",
+            SshTarget::new("studio.example", Some("deploy".to_owned()), Some(22))
+                .expect("valid target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid remote host");
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                config.id(),
+                config.name(),
+                config.endpoint(),
+                HostConnectionState::Ready,
+                vec![SessionItem::new("work", 0)],
+                None,
+            )],
+        ));
+        let cancellation = CancellationToken::new();
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                config.id().to_owned(),
+                RemoteEntry {
+                    config: config.clone(),
+                    native_host: None,
+                    context: None,
+                    cancellation: Some(cancellation.clone()),
+                    generation: 7,
+                },
+            );
+        let edited = SshHostSettings::new(
+            "Build Mac",
+            "studio.example",
+            Some("deploy".to_owned()),
+            Some(22),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid settings");
+
+        workspace
+            .publish_saved_ssh_host(Some(config.id()), &edited)
+            .expect("publish display edit");
+
+        {
+            let entries = workspace.inner.remote_hosts.lock().expect("remote hosts");
+            let entry = entries.get(config.id()).expect("preserved runtime");
+            assert_eq!(entry.generation, 7);
+        }
+        assert!(!cancellation.is_cancelled());
+        let snapshot = workspace.snapshot();
+        assert_eq!(snapshot.selected_host(), Some(config.id()));
+        assert_eq!(snapshot.hosts()[0].name(), "Build Mac");
+        assert_eq!(snapshot.hosts()[0].connection(), HostConnectionState::Ready);
+        assert_eq!(snapshot.hosts()[0].sessions()[0].name(), "work");
+    }
+
+    #[test]
+    fn connection_changing_ssh_host_edits_disconnect_and_move_selection() {
+        let config = RemoteTmuxConfig::new(
+            "ssh:deploy@old.example:22",
+            "Studio",
+            SshTarget::new("old.example", Some("deploy".to_owned()), Some(22))
+                .expect("valid target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid remote host");
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                config.id(),
+                config.name(),
+                config.endpoint(),
+                HostConnectionState::Connecting,
+                Vec::new(),
+                None,
+            )],
+        ));
+        let cancellation = CancellationToken::new();
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                config.id().to_owned(),
+                RemoteEntry {
+                    config: config.clone(),
+                    native_host: None,
+                    context: None,
+                    cancellation: Some(cancellation.clone()),
+                    generation: 7,
+                },
+            );
+        let edited = SshHostSettings::new(
+            "Studio",
+            "new.example",
+            Some("deploy".to_owned()),
+            Some(22),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid settings");
+        let edited_id = edited.id();
+
+        workspace
+            .publish_saved_ssh_host(Some(config.id()), &edited)
+            .expect("publish connection edit");
+
+        assert!(cancellation.is_cancelled());
+        let snapshot = workspace.snapshot();
+        assert_eq!(snapshot.selected_host(), Some(edited_id.as_str()));
+        assert_eq!(snapshot.hosts().len(), 1);
+        assert_eq!(snapshot.hosts()[0].id(), edited_id);
+        assert_eq!(
+            snapshot.hosts()[0].connection(),
+            HostConnectionState::Unavailable
         );
     }
 }
