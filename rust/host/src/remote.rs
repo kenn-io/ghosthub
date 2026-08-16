@@ -6,11 +6,15 @@ use std::path::Path;
 use std::time::Duration;
 
 use model::DiagnosticKind;
-use session::{AttachPlan, DiscoveredSession, SessionIdentity};
+use session::{
+    AttachPlan, DiscoveredSession, HerdrAttachPlan, HerdrSessionRecord, SessionIdentity,
+    ZellijAttachPlan, ZellijSessionRecord,
+};
 
 use crate::{
-    CancellationToken, CommandPrefix, CommandRunner, KwtSshExecutable, KwtSshLeaseClient,
-    KwtSshResolver, SshLease, SshLeaseEvent, SshLeasePrompt, SshTarget,
+    CancellationToken, CommandPrefix, CommandRunner, HerdrInventory, HostError, KwtSshExecutable,
+    KwtSshLeaseClient, KwtSshResolver, SshLease, SshLeaseEvent, SshLeasePrompt, SshTarget,
+    ZellijInventory, herdr, zellij,
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
@@ -21,8 +25,8 @@ const INVENTORY_FORMAT: &str =
     "#{pid}|#{session_id}|#{session_created}|#{session_attached}|#{n:session_name}|#{session_name}";
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const TMUX_PATH_MARKER: &str = "GHOSTHUB_TMUX_PATH=";
-const INVENTORY_BEGIN_PREFIX: &str = "GHOSTHUB_TMUX_INVENTORY_BEGIN_";
-const INVENTORY_END_PREFIX: &str = "GHOSTHUB_TMUX_INVENTORY_END_";
+const HERDR_INVENTORY_PREFIX: &str = "GHOSTHUB_HERDR_INVENTORY_";
+const ZELLIJ_INVENTORY_PREFIX: &str = "GHOSTHUB_ZELLIJ_INVENTORY_";
 const IDENTITY_MISMATCH_PREFIX: &str = "GHOSTHUB_REMOTE_IDENTITY_MISMATCH_";
 
 /// Absolute system OpenSSH client used only with KWT-issued lease arguments.
@@ -170,7 +174,40 @@ pub struct RemoteTmuxSnapshot {
     lease_generation: u64,
     tmux_binary: String,
     sessions: Vec<DiscoveredSession>,
+    herdr: HerdrInventory,
+    zellij: ZellijInventory,
     lease: SshLease,
+}
+
+/// Multiplexer inventory captured through one reviewed SSH lease.
+#[derive(Clone, Debug)]
+pub struct RemoteSessionInventory {
+    tmux_binary: String,
+    sessions: Vec<DiscoveredSession>,
+    herdr: HerdrInventory,
+    zellij: ZellijInventory,
+}
+
+impl RemoteSessionInventory {
+    #[must_use]
+    pub fn tmux_binary(&self) -> &str {
+        &self.tmux_binary
+    }
+
+    #[must_use]
+    pub fn sessions(&self) -> &[DiscoveredSession] {
+        &self.sessions
+    }
+
+    #[must_use]
+    pub const fn herdr(&self) -> &HerdrInventory {
+        &self.herdr
+    }
+
+    #[must_use]
+    pub const fn zellij(&self) -> &ZellijInventory {
+        &self.zellij
+    }
 }
 
 impl RemoteTmuxSnapshot {
@@ -197,6 +234,16 @@ impl RemoteTmuxSnapshot {
     #[must_use]
     pub fn sessions(&self) -> &[DiscoveredSession] {
         &self.sessions
+    }
+
+    #[must_use]
+    pub const fn herdr(&self) -> &HerdrInventory {
+        &self.herdr
+    }
+
+    #[must_use]
+    pub const fn zellij(&self) -> &ZellijInventory {
+        &self.zellij
     }
 
     #[must_use]
@@ -272,14 +319,15 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         let lease = KwtSshLeaseClient::with_command(self.controller.clone())
             .acquire(&route, cancellation, prompt, status)
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
-        let tmux_binary = self.resolve_tmux_binary(&lease, cancellation)?;
-        let sessions = self.discover_sessions(&lease, &tmux_binary, cancellation)?;
+        let inventory = self.refresh(&lease, cancellation)?;
         Ok(RemoteTmuxSnapshot {
             endpoint: self.config.endpoint(),
             route_identity: route.route_identity().to_owned(),
             lease_generation: lease.result().generation(),
-            tmux_binary,
-            sessions,
+            tmux_binary: inventory.tmux_binary,
+            sessions: inventory.sessions,
+            herdr: inventory.herdr,
+            zellij: inventory.zellij,
             lease,
         })
     }
@@ -293,9 +341,102 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         &self,
         lease: &SshLease,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<DiscoveredSession>, RemoteTmuxError> {
+    ) -> Result<RemoteSessionInventory, RemoteTmuxError> {
         let tmux_binary = self.resolve_tmux_binary(lease, cancellation)?;
-        self.discover_sessions(lease, &tmux_binary, cancellation)
+        let sessions = self.discover_sessions(lease, &tmux_binary, cancellation)?;
+        Ok(RemoteSessionInventory {
+            tmux_binary,
+            sessions,
+            herdr: self.discover_herdr(lease, cancellation),
+            zellij: self.discover_zellij(lease, cancellation),
+        })
+    }
+
+    fn discover_herdr(&self, lease: &SshLease, cancellation: &CancellationToken) -> HerdrInventory {
+        let result: Result<Option<(String, Vec<HerdrSessionRecord>)>, RemoteTmuxError> = (|| {
+            let probe = self.run_remote_shell(lease, herdr::RESOLVE_SCRIPT, cancellation)?;
+            if probe.status != 0 && probe.status != 127 {
+                return Err(command_failure(&probe, "remote Herdr probe failed"));
+            }
+            let executable = match herdr::parse_executable(probe.status, &probe.stdout)
+                .map_err(|detail| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, detail))?
+            {
+                herdr::ExecutableProbe::Available(executable) => executable,
+                herdr::ExecutableProbe::Unavailable => return Ok(None),
+            };
+            let command = multiplexer_command(
+                &herdr::CONTROL_VARIABLES,
+                None,
+                &executable,
+                ["session", "list", "--json"],
+            );
+            let output = self.run_framed_remote_shell(
+                lease,
+                &posix_command(&command),
+                HERDR_INVENTORY_PREFIX,
+                cancellation,
+            )?;
+            if output.status != 0 {
+                return Err(command_failure(&output, "remote Herdr inventory failed"));
+            }
+            let sessions = herdr::parse_inventory(&output.stdout)
+                .map_err(|detail| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, detail))?;
+            Ok(Some((executable, sessions)))
+        })(
+        );
+        match result {
+            Ok(Some((executable, sessions))) => HerdrInventory::Available {
+                executable,
+                sessions,
+            },
+            Ok(None) => HerdrInventory::Unavailable,
+            Err(error) => HerdrInventory::Failed(HostError::new(error.kind(), error.to_string())),
+        }
+    }
+
+    fn discover_zellij(
+        &self,
+        lease: &SshLease,
+        cancellation: &CancellationToken,
+    ) -> ZellijInventory {
+        let result: Result<Option<(String, Vec<ZellijSessionRecord>)>, RemoteTmuxError> = (|| {
+            let probe = self.run_remote_shell(lease, zellij::RESOLVE_SCRIPT, cancellation)?;
+            if probe.status != 0 && probe.status != 127 {
+                return Err(command_failure(&probe, "remote Zellij probe failed"));
+            }
+            let executable = match zellij::parse_executable(probe.status, &probe.stdout)
+                .map_err(|detail| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, detail))?
+            {
+                zellij::ExecutableProbe::Available(executable) => executable,
+                zellij::ExecutableProbe::Unavailable => return Ok(None),
+            };
+            let command = multiplexer_command(
+                &zellij::CONTROL_VARIABLES,
+                None,
+                &executable,
+                ["list-sessions", "--no-formatting", "--short"],
+            );
+            let output = self.run_framed_remote_shell(
+                lease,
+                &posix_command(&command),
+                ZELLIJ_INVENTORY_PREFIX,
+                cancellation,
+            )?;
+            let sessions = zellij::parse_inventory(output.status, &output.stdout, &output.stderr)
+                .map_err(|detail| {
+                RemoteTmuxError::new(DiagnosticKind::MalformedOutput, detail)
+            })?;
+            Ok(Some((executable, sessions)))
+        })(
+        );
+        match result {
+            Ok(Some((executable, sessions))) => ZellijInventory::Available {
+                executable,
+                sessions,
+            },
+            Ok(None) => ZellijInventory::Unavailable,
+            Err(error) => ZellijInventory::Failed(HostError::new(error.kind(), error.to_string())),
+        }
     }
 
     fn resolve_tmux_binary(
@@ -416,6 +557,90 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok((plan, identity_mismatch_marker))
     }
 
+    /// Build an ordinary remote Herdr client over the reviewed SSH lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed lease is no longer live.
+    pub fn herdr_attach_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        session: &HerdrSessionRecord,
+        term: &str,
+    ) -> Result<HerdrAttachPlan, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let command = multiplexer_command(
+            &herdr::CONTROL_VARIABLES,
+            Some(term),
+            executable,
+            ["session", "attach", session.name()],
+        );
+        Ok(HerdrAttachPlan::attach_only(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&posix_command(&command)),
+            )),
+        ))
+    }
+
+    /// Build an ordinary remote Zellij client over the reviewed SSH lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed lease is no longer live.
+    pub fn zellij_attach_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        session: &ZellijSessionRecord,
+        term: &str,
+    ) -> Result<ZellijAttachPlan, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let command = multiplexer_command(
+            &zellij::CONTROL_VARIABLES,
+            Some(term),
+            executable,
+            ["attach", "--", session.name()],
+        );
+        Ok(ZellijAttachPlan::attach_only(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&posix_command(&command)),
+            )),
+        ))
+    }
+
+    fn run_framed_remote_shell(
+        &self,
+        lease: &SshLease,
+        command: &str,
+        prefix: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::CommandOutput, RemoteTmuxError> {
+        let (begin, end) = payload_markers(prefix)?;
+        let framed = format!(
+            "printf '%s\\n' {}; {command}; ghosthub_status=$?; printf '%s\\n' {}; exit $ghosthub_status",
+            shell_quoted_argument(&begin),
+            shell_quoted_argument(&end),
+        );
+        let mut output = self.run_remote_shell(lease, &framed, cancellation)?;
+        output.stdout = extract_framed_payload(&output.stdout, &begin, &end)?;
+        Ok(output)
+    }
+
     fn run_remote_shell(
         &self,
         lease: &SshLease,
@@ -465,6 +690,25 @@ fn tmux_command<'a>(
         command.push(format!("TMUX_TMPDIR={path}"));
     }
     command.push(tmux_binary.to_owned());
+    command.extend(args.into_iter().map(str::to_owned));
+    command
+}
+
+fn multiplexer_command<'a>(
+    scrubbed: &[&str],
+    term: Option<&str>,
+    executable: &str,
+    args: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut command = vec!["/usr/bin/env".to_owned()];
+    for variable in scrubbed {
+        command.extend(["-u".to_owned(), (*variable).to_owned()]);
+    }
+    command.push("LC_ALL=C".to_owned());
+    if let Some(term) = term {
+        command.push(format!("TERM={term}"));
+    }
+    command.push(executable.to_owned());
     command.extend(args.into_iter().map(str::to_owned));
     command
 }
@@ -565,6 +809,10 @@ fn identity_mismatch_marker() -> Result<String, RemoteTmuxError> {
 }
 
 fn inventory_markers() -> Result<(String, String), RemoteTmuxError> {
+    payload_markers("GHOSTHUB_TMUX_INVENTORY_")
+}
+
+fn payload_markers(prefix: &str) -> Result<(String, String), RemoteTmuxError> {
     let mut nonce = [0_u8; 16];
     getrandom::fill(&mut nonce).map_err(|error| {
         RemoteTmuxError::new(
@@ -574,9 +822,59 @@ fn inventory_markers() -> Result<(String, String), RemoteTmuxError> {
     })?;
     let nonce = hex::encode(nonce);
     Ok((
-        format!("{INVENTORY_BEGIN_PREFIX}{nonce}"),
-        format!("{INVENTORY_END_PREFIX}{nonce}"),
+        format!("{prefix}BEGIN_{nonce}"),
+        format!("{prefix}END_{nonce}"),
     ))
+}
+
+fn extract_framed_payload(
+    bytes: &[u8],
+    begin_marker: &str,
+    end_marker: &str,
+) -> Result<Vec<u8>, RemoteTmuxError> {
+    let output = std::str::from_utf8(bytes).map_err(|_| {
+        RemoteTmuxError::new(
+            DiagnosticKind::MalformedOutput,
+            "remote output is not UTF-8",
+        )
+    })?;
+    let begin = format!("{begin_marker}\n");
+    let end = format!("{end_marker}\n");
+    let start = output.find(&begin).ok_or_else(|| {
+        RemoteTmuxError::new(
+            DiagnosticKind::MalformedOutput,
+            "remote output framing is invalid",
+        )
+    })? + begin.len();
+    let finish = output[start..]
+        .find(&end)
+        .map(|offset| start + offset)
+        .ok_or_else(|| {
+            RemoteTmuxError::new(
+                DiagnosticKind::MalformedOutput,
+                "remote output framing is invalid",
+            )
+        })?;
+    if output[start..finish].contains(&begin) || output[finish + end.len()..].contains(&end) {
+        return Err(RemoteTmuxError::new(
+            DiagnosticKind::MalformedOutput,
+            "remote output framing is invalid",
+        ));
+    }
+    Ok(output.as_bytes()[start..finish].to_vec())
+}
+
+fn command_failure(output: &crate::CommandOutput, fallback: &str) -> RemoteTmuxError {
+    RemoteTmuxError::new(
+        if output.status == 255 {
+            DiagnosticKind::Transport
+        } else if output.status == 127 {
+            DiagnosticKind::ExecutableNotFound
+        } else {
+            DiagnosticKind::UnsupportedEnvironment
+        },
+        nonempty_diagnostic(&output.stderr, fallback),
+    )
 }
 
 fn parse_tmux_probe(bytes: &[u8]) -> Result<String, RemoteTmuxError> {
@@ -907,6 +1205,46 @@ mod tests {
     }
 
     #[test]
+    fn remote_multiplexer_commands_scrub_backend_state_before_terminal_assignments() {
+        assert_eq!(
+            multiplexer_command(
+                &["HERDR_SESSION", "HERDR_SOCKET_PATH"],
+                Some("xterm-256color"),
+                "/usr/bin/herdr",
+                ["session", "attach", "review"],
+            ),
+            [
+                "/usr/bin/env",
+                "-u",
+                "HERDR_SESSION",
+                "-u",
+                "HERDR_SOCKET_PATH",
+                "LC_ALL=C",
+                "TERM=xterm-256color",
+                "/usr/bin/herdr",
+                "session",
+                "attach",
+                "review",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn optional_inventory_framing_ignores_login_shell_noise() {
+        assert_eq!(
+            extract_framed_payload(
+                b"startup banner\nBEGIN\n{\"sessions\":[]}\nEND\nlogout noise\n",
+                "BEGIN",
+                "END",
+            )
+            .expect("framed payload"),
+            b"{\"sessions\":[]}\n"
+        );
+        assert!(extract_framed_payload(b"BEGIN\npayload\n", "BEGIN", "END").is_err());
+    }
+
+    #[test]
     fn leased_ssh_arguments_keep_destination_separate_from_remote_command() {
         let arguments = complete_ssh_arguments(
             &["-S".to_owned(), "/tmp/control".to_owned()],
@@ -1016,6 +1354,8 @@ mod tests {
             lease_generation: 7,
             tmux_binary: "/usr/bin/tmux".to_owned(),
             sessions: vec![session.clone()],
+            herdr: HerdrInventory::Unavailable,
+            zellij: ZellijInventory::Unavailable,
             lease: exited_lease(),
         };
 

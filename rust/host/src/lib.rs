@@ -28,12 +28,13 @@ pub use kwt::{
     kwt_command_failure_message,
 };
 pub use remote::{
-    RemoteTmuxConfig, RemoteTmuxError, RemoteTmuxHost, RemoteTmuxSnapshot, SshExecutable,
+    RemoteSessionInventory, RemoteTmuxConfig, RemoteTmuxError, RemoteTmuxHost, RemoteTmuxSnapshot,
+    SshExecutable,
 };
 pub use ssh::{
     KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshError, SshExecutionProjection,
-    SshLease, SshLeaseEvent, SshLeaseMode, SshLeasePrompt, SshLeaseResult, SshPromptDetails,
-    SshPromptKind, SshResolvedTarget, SshRouteSnapshot, SshTarget,
+    SshHostKeyDetails, SshLease, SshLeaseEvent, SshLeaseMode, SshLeasePrompt, SshLeaseResult,
+    SshPromptDetails, SshPromptKind, SshResolvedTarget, SshRouteSnapshot, SshTarget,
 };
 pub use wsl::{
     AdmissionAttacher, AttachTerm, CreationReceipt, HerdrInventory, HostError, HostSnapshot,

@@ -165,9 +165,11 @@ consumed through kwt's machine-readable CLI surfaces.
 ### Windows and Linux Rust applications
 
 The first Rust product slice is a native Windows GPUI application attaching to
-tmux and discovering optional Herdr sessions inside WSL2. It also has an
-explicitly configured POSIX SSH host slice for remote tmux discovery and
-attach-only presentation. Linux remains a
+tmux and discovering optional Herdr and Zellij sessions inside WSL2. It also
+has explicitly configured POSIX SSH hosts that discover tmux plus optional
+Herdr and Zellij sessions through one KWT-owned lease. All three backends use
+ordinary attach-only presentation; remote lifecycle controls remain withheld
+until they have fresh backend-specific identity fencing. Linux remains a
 compile-and-contract target until a native Linux product slice is authorized.
 Neither replaces the macOS SwiftUI
 application or embeds a Rust runtime into it. Cross-platform parity is enforced

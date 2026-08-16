@@ -828,8 +828,9 @@ Connection establishment uses the matching long-lived `kwt ssh lease --json`
 operation bound to that route identity and projection policy. Its NDJSON
 stream must retain one operation ID, contiguous sequence numbers, exact
 prompt-to-hop attribution, and one terminal result. Host-key prompts are
-non-sensitive; authentication prompts are sensitive; both retain KWT's
-deadline and exact logical, effective, and display target. A changed route,
+non-sensitive and display KWT's structured host, algorithm, and fingerprint;
+authentication prompts are sensitive. Both retain KWT's deadline and exact
+logical, effective, and display target. A changed route,
 unsupported masterless result, malformed event, or attribution mismatch fails
 closed.
 
@@ -873,14 +874,20 @@ to disconnected state without affecting WSL or another SSH host. A changed or
 late prompt generation is rejected rather than applied to a replacement
 connection.
 
-After admission, Host discovers ordinary tmux sessions through the lease and
-builds an attach-only argv plan for the exact server PID, session ID, and
-creation time. Terminal launches the resolved client through ConPTY and
-remains unaware of WSL, KWT, routing, or SSH configuration.
-The v0 remote UI intentionally supports discovery and attachment only. It
-does not expose remote session creation or destruction, Herdr, Zellij,
-managed remote KWT helpers, worktrees, reconnect/backoff, or restoration.
-Those absent controls cannot silently fall back to WSL or unguarded SSH.
+After admission, Host discovers ordinary tmux sessions plus optional Herdr and
+Zellij inventory through the same reviewed lease. Missing optional backends are
+silent; malformed or failed optional inventory is backend-scoped and never
+hides another backend. Tmux attachment retains exact server PID, session ID,
+and creation-time authority. Running Herdr and active Zellij rows build their
+ordinary attach-only client argv after scrubbing inherited backend routing
+variables. Terminal launches each resolved client through ConPTY and remains
+unaware of WSL, KWT, routing, SSH configuration, or multiplexer selection.
+
+The current remote UI supports discovery, attach-only presentation, retained
+switching, and detach. It deliberately withholds remote creation, tmux/Zellij
+kill, Herdr create/stop/restart/delete, worktrees, reconnect/backoff, and
+restoration until each operation has fresh remote identity and lifecycle
+fencing. An absent control cannot silently fall back to WSL or unguarded SSH.
 
 Rust config resolution is:
 
@@ -1102,10 +1109,24 @@ Slice 1 reads font family, font size, and theme through:
 config → workspace projection → UI-facing state → GPUI
 ~~~
 
-The Settings shell exposes only the Hosts pane in this slice, and that pane
-owns only `[[ssh-host]]` records. WSL and terminal appearance remain startup
-configuration rather than mutable UI settings; adding those panes later does
-not change the shell's navigation or page-layout contract.
+The Settings shell currently exposes the Hosts pane, and that pane owns only
+`[[ssh-host]]` records. Its stable navigation, page header, list, and detail
+regions are the permanent container for the remaining Swift settings domains.
+The parity inventory is:
+
+| Swift domain | Rust state |
+| --- | --- |
+| Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
+| Appearance | Startup configuration only; pane not yet implemented |
+| Terminal | Startup configuration only; pane not yet implemented |
+| Keyboard | Runtime shortcuts exist; pane not yet implemented |
+| Worktrees | Project/worktree workflows exist; preferences pane not yet implemented |
+| Agents | Not yet implemented |
+| Privacy | Clipboard policy exists in configuration; pane not yet implemented |
+| Integrations | Not yet implemented |
+
+Adding these panes extends the existing shell rather than replacing it. WSL
+and terminal appearance remain startup configuration until their panes land.
 
 Read-only configuration may select a distro name, an absolute POSIX tmux
 binary, and an absolute POSIX `TMUX_TMPDIR`. Defaults are the current WSL
@@ -1249,11 +1270,11 @@ After Slice 1:
    session creation already ships through CreateOnce in the WSL slice.
 3. Remaining local work adds project settings, Console Panel, and broader
    command and accessibility surfaces.
-4. Remote POSIX tmux host settings, explicit connect, KWT-owned prompts,
-   inventory, and attach-only presentation now ship as the first remote slice.
-   Follow-on remote work adds managed-helper installation, attach-only
-   transport reconnect, repair/open reconnect, other multiplexers, and remote
-   Windows.
+4. Remote POSIX host settings, explicit connect, KWT-owned prompts, tmux plus
+   optional Herdr/Zellij inventory, and attach-only presentation now ship.
+   Follow-on remote work adds identity-fenced lifecycle operations,
+   managed-helper installation, transport reconnect, repair/open reconnect,
+   worktrees, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.

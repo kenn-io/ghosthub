@@ -155,6 +155,19 @@ pub enum SessionKind {
 }
 
 impl SessionSelection {
+    fn for_kind(
+        host_id: impl Into<String>,
+        endpoint: impl Into<String>,
+        session: impl Into<String>,
+        kind: SessionKind,
+    ) -> Self {
+        match kind {
+            SessionKind::Tmux => Self::new(host_id, endpoint, session),
+            SessionKind::Herdr => Self::herdr(host_id, endpoint, session),
+            SessionKind::Zellij => Self::zellij(host_id, endpoint, session),
+        }
+    }
+
     #[must_use]
     pub fn new(
         host_id: impl Into<String>,
@@ -1017,6 +1030,11 @@ impl SshPromptRequest {
     }
 
     #[must_use]
+    pub const fn host_key(&self) -> Option<&host::SshHostKeyDetails> {
+        self.prompt.details().host_key()
+    }
+
+    #[must_use]
     pub const fn sensitive(&self) -> bool {
         self.prompt.sensitive()
     }
@@ -1544,7 +1562,19 @@ struct RemoteActive {
     lease: host::SshLease,
     presentation_id: u64,
     retainable: bool,
-    identity_mismatch_marker: String,
+    identity_mismatch_marker: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RemoteSessionIdentity {
+    Tmux(session::SessionIdentity),
+    Herdr {
+        name: String,
+        is_default: bool,
+        session_directory: String,
+        socket_path: String,
+    },
+    Zellij(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1553,7 +1583,7 @@ struct RemotePresentationKey {
     endpoint: String,
     route_identity: String,
     lease_generation: u64,
-    session_identity: session::SessionIdentity,
+    session_identity: RemoteSessionIdentity,
 }
 
 struct RemoteRetainedPresentation {
@@ -1576,22 +1606,74 @@ struct RemotePublishError {
     worker: TerminalWorker,
 }
 
+enum RemoteAttachPlan {
+    Tmux(session::AttachPlan),
+    Herdr(session::HerdrAttachPlan),
+    Zellij(session::ZellijAttachPlan),
+}
+
+#[derive(Clone, Copy)]
+struct RemoteInventory<'a> {
+    tmux: &'a [session::DiscoveredSession],
+    herdr: &'a [session::HerdrSessionRecord],
+    zellij: &'a [session::ZellijSessionRecord],
+}
+
+impl<'a> From<&'a RemoteTmuxSnapshot> for RemoteInventory<'a> {
+    fn from(snapshot: &'a RemoteTmuxSnapshot) -> Self {
+        Self {
+            tmux: snapshot.sessions(),
+            herdr: snapshot.herdr().sessions(),
+            zellij: snapshot.zellij().sessions(),
+        }
+    }
+}
+
 impl RemotePresentationKey {
     fn reconcile(
         &mut self,
         endpoint: &str,
         route_identity: &str,
         lease_generation: u64,
-        sessions: &[session::DiscoveredSession],
-    ) -> Option<String> {
+        inventory: Option<RemoteInventory<'_>>,
+    ) -> Option<(SessionKind, String)> {
         if self.endpoint != endpoint || self.route_identity != route_identity {
             return None;
         }
-        let session = sessions
-            .iter()
-            .find(|session| session.identity() == &self.session_identity)?;
+        let inventory = inventory?;
+        let (kind, name) = match &self.session_identity {
+            RemoteSessionIdentity::Tmux(identity) => {
+                let session = inventory
+                    .tmux
+                    .iter()
+                    .find(|session| session.identity() == identity)?;
+                (SessionKind::Tmux, session.name().to_owned())
+            }
+            RemoteSessionIdentity::Herdr {
+                name,
+                is_default,
+                session_directory,
+                socket_path,
+            } => {
+                let session = inventory.herdr.iter().find(|session| {
+                    session.name() == name
+                        && session.is_default() == *is_default
+                        && session.session_directory() == session_directory
+                        && session.socket_path() == socket_path
+                        && session.state() == HerdrSessionState::Running
+                })?;
+                (SessionKind::Herdr, session.name().to_owned())
+            }
+            RemoteSessionIdentity::Zellij(name) => {
+                let session = inventory
+                    .zellij
+                    .iter()
+                    .find(|session| session.name() == name)?;
+                (SessionKind::Zellij, session.name().to_owned())
+            }
+        };
         self.lease_generation = lease_generation;
-        Some(session.name().to_owned())
+        Some((kind, name))
     }
 }
 
@@ -1652,7 +1734,7 @@ impl RemoteRetainedPresentations {
         endpoint: &str,
         route_identity: &str,
         lease_generation: u64,
-        sessions: &[session::DiscoveredSession],
+        inventory: Option<RemoteInventory<'_>>,
     ) -> Vec<RemoteRetainedPresentation> {
         let mut stale = Vec::new();
         let mut index = 0;
@@ -1661,15 +1743,15 @@ impl RemoteRetainedPresentations {
                 index += 1;
                 continue;
             }
-            let name = self.entries[index].active.key.reconcile(
+            let resolved = self.entries[index].active.key.reconcile(
                 endpoint,
                 route_identity,
                 lease_generation,
-                sessions,
+                inventory,
             );
-            if let Some(name) = name {
+            if let Some((kind, name)) = resolved {
                 self.entries[index].active.selection =
-                    SessionSelection::new(host_id, endpoint, name);
+                    SessionSelection::for_kind(host_id, endpoint, name, kind);
                 index += 1;
             } else {
                 stale.push(self.entries.remove(index));
@@ -1707,9 +1789,11 @@ impl RemoteRetainedPresentations {
                     let identity_mismatch_marker =
                         self.entries[index].active.identity_mismatch_marker.clone();
                     self.entries.remove(index);
-                    if let Some(error) =
-                        classify_remote_terminal_exit(code, &output_tail, &identity_mismatch_marker)
-                    {
+                    if let Some(error) = classify_remote_terminal_exit(
+                        code,
+                        &output_tail,
+                        identity_mismatch_marker.as_deref(),
+                    ) {
                         emitted.push(WorkspaceEvent::Error(error));
                     }
                 }
@@ -3161,13 +3245,15 @@ fn publish_remote_connection(
             let endpoint = snapshot.endpoint().to_owned();
             let route_identity = snapshot.route_identity().to_owned();
             let lease_generation = snapshot.lease_generation();
-            let discovered_sessions = snapshot.sessions().to_vec();
             let sessions = snapshot
                 .sessions()
                 .iter()
                 .map(|session| SessionItem::new(session.name(), session.attached_clients()))
                 .collect();
-            entry.context = Some(RemoteHostContext { host, snapshot });
+            entry.context = Some(RemoteHostContext {
+                host,
+                snapshot: snapshot.clone(),
+            });
             drop(entries);
             stale_presentations = reconcile_remote_presentations(
                 inner,
@@ -3175,14 +3261,14 @@ fn publish_remote_connection(
                 &endpoint,
                 &route_identity,
                 lease_generation,
-                &discovered_sessions,
+                Some(RemoteInventory::from(&snapshot)),
             );
-            set_remote_host_state(
+            set_remote_host_snapshot(
                 inner,
                 host_id,
-                HostConnectionState::Ready,
-                Some(sessions),
-                None,
+                sessions,
+                snapshot.herdr(),
+                snapshot.zellij(),
             );
         }
         Err(error) => {
@@ -3212,7 +3298,7 @@ fn reconcile_remote_presentations(
     endpoint: &str,
     route_identity: &str,
     lease_generation: u64,
-    sessions: &[session::DiscoveredSession],
+    inventory: Option<RemoteInventory<'_>>,
 ) -> Vec<RemoteRetainedPresentation> {
     let _navigation = inner
         .navigation
@@ -3236,16 +3322,16 @@ fn reconcile_remote_presentations(
                     endpoint,
                     route_identity,
                     lease_generation,
-                    sessions,
+                    inventory,
                 );
         };
-        if let Some(name) =
+        if let Some((kind, name)) =
             active
                 .key
-                .reconcile(endpoint, route_identity, lease_generation, sessions)
+                .reconcile(endpoint, route_identity, lease_generation, inventory)
         {
             active.retainable = true;
-            let selection = SessionSelection::new(host_id, endpoint, name);
+            let selection = SessionSelection::for_kind(host_id, endpoint, name, kind);
             if active.selection == selection {
                 None
             } else {
@@ -3280,7 +3366,7 @@ fn reconcile_remote_presentations(
             endpoint,
             route_identity,
             lease_generation,
-            sessions,
+            inventory,
         );
     if let Some((selection, presentation_id, surface)) = terminal_update {
         set_inner_state(
@@ -3289,13 +3375,35 @@ fn reconcile_remote_presentations(
                 host_id: selection.host_id().to_owned(),
                 endpoint: selection.endpoint().to_owned(),
                 session: selection.session().to_owned(),
-                kind: SessionKind::Tmux,
+                kind: selection.kind(),
                 presentation_id,
                 surface,
             },
         );
     }
     stale
+}
+
+fn set_remote_host_snapshot(
+    inner: &Inner,
+    host_id: &str,
+    sessions: Vec<SessionItem>,
+    herdr: &HerdrInventory,
+    zellij: &ZellijInventory,
+) {
+    let mut hosts = inner
+        .hosts
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(host) = hosts.iter_mut().find(|host| host.id == host_id) else {
+        return;
+    };
+    host.connection = HostConnectionState::Ready;
+    host.sessions = sessions;
+    host.diagnostic = None;
+    apply_herdr_inventory(host, herdr);
+    apply_zellij_inventory(host, zellij);
+    inner.revision.fetch_add(1, Ordering::Release);
 }
 
 fn set_remote_host_state(
@@ -4943,17 +5051,45 @@ impl Workspace {
         if context.snapshot.endpoint() != selection.endpoint() {
             return None;
         }
-        let session = context
-            .snapshot
-            .sessions()
-            .iter()
-            .find(|session| session.name() == selection.session())?;
+        let session_identity = match selection.kind() {
+            SessionKind::Tmux => RemoteSessionIdentity::Tmux(
+                context
+                    .snapshot
+                    .sessions()
+                    .iter()
+                    .find(|session| session.name() == selection.session())?
+                    .identity()
+                    .clone(),
+            ),
+            SessionKind::Herdr => {
+                let session = context.snapshot.herdr().sessions().iter().find(|session| {
+                    session.name() == selection.session()
+                        && session.state() == HerdrSessionState::Running
+                })?;
+                RemoteSessionIdentity::Herdr {
+                    name: session.name().to_owned(),
+                    is_default: session.is_default(),
+                    session_directory: session.session_directory().to_owned(),
+                    socket_path: session.socket_path().to_owned(),
+                }
+            }
+            SessionKind::Zellij => RemoteSessionIdentity::Zellij(
+                context
+                    .snapshot
+                    .zellij()
+                    .sessions()
+                    .iter()
+                    .find(|session| session.name() == selection.session())?
+                    .name()
+                    .to_owned(),
+            ),
+        };
         Some(RemotePresentationKey {
             host_id: selection.host_id().to_owned(),
             endpoint: selection.endpoint().to_owned(),
             route_identity: context.snapshot.route_identity().to_owned(),
             lease_generation: context.snapshot.lease_generation(),
-            session_identity: session.identity().clone(),
+            session_identity,
         })
     }
 
@@ -4993,7 +5129,7 @@ impl Workspace {
                     host_id: selection.host_id().to_owned(),
                     endpoint: selection.endpoint().to_owned(),
                     session: selection.session().to_owned(),
-                    kind: SessionKind::Tmux,
+                    kind: selection.kind(),
                     presentation_id: active.presentation_id,
                     surface,
                 },
@@ -5054,11 +5190,6 @@ impl Workspace {
         reason = "remote attachment keeps preparation and the atomic worker swap in one boundary"
     )]
     fn attach_remote(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
-        if selection.kind() != SessionKind::Tmux {
-            return Err(WorkspaceError::new(
-                "the first SSH host slice supports tmux sessions only",
-            ));
-        }
         let (plan, lease, key, identity_mismatch_marker) = {
             let entries = self
                 .inner
@@ -5076,16 +5207,88 @@ impl Workspace {
                     "SSH endpoint changed; refresh the session selection",
                 ));
             }
-            let session = context
-                .snapshot
-                .sessions()
-                .iter()
-                .find(|session| session.name() == selection.session())
-                .ok_or_else(|| WorkspaceError::new("session is not in current remote inventory"))?;
-            let (plan, identity_mismatch_marker) = context
-                .host
-                .attach_plan(&context.snapshot, session, "xterm-256color")
-                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            let (plan, session_identity, identity_mismatch_marker) = match selection.kind() {
+                SessionKind::Tmux => {
+                    let session = context
+                        .snapshot
+                        .sessions()
+                        .iter()
+                        .find(|session| session.name() == selection.session())
+                        .ok_or_else(|| {
+                            WorkspaceError::new("session is not in current remote inventory")
+                        })?;
+                    let (plan, marker) = context
+                        .host
+                        .attach_plan(&context.snapshot, session, "xterm-256color")
+                        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+                    (
+                        RemoteAttachPlan::Tmux(plan),
+                        RemoteSessionIdentity::Tmux(session.identity().clone()),
+                        Some(marker),
+                    )
+                }
+                SessionKind::Herdr => {
+                    let executable = context.snapshot.herdr().executable().ok_or_else(|| {
+                        WorkspaceError::new("Herdr is unavailable on this SSH host")
+                    })?;
+                    let session = context
+                        .snapshot
+                        .herdr()
+                        .sessions()
+                        .iter()
+                        .find(|session| {
+                            session.name() == selection.session()
+                                && session.state() == HerdrSessionState::Running
+                        })
+                        .ok_or_else(|| {
+                            WorkspaceError::new(
+                                "running Herdr session is not in current remote inventory",
+                            )
+                        })?;
+                    let plan = context
+                        .host
+                        .herdr_attach_plan(&context.snapshot, executable, session, "xterm-256color")
+                        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+                    (
+                        RemoteAttachPlan::Herdr(plan),
+                        RemoteSessionIdentity::Herdr {
+                            name: session.name().to_owned(),
+                            is_default: session.is_default(),
+                            session_directory: session.session_directory().to_owned(),
+                            socket_path: session.socket_path().to_owned(),
+                        },
+                        None,
+                    )
+                }
+                SessionKind::Zellij => {
+                    let executable = context.snapshot.zellij().executable().ok_or_else(|| {
+                        WorkspaceError::new("Zellij is unavailable on this SSH host")
+                    })?;
+                    let session = context
+                        .snapshot
+                        .zellij()
+                        .sessions()
+                        .iter()
+                        .find(|session| session.name() == selection.session())
+                        .ok_or_else(|| {
+                            WorkspaceError::new("Zellij session is not in current remote inventory")
+                        })?;
+                    let plan = context
+                        .host
+                        .zellij_attach_plan(
+                            &context.snapshot,
+                            executable,
+                            session,
+                            "xterm-256color",
+                        )
+                        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+                    (
+                        RemoteAttachPlan::Zellij(plan),
+                        RemoteSessionIdentity::Zellij(session.name().to_owned()),
+                        None,
+                    )
+                }
+            };
             (
                 plan,
                 context.snapshot.lease().clone(),
@@ -5094,7 +5297,7 @@ impl Workspace {
                     endpoint: selection.endpoint().to_owned(),
                     route_identity: context.snapshot.route_identity().to_owned(),
                     lease_generation: context.snapshot.lease_generation(),
-                    session_identity: session.identity().clone(),
+                    session_identity,
                 },
                 identity_mismatch_marker,
             )
@@ -5104,14 +5307,34 @@ impl Workspace {
             .terminal_geometry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let worker = TerminalWorker::attach_with_metadata(
-            &plan,
-            initial_geometry.grid,
-            initial_geometry.sequence,
-            initial_geometry.pixels,
-            ClipboardPolicy::remote(self.inner.allow_remote_clipboard_write),
-            default_colors(&self.inner.appearance),
-        )
+        let clipboard = ClipboardPolicy::remote(self.inner.allow_remote_clipboard_write);
+        let colors = default_colors(&self.inner.appearance);
+        let worker = match &plan {
+            RemoteAttachPlan::Tmux(plan) => TerminalWorker::attach_with_metadata(
+                plan,
+                initial_geometry.grid,
+                initial_geometry.sequence,
+                initial_geometry.pixels,
+                clipboard,
+                colors,
+            ),
+            RemoteAttachPlan::Herdr(plan) => TerminalWorker::attach_herdr_with_metadata(
+                plan,
+                initial_geometry.grid,
+                initial_geometry.sequence,
+                initial_geometry.pixels,
+                clipboard,
+                colors,
+            ),
+            RemoteAttachPlan::Zellij(plan) => TerminalWorker::attach_zellij_with_metadata(
+                plan,
+                initial_geometry.grid,
+                initial_geometry.sequence,
+                initial_geometry.pixels,
+                clipboard,
+                colors,
+            ),
+        }
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
         let presentation_id = next_presentation_id(&self.inner);
         publish_remote_worker(
@@ -7033,7 +7256,7 @@ impl Workspace {
                 context.snapshot.endpoint(),
                 context.snapshot.route_identity(),
                 context.snapshot.lease_generation(),
-                &[],
+                None,
             );
             set_remote_host_state(
                 &self.inner,
@@ -7099,7 +7322,11 @@ impl Workspace {
         let active = remote_active
             .as_ref()
             .filter(|active| active.worker_generation == worker_generation)?;
-        classify_remote_terminal_exit(code, output_tail, &active.identity_mismatch_marker)
+        classify_remote_terminal_exit(
+            code,
+            output_tail,
+            active.identity_mismatch_marker.as_deref(),
+        )
     }
 
     fn drain_operation_events(&self, emitted: &mut Vec<WorkspaceEvent>) -> bool {
@@ -11739,7 +11966,7 @@ fn publish_remote_worker(
     selection: &SessionSelection,
     lease: host::SshLease,
     presentation_id: u64,
-    identity_mismatch_marker: String,
+    identity_mismatch_marker: Option<String>,
 ) -> Result<(), Box<RemotePublishError>> {
     let surface = worker.surface_handle();
     let snapshot_write = begin_snapshot_write(inner);
@@ -11824,7 +12051,7 @@ fn publish_remote_worker(
             host_id: selection.host_id().to_owned(),
             endpoint: selection.endpoint().to_owned(),
             session: selection.session().to_owned(),
-            kind: SessionKind::Tmux,
+            kind: selection.kind(),
             presentation_id,
             surface,
         },
@@ -13583,6 +13810,10 @@ fn set_herdr_inventory(inner: &Inner, inventory: &HerdrInventory) {
     let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") else {
         return;
     };
+    apply_herdr_inventory(host, inventory);
+}
+
+fn apply_herdr_inventory(host: &mut HostItem, inventory: &HerdrInventory) {
     match inventory {
         HerdrInventory::Unavailable => {
             host.herdr_available = false;
@@ -13613,6 +13844,10 @@ fn set_zellij_inventory(inner: &Inner, inventory: &ZellijInventory) {
     let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") else {
         return;
     };
+    apply_zellij_inventory(host, inventory);
+}
+
+fn apply_zellij_inventory(host: &mut HostItem, inventory: &ZellijInventory) {
     match inventory {
         ZellijInventory::Unavailable => {
             host.zellij_available = false;
@@ -13856,12 +14091,14 @@ fn classify_terminal_exit(code: u32, output_tail: &str) -> String {
 fn classify_remote_terminal_exit(
     code: u32,
     output_tail: &str,
-    identity_mismatch_marker: &str,
+    identity_mismatch_marker: Option<&str>,
 ) -> Option<String> {
-    let has_identity_mismatch = output_tail
-        .lines()
-        .map(str::trim)
-        .any(|line| line == identity_mismatch_marker);
+    let has_identity_mismatch = identity_mismatch_marker.is_some_and(|marker| {
+        output_tail
+            .lines()
+            .map(str::trim)
+            .any(|line| line == marker)
+    });
     if has_identity_mismatch {
         return Some(
             "session identity changed immediately before attachment; refresh and try again"
@@ -13871,7 +14108,7 @@ fn classify_remote_terminal_exit(
     (code != 0).then(|| {
         let tail = output_tail.trim();
         if tail.is_empty() {
-            format!("Remote tmux client exited with status {code}")
+            format!("Remote session client exited with status {code}")
         } else {
             tail.to_owned()
         }
@@ -15613,7 +15850,7 @@ mod tests {
         let output =
             format!("Welcome to the remote host\r\n{marker}\r\nlogout\r\nConnection closed.\r\n");
 
-        let diagnostic = classify_remote_terminal_exit(0, &output, marker)
+        let diagnostic = classify_remote_terminal_exit(0, &output, Some(marker))
             .expect("the attachment-specific marker is authoritative");
 
         assert!(diagnostic.contains("session identity changed"));
@@ -15624,7 +15861,10 @@ mod tests {
         let marker = "GHOSTHUB_REMOTE_IDENTITY_MISMATCH_deadbeef";
         let output = format!("shell output: {marker}\r\nordinary logout\r\n");
 
-        assert_eq!(classify_remote_terminal_exit(0, &output, marker), None);
+        assert_eq!(
+            classify_remote_terminal_exit(0, &output, Some(marker)),
+            None
+        );
     }
 
     #[test]
@@ -16818,17 +17058,35 @@ mod tests {
             endpoint: "studio.example".to_owned(),
             route_identity: "route-a".to_owned(),
             lease_generation: 7,
-            session_identity: identity.clone(),
+            session_identity: RemoteSessionIdentity::Tmux(identity.clone()),
         };
         let sessions = vec![session::DiscoveredSession::new("renamed", identity, 1)];
 
         assert_eq!(
-            key.reconcile("studio.example", "route-a", 8, &sessions),
-            Some("renamed".to_owned())
+            key.reconcile(
+                "studio.example",
+                "route-a",
+                8,
+                Some(RemoteInventory {
+                    tmux: &sessions,
+                    herdr: &[],
+                    zellij: &[],
+                }),
+            ),
+            Some((SessionKind::Tmux, "renamed".to_owned()))
         );
         assert_eq!(key.lease_generation, 8);
         assert_eq!(
-            key.reconcile("studio.example", "route-b", 9, &sessions),
+            key.reconcile(
+                "studio.example",
+                "route-b",
+                9,
+                Some(RemoteInventory {
+                    tmux: &sessions,
+                    herdr: &[],
+                    zellij: &[],
+                }),
+            ),
             None
         );
         assert_eq!(key.lease_generation, 8);

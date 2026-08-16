@@ -4807,6 +4807,32 @@ impl RootView {
                     .text_color(rgb(0x8f_96_a3))
                     .child(prompt.request.display_target().to_owned()),
             );
+        if let Some(host_key) = prompt.request.host_key() {
+            body = body.child(
+                div()
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(0x3a_404c))
+                    .bg(rgb(0x0f_1218))
+                    .child(host_key.host().to_owned())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x8f_96_a3))
+                            .child(host_key.algorithm().to_owned()),
+                    )
+                    .child(
+                        div()
+                            .font_family("monospace")
+                            .text_xs()
+                            .child(host_key.fingerprint().to_owned()),
+                    ),
+            );
+        }
         if sensitive {
             body = body.child(
                 div()
@@ -5552,7 +5578,7 @@ impl RootView {
             let create_available = match create_kind {
                 NewSessionKind::Tmux => !host.is_ssh(),
                 NewSessionKind::Zellij => {
-                    host.zellij_available() && host.zellij_diagnostic().is_none()
+                    !host.is_ssh() && host.zellij_available() && host.zellij_diagnostic().is_none()
                 }
                 NewSessionKind::Herdr => false,
             };
@@ -6845,16 +6871,17 @@ fn tree_herdr_sessions(
             });
         }
     }
-    let host_accepts_actions = !matches!(
+    let host_can_open = !matches!(
         host.connection(),
         HostConnectionState::Disconnected | HostConnectionState::Unavailable
     ) && host.herdr_diagnostic().is_none();
+    let host_accepts_mutation = host_can_open && !host.is_ssh();
     for session in &mut sessions {
         session.active = active == Some(&session.selection);
         let retained = retained.contains(&session.selection);
-        session.access = if session.inventory.is_some() && host_accepts_actions {
+        session.access = if session.inventory.is_some() && host_accepts_mutation {
             HerdrRowAccess::Mutable
-        } else if session.active || retained {
+        } else if (session.inventory.is_some() && host_can_open) || session.active || retained {
             HerdrRowAccess::OpenOnly
         } else {
             HerdrRowAccess::Cached
@@ -6904,13 +6931,14 @@ fn tree_zellij_sessions(
         .map(|(selection, discovered)| {
             let retained = retained.contains(&selection);
             let is_active = active == Some(&selection);
-            let can_kill = discovered && host_accepts_actions;
+            let can_kill = discovered && host_accepts_actions && !host.is_ssh();
             let state = match (is_active, retained, host_accepts_actions, can_kill) {
                 (true, _, _, true) => TreeSessionState::ActiveKillable,
                 (true, _, _, false) => TreeSessionState::Active,
                 (false, true, _, true) => TreeSessionState::RetainedKillable,
                 (false, true, _, false) => TreeSessionState::Retained,
-                (false, false, true, _) => TreeSessionState::Fresh,
+                (false, false, true, true) => TreeSessionState::Fresh,
+                (false, false, true, false) => TreeSessionState::FreshOpenOnly,
                 (false, false, false, _) => TreeSessionState::Cached,
             };
             TreeSession {
@@ -8672,6 +8700,48 @@ mod tests {
         assert_eq!(rows[0].selection.session(), "cached");
         assert!(!rows[0].access.can_open());
         assert!(!rows[0].access.can_mutate());
+    }
+
+    #[test]
+    fn remote_herdr_sessions_are_openable_without_remote_lifecycle_actions() {
+        let host = HostItem::ssh(
+            "ssh:studio",
+            "Studio",
+            "studio.example",
+            HostConnectionState::Ready,
+            Vec::new(),
+            None,
+        )
+        .with_herdr_sessions(vec![HerdrSessionItem::new(
+            "review",
+            false,
+            HerdrSessionState::Running,
+        )]);
+
+        let rows = tree_herdr_sessions(&host, None, &[]);
+
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].access.can_open());
+        assert!(!rows[0].access.can_mutate());
+    }
+
+    #[test]
+    fn remote_zellij_sessions_are_openable_without_remote_kill_authority() {
+        let host = HostItem::ssh(
+            "ssh:studio",
+            "Studio",
+            "studio.example",
+            HostConnectionState::Ready,
+            Vec::new(),
+            None,
+        )
+        .with_zellij_sessions(vec![workspace::SessionItem::new("review", 0)]);
+
+        let rows = tree_zellij_sessions(&host, None, &[]);
+
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].state.can_open());
+        assert!(!rows[0].state.can_kill());
     }
 
     #[test]

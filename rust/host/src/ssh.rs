@@ -574,6 +574,15 @@ pub struct SshPromptDetails {
     display_target: String,
     hop_index: usize,
     hop_count: usize,
+    host_key: Option<SshHostKeyDetails>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SshHostKeyDetails {
+    host: String,
+    algorithm: String,
+    fingerprint: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -647,6 +656,20 @@ impl SshLeasePrompt {
                 "SSH prompt sensitivity does not match its kind",
             ));
         }
+        match (self.kind, self.details.host_key.as_ref()) {
+            (SshPromptKind::HostKey, Some(host_key)) => host_key.validate()?,
+            (SshPromptKind::HostKey, None) => {
+                return Err(SshError::malformed(
+                    "SSH host-key prompt omitted reviewed key details",
+                ));
+            }
+            (SshPromptKind::Authentication, Some(_)) => {
+                return Err(SshError::malformed(
+                    "SSH authentication prompt included host-key details",
+                ));
+            }
+            (SshPromptKind::Authentication, None) => {}
+        }
         if self.details.hop_count != route.targets.len()
             || self.details.hop_index >= route.targets.len()
         {
@@ -692,13 +715,45 @@ impl SshPromptDetails {
     pub const fn hop_count(&self) -> usize {
         self.hop_count
     }
+
+    #[must_use]
+    pub const fn host_key(&self) -> Option<&SshHostKeyDetails> {
+        self.host_key.as_ref()
+    }
+}
+
+impl SshHostKeyDetails {
+    fn validate(&self) -> Result<(), SshError> {
+        require_safe_value("SSH host-key host", &self.host)?;
+        require_safe_value("SSH host-key algorithm", &self.algorithm)?;
+        require_safe_value("SSH host-key fingerprint", &self.fingerprint)?;
+        if self.host.is_empty() || self.algorithm.is_empty() || self.fingerprint.is_empty() {
+            return Err(SshError::malformed("SSH host-key details are incomplete"));
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    #[must_use]
+    pub fn algorithm(&self) -> &str {
+        &self.algorithm
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SshLeaseEvent {
     Progress(String),
     Warning(String),
-    Prompt(SshLeasePrompt),
+    Prompt(Box<SshLeasePrompt>),
     Complete(SshLeaseResult),
 }
 
@@ -810,7 +865,7 @@ impl SshLeaseStream {
                     .prompt
                     .ok_or_else(|| SshError::malformed("SSH prompt event has no prompt"))?;
                 prompt.validate(route)?;
-                SshLeaseEvent::Prompt(prompt)
+                SshLeaseEvent::Prompt(Box::new(prompt))
             }
             OperationKind::Complete => {
                 if event.message.is_some() || event.prompt.is_some() {
@@ -1777,12 +1832,19 @@ mod tests {
             "details":{
               "logical_target":{"hostname":"jump","user":null,"port":null},
               "effective_target":{"hostname":"jump.example","user":"ops","port":22},
-              "display_target":"ops@jump.example:22","hop_index":0,"hop_count":2
+              "display_target":"ops@jump.example:22","hop_index":0,"hop_count":2,
+              "host_key":{"host":"jump.example","algorithm":"ED25519","fingerprint":"SHA256:abc123"}
             }
           }
         }"#;
         let accepted = stream.accept(prompt, &route).expect("attributed prompt");
-        assert!(matches!(accepted, SshLeaseEvent::Prompt(_)));
+        let SshLeaseEvent::Prompt(prompt) = accepted else {
+            panic!("expected prompt");
+        };
+        let host_key = prompt.details().host_key().expect("reviewed host key");
+        assert_eq!(host_key.host(), "jump.example");
+        assert_eq!(host_key.algorithm(), "ED25519");
+        assert_eq!(host_key.fingerprint(), "SHA256:abc123");
         let complete = br#"{
           "operation_id":"op-1","sequence":3,"kind":"complete",
           "result":{
