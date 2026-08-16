@@ -659,14 +659,17 @@ runbook.
 
 Outputs live in `dist/release/`. `tools/build_release_dmg.sh` signs Sparkle's
 nested executables and services from the inside out, then the local kwt helper
-and Darwin remote kwt resources, then the containing app; do not replace that
-release order with recursive `codesign --deep` signing. Mach-O helpers require
-their own Developer ID signatures even when staged as non-executable resources;
-the Linux ELF variants do not. Sparkle remains under `Contents/Frameworks`,
-and SwiftPM resource bundles remain under `Contents/Resources`; placing
-compatibility symlinks at the `.app` root creates unsealed content that strict
-code-signing rejects. Ghosthub's AGPL license and every third-party notice in
-`LICENSES` are staged during the same assembly step.
+and Darwin remote kwt resources, then the containing app. The app signature
+uses `Resources/Ghosthub.entitlements` so terminal child processes can trigger
+the protected-resource consent described by the app's privacy purpose strings;
+keep that file aligned with the generated `Info.plist`. Do not replace the
+release signing order with recursive `codesign --deep` signing. Mach-O helpers
+require their own Developer ID signatures even when staged as non-executable
+resources; the Linux ELF variants do not. Sparkle remains under
+`Contents/Frameworks`, and SwiftPM resource bundles remain under
+`Contents/Resources`; placing compatibility symlinks at the `.app` root creates
+unsealed content that strict code-signing rejects. Ghosthub's AGPL license and
+every third-party notice in `LICENSES` are staged during the same assembly step.
 
 Update this document whenever release packaging, signing, notarization, the
 embedded kwt policy, or `.github/workflows/release.yml` changes.

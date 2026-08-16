@@ -146,6 +146,63 @@ def resolve_release_metadata(
 # every `theme = <name>` resolves only against ~/.config/ghostty/themes.
 LIBGHOSTTY_RESOURCE_TREES = ("ghostty", "terminfo")
 
+# TCC attributes protected-resource requests from terminal child processes to
+# the terminal app. These strings let macOS explain those requests instead of
+# silently rejecting programs that run within Ghosthub.
+PRIVACY_USAGE_DESCRIPTIONS = {
+    "NSAppleEventsUsageDescription": (
+        "A program running within Ghosthub would like to use AppleScript."
+    ),
+    "NSBluetoothAlwaysUsageDescription": (
+        "A program running within Ghosthub would like to use Bluetooth."
+    ),
+    "NSCalendarsFullAccessUsageDescription": (
+        "A program running within Ghosthub would like full access to your "
+        "Calendar."
+    ),
+    "NSCalendarsUsageDescription": (
+        "A program running within Ghosthub would like to access your Calendar."
+    ),
+    "NSCalendarsWriteOnlyAccessUsageDescription": (
+        "A program running within Ghosthub would like to add events to your "
+        "Calendar."
+    ),
+    "NSCameraUsageDescription": (
+        "A program running within Ghosthub would like to use the camera."
+    ),
+    "NSContactsUsageDescription": (
+        "A program running within Ghosthub would like to access your Contacts."
+    ),
+    "NSLocalNetworkUsageDescription": (
+        "A program running within Ghosthub would like to access the local network."
+    ),
+    "NSLocationUsageDescription": (
+        "A program running within Ghosthub would like to access your "
+        "location information."
+    ),
+    "NSMicrophoneUsageDescription": (
+        "A program running within Ghosthub would like to use your microphone."
+    ),
+    "NSMotionUsageDescription": (
+        "A program running within Ghosthub would like to access motion data."
+    ),
+    "NSPhotoLibraryUsageDescription": (
+        "A program running within Ghosthub would like to access your Photo Library."
+    ),
+    "NSRemindersFullAccessUsageDescription": (
+        "A program running within Ghosthub would like full access to your reminders."
+    ),
+    "NSRemindersUsageDescription": (
+        "A program running within Ghosthub would like to access your reminders."
+    ),
+    "NSSpeechRecognitionUsageDescription": (
+        "A program running within Ghosthub would like to use speech recognition."
+    ),
+    "NSSystemAdministrationUsageDescription": (
+        "A program running within Ghosthub requires elevated privileges."
+    ),
+}
+
 
 def resolve_libghostty_resource_trees(share_dir: Path) -> dict[str, Path]:
     """Validate the emitted libghostty `share` tree before staging it."""
@@ -338,6 +395,7 @@ def assemble_app_bundle(
         "NSHumanReadableCopyright": copyright,
         "NSPrincipalClass": "NSApplication",
     }
+    plist.update(PRIVACY_USAGE_DESCRIPTIONS)
     if release_metadata.development_version is not None:
         plist["GhosthubDevelopmentVersion"] = (
             release_metadata.development_version
