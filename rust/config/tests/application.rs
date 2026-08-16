@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use config::{ApplicationConfig, Roots};
+use config::{ApplicationConfig, Roots, SshHostSettings};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -100,6 +100,128 @@ fn invalid_runtime_values_are_rejected_before_workspace_creation() {
             "must reject {contents:?}"
         );
     }
+}
+
+#[test]
+fn ssh_hosts_round_trip_through_the_application_config() {
+    let root = temporary_root("ssh-round-trip");
+    let roots = roots_at(&root);
+    let mut config = ApplicationConfig::default();
+    let host = SshHostSettings::new(
+        "Studio",
+        "studio.example",
+        Some("wesm".to_owned()),
+        Some(2222),
+        "/opt/homebrew/bin/tmux",
+        Some("/run/user/501/tmux".to_owned()),
+    )
+    .expect("valid SSH host");
+
+    config
+        .replace_ssh_hosts(&roots, vec![host])
+        .expect("persist SSH host");
+    let loaded = ApplicationConfig::load(&roots).expect("reload SSH host");
+
+    assert_eq!(loaded.ssh_hosts().len(), 1);
+    let loaded = &loaded.ssh_hosts()[0];
+    assert_eq!(loaded.name(), "Studio");
+    assert_eq!(loaded.hostname(), "studio.example");
+    assert_eq!(loaded.user(), Some("wesm"));
+    assert_eq!(loaded.port(), Some(2222));
+    assert_eq!(loaded.tmux_binary(), "/opt/homebrew/bin/tmux");
+    assert_eq!(loaded.socket_directory(), Some("/run/user/501/tmux"));
+    fs::remove_dir_all(root).expect("remove temporary config root");
+}
+
+#[test]
+fn saving_over_an_existing_config_replaces_it_without_temporary_files() {
+    let root = temporary_root("atomic-replace");
+    let roots = roots_at(&root);
+    let mut config = ApplicationConfig::default();
+    config.save(&roots).expect("persist initial config");
+    let host = SshHostSettings::new(
+        "Studio",
+        "studio.example",
+        None,
+        None,
+        "/usr/bin/tmux",
+        None,
+    )
+    .expect("valid SSH host");
+
+    config
+        .replace_ssh_hosts(&roots, vec![host])
+        .expect("atomically replace existing config");
+
+    let loaded = ApplicationConfig::load(&roots).expect("load replaced config");
+    assert_eq!(loaded.ssh_hosts()[0].hostname(), "studio.example");
+    let entries = fs::read_dir(&root)
+        .expect("read config directory")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read config entries");
+    assert_eq!(entries.len(), 1, "temporary config files must be removed");
+    assert_eq!(entries[0].file_name(), "config.toml");
+    fs::remove_dir_all(root).expect("remove temporary config root");
+}
+
+#[test]
+fn duplicate_ssh_endpoints_are_rejected_before_persistence() {
+    let root = temporary_root("ssh-duplicates");
+    let roots = roots_at(&root);
+    let mut config = ApplicationConfig::default();
+    let first = SshHostSettings::new(
+        "Studio",
+        "studio.example",
+        Some("wesm".to_owned()),
+        None,
+        "/usr/bin/tmux",
+        None,
+    )
+    .expect("valid SSH host");
+    let second = SshHostSettings::new(
+        "Duplicate",
+        "studio.example",
+        Some("wesm".to_owned()),
+        None,
+        "/usr/local/bin/tmux",
+        None,
+    )
+    .expect("valid SSH host");
+
+    let error = config
+        .replace_ssh_hosts(&roots, vec![first, second])
+        .expect_err("duplicate endpoint must fail");
+
+    assert!(error.to_string().contains("configured more than once"));
+    assert!(!root.join("config.toml").exists());
+}
+
+#[test]
+fn failed_ssh_host_persistence_preserves_the_loaded_configuration() {
+    let root = temporary_root("ssh-write-failure");
+    fs::write(&root, "not a directory").expect("create blocking config file");
+    let roots = roots_at(&root);
+    let mut config = ApplicationConfig::default();
+    let host = SshHostSettings::new(
+        "Studio",
+        "studio.example",
+        Some("wesm".to_owned()),
+        None,
+        "/usr/bin/tmux",
+        None,
+    )
+    .expect("valid SSH host");
+
+    let error = config
+        .replace_ssh_hosts(&roots, vec![host])
+        .expect_err("persistence must fail when the config root is a file");
+
+    assert!(error.to_string().contains("create"));
+    assert!(
+        config.ssh_hosts().is_empty(),
+        "failed persistence must not change the in-memory settings"
+    );
+    fs::remove_file(root).expect("remove blocking config file");
 }
 
 fn temporary_root(label: &str) -> PathBuf {

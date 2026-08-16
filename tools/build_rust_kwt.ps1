@@ -27,8 +27,6 @@ if ($revision -notmatch '^[0-9a-f]{40}$') {
 
 $source = Join-Path $repoRoot ".build\kwt-source"
 $variantsDirectory = Join-Path $repoRoot ".build\kwt\variants"
-$outputDirectory = Join-Path $repoRoot ".build\kwt\variants\linux-$Architecture"
-$output = Join-Path $outputDirectory "kwt"
 
 if (-not (Test-Path (Join-Path $source ".git"))) {
     git clone --filter=blob:none https://github.com/kenn-io/kwt.git $source
@@ -54,28 +52,49 @@ if ($dirty.Count -ne 0) {
     throw "KWT source checkout changed while selecting the pinned revision"
 }
 
-New-Item -ItemType Directory -Force $outputDirectory | Out-Null
-Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
 $previousGoos = $env:GOOS
 $previousGoarch = $env:GOARCH
 $previousCgo = $env:CGO_ENABLED
 try {
-    $env:GOOS = "linux"
     $env:GOARCH = $Architecture
     $env:CGO_ENABLED = "0"
-    Push-Location $source
-    try {
-        go build -trimpath `
-            -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=$revision" `
-            -o $output `
-            cmd/kwt/main.go
+    foreach ($targetOs in @("linux", "windows")) {
+        $target = "$targetOs-$Architecture"
+        $outputDirectory = Join-Path $variantsDirectory $target
+        $output = Join-Path $outputDirectory "kwt"
+        New-Item -ItemType Directory -Force $outputDirectory | Out-Null
+        Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+        $env:GOOS = $targetOs
+        Push-Location $source
+        try {
+            go build -trimpath `
+                -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=$revision" `
+                -o $output `
+                cmd/kwt/main.go
+            if ($LASTEXITCODE -ne 0) {
+                Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+                throw "build pinned KWT helper for $target failed with exit code $LASTEXITCODE"
+            }
+        }
+        finally {
+            Pop-Location
+        }
+        if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
+            throw "KWT build did not produce an executable for $target"
+        }
+        uv run --frozen python (Join-Path $repoRoot "tools\validate_kwt_variants.py") `
+            --variants-dir $variantsDirectory `
+            --revision $revision `
+            --target $target
         if ($LASTEXITCODE -ne 0) {
             Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
-            throw "build pinned KWT helper failed with exit code $LASTEXITCODE"
+            throw "validate pinned KWT helper for $target failed with exit code $LASTEXITCODE"
         }
-    }
-    finally {
-        Pop-Location
+
+        $digest = (Get-FileHash -Algorithm SHA256 $output).Hash.ToLowerInvariant()
+        Write-Output "Built pinned KWT $revision for $target"
+        Write-Output "Path: $output"
+        Write-Output "SHA-256: $digest"
     }
 }
 finally {
@@ -83,20 +102,3 @@ finally {
     $env:GOARCH = $previousGoarch
     $env:CGO_ENABLED = $previousCgo
 }
-
-if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
-    throw "KWT build did not produce an executable"
-}
-uv run --frozen python (Join-Path $repoRoot "tools\validate_kwt_variants.py") `
-    --variants-dir $variantsDirectory `
-    --revision $revision `
-    --target "linux-$Architecture"
-if ($LASTEXITCODE -ne 0) {
-    Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
-    throw "validate pinned KWT helper failed with exit code $LASTEXITCODE"
-}
-
-$digest = (Get-FileHash -Algorithm SHA256 $output).Hash.ToLowerInvariant()
-Write-Output "Built pinned KWT $revision for linux-$Architecture"
-Write-Output "Path: $output"
-Write-Output "SHA-256: $digest"

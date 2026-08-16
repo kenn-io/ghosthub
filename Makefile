@@ -68,7 +68,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test sandbox-image-check sandbox-image-prepare-candidate sandbox-image-refresh sandbox-image-vet sandbox-image-pin sandbox-image-promote sandbox-image-clean sandbox-image-status sandbox-image-authority-configure sandbox-image-authority-enable sandbox-image-authority-audit sandbox-image-python-lint sandbox-image-python-typecheck zizmor test rust-format-check rust-test rust-test-wsl-live rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test sandbox-image-check sandbox-image-prepare-candidate sandbox-image-refresh sandbox-image-vet sandbox-image-pin sandbox-image-promote sandbox-image-clean sandbox-image-status sandbox-image-authority-configure sandbox-image-authority-enable sandbox-image-authority-audit sandbox-image-python-lint sandbox-image-python-typecheck zizmor test rust-format-check rust-test rust-test-wsl-live rust-test-ssh-controller-live rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -131,6 +131,8 @@ help:
 		'      Run Rust formatting, tests, checks, and clippy for the current platform.' \
 		'  make rust-test-wsl-live' \
 		'      Run the isolated WSL2 terminal and workspace acceptance suites.' \
+		'  make rust-test-ssh-controller-live GHOSTHUB_KWT_CONTROLLER_BUNDLE_TEST=/absolute/path/to/kwt.exe' \
+		'      Validate the pinned native KWT SSH route contract without connecting.' \
 		'  make rust-deny' \
 		'      Check the complete Windows/Linux Rust dependency graph with cargo-deny.' \
 		'  make format' \
@@ -593,6 +595,9 @@ rust-test:
 rust-test-wsl-live:
 	@cd "$(RUST_DIR)" && $(CARGO) test-wsl-terminal-live
 	@cd "$(RUST_DIR)" && $(CARGO) test-wsl-workspace-live
+
+rust-test-ssh-controller-live:
+	@cd "$(RUST_DIR)" && $(CARGO) test-ssh-controller-live
 
 rust-lint:
 	@cd "$(RUST_DIR)" && $(CARGO) check --workspace --all-targets --locked

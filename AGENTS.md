@@ -135,6 +135,8 @@ layer, as subject to direct iteration.
   sections such as "Changes", "Validation", "Tests", or "Verification";
   mention unusual validation only inline when it is genuinely useful reviewer
   context.
+- Prefix every Rust-port pull request title with `Rust Port:` so changelog and
+  release-note entries clearly identify Rust-port work.
 - The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
   or open pull requests when the user explicitly asks.
 - The public repository does not accept unsolicited pull requests. Direct bug

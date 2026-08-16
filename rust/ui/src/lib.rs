@@ -18,9 +18,10 @@ use gpui::{
 use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
-    HerdrSessionState, HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput,
-    KwtProjectAction, Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey,
-    SessionName, SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
+    ConfiguredSshHost, HerdrSessionState, HostConnectionState, HostItem, KeyEvent as InputKeyEvent,
+    KeyInput, KwtProjectAction, Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput,
+    NamedKey, SessionName, SessionSelection, SshHostDraft, SshPromptRequest, Workspace,
+    WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
@@ -41,6 +42,8 @@ const UI_INPUT_CAPACITY: usize = 512;
 const MOUSE_RELEASE_RESERVE: usize = 3;
 const MAX_WHEEL_EVENTS_PER_CALLBACK: usize = 64;
 const UI_INPUT_BYTE_CAPACITY: usize = 512 * 1024;
+const SETTINGS_FIELD_CHARACTER_LIMIT: usize = 4 * 1024;
+const SSH_PROMPT_CHARACTER_LIMIT: usize = 64 * 1024;
 const INPUT_BUFFERED_DIAGNOSTIC: &str = "Terminal is busy; input is buffered.";
 const INPUT_BUFFER_FULL_DIAGNOSTIC: &str =
     "Terminal input buffer is full; wait for pending input to be delivered.";
@@ -64,7 +67,7 @@ pub fn host_status_text(host: &HostItem) -> String {
         }
         HostConnectionState::Ready => format!("Tmux sessions in {}", host.endpoint()),
         HostConnectionState::Unavailable => host.diagnostic().map_or_else(
-            || "WSL host is unavailable".to_owned(),
+            || "Host is unavailable".to_owned(),
             |error| error.message().to_owned(),
         ),
     }
@@ -290,6 +293,8 @@ pub struct RootView {
     focus: FocusHandle,
     create_focus: FocusHandle,
     project_focus: FocusHandle,
+    settings_focus: FocusHandle,
+    ssh_prompt_focus: FocusHandle,
     kill_focus: FocusHandle,
     diagnostic: Option<String>,
     paste_confirmation: bool,
@@ -308,9 +313,170 @@ pub struct RootView {
     sidebar_visible: bool,
     new_session: Option<NewSessionDraft>,
     project_dialog: Option<ProjectDialog>,
+    settings_dialog: Option<SettingsDialog>,
+    ssh_prompts: VecDeque<SshPromptDialog>,
     pending_worktree_navigation: Option<u64>,
     session_action_menu: Option<SessionActionMenu>,
     restore_focus: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SshField {
+    Name,
+    Hostname,
+    User,
+    Port,
+    TmuxBinary,
+    SocketDirectory,
+}
+
+impl SshField {
+    const fn adjacent(self, backwards: bool) -> Self {
+        if backwards {
+            match self {
+                Self::Name => Self::SocketDirectory,
+                Self::Hostname => Self::Name,
+                Self::User => Self::Hostname,
+                Self::Port => Self::User,
+                Self::TmuxBinary => Self::Port,
+                Self::SocketDirectory => Self::TmuxBinary,
+            }
+        } else {
+            match self {
+                Self::Name => Self::Hostname,
+                Self::Hostname => Self::User,
+                Self::User => Self::Port,
+                Self::Port => Self::TmuxBinary,
+                Self::TmuxBinary => Self::SocketDirectory,
+                Self::SocketDirectory => Self::Name,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SettingsPane {
+    Hosts,
+}
+
+impl SettingsPane {
+    const ALL: [Self; 1] = [Self::Hosts];
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Hosts => "Hosts",
+        }
+    }
+
+    const fn subtitle(self) -> &'static str {
+        match self {
+            Self::Hosts => "Connect the machines and tmux sessions in your SSH network.",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SshHostEditor {
+    original_id: Option<String>,
+    draft: SshHostDraft,
+    field: SshField,
+    error: Option<String>,
+}
+
+impl SshHostEditor {
+    fn new(host: Option<&ConfiguredSshHost>) -> Self {
+        Self {
+            original_id: host.map(|host| host.id().to_owned()),
+            draft: host.map_or_else(SshHostDraft::default, |host| host.draft().clone()),
+            field: SshField::Name,
+            error: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SettingsDialog {
+    pane: SettingsPane,
+    selected_host_id: Option<String>,
+    host_editor: Option<SshHostEditor>,
+    pending_remove: Option<ConfiguredSshHost>,
+    error: Option<String>,
+}
+
+impl SettingsDialog {
+    fn new(hosts: &[ConfiguredSshHost]) -> Self {
+        let selected = hosts.first();
+        Self {
+            pane: SettingsPane::Hosts,
+            selected_host_id: selected.map(|host| host.id().to_owned()),
+            host_editor: selected.map(|host| SshHostEditor::new(Some(host))),
+            pending_remove: None,
+            error: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SshPromptDialog {
+    request: SshPromptRequest,
+    value: String,
+}
+
+fn ssh_draft_field_mut(draft: &mut SshHostDraft, field: SshField) -> &mut String {
+    match field {
+        SshField::Name => &mut draft.name,
+        SshField::Hostname => &mut draft.hostname,
+        SshField::User => &mut draft.user,
+        SshField::Port => &mut draft.port,
+        SshField::TmuxBinary => &mut draft.tmux_binary,
+        SshField::SocketDirectory => &mut draft.socket_directory,
+    }
+}
+
+fn ssh_draft_field(draft: &SshHostDraft, field: SshField) -> &str {
+    match field {
+        SshField::Name => &draft.name,
+        SshField::Hostname => &draft.hostname,
+        SshField::User => &draft.user,
+        SshField::Port => &draft.port,
+        SshField::TmuxBinary => &draft.tmux_binary,
+        SshField::SocketDirectory => &draft.socket_directory,
+    }
+}
+
+fn ssh_host_subtitle(draft: &SshHostDraft) -> String {
+    let user = (!draft.user.trim().is_empty()).then(|| format!("{}@", draft.user.trim()));
+    let port = (!draft.port.trim().is_empty()).then(|| format!(":{}", draft.port.trim()));
+    format!(
+        "{}{}{}",
+        user.unwrap_or_default(),
+        draft.hostname.trim(),
+        port.unwrap_or_default()
+    )
+}
+
+fn append_non_control_characters(value: &mut String, text: &str, limit: usize) {
+    let remaining = limit.saturating_sub(value.chars().count());
+    value.extend(
+        text.chars()
+            .filter(|character| !character.is_control())
+            .take(remaining),
+    );
+}
+
+fn ssh_prompt_input_text(value: &str, focused: bool) -> String {
+    if value.is_empty() {
+        return if focused {
+            "▏".to_owned()
+        } else {
+            "Password or passphrase".to_owned()
+        };
+    }
+    let mut displayed = "•".repeat(value.chars().count());
+    if focused {
+        displayed.push('▏');
+    }
+    displayed
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1028,6 +1194,8 @@ impl RootView {
             focus: cx.focus_handle(),
             create_focus: cx.focus_handle(),
             project_focus: cx.focus_handle(),
+            settings_focus: cx.focus_handle(),
+            ssh_prompt_focus: cx.focus_handle(),
             kill_focus: cx.focus_handle(),
             diagnostic: None,
             paste_confirmation: false,
@@ -1046,6 +1214,8 @@ impl RootView {
             sidebar_visible: true,
             new_session: None,
             project_dialog: None,
+            settings_dialog: None,
+            ssh_prompts: VecDeque::new(),
             pending_worktree_navigation: None,
             session_action_menu: None,
             restore_focus: false,
@@ -1153,6 +1323,301 @@ impl RootView {
             self.diagnostic = None;
         }
         cx.notify();
+    }
+
+    fn connect_host(&mut self, host_id: &str, cx: &mut Context<Self>) {
+        if let Err(error) = self.workspace.connect_host(host_id) {
+            self.diagnostic = Some(error.to_string());
+        } else {
+            self.diagnostic = None;
+        }
+        cx.notify();
+    }
+
+    fn cancel_host_connection(&mut self, host_id: &str, cx: &mut Context<Self>) {
+        if self.workspace.cancel_host_connection(host_id) {
+            let mut retained = VecDeque::with_capacity(self.ssh_prompts.len());
+            while let Some(prompt) = self.ssh_prompts.pop_front() {
+                if prompt.request.host_id() == host_id {
+                    prompt.request.respond(None);
+                } else {
+                    retained.push_back(prompt);
+                }
+            }
+            self.ssh_prompts = retained;
+            self.diagnostic = None;
+        }
+        cx.notify();
+    }
+
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let hosts = self.workspace.configured_ssh_hosts();
+        self.settings_dialog = Some(SettingsDialog::new(&hosts));
+        self.session_action_menu = None;
+        window.focus(&self.settings_focus);
+        cx.notify();
+    }
+
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_dialog = None;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn select_ssh_host(
+        &mut self,
+        host: &ConfiguredSshHost,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(dialog) = &mut self.settings_dialog {
+            dialog.selected_host_id = Some(host.id().to_owned());
+            dialog.host_editor = Some(SshHostEditor::new(Some(host)));
+            dialog.pending_remove = None;
+            dialog.error = None;
+        }
+        window.focus(&self.settings_focus);
+        cx.notify();
+    }
+
+    fn add_ssh_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(dialog) = &mut self.settings_dialog {
+            dialog.selected_host_id = None;
+            dialog.host_editor = Some(SshHostEditor::new(None));
+            dialog.pending_remove = None;
+            dialog.error = None;
+        }
+        window.focus(&self.settings_focus);
+        cx.notify();
+    }
+
+    fn save_ssh_host(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self
+            .settings_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.host_editor.as_ref())
+        else {
+            return;
+        };
+        let original_id = editor.original_id.clone();
+        let draft = editor.draft.clone();
+        match self.workspace.save_ssh_host(original_id.as_deref(), &draft) {
+            Ok(id) => {
+                let saved = self
+                    .workspace
+                    .configured_ssh_hosts()
+                    .into_iter()
+                    .find(|host| host.id() == id);
+                if let Some(dialog) = &mut self.settings_dialog {
+                    dialog.selected_host_id = Some(id);
+                    dialog.host_editor = saved
+                        .as_ref()
+                        .map(|host| SshHostEditor::new(Some(host)))
+                        .or_else(|| {
+                            Some(SshHostEditor {
+                                original_id: dialog.selected_host_id.clone(),
+                                draft,
+                                field: SshField::Name,
+                                error: None,
+                            })
+                        });
+                    dialog.error = None;
+                }
+            }
+            Err(error) => {
+                if let Some(editor) = self
+                    .settings_dialog
+                    .as_mut()
+                    .and_then(|dialog| dialog.host_editor.as_mut())
+                {
+                    editor.error = Some(error.to_string());
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn remove_ssh_host(&mut self, cx: &mut Context<Self>) {
+        let Some(host) = self
+            .settings_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.pending_remove.clone())
+        else {
+            return;
+        };
+        match self.workspace.remove_ssh_host(host.id()) {
+            Ok(()) => {
+                let hosts = self.workspace.configured_ssh_hosts();
+                let replacement = hosts.first();
+                if let Some(dialog) = &mut self.settings_dialog {
+                    dialog.selected_host_id = replacement.map(|host| host.id().to_owned());
+                    dialog.host_editor = replacement.map(|host| SshHostEditor::new(Some(host)));
+                    dialog.pending_remove = None;
+                    dialog.error = None;
+                }
+            }
+            Err(error) => {
+                if let Some(dialog) = &mut self.settings_dialog {
+                    dialog.error = Some(error.to_string());
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn cancel_ssh_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(prompt) = self.ssh_prompts.pop_front() {
+            let host_id = prompt.request.host_id().to_owned();
+            prompt.request.respond(None);
+            let _cancelled = self.workspace.cancel_host_connection(&host_id);
+        }
+        self.focus_after_ssh_prompt(window);
+        cx.notify();
+    }
+
+    fn submit_ssh_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.ssh_prompts.pop_front() else {
+            return;
+        };
+        let response = if prompt.request.sensitive() {
+            prompt.value
+        } else {
+            "yes".to_owned()
+        };
+        prompt.request.respond(Some(response));
+        self.focus_after_ssh_prompt(window);
+        cx.notify();
+    }
+
+    fn focus_after_ssh_prompt(&self, window: &mut Window) {
+        if self.ssh_prompts.is_empty() {
+            window.focus(&self.focus);
+        } else {
+            window.focus(&self.ssh_prompt_focus);
+        }
+    }
+
+    fn on_settings_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.to_ascii_lowercase();
+        if key == "escape" && !event.is_held {
+            if self
+                .settings_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.pending_remove.is_some())
+            {
+                if let Some(dialog) = &mut self.settings_dialog {
+                    dialog.pending_remove = None;
+                    dialog.error = None;
+                }
+                cx.notify();
+            } else {
+                self.close_settings(window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if key == "enter" && !event.is_held {
+            if self
+                .settings_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.pending_remove.is_some())
+            {
+                self.remove_ssh_host(cx);
+            } else {
+                self.save_ssh_host(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if key == "tab" {
+            if let Some(editor) = self
+                .settings_dialog
+                .as_mut()
+                .and_then(|dialog| dialog.host_editor.as_mut())
+            {
+                editor.field = editor.field.adjacent(event.keystroke.modifiers.shift);
+                editor.error = None;
+                cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
+        let Some(editor) = self
+            .settings_dialog
+            .as_mut()
+            .and_then(|dialog| dialog.host_editor.as_mut())
+        else {
+            return;
+        };
+        let value = ssh_draft_field_mut(&mut editor.draft, editor.field);
+        editor.error = None;
+        if is_paste_shortcut(&event.keystroke) {
+            if !event.is_held
+                && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+            {
+                append_non_control_characters(value, &text, SETTINGS_FIELD_CHARACTER_LIMIT);
+            }
+        } else if key == "backspace" {
+            value.pop();
+        } else if !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.function
+            && let Some(text) = &event.keystroke.key_char
+        {
+            append_non_control_characters(value, text, SETTINGS_FIELD_CHARACTER_LIMIT);
+        }
+        cx.notify();
+        cx.stop_propagation();
+    }
+
+    fn on_ssh_prompt_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.to_ascii_lowercase();
+        if key == "escape" && !event.is_held {
+            self.cancel_ssh_prompt(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if key == "enter" && !event.is_held {
+            self.submit_ssh_prompt(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        let Some(prompt) = self.ssh_prompts.front_mut() else {
+            return;
+        };
+        if !prompt.request.sensitive() {
+            cx.stop_propagation();
+            return;
+        }
+        if is_paste_shortcut(&event.keystroke) {
+            if !event.is_held
+                && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+            {
+                append_non_control_characters(&mut prompt.value, &text, SSH_PROMPT_CHARACTER_LIMIT);
+            }
+        } else if key == "backspace" {
+            prompt.value.pop();
+        } else if !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.function
+            && let Some(text) = &event.keystroke.key_char
+        {
+            append_non_control_characters(&mut prompt.value, text, SSH_PROMPT_CHARACTER_LIMIT);
+        }
+        cx.notify();
+        cx.stop_propagation();
     }
 
     fn open_new_session(
@@ -1898,13 +2363,6 @@ impl RootView {
         application_navigation_width(self.sidebar_visible, !snapshot.hosts().is_empty())
     }
 
-    fn cancel_refresh(&mut self, cx: &mut Context<Self>) {
-        if self.workspace.cancel_refresh() {
-            self.diagnostic = None;
-        }
-        cx.notify();
-    }
-
     fn request_session_kill(&mut self, selection: &SessionSelection, cx: &mut Context<Self>) {
         self.pending_worktree_navigation = None;
         match self.workspace.request_session_kill(selection) {
@@ -2053,6 +2511,33 @@ impl RootView {
                     }
                 }
                 WorkspaceEvent::ConfirmPaste => self.paste_confirmation = true,
+                WorkspaceEvent::SshPrompt(request) => {
+                    if !self
+                        .workspace
+                        .ssh_prompt_is_current(request.host_id(), request.generation())
+                    {
+                        request.respond(None);
+                        continue;
+                    }
+                    self.ssh_prompts.push_back(SshPromptDialog {
+                        request,
+                        value: String::new(),
+                    });
+                    self.restore_focus = false;
+                }
+                WorkspaceEvent::SshPromptDismissed {
+                    host_id,
+                    generation,
+                } => {
+                    if let Some(index) = self.ssh_prompts.iter().position(|prompt| {
+                        prompt.request.host_id() == host_id
+                            && prompt.request.generation() == generation
+                    }) && let Some(prompt) = self.ssh_prompts.remove(index)
+                    {
+                        prompt.request.respond(None);
+                        self.restore_focus = index == 0 && self.ssh_prompts.is_empty();
+                    }
+                }
                 WorkspaceEvent::KwtProjectMutationFinished { action, .. } => {
                     if self
                         .project_dialog
@@ -2962,7 +3447,7 @@ impl RootView {
         }
         match snapshot.content() {
             WorkspaceContent::Shell => centered("No terminal hosts are available."),
-            WorkspaceContent::Loading => centered("Starting WSL and discovering sessions…"),
+            WorkspaceContent::Loading => centered("Discovering sessions…"),
             WorkspaceContent::Error { message } => div()
                 .size_full()
                 .flex()
@@ -3090,6 +3575,24 @@ impl RootView {
                     .text_sm()
                     .text_color(rgb(0xc4_c9d2))
                     .child(title),
+            )
+            .child(
+                div()
+                    .id("open-settings")
+                    .w(px(APP_TITLEBAR_HEIGHT))
+                    .h_full()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_size(px(15.0))
+                    .text_color(rgb(0xa5_acb8))
+                    .hover(|style| style.bg(rgb(0x24_2933)).text_color(rgb(0xe5_e9f0)))
+                    .child("⚙")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_settings(window, cx);
+                    })),
             )
             .child(window_control(
                 "window-minimize",
@@ -3710,6 +4213,701 @@ impl RootView {
         )
     }
 
+    fn ssh_field_row(
+        &self,
+        label: &'static str,
+        field: SshField,
+        draft: &SshHostDraft,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let selected = self
+            .settings_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.host_editor.as_ref())
+            .is_some_and(|editor| editor.field == field);
+        let value = ssh_draft_field(draft, field);
+        let placeholder = match field {
+            SshField::Name => "Display name",
+            SshField::Hostname => "Hostname or SSH alias",
+            SshField::User | SshField::Port | SshField::SocketDirectory => "Optional",
+            SshField::TmuxBinary => "/usr/bin/tmux",
+        };
+        let display = if value.is_empty() {
+            if selected { "▏" } else { placeholder }.to_owned()
+        } else if selected {
+            format!("{value}▏")
+        } else {
+            value.to_owned()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(label))
+            .child(
+                div()
+                    .id(("ssh-setting-field", field as usize))
+                    .h(px(36.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(if selected { 0x4a_8f_cf } else { 0x3a_404c }))
+                    .bg(rgb(0x0f_1218))
+                    .cursor_text()
+                    .text_sm()
+                    .text_color(rgb(if value.is_empty() && !selected {
+                        0x72_7986
+                    } else {
+                        0xe1_e5ec
+                    }))
+                    .child(display)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(editor) = this
+                            .settings_dialog
+                            .as_mut()
+                            .and_then(|dialog| dialog.host_editor.as_mut())
+                        {
+                            editor.field = field;
+                        }
+                        window.focus(&this.settings_focus);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn settings_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let active = self
+            .settings_dialog
+            .as_ref()
+            .map_or(SettingsPane::Hosts, |dialog| dialog.pane);
+        let mut panes = div().flex().flex_col().gap_1();
+        for (index, pane) in SettingsPane::ALL.into_iter().enumerate() {
+            panes = panes.child(
+                div()
+                    .id(("settings-pane", index))
+                    .h(px(34.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .bg(rgb(if pane == active { 0x25_2d3a } else { 0x13_161c }))
+                    .text_color(rgb(if pane == active { 0xe1_e5ec } else { 0xa0_a7b3 }))
+                    .child("▣")
+                    .child(pane.title())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(dialog) = &mut this.settings_dialog {
+                            dialog.pane = pane;
+                            dialog.error = None;
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        div()
+            .w(px(188.0))
+            .h_full()
+            .flex_none()
+            .px_3()
+            .py_4()
+            .border_r_1()
+            .border_color(rgb(0x2a_2f39))
+            .bg(rgb(0x11_141a))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .px_2()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x78_808e))
+                    .child("SETTINGS"),
+            )
+            .child(panes)
+            .into_any_element()
+    }
+
+    #[allow(clippy::too_many_lines)] // Declarative GPUI host-list hierarchy.
+    fn settings_host_list(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let hosts = self.workspace.configured_ssh_hosts();
+        let selected = self
+            .settings_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.selected_host_id.as_deref());
+        let mut rows = div()
+            .id("settings-host-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .py_1();
+        if hosts.is_empty() {
+            rows = rows.child(
+                div()
+                    .px_3()
+                    .py_4()
+                    .text_sm()
+                    .text_color(rgb(0x78_808e))
+                    .child("No SSH hosts configured."),
+            );
+        }
+        for (index, host) in hosts.into_iter().enumerate() {
+            let is_selected = selected == Some(host.id());
+            let target = host.clone();
+            rows = rows.child(
+                div()
+                    .id(("settings-host-row", index))
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .cursor_pointer()
+                    .bg(rgb(if is_selected { 0x24_3040 } else { 0x14_171d }))
+                    .hover(|style| style.bg(rgb(0x20_2630)))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(0xd7_dbe3))
+                            .child(host.draft().name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x7f_8794))
+                            .child(ssh_host_subtitle(host.draft())),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_ssh_host(&target, window, cx);
+                    })),
+            );
+        }
+
+        let selected_host = self.settings_dialog.as_ref().and_then(|dialog| {
+            let selected = dialog.selected_host_id.as_deref()?;
+            self.workspace
+                .configured_ssh_hosts()
+                .into_iter()
+                .find(|host| host.id() == selected)
+        });
+        let mut footer = div()
+            .h(px(42.0))
+            .px_3()
+            .flex()
+            .items_center()
+            .justify_between()
+            .border_t_1()
+            .border_color(rgb(0x2a_2f39));
+        if let Some(host) = selected_host {
+            footer = footer.child(
+                div()
+                    .id("remove-selected-ssh-host")
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(0xd0_7070))
+                    .hover(|style| style.bg(rgb(0x35_2228)))
+                    .child("Remove")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(dialog) = &mut this.settings_dialog {
+                            dialog.pending_remove = Some(host.clone());
+                            dialog.error = None;
+                        }
+                        window.focus(&this.settings_focus);
+                        cx.notify();
+                    })),
+            );
+        }
+        footer = footer.child(
+            div()
+                .id("add-ssh-host")
+                .px_2()
+                .py_1()
+                .rounded_sm()
+                .cursor_pointer()
+                .text_xs()
+                .bg(rgb(0x1d_5f9a))
+                .child("Add Host")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.add_ssh_host(window, cx);
+                })),
+        );
+
+        div()
+            .w(px(248.0))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(rgb(0x2a_2f39))
+            .bg(rgb(0x14_171d))
+            .child(
+                div()
+                    .h(px(42.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(rgb(0x2a_2f39))
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x8f_96_a3))
+                    .child("SSH HOSTS"),
+            )
+            .child(rows)
+            .child(footer)
+            .into_any_element()
+    }
+
+    fn settings_host_editor(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let Some(editor) = self
+            .settings_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.host_editor.as_ref())
+        else {
+            return div()
+                .flex_1()
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_sm()
+                .text_color(rgb(0x78_808e))
+                .child("Select a host or add a new one.")
+                .into_any_element();
+        };
+
+        let heading = if editor.original_id.is_some() {
+            "SSH Tmux Host"
+        } else {
+            "New SSH Host"
+        };
+        let mut form = div()
+            .w_full()
+            .max_w(px(620.0))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(heading),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(0x8f_96_a3))
+                    .child("Ghosthub connects through the system OpenSSH client and KWT."),
+            )
+            .child(self.ssh_field_row("Name", SshField::Name, &editor.draft, cx))
+            .child(self.ssh_field_row("Host", SshField::Hostname, &editor.draft, cx))
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(div().flex_1().child(self.ssh_field_row(
+                        "User",
+                        SshField::User,
+                        &editor.draft,
+                        cx,
+                    )))
+                    .child(div().w(px(150.0)).child(self.ssh_field_row(
+                        "Port",
+                        SshField::Port,
+                        &editor.draft,
+                        cx,
+                    ))),
+            )
+            .child(self.ssh_field_row("Tmux binary", SshField::TmuxBinary, &editor.draft, cx))
+            .child(self.ssh_field_row(
+                "Tmux socket directory",
+                SshField::SocketDirectory,
+                &editor.draft,
+                cx,
+            ));
+        if let Some(error) = &editor.error {
+            form = form.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0xd0_7070))
+                    .child(error.clone()),
+            );
+        }
+        form = form.child(
+            div().pt_2().flex().justify_end().child(
+                div()
+                    .id("save-ssh-host")
+                    .px_4()
+                    .py_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .bg(rgb(0x1d_5f9a))
+                    .child("Save Host")
+                    .on_click(cx.listener(|this, _, _, cx| this.save_ssh_host(cx))),
+            ),
+        );
+
+        div()
+            .id("settings-host-editor")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .px_6()
+            .py_5()
+            .child(form)
+            .into_any_element()
+    }
+
+    fn settings_remove_confirmation(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let dialog = self.settings_dialog.as_ref()?;
+        let host = dialog.pending_remove.as_ref()?;
+        let mut body = div()
+            .px_4()
+            .py_4()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .text_sm()
+            .child(format!("Remove “{}” from Ghosthub?", host.draft().name))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x8f_96_a3))
+                    .child("Any open terminal client for this host will detach."),
+            );
+        if let Some(error) = &dialog.error {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0xd0_7070))
+                    .child(error.clone()),
+            );
+        }
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x00_00_00_a0))
+                .child(
+                    div()
+                        .id("remove-ssh-host-confirmation")
+                        .w(px(440.0))
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(0x36_3c48))
+                        .bg(rgb(0x18_1b22))
+                        .shadow_lg()
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_b_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Remove SSH Host"),
+                        )
+                        .child(body)
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_t_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("cancel-remove-ssh-host")
+                                        .px_3()
+                                        .py_1()
+                                        .cursor_pointer()
+                                        .child("Cancel")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(dialog) = &mut this.settings_dialog {
+                                                dialog.pending_remove = None;
+                                                dialog.error = None;
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("confirm-remove-ssh-host")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .bg(rgb(0x7a_3038))
+                                        .child("Remove")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.remove_ssh_host(cx);
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    #[allow(clippy::too_many_lines)] // Declarative GPUI settings-shell hierarchy.
+    fn settings_overlay(
+        &self,
+        _window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let dialog = self.settings_dialog.as_ref()?;
+        let pane = dialog.pane;
+        let detail = match pane {
+            SettingsPane::Hosts => div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(self.settings_host_list(cx))
+                .child(self.settings_host_editor(cx))
+                .into_any_element(),
+        };
+        let confirmation = self.settings_remove_confirmation(cx);
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00_00_00_80))
+                .child(
+                    div()
+                        .id("settings-shell")
+                        .track_focus(&self.settings_focus)
+                        .absolute()
+                        .left(px(24.0))
+                        .right(px(24.0))
+                        .top(px(24.0))
+                        .bottom(px(24.0))
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(0x36_3c48))
+                        .bg(rgb(0x18_1b22))
+                        .shadow_lg()
+                        .on_key_down(cx.listener(|this, event, window, cx| {
+                            this.on_settings_key_down(event, window, cx);
+                        }))
+                        .child(
+                            div()
+                                .h(px(50.0))
+                                .px_4()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .border_b_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Settings"),
+                                )
+                                .child(
+                                    div()
+                                        .id("close-settings")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(rgb(0x25_2a34)))
+                                        .child("Done")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.close_settings(window, cx);
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .flex()
+                                .child(self.settings_sidebar(cx))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .px_6()
+                                                .py_4()
+                                                .flex_none()
+                                                .border_b_1()
+                                                .border_color(rgb(0x2a_2f39))
+                                                .child(
+                                                    div()
+                                                        .text_2xl()
+                                                        .font_weight(FontWeight::BOLD)
+                                                        .child(pane.title()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .pt_1()
+                                                        .text_sm()
+                                                        .text_color(rgb(0x8f_96_a3))
+                                                        .child(pane.subtitle()),
+                                                ),
+                                        )
+                                        .child(detail),
+                                ),
+                        )
+                        .children(confirmation),
+                )
+                .into_any_element(),
+        )
+    }
+
+    #[allow(clippy::too_many_lines)] // Declarative GPUI SSH prompt hierarchy.
+    fn ssh_prompt_overlay(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let prompt = self.ssh_prompts.front()?;
+        let sensitive = prompt.request.sensitive();
+        let focused = self.ssh_prompt_focus.is_focused(window);
+        let displayed = if sensitive {
+            ssh_prompt_input_text(&prompt.value, focused)
+        } else {
+            String::new()
+        };
+        let mut body = div()
+            .px_4()
+            .py_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .text_sm()
+            .child(prompt.request.message().to_owned())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x8f_96_a3))
+                    .child(prompt.request.display_target().to_owned()),
+            );
+        if sensitive {
+            body = body.child(
+                div()
+                    .id("ssh-prompt-input")
+                    .h(px(38.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(if focused { 0x4a_8f_cf } else { 0x3a_404c }))
+                    .bg(rgb(0x0f_1218))
+                    .cursor_text()
+                    .text_color(rgb(if prompt.value.is_empty() && !focused {
+                        0x72_7986
+                    } else {
+                        0xe1_e5ec
+                    }))
+                    .child(displayed)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        window.focus(&this.ssh_prompt_focus);
+                        cx.notify();
+                    })),
+            );
+        }
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x00_00_00_a0))
+                .child(
+                    div()
+                        .id("ssh-prompt-dialog")
+                        .track_focus(&self.ssh_prompt_focus)
+                        .w(px(520.0))
+                        .flex()
+                        .flex_col()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(0x36_3c48))
+                        .bg(rgb(0x18_1b22))
+                        .shadow_lg()
+                        .on_key_down(cx.listener(|this, event, window, cx| {
+                            this.on_ssh_prompt_key_down(event, window, cx);
+                        }))
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_b_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(if sensitive {
+                                    "Authenticate SSH Connection"
+                                } else {
+                                    "Verify SSH Host"
+                                }),
+                        )
+                        .child(body)
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_t_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("cancel-ssh-prompt")
+                                        .px_3()
+                                        .py_1()
+                                        .cursor_pointer()
+                                        .child("Cancel")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.cancel_ssh_prompt(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("submit-ssh-prompt")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .bg(rgb(0x1d_5f9a))
+                                        .child(if sensitive { "Continue" } else { "Trust Host" })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.submit_ssh_prompt(window, cx);
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn session_kill_overlay(
         &self,
         confirmation: &workspace::SessionKillConfirmation,
@@ -4206,15 +5404,6 @@ impl RootView {
                 .flex_col()
                 .child(Self::host_header(host_index, host, is_selected, cx));
 
-        if let Some(status) = host_tree_status(host) {
-            host_tree = host_tree.child(Self::host_status_row(
-                host_index,
-                status.message,
-                status.action,
-                cx,
-            ));
-        }
-
         let sessions = tree_sessions(host, active, retained);
         let herdr_sessions = tree_herdr_sessions(host, active, retained);
         let zellij_sessions = tree_zellij_sessions(host, active, retained);
@@ -4302,41 +5491,40 @@ impl RootView {
                     .text_color(rgb(0xd2_d7_df))
                     .child(host.name().to_owned()),
             );
-        if host.connection() == HostConnectionState::Ready {
-            host_header = host_header.child(
-                div()
-                    .id(("refresh-host", host_index))
-                    .flex_none()
-                    .size(px(24.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(0x8f_96_a3))
-                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                    .child("↻")
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-            );
-        } else if host.connection() == HostConnectionState::Connecting {
-            host_header = host_header.child(
-                div()
-                    .id(("cancel-host-refresh", host_index))
-                    .flex_none()
-                    .size(px(24.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_sm()
-                    .text_color(rgb(0x8f_96_a3))
-                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                    .child("×")
-                    .on_click(cx.listener(|this, _, _, cx| this.cancel_refresh(cx))),
-            );
-        }
+        let select_host_id = host.id().to_owned();
+        host_header = host_header
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Err(error) = this.workspace.select_host(&select_host_id) {
+                    this.diagnostic = Some(error.to_string());
+                }
+                cx.notify();
+            }));
+        let host_id = host.id().to_owned();
+        let action = host_header_action(host.connection());
+        host_header = host_header.child(
+            div()
+                .id((action.element_id(), host_index))
+                .flex_none()
+                .h(px(24.0))
+                .min_w(px(24.0))
+                .px_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .cursor_pointer()
+                .text_xs()
+                .text_color(rgb(0x8f_96_a3))
+                .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                .child(action.label())
+                .on_click(cx.listener(move |this, _, _, cx| match action {
+                    HostHeaderAction::Cancel => this.cancel_host_connection(&host_id, cx),
+                    HostHeaderAction::Connect
+                    | HostHeaderAction::Refresh
+                    | HostHeaderAction::Retry => this.connect_host(&host_id, cx),
+                })),
+        );
         host_header.into_any_element()
     }
 
@@ -4362,7 +5550,7 @@ impl RootView {
                 .text_color(rgb(SESSION_GROUP_TEXT))
                 .child(div().flex_1().child(title));
             let create_available = match create_kind {
-                NewSessionKind::Tmux => true,
+                NewSessionKind::Tmux => !host.is_ssh(),
                 NewSessionKind::Zellij => {
                     host.zellij_available() && host.zellij_diagnostic().is_none()
                 }
@@ -5091,34 +6279,6 @@ impl RootView {
             .into_any_element()
     }
 
-    fn host_status_row(
-        host_index: usize,
-        message: String,
-        action: &'static str,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .mx_2()
-            .mb_1()
-            .px_2()
-            .py_2()
-            .rounded_sm()
-            .bg(rgb(0x16_1920))
-            .child(div().text_xs().text_color(rgb(0x9b_a2ae)).child(message))
-            .child(
-                div()
-                    .id(("retry-host-refresh", host_index))
-                    .mt_1()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(0x79_aee3))
-                    .hover(|style| style.text_color(rgb(0xb6_d8_f8)))
-                    .child(action)
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-            )
-            .into_any_element()
-    }
-
     fn tree_session_row(
         host_index: usize,
         index: usize,
@@ -5209,72 +6369,12 @@ impl RootView {
 
     fn host_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
         match host.connection() {
-            HostConnectionState::Disconnected => div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(0xb7_bc_c6))
-                .child(host_status_text(host))
-                .child(
-                    div()
-                        .id("connect-wsl-host")
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .bg(rgb(0x2a_2f_3a))
-                        .child("Connect")
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                )
-                .into_any_element(),
-            HostConnectionState::Connecting => div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(0xb7_bc_c6))
-                .child(host_status_text(host))
-                .child(
-                    div()
-                        .id("cancel-wsl-host-refresh")
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .bg(rgb(0x2a_2f_3a))
-                        .child("Cancel")
-                        .on_click(cx.listener(|this, _, _, cx| this.cancel_refresh(cx))),
-                )
-                .into_any_element(),
+            HostConnectionState::Disconnected
+            | HostConnectionState::Connecting
+            | HostConnectionState::Unavailable => centered(host_status_text(host)),
             HostConnectionState::Ready => {
                 Self::ready_element(host.endpoint(), host.sessions(), Some(host), cx)
             }
-            HostConnectionState::Unavailable => div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(0xb7_bc_c6))
-                .child(host_status_text(host))
-                .child(
-                    div()
-                        .id("retry-wsl-host")
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .bg(rgb(0x2a_2f_3a))
-                        .child("Retry")
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                )
-                .into_any_element(),
         }
     }
 
@@ -5284,6 +6384,7 @@ impl RootView {
         host: Option<&HostItem>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let refresh_host_id = host.map(|host| host.id().to_owned());
         let mut list = div().flex().flex_col().gap_2().p_6().max_w(px(720.0));
         list = list
             .child(
@@ -5306,7 +6407,13 @@ impl RootView {
                             .cursor_pointer()
                             .bg(rgb(0x2a_2f_3a))
                             .child("Refresh")
-                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(host_id) = &refresh_host_id {
+                                    this.connect_host(host_id, cx);
+                                } else {
+                                    this.refresh(cx);
+                                }
+                            })),
                     ),
             )
             .child(div().text_sm().text_color(rgb(0x8f_96_a3)).mb_4().child(
@@ -5407,10 +6514,32 @@ impl HerdrRowAccess {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct HostTreeStatus {
-    message: String,
-    action: &'static str,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostHeaderAction {
+    Connect,
+    Cancel,
+    Refresh,
+    Retry,
+}
+
+impl HostHeaderAction {
+    const fn element_id(self) -> &'static str {
+        match self {
+            Self::Connect => "connect-host",
+            Self::Cancel => "cancel-host-refresh",
+            Self::Refresh => "refresh-host",
+            Self::Retry => "retry-host",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Connect => "Connect",
+            Self::Cancel => "×",
+            Self::Refresh => "↻",
+            Self::Retry => "Retry",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5536,20 +6665,12 @@ fn session_group_visibility(
     }
 }
 
-fn host_tree_status(host: &HostItem) -> Option<HostTreeStatus> {
-    match host.connection() {
-        HostConnectionState::Connecting | HostConnectionState::Ready => None,
-        HostConnectionState::Unavailable => Some(HostTreeStatus {
-            message: host.diagnostic().map_or_else(
-                || "Host unavailable".to_owned(),
-                |diagnostic| diagnostic.message().to_owned(),
-            ),
-            action: "Retry",
-        }),
-        HostConnectionState::Disconnected => Some(HostTreeStatus {
-            message: "Host disconnected".to_owned(),
-            action: "Connect",
-        }),
+const fn host_header_action(connection: HostConnectionState) -> HostHeaderAction {
+    match connection {
+        HostConnectionState::Disconnected => HostHeaderAction::Connect,
+        HostConnectionState::Connecting => HostHeaderAction::Cancel,
+        HostConnectionState::Ready => HostHeaderAction::Refresh,
+        HostConnectionState::Unavailable => HostHeaderAction::Retry,
     }
 }
 
@@ -5560,6 +6681,7 @@ enum TreeSessionState {
     Retained,
     RetainedKillable,
     Fresh,
+    FreshOpenOnly,
     Cached,
 }
 
@@ -5665,13 +6787,14 @@ fn tree_sessions(
         .map(|(selection, discovered)| {
             let retained = retained.contains(&selection);
             let is_active = active == Some(&selection);
-            let can_kill = discovered && host_accepts_actions;
+            let can_kill = discovered && host_accepts_actions && !host.is_ssh();
             let state = match (is_active, retained, host_accepts_actions, can_kill) {
                 (true, _, _, true) => TreeSessionState::ActiveKillable,
                 (true, _, _, false) => TreeSessionState::Active,
                 (false, true, _, true) => TreeSessionState::RetainedKillable,
                 (false, true, _, false) => TreeSessionState::Retained,
-                (false, false, true, _) => TreeSessionState::Fresh,
+                (false, false, true, true) => TreeSessionState::Fresh,
+                (false, false, true, false) => TreeSessionState::FreshOpenOnly,
                 (false, false, false, _) => TreeSessionState::Cached,
             };
             TreeSession {
@@ -5916,12 +7039,17 @@ impl Render for RootView {
             window.focus(&self.focus);
             self.restore_focus = false;
         }
+        if !self.ssh_prompts.is_empty() && !self.ssh_prompt_focus.is_focused(window) {
+            window.focus(&self.ssh_prompt_focus);
+        }
         let title = workspace_window_title(snapshot.content());
         window.set_window_title(&title);
         self.synchronize_render_state(&snapshot);
         let content = self.content_element(&snapshot, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
         let project_overlay = self.project_overlay(window, cx);
+        let settings_overlay = self.settings_overlay(window, cx);
+        let ssh_prompt_overlay = self.ssh_prompt_overlay(window, cx);
         let session_action_menu = self.session_action_menu_overlay(window, cx);
         let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let herdr_lifecycle_overlay = self.pending_herdr_lifecycle_overlay(window, cx);
@@ -5938,6 +7066,7 @@ impl Render for RootView {
             .child(div().flex_1().min_h_0().w_full().child(content))
             .children(creation_overlay)
             .children(project_overlay)
+            .children(settings_overlay)
             .children(session_action_menu)
             .children(kill_overlay)
             .children(herdr_lifecycle_overlay);
@@ -6016,7 +7145,7 @@ impl Render for RootView {
                     ),
             );
         }
-        root
+        root.children(ssh_prompt_overlay)
     }
 }
 
@@ -6613,10 +7742,11 @@ mod tests {
 
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
-        INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
-        NewSessionDraft, NewSessionKind, NewWorktreeMode, PendingUiInput, ProjectDialog,
-        QueuedUiInput, SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer,
-        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
+        HostHeaderAction, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal,
+        LayoutKey, NewSessionDraft, NewSessionKind, NewWorktreeMode, PendingUiInput, ProjectDialog,
+        QueuedUiInput, SessionRowAction, SettingsDialog, SettingsPane, SshField, SshHostEditor,
+        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
+        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
         WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
         WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
         active_session_selection, application_navigation_width, apply_new_worktree_failure,
@@ -6624,16 +7754,16 @@ mod tests {
         canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
         clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
         has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
-        host_tree_status, input_queue_has_capacity, is_toggle_sidebar_shortcut,
+        host_header_action, input_queue_has_capacity, is_toggle_sidebar_shortcut,
         kill_confirmation_description, kill_confirmation_title, kwt_operation_failure_owns_dialog,
         named_key, new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
         pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
         session_action_menu_position, session_backend_id, session_group_visibility,
-        session_row_element_id, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
-        tree_zellij_sessions, visible_kwt_branch_candidates, visible_kwt_pull_requests,
-        workspace_window_title, worktree_open_mode,
+        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
+        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates,
+        visible_kwt_pull_requests, workspace_window_title, worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -6641,9 +7771,59 @@ mod tests {
     use workspace::{
         HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
         KeyEvent, KeyInput, KwtBranchItem, KwtPullRequestItem, Modifiers, MouseAction, MouseButton,
-        MouseInput, NamedKey, ProjectItem, SessionItem, SessionSelection, WorkspaceContent,
-        WorkspaceSnapshot, WorktreeItem,
+        MouseInput, NamedKey, ProjectItem, SessionItem, SessionSelection, SshHostDraft,
+        WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
     };
+
+    #[test]
+    fn settings_shell_opens_the_hosts_pane_without_a_transient_editor() {
+        let dialog = SettingsDialog::new(&[]);
+
+        assert_eq!(SettingsPane::ALL, [SettingsPane::Hosts]);
+        assert_eq!(dialog.pane, SettingsPane::Hosts);
+        assert!(dialog.selected_host_id.is_none());
+        assert!(dialog.host_editor.is_none());
+        assert!(dialog.pending_remove.is_none());
+    }
+
+    #[test]
+    fn new_host_editor_and_endpoint_subtitle_preserve_optional_authority() {
+        let mut editor = SshHostEditor::new(None);
+        editor.draft.name = "Build host".to_owned();
+        editor.draft.hostname = "build.internal".to_owned();
+        editor.draft.user = "wesm".to_owned();
+        editor.draft.port = "2222".to_owned();
+
+        assert_eq!(editor.original_id, None);
+        assert_eq!(ssh_host_subtitle(&editor.draft), "wesm@build.internal:2222");
+        assert_eq!(
+            ssh_host_subtitle(&SshHostDraft {
+                hostname: "studio.local".to_owned(),
+                ..SshHostDraft::default()
+            }),
+            "studio.local"
+        );
+    }
+
+    #[test]
+    fn ssh_host_fields_follow_tab_order_in_both_directions() {
+        let fields = [
+            SshField::Name,
+            SshField::Hostname,
+            SshField::User,
+            SshField::Port,
+            SshField::TmuxBinary,
+            SshField::SocketDirectory,
+        ];
+
+        for (index, field) in fields.iter().copied().enumerate() {
+            assert_eq!(field.adjacent(false), fields[(index + 1) % fields.len()]);
+            assert_eq!(
+                field.adjacent(true),
+                fields[(index + fields.len() - 1) % fields.len()]
+            );
+        }
+    }
 
     #[test]
     fn ambiguous_existing_branch_requires_an_explicit_source() {
@@ -7118,6 +8298,24 @@ mod tests {
     }
 
     #[test]
+    fn remote_tmux_rows_open_without_exposing_unimplemented_mutations() {
+        let host = HostItem::ssh(
+            "ssh:wesm@studio.example:",
+            "Studio",
+            "wesm@studio.example",
+            HostConnectionState::Ready,
+            vec![SessionItem::new("build", 0)],
+            None,
+        );
+
+        let rows = tree_sessions(&host, None, &[]);
+
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].state.can_open());
+        assert!(!rows[0].state.can_kill());
+    }
+
+    #[test]
     fn a_refused_input_stays_visible_until_later_input_is_delivered() {
         assert!(clears_when_input_queue_is_empty(Some(
             INPUT_BUFFERED_DIAGNOSTIC
@@ -7393,17 +8591,23 @@ mod tests {
     }
 
     #[test]
-    fn background_refresh_does_not_insert_a_transient_navigation_status_row() {
-        let host = HostItem::wsl(
-            "Ubuntu",
-            None,
-            HostConnectionState::Connecting,
-            Vec::new(),
-            None,
+    fn host_connection_actions_stay_on_the_host_row() {
+        assert_eq!(
+            host_header_action(HostConnectionState::Disconnected),
+            HostHeaderAction::Connect
         );
-
-        assert_eq!(host_tree_status(&host), None);
-        assert!(session_group_visibility(&host, &[], &[]).tmux);
+        assert_eq!(
+            host_header_action(HostConnectionState::Connecting),
+            HostHeaderAction::Cancel
+        );
+        assert_eq!(
+            host_header_action(HostConnectionState::Ready),
+            HostHeaderAction::Refresh
+        );
+        assert_eq!(
+            host_header_action(HostConnectionState::Unavailable),
+            HostHeaderAction::Retry
+        );
     }
 
     #[test]
@@ -8524,5 +9728,13 @@ mod tests {
         assert!(queued_input_matches_presentation(&input, Some(7)));
         assert!(!queued_input_matches_presentation(&input, Some(8)));
         assert!(!queued_input_matches_presentation(&input, None));
+    }
+
+    #[test]
+    fn focused_ssh_password_field_has_a_visible_caret() {
+        assert_eq!(ssh_prompt_input_text("", false), "Password or passphrase");
+        assert_eq!(ssh_prompt_input_text("", true), "▏");
+        assert_eq!(ssh_prompt_input_text("secret", false), "••••••");
+        assert_eq!(ssh_prompt_input_text("secret", true), "••••••▏");
     }
 }
