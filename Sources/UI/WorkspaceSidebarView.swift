@@ -460,6 +460,8 @@ struct WorkspaceSidebarView: View {
     private var differentiateWithoutColor
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     let snapshot: WorkspaceSnapshot
+    let sectionCache: WorkspaceSidebarSectionCache?
+    let snapshotRevision: UInt64
     @Binding var selection: WorkspaceSelection
     let visibility: WorktreeVisibility
     let tmuxSessionVisibility: TmuxSessionVisibility
@@ -528,6 +530,8 @@ struct WorkspaceSidebarView: View {
 
     init(
         snapshot: WorkspaceSnapshot,
+        sectionCache: WorkspaceSidebarSectionCache? = nil,
+        snapshotRevision: UInt64 = 0,
         selection: Binding<WorkspaceSelection>,
         visibility: WorktreeVisibility,
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
@@ -596,6 +600,8 @@ struct WorkspaceSidebarView: View {
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
     ) {
         self.snapshot = snapshot
+        self.sectionCache = sectionCache
+        self.snapshotRevision = snapshotRevision
         _selection = selection
         self.visibility = visibility
         self.tmuxSessionVisibility = tmuxSessionVisibility
@@ -643,17 +649,32 @@ struct WorkspaceSidebarView: View {
     // MARK: - Computed
 
     private var sections: [WorkspaceSidebarSection] {
-        WorkspaceSidebarModel.sections(
-            in: snapshot,
-            visibility: visibility,
-            tmuxSessionVisibility: tmuxSessionVisibility,
-            connectedTmuxSessionIDs: connectedTmuxSessionIDs,
-            liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
-            worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: zellijSessionOrderRawValue
-        )
+        if let sectionCache {
+            sectionCache.sections(
+                in: snapshot,
+                snapshotRevision: snapshotRevision,
+                visibility: visibility,
+                tmuxSessionVisibility: tmuxSessionVisibility,
+                connectedTmuxSessionIDs: connectedTmuxSessionIDs,
+                liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
+                worktreeOrderRawValue: worktreeOrderRawValue,
+                tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+                herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+                zellijSessionOrderRawValue: zellijSessionOrderRawValue
+            )
+        } else {
+            WorkspaceSidebarModel.sections(
+                in: snapshot,
+                visibility: visibility,
+                tmuxSessionVisibility: tmuxSessionVisibility,
+                connectedTmuxSessionIDs: connectedTmuxSessionIDs,
+                liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
+                worktreeOrderRawValue: worktreeOrderRawValue,
+                tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+                herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+                zellijSessionOrderRawValue: zellijSessionOrderRawValue
+            )
+        }
     }
 
     // MARK: - Body

@@ -3,6 +3,7 @@ import GhosthubWorkspace
 
 public struct KeyboardNavigationContext: Sendable {
     public var snapshot: WorkspaceSnapshot
+    public var sidebarSections: [WorkspaceSidebarSection]?
     public var visibility: WorktreeVisibility
     public var tmuxSessionVisibility: TmuxSessionVisibility
     public var worktreeOrderRawValue: String
@@ -12,6 +13,7 @@ public struct KeyboardNavigationContext: Sendable {
 
     public init(
         snapshot: WorkspaceSnapshot,
+        sidebarSections: [WorkspaceSidebarSection]? = nil,
         visibility: WorktreeVisibility = .default,
         tmuxSessionVisibility: TmuxSessionVisibility = .init(),
         worktreeOrderRawValue: String = "",
@@ -20,6 +22,7 @@ public struct KeyboardNavigationContext: Sendable {
         zellijSessionOrderRawValue: String = ""
     ) {
         self.snapshot = snapshot
+        self.sidebarSections = sidebarSections
         self.visibility = visibility
         self.tmuxSessionVisibility = tmuxSessionVisibility
         self.worktreeOrderRawValue = worktreeOrderRawValue
@@ -34,15 +37,16 @@ public enum KeyboardNavigationModel {
         for currentTarget: WorkspaceNavigationTarget,
         in context: KeyboardNavigationContext
     ) -> [WorkspaceNavigationTarget] {
-        let sections = WorkspaceSidebarModel.sections(
-            in: context.snapshot,
-            visibility: context.visibility,
-            tmuxSessionVisibility: context.tmuxSessionVisibility,
-            worktreeOrderRawValue: context.worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: context.tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: context.herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: context.zellijSessionOrderRawValue
-        )
+        let sections = context.sidebarSections
+            ?? WorkspaceSidebarModel.sections(
+                in: context.snapshot,
+                visibility: context.visibility,
+                tmuxSessionVisibility: context.tmuxSessionVisibility,
+                worktreeOrderRawValue: context.worktreeOrderRawValue,
+                tmuxSessionOrderRawValue: context.tmuxSessionOrderRawValue,
+                herdrSessionOrderRawValue: context.herdrSessionOrderRawValue,
+                zellijSessionOrderRawValue: context.zellijSessionOrderRawValue
+            )
 
         switch currentTarget {
         case .worktree:

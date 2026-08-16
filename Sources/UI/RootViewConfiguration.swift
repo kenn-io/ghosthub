@@ -7,6 +7,8 @@ import SwiftUI
 /// Snapshot data and display flags consumed by RootView.
 public struct WorkspaceDisplayState {
     public let snapshot: WorkspaceSnapshot
+    public let sidebarSectionCache: WorkspaceSidebarSectionCache?
+    public let sidebarSnapshotRevision: UInt64
     public let workspaceResourceSummary: WorkspaceResourceSummary
     public let activatedWorktreeIDs: Set<UUID>
     public let activeAgentWorktreeIDs: Set<UUID>
@@ -41,6 +43,8 @@ public struct WorkspaceDisplayState {
 
     public init(
         snapshot: WorkspaceSnapshot,
+        sidebarSectionCache: WorkspaceSidebarSectionCache? = nil,
+        sidebarSnapshotRevision: UInt64 = 0,
         workspaceResourceSummary: WorkspaceResourceSummary = .empty,
         activatedWorktreeIDs: Set<UUID> = [],
         activeAgentWorktreeIDs: Set<UUID> = [],
@@ -74,6 +78,8 @@ public struct WorkspaceDisplayState {
         sessionPreviewMode: SessionPreviewMode = .off
     ) {
         self.snapshot = snapshot
+        self.sidebarSectionCache = sidebarSectionCache
+        self.sidebarSnapshotRevision = sidebarSnapshotRevision
         self.workspaceResourceSummary = workspaceResourceSummary
         self.activatedWorktreeIDs = activatedWorktreeIDs
         self.activeAgentWorktreeIDs = activeAgentWorktreeIDs
