@@ -842,7 +842,7 @@ struct WorkspaceZellijTests {
         }
         let close = try #require(store.surface.closeObservers.values.first)
         close(false, 255)
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             model.activeBorrowedZellijRecoveryState?.isReconnecting == true
                 && results.withLock { $0.count } == 1
         }
@@ -850,7 +850,7 @@ struct WorkspaceZellijTests {
 
         model.reconnectActiveZellijSessionNow()
 
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             store.requestedConfigurations.count == 2
                 && model.activeBorrowedZellijConnectionState == .connected
         }
