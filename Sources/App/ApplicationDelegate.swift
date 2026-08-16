@@ -50,8 +50,15 @@ enum WorkspaceWindowResolver {
 }
 
 final class WorkspaceWindowRequests<Window: AnyObject> {
+    struct ConsumedRequest {
+        let parent: Window?
+        let remainingStates: [WorkspaceWindowState]
+        let requiredParentMissing: Bool
+    }
+
     private final class Request {
         weak var parent: Window?
+        let requiresParent: Bool
         let remainingStates: [WorkspaceWindowState]
 
         init(
@@ -59,6 +66,7 @@ final class WorkspaceWindowRequests<Window: AnyObject> {
             remainingStates: [WorkspaceWindowState]
         ) {
             self.parent = parent
+            requiresParent = parent != nil
             self.remainingStates = remainingStates
         }
     }
@@ -79,16 +87,15 @@ final class WorkspaceWindowRequests<Window: AnyObject> {
     func consume(
         for id: UUID?,
         window: Window
-    ) -> (
-        parent: Window?,
-        remainingStates: [WorkspaceWindowState]
-    )? {
+    ) -> ConsumedRequest? {
         guard let id,
               let request = requests.removeValue(forKey: id)
         else { return nil }
-        return (
-            request.parent === window ? nil : request.parent,
-            request.remainingStates
+        let parent = request.parent
+        return ConsumedRequest(
+            parent: parent === window ? nil : parent,
+            remainingStates: request.remainingStates,
+            requiredParentMissing: request.requiresParent && parent == nil
         )
     }
 }
@@ -107,6 +114,12 @@ final class WorkspaceWindowLaunchIntents {
 
     func consume(for windowID: UUID) -> WorkspaceWindowLaunchIntent? {
         intents.removeValue(forKey: windowID)
+    }
+
+    func remove(for windowIDs: [UUID]) {
+        for windowID in windowIDs {
+            intents.removeValue(forKey: windowID)
+        }
     }
 }
 
@@ -268,6 +281,14 @@ final class ApplicationDelegate: NSObject,
                   window: window
               )
         else { return }
+        if request.requiredParentMissing {
+            windowLaunchIntents.remove(
+                for: requestID.map { [$0] } ?? []
+                    + request.remainingStates.map(\.windowID)
+            )
+            window.close()
+            return
+        }
         let groupWindow: NSWindow
         let adoptedParent: NSWindow?
         let preservedFrame: NSRect?

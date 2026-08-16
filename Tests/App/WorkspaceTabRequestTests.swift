@@ -107,6 +107,33 @@ struct WorkspaceTabRequestTests {
             second.windowID,
             third.windowID,
         ])
+        #expect(request?.requiredParentMissing == false)
+    }
+
+    @Test("a request stops when its required tab parent disappears")
+    func requiredParentLossStopsRequest() throws {
+        let state = WorkspaceWindowState.fresh()
+        let remaining = WorkspaceWindowState.fresh()
+        var parent: Window? = Window(isWorkspace: true)
+        let child = Window(isWorkspace: true)
+        let requests = WorkspaceWindowRequests<Window>()
+
+        requests.add(
+            state.windowID,
+            parent: parent,
+            remainingStates: [remaining]
+        )
+        parent = nil
+
+        let request = try #require(requests.consume(
+            for: state.windowID,
+            window: child
+        ))
+        #expect(request.requiredParentMissing)
+        #expect(request.parent == nil)
+        #expect(request.remainingStates.map(\.windowID) == [
+            remaining.windowID,
+        ])
     }
 
     @Test("window launch intents are ephemeral and one shot")
