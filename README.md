@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img alt="macOS 15 or newer" src="https://img.shields.io/badge/macOS-15%2B-111111?style=flat-square&logo=apple">
+  <img alt="macOS 26 or newer" src="https://img.shields.io/badge/macOS-26%2B-111111?style=flat-square&logo=apple">
   <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-native-111111?style=flat-square">
   <a href="LICENSE">
     <img alt="GNU AGPL v3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square">
@@ -99,7 +99,7 @@ we will do our best to fix them.
 Ghosthub requires:
 
 - an Apple Silicon Mac
-- macOS 15 (Sequoia) or newer
+- macOS 26 (Tahoe) or newer
 - tmux 3.2 or newer for tmux sessions
 - Herdr 0.8.0 or newer for Herdr sessions
 - Zellij 0.44 or newer for Zellij sessions
