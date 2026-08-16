@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import sys
 from collections.abc import Sequence
@@ -1620,6 +1621,49 @@ def test_proposed_workflow_audit_rejects_changes_to_the_status_writer(
             proposed,
             trusted_workflow_root=trusted,
         )
+
+
+def test_proposed_workflow_audit_allows_exact_gate_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trusted = tmp_path / "trusted"
+    proposed = tmp_path / "proposed"
+    trusted.mkdir()
+    proposed.mkdir()
+    status = (
+        "permissions: {}\njobs:\n"
+        "  reconcile:\n"
+        "    environment: sandbox-image-promotion-status\n"
+    )
+    repaired_status = status + "    timeout-minutes: 5\n"
+    promotion = (
+        status
+        + "  retag:\n"
+        "    environment: sandbox-image-production\n"
+    )
+    publisher = (
+        "permissions: {}\njobs:\n"
+        "  publish:\n"
+        "    environment: sandbox-image-package-writer\n"
+    )
+    for root in (trusted, proposed):
+        (root / "sandbox-image-promote.yml").write_text(promotion)
+        (root / "sandbox-image-publish.yml").write_text(publisher)
+        (root / "sandbox-image-merge-signal.yml").write_text(
+            MERGE_SIGNAL_WORKFLOW
+        )
+    (trusted / "sandbox-image-promotion-gate.yml").write_text(status)
+    (proposed / "sandbox-image-promotion-gate.yml").write_text(repaired_status)
+    monkeypatch.setattr(
+        github_module,
+        "PROMOTION_GATE_REPAIR_DIGEST",
+        hashlib.sha256(repaired_status.encode()).hexdigest(),
+    )
+
+    github_module.verify_promotion_workflows(
+        proposed,
+        trusted_workflow_root=trusted,
+    )
 
 
 def test_proposed_workflow_audit_rejects_merge_signal_changes(

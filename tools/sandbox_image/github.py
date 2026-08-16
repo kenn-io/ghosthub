@@ -76,6 +76,9 @@ MERGE_SIGNAL_TRANSITION_WORKFLOW_DIGESTS = {
         "152f9794413744fc3cbf17221236e5457e7bf0f9bd0bbdbd4ca3a98473fc8fc0"
     ),
 }
+PROMOTION_GATE_REPAIR_DIGEST = (
+    "09a0d39bf4527d2cfec188dcaee522170af3817ab19de5c35d465730bfc60e56"
+)
 ALLOWED_REUSABLE_WORKFLOWS = {
     "kenn-io/ghosthub/.github/workflows/ci.yml@main",
 }
@@ -770,6 +773,7 @@ def verify_promotion_workflows(
         signal_removed = not (
             proposed_signal.exists() or proposed_signal.is_symlink()
         )
+        gate_repair_matches = False
         if not signal_removed:
             trusted_signal = trusted_workflow_root / MERGE_SIGNAL_WORKFLOW_NAME
             try:
@@ -784,6 +788,14 @@ def verify_promotion_workflows(
                     "trusted merge signal workflow changed in proposed tree"
                 )
             if changed_workflows:
+                gate_repair_matches = (
+                    set(changed_workflows) == {PROMOTION_STATUS_WORKFLOW}
+                    and hashlib.sha256(
+                        changed_workflows[PROMOTION_STATUS_WORKFLOW]
+                    ).hexdigest()
+                    == PROMOTION_GATE_REPAIR_DIGEST
+                )
+            if changed_workflows and not gate_repair_matches:
                 labels = {
                     PROMOTION_STATUS_WORKFLOW: "status",
                     PROMOTION_WORKFLOW: "promotion",
@@ -795,17 +807,17 @@ def verify_promotion_workflows(
                 )
         if changed_workflows or signal_removed:
             expected_names = set(MERGE_SIGNAL_TRANSITION_WORKFLOW_DIGESTS)
-            transition_matches = (
+            signal_transition_matches = (
                 signal_removed and set(changed_workflows) == expected_names
             )
-            if transition_matches:
-                transition_matches = all(
+            if signal_transition_matches:
+                signal_transition_matches = all(
                     hashlib.sha256(changed_workflows[name]).hexdigest() == digest
                     for name, digest in (
                         MERGE_SIGNAL_TRANSITION_WORKFLOW_DIGESTS.items()
                     )
                 )
-            if not transition_matches:
+            if not gate_repair_matches and not signal_transition_matches:
                 raise ValueError(
                     "protected workflows changed outside the approved "
                     "merge signal transition"

@@ -172,14 +172,29 @@ jobs:
         shell: bash
         env:
           AUDIT_TOKEN: ${{ steps.audit-token.outputs.token }}
-          INSTALLATION_ID: ${{ steps.audit-token.outputs.installation-id }}
-          STATUS_APP_SLUG: ${{ steps.audit-token.outputs.app-slug }}
+          STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
         run: |
           set -euo pipefail
 
-          if [[ "$STATUS_APP_SLUG" != ghosthub-sandbox-promotion ||
-                ! "$INSTALLATION_ID" =~ ^[1-9][0-9]*$ ]]; then
-            echo "Promotion-status app identity drifted." >&2
+          installation="$(GH_TOKEN="$AUDIT_TOKEN" gh api /installation)"
+          if ! jq -e --arg app_id "$STATUS_APP_ID" '
+            .app_id == ($app_id | tonumber) and
+            .app_slug == "ghosthub-sandbox-promotion" and
+            .account.login == "kenn-io" and
+            .account.type == "Organization" and
+            .repository_selection == "selected" and
+            .permissions == {
+              actions: "read",
+              administration: "read",
+              attestations: "read",
+              contents: "read",
+              environments: "read",
+              metadata: "read",
+              pull_requests: "read",
+              statuses: "write"
+            }
+          ' <<< "$installation" > /dev/null; then
+            echo "Promotion-status app identity or permissions drifted." >&2
             exit 1
           fi
           repositories="$(GH_TOKEN="$AUDIT_TOKEN" gh api --paginate --slurp \
