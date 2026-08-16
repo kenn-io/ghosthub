@@ -184,6 +184,10 @@ struct WorkspaceSidebarView: View {
     let onRequestKillZellijSession: (WorkspaceZellijSessionSelection) -> Void
     let onRequestRemoveWorktree: (WorktreeSummary) -> Void
     let onRequestRemoveProject: (ProjectSummary) -> Void
+    let onOpenProjectWorktreesAsTabs:
+        (ProjectSummary, [WorktreeSummary]) -> Void
+    let canOpenProjectWorktreesAsTabs:
+        (ProjectSummary, [WorktreeSummary]) -> Bool
     let onNewWorktree: (ProjectSummary) -> Void
     let onImportPullRequest: (ProjectSummary) -> Void
     let onNewTmuxSession: (HostSummary) -> Void
@@ -274,6 +278,14 @@ struct WorkspaceSidebarView: View {
         onRequestRemoveProject: @escaping (
             ProjectSummary
         ) -> Void = { _ in },
+        onOpenProjectWorktreesAsTabs: @escaping (
+            ProjectSummary,
+            [WorktreeSummary]
+        ) -> Void = { _, _ in },
+        canOpenProjectWorktreesAsTabs: @escaping (
+            ProjectSummary,
+            [WorktreeSummary]
+        ) -> Bool = { _, _ in false },
         onNewWorktree: @escaping (ProjectSummary) -> Void = { _ in },
         onImportPullRequest: @escaping (ProjectSummary) -> Void = { _ in },
         onNewTmuxSession: @escaping (HostSummary) -> Void = { _ in },
@@ -320,6 +332,9 @@ struct WorkspaceSidebarView: View {
         self.onRequestKillZellijSession = onRequestKillZellijSession
         self.onRequestRemoveWorktree = onRequestRemoveWorktree
         self.onRequestRemoveProject = onRequestRemoveProject
+        self.onOpenProjectWorktreesAsTabs = onOpenProjectWorktreesAsTabs
+        self.canOpenProjectWorktreesAsTabs =
+            canOpenProjectWorktreesAsTabs
         self.onNewWorktree = onNewWorktree
         self.onImportPullRequest = onImportPullRequest
         self.onNewTmuxSession = onNewTmuxSession
@@ -576,6 +591,21 @@ struct WorkspaceSidebarView: View {
                                     .disabled(
                                         !snapshot.canImportPullRequest(
                                             in: project.project
+                                        )
+                                    )
+                                    Divider()
+                                    Button(
+                                        "Open All Worktrees as Tabs"
+                                    ) {
+                                        onOpenProjectWorktreesAsTabs(
+                                            project.project,
+                                            project.worktrees
+                                        )
+                                    }
+                                    .disabled(
+                                        !canOpenProjectWorktreesAsTabs(
+                                            project.project,
+                                            project.worktrees
                                         )
                                     )
                                     if snapshot.host(

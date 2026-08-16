@@ -427,6 +427,10 @@ public struct InteractionHandlers {
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
     public let unregisterProject:
         ((ProjectSummary, HostSummary) async -> Result<String, HostProbeError>)?
+    public let openProjectWorktreesAsTabs:
+        ((ProjectSummary, [WorktreeSummary]) -> Void)?
+    public let canOpenProjectWorktreesAsTabs:
+        ((ProjectSummary, [WorktreeSummary]) -> Bool)?
     public let createWorktree:
         ((WorktreeCreateRequest) async throws -> Void)?
     public let listBranches:
@@ -512,6 +516,10 @@ public struct InteractionHandlers {
         ((ProjectSummary, HostSummary) async -> Result<
             String, HostProbeError
         >)? = nil,
+        openProjectWorktreesAsTabs:
+        ((ProjectSummary, [WorktreeSummary]) -> Void)? = nil,
+        canOpenProjectWorktreesAsTabs:
+        ((ProjectSummary, [WorktreeSummary]) -> Bool)? = nil,
         createWorktree:
         ((WorktreeCreateRequest) async throws -> Void)? = nil,
         listBranches:
@@ -567,6 +575,8 @@ public struct InteractionHandlers {
         self.cancelSSHAuthentication = cancelSSHAuthentication
         self.registerProject = registerProject
         self.unregisterProject = unregisterProject
+        self.openProjectWorktreesAsTabs = openProjectWorktreesAsTabs
+        self.canOpenProjectWorktreesAsTabs = canOpenProjectWorktreesAsTabs
         self.createWorktree = createWorktree
         self.listBranches = listBranches
         self.listPullRequests = listPullRequests

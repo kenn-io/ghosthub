@@ -31,16 +31,16 @@ struct WorkspaceTabRequestTests {
         requests.add(secondState.windowID, parent: secondParent)
 
         #expect(
-            requests.consumeParent(
+            requests.consume(
                 for: secondState.windowID,
                 window: secondWindow
-            ) === secondParent
+            )?.parent === secondParent
         )
         #expect(
-            requests.consumeParent(
+            requests.consume(
                 for: firstState.windowID,
                 window: firstWindow
-            ) === firstParent
+            )?.parent === firstParent
         )
     }
 
@@ -57,30 +57,96 @@ struct WorkspaceTabRequestTests {
         requests.add(tabState.windowID, parent: parent)
         requests.add(independentState.windowID, parent: nil)
 
-        #expect(
-            requests.consumeParent(
-                for: independentState.windowID,
-                window: independentWindow
-            ) == nil
+        let independent = requests.consume(
+            for: independentState.windowID,
+            window: independentWindow
         )
+        #expect(independent != nil)
+        #expect(independent?.parent == nil)
         #expect(
-            requests.consumeParent(
+            requests.consume(
                 for: restoredState.windowID,
                 window: independentWindow
             ) == nil
         )
         #expect(
-            requests.consumeParent(
+            requests.consume(
                 for: tabState.windowID,
                 window: tabWindow
-            ) === parent
+            )?.parent === parent
         )
         #expect(
-            requests.consumeParent(
+            requests.consume(
                 for: tabState.windowID,
                 window: tabWindow
             ) == nil
         )
+    }
+
+    @Test("a group request preserves the remaining tab order")
+    func groupRequestPreservesRemainingOrder() {
+        let first = WorkspaceWindowState.fresh()
+        let second = WorkspaceWindowState.fresh()
+        let third = WorkspaceWindowState.fresh()
+        let window = Window(isWorkspace: true)
+        let requests = WorkspaceWindowRequests<Window>()
+
+        requests.add(
+            first.windowID,
+            parent: nil,
+            remainingStates: [second, third]
+        )
+
+        let request = requests.consume(
+            for: first.windowID,
+            window: window
+        )
+
+        #expect(request?.parent == nil)
+        #expect(request?.remainingStates.map(\.windowID) == [
+            second.windowID,
+            third.windowID,
+        ])
+        #expect(request?.requiredParentMissing == false)
+    }
+
+    @Test("a request stops when its required tab parent disappears")
+    func requiredParentLossStopsRequest() throws {
+        let state = WorkspaceWindowState.fresh()
+        let remaining = WorkspaceWindowState.fresh()
+        var parent: Window? = Window(isWorkspace: true)
+        let child = Window(isWorkspace: true)
+        let requests = WorkspaceWindowRequests<Window>()
+
+        requests.add(
+            state.windowID,
+            parent: parent,
+            remainingStates: [remaining]
+        )
+        parent = nil
+
+        let request = try #require(requests.consume(
+            for: state.windowID,
+            window: child
+        ))
+        #expect(request.requiredParentMissing)
+        #expect(request.parent == nil)
+        #expect(request.remainingStates.map(\.windowID) == [
+            remaining.windowID,
+        ])
+    }
+
+    @Test("window launch intents are ephemeral and one shot")
+    func windowLaunchIntentsAreEphemeral() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let intents = WorkspaceWindowLaunchIntents()
+
+        intents.add(.openWorktree, for: [firstID, secondID])
+
+        #expect(intents.consume(for: firstID) == .openWorktree)
+        #expect(intents.consume(for: firstID) == nil)
+        #expect(intents.consume(for: secondID) == .openWorktree)
     }
 
     @Test("a sheet resolves to its workspace parent")

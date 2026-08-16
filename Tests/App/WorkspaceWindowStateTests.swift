@@ -176,6 +176,110 @@ private struct RestorationFixture {
 
 @Suite("Workspace window restoration state")
 struct WorkspaceWindowStateTests {
+    @Test("project tab plans preserve visible worktree order and endpoints")
+    func projectTabPlanPreservesWorktreeOrder() throws {
+        let fixture = RestorationFixture.local(sessionName: "main")
+        let host = try #require(fixture.snapshot.hosts.first)
+        let project = try #require(fixture.snapshot.projects.first)
+        var first = try #require(fixture.snapshot.worktrees.first)
+        first.tmuxSocketName = "protected-main"
+        var second = first
+        second = WorktreeSummary(
+            id: UUID(),
+            hostID: host.id,
+            projectID: project.id,
+            scopedKey: "worktree:feature",
+            name: "feature",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature",
+            generation: "fedcba9876543210fedcba9876543210",
+            tmuxSessionName: "feature",
+            sessionBackend: .localTmux
+        )
+        let states = try #require(ProjectWorktreeWindowPlan.states(
+            project: project,
+            host: host,
+            worktrees: [second, first]
+        ))
+
+        #expect(states.map(\.tmux?.sessionName) == ["feature", "main"])
+        #expect(states.last?.tmux?.socketName == "protected-main")
+    }
+
+    @Test("project tab plans reject the entire invalid worktree list")
+    func projectTabPlanRejectsPartialLaunches() throws {
+        let fixture = RestorationFixture.local(sessionName: "main")
+        let host = try #require(fixture.snapshot.hosts.first)
+        let project = try #require(fixture.snapshot.projects.first)
+        let valid = try #require(fixture.snapshot.worktrees.first)
+        var stale = valid
+        stale.isStale = true
+
+        #expect(!ProjectWorktreeWindowPlan.isAvailable(
+            project: project,
+            host: host,
+            worktrees: [valid, stale]
+        ))
+        #expect(ProjectWorktreeWindowPlan.states(
+            project: project,
+            host: host,
+            worktrees: [valid, stale]
+        ) == nil)
+    }
+
+    @Test("project tab launch intent establishes absent worktree sessions")
+    func projectTabLaunchIntentEstablishesAbsentSession() throws {
+        let fixture = RestorationFixture.local(sessionName: "main")
+        var snapshot = fixture.snapshot
+        snapshot.hosts[0].tmuxSessions = []
+        let host = try #require(snapshot.hosts.first)
+        let project = try #require(snapshot.projects.first)
+        let worktree = try #require(snapshot.worktrees.first)
+        let states = try #require(ProjectWorktreeWindowPlan.states(
+            project: project,
+            host: host,
+            worktrees: [worktree]
+        ))
+        let state = try #require(states.first)
+
+        #expect(
+            WorkspaceWindowRestorationResolver.resolve(
+                state,
+                in: snapshot
+            ) == .pending(selection: fixture.selection)
+        )
+
+        #expect(
+            WorkspaceWindowRestorationResolver.resolve(
+                state,
+                in: snapshot,
+                launchIntent: .openWorktree
+            ) == .ready(
+                selection: fixture.selection,
+                presentation: .tmux(fixture.tmuxSelection)
+            )
+        )
+
+        let encoded = try JSONEncoder().encode(state)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded)
+                as? [String: Any]
+        )
+        #expect(object["launchIntent"] == nil)
+        object["launchIntent"] = "openWorktree"
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let restored = try JSONDecoder().decode(
+            WorkspaceWindowState.self,
+            from: legacyData
+        )
+        #expect(
+            WorkspaceWindowRestorationResolver.resolve(
+                restored,
+                in: snapshot
+            ) == .pending(selection: fixture.selection)
+        )
+    }
+
     @Test("older window descriptors decode without a directory path")
     func decodesOlderDescriptor() throws {
         let fixture = RestorationFixture.local(sessionName: "editor")

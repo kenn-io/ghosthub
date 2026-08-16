@@ -535,6 +535,8 @@ final class WorkspaceSceneModel: ObservableObject {
             || selectedWorktreeRemovalIsPending
     }
     private var pendingRestoration: WorkspaceWindowState?
+    private var pendingRestorationLaunchIntent:
+        WorkspaceWindowLaunchIntent?
     private var protectedRestorationProbeTask: Task<Void, Never>?
     private var protectedRestorationProbeID: UUID?
     private var protectedRestorationRefreshPending = false
@@ -1715,9 +1717,17 @@ final class WorkspaceSceneModel: ObservableObject {
         activityControllerBacking = nil
     }
 
-    func beginRestoration(_ state: WorkspaceWindowState) {
+    func beginRestoration(
+        _ state: WorkspaceWindowState,
+        launchIntent: WorkspaceWindowLaunchIntent? = nil
+    ) {
         guard state.navigation != nil || state.tmux != nil
             || state.herdr != nil || state.zellij != nil else { return }
+        if let launchIntent {
+            pendingRestorationLaunchIntent = launchIntent
+        } else if pendingRestoration?.windowID != state.windowID {
+            pendingRestorationLaunchIntent = nil
+        }
         zellijRestorationRoute = state.zellij.flatMap { descriptor in
             guard let hostSummary = snapshot.hosts.first(where: {
                 $0.configKey == descriptor.hostKey
@@ -1744,6 +1754,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func cancelPendingRestoration() {
         pendingRestoration = nil
+        pendingRestorationLaunchIntent = nil
         isWorkspaceRestorationPending = false
         suppressesAutomaticWorktreeSessionOpen = false
         protectedRestorationProbeTask?.cancel()
@@ -1842,6 +1853,7 @@ final class WorkspaceSceneModel: ObservableObject {
         switch WorkspaceWindowRestorationResolver.resolve(
             pendingRestoration,
             in: snapshot,
+            launchIntent: pendingRestorationLaunchIntent,
             herdrFreshHostIDs: herdrFreshHostIDs,
             zellijFreshHostIDs: zellijFreshHostIDs,
             pendingHerdrSessions: pendingHerdrSessionSelections
@@ -1859,7 +1871,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 _ = presentTmuxSession(
                     tmuxSelection,
                     launchMode: .attach,
-                    intent: .restoreOnly
+                    intent: pendingRestorationLaunchIntent == .openWorktree
+                        ? .userInitiated
+                        : .restoreOnly
                 )
                 suppressesAutomaticWorktreeSessionOpen = false
             case let .herdr(herdrSelection):
@@ -1880,6 +1894,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 applyRestoredSelection(resolvedSelection)
             }
             self.pendingRestoration = nil
+            pendingRestorationLaunchIntent = nil
             isWorkspaceRestorationPending = false
         case let .needsProtectedProbe(resolvedSelection, tmuxSelection):
             beginProtectedRestorationProbe(

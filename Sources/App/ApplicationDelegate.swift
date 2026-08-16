@@ -50,30 +50,99 @@ enum WorkspaceWindowResolver {
 }
 
 final class WorkspaceWindowRequests<Window: AnyObject> {
+    struct ConsumedRequest {
+        let parent: Window?
+        let remainingStates: [WorkspaceWindowState]
+        let requiredParentMissing: Bool
+    }
+
+    struct Cancellation {
+        let requestIDs: [UUID]
+        let windowIDs: [UUID]
+    }
+
     private final class Request {
         weak var parent: Window?
+        let requiresParent: Bool
+        let remainingStates: [WorkspaceWindowState]
 
-        init(parent: Window?) {
+        init(
+            parent: Window?,
+            remainingStates: [WorkspaceWindowState]
+        ) {
             self.parent = parent
+            requiresParent = parent != nil
+            self.remainingStates = remainingStates
         }
     }
 
     private var requests: [UUID: Request] = [:]
 
-    func add(_ id: UUID, parent: Window?) {
-        requests[id] = Request(parent: parent)
+    func add(
+        _ id: UUID,
+        parent: Window?,
+        remainingStates: [WorkspaceWindowState] = []
+    ) {
+        requests[id] = Request(
+            parent: parent,
+            remainingStates: remainingStates
+        )
     }
 
-    func consumeParent(
+    func consume(
         for id: UUID?,
         window: Window
-    ) -> Window? {
+    ) -> ConsumedRequest? {
         guard let id,
-              let request = requests.removeValue(forKey: id),
-              let parent = request.parent,
-              parent !== window
+              let request = requests.removeValue(forKey: id)
         else { return nil }
-        return parent
+        let parent = request.parent
+        return ConsumedRequest(
+            parent: parent === window ? nil : parent,
+            remainingStates: request.remainingStates,
+            requiredParentMissing: request.requiresParent && parent == nil
+        )
+    }
+
+    func cancel(requiring parent: Window) -> Cancellation {
+        let requestIDs = requests.compactMap { id, request in
+            request.requiresParent && request.parent === parent ? id : nil
+        }
+        var windowIDs: [UUID] = []
+        for id in requestIDs {
+            guard let request = requests.removeValue(forKey: id) else {
+                continue
+            }
+            windowIDs.append(id)
+            windowIDs.append(contentsOf: request.remainingStates.map(\.windowID))
+        }
+        return Cancellation(
+            requestIDs: requestIDs,
+            windowIDs: windowIDs
+        )
+    }
+}
+
+final class WorkspaceWindowLaunchIntents {
+    private var intents: [UUID: WorkspaceWindowLaunchIntent] = [:]
+
+    func add(
+        _ intent: WorkspaceWindowLaunchIntent,
+        for windowIDs: [UUID]
+    ) {
+        for windowID in windowIDs {
+            intents[windowID] = intent
+        }
+    }
+
+    func consume(for windowID: UUID) -> WorkspaceWindowLaunchIntent? {
+        intents.removeValue(forKey: windowID)
+    }
+
+    func remove(for windowIDs: [UUID]) {
+        for windowID in windowIDs {
+            intents.removeValue(forKey: windowID)
+        }
     }
 }
 
@@ -101,6 +170,9 @@ final class ApplicationDelegate: NSObject,
     var openWorkspaceWindow: (WorkspaceWindowState) -> Void = { _ in }
 
     private let windowRequests = WorkspaceWindowRequests<NSWindow>()
+    private let windowLaunchIntents = WorkspaceWindowLaunchIntents()
+    private let closedWorkspaceWindows = NSHashTable<NSWindow>.weakObjects()
+    private var cancelledWorkspaceWindowRequestIDs: Set<UUID> = []
     private var windowRestorationFinishedHandler: (Int) -> Void = { _ in }
     private var restoredWorkspaceWindowCount: Int?
     private(set) var terminationConfirmed = false
@@ -117,12 +189,23 @@ final class ApplicationDelegate: NSObject,
             name: NSApplication.didFinishRestoringWindowsNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(workspaceWindowWillClose(_:)),
+            name: NSWindow.willCloseNotification,
+            object: nil
+        )
     }
 
     deinit {
         NotificationCenter.default.removeObserver(
             self,
             name: NSApplication.didFinishRestoringWindowsNotification,
+            object: nil
+        )
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSWindow.willCloseNotification,
             object: nil
         )
     }
@@ -145,6 +228,18 @@ final class ApplicationDelegate: NSObject,
         )
         restoredWorkspaceWindowCount = count
         windowRestorationFinishedHandler(count)
+    }
+
+    @objc func workspaceWindowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              WorkspaceWindowIdentity.matches(window)
+        else { return }
+        closedWorkspaceWindows.add(window)
+        let cancellation = windowRequests.cancel(requiring: window)
+        cancelledWorkspaceWindowRequestIDs.formUnion(
+            cancellation.requestIDs
+        )
+        windowLaunchIntents.remove(for: cancellation.windowIDs)
     }
 
     func applicationDidFinishLaunching(
@@ -201,31 +296,114 @@ final class ApplicationDelegate: NSObject,
         openWorkspaceWindow(requestWorkspaceWindow(parent: parent))
     }
 
+    func requestWorkspaceTabGroup(
+        _ states: [WorkspaceWindowState],
+        launchIntent: WorkspaceWindowLaunchIntent
+    ) {
+        guard let first = states.first else { return }
+        windowLaunchIntents.add(
+            launchIntent,
+            for: states.map(\.windowID)
+        )
+        windowRequests.add(
+            first.windowID,
+            parent: nil,
+            remainingStates: Array(states.dropFirst())
+        )
+        openWorkspaceWindow(first)
+    }
+
+    func consumeWorkspaceWindowLaunchIntent(
+        for windowID: UUID
+    ) -> WorkspaceWindowLaunchIntent? {
+        windowLaunchIntents.consume(for: windowID)
+    }
+
     func adoptWorkspaceWindowAsTabIfRequested(
         _ window: NSWindow,
         requestID: UUID?
     ) {
-        guard WorkspaceWindowIdentity.matches(window),
-              let parent = windowRequests.consumeParent(
-                  for: requestID,
-                  window: window
-              )
-        else { return }
-        guard !WorkspaceWindowIdentity.group(containing: parent)
-            .contains(where: { $0 === window })
-        else { return }
-        let parentFrame = parent.frame
-        parent.addTabbedWindow(window, ordered: .above)
-        window.makeKeyAndOrderFront(nil)
-        NativeTabCommands.installBracketShortcuts()
-        DispatchQueue.main.async { [weak parent, weak window] in
-            guard let parent,
-                  let window,
-                  let group = parent.tabGroup,
-                  group === window.tabGroup
-            else { return }
-            window.setFrame(parentFrame, display: true)
+        guard WorkspaceWindowIdentity.matches(window) else { return }
+        if let requestID,
+           cancelledWorkspaceWindowRequestIDs.remove(requestID) != nil {
+            windowLaunchIntents.remove(for: [requestID])
+            window.close()
+            return
         }
+        guard let request = windowRequests.consume(
+            for: requestID,
+            window: window
+        )
+        else { return }
+        if request.requiredParentMissing
+            || request.parent.map(closedWorkspaceWindows.contains) == true {
+            windowLaunchIntents.remove(
+                for: requestID.map { [$0] } ?? []
+                    + request.remainingStates.map(\.windowID)
+            )
+            window.close()
+            return
+        }
+        let groupWindow: NSWindow
+        let adoptedParent: NSWindow?
+        let preservedFrame: NSRect?
+        if let parent = request.parent {
+            guard !WorkspaceWindowIdentity.group(containing: parent)
+                .contains(where: { $0 === window })
+            else { return }
+            let parentFrame = parent.frame
+            if let group = parent.tabGroup {
+                group.insertWindow(window, at: group.windows.count)
+            } else {
+                parent.addTabbedWindow(window, ordered: .above)
+            }
+            window.makeKeyAndOrderFront(nil)
+            NativeTabCommands.installBracketShortcuts()
+            window.setFrame(parentFrame, display: true)
+            groupWindow = parent
+            adoptedParent = parent
+            preservedFrame = parentFrame
+        } else {
+            groupWindow = window
+            adoptedParent = nil
+            preservedFrame = nil
+        }
+        DispatchQueue.main.async {
+            [weak self, weak groupWindow, weak window, weak adoptedParent] in
+            guard let self,
+                  let groupWindow,
+                  let window
+            else { return }
+            if let adoptedParent {
+                guard let group = adoptedParent.tabGroup,
+                      group === window.tabGroup
+                else { return }
+                if let preservedFrame {
+                    window.setFrame(preservedFrame, display: true)
+                }
+            }
+            openNextWorkspaceTab(
+                request.remainingStates,
+                parent: groupWindow
+            )
+        }
+    }
+
+    private func openNextWorkspaceTab(
+        _ states: [WorkspaceWindowState],
+        parent: NSWindow
+    ) {
+        guard let next = states.first else { return }
+        guard !closedWorkspaceWindows.contains(parent) else {
+            windowLaunchIntents.remove(for: states.map(\.windowID))
+            return
+        }
+        windowRequests.add(
+            next.windowID,
+            parent: parent,
+            remainingStates: Array(states.dropFirst())
+        )
+        openWorkspaceWindow(next)
     }
 
     private func requestWorkspaceWindow(

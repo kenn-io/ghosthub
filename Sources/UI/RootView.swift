@@ -704,6 +704,15 @@ public struct RootView: View {
             onRequestKillZellijSession: requestZellijSessionKill,
             onRequestRemoveWorktree: requestWorktreeRemoval,
             onRequestRemoveProject: requestProjectRemoval,
+            onOpenProjectWorktreesAsTabs: { project, worktrees in
+                handlers.openProjectWorktreesAsTabs?(project, worktrees)
+            },
+            canOpenProjectWorktreesAsTabs: { project, worktrees in
+                handlers.canOpenProjectWorktreesAsTabs?(
+                    project,
+                    worktrees
+                ) ?? false
+            },
             onNewWorktree: openNewWorktree,
             onImportPullRequest: openImportPullRequest,
             onNewTmuxSession: { host in
