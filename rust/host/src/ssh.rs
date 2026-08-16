@@ -867,6 +867,7 @@ impl KwtSshLeaseClient {
         mut prompt: impl FnMut(&SshLeasePrompt) -> Result<String, SshError>,
         mut status: impl FnMut(&SshLeaseEvent),
     ) -> Result<SshLease, SshError> {
+        require_active_acquisition(cancellation)?;
         let mut command = Command::new(self.command.program());
         command_process::prepare(&mut command);
         let args = self.command.with_arguments(lease_arguments(route));
@@ -877,12 +878,14 @@ impl KwtSshLeaseClient {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(classify_io_error)?;
-        let containment = match CommandContainment::attach(&mut child) {
+        let containment = match while_acquisition_active(cancellation, || {
+            CommandContainment::attach(&mut child).map_err(classify_io_error)
+        }) {
             Ok(containment) => containment,
             Err(error) => {
                 let _ignored = child.kill();
                 let _ignored = child.wait();
-                return Err(classify_io_error(error));
+                return Err(error);
             }
         };
         let stdin = child.stdin.take().ok_or_else(|| {
@@ -1021,6 +1024,14 @@ fn require_active_acquisition(cancellation: &CancellationToken) -> Result<(), Ss
     } else {
         Ok(())
     }
+}
+
+fn while_acquisition_active<T>(
+    cancellation: &CancellationToken,
+    operation: impl FnOnce() -> Result<T, SshError>,
+) -> Result<T, SshError> {
+    require_active_acquisition(cancellation)?;
+    operation()
 }
 
 fn lease_arguments(route: &SshRouteSnapshot) -> Vec<OsString> {
@@ -2007,6 +2018,44 @@ mod tests {
             .expect_err("cancelled completion must not become a lease");
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
+    }
+
+    #[test]
+    fn pre_cancelled_acquisition_never_attempts_to_spawn_the_controller() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let missing = if cfg!(windows) {
+            r"C:\definitely-missing\ghosthub-kwt.exe"
+        } else {
+            "/definitely-missing/ghosthub-kwt"
+        };
+
+        let error = KwtSshLeaseClient::with_command(CommandPrefix::native(missing))
+            .acquire(
+                &route(),
+                &cancellation,
+                |_| Err(SshError::prompt_cancelled()),
+                |_| {},
+            )
+            .expect_err("pre-cancelled acquisition must not spawn KWT");
+
+        assert_eq!(error.to_string(), "SSH lease acquisition cancelled");
+    }
+
+    #[test]
+    fn cancellation_before_containment_skips_attachment() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let mut attached = false;
+
+        let error = while_acquisition_active(&cancellation, || {
+            attached = true;
+            Ok(())
+        })
+        .expect_err("cancelled child must not be attached or resumed");
+
+        assert_eq!(error.to_string(), "SSH lease acquisition cancelled");
+        assert!(!attached);
     }
 
     #[test]
