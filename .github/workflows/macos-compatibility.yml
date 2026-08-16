@@ -55,6 +55,10 @@ jobs:
           DEVELOPER_DIR="$DEVELOPER_DIR" xcodebuild -version
           DEVELOPER_DIR="$DEVELOPER_DIR" xcrun swift --version
 
+      - name: Install Xcode Metal toolchain
+        shell: bash
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -101,7 +105,7 @@ jobs:
           "$LIBGHOSTTY_ZIG" version
           go version
           uv --version
-          xcrun -sdk macosx --find metal
+          xcrun -sdk macosx metal --version
 
       - name: Build release bundle on Sequoia
         run: make release-app
