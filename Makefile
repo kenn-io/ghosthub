@@ -389,8 +389,14 @@ debug-app: ensure-kwt ensure-kwt-variants bootstrap-libghostty
 		--kwt-version "$(KWT_VERSION)" \
 		--kwt-source-revision "$(KWT_SOURCE_REVISION)" \
 		--remote-kwt-source-revision "$(KWT_REF)" >/dev/null; \
+	umask 077; \
+	debug_entitlements="$$(mktemp "$${TMPDIR:-/tmp}/ghosthub-debug-entitlements.XXXXXX")"; \
+	trap 'rm -f -- "$$debug_entitlements"' EXIT; \
+	cp -f "$(APP_ENTITLEMENTS_PATH)" "$$debug_entitlements"; \
+	plutil -insert 'com\.apple\.security\.cs\.disable-library-validation' \
+		-bool true "$$debug_entitlements"; \
 	codesign --force --deep --options runtime \
-		--entitlements "$(APP_ENTITLEMENTS_PATH)" \
+		--entitlements "$$debug_entitlements" \
 		--sign - "$(DEBUG_APP_PATH)" >/dev/null; \
 	codesign --verify --deep --strict "$(DEBUG_APP_PATH)"; \
 	printf 'Built debug app bundle: %s\n' "$(DEBUG_APP_PATH)"

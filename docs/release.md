@@ -683,5 +683,12 @@ resources; the Linux ELF variants do not. Sparkle remains under
 unsealed content that strict code-signing rejects. Ghosthub's AGPL license and
 every third-party notice in `LICENSES` are staged during the same assembly step.
 
+`make debug-app` keeps the hardened runtime but adds the library-validation
+exception only to its temporary ad-hoc signature. Ad-hoc signatures have no
+Team ID, so macOS otherwise rejects the bundled Sparkle framework before the
+debug executable reaches `main`. Developer ID release and nightly signatures
+do not receive this exception: their app and nested framework signatures share
+the release Team ID and retain library validation.
+
 Update this document whenever release packaging, signing, notarization, the
 embedded kwt policy, or `.github/workflows/release.yml` changes.
