@@ -163,6 +163,71 @@ struct SidebarToggleStabilityTests {
         #expect(!second.isCommandPalettePresented)
     }
 
+    @Test("close command detaches only its targeted window")
+    func closeCommandDetachesOnlyTargetedWindow() {
+        let firstTarget = SidebarToggleTarget()
+        let secondTarget = SidebarToggleTarget()
+        let first = StabilityTestEnvironment(
+            sidebarToggleTarget: firstTarget
+        )
+        let second = StabilityTestEnvironment(
+            sidebarToggleTarget: secondTarget
+        )
+        defer {
+            first.close()
+            second.close()
+        }
+        first.workspaceWindow?.makeKeyAndOrderFront(nil)
+
+        #expect(first.workspaceWindow?.isKeyWindow == true)
+
+        NotificationCenter.default.post(
+            name: .ghosthubCloseTab,
+            object: firstTarget
+        )
+        #expect(first.closedSessionNames == ["alpha"])
+
+        first.settle()
+        second.settle()
+
+        #expect(second.closedSessionNames.isEmpty)
+    }
+
+    @Test("close command ignores a targeted workspace behind a sheet")
+    func closeCommandIgnoresTargetedWorkspaceBehindSheet() {
+        let target = SidebarToggleTarget()
+        let env = StabilityTestEnvironment(
+            sidebarToggleTarget: target
+        )
+        defer { env.close() }
+        guard let window = env.workspaceWindow else {
+            Issue.record("workspace window should exist")
+            return
+        }
+        let sheet = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.beginSheet(sheet)
+        env.settle()
+        defer {
+            window.endSheet(sheet)
+            sheet.orderOut(nil)
+        }
+
+        #expect(window.attachedSheet === sheet)
+
+        NotificationCenter.default.post(
+            name: .ghosthubCloseTab,
+            object: target
+        )
+        env.settle()
+
+        #expect(env.closedSessionNames.isEmpty)
+    }
+
     @Test("right side panel toggle preserves main column view identity")
     func rightSidePanelTogglePreservesMainColumn() {
         let env = SidePanelStabilityTestEnvironment()
@@ -195,6 +260,14 @@ struct SidebarToggleStabilityTests {
 // MARK: - Test Helpers
 
 private final class SidebarToggleTarget {}
+
+private final class StabilityTestWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
+}
+
+private final class WeakWindow {
+    weak var window: NSWindow?
+}
 
 @MainActor
 private final class StabilityTestEnvironment {
@@ -243,6 +316,14 @@ private final class StabilityTestEnvironment {
 
     var terminalResizeDeferrals: [Bool] {
         model.terminalResizeDeferrals
+    }
+
+    var closedSessionNames: [String] {
+        model.closedSessionNames
+    }
+
+    var workspaceWindow: NSWindow? {
+        window
     }
 
     init(
@@ -307,16 +388,20 @@ private final class StabilityTestEnvironment {
             ),
             userDefaults: defaults
         )
+        let windowReference = WeakWindow()
         hostingView = NSHostingView(
             rootView: StabilityTestHarness(
                 model: model,
                 settingsStore: settingsStore,
                 defaults: defaults,
-                sidebarToggleTarget: sidebarToggleTarget
+                sidebarToggleTarget: sidebarToggleTarget,
+                workspaceWindowProvider: {
+                    windowReference.window
+                }
             )
         )
         if presentsWindow {
-            let window = NSWindow(
+            let window = StabilityTestWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
                 styleMask: [.titled],
                 backing: .buffered,
@@ -325,6 +410,7 @@ private final class StabilityTestEnvironment {
             window.contentView = hostingView
             window.makeKeyAndOrderFront(nil)
             self.window = window
+            windowReference.window = window
         } else {
             window = nil
             hostingView.frame = NSRect(
@@ -389,6 +475,7 @@ private final class StabilityTestModel: ObservableObject {
     @Published var columnVisibility: NavigationSplitViewVisibility = .all
     @Published var isCommandPalettePresented = false
     private(set) var terminalResizeDeferrals: [Bool] = []
+    private(set) var closedSessionNames: [String] = []
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -408,6 +495,13 @@ private final class StabilityTestModel: ObservableObject {
         terminalResizeDeferrals.removeAll()
     }
 
+    func closeSession(_ session: WorkspaceTmuxSessionSelection) {
+        closedSessionNames.append(session.name)
+        if activeSession == session {
+            activeSession = nil
+        }
+    }
+
 }
 
 private struct StabilityTestHarness: View {
@@ -415,6 +509,7 @@ private struct StabilityTestHarness: View {
     let settingsStore: SettingsStore
     let defaults: UserDefaults
     let sidebarToggleTarget: AnyObject
+    let workspaceWindowProvider: () -> NSWindow?
 
     var body: some View {
         RootView(
@@ -436,7 +531,11 @@ private struct StabilityTestHarness: View {
                     AnyView(Color.clear)
                 }
             ),
+            handlers: InteractionHandlers(
+                closeTmuxSession: model.closeSession
+            ),
             sidebarToggleTarget: sidebarToggleTarget,
+            workspaceWindowProvider: workspaceWindowProvider,
             settingsStore: settingsStore,
             selection: $model.selection,
             columnVisibility: $model.columnVisibility,

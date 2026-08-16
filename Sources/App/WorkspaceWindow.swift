@@ -1062,6 +1062,9 @@ struct WorkspaceWindow: View {
             sidebarWidthChanged: { width in
                 titlebarSidebarWidth = width
             },
+            workspaceWindowProvider: { [weak sceneModel] in
+                sceneModel?.workspaceWindow
+            },
             settingsStore: settingsStore,
             selection: Binding(
                 get: { sceneModel.selection },

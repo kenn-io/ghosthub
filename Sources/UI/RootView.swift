@@ -10,6 +10,7 @@ public struct RootView: View {
     private let handlers: InteractionHandlers
     private let sidebarToggleTarget: AnyObject
     private let sidebarWidthChanged: (CGFloat) -> Void
+    private let workspaceWindowProvider: () -> NSWindow?
     @Binding private var selection: WorkspaceSelection
     @Binding private var isSidePanelVisible: Bool
     @Binding private var columnVisibility: NavigationSplitViewVisibility
@@ -70,6 +71,7 @@ public struct RootView: View {
         handlers: InteractionHandlers = InteractionHandlers(),
         sidebarToggleTarget: AnyObject = NSObject(),
         sidebarWidthChanged: @escaping (CGFloat) -> Void = { _ in },
+        workspaceWindowProvider: @escaping () -> NSWindow? = { nil },
         settingsStore: SettingsStore = .shared,
         selection: Binding<WorkspaceSelection>,
         isSidePanelVisible: Binding<Bool> = .constant(false),
@@ -83,6 +85,7 @@ public struct RootView: View {
         self.handlers = handlers
         self.sidebarToggleTarget = sidebarToggleTarget
         self.sidebarWidthChanged = sidebarWidthChanged
+        self.workspaceWindowProvider = workspaceWindowProvider
         self.settingsStore = settingsStore
         _selection = selection
         _isSidePanelVisible = isSidePanelVisible
@@ -393,9 +396,16 @@ public struct RootView: View {
             ) { _ in handleNewWorktreeNotification() }
             .onReceive(
                 NotificationCenter.default.publisher(
-                    for: .ghosthubCloseTab
+                    for: .ghosthubCloseTab,
+                    object: sidebarToggleTarget
                 )
-            ) { _ in handleCloseTabNotification() }
+            ) { _ in
+                guard let window = workspaceWindowProvider(),
+                      window.isKeyWindow,
+                      window.attachedSheet == nil
+                else { return }
+                handleCloseTab()
+            }
             .onReceive(
                 NotificationCenter.default.publisher(
                     for: .ghosthubCommandPalette
@@ -2260,11 +2270,6 @@ public struct RootView: View {
     }
 
     // MARK: - Notification handlers
-
-    private func handleCloseTabNotification() {
-        guard controlActiveState == .key else { return }
-        handleCloseTab()
-    }
 
     private func handleNewWorktreeNotification() {
         guard controlActiveState == .key,
