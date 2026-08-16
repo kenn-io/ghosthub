@@ -172,7 +172,8 @@ pub struct RemoteTmuxSnapshot {
     endpoint: String,
     route_identity: String,
     lease_generation: u64,
-    tmux_binary: String,
+    tmux_binary: Option<String>,
+    tmux_diagnostic: Option<HostError>,
     sessions: Vec<DiscoveredSession>,
     herdr: HerdrInventory,
     zellij: ZellijInventory,
@@ -182,7 +183,8 @@ pub struct RemoteTmuxSnapshot {
 /// Multiplexer inventory captured through one reviewed SSH lease.
 #[derive(Clone, Debug)]
 pub struct RemoteSessionInventory {
-    tmux_binary: String,
+    tmux_binary: Option<String>,
+    tmux_diagnostic: Option<HostError>,
     sessions: Vec<DiscoveredSession>,
     herdr: HerdrInventory,
     zellij: ZellijInventory,
@@ -190,8 +192,13 @@ pub struct RemoteSessionInventory {
 
 impl RemoteSessionInventory {
     #[must_use]
-    pub fn tmux_binary(&self) -> &str {
-        &self.tmux_binary
+    pub fn tmux_binary(&self) -> Option<&str> {
+        self.tmux_binary.as_deref()
+    }
+
+    #[must_use]
+    pub const fn tmux_diagnostic(&self) -> Option<&HostError> {
+        self.tmux_diagnostic.as_ref()
     }
 
     #[must_use]
@@ -227,8 +234,13 @@ impl RemoteTmuxSnapshot {
     }
 
     #[must_use]
-    pub fn tmux_binary(&self) -> &str {
-        &self.tmux_binary
+    pub fn tmux_binary(&self) -> Option<&str> {
+        self.tmux_binary.as_deref()
+    }
+
+    #[must_use]
+    pub const fn tmux_diagnostic(&self) -> Option<&HostError> {
+        self.tmux_diagnostic.as_ref()
     }
 
     #[must_use]
@@ -325,6 +337,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             route_identity: route.route_identity().to_owned(),
             lease_generation: lease.result().generation(),
             tmux_binary: inventory.tmux_binary,
+            tmux_diagnostic: inventory.tmux_diagnostic,
             sessions: inventory.sessions,
             herdr: inventory.herdr,
             zellij: inventory.zellij,
@@ -342,10 +355,16 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         lease: &SshLease,
         cancellation: &CancellationToken,
     ) -> Result<RemoteSessionInventory, RemoteTmuxError> {
-        let tmux_binary = self.resolve_tmux_binary(lease, cancellation)?;
-        let sessions = self.discover_sessions(lease, &tmux_binary, cancellation)?;
+        let (tmux_binary, sessions, tmux_diagnostic) = scope_tmux_inventory(
+            self.resolve_tmux_binary(lease, cancellation)
+                .and_then(|binary| {
+                    self.discover_sessions(lease, &binary, cancellation)
+                        .map(|sessions| (binary, sessions))
+                }),
+        )?;
         Ok(RemoteSessionInventory {
             tmux_binary,
+            tmux_diagnostic,
             sessions,
             herdr: self.discover_herdr(lease, cancellation),
             zellij: self.discover_zellij(lease, cancellation),
@@ -528,7 +547,12 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         let attach = format!("attach-session -E -t ={}", identity.session_id());
         let command = tmux_command(
             &self.config,
-            snapshot.tmux_binary(),
+            snapshot.tmux_binary().ok_or_else(|| {
+                RemoteTmuxError::new(
+                    DiagnosticKind::ExecutableNotFound,
+                    "tmux is unavailable on the remote host",
+                )
+            })?,
             [
                 "if-shell",
                 "-F",
@@ -875,6 +899,22 @@ fn command_failure(output: &crate::CommandOutput, fallback: &str) -> RemoteTmuxE
         },
         nonempty_diagnostic(&output.stderr, fallback),
     )
+}
+
+type OptionalTmuxInventory = (Option<String>, Vec<DiscoveredSession>, Option<HostError>);
+
+fn scope_tmux_inventory(
+    result: Result<(String, Vec<DiscoveredSession>), RemoteTmuxError>,
+) -> Result<OptionalTmuxInventory, RemoteTmuxError> {
+    match result {
+        Ok((binary, sessions)) => Ok((Some(binary), sessions, None)),
+        Err(error) if error.kind() == DiagnosticKind::Transport => Err(error),
+        Err(error) => Ok((
+            None,
+            Vec::new(),
+            Some(HostError::new(error.kind(), error.to_string())),
+        )),
+    }
 }
 
 fn parse_tmux_probe(bytes: &[u8]) -> Result<String, RemoteTmuxError> {
@@ -1245,6 +1285,30 @@ mod tests {
     }
 
     #[test]
+    fn missing_tmux_is_backend_scoped_but_transport_failure_is_not() {
+        let (_, sessions, diagnostic) = scope_tmux_inventory(Err(RemoteTmuxError::new(
+            DiagnosticKind::ExecutableNotFound,
+            "tmux is unavailable on the remote host",
+        )))
+        .expect("missing optional tmux remains host-usable");
+        assert!(sessions.is_empty());
+        assert_eq!(
+            diagnostic.expect("tmux diagnostic").kind(),
+            DiagnosticKind::ExecutableNotFound
+        );
+
+        assert_eq!(
+            scope_tmux_inventory(Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "SSH connection failed",
+            )))
+            .expect_err("transport failure invalidates the host")
+            .kind(),
+            DiagnosticKind::Transport
+        );
+    }
+
+    #[test]
     fn leased_ssh_arguments_keep_destination_separate_from_remote_command() {
         let arguments = complete_ssh_arguments(
             &["-S".to_owned(), "/tmp/control".to_owned()],
@@ -1352,7 +1416,8 @@ mod tests {
             route_identity: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_owned(),
             lease_generation: 7,
-            tmux_binary: "/usr/bin/tmux".to_owned(),
+            tmux_binary: Some("/usr/bin/tmux".to_owned()),
+            tmux_diagnostic: None,
             sessions: vec![session.clone()],
             herdr: HerdrInventory::Unavailable,
             zellij: ZellijInventory::Unavailable,

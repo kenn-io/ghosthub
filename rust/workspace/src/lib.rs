@@ -324,6 +324,8 @@ pub struct HostItem {
     connection: HostConnectionState,
     sessions: Vec<SessionItem>,
     diagnostic: Option<HostDiagnostic>,
+    tmux_available: bool,
+    tmux_diagnostic: Option<HostDiagnostic>,
     herdr_available: bool,
     herdr_sessions: Vec<HerdrSessionItem>,
     herdr_diagnostic: Option<HostDiagnostic>,
@@ -576,6 +578,8 @@ impl HostItem {
             connection,
             sessions,
             diagnostic,
+            tmux_available: true,
+            tmux_diagnostic: None,
             herdr_available: false,
             herdr_sessions: Vec::new(),
             herdr_diagnostic: None,
@@ -606,6 +610,8 @@ impl HostItem {
             connection,
             sessions,
             diagnostic,
+            tmux_available: false,
+            tmux_diagnostic: None,
             herdr_available: false,
             herdr_sessions: Vec::new(),
             herdr_diagnostic: None,
@@ -622,6 +628,13 @@ impl HostItem {
     #[must_use]
     pub fn is_ssh(&self) -> bool {
         self.id.starts_with("ssh:")
+    }
+
+    #[must_use]
+    pub fn with_tmux_diagnostic(mut self, diagnostic: HostDiagnostic) -> Self {
+        self.tmux_available = false;
+        self.tmux_diagnostic = Some(diagnostic);
+        self
     }
 
     #[must_use]
@@ -683,6 +696,16 @@ impl HostItem {
     #[must_use]
     pub const fn diagnostic(&self) -> Option<&HostDiagnostic> {
         self.diagnostic.as_ref()
+    }
+
+    #[must_use]
+    pub const fn tmux_available(&self) -> bool {
+        self.tmux_available
+    }
+
+    #[must_use]
+    pub const fn tmux_diagnostic(&self) -> Option<&HostDiagnostic> {
+        self.tmux_diagnostic.as_ref()
     }
 
     #[must_use]
@@ -3245,11 +3268,6 @@ fn publish_remote_connection(
             let endpoint = snapshot.endpoint().to_owned();
             let route_identity = snapshot.route_identity().to_owned();
             let lease_generation = snapshot.lease_generation();
-            let sessions = snapshot
-                .sessions()
-                .iter()
-                .map(|session| SessionItem::new(session.name(), session.attached_clients()))
-                .collect();
             entry.context = Some(RemoteHostContext {
                 host,
                 snapshot: snapshot.clone(),
@@ -3263,13 +3281,7 @@ fn publish_remote_connection(
                 lease_generation,
                 Some(RemoteInventory::from(&snapshot)),
             );
-            set_remote_host_snapshot(
-                inner,
-                host_id,
-                sessions,
-                snapshot.herdr(),
-                snapshot.zellij(),
-            );
+            set_remote_host_snapshot(inner, host_id, &snapshot);
         }
         Err(error) => {
             let diagnostic = HostDiagnostic::new(error.kind(), error.to_string());
@@ -3384,13 +3396,7 @@ fn reconcile_remote_presentations(
     stale
 }
 
-fn set_remote_host_snapshot(
-    inner: &Inner,
-    host_id: &str,
-    sessions: Vec<SessionItem>,
-    herdr: &HerdrInventory,
-    zellij: &ZellijInventory,
-) {
+fn set_remote_host_snapshot(inner: &Inner, host_id: &str, snapshot: &RemoteTmuxSnapshot) {
     let mut hosts = inner
         .hosts
         .write()
@@ -3399,10 +3405,18 @@ fn set_remote_host_snapshot(
         return;
     };
     host.connection = HostConnectionState::Ready;
-    host.sessions = sessions;
+    host.sessions = snapshot
+        .sessions()
+        .iter()
+        .map(|session| SessionItem::new(session.name(), session.attached_clients()))
+        .collect();
     host.diagnostic = None;
-    apply_herdr_inventory(host, herdr);
-    apply_zellij_inventory(host, zellij);
+    host.tmux_available = snapshot.tmux_binary().is_some();
+    host.tmux_diagnostic = snapshot
+        .tmux_diagnostic()
+        .map(|error| HostDiagnostic::new(error.kind(), error.to_string()));
+    apply_herdr_inventory(host, snapshot.herdr());
+    apply_zellij_inventory(host, snapshot.zellij());
     inner.revision.fetch_add(1, Ordering::Release);
 }
 

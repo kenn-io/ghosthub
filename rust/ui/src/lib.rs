@@ -65,7 +65,7 @@ pub fn host_status_text(host: &HostItem) -> String {
                 host.endpoint()
             )
         }
-        HostConnectionState::Ready => format!("Tmux sessions in {}", host.endpoint()),
+        HostConnectionState::Ready => format!("Sessions in {}", host.endpoint()),
         HostConnectionState::Unavailable => host.diagnostic().map_or_else(
             || "Host is unavailable".to_owned(),
             |error| error.message().to_owned(),
@@ -5441,7 +5441,8 @@ impl RootView {
                 &sessions,
                 "TMUX SESSIONS",
                 NewSessionKind::Tmux,
-                None,
+                host.tmux_diagnostic()
+                    .map(|diagnostic| diagnostic.message().to_owned()),
                 cx,
             ));
         }
@@ -5613,11 +5614,13 @@ impl RootView {
             header
         });
         if let Some(message) = diagnostic {
+            let retry_id = match create_kind {
+                NewSessionKind::Tmux => "retry-tmux",
+                NewSessionKind::Herdr => "retry-herdr",
+                NewSessionKind::Zellij => "retry-zellij",
+            };
             tree = tree.child(Self::capability_diagnostic_row(
-                host_index,
-                "retry-zellij",
-                message,
-                cx,
+                host_index, retry_id, message, cx,
             ));
         } else if sessions.is_empty() {
             tree = tree.child(
@@ -8341,6 +8344,40 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].state.can_open());
         assert!(!rows[0].state.can_kill());
+    }
+
+    #[test]
+    fn remote_tmux_failure_keeps_optional_multiplexer_groups_usable() {
+        let host = HostItem::ssh(
+            "ssh:wesm@studio.example:",
+            "Studio",
+            "wesm@studio.example",
+            HostConnectionState::Ready,
+            Vec::new(),
+            None,
+        )
+        .with_tmux_diagnostic(workspace::HostDiagnostic::new(
+            model::DiagnosticKind::ExecutableNotFound,
+            "tmux is unavailable",
+        ))
+        .with_herdr_sessions(vec![workspace::HerdrSessionItem::new(
+            "agents",
+            false,
+            workspace::HerdrSessionState::Running,
+        )])
+        .with_zellij_sessions(vec![SessionItem::new("review", 0)]);
+
+        let herdr = tree_herdr_sessions(&host, None, &[]);
+        let zellij = tree_zellij_sessions(&host, None, &[]);
+        let groups = session_group_visibility(&host, &herdr, &zellij);
+
+        assert_eq!(host.connection(), HostConnectionState::Ready);
+        assert!(host.tmux_diagnostic().is_some());
+        assert!(groups.tmux);
+        assert!(groups.herdr);
+        assert!(groups.zellij);
+        assert!(herdr[0].access.can_open());
+        assert!(zellij[0].state.can_open());
     }
 
     #[test]

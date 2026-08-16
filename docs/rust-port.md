@@ -874,10 +874,11 @@ to disconnected state without affecting WSL or another SSH host. A changed or
 late prompt generation is rejected rather than applied to a replacement
 connection.
 
-After admission, Host discovers ordinary tmux sessions plus optional Herdr and
-Zellij inventory through the same reviewed lease. Missing optional backends are
-silent; malformed or failed optional inventory is backend-scoped and never
-hides another backend. Tmux attachment retains exact server PID, session ID,
+After admission, Host independently discovers tmux, Herdr, and Zellij inventory
+through the same reviewed lease. A missing or failed backend is backend-scoped
+and never disables the host or hides another backend; configured tmux failures
+remain visible beside the tmux group so its path can be corrected. Tmux
+attachment retains exact server PID, session ID,
 and creation-time authority. Running Herdr and active Zellij rows build their
 ordinary attach-only client argv after scrubbing inherited backend routing
 variables. Terminal launches each resolved client through ConPTY and remains

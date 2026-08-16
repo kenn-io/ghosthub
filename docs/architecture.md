@@ -166,8 +166,10 @@ consumed through kwt's machine-readable CLI surfaces.
 
 The first Rust product slice is a native Windows GPUI application attaching to
 tmux and discovering optional Herdr and Zellij sessions inside WSL2. It also
-has explicitly configured POSIX SSH hosts that discover tmux plus optional
-Herdr and Zellij sessions through one KWT-owned lease. All three backends use
+has explicitly configured POSIX SSH hosts that independently discover tmux,
+Herdr, and Zellij sessions through one KWT-owned lease. A missing or broken
+backend is scoped to its own inventory and does not disable the host or another
+backend. All three backends use
 ordinary attach-only presentation; remote lifecycle controls remain withheld
 until they have fresh backend-specific identity fencing. Linux remains a
 compile-and-contract target until a native Linux product slice is authorized.
