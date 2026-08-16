@@ -884,6 +884,8 @@ and creation-time authority. Running Herdr and active Zellij rows build their
 ordinary attach-only client argv after scrubbing inherited backend routing
 variables. Terminal launches each resolved client through ConPTY and remains
 unaware of WSL, KWT, routing, SSH configuration, or multiplexer selection.
+Each host's tmux, Herdr, and Zellij groups have independent disclosure controls;
+collapsing navigation never detaches a client or changes session lifetime.
 
 The current remote UI supports discovery, attach-only presentation, retained
 switching, and detach. It deliberately withholds remote creation, tmux/Zellij

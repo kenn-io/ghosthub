@@ -4,7 +4,7 @@
 #[allow(unsafe_code)]
 mod windows_key;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -311,6 +311,7 @@ pub struct RootView {
     keyboard: TerminalKeyboard,
     pointer: TerminalPointer,
     sidebar_visible: bool,
+    collapsed_session_groups: HashSet<SessionGroupKey>,
     new_session: Option<NewSessionDraft>,
     project_dialog: Option<ProjectDialog>,
     settings_dialog: Option<SettingsDialog>,
@@ -318,6 +319,43 @@ pub struct RootView {
     pending_worktree_navigation: Option<u64>,
     session_action_menu: Option<SessionActionMenu>,
     restore_focus: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum SessionGroup {
+    Tmux,
+    Herdr,
+    Zellij,
+}
+
+impl SessionGroup {
+    const fn element_id(self) -> &'static str {
+        match self {
+            Self::Tmux => "toggle-tmux-sessions",
+            Self::Herdr => "toggle-herdr-sessions",
+            Self::Zellij => "toggle-zellij-sessions",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct SessionGroupKey {
+    host_id: String,
+    group: SessionGroup,
+}
+
+fn toggle_session_group_state(
+    collapsed: &mut HashSet<SessionGroupKey>,
+    host_id: &str,
+    group: SessionGroup,
+) {
+    let key = SessionGroupKey {
+        host_id: host_id.to_owned(),
+        group,
+    };
+    if !collapsed.remove(&key) {
+        collapsed.insert(key);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -515,6 +553,24 @@ enum NewSessionKind {
     Tmux,
     Herdr,
     Zellij,
+}
+
+impl NewSessionKind {
+    const fn group(self) -> SessionGroup {
+        match self {
+            Self::Tmux => SessionGroup::Tmux,
+            Self::Herdr => SessionGroup::Herdr,
+            Self::Zellij => SessionGroup::Zellij,
+        }
+    }
+
+    const fn group_title(self) -> &'static str {
+        match self {
+            Self::Tmux => "TMUX SESSIONS",
+            Self::Herdr => "HERDR SESSIONS",
+            Self::Zellij => "ZELLIJ SESSIONS",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1212,6 +1268,7 @@ impl RootView {
             keyboard: TerminalKeyboard::default(),
             pointer: TerminalPointer::default(),
             sidebar_visible: true,
+            collapsed_session_groups: HashSet::new(),
             new_session: None,
             project_dialog: None,
             settings_dialog: None,
@@ -3518,7 +3575,7 @@ impl RootView {
         };
         let mut shell = div().size_full().flex().min_w_0();
         if self.sidebar_visible {
-            shell = shell.child(Self::workspace_tree(snapshot, cx));
+            shell = shell.child(self.workspace_tree(snapshot, cx));
         }
         shell
             .child(div().flex_1().min_w_0().h_full().child(main))
@@ -5365,6 +5422,7 @@ impl RootView {
     }
 
     fn workspace_tree(
+        &self,
         snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -5379,7 +5437,7 @@ impl RootView {
             .overflow_y_scroll()
             .overflow_x_hidden();
         for (host_index, host) in snapshot.hosts().iter().enumerate() {
-            body = body.child(Self::host_tree(
+            body = body.child(self.host_tree(
                 host_index,
                 host,
                 snapshot.selected_host() == Some(host.id()),
@@ -5417,6 +5475,7 @@ impl RootView {
     }
 
     fn host_tree(
+        &self,
         host_index: usize,
         host: &HostItem,
         is_selected: bool,
@@ -5435,31 +5494,33 @@ impl RootView {
         let zellij_sessions = tree_zellij_sessions(host, active, retained);
         let groups = session_group_visibility(host, &herdr_sessions, &zellij_sessions);
         if groups.tmux {
-            host_tree = host_tree.child(Self::session_tree(
-                host_index,
-                host,
-                &sessions,
-                "TMUX SESSIONS",
-                NewSessionKind::Tmux,
-                host.tmux_diagnostic()
-                    .map(|diagnostic| diagnostic.message().to_owned()),
-                cx,
-            ));
+            host_tree = host_tree.child(
+                self.session_tree(
+                    host_index,
+                    host,
+                    &sessions,
+                    NewSessionKind::Tmux,
+                    host.tmux_diagnostic()
+                        .map(|diagnostic| diagnostic.message().to_owned()),
+                    cx,
+                ),
+            );
         }
         if groups.herdr {
-            host_tree = host_tree.child(Self::herdr_tree(host_index, host, &herdr_sessions, cx));
+            host_tree = host_tree.child(self.herdr_tree(host_index, host, &herdr_sessions, cx));
         }
         if groups.zellij {
-            host_tree = host_tree.child(Self::session_tree(
-                host_index,
-                host,
-                &zellij_sessions,
-                "ZELLIJ SESSIONS",
-                NewSessionKind::Zellij,
-                host.zellij_diagnostic()
-                    .map(|diagnostic| diagnostic.message().to_owned()),
-                cx,
-            ));
+            host_tree = host_tree.child(
+                self.session_tree(
+                    host_index,
+                    host,
+                    &zellij_sessions,
+                    NewSessionKind::Zellij,
+                    host.zellij_diagnostic()
+                        .map(|diagnostic| diagnostic.message().to_owned()),
+                    cx,
+                ),
+            );
         }
         if host.kwt_available()
             || !host.projects().is_empty()
@@ -5556,14 +5617,20 @@ impl RootView {
     }
 
     fn session_tree(
+        &self,
         host_index: usize,
         host: &HostItem,
         sessions: &[TreeSession],
-        title: &'static str,
         create_kind: NewSessionKind,
         diagnostic: Option<String>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let group = create_kind.group();
+        let group_key = SessionGroupKey {
+            host_id: host.id().to_owned(),
+            group,
+        };
+        let collapsed = self.collapsed_session_groups.contains(&group_key);
         let mut tree = div().w_full().flex().flex_col().child({
             let mut header = div()
                 .h(px(SESSION_GROUP_ROW_HEIGHT))
@@ -5575,7 +5642,14 @@ impl RootView {
                 .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(SESSION_GROUP_TEXT))
-                .child(div().flex_1().child(title));
+                .child(Self::session_group_toggle(
+                    host_index,
+                    host.id(),
+                    group,
+                    collapsed,
+                    cx,
+                ))
+                .child(div().flex_1().child(create_kind.group_title()));
             let create_available = match create_kind {
                 NewSessionKind::Tmux => !host.is_ssh(),
                 NewSessionKind::Zellij => {
@@ -5613,6 +5687,9 @@ impl RootView {
             }
             header
         });
+        if collapsed {
+            return tree.into_any_element();
+        }
         if let Some(message) = diagnostic {
             let retry_id = match create_kind {
                 NewSessionKind::Tmux => "retry-tmux",
@@ -5643,6 +5720,35 @@ impl RootView {
             ));
         }
         tree.into_any_element()
+    }
+
+    fn session_group_toggle(
+        host_index: usize,
+        host_id: &str,
+        group: SessionGroup,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let host_id = host_id.to_owned();
+        div()
+            .id((group.element_id(), host_index))
+            .size(px(20.0))
+            .mr_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(rgb(0x8f_96_a3))
+            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+            .child(if collapsed { "▸" } else { "▾" })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                toggle_session_group_state(&mut this.collapsed_session_groups, &host_id, group);
+                this.session_action_menu = None;
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     #[allow(clippy::too_many_lines)] // Declarative GPUI tree hierarchy.
@@ -6044,6 +6150,7 @@ impl RootView {
     }
 
     fn herdr_tree(
+        &self,
         host_index: usize,
         host: &HostItem,
         sessions: &[TreeHerdrSession],
@@ -6051,6 +6158,11 @@ impl RootView {
     ) -> gpui::AnyElement {
         let host_id = host.id().to_owned();
         let endpoint = host.endpoint().to_owned();
+        let group_key = SessionGroupKey {
+            host_id: host_id.clone(),
+            group: SessionGroup::Herdr,
+        };
+        let collapsed = self.collapsed_session_groups.contains(&group_key);
         let mut tree = div().w_full().flex().flex_col().child({
             let mut header = div()
                 .h(px(SESSION_GROUP_ROW_HEIGHT))
@@ -6062,11 +6174,21 @@ impl RootView {
                 .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(SESSION_GROUP_TEXT))
+                .child(Self::session_group_toggle(
+                    host_index,
+                    &host_id,
+                    SessionGroup::Herdr,
+                    collapsed,
+                    cx,
+                ))
                 .child(div().flex_1().child("HERDR SESSIONS"));
             if host.connection() == HostConnectionState::Ready
+                && !host.is_ssh()
                 && host.herdr_available()
                 && host.herdr_diagnostic().is_none()
             {
+                let host_id = host_id.clone();
+                let endpoint = endpoint.clone();
                 header = header.child(
                     div()
                         .id(("create-herdr-session", host_index))
@@ -6093,6 +6215,9 @@ impl RootView {
             }
             header
         });
+        if collapsed {
+            return tree.into_any_element();
+        }
         if let Some(diagnostic) = host.herdr_diagnostic() {
             tree = tree.child(Self::capability_diagnostic_row(
                 host_index,
@@ -7775,33 +7900,34 @@ pub fn run(status: PortStatus, workspace: Workspace) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{HashSet, VecDeque};
 
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
         HostHeaderAction, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal,
         LayoutKey, NewSessionDraft, NewSessionKind, NewWorktreeMode, PendingUiInput, ProjectDialog,
-        QueuedUiInput, SessionRowAction, SettingsDialog, SettingsPane, SshField, SshHostEditor,
-        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
-        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
-        WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
-        WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
-        active_session_selection, application_navigation_width, apply_new_worktree_failure,
-        apply_worktree_removal_failure, can_create_worktree, can_kill_worktree,
-        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
-        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
-        host_header_action, host_landing_text, input_queue_has_capacity,
-        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
-        owns_created_worktree_navigation, pull_request_import_selector,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_group_visibility, session_row_element_id, ssh_host_subtitle,
-        ssh_prompt_input_text, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
-        tree_zellij_sessions, visible_kwt_branch_candidates, visible_kwt_pull_requests,
-        workspace_window_title, worktree_open_mode,
+        QueuedUiInput, SessionGroup, SessionGroupKey, SessionRowAction, SettingsDialog,
+        SettingsPane, SshField, SshHostEditor, TerminalKeyIdentity, TerminalKeyboard,
+        TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
+        WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode,
+        WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence,
+        WorktreeSocket, active_session_selection, application_navigation_width,
+        apply_new_worktree_failure, apply_worktree_removal_failure, can_create_worktree,
+        can_kill_worktree, canonical_terminal_key_with, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
+        herdr_session_menu_actions, host_header_action, host_landing_text,
+        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
+        kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
+        new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
+        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
+        session_action_menu_position, session_backend_id, session_group_visibility,
+        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, tmux_row_actions, toggle_session_group_state,
+        transitioned_presentation, tree_herdr_sessions, tree_sessions, tree_zellij_sessions,
+        visible_kwt_branch_candidates, visible_kwt_pull_requests, workspace_window_title,
+        worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -8333,6 +8459,29 @@ mod tests {
         assert_eq!(new_session_validation(&refreshing, &draft), None);
         draft.endpoint = "Debian".to_owned();
         assert!(new_session_validation(&refreshing, &draft).is_some());
+    }
+
+    #[test]
+    fn collapsed_session_groups_are_scoped_to_the_host_and_backend() {
+        let mut collapsed = HashSet::new();
+
+        toggle_session_group_state(&mut collapsed, "ssh:studio", SessionGroup::Tmux);
+
+        assert!(collapsed.contains(&SessionGroupKey {
+            host_id: "ssh:studio".to_owned(),
+            group: SessionGroup::Tmux,
+        }));
+        assert!(!collapsed.contains(&SessionGroupKey {
+            host_id: "ssh:studio".to_owned(),
+            group: SessionGroup::Herdr,
+        }));
+        assert!(!collapsed.contains(&SessionGroupKey {
+            host_id: "wsl".to_owned(),
+            group: SessionGroup::Tmux,
+        }));
+
+        toggle_session_group_state(&mut collapsed, "ssh:studio", SessionGroup::Tmux);
+        assert!(collapsed.is_empty());
     }
 
     #[test]
