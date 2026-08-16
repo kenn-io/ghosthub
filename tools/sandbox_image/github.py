@@ -70,7 +70,7 @@ MERGE_SIGNAL_COMMIT = "67ead910ccc186d9ffe543c32721d359b3eea80e"
 # removes this allowlist after these exact workflow bytes reach main.
 MERGE_SIGNAL_TRANSITION_WORKFLOW_DIGESTS = {
     PROMOTION_STATUS_WORKFLOW: (
-        "26bdf231a61cefa233d769dadfbdda30ae37ec9d58364d9d3fa670f58317c236"
+        "146626c9c1c9af80fde30390a9863446a1fa775ccb56a73e516a23c2197aaaa7"
     ),
     PROMOTION_WORKFLOW: (
         "152f9794413744fc3cbf17221236e5457e7bf0f9bd0bbdbd4ca3a98473fc8fc0"
