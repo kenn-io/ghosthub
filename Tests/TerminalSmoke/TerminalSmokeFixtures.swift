@@ -10,6 +10,7 @@ import XCTest
 @MainActor
 final class InMemoryTerminalPasteboard: TerminalPasteboard {
     private var contents: [NSPasteboard.PasteboardType: String] = [:]
+    var acceptsWrites = true
 
     func string(forType dataType: NSPasteboard.PasteboardType) -> String? {
         contents[dataType]
@@ -35,6 +36,7 @@ final class InMemoryTerminalPasteboard: TerminalPasteboard {
         _ string: String,
         forType dataType: NSPasteboard.PasteboardType
     ) -> Bool {
+        guard acceptsWrites else { return false }
         contents[dataType] = string
         return true
     }

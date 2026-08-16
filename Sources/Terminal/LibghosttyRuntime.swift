@@ -4,6 +4,7 @@ import Foundation
 import GhosthubTerminalSupport
 import GhosthubWorkspace
 import GhosttyKit
+import os.log
 import UniformTypeIdentifiers
 
 private struct ResolvedColorCallbackGeneration: Equatable {
@@ -114,7 +115,22 @@ public final class LibghosttyRuntime: ObservableObject,
         let data: String
     }
 
-    static let osc52ClipboardWriteMIME = "application/x-ghosthub-osc52"
+    enum OSC52ClipboardWriteDiagnostic: Equatable {
+        case confirmationRequired
+        case surfaceUnavailable
+        case noWritableContent
+        case pasteboardRejected(entryCount: Int, byteCount: Int)
+        case written(entryCount: Int, byteCount: Int)
+    }
+
+    nonisolated static let osc52ClipboardWriteMIME =
+        "application/x-ghosthub-osc52"
+    private static let osc52ClipboardLog = OSLog(
+        subsystem: "com.ghosthub.app",
+        category: "clipboard"
+    )
+    static var osc52ClipboardWriteDiagnosticObserver:
+        ((OSC52ClipboardWriteDiagnostic) -> Void)?
     static var urlOpener: (URL) -> Bool = { url in
         NSWorkspace.shared.open(url)
     }
@@ -1035,11 +1051,6 @@ public final class LibghosttyRuntime: ObservableObject,
         len: Int,
         confirm: Bool
     ) {
-        guard !confirm else {
-            // Confirmed writes require user approval UI. Deny rather
-            // than silently allowing remote clipboard overwrites.
-            return
-        }
         let userdataValue = userdata.map { UInt(bitPattern: $0) }
         guard let content, len > 0 else { return }
         let entries: [ClipboardWriteEntry] = (0 ..< len).compactMap { index in
@@ -1054,21 +1065,127 @@ public final class LibghosttyRuntime: ObservableObject,
                 data: String(cString: dataPtr)
             )
         }
-        dispatchToMainSync {
-            guard surfaceView(from: userdataValue) != nil else { return }
-            let acceptedEntries = acceptedClipboardWriteEntries(entries)
-            let pasteboard = TerminalPasteboardAccess.current
-            pasteboard.clearContents()
-            let types = acceptedEntries.compactMap {
-                pasteboardType(forMIMEType: $0.mime)
-            }
-            pasteboard.declareTypes(types, owner: nil)
-            for entry in acceptedEntries {
-                guard let type = pasteboardType(forMIMEType: entry.mime) else {
-                    continue
+        let isOSC52Write = entries.contains {
+            $0.mime == osc52ClipboardWriteMIME
+        }
+        guard !confirm else {
+            // Confirmed writes require user approval UI. Deny rather
+            // than silently allowing remote clipboard overwrites.
+            if isOSC52Write {
+                dispatchToMainSync {
+                    recordOSC52ClipboardWriteDiagnostic(
+                        .confirmationRequired
+                    )
                 }
-                pasteboard.setString(entry.data, forType: type)
             }
+            return
+        }
+        dispatchToMainSync {
+            guard surfaceView(from: userdataValue) != nil else {
+                if isOSC52Write {
+                    recordOSC52ClipboardWriteDiagnostic(
+                        .surfaceUnavailable
+                    )
+                }
+                return
+            }
+            let diagnostic = writeClipboardEntries(
+                entries,
+                to: TerminalPasteboardAccess.current
+            )
+            if isOSC52Write {
+                recordOSC52ClipboardWriteDiagnostic(diagnostic)
+            }
+        }
+    }
+
+    static func writeClipboardEntries(
+        _ entries: [ClipboardWriteEntry],
+        to pasteboard: any TerminalPasteboard
+    ) -> OSC52ClipboardWriteDiagnostic {
+        let writableEntries = acceptedClipboardWriteEntries(entries)
+            .compactMap { entry -> (
+                entry: ClipboardWriteEntry,
+                type: NSPasteboard.PasteboardType
+            )? in
+                guard let type = pasteboardType(forMIMEType: entry.mime) else {
+                    return nil
+                }
+                return (entry, type)
+            }
+        guard !writableEntries.isEmpty else {
+            return .noWritableContent
+        }
+
+        pasteboard.clearContents()
+        pasteboard.declareTypes(
+            writableEntries.map(\.type),
+            owner: nil
+        )
+        let byteCount = writableEntries.reduce(into: 0) { count, writable in
+            count += writable.entry.data.utf8.count
+        }
+        let wroteEveryEntry = writableEntries.reduce(into: true) {
+            wroteEveryEntry, writable in
+            if !pasteboard.setString(
+                writable.entry.data,
+                forType: writable.type
+            ) {
+                wroteEveryEntry = false
+            }
+        }
+        let entryCount = writableEntries.count
+        if wroteEveryEntry {
+            return .written(
+                entryCount: entryCount,
+                byteCount: byteCount
+            )
+        }
+        return .pasteboardRejected(
+            entryCount: entryCount,
+            byteCount: byteCount
+        )
+    }
+
+    private static func recordOSC52ClipboardWriteDiagnostic(
+        _ diagnostic: OSC52ClipboardWriteDiagnostic
+    ) {
+        osc52ClipboardWriteDiagnosticObserver?(diagnostic)
+        switch diagnostic {
+        case .confirmationRequired:
+            os_log(
+                "OSC 52 clipboard write requires confirmation and was denied",
+                log: osc52ClipboardLog,
+                type: .error
+            )
+        case .surfaceUnavailable:
+            os_log(
+                "OSC 52 clipboard write arrived after its surface detached",
+                log: osc52ClipboardLog,
+                type: .error
+            )
+        case .noWritableContent:
+            os_log(
+                "OSC 52 clipboard write had no writable content",
+                log: osc52ClipboardLog,
+                type: .error
+            )
+        case let .pasteboardRejected(entryCount, byteCount):
+            os_log(
+                "OSC 52 pasteboard write failed: entries=%{public}d bytes=%{public}d",
+                log: osc52ClipboardLog,
+                type: .error,
+                entryCount,
+                byteCount
+            )
+        case let .written(entryCount, byteCount):
+            os_log(
+                "OSC 52 pasteboard write completed: entries=%{public}d bytes=%{public}d",
+                log: osc52ClipboardLog,
+                type: .info,
+                entryCount,
+                byteCount
+            )
         }
     }
 
