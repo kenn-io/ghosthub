@@ -965,10 +965,11 @@ impl KwtSshLeaseClient {
                             last_activity = Instant::now();
                         }
                         SshLeaseEvent::Complete(result) => {
-                            require_active_acquisition(cancellation)?;
-                            return Ok(SshLease {
-                                result,
-                                process: Arc::new(LeaseState::new(process)),
+                            return while_acquisition_active(cancellation, || {
+                                Ok(SshLease {
+                                    result,
+                                    process: Arc::new(LeaseState::new(process)),
+                                })
                             });
                         }
                         event => status(&event),
@@ -1011,8 +1012,7 @@ fn deliver_prompt_response(
     publish: impl FnOnce(&str) -> Result<(), SshError>,
 ) -> Result<(), SshError> {
     let response = prompt()?;
-    require_active_acquisition(cancellation)?;
-    publish(&response)
+    while_acquisition_active(cancellation, || publish(&response))
 }
 
 fn require_active_acquisition(cancellation: &CancellationToken) -> Result<(), SshError> {
@@ -1030,8 +1030,13 @@ fn while_acquisition_active<T>(
     cancellation: &CancellationToken,
     operation: impl FnOnce() -> Result<T, SshError>,
 ) -> Result<T, SshError> {
-    require_active_acquisition(cancellation)?;
-    operation()
+    match cancellation.run_if_active(operation) {
+        Some(result) => result,
+        None => Err(SshError::new(
+            DiagnosticKind::Transport,
+            "SSH lease acquisition cancelled",
+        )),
+    }
 }
 
 fn lease_arguments(route: &SshRouteSnapshot) -> Vec<OsString> {
@@ -1603,7 +1608,11 @@ fn days_since_unix_epoch(year: i64, month: u32, day: u32) -> i64 {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::sync::Mutex;
+    use std::sync::{
+        Arc, Barrier, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
 
     use super::*;
     use crate::{CommandOutput, CommandRunner};
@@ -2056,6 +2065,123 @@ mod tests {
 
         assert_eq!(error.to_string(), "SSH lease acquisition cancelled");
         assert!(!attached);
+    }
+
+    #[test]
+    fn controller_resume_is_atomic_with_cancellation() {
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let cancel_started = Arc::new(Barrier::new(2));
+        let order = Arc::new(AtomicUsize::new(0));
+        let resume_order = Arc::new(AtomicUsize::new(usize::MAX));
+        let cancel_order = Arc::new(AtomicUsize::new(usize::MAX));
+        let worker = {
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let order = Arc::clone(&order);
+            let resume_order = Arc::clone(&resume_order);
+            thread::spawn(move || {
+                while_acquisition_active(&worker_cancellation, || {
+                    entered.wait();
+                    release.wait();
+                    resume_order.store(order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
+                    Ok(())
+                })
+            })
+        };
+        entered.wait();
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        let cancelling = {
+            let cancel_started = Arc::clone(&cancel_started);
+            let order = Arc::clone(&order);
+            let cancel_order = Arc::clone(&cancel_order);
+            thread::spawn(move || {
+                cancel_started.wait();
+                cancellation.cancel();
+                cancel_order.store(order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
+                cancelled_tx.send(()).expect("cancellation receiver");
+            })
+        };
+        cancel_started.wait();
+        let cancellation_overtook_resume =
+            cancelled_rx.recv_timeout(Duration::from_millis(50)).is_ok();
+        release.wait();
+        worker
+            .join()
+            .expect("resume worker")
+            .expect("resume result");
+        if !cancellation_overtook_resume {
+            cancelled_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cancellation completes after resume");
+        }
+        cancelling.join().expect("cancellation worker");
+
+        assert!(!cancellation_overtook_resume);
+        assert!(resume_order.load(Ordering::Acquire) < cancel_order.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn credential_publication_is_atomic_with_cancellation() {
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let cancel_started = Arc::new(Barrier::new(2));
+        let order = Arc::new(AtomicUsize::new(0));
+        let publish_order = Arc::new(AtomicUsize::new(usize::MAX));
+        let cancel_order = Arc::new(AtomicUsize::new(usize::MAX));
+        let worker = {
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let order = Arc::clone(&order);
+            let publish_order = Arc::clone(&publish_order);
+            thread::spawn(move || {
+                deliver_prompt_response(
+                    &worker_cancellation,
+                    || Ok("secret".to_owned()),
+                    |_| {
+                        entered.wait();
+                        release.wait();
+                        publish_order
+                            .store(order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
+                        Ok(())
+                    },
+                )
+            })
+        };
+        entered.wait();
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        let cancelling = {
+            let cancel_started = Arc::clone(&cancel_started);
+            let order = Arc::clone(&order);
+            let cancel_order = Arc::clone(&cancel_order);
+            thread::spawn(move || {
+                cancel_started.wait();
+                cancellation.cancel();
+                cancel_order.store(order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
+                cancelled_tx.send(()).expect("cancellation receiver");
+            })
+        };
+        cancel_started.wait();
+        let cancellation_overtook_publication =
+            cancelled_rx.recv_timeout(Duration::from_millis(50)).is_ok();
+        release.wait();
+        worker
+            .join()
+            .expect("publication worker")
+            .expect("publication result");
+        if !cancellation_overtook_publication {
+            cancelled_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cancellation completes after publication");
+        }
+        cancelling.join().expect("cancellation worker");
+
+        assert!(!cancellation_overtook_publication);
+        assert!(publish_order.load(Ordering::Acquire) < cancel_order.load(Ordering::Acquire));
     }
 
     #[test]

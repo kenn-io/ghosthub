@@ -113,6 +113,19 @@ impl CancellationToken {
         self.0.cancelled.load(Ordering::Acquire)
     }
 
+    pub(crate) fn run_if_active<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
+        let _guard = self
+            .0
+            .mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_cancelled() {
+            None
+        } else {
+            Some(operation())
+        }
+    }
+
     /// Wait until cancellation or the timeout expires.
     ///
     /// Returns `true` when cancellation woke the wait.
