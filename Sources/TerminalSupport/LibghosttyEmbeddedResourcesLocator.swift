@@ -95,22 +95,26 @@ public enum LibghosttyEmbeddedResourcesLocator {
         func appendAncestors(of path: String) {
             guard !path.isEmpty else { return }
 
-            var currentURL = URL(fileURLWithPath: path, isDirectory: true)
+            let standardizedPath = URL(
+                fileURLWithPath: path,
+                isDirectory: true
+            ).standardizedFileURL.path
+            var components = NSString(
+                string: standardizedPath
+            ).pathComponents
             if !path.hasSuffix("/") {
-                currentURL.deleteLastPathComponent()
+                components.removeLast()
             }
 
-            while true {
-                let standardized = currentURL.standardizedFileURL.path
-                if seen.insert(standardized).inserted {
-                    roots.append(currentURL)
-                }
+            while !components.isEmpty {
+                let currentPath = NSString.path(withComponents: components)
+                guard seen.insert(currentPath).inserted else { break }
+                roots.append(
+                    URL(fileURLWithPath: currentPath, isDirectory: true)
+                )
 
-                let parent = currentURL.deletingLastPathComponent()
-                if parent.path == currentURL.path {
-                    break
-                }
-                currentURL = parent
+                guard components.count > 1 else { break }
+                components.removeLast()
             }
         }
 

@@ -397,6 +397,18 @@ Publishing is safe to rerun after a partial GitHub release failure. The
 workflow reuses an existing release for the tag, refreshes its title and notes,
 and replaces its assets with the newly notarized outputs.
 
+Release binaries target macOS 15.0 and the assembled app declares the same
+minimum through `LSMinimumSystemVersion`. Pull requests and `main` pushes build
+the unsigned release bundle on GitHub's Apple Silicon macOS 15 image, reject
+any packaged Mach-O with a newer deployment target, and run the libghostty
+runtime smoke suite there. Xcode 26's separately downloaded Metal toolchain
+does not activate on the hosted Sequoia image, so that job builds libghostty's
+shaders with Xcode 16.4's bundled Metal compiler before compiling and packaging
+Ghosthub with Xcode 26.0.1. Stable and nightly builds use that same split on
+the macOS 15 runner, so the tested libghostty and Metal artifacts are the ones
+that signing and notarization ship. Lowering the deployment target does not
+create a separate Sequoia artifact.
+
 If Apple rejects the submission, the workflow prints the notary response and
 fetches the detailed notarization log before failing. It never publishes an
 unsigned or unnotarized fallback artifact.

@@ -110,4 +110,14 @@ struct LibghosttyEmbeddedResourcesLocatorTests {
 
         #expect(resolved == nil)
     }
+
+    @Test("candidate roots terminate at the filesystem root")
+    func candidateRootsTerminateAtFilesystemRoot() {
+        let roots = LibghosttyEmbeddedResourcesLocator.candidateRoots(
+            executablePath: "/Ghosthub",
+            currentDirectoryPath: "/"
+        )
+
+        #expect(roots.map(\.path) == ["/"])
+    }
 }

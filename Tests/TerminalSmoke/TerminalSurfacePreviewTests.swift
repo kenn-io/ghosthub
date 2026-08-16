@@ -468,7 +468,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(positions.count, 2)
         for position in positions {
             XCTAssertEqual(position.0, 40)
-            XCTAssertEqual(position.1, view.frame.height - 40)
+            XCTAssertEqual(position.1, Double(view.frame.height) - 40)
         }
         XCTAssertEqual(buttonModifiers.count, 2)
         for modifier in positions.map(\.2) + buttonModifiers {
@@ -527,7 +527,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let sentPosition = try XCTUnwrap(position)
         XCTAssertEqual(sequence, ["position", "press"])
         XCTAssertEqual(sentPosition.0, 20)
-        XCTAssertEqual(sentPosition.1, view.frame.height - 30)
+        XCTAssertEqual(sentPosition.1, Double(view.frame.height) - 30)
         XCTAssertNotEqual(
             sentPosition.2 & GHOSTTY_MODS_SUPER.rawValue,
             0

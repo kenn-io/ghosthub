@@ -38,7 +38,7 @@ ifeq ($(origin DEVELOPMENT_VERSION_DESCRIPTION),undefined)
 DEVELOPMENT_VERSION_DESCRIPTION := $(shell $(PYTHON) tools/development_version.py --component display)
 endif
 RELEASE_BUILD_VERSION ?= $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
-RELEASE_MIN_MACOS ?= 26.0
+RELEASE_MIN_MACOS ?= 15.0
 APP_ICON_PATH ?= Resources/AppIcon/Ghosthub.icns
 APP_ENTITLEMENTS_PATH ?= Resources/Ghosthub.entitlements
 APP_COPYRIGHT ?= Copyright © 2026 Kenn Software LLC. Licensed under the GNU AGPL v3.0 or later.
