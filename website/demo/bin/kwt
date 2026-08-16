@@ -137,6 +137,14 @@ open_worktree() {
 case "${1:-}" in
   projects) projects_json ;;
   list) list_json ;;
+  workspace)
+    if [[ "${2:-}" == "list" && "${3:-}" == "--json" && "$#" -eq 3 ]]; then
+      echo "[]"
+    else
+      echo "faux kwt: unsupported workspace command" >&2
+      exit 64
+    fi
+    ;;
   branches) branches_json ;;
   open) open_worktree "$@" ;;
   *)

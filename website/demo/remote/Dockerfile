@@ -8,7 +8,7 @@ RUN apt-get update \
 
 COPY entry.sh /usr/local/bin/entry.sh
 COPY zellij /usr/local/bin/zellij
-RUN chmod +x /usr/local/bin/entry.sh /usr/local/bin/zellij
+RUN chmod 755 /usr/local/bin/entry.sh /usr/local/bin/zellij
 
 EXPOSE 22
 CMD ["/usr/local/bin/entry.sh"]

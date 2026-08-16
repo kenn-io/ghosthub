@@ -47,6 +47,13 @@ cat > /usr/local/bin/kwt <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
   projects|list) echo "[]" ;;
+  workspace)
+    if [[ "${2:-}" == "list" && "${3:-}" == "--json" && "$#" -eq 3 ]]; then
+      echo "[]"
+    else
+      exit 64
+    fi
+    ;;
   *) exit 64 ;;
 esac
 EOF

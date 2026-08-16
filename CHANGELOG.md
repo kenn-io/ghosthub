@@ -5,12 +5,47 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-15
+
+### Added
+
+- Optional **Efficient** and **Live** bitmap previews show tmux sessions that
+  are already open in a workspace without creating another tmux or SSH client.
+  Preview rendering is off by default, identity-fenced across reconnects, and
+  bounded to four inactive live surfaces across the app.
+- Worktree rows show a compact count of the tmux windows in each confirmed
+  live session, with the existing running or agent indicator retained when an
+  authoritative count is unavailable.
+- **Command-1** through **Command-8** select numbered native workspace tabs,
+  while **Command-9** selects the last tab. Explicit Ghosthub shortcut
+  assignments still take precedence.
+
+### Changed
+
+- Native tabs and titlebars for kwt worktrees use readable project and
+  worktree names, while attachments continue to use kwt's exact session
+  identity. Newly created worktree sessions also use kwt's shorter,
+  hash-suffixed names.
+- Ghosthub enables tmux mouse mode when attaching to POSIX sessions, so wheel
+  scrolling enters tmux copy mode with the backend's own mouse bindings.
+- A client-local contrast floor keeps inherited ANSI colors legible against
+  light tmux backgrounds without changing shared session colors or overriding
+  an explicit `minimum-contrast` setting.
+
 ### Fixed
 
 - Ghostty's built-in color schemes now ship with Ghosthub, so `theme =
   Catppuccin Macchiato` and every other bundled name resolves without first
   copying theme files into `~/.config/ghostty/themes`. Bundled shell
   integration and the `xterm-ghostty` terminfo database ship alongside them.
+- Multi-window shortcut evaluation no longer risks a release-build crash, and
+  sibling navigation now follows the active workspace window reliably.
+- Quit confirmation no longer blocks the main thread or leaves Ghosthub
+  beachballed when quitting from the menu, **Command-Q**, or a terminal action.
+- Remote tmux, Herdr, and Zellij recovery waits through a lid-closed wake with
+  no active display and resumes when a terminal surface can be created again.
+- **Command-click** reliably opens highlighted terminal links, including after
+  pointer movement or dragging.
 
 ## [0.8.2] - 2026-08-11
 
@@ -294,7 +329,8 @@ test, and documentation-only changes are omitted.
   and SSH tmux session discovery, automatic reconnect, and kwt-backed project
   and worktree navigation.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/kenn-io/ghosthub/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/kenn-io/ghosthub/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/kenn-io/ghosthub/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kenn-io/ghosthub/compare/v0.7.0...v0.8.0
