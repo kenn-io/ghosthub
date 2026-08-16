@@ -490,7 +490,8 @@ merge time, an unprivileged merge-group signal receives a SHA-specific trusted
 reconciliation. Trusted-main tooling audits the proposed workflow tree without
 executing it and refuses any change to a credential-bearing workflow before
 authorizing the queue's fresh synthetic SHA. The candidate tree cannot change
-the externally pinned merge signal; inability to reconcile
+the externally pinned merge signal or claim its reserved workflow path or
+public name; inability to reconcile
 therefore leaves that SHA blocked rather than preserving an old head status.
 Main changes, a new pin PR head SHA, the immutable promotion-plan deadline, and
 the 24-hour run-age limit invalidate authorization. A
