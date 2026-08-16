@@ -14,6 +14,8 @@ pub use model::DiagnosticKind as HostErrorKind;
 mod command_process;
 mod herdr;
 mod kwt;
+mod remote;
+mod ssh;
 #[cfg(windows)]
 mod windows_system;
 mod wsl;
@@ -25,11 +27,53 @@ pub use kwt::{
     KwtPullRequestImportRequest, KwtWorktree, KwtWorktreeCreate, KwtWorktreeOpen,
     kwt_command_failure_message,
 };
+pub use remote::{
+    RemoteTmuxConfig, RemoteTmuxError, RemoteTmuxHost, RemoteTmuxSnapshot, SshExecutable,
+};
+pub use ssh::{
+    KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshError, SshExecutionProjection,
+    SshLease, SshLeaseEvent, SshLeaseMode, SshLeasePrompt, SshLeaseResult, SshPromptDetails,
+    SshPromptKind, SshResolvedTarget, SshRouteSnapshot, SshTarget,
+};
 pub use wsl::{
     AdmissionAttacher, AttachTerm, CreationReceipt, HerdrInventory, HostError, HostSnapshot,
     KwtHostSnapshot, LiveSessionTarget, SystemWslPresence, WslConfig, WslEndpoint, WslExecutable,
     WslHost, WslPresence, WslRuntimeIdentity, ZellijInventory,
 };
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CommandPrefix {
+    program: OsString,
+    arguments: Vec<OsString>,
+}
+
+impl CommandPrefix {
+    fn new(program: impl Into<OsString>, arguments: Vec<OsString>) -> Self {
+        Self {
+            program: program.into(),
+            arguments,
+        }
+    }
+
+    fn native(program: impl Into<OsString>) -> Self {
+        Self::new(program, Vec::new())
+    }
+
+    fn program(&self) -> &OsStr {
+        &self.program
+    }
+
+    #[cfg(test)]
+    fn arguments(&self) -> &[OsString] {
+        &self.arguments
+    }
+
+    fn with_arguments(&self, arguments: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+        let mut resolved = self.arguments.clone();
+        resolved.extend(arguments);
+        resolved
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandOutput {

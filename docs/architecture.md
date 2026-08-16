@@ -159,7 +159,9 @@ consumed through kwt's machine-readable CLI surfaces.
 ### Windows and Linux Rust applications
 
 The first Rust product slice is a native Windows GPUI application attaching to
-tmux and discovering optional Herdr sessions inside WSL2. Linux remains a
+tmux and discovering optional Herdr sessions inside WSL2. It also has an
+explicitly configured POSIX SSH host slice for remote tmux discovery and
+attach-only presentation. Linux remains a
 compile-and-contract target until a native Linux product slice is authorized.
 Neither replaces the macOS SwiftUI
 application or embeds a Rust runtime into it. Cross-platform parity is enforced
@@ -431,6 +433,38 @@ reachable.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
 releases it; an authenticated master remains available until the app exits.
+
+The Rust port reaches this boundary through revision-pinned KWT rather than
+reimplementing OpenSSH configuration or prompt policy. On Windows, the host
+layer runs the pinned Linux helper and `/usr/bin/ssh` inside the selected WSL
+distro because Windows OpenSSH cannot provide the persistent ControlMaster
+socket required by KWT's daemon lease. It resolves an immutable KWT route
+snapshot, acquires a generation-bound multiplexed lease, validates ordered
+prompt attribution for every ProxyJump hop, and retains that lease with the
+presentation. The terminal layer receives only an absolute `wsl.exe` program
+and fully resolved argv. It never depends on WSL or KWT and never owns route,
+trust, or authentication state. Runtime lease authority is not persisted.
+
+The Rust composition root resolves `wsl.exe` by absolute Windows system path.
+At explicit connection time, Host pins the ready WSL endpoint and runtime,
+activates the bundled Linux helper in that distro, and verifies its
+`/usr/bin/ssh`. Native Windows OpenSSH, masterless leases, and direct fallback
+are inadmissible. GPUI owns a durable Settings shell with stable domain
+navigation and a page header/detail contract matching the Swift app;
+Hosts is its first implemented pane. The Hosts pane persists named SSH
+endpoints in `config.toml`, while saving or merely opening Settings never
+connects. An explicit host Connect action schedules route resolution, lease
+acquisition, prompt handling,
+and tmux inventory on a cancellable background host lane. Prompt events carry
+their host generation, so cancellation or a replacement attempt cannot apply
+late trust or authentication input. Each host publishes independently and a
+remote failure remains host-scoped.
+
+The initial remote product boundary is tmux discovery and exact attach only.
+Remote creation, killing, Herdr, Zellij, KWT project/worktree management,
+managed-helper installation, reconnect, and restoration remain unavailable in
+the UI until their own identity and lifecycle contracts are implemented.
+
 Before opening that channel, Ghosthub reads the effective destination policy
 with `ssh -G`. It tightens `accept-new` to an explicit review but does not
 override `yes`, `no`, or `off`; approval matches the parsed algorithm and

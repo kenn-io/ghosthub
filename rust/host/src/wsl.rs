@@ -22,9 +22,10 @@ use crate::kwt::{
 };
 use crate::zellij;
 use crate::{
-    CancellationToken, CommandOutput, CommandRunner, KwtBranchCandidate, KwtBundle, KwtInventory,
-    KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport,
-    KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen,
+    CancellationToken, CommandOutput, CommandPrefix, CommandRunner, KwtBranchCandidate, KwtBundle,
+    KwtInventory, KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport,
+    KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen, RemoteTmuxConfig,
+    RemoteTmuxHost,
 };
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
@@ -705,6 +706,68 @@ impl<R: CommandRunner> WslHost<R> {
         self.config.socket_directory()
     }
 
+    /// Build the Windows remote-host command boundary inside this exact WSL
+    /// runtime. Linux OpenSSH owns the persistent master; Windows owns only
+    /// the disposable `wsl.exe` relays and terminal client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the WSL runtime changed, the revision-pinned KWT
+    /// helper is unavailable, or the selected distro lacks `/usr/bin/ssh`.
+    pub fn remote_tmux_host(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        config: RemoteTmuxConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<RemoteTmuxHost<R>, HostError>
+    where
+        R: Clone,
+    {
+        let Some(bundle) = self.config.kwt_bundle() else {
+            return Err(HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "The revision-pinned KWT helper is unavailable in this build",
+            ));
+        };
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let mut ssh_probe = pinned_prefix(endpoint);
+        ssh_probe.extend(
+            ["/usr/bin/test", "-x", "/usr/bin/ssh"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let output = self.run(&ssh_probe, cancellation)?;
+        if output.status != 0 {
+            return Err(HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                format!(
+                    "OpenSSH is not installed in the {} WSL distro",
+                    endpoint.distro()
+                ),
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+
+        let mut controller_arguments = pinned_prefix(endpoint);
+        controller_arguments.push(OsString::from(helper));
+        let mut ssh_arguments = pinned_prefix(endpoint);
+        ssh_arguments.push(OsString::from("/usr/bin/ssh"));
+        Ok(RemoteTmuxHost::with_commands(
+            config,
+            CommandPrefix::new(
+                self.wsl_executable.as_os_str().to_os_string(),
+                controller_arguments,
+            ),
+            CommandPrefix::new(
+                self.wsl_executable.as_os_str().to_os_string(),
+                ssh_arguments,
+            ),
+            self.runner.clone(),
+        ))
+    }
+
     /// Read KWT project and worktree inventory independently from session
     /// discovery. Callers schedule this on the slower worktree cadence; tmux
     /// and Herdr refreshes never invoke it.
@@ -966,7 +1029,11 @@ impl<R: CommandRunner> WslHost<R> {
         }
 
         let home = self.resolve_home(endpoint, cancellation)?;
-        let directory = format!("{home}/.ghosthub/helpers/kwt/{}", bundle.revision());
+        let directory = format!(
+            "{home}/.ghosthub/helpers/kwt/{}/{}",
+            bundle.revision(),
+            bundle.sha256()
+        );
         let path = format!("{directory}/kwt");
         if !self.kwt_helper_matches(endpoint, &path, bundle, cancellation)? {
             self.install_kwt_helper(endpoint, &directory, &path, bundle, cancellation)?;
@@ -1051,8 +1118,12 @@ impl<R: CommandRunner> WslHost<R> {
                 ));
             }
             let activate =
-                self.run_scrubbed(endpoint, &["/usr/bin/mv", "-f", &temp, path], cancellation)?;
-            require_kwt_command(&activate, "activate the managed KWT helper")?;
+                self.run_scrubbed(endpoint, &["/usr/bin/ln", "--", &temp, path], cancellation)?;
+            if activate.status != 0
+                && !self.kwt_helper_matches(endpoint, path, bundle, cancellation)?
+            {
+                require_kwt_command(&activate, "activate the managed KWT helper")?;
+            }
             if !self.kwt_helper_matches(endpoint, path, bundle, cancellation)? {
                 return Err(HostError::new(
                     DiagnosticKind::MalformedOutput,
@@ -1061,13 +1132,11 @@ impl<R: CommandRunner> WslHost<R> {
             }
             Ok(())
         });
-        if result.is_err() {
-            let _ignored = self.run_scrubbed(
-                endpoint,
-                &["/usr/bin/rm", "-f", &temp],
-                &CancellationToken::new(),
-            );
-        }
+        let _ignored = self.run_scrubbed(
+            endpoint,
+            &["/usr/bin/rm", "-f", &temp],
+            &CancellationToken::new(),
+        );
         result
     }
 
@@ -4965,6 +5034,7 @@ mod tests {
         provider_timeouts: Arc<Mutex<Vec<Duration>>>,
         mutation_failure: Arc<Mutex<Option<String>>>,
         branch_failure: Arc<AtomicBool>,
+        helper_exists: Arc<AtomicBool>,
         helper_matches: Arc<AtomicBool>,
     }
 
@@ -4976,6 +5046,7 @@ mod tests {
                 provider_timeouts: Arc::default(),
                 mutation_failure: Arc::default(),
                 branch_failure: Arc::new(AtomicBool::new(false)),
+                helper_exists: Arc::new(AtomicBool::new(true)),
                 helper_matches: Arc::new(AtomicBool::new(true)),
             }
         }
@@ -5055,14 +5126,33 @@ mod tests {
             if let Some(output) = self.branch_failure_output(&args) {
                 return Ok(output);
             }
+            if args.iter().any(|argument| argument == "/usr/bin/ln") {
+                if self.helper_exists.swap(true, Ordering::AcqRel) {
+                    return Ok(CommandOutput {
+                        status: 1,
+                        stdout: Vec::new(),
+                        stderr: b"File exists".to_vec(),
+                    });
+                }
+                self.helper_matches.store(true, Ordering::Release);
+            }
             let stdout = if args.iter().any(|argument| argument == "/usr/bin/cat") {
                 TEST_RUNTIME_OUTPUT.to_vec()
             } else if args.iter().any(|argument| argument == "/usr/bin/sha256sum") {
-                let digest = if self.helper_matches.load(Ordering::Acquire) {
-                    "b".repeat(64)
-                } else {
-                    "c".repeat(64)
-                };
+                let path = args.last().expect("helper digest path");
+                if !path.contains(".tmp-") && !self.helper_exists.load(Ordering::Acquire) {
+                    return Ok(CommandOutput {
+                        status: 1,
+                        stdout: Vec::new(),
+                        stderr: b"No such file".to_vec(),
+                    });
+                }
+                let digest =
+                    if path.contains(".tmp-") || self.helper_matches.load(Ordering::Acquire) {
+                        "b".repeat(64)
+                    } else {
+                        "c".repeat(64)
+                    };
                 format!("{digest}  helper\n").into_bytes()
             } else if args.last().is_some_and(|argument| argument == "version") {
                 format!("kwt version {}\n", "a".repeat(40)).into_bytes()
@@ -5095,9 +5185,10 @@ mod tests {
                 matches!(
                     argument.as_str(),
                     "/usr/bin/install"
+                        | "/usr/bin/test"
                         | "/usr/bin/dd"
                         | "/usr/bin/chmod"
-                        | "/usr/bin/mv"
+                        | "/usr/bin/ln"
                         | "/usr/bin/rm"
                 )
             }) {
@@ -5122,7 +5213,6 @@ mod tests {
             cancellation: &CancellationToken,
             timeout: Duration,
         ) -> io::Result<CommandOutput> {
-            self.helper_matches.store(true, Ordering::Release);
             self.run(program, args, cancellation, timeout)
         }
     }
@@ -5134,6 +5224,14 @@ mod tests {
         WslRuntimeIdentity,
     ) {
         kwt_mutation_host_with_config(WslConfig::with_distro("Ubuntu").expect("config"))
+    }
+
+    fn test_kwt_helper_path() -> String {
+        format!(
+            "/home/test/.ghosthub/helpers/kwt/{}/{}/kwt",
+            "a".repeat(40),
+            "b".repeat(64)
+        )
     }
 
     fn kwt_mutation_host_with_config(
@@ -5162,9 +5260,43 @@ mod tests {
         *host.verified_kwt.lock().expect("verified KWT") = Some(VerifiedKwtHelper {
             endpoint: endpoint.clone(),
             runtime: runtime.clone(),
-            path: "/home/test/.ghosthub/helpers/kwt/revision/kwt".to_owned(),
+            path: test_kwt_helper_path(),
         });
         (host, runner, endpoint, runtime)
+    }
+
+    #[test]
+    fn remote_ssh_commands_are_pinned_inside_the_selected_wsl_distro() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let remote = host
+            .remote_tmux_host(
+                &endpoint,
+                &runtime,
+                RemoteTmuxConfig::default(),
+                &CancellationToken::new(),
+            )
+            .expect("prepare WSL-backed SSH host");
+        let (controller, ssh) = remote.commands();
+
+        assert_eq!(
+            controller.program(),
+            OsStr::new(r"C:\Windows\System32\wsl.exe")
+        );
+        assert_eq!(
+            controller.arguments(),
+            [
+                "--distribution",
+                "Ubuntu",
+                "--exec",
+                &test_kwt_helper_path(),
+            ]
+            .map(OsString::from)
+        );
+        assert_eq!(ssh.program(), OsStr::new(r"C:\Windows\System32\wsl.exe"));
+        assert_eq!(
+            ssh.arguments(),
+            ["--distribution", "Ubuntu", "--exec", "/usr/bin/ssh"].map(OsString::from)
+        );
     }
 
     #[test]
@@ -5519,13 +5651,10 @@ mod tests {
             .iter()
             .map(|argument| argument.to_string_lossy())
             .collect::<Vec<_>>();
-        assert!(args.windows(3).any(|args| {
-            args == [
-                "/home/test/.ghosthub/helpers/kwt/revision/kwt",
-                "open",
-                "/work/widget/topic",
-            ]
-        }));
+        assert!(
+            args.windows(3)
+                .any(|args| { args == [&test_kwt_helper_path(), "open", "/work/widget/topic",] })
+        );
         assert!(
             args.windows(2)
                 .any(|args| { args == ["--expected-repository", "github.com/acme/widget"] })
@@ -5586,7 +5715,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(args.windows(4).any(|args| {
             args == [
-                "/home/test/.ghosthub/helpers/kwt/revision/kwt",
+                &test_kwt_helper_path(),
                 "pr",
                 "attach",
                 "/work/widget/pr-17",
@@ -5655,9 +5784,41 @@ mod tests {
     }
 
     #[test]
-    fn cached_kwt_helper_is_revalidated_and_repaired_before_execution() {
+    fn conflicting_kwt_helper_is_rejected_without_overwrite() {
         let (host, runner, endpoint, runtime) = kwt_mutation_host();
         runner.helper_matches.store(false, Ordering::Release);
+
+        let error = host
+            .register_kwt_project(
+                &endpoint,
+                &runtime,
+                "/code/widget",
+                &CancellationToken::new(),
+            )
+            .expect_err("a conflicting immutable helper must fail closed");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(
+            error
+                .to_string()
+                .contains("activate the managed KWT helper")
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|args| args.iter().any(|argument| argument == "/usr/bin/ln"))
+        );
+        assert!(!calls.iter().any(|args| {
+            args.iter().any(|argument| argument == "/usr/bin/mv")
+                || args.windows(2).any(|pair| pair == ["projects", "add"])
+        }));
+    }
+
+    #[test]
+    fn missing_kwt_helper_is_published_at_a_digest_qualified_path() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        *host.verified_kwt.lock().expect("verified KWT") = None;
+        runner.helper_exists.store(false, Ordering::Release);
 
         host.register_kwt_project(
             &endpoint,
@@ -5665,22 +5826,17 @@ mod tests {
             "/code/widget",
             &CancellationToken::new(),
         )
-        .expect("replace the stale helper before project execution");
+        .expect("publish and execute the pinned helper");
 
+        let expected = test_kwt_helper_path();
         let calls = runner.calls.lock().expect("calls");
-        let digest_check = calls
-            .iter()
-            .position(|args| args.iter().any(|argument| argument == "/usr/bin/sha256sum"))
-            .expect("cached helper digest is checked");
-        let upload = calls
-            .iter()
-            .position(|args| args.iter().any(|argument| argument == "/usr/bin/dd"))
-            .expect("stale helper is reinstalled");
-        let project_command = calls
-            .iter()
-            .position(|args| args.windows(2).any(|pair| pair == ["projects", "add"]))
-            .expect("project command executes after repair");
-        assert!(digest_check < upload && upload < project_command);
+        assert!(calls.iter().any(|args| {
+            args.iter().any(|argument| argument == "/usr/bin/ln") && args.last() == Some(&expected)
+        }));
+        assert!(calls.iter().any(|args| {
+            args.windows(2).any(|pair| pair == ["projects", "add"])
+                && args.iter().any(|argument| argument == &expected)
+        }));
     }
 
     #[test]

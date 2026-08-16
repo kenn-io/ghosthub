@@ -793,6 +793,86 @@ account home has no helper-path override. Installation fails with an actionable
 diagnostic requiring a corrected or different remote account. This enterprise
 tradeoff is accepted for fleet predictability.
 
+Windows Cargo builds embed and validate both the revision-pinned native KWT
+controller and the Linux helper for the current architecture. The native PE
+controller remains a packaged contract artifact, but it is not the Windows
+product path for SSH leases: Windows OpenSSH does not provide the Unix-domain
+ControlMaster socket required by KWT's persistent daemon lease. The product
+therefore runs the Linux helper and `/usr/bin/ssh` inside the selected WSL
+distro. The helper is activated under its existing content-addressed WSL path;
+an existing file whose bytes or SHA-256 differ from the packaged bundle is
+rejected instead of being replaced in place.
+
+### KWT-owned SSH boundary
+
+Rust does not reproduce OpenSSH configuration resolution, ProxyJump
+expansion, host-key prompting, authentication prompting, or ControlMaster
+lifecycle. On Windows, the host crate invokes the exact revision-pinned Linux
+controller through system-owned `wsl.exe --distribution <distro> --exec` as
+argv-only `kwt ssh resolve --json`; the matching `/usr/bin/ssh` in that distro
+owns every master and client. The selected distro's OpenSSH configuration,
+known-hosts files, agents, and credentials are authoritative. There is no
+fallback to native Windows OpenSSH, a masterless KWT lease, or an unguarded
+direct SSH client. The host accepts only projection policy
+`kwt.openssh.projection.v1`, and treats its route identity and ordered target
+list as one immutable reviewed snapshot. Owner-private projection lines may be
+retained in memory for validation but are redacted from Rust debug output and
+never reconstructed by Ghosthub.
+
+Connection establishment uses the matching long-lived `kwt ssh lease --json`
+operation bound to that route identity and projection policy. Its NDJSON
+stream must retain one operation ID, contiguous sequence numbers, exact
+prompt-to-hop attribution, and one terminal result. Host-key prompts are
+non-sensitive; authentication prompts are sensitive; both retain KWT's
+deadline and exact logical, effective, and display target. A changed route,
+unsupported masterless result, malformed event, or attribution mismatch fails
+closed.
+
+A successful lease exposes only generation-bound OpenSSH arguments. The host
+owns the KWT lease process and keeps it alive for as long as any presentation
+uses the connection. Closing the final owner closes stdin and waits a bounded
+interval for release; cancellation or protocol failure terminates the
+controller process. The terminal crate never names KWT, parses a route, or
+answers an SSH prompt. It receives only the resolved client program and argv
+from a later host-built attach plan. On Windows that program is the absolute
+system `wsl.exe`, followed by the selected distro, `--exec /usr/bin/ssh`, the
+reviewed lease arguments, and the remote command. Ghosthub accepts the pinned
+KWT lease result only as an option-only `-F`/`-o`/`-S` prefix, then appends the
+reviewed logical destination exactly once before the remote command. Lease
+authority is runtime-only and is never serialized.
+Cancelling or failing a connection refresh discards that host's stale runtime
+context and lease before publishing `Disconnected` or `Unavailable`; retained
+terminal presentations keep only their own explicit lease ownership.
+
+The first Rust remote-host slice exposes this boundary through a native
+Settings shell modeled on the Swift app. The shell owns stable domain
+navigation plus a consistent page header and detail area, so later settings
+panes extend the container rather than replace it. Hosts is the first
+implemented pane: its host list and selected-host editor add, edit, or remove
+a named POSIX SSH endpoint with an optional user and port plus an explicit
+absolute tmux binary and optional absolute `TMUX_TMPDIR`. Saving rewrites only
+the Rust application configuration. Each configured endpoint appears as a
+disconnected host and connects only after an explicit Connect action; merely
+starting Ghosthub or opening Settings never opens a network connection.
+
+Connect resolves the route and acquires its KWT lease on a background host
+lane. KWT host-key and authentication prompt events are presented by GPUI
+with their exact display target and message. Authentication input is masked,
+kept only until the one-shot response is sent, and never persisted or logged.
+Cancel closes the prompt, cancels the host generation, and returns that host
+to disconnected state without affecting WSL or another SSH host. A changed or
+late prompt generation is rejected rather than applied to a replacement
+connection.
+
+After admission, Host discovers ordinary tmux sessions through the lease and
+builds an attach-only argv plan for the exact server PID, session ID, and
+creation time. Terminal launches the resolved client through ConPTY and
+remains unaware of WSL, KWT, routing, or SSH configuration.
+The v0 remote UI intentionally supports discovery and attachment only. It
+does not expose remote session creation or destruction, Herdr, Zellij,
+managed remote KWT helpers, worktrees, reconnect/backoff, or restoration.
+Those absent controls cannot silently fall back to WSL or unguarded SSH.
+
 Rust config resolution is:
 
 1. valid GHOSTHUB_CONFIG_HOME
@@ -1013,7 +1093,10 @@ Slice 1 reads font family, font size, and theme through:
 config → workspace projection → UI-facing state → GPUI
 ~~~
 
-It has no settings editor.
+The Settings shell exposes only the Hosts pane in this slice, and that pane
+owns only `[[ssh-host]]` records. WSL and terminal appearance remain startup
+configuration rather than mutable UI settings; adding those panes later does
+not change the shell's navigation or page-layout contract.
 
 Read-only configuration may select a distro name, an absolute POSIX tmux
 binary, and an absolute POSIX `TMUX_TMPDIR`. Defaults are the current WSL
@@ -1040,10 +1123,21 @@ font-size = 14
 background = "#0c0f14"
 foreground = "#d8dee9"
 clipboard-write = true
+
+[[ssh-host]]
+name = "Studio"
+hostname = "studio.example"
+user = "wesm"
+port = 22
+tmux-binary = "/usr/bin/tmux"
+socket-directory = "/run/user/1000/tmux"
 ~~~
 
-Every field is optional. `clipboard-write` governs remote OSC 52 writes;
-remote OSC 52 reads remain denied regardless of configuration.
+Every WSL and terminal field is optional. SSH host name and hostname are
+required, while user, port, and socket directory are optional and the tmux
+binary defaults to `/usr/bin/tmux`. SSH endpoint identity is user, hostname,
+and port; duplicates are rejected. `clipboard-write` governs remote OSC 52
+writes; remote OSC 52 reads remain denied regardless of configuration.
 
 Windows manual acceptance requires WSL2 and tmux. Ghosthub can create the first
 session itself; setup remains documented as deterministic commands for tests
@@ -1075,8 +1169,8 @@ Cross-window focus arbitration is deferred until multi-window delivery.
 Slice 1 includes policy-controlled OSC 52 writes to the Windows clipboard,
 empty responses for remote OSC 52 reads, and explicit clipboard paste with
 bracketed framing. It excludes IME composition, dead keys,
-kwt inventory, worktree mutation, remote SSH, managed-helper
-installation, native Linux product UI, persistence/restoration, multiple
+kwt inventory, worktree mutation, SSH reconnect and remote lifecycle,
+managed-helper installation, native Linux product UI, persistence/restoration, multiple
 windows, Console Panel, telemetry, updates, packaging, and acceptance
 screenshots.
 
@@ -1144,11 +1238,13 @@ After Slice 1:
 2. Local pull-request import and protected worktree attachment now ship through
    the pinned KWT provider contract and protected socket identity. Plain local
    session creation already ships through CreateOnce in the WSL slice.
-3. Remaining local work adds host/project settings, Console Panel, and broader
-   command and accessibility surfaces without
-   introducing remote transport.
-4. Remote hosts add OpenSSH diagnostics, managed-helper installation,
-   attach-only transport reconnect, repair/open reconnect, and remote Windows.
+3. Remaining local work adds project settings, Console Panel, and broader
+   command and accessibility surfaces.
+4. Remote POSIX tmux host settings, explicit connect, KWT-owned prompts,
+   inventory, and attach-only presentation now ship as the first remote slice.
+   Follow-on remote work adds managed-helper installation, attach-only
+   transport reconnect, repair/open reconnect, other multiplexers, and remote
+   Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.

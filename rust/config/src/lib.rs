@@ -1,8 +1,13 @@
 //! Configuration and path resolution for the Rust Ghosthub application.
 
-use std::{collections::BTreeMap, fmt, fs, io, path::Path};
+use std::{
+    collections::BTreeMap,
+    fmt, fs,
+    io::{self, Write},
+    path::Path,
+};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const CONFIG_HOME: &str = "GHOSTHUB_CONFIG_HOME";
 const STATE_HOME: &str = "GHOSTHUB_STATE_HOME";
@@ -48,6 +53,100 @@ impl Default for WslSettings {
 pub struct ApplicationConfig {
     wsl: WslSettings,
     terminal: TerminalAppearance,
+    ssh_hosts: Vec<SshHostSettings>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SshHostSettings {
+    name: String,
+    hostname: String,
+    user: Option<String>,
+    port: Option<u16>,
+    tmux_binary: String,
+    socket_directory: Option<String>,
+}
+
+impl SshHostSettings {
+    /// Validate one user-authored SSH host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty labels or targets, invalid ports, control
+    /// characters, or non-absolute remote paths.
+    pub fn new(
+        name: impl Into<String>,
+        hostname: impl Into<String>,
+        user: Option<String>,
+        port: Option<u16>,
+        tmux_binary: impl Into<String>,
+        socket_directory: Option<String>,
+    ) -> Result<Self, ConfigError> {
+        let host = Self {
+            name: name.into(),
+            hostname: hostname.into(),
+            user,
+            port,
+            tmux_binary: tmux_binary.into(),
+            socket_directory,
+        };
+        host.validate("ssh-host")?;
+        Ok(host)
+    }
+
+    fn validate(&self, prefix: &str) -> Result<(), ConfigError> {
+        require_safe_nonempty(&format!("{prefix}.name"), &self.name)?;
+        require_safe_nonempty(&format!("{prefix}.hostname"), &self.hostname)?;
+        if let Some(user) = &self.user {
+            require_safe_nonempty(&format!("{prefix}.user"), user)?;
+        }
+        if self.port == Some(0) {
+            return Err(ConfigError::new(format!(
+                "{prefix}.port must be greater than zero"
+            )));
+        }
+        require_posix_absolute(&format!("{prefix}.tmux-binary"), &self.tmux_binary)?;
+        if let Some(path) = &self.socket_directory {
+            require_posix_absolute(&format!("{prefix}.socket-directory"), path)?;
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn id(&self) -> String {
+        let user = self.user.as_deref().unwrap_or_default();
+        let port = self.port.map_or_else(String::new, |port| port.to_string());
+        format!("ssh:{user}@{}:{port}", self.hostname)
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn hostname(&self) -> &str {
+        &self.hostname
+    }
+
+    #[must_use]
+    pub fn user(&self) -> Option<&str> {
+        self.user.as_deref()
+    }
+
+    #[must_use]
+    pub const fn port(&self) -> Option<u16> {
+        self.port
+    }
+
+    #[must_use]
+    pub fn tmux_binary(&self) -> &str {
+        &self.tmux_binary
+    }
+
+    #[must_use]
+    pub fn socket_directory(&self) -> Option<&str> {
+        self.socket_directory.as_deref()
+    }
 }
 
 impl ApplicationConfig {
@@ -85,32 +184,7 @@ impl ApplicationConfig {
     ///
     /// Returns an error for invalid path overrides or an invalid present file.
     pub fn load_current() -> Result<Self, ConfigError> {
-        let platform = current_platform();
-        let home_name = if platform == Platform::Windows {
-            "USERPROFILE"
-        } else {
-            "HOME"
-        };
-        let user_home = std::env::var(home_name)
-            .map_err(|error| ConfigError::new(format!("read {home_name}: {error}")))?;
-        let mut environment = BTreeMap::new();
-        for name in [GHOSTHUB_HOME, CONFIG_HOME, STATE_HOME] {
-            match std::env::var(name) {
-                Ok(value) => {
-                    environment.insert(name.to_owned(), value);
-                }
-                Err(std::env::VarError::NotPresent) => {}
-                Err(error) => {
-                    return Err(ConfigError::new(format!("read {name}: {error}")));
-                }
-            }
-        }
-        let roots = resolve_roots(&ResolveInput {
-            platform,
-            user_home,
-            environment,
-        })
-        .map_err(|error| ConfigError::new(error.to_string()))?;
+        let roots = current_roots()?;
         Self::load(&roots)
     }
 
@@ -122,6 +196,68 @@ impl ApplicationConfig {
     #[must_use]
     pub const fn terminal(&self) -> &TerminalAppearance {
         &self.terminal
+    }
+
+    #[must_use]
+    pub fn ssh_hosts(&self) -> &[SshHostSettings] {
+        &self.ssh_hosts
+    }
+
+    /// Replace the configured SSH hosts and persist the complete validated
+    /// application configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when host identities collide or the file cannot be
+    /// written.
+    pub fn replace_ssh_hosts(
+        &mut self,
+        roots: &Roots,
+        hosts: Vec<SshHostSettings>,
+    ) -> Result<(), ConfigError> {
+        validate_unique_ssh_hosts(&hosts)?;
+        let mut candidate = self.clone();
+        candidate.ssh_hosts = hosts;
+        candidate.save(roots)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Persist the current configuration to its resolved location.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory or file cannot be written.
+    pub fn save(&self, roots: &Roots) -> Result<(), ConfigError> {
+        let directory = Path::new(&roots.config);
+        fs::create_dir_all(directory).map_err(|error| {
+            ConfigError::new(format!("create {}: {error}", directory.display()))
+        })?;
+        let path = directory.join(APPLICATION_CONFIG);
+        let contents = toml::to_string_pretty(&ConfigFile::from(self))
+            .map_err(|error| ConfigError::new(format!("encode {APPLICATION_CONFIG}: {error}")))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(|error| {
+            ConfigError::new(format!("create temporary {}: {error}", path.display()))
+        })?;
+        temporary.write_all(contents.as_bytes()).map_err(|error| {
+            ConfigError::new(format!("write temporary {}: {error}", path.display()))
+        })?;
+        temporary.as_file().sync_all().map_err(|error| {
+            ConfigError::new(format!("sync temporary {}: {error}", path.display()))
+        })?;
+        temporary.persist(&path).map_err(|error| {
+            ConfigError::new(format!("replace {}: {}", path.display(), error.error))
+        })?;
+        Ok(())
+    }
+
+    /// Resolve the current process roots without loading configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid path overrides or a missing user home.
+    pub fn current_roots() -> Result<Roots, ConfigError> {
+        current_roots()
     }
 }
 
@@ -146,14 +282,16 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
     wsl: WslFile,
     terminal: TerminalFile,
+    #[serde(rename = "ssh-host")]
+    ssh_hosts: Vec<SshHostFile>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 struct WslFile {
     distro: Option<String>,
@@ -161,7 +299,7 @@ struct WslFile {
     socket_directory: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 struct TerminalFile {
     font_family: Option<String>,
@@ -169,6 +307,17 @@ struct TerminalFile {
     background: Option<String>,
     foreground: Option<String>,
     clipboard_write: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+struct SshHostFile {
+    name: String,
+    hostname: String,
+    user: Option<String>,
+    port: Option<u16>,
+    tmux_binary: Option<String>,
+    socket_directory: Option<String>,
 }
 
 impl TryFrom<ConfigFile> for ApplicationConfig {
@@ -187,6 +336,27 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
         if let Some(path) = &file.wsl.socket_directory {
             require_posix_absolute("wsl.socket-directory", path)?;
         }
+
+        let ssh_hosts = file
+            .ssh_hosts
+            .into_iter()
+            .enumerate()
+            .map(|(index, host)| {
+                let host = SshHostSettings {
+                    name: host.name,
+                    hostname: host.hostname,
+                    user: host.user,
+                    port: host.port,
+                    tmux_binary: host
+                        .tmux_binary
+                        .unwrap_or_else(|| DEFAULT_TMUX_BINARY.to_owned()),
+                    socket_directory: host.socket_directory,
+                };
+                host.validate(&format!("ssh-host[{index}]"))?;
+                Ok(host)
+            })
+            .collect::<Result<Vec<_>, ConfigError>>()?;
+        validate_unique_ssh_hosts(&ssh_hosts)?;
 
         let font_family = file
             .terminal
@@ -231,13 +401,69 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
                     .clipboard_write
                     .unwrap_or(defaults.terminal.allow_remote_clipboard_write),
             },
+            ssh_hosts,
         })
     }
+}
+
+impl From<&ApplicationConfig> for ConfigFile {
+    fn from(config: &ApplicationConfig) -> Self {
+        Self {
+            wsl: WslFile {
+                distro: config.wsl.distro.clone(),
+                tmux_binary: Some(config.wsl.tmux_binary.clone()),
+                socket_directory: config.wsl.socket_directory.clone(),
+            },
+            terminal: TerminalFile {
+                font_family: Some(config.terminal.font_family.clone()),
+                font_size: Some(config.terminal.font_size),
+                background: Some(format!("#{:06x}", config.terminal.background)),
+                foreground: Some(format!("#{:06x}", config.terminal.foreground)),
+                clipboard_write: Some(config.terminal.allow_remote_clipboard_write),
+            },
+            ssh_hosts: config
+                .ssh_hosts
+                .iter()
+                .map(|host| SshHostFile {
+                    name: host.name.clone(),
+                    hostname: host.hostname.clone(),
+                    user: host.user.clone(),
+                    port: host.port,
+                    tmux_binary: Some(host.tmux_binary.clone()),
+                    socket_directory: host.socket_directory.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+fn validate_unique_ssh_hosts(hosts: &[SshHostSettings]) -> Result<(), ConfigError> {
+    let mut identities = std::collections::BTreeSet::new();
+    for host in hosts {
+        if !identities.insert(host.id()) {
+            return Err(ConfigError::new(format!(
+                "SSH host {} is configured more than once",
+                host.hostname
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn require_nonempty(name: &str, value: &str) -> Result<(), ConfigError> {
     if value.is_empty() {
         Err(ConfigError::new(format!("{name} must not be empty")))
+    } else {
+        Ok(())
+    }
+}
+
+fn require_safe_nonempty(name: &str, value: &str) -> Result<(), ConfigError> {
+    require_nonempty(name, value)?;
+    if value.chars().any(char::is_control) {
+        Err(ConfigError::new(format!(
+            "{name} must not contain control characters"
+        )))
     } else {
         Ok(())
     }
@@ -271,6 +497,33 @@ const fn current_platform() -> Platform {
     {
         Platform::Posix
     }
+}
+
+fn current_roots() -> Result<Roots, ConfigError> {
+    let platform = current_platform();
+    let home_name = if platform == Platform::Windows {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
+    let user_home = std::env::var(home_name)
+        .map_err(|error| ConfigError::new(format!("read {home_name}: {error}")))?;
+    let mut environment = BTreeMap::new();
+    for name in [GHOSTHUB_HOME, CONFIG_HOME, STATE_HOME] {
+        match std::env::var(name) {
+            Ok(value) => {
+                environment.insert(name.to_owned(), value);
+            }
+            Err(std::env::VarError::NotPresent) => {}
+            Err(error) => return Err(ConfigError::new(format!("read {name}: {error}"))),
+        }
+    }
+    resolve_roots(&ResolveInput {
+        platform,
+        user_home,
+        environment,
+    })
+    .map_err(|error| ConfigError::new(error.to_string()))
 }
 
 #[derive(Clone, Debug, PartialEq)]
