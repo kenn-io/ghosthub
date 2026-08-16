@@ -635,6 +635,9 @@ struct WorkspaceWindow: View {
         return RootView(
             display: WorkspaceDisplayState(
                 snapshot: sceneModel.snapshot,
+                sidebarSectionCache: sceneModel.sidebarSectionCache,
+                sidebarSnapshotRevision:
+                sceneModel.sidebarSnapshotRevision,
                 workspaceResourceSummary:
                 sceneModel.workspaceResourceSummary,
                 activatedWorktreeIDs:

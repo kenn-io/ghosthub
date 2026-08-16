@@ -22,17 +22,16 @@ import Testing
 struct ActivationWorkGateTests {
     /// Budgets are a ratchet at the measured baseline plus 30%: 10 switches
     /// cost exactly 20 root body evaluations (one per window per switch)
-    /// and 40 sidebar section computations (two call sites per root
-    /// evaluation until the sections result is memoized). The
-    /// headroom absorbs a stray framework re-evaluation, while any new
-    /// per-switch invalidation source adds at least one root evaluation
-    /// per switch (+10 and +20 here) and trips the gate. Lower the budgets
-    /// when render work shrinks; never raise them without profiling why
-    /// the work grew.
+    /// and no sidebar section recomputation. The headroom absorbs a stray
+    /// framework re-evaluation, while any new per-switch invalidation source
+    /// adds at least one root evaluation per switch (+10 here) and trips the
+    /// gate. The section budget has no headroom because activation changes
+    /// none of its inputs. Lower the budgets when render work shrinks; never
+    /// raise them without profiling why the work grew.
     private enum Budget {
         static let switches = 10
         static let rootBodyEvaluations = 26
-        static let sidebarSectionComputations = 52
+        static let sidebarSectionComputations = 0
     }
 
     @Test("key-window switching stays within the render work budget")
@@ -199,6 +198,7 @@ private final class GateEnvironment {
 @MainActor
 private final class GateWindowModel: ObservableObject {
     let snapshot: WorkspaceSnapshot
+    let sidebarSectionCache = WorkspaceSidebarSectionCache()
     @Published var selection: WorkspaceSelection
     @Published var activeSession: WorkspaceTmuxSessionSelection?
     @Published var columnVisibility: NavigationSplitViewVisibility = .all
@@ -228,6 +228,7 @@ private struct GateHarness: View {
         RootView(
             display: WorkspaceDisplayState(
                 snapshot: model.snapshot,
+                sidebarSectionCache: model.sidebarSectionCache,
                 activeTmuxSession: model.activeSession
             ),
             content: ContentBuilders(

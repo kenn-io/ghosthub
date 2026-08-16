@@ -642,6 +642,8 @@ public struct RootView: View {
     private var workspaceSidebarColumn: some View {
         WorkspaceSidebarView(
             snapshot: snapshot,
+            sectionCache: display.sidebarSectionCache,
+            snapshotRevision: display.sidebarSnapshotRevision,
             selection: Binding(
                 get: { selection },
                 set: { selectWorkspace($0) }

@@ -579,10 +579,13 @@ final class WorkspaceSceneModel: ObservableObject {
 
     @Published var snapshot: WorkspaceSnapshot {
         didSet {
+            sidebarSnapshotRevision &+= 1
             publishProtectedTmuxEndpoints()
             reconcileInventoryHosts()
         }
     }
+    let sidebarSectionCache = WorkspaceSidebarSectionCache()
+    private(set) var sidebarSnapshotRevision: UInt64 = 0
     private var tmuxDiscoveryEnabled = false
     private var isApplyingInventoryOverlay = false
     private var inventoryHosts: [UUID: CommandHost] = [:]

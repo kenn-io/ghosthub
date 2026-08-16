@@ -160,23 +160,41 @@ extension WorkspaceSceneModel {
     }
 
     private var keyboardNavigationContext: KeyboardNavigationContext {
-        KeyboardNavigationContext(
-            snapshot: snapshot,
+        let tmuxSessionVisibility = TmuxSessionVisibility(
+            hiddenPatterns: SettingsStore.shared.tmuxSessionPreferences
+                .hiddenSessionPatterns,
+            hideKwtManagedSessions: SettingsStore.shared
+                .worktreePreferences.hideKwtManagedSessions
+        )
+        let worktreeOrderRawValue = WorkspaceSidebarOrderStorage
+            .worktreeRawValue()
+        let tmuxSessionOrderRawValue = WorkspaceSidebarOrderStorage
+            .tmuxSessionRawValue()
+        let herdrSessionOrderRawValue = WorkspaceSidebarOrderStorage
+            .herdrSessionRawValue()
+        let zellijSessionOrderRawValue = WorkspaceSidebarOrderStorage
+            .zellijSessionRawValue()
+        let sidebarSections = sidebarSectionCache.sections(
+            in: snapshot,
+            snapshotRevision: sidebarSnapshotRevision,
             visibility: worktreeVisibility,
-            tmuxSessionVisibility: TmuxSessionVisibility(
-                hiddenPatterns: SettingsStore.shared.tmuxSessionPreferences
-                    .hiddenSessionPatterns,
-                hideKwtManagedSessions: SettingsStore.shared
-                    .worktreePreferences.hideKwtManagedSessions
-            ),
-            worktreeOrderRawValue: WorkspaceSidebarOrderStorage
-                .worktreeRawValue(),
-            tmuxSessionOrderRawValue: WorkspaceSidebarOrderStorage
-                .tmuxSessionRawValue(),
-            herdrSessionOrderRawValue: WorkspaceSidebarOrderStorage
-                .herdrSessionRawValue(),
-            zellijSessionOrderRawValue: WorkspaceSidebarOrderStorage
-                .zellijSessionRawValue()
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            connectedTmuxSessionIDs: connectedBorrowedTmuxSessionIDs,
+            liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+            zellijSessionOrderRawValue: zellijSessionOrderRawValue
+        )
+        return KeyboardNavigationContext(
+            snapshot: snapshot,
+            sidebarSections: sidebarSections,
+            visibility: worktreeVisibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+            zellijSessionOrderRawValue: zellijSessionOrderRawValue
         )
     }
 

@@ -5,6 +5,32 @@ import Testing
 @testable import GhosthubUI
 
 struct WorkspaceSidebarModelTests {
+    @MainActor
+    @Test("section cache refreshes only when its inputs change")
+    func sectionCacheInvalidation() {
+        let hostID = UUID()
+        let cache = WorkspaceSidebarSectionCache()
+        var snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(
+                id: hostID,
+                tmuxSessions: [
+                    .init(name: "first", managed: false, windows: []),
+                ]
+            ),
+        ])
+
+        let first = cache.sections(in: snapshot, snapshotRevision: 0)
+        let repeated = cache.sections(in: snapshot, snapshotRevision: 0)
+        #expect(first == repeated)
+
+        snapshot.hosts[0].tmuxSessions.append(
+            .init(name: "second", managed: false, windows: [])
+        )
+        let refreshed = cache.sections(in: snapshot, snapshotRevision: 1)
+        #expect(refreshed[0].tmuxSessionRows.map(\.title)
+            == ["first", "second"])
+    }
+
     @Test("drag ordering is durable and scoped to one project")
     func worktreeDragOrdering() {
         let first = WorktreeSummary.fixture(name: "first")
