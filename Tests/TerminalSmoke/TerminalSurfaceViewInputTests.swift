@@ -25,9 +25,11 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         try skipUnlessLibghosttyReady()
         pasteboard = InMemoryTerminalPasteboard()
         TerminalPasteboardAccess.current = pasteboard
+        LibghosttyRuntime.osc52ClipboardWriteDiagnosticObserver = nil
     }
 
     override func tearDown() async throws {
+        LibghosttyRuntime.osc52ClipboardWriteDiagnosticObserver = nil
         TerminalPasteboardAccess.reset()
         pasteboard = nil
         try await super.tearDown()
@@ -2810,6 +2812,12 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             )
         )
         view.blocksClipboardReads = true
+        var diagnostics: [
+            LibghosttyRuntime.OSC52ClipboardWriteDiagnostic
+        ] = []
+        LibghosttyRuntime.osc52ClipboardWriteDiagnosticObserver = {
+            diagnostics.append($0)
+        }
 
         pasteboard.clearContents()
 
@@ -2824,6 +2832,37 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             pasteboard.string(forType: .string),
             copiedText,
             "OSC 52 copy from a remote surface must reach the Mac clipboard."
+        )
+        XCTAssertEqual(
+            diagnostics.last,
+            .written(
+                entryCount: 1,
+                byteCount: copiedText.utf8.count
+            )
+        )
+    }
+
+    func testOSC52ClipboardDiagnosticReportsPasteboardRejection() {
+        pasteboard.acceptsWrites = false
+        let copiedText = "clipboard write"
+
+        let diagnostic = LibghosttyRuntime.writeClipboardEntries(
+            [
+                .init(mime: "text/plain", data: copiedText),
+                .init(
+                    mime: LibghosttyRuntime.osc52ClipboardWriteMIME,
+                    data: ""
+                ),
+            ],
+            to: pasteboard
+        )
+
+        XCTAssertEqual(
+            diagnostic,
+            .pasteboardRejected(
+                entryCount: 1,
+                byteCount: copiedText.utf8.count
+            )
         )
     }
 
