@@ -946,18 +946,23 @@ impl KwtSshLeaseClient {
                     last_activity = Instant::now();
                     match accept_lease_line(&mut decoder, &line, route)? {
                         SshLeaseEvent::Prompt(request) => {
-                            let response = prompt(&request)?;
-                            if response.len() > MAX_PROMPT_RESPONSE_BYTES {
-                                process.terminate_and_reap();
-                                return Err(SshError::new(
-                                    DiagnosticKind::MalformedOutput,
-                                    "SSH prompt response is too large",
-                                ));
-                            }
-                            process.write_prompt_response(&request, &response)?;
+                            deliver_prompt_response(
+                                cancellation,
+                                || prompt(&request),
+                                |response| {
+                                    if response.len() > MAX_PROMPT_RESPONSE_BYTES {
+                                        return Err(SshError::new(
+                                            DiagnosticKind::MalformedOutput,
+                                            "SSH prompt response is too large",
+                                        ));
+                                    }
+                                    process.write_prompt_response(&request, response)
+                                },
+                            )?;
                             last_activity = Instant::now();
                         }
                         SshLeaseEvent::Complete(result) => {
+                            require_active_acquisition(cancellation)?;
                             return Ok(SshLease {
                                 result,
                                 process: Arc::new(LeaseState::new(process)),
@@ -994,6 +999,27 @@ impl KwtSshLeaseClient {
                 }
             }
         }
+    }
+}
+
+fn deliver_prompt_response(
+    cancellation: &CancellationToken,
+    prompt: impl FnOnce() -> Result<String, SshError>,
+    publish: impl FnOnce(&str) -> Result<(), SshError>,
+) -> Result<(), SshError> {
+    let response = prompt()?;
+    require_active_acquisition(cancellation)?;
+    publish(&response)
+}
+
+fn require_active_acquisition(cancellation: &CancellationToken) -> Result<(), SshError> {
+    if cancellation.is_cancelled() {
+        Err(SshError::new(
+            DiagnosticKind::Transport,
+            "SSH lease acquisition cancelled",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -1949,6 +1975,38 @@ mod tests {
             "released"
         );
         std::fs::remove_file(marker).expect("remove release marker");
+    }
+
+    #[test]
+    fn cancelled_prompt_response_never_reaches_the_controller() {
+        let cancellation = CancellationToken::new();
+        let mut published = false;
+        let error = deliver_prompt_response(
+            &cancellation,
+            || {
+                cancellation.cancel();
+                Ok("credential-must-not-cross".to_owned())
+            },
+            |_| {
+                published = true;
+                Ok(())
+            },
+        )
+        .expect_err("cancelled prompt must abort before publication");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert!(!published, "cancelled credential reached KWT");
+    }
+
+    #[test]
+    fn cancelled_acquisition_rejects_a_decoded_completion() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let error = require_active_acquisition(&cancellation)
+            .expect_err("cancelled completion must not become a lease");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
     }
 
     #[test]

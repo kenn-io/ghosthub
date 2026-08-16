@@ -1173,7 +1173,15 @@ impl<R: CommandRunner> WslHost<R> {
         if digest.split_whitespace().next() != Some(bundle.sha256()) {
             return Ok(false);
         }
-        let version = self.run_scrubbed(endpoint, &[path, "version"], cancellation)?;
+        let mut version = self.run_scrubbed(endpoint, &[path, "version"], cancellation)?;
+        if version.status == 126 {
+            let chmod =
+                self.run_scrubbed(endpoint, &["/usr/bin/chmod", "0755", path], cancellation)?;
+            if chmod.status != 0 {
+                return Ok(false);
+            }
+            version = self.run_scrubbed(endpoint, &[path, "version"], cancellation)?;
+        }
         if version.status != 0 {
             return Ok(false);
         }
@@ -5067,6 +5075,7 @@ mod tests {
         branch_failure: Arc<AtomicBool>,
         helper_exists: Arc<AtomicBool>,
         helper_matches: Arc<AtomicBool>,
+        helper_executable: Arc<AtomicBool>,
     }
 
     impl Default for KwtMutationRunner {
@@ -5079,6 +5088,7 @@ mod tests {
                 branch_failure: Arc::new(AtomicBool::new(false)),
                 helper_exists: Arc::new(AtomicBool::new(true)),
                 helper_matches: Arc::new(AtomicBool::new(true)),
+                helper_executable: Arc::new(AtomicBool::new(true)),
             }
         }
     }
@@ -5166,6 +5176,23 @@ mod tests {
                     });
                 }
                 self.helper_matches.store(true, Ordering::Release);
+            }
+            if args
+                .windows(2)
+                .any(|pair| pair == ["0755", test_kwt_helper_path().as_str()])
+            {
+                self.helper_executable.store(true, Ordering::Release);
+            }
+            if args
+                .windows(2)
+                .any(|pair| pair == [test_kwt_helper_path().as_str(), "version"])
+                && !self.helper_executable.load(Ordering::Acquire)
+            {
+                return Ok(CommandOutput {
+                    status: 126,
+                    stdout: Vec::new(),
+                    stderr: b"Permission denied".to_vec(),
+                });
             }
             let stdout = if args.iter().any(|argument| argument == "/usr/bin/cat") {
                 TEST_RUNTIME_OUTPUT.to_vec()
@@ -5346,6 +5373,24 @@ mod tests {
             ]
             .map(OsString::from)
         );
+    }
+
+    #[test]
+    fn matching_managed_kwt_helper_recovers_executable_permission() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        runner.helper_executable.store(false, Ordering::Release);
+        let bundle = KwtBundle::new("a".repeat(40), "b".repeat(64), vec![1_u8]).expect("bundle");
+
+        let helper = host
+            .ensure_kwt_helper(&endpoint, &runtime, &bundle, &CancellationToken::new())
+            .expect("repair matching managed helper");
+
+        assert_eq!(helper, test_kwt_helper_path());
+        assert!(runner.helper_executable.load(Ordering::Acquire));
+        assert!(runner.calls.lock().expect("calls").iter().any(|args| {
+            args.windows(3)
+                .any(|window| window == ["/usr/bin/chmod", "0755", test_kwt_helper_path().as_str()])
+        }));
     }
 
     #[test]
