@@ -3054,6 +3054,13 @@ fn remote_config(settings: &SshHostSettings) -> Result<RemoteTmuxConfig, Workspa
     .map_err(|error| WorkspaceError::new(error.to_string()))
 }
 
+fn remote_connection_matches(left: &RemoteTmuxConfig, right: &RemoteTmuxConfig) -> bool {
+    left.id() == right.id()
+        && left.target() == right.target()
+        && left.tmux_binary() == right.tmux_binary()
+        && left.socket_directory() == right.socket_directory()
+}
+
 fn request_ssh_prompt(
     inner: &Inner,
     host_id: &str,
@@ -3936,15 +3943,65 @@ impl Workspace {
             .is_some_and(|entry| entry.generation == generation && entry.cancellation.is_some())
     }
 
+    fn update_ssh_host_metadata(
+        &self,
+        original_id: Option<&str>,
+        config: &RemoteTmuxConfig,
+    ) -> bool {
+        if original_id != Some(config.id()) {
+            return false;
+        }
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        {
+            let mut entries = self
+                .inner
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(entry) = entries
+                .get_mut(config.id())
+                .filter(|entry| remote_connection_matches(&entry.config, config))
+            else {
+                return false;
+            };
+            entry.config = config.clone();
+        }
+        if let Some(item) = self
+            .inner
+            .hosts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter_mut()
+            .find(|item| item.id() == config.id())
+        {
+            config.name().clone_into(&mut item.name);
+            item.endpoint = config.endpoint();
+        }
+        self.inner.revision.fetch_add(1, Ordering::Release);
+        true
+    }
+
     fn publish_saved_ssh_host(
         &self,
         original_id: Option<&str>,
         settings: &SshHostSettings,
     ) -> Result<(), WorkspaceError> {
+        let config = remote_config(settings)?;
+        let new_id = config.id().to_owned();
+        if self.update_ssh_host_metadata(original_id, &config) {
+            return Ok(());
+        }
+        let selected_original = original_id.is_some_and(|original_id| {
+            self.inner
+                .selected_host
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_deref()
+                == Some(original_id)
+        });
         if let Some(original_id) = original_id {
             self.remove_ssh_host_runtime(original_id);
         }
-        let config = remote_config(settings)?;
         #[cfg(windows)]
         let dependencies_available = self
             .inner
@@ -4010,6 +4067,13 @@ impl Workspace {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(item);
+        if selected_original {
+            *self
+                .inner
+                .selected_host
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_id);
+        }
         self.inner.revision.fetch_add(1, Ordering::Release);
         Ok(())
     }
@@ -19365,5 +19429,134 @@ mod tests {
             HostConnectionState::Disconnected
         );
         assert!(snapshot.hosts()[0].diagnostic().is_none());
+    }
+
+    #[test]
+    fn display_only_ssh_host_edits_preserve_runtime_and_selection() {
+        let config = RemoteTmuxConfig::new(
+            "ssh:deploy@studio.example:22",
+            "Studio",
+            SshTarget::new("studio.example", Some("deploy".to_owned()), Some(22))
+                .expect("valid target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid remote host");
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                config.id(),
+                config.name(),
+                config.endpoint(),
+                HostConnectionState::Ready,
+                vec![SessionItem::new("work", 0)],
+                None,
+            )],
+        ));
+        let cancellation = CancellationToken::new();
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                config.id().to_owned(),
+                RemoteEntry {
+                    config: config.clone(),
+                    native_host: None,
+                    context: None,
+                    cancellation: Some(cancellation.clone()),
+                    generation: 7,
+                },
+            );
+        let edited = SshHostSettings::new(
+            "Build Mac",
+            "studio.example",
+            Some("deploy".to_owned()),
+            Some(22),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid settings");
+
+        workspace
+            .publish_saved_ssh_host(Some(config.id()), &edited)
+            .expect("publish display edit");
+
+        {
+            let entries = workspace.inner.remote_hosts.lock().expect("remote hosts");
+            let entry = entries.get(config.id()).expect("preserved runtime");
+            assert_eq!(entry.generation, 7);
+        }
+        assert!(!cancellation.is_cancelled());
+        let snapshot = workspace.snapshot();
+        assert_eq!(snapshot.selected_host(), Some(config.id()));
+        assert_eq!(snapshot.hosts()[0].name(), "Build Mac");
+        assert_eq!(snapshot.hosts()[0].connection(), HostConnectionState::Ready);
+        assert_eq!(snapshot.hosts()[0].sessions()[0].name(), "work");
+    }
+
+    #[test]
+    fn connection_changing_ssh_host_edits_disconnect_and_move_selection() {
+        let config = RemoteTmuxConfig::new(
+            "ssh:deploy@old.example:22",
+            "Studio",
+            SshTarget::new("old.example", Some("deploy".to_owned()), Some(22))
+                .expect("valid target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid remote host");
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                config.id(),
+                config.name(),
+                config.endpoint(),
+                HostConnectionState::Connecting,
+                Vec::new(),
+                None,
+            )],
+        ));
+        let cancellation = CancellationToken::new();
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                config.id().to_owned(),
+                RemoteEntry {
+                    config: config.clone(),
+                    native_host: None,
+                    context: None,
+                    cancellation: Some(cancellation.clone()),
+                    generation: 7,
+                },
+            );
+        let edited = SshHostSettings::new(
+            "Studio",
+            "new.example",
+            Some("deploy".to_owned()),
+            Some(22),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid settings");
+        let edited_id = edited.id();
+
+        workspace
+            .publish_saved_ssh_host(Some(config.id()), &edited)
+            .expect("publish connection edit");
+
+        assert!(cancellation.is_cancelled());
+        let snapshot = workspace.snapshot();
+        assert_eq!(snapshot.selected_host(), Some(edited_id.as_str()));
+        assert_eq!(snapshot.hosts().len(), 1);
+        assert_eq!(snapshot.hosts()[0].id(), edited_id);
+        assert_eq!(
+            snapshot.hosts()[0].connection(),
+            HostConnectionState::Unavailable
+        );
     }
 }

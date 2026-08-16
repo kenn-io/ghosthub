@@ -7034,13 +7034,13 @@ impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _scope_changed = self.sync_terminal_scope();
         let _handled = self.handle_events(cx);
-        if !self.ssh_prompts.is_empty() && !self.ssh_prompt_focus.is_focused(window) {
-            window.focus(&self.ssh_prompt_focus);
-        }
         let snapshot = self.workspace.snapshot();
         if self.restore_focus {
             window.focus(&self.focus);
             self.restore_focus = false;
+        }
+        if !self.ssh_prompts.is_empty() && !self.ssh_prompt_focus.is_focused(window) {
+            window.focus(&self.ssh_prompt_focus);
         }
         let title = workspace_window_title(snapshot.content());
         window.set_window_title(&title);
@@ -7067,7 +7067,6 @@ impl Render for RootView {
             .children(creation_overlay)
             .children(project_overlay)
             .children(settings_overlay)
-            .children(ssh_prompt_overlay)
             .children(session_action_menu)
             .children(kill_overlay)
             .children(herdr_lifecycle_overlay);
@@ -7146,7 +7145,7 @@ impl Render for RootView {
                     ),
             );
         }
-        root
+        root.children(ssh_prompt_overlay)
     }
 }
 

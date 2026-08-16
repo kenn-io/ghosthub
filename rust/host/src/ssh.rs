@@ -3,8 +3,8 @@ use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -525,16 +525,34 @@ impl SshLeaseResult {
 
 fn require_option_only_lease_arguments(arguments: &[String]) -> Result<(), SshError> {
     let mut pairs = arguments.chunks_exact(2);
+    let mut has_control_path = false;
+    let mut has_fail_closed_proxy = false;
     for pair in &mut pairs {
         if !matches!(pair[0].as_str(), "-F" | "-o" | "-S") {
             return Err(SshError::malformed(
                 "SSH lease contains an unsupported OpenSSH argument",
             ));
         }
+        if pair[0] == "-S" && !pair[1].is_empty() {
+            has_control_path = true;
+        }
+        if pair[0] == "-o"
+            && matches!(
+                pair[1].as_str(),
+                "ProxyCommand=/usr/bin/false" | "ProxyCommand=cmd.exe /d /c exit 255"
+            )
+        {
+            has_fail_closed_proxy = true;
+        }
     }
     if !pairs.remainder().is_empty() {
         return Err(SshError::malformed(
             "SSH lease contains a destination or incomplete OpenSSH option",
+        ));
+    }
+    if !has_control_path || !has_fail_closed_proxy {
+        return Err(SshError::malformed(
+            "SSH lease does not provide fail-closed multiplexed execution",
         ));
     }
     Ok(())
@@ -898,12 +916,15 @@ impl KwtSshLeaseClient {
             SshError::new(DiagnosticKind::Transport, "KWT lease stderr is unavailable")
         })?;
         let (sender, receiver) = sync_channel(STREAM_CHANNEL_DEPTH);
-        let stdout_reader = spawn_line_reader(stdout, sender);
+        let stdout_reader = spawn_line_reader(stdout, sender.clone());
+        let (prompt_sender, prompt_receiver) = sync_channel(1);
+        let prompt_writer = spawn_prompt_writer(stdin, prompt_receiver, sender);
         let diagnostics = Arc::new(Mutex::new(Vec::new()));
         let stderr_reader = spawn_diagnostic_reader(stderr, Arc::clone(&diagnostics));
         let process = LeaseProcess {
             child,
-            stdin: Some(stdin),
+            prompt_sender: Some(prompt_sender),
+            prompt_writer: Some(prompt_writer),
             containment,
             receiver: Some(receiver),
             stdout_reader: Some(stdout_reader),
@@ -949,19 +970,17 @@ impl KwtSshLeaseClient {
                     last_activity = Instant::now();
                     match accept_lease_line(&mut decoder, &line, route)? {
                         SshLeaseEvent::Prompt(request) => {
-                            deliver_prompt_response(
-                                cancellation,
-                                || prompt(&request),
-                                |response| {
-                                    if response.len() > MAX_PROMPT_RESPONSE_BYTES {
-                                        return Err(SshError::new(
-                                            DiagnosticKind::MalformedOutput,
-                                            "SSH prompt response is too large",
-                                        ));
-                                    }
-                                    process.write_prompt_response(&request, response)
-                                },
-                            )?;
+                            let response = prompt(&request)?;
+                            if response.len() > MAX_PROMPT_RESPONSE_BYTES {
+                                return Err(SshError::new(
+                                    DiagnosticKind::MalformedOutput,
+                                    "SSH prompt response is too large",
+                                ));
+                            }
+                            let payload = encode_prompt_response(&request, &response)?;
+                            while_acquisition_active(cancellation, || {
+                                process.queue_prompt_response(payload)
+                            })?;
                             last_activity = Instant::now();
                         }
                         SshLeaseEvent::Complete(result) => {
@@ -992,7 +1011,7 @@ impl KwtSshLeaseClient {
                         .is_some()
                     {
                         let error = process.exit_error("SSH lease exited before completion");
-                        process.finish_readers();
+                        process.finish_io();
                         return Err(error);
                     }
                 }
@@ -1006,13 +1025,14 @@ impl KwtSshLeaseClient {
     }
 }
 
-fn deliver_prompt_response(
-    cancellation: &CancellationToken,
-    prompt: impl FnOnce() -> Result<String, SshError>,
-    publish: impl FnOnce(&str) -> Result<(), SshError>,
-) -> Result<(), SshError> {
-    let response = prompt()?;
-    while_acquisition_active(cancellation, || publish(&response))
+fn encode_prompt_response(prompt: &SshLeasePrompt, response: &str) -> Result<Vec<u8>, SshError> {
+    let mut payload = serde_json::to_vec(&PromptResponse {
+        prompt_id: prompt.id(),
+        value: response,
+    })
+    .map_err(|error| SshError::malformed(format!("encode SSH prompt response: {error}")))?;
+    payload.push(b'\n');
+    Ok(payload)
 }
 
 fn require_active_acquisition(cancellation: &CancellationToken) -> Result<(), SshError> {
@@ -1169,7 +1189,7 @@ fn finish_exited_lease(mut process: LeaseProcess) {
         .spawn(move || {
             process.containment.terminate();
             process.released = true;
-            process.finish_readers();
+            process.finish_io();
         });
 }
 
@@ -1192,7 +1212,8 @@ impl Drop for LeaseState {
 
 struct LeaseProcess {
     child: Child,
-    stdin: Option<ChildStdin>,
+    prompt_sender: Option<SyncSender<Vec<u8>>>,
+    prompt_writer: Option<JoinHandle<()>>,
     containment: CommandContainment,
     receiver: Option<Receiver<StreamItem>>,
     stdout_reader: Option<JoinHandle<()>>,
@@ -1202,34 +1223,29 @@ struct LeaseProcess {
 }
 
 impl LeaseProcess {
-    fn write_prompt_response(
-        &mut self,
-        prompt: &SshLeasePrompt,
-        value: &str,
-    ) -> Result<(), SshError> {
-        let stdin = self
-            .stdin
-            .as_mut()
+    fn queue_prompt_response(&self, payload: Vec<u8>) -> Result<(), SshError> {
+        let sender = self
+            .prompt_sender
+            .as_ref()
             .ok_or_else(|| SshError::new(DiagnosticKind::Transport, "SSH lease input is closed"))?;
-        serde_json::to_writer(
-            &mut *stdin,
-            &PromptResponse {
-                prompt_id: prompt.id(),
-                value,
-            },
-        )
-        .map_err(|error| SshError::malformed(format!("encode SSH prompt response: {error}")))?;
-        stdin.write_all(b"\n").map_err(classify_io_error)?;
-        stdin.flush().map_err(classify_io_error)
+        sender.try_send(payload).map_err(|error| match error {
+            TrySendError::Full(_) => SshError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT requested another SSH response before consuming the previous one",
+            ),
+            TrySendError::Disconnected(_) => {
+                SshError::new(DiagnosticKind::Transport, "SSH lease input is closed")
+            }
+        })
     }
 
     fn release(&mut self, timeout: Duration) -> Result<(), SshError> {
-        self.stdin.take();
+        self.prompt_sender.take();
         let deadline = Instant::now() + timeout;
         loop {
             if self.child.try_wait().map_err(classify_io_error)?.is_some() {
                 self.released = true;
-                self.finish_readers();
+                self.finish_io();
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -1266,20 +1282,24 @@ impl LeaseProcess {
     }
 
     fn terminate_and_reap(&mut self) {
-        self.stdin.take();
+        self.prompt_sender.take();
         self.containment.terminate();
         let _ignored = self.child.kill();
         let _ignored = self.child.wait();
         self.released = true;
-        self.finish_readers();
+        self.finish_io();
     }
 
-    fn finish_readers(&mut self) {
+    fn finish_io(&mut self) {
+        self.prompt_sender.take();
         finish_stream_readers(
             &mut self.receiver,
             &mut self.stdout_reader,
             &mut self.stderr_reader,
         );
+        if let Some(writer) = self.prompt_writer.take() {
+            let _ignored = writer.join();
+        }
     }
 }
 
@@ -1303,6 +1323,21 @@ fn finish_stream_readers(
     if let Some(reader) = stderr_reader.take() {
         let _ignored = reader.join();
     }
+}
+
+fn spawn_prompt_writer(
+    mut stdin: impl Write + Send + 'static,
+    receiver: Receiver<Vec<u8>>,
+    output: SyncSender<StreamItem>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        while let Ok(payload) = receiver.recv() {
+            if let Err(error) = stdin.write_all(&payload).and_then(|()| stdin.flush()) {
+                let _ignored = output.send(StreamItem::Failed(error));
+                return;
+            }
+        }
+    })
 }
 
 fn spawn_line_reader(
@@ -1752,7 +1787,7 @@ mod tests {
           "operation_id":"op-1","sequence":3,"kind":"complete",
           "result":{
             "lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,
-            "mode":"multiplexed","arguments":["-S","control-path"]
+            "mode":"multiplexed","arguments":["-S","control-path","-o","ProxyCommand=/usr/bin/false"]
           }
         }"#;
         let accepted = stream.accept(complete, &route).expect("valid lease");
@@ -1808,6 +1843,26 @@ mod tests {
             .accept(complete, &route)
             .expect_err("destination-bearing lease arguments");
         assert_eq!(error.kind(), DiagnosticKind::MalformedOutput);
+    }
+
+    #[test]
+    fn lease_stream_requires_fail_closed_control_socket_execution() {
+        let route = route();
+        for arguments in [
+            r#"["-S","control-path"]"#,
+            r#"["-S","control-path","-o","ProxyCommand=none"]"#,
+            r#"["-o","ProxyCommand=/usr/bin/false"]"#,
+        ] {
+            let mut stream = SshLeaseStream::new();
+            let complete = format!(
+                r#"{{"operation_id":"op-1","sequence":1,"kind":"complete","result":{{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":{arguments}}}}}"#
+            );
+
+            let error = stream
+                .accept(complete.as_bytes(), &route)
+                .expect_err("lease must fail closed when its master disappears");
+            assert_eq!(error.kind(), DiagnosticKind::MalformedOutput);
+        }
     }
 
     #[test]
@@ -1937,7 +1992,7 @@ mod tests {
         let marker =
             std::env::temp_dir().join(format!("ghosthub-ssh-lease-release-{}", std::process::id()));
         let _ignored = std::fs::remove_file(&marker);
-        let complete = r#"{"operation_id":"op-1","sequence":1,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":["-S","control-path"]}}"#;
+        let complete = r#"{"operation_id":"op-1","sequence":1,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":["-S","control-path","-o","ProxyCommand=/usr/bin/false"]}}"#;
         #[cfg(windows)]
         let command = {
             let marker = marker.to_string_lossy().replace('\'', "''");
@@ -2000,22 +2055,20 @@ mod tests {
     #[test]
     fn cancelled_prompt_response_never_reaches_the_controller() {
         let cancellation = CancellationToken::new();
-        let mut published = false;
-        let error = deliver_prompt_response(
-            &cancellation,
-            || {
-                cancellation.cancel();
-                Ok("credential-must-not-cross".to_owned())
-            },
-            |_| {
-                published = true;
-                Ok(())
-            },
-        )
-        .expect_err("cancelled prompt must abort before publication");
+        let (sender, receiver) = sync_channel(1);
+        cancellation.cancel();
+        let error = while_acquisition_active(&cancellation, || {
+            sender
+                .try_send(b"credential-must-not-cross".to_vec())
+                .map_err(|_| SshError::new(DiagnosticKind::Transport, "queue failed"))
+        })
+        .expect_err("cancelled prompt must abort before queueing");
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
-        assert!(!published, "cancelled credential reached KWT");
+        assert!(
+            receiver.try_recv().is_err(),
+            "cancelled credential reached KWT"
+        );
     }
 
     #[test]
@@ -2124,69 +2177,62 @@ mod tests {
     }
 
     #[test]
-    fn credential_publication_is_atomic_with_cancellation() {
+    fn blocked_credential_write_does_not_block_cancellation() {
+        struct BlockingWriter {
+            entered: Arc<Barrier>,
+            release: Arc<Barrier>,
+        }
+
+        impl Write for BlockingWriter {
+            fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+                self.entered.wait();
+                self.release.wait();
+                Ok(buffer.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
         let cancellation = CancellationToken::new();
-        let worker_cancellation = cancellation.clone();
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
-        let cancel_started = Arc::new(Barrier::new(2));
-        let order = Arc::new(AtomicUsize::new(0));
-        let publish_order = Arc::new(AtomicUsize::new(usize::MAX));
-        let cancel_order = Arc::new(AtomicUsize::new(usize::MAX));
-        let worker = {
-            let entered = Arc::clone(&entered);
-            let release = Arc::clone(&release);
-            let order = Arc::clone(&order);
-            let publish_order = Arc::clone(&publish_order);
-            thread::spawn(move || {
-                deliver_prompt_response(
-                    &worker_cancellation,
-                    || Ok("secret".to_owned()),
-                    |_| {
-                        entered.wait();
-                        release.wait();
-                        publish_order
-                            .store(order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
-                        Ok(())
-                    },
-                )
-            })
-        };
+        let (prompt_sender, prompt_receiver) = sync_channel(1);
+        let (output_sender, _output_receiver) = sync_channel(1);
+        let writer = spawn_prompt_writer(
+            BlockingWriter {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            },
+            prompt_receiver,
+            output_sender,
+        );
+        while_acquisition_active(&cancellation, || {
+            prompt_sender
+                .try_send(b"secret".to_vec())
+                .map_err(|_| SshError::new(DiagnosticKind::Transport, "queue failed"))
+        })
+        .expect("queue credential while active");
         entered.wait();
         let (cancelled_tx, cancelled_rx) = mpsc::channel();
-        let cancelling = {
-            let cancel_started = Arc::clone(&cancel_started);
-            let order = Arc::clone(&order);
-            let cancel_order = Arc::clone(&cancel_order);
-            thread::spawn(move || {
-                cancel_started.wait();
-                cancellation.cancel();
-                cancel_order.store(order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
-                cancelled_tx.send(()).expect("cancellation receiver");
-            })
-        };
-        cancel_started.wait();
-        let cancellation_overtook_publication =
-            cancelled_rx.recv_timeout(Duration::from_millis(50)).is_ok();
+        let cancelling = thread::spawn(move || {
+            cancellation.cancel();
+            cancelled_tx.send(()).expect("cancellation receiver");
+        });
+        let cancelled_while_write_blocked =
+            cancelled_rx.recv_timeout(Duration::from_secs(1)).is_ok();
         release.wait();
-        worker
-            .join()
-            .expect("publication worker")
-            .expect("publication result");
-        if !cancellation_overtook_publication {
-            cancelled_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("cancellation completes after publication");
-        }
         cancelling.join().expect("cancellation worker");
+        drop(prompt_sender);
+        writer.join().expect("prompt writer");
 
-        assert!(!cancellation_overtook_publication);
-        assert!(publish_order.load(Ordering::Acquire) < cancel_order.load(Ordering::Acquire));
+        assert!(cancelled_while_write_blocked);
     }
 
     #[test]
     fn acquired_lease_reports_an_unexpected_controller_exit() {
-        let complete = r#"{"operation_id":"op-1","sequence":1,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":["-S","control-path"]}}"#;
+        let complete = r#"{"operation_id":"op-1","sequence":1,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":["-S","control-path","-o","ProxyCommand=/usr/bin/false"]}}"#;
         #[cfg(windows)]
         let command = CommandPrefix::new(
             "powershell.exe",

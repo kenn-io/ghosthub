@@ -830,7 +830,7 @@ mod tests {
             &target,
         )
         .expect("route");
-        let complete = r#"{"operation_id":"op-1","sequence":1,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":["-S","control-path"]}}"#;
+        let complete = r#"{"operation_id":"op-1","sequence":1,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":["-S","control-path","-o","ProxyCommand=/usr/bin/false"]}}"#;
         #[cfg(windows)]
         let command = CommandPrefix::new(
             "powershell.exe",
@@ -932,7 +932,7 @@ mod tests {
     #[test]
     fn kwt_lease_fixture_produces_one_destination_before_the_remote_command() {
         let lease_arguments = serde_json::from_str::<serde_json::Value>(
-            r#"{"arguments":["-F","/dev/null","-o","BatchMode=yes","-S","/tmp/control"]}"#,
+            r#"{"arguments":["-F","/dev/null","-o","BatchMode=yes","-S","/tmp/control","-o","ProxyCommand=/usr/bin/false"]}"#,
         )
         .expect("KWT lease fixture");
         let lease_arguments = lease_arguments["arguments"]
@@ -958,6 +958,8 @@ mod tests {
                 "BatchMode=yes",
                 "-S",
                 "/tmp/control",
+                "-o",
+                "ProxyCommand=/usr/bin/false",
                 "-T",
                 "--",
                 "host-alias",
