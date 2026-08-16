@@ -396,7 +396,10 @@ public struct RootView: View {
                     for: .ghosthubCloseTab,
                     object: sidebarToggleTarget
                 )
-            ) { _ in handleCloseTab() }
+            ) { _ in
+                guard controlActiveState == .key else { return }
+                handleCloseTab()
+            }
             .onReceive(
                 NotificationCenter.default.publisher(
                     for: .ghosthubCommandPalette

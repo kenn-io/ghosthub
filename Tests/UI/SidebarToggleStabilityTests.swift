@@ -191,6 +191,25 @@ struct SidebarToggleStabilityTests {
         #expect(second.closedSessionNames.isEmpty)
     }
 
+    @Test("close command ignores a targeted inactive workspace")
+    func closeCommandIgnoresTargetedInactiveWorkspace() {
+        let target = SidebarToggleTarget()
+        let env = StabilityTestEnvironment(
+            sidebarToggleTarget: target,
+            presentsWindow: false,
+            controlActiveState: .inactive
+        )
+        defer { env.close() }
+
+        NotificationCenter.default.post(
+            name: .ghosthubCloseTab,
+            object: target
+        )
+        env.settle()
+
+        #expect(env.closedSessionNames.isEmpty)
+    }
+
     @Test("right side panel toggle preserves main column view identity")
     func rightSidePanelTogglePreservesMainColumn() {
         let env = SidePanelStabilityTestEnvironment()
@@ -279,7 +298,8 @@ private final class StabilityTestEnvironment {
 
     init(
         sidebarToggleTarget: AnyObject = SidebarToggleTarget(),
-        presentsWindow: Bool = true
+        presentsWindow: Bool = true,
+        controlActiveState: ControlActiveState = .key
     ) {
         self.sidebarToggleTarget = sidebarToggleTarget
         let hostID = UUID()
@@ -344,7 +364,8 @@ private final class StabilityTestEnvironment {
                 model: model,
                 settingsStore: settingsStore,
                 defaults: defaults,
-                sidebarToggleTarget: sidebarToggleTarget
+                sidebarToggleTarget: sidebarToggleTarget,
+                controlActiveState: controlActiveState
             )
         )
         if presentsWindow {
@@ -455,6 +476,7 @@ private struct StabilityTestHarness: View {
     let settingsStore: SettingsStore
     let defaults: UserDefaults
     let sidebarToggleTarget: AnyObject
+    let controlActiveState: ControlActiveState
 
     var body: some View {
         RootView(
@@ -486,7 +508,7 @@ private struct StabilityTestHarness: View {
             isCommandPalettePresented: $model.isCommandPalettePresented
         )
         .defaultAppStorage(defaults)
-        .environment(\.controlActiveState, .key)
+        .environment(\.controlActiveState, controlActiveState)
     }
 }
 
