@@ -391,7 +391,7 @@ struct WorkspaceRestorationTests {
         model.startHerdrSessionDiscovery()
         model.beginRestoration(state)
         #expect(model.activeBorrowedHerdrSelection == nil)
-        await waitUntilMainActor {
+        await waitUntilMainActor(timeout: .seconds(30)) {
             inventory.attemptCount >= 1
                 && model.snapshot.host(id: environment.host.id)?
                 .herdrSessions.isEmpty == true

@@ -332,8 +332,7 @@ struct WorkspaceTmuxDiscoveryTests {
         creationGate.release()
         await waitUntilMainActor {
             creationCompleted.count == 1
-                && (calls.count >= 3
-                    || model.exhaustedCreatedTmuxSessionCount == 1)
+                && calls.count >= 3
         }
 
         let host = try #require(

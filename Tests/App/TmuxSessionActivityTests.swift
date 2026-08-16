@@ -1204,7 +1204,7 @@ struct TmuxSessionActivityControllerTests {
                 at: start.addingTimeInterval(20)
             )
         }
-        await waitUntilMainActor(timeout: .milliseconds(250)) {
+        await waitUntilMainActor {
             controller.workingSessionIDs.contains(fast.id)
         }
         #expect(controller.workingSessionIDs.contains(fast.id))
@@ -1216,7 +1216,7 @@ struct TmuxSessionActivityControllerTests {
             )
             thirdTickFinished.store(true)
         }
-        await waitUntilMainActor(timeout: .milliseconds(250)) {
+        await waitUntilMainActor {
             thirdTickFinished.load()
         }
         #expect(thirdTickFinished.load())

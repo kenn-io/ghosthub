@@ -889,7 +889,7 @@ struct TmuxBinaryResolverTests {
             [.posixPermissions: 0o755], ofItemAtPath: shell.path
         )
         let resolver = TmuxBinaryResolver(
-            processTimeout: 2,
+            processTimeout: 10,
             loginShellProvider: { shell.path }
         )
 

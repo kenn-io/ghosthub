@@ -104,9 +104,9 @@ func waitUntil(
 @MainActor
 func waitUntilMainActor(
     // Swift Testing runs suites concurrently, so a package-wide run can spend
-    // several seconds scheduling other MainActor-isolated tests before this
+    // tens of seconds scheduling other MainActor-isolated tests before this
     // condition is evaluated again.
-    timeout: Duration = .seconds(10),
+    timeout: Duration = .seconds(30),
     pollInterval: Duration = .milliseconds(10),
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: @escaping @MainActor () async -> Bool

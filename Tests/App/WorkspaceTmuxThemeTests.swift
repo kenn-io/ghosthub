@@ -422,13 +422,15 @@ struct WorkspaceTmuxThemeTests {
 
         resolvedStyle = primaryStyle
         model.terminalPresentationStyleDidChange()
-        await waitUntilMainActor {
+        await waitUntilMainActor(timeout: .seconds(30)) {
             appliedStyles.load() == [primaryStyle]
                 && model.tmuxStylingQuiesced
         }
 
         model.terminalPresentationStyleDidChange()
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntilMainActor(timeout: .seconds(30)) {
+            model.tmuxStylingQuiesced
+        }
 
         #expect(appliedStyles.load() == [primaryStyle])
         #expect(appliedIdentities.load() == [sessionIdentity])

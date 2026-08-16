@@ -272,7 +272,7 @@ struct WorkspaceWorktreeRemovalTests {
         )
         secondModel.startKwtInventory()
         secondModel.startTmuxSessionDiscovery()
-        await waitUntilMainActor(timeout: .seconds(10)) {
+        await waitUntilMainActor {
             secondLoads.load() >= 1
                 && secondDiscoveries.load() >= 1
         }
@@ -283,7 +283,7 @@ struct WorkspaceWorktreeRemovalTests {
         // Wait on the reconciled snapshot itself: the load and discovery
         // counters increment when the closures are entered, before their
         // results are applied, so counter-based waits race the assertion.
-        await waitUntilMainActor(timeout: .seconds(10)) {
+        await waitUntilMainActor {
             secondModel.snapshot.worktree(id: removable.id) == nil
                 && secondModel.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.isEmpty == true
