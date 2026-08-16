@@ -54,7 +54,7 @@ Never use `latest`.
 - an organization-owned ruleset with no bypass actors or ref exclusions that
   targets Ghosthub's default branch and requires
   `.github/workflows/sandbox-image-merge-signal.yml` from
-  `kenn-io/ghosthub-nightly@refs/heads/main`
+  the reviewed immutable source commit in `kenn-io/ghosthub-nightly`
 - approval authority, or an available reviewer, for that environment
 
 The promotion preflight reads the live rulesets through the GitHub API and
@@ -99,9 +99,10 @@ make sandbox-image-authority-configure \
 ```
 
 After the promotion gate lands on Ghosthub's `main` and the merge-signal
-workflow lands on `kenn-io/ghosthub-nightly@main`, add the organization
-ruleset's **Require workflows to pass before merging** rule. Its source must be
-that separate public repository, branch `main`, and the merge-signal workflow.
+workflow lands on `kenn-io/ghosthub-nightly`, add the organization ruleset's
+**Require workflows to pass before merging** rule. Its source must be that
+separate public repository, the reviewed full commit SHA, and the merge-signal
+workflow. A branch or tag reference is not an acceptable authority pin.
 Then enable and audit the exact repository and inherited organization rules:
 
 ```bash
@@ -278,16 +279,19 @@ The repository ruleset must require this status from the dedicated app with
 strict checking enabled, no bypass actors, an empty exclusion list, and a
 single-entry merge queue. Queue the pull request with **Merge when ready**
 rather than merging its head directly. The organization ruleset separately
-requires the merge-signal workflow pinned to the public source repository's
-trusted `main`. The queue creates a fresh synthetic SHA; that pinned workflow
-requests a SHA-specific reconciliation.
+requires the merge-signal workflow pinned to a reviewed immutable commit in the
+public source repository. The queue creates a fresh synthetic SHA; that pinned
+workflow requests a SHA-specific reconciliation.
 Trusted-main code checks out the proposed merge tree without executing it,
 structurally audits every proposed workflow, and requires every workflow that
 can reference a credential-bearing environment to remain byte-identical to
 trusted `main`. The audit rejects job-level reusable workflows except the
 exact repository-owned `ci.yml@main` call. The organization ruleset binds the
-merge-signal path, repository identity, and `main` ref outside the candidate
-tree; reconciliation accepts only runs with the expected name and path. The
+merge-signal path, repository identity, and immutable source commit outside the
+candidate tree. Live preflight also fetches that commit and requires its sole
+`merge_group` trigger, empty permissions, and absence of environment or reusable
+workflow authority; reconciliation accepts only runs with the expected name
+and path. The
 executable post-approval vulnerability policy is part of the same
 byte-identical authority closure, and changing it is promotion-relevant.
 It then rechecks the complete App, environment, ruleset, file, base,

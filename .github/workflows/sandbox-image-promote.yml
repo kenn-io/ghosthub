@@ -419,7 +419,9 @@ jobs:
                 .type == "workflows" and
                 any(.parameters.workflows[]?;
                   .path == ".github/workflows/sandbox-image-merge-signal.yml" and
-                  .ref == "refs/heads/main" and
+                  .sha == "67ead910ccc186d9ffe543c32721d359b3eea80e" and
+                  ((.ref == null) or (.ref == "") or
+                    (.ref == "67ead910ccc186d9ffe543c32721d359b3eea80e")) and
                   .repository_id == 1334318821));
             any(.[]; promotion_status) and any(.[]; merge_signal)
           ' <<< "$rulesets" > /dev/null; then

@@ -471,10 +471,13 @@ selection is
 rejected, every workflow declares explicit top-level permissions, the job
 refuses non-`main` effective refs, and no
 `GITHUB_TOKEN` has status-write or package-write authority. The GHCR package
-does not inherit repository Actions access, and an organization ruleset pins
-the merge-signal workflow to this repository's `main`. Trusted promotion and
-every reconciliation verify the live environments, parsed workflow authority,
-app integration ID, and ruleset. At the final production-tag mutation boundary,
+does not inherit repository Actions access. An organization ruleset pins the
+merge-signal workflow to a reviewed immutable commit in the separate public
+`kenn-io/ghosthub-nightly` repository. Trusted promotion and every
+reconciliation verify that exact source repository, commit, workflow path,
+sole `merge_group` trigger, empty token permissions, absence of environment use,
+live environments, parsed workflow authority, app integration
+ID, and ruleset. At the final production-tag mutation boundary,
 trusted promotion authenticates the App owner, slug, permissions, private key,
 and complete single-repository installation scope, then rechecks both required
 rulesets, pull-request evidence, and tag availability immediately before the
@@ -485,9 +488,9 @@ Reconciliation fences all open heads and prior merge-group SHAs before
 inspecting their metadata. At
 merge time, an unprivileged merge-group signal receives a SHA-specific trusted
 reconciliation. Trusted-main tooling audits the proposed workflow tree without
-executing it and refuses any change to a credential-bearing workflow or to the
-merge-signal workflow's name, trigger, or bytes
-before authorizing the queue's fresh synthetic SHA; inability to reconcile
+executing it and refuses any change to a credential-bearing workflow before
+authorizing the queue's fresh synthetic SHA. The candidate tree cannot change
+the externally pinned merge signal; inability to reconcile
 therefore leaves that SHA blocked rather than preserving an old head status.
 Main changes, a new pin PR head SHA, the immutable promotion-plan deadline, and
 the 24-hour run-age limit invalidate authorization. A
