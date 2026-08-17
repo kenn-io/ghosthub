@@ -54,7 +54,8 @@ Never use `latest`.
 - an organization-owned ruleset with no bypass actors or ref exclusions that
   targets Ghosthub's default branch and requires
   `.github/workflows/sandbox-image-merge-signal.yml` from
-  `kenn-io/ghosthub@refs/heads/main`
+  the protected `sandbox-merge-signal-v1` tag of
+  `kenn-io/ghosthub-nightly`
 - approval authority, or an available reviewer, for that environment
 
 The promotion preflight reads the live rulesets through the GitHub API and
@@ -98,9 +99,15 @@ make sandbox-image-authority-configure \
   PRIVATE_KEY=</absolute/path/to/downloaded.pem>
 ```
 
-After the promotion-gate and merge-signal workflows land on `main`, add the
-organization ruleset's **Require workflows to pass before merging** rule. Its
-source must be this repository, branch `main`, and the merge-signal workflow.
+After the promotion gate lands on Ghosthub's `main` and the merge-signal
+workflow lands on `kenn-io/ghosthub-nightly`, add the organization ruleset's
+**Require workflows to pass before merging** rule. Its source must be that
+separate public repository, the protected `sandbox-merge-signal-v1` tag, and
+the merge-signal workflow. Organization policy forbids updating or deleting
+that exact tag. Authority checks require it to resolve to reviewed commit
+`9c5afce214433bc642802220402a2e4ec4055f5d` and fetch the workflow by commit
+rather than by mutable reference. The applied organization policy is the
+authority that prevents tag updates or deletion.
 Then enable and audit the exact repository and inherited organization rules:
 
 ```bash
@@ -277,17 +284,23 @@ The repository ruleset must require this status from the dedicated app with
 strict checking enabled, no bypass actors, an empty exclusion list, and a
 single-entry merge queue. Queue the pull request with **Merge when ready**
 rather than merging its head directly. The organization ruleset separately
-requires the merge-signal workflow pinned to trusted `main`. The queue creates
-a fresh synthetic SHA; that pinned workflow requests a SHA-specific
+requires the merge-signal workflow from the protected
+`sandbox-merge-signal-v1` tag of the public source repository. The queue
+creates a fresh synthetic SHA; that workflow requests a SHA-specific
 reconciliation.
 Trusted-main code checks out the proposed merge tree without executing it,
 structurally audits every proposed workflow, and requires every workflow that
 can reference a credential-bearing environment to remain byte-identical to
 trusted `main`. The audit rejects job-level reusable workflows except the
-exact repository-owned `ci.yml@main` call, and it keeps the merge-signal name,
-trigger, and file byte-identical to trusted `main`. The executable
-post-approval vulnerability policy is part of the same byte-identical authority
-closure, and changing it is promotion-relevant.
+exact repository-owned `ci.yml@main` call. The organization ruleset binds the
+merge-signal path, repository identity, and protected source tag outside the
+candidate tree. Live preflight resolves the tag to its reviewed commit,
+then requires the workflow's `pull_request` and `merge_group` triggers, empty
+permissions, and absence of environment or reusable
+workflow authority; reconciliation accepts only runs with the expected name
+and path. The
+executable post-approval vulnerability policy is part of the same
+byte-identical authority closure, and changing it is promotion-relevant.
 It then rechecks the complete App, environment, ruleset, file, base,
 promotion-run, and freshness authority before the dedicated App authorizes that
 queue SHA. If GitHub cannot run reconciliation, the queue SHA never succeeds

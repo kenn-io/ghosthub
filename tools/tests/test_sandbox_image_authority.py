@@ -131,27 +131,7 @@ class AppValidationRunner:
         call = tuple(argv)
         assert token == "installation-token"
         self.authenticated_calls.append((call, input_text, check))
-        if call == ("gh", "api", "/installation"):
-            payload = {
-                "app_id": 424242,
-                "app_slug": self.app_slug,
-                "account": {
-                    "login": self.owner_login,
-                    "type": "Organization",
-                },
-                "repository_selection": "selected",
-                "permissions": {
-                    "actions": "read",
-                    "administration": "read",
-                    "attestations": "read",
-                    "contents": "read",
-                    "environments": "read",
-                    "metadata": "read",
-                    "pull_requests": "read",
-                    "statuses": "write",
-                },
-            }
-        elif call == (
+        if call == (
             "gh",
             "api",
             "--paginate",
@@ -211,11 +191,23 @@ class AppValidationRunner:
             payload = [
                 {
                     "id": 77,
+                    "app_id": self.app_id,
+                    "app_slug": self.app_slug,
                     "account": {
-                        "login": "kenn-io",
+                        "login": self.owner_login,
                         "type": "Organization",
                     },
                     "repository_selection": "selected",
+                    "permissions": {
+                        "actions": "read",
+                        "administration": "read",
+                        "attestations": "read",
+                        "contents": "read",
+                        "environments": "read",
+                        "metadata": "read",
+                        "pull_requests": "read",
+                        "statuses": "write",
+                    },
                 }
             ]
         elif url == "https://api.github.com/app/installations/77/access_tokens":

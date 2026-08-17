@@ -194,8 +194,12 @@ retagging use a separate package-writer credential available only through
 exact-`main` environments, and the GHCR package does not inherit repository
 Actions access. Trusted promotion and every reconciliation audit the
 environment, parsed workflow authority, app integration ID, and repository
-policy. An organization ruleset requires the merge-signal workflow from this
-repository's `main`, so merge-queue code cannot select its own signal logic.
+policy. An organization ruleset requires the merge-signal workflow from the
+protected `sandbox-merge-signal-v1` tag in the separate public
+`kenn-io/ghosthub-nightly` repository, so merge-queue code cannot select its
+own signal logic. Promotion preflight and reconciliation verify the source
+identity, reviewed commit, and the workflow's restricted
+trigger, permissions, and environment authority.
 Reconciliation fences all open heads before file inspection. The merge queue
 generates a fresh SHA with its own reconciliation lane; trusted-main
 tooling audits the proposed workflow tree without executing it, refuses changes

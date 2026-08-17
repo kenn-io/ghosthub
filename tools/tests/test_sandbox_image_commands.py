@@ -1,5 +1,4 @@
 import base64
-import hashlib
 import json
 import sys
 from collections.abc import Sequence
@@ -50,6 +49,37 @@ from sandbox_image.process import (
 
 ARM64_DIGEST = "sha256:" + "a" * 64
 REFRESHED_ARM64_DIGEST = "sha256:" + "c" * 64
+
+
+def _merge_signal_source_responses(
+    workflow_content: str,
+    *,
+    tag_sha: str | None = None,
+) -> dict[tuple[str, ...], str]:
+    tag_sha = tag_sha or github_module.MERGE_SIGNAL_COMMIT
+    return {
+        (
+            "gh",
+            "api",
+            "repos/kenn-io/ghosthub-nightly/git/ref/tags/"
+            "sandbox-merge-signal-v1",
+        ): json.dumps({"object": {"type": "commit", "sha": tag_sha}}),
+        (
+            "gh",
+            "api",
+            "repos/kenn-io/ghosthub-nightly/contents/"
+            ".github/workflows/sandbox-image-merge-signal.yml"
+            f"?ref={github_module.MERGE_SIGNAL_COMMIT}",
+        ): json.dumps(
+            {
+                "type": "file",
+                "path": ".github/workflows/sandbox-image-merge-signal.yml",
+                "encoding": "base64",
+                "size": len(workflow_content.encode()),
+                "content": base64.b64encode(workflow_content.encode()).decode(),
+            }
+        ),
+    }
 
 
 def test_policy_date_is_normalized_to_utc() -> None:
@@ -155,18 +185,6 @@ def production_credential_responses(
             }
         ),
     }
-
-
-MERGE_SIGNAL_WORKFLOW = (
-    "name: Sandbox image merge signal\n"
-    "on:\n"
-    "  merge_group:\n"
-    "    types: [checks_requested]\n"
-    "permissions: {}\n"
-    "jobs:\n"
-    "  signal:\n"
-    "    runs-on: ubuntu-24.04\n"
-)
 
 
 class UnavailableRegistryRunner:
@@ -1114,49 +1132,8 @@ def test_required_promotion_status_rejects_weak_policy(
         verify_required_promotion_status(runner, 424242)
 
 
-def test_required_merge_signal_is_organization_owned_and_pinned_to_main() -> None:
+def test_required_merge_signal_uses_the_external_protected_tag() -> None:
     rulesets = [{"id": 42}]
-    detail = {
-        "source_type": "Organization",
-        "source": "kenn-io",
-        "target": "branch",
-        "enforcement": "active",
-        "bypass_actors": [],
-        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
-        "rules": [
-            {
-                "type": "workflows",
-                "parameters": {
-                    "do_not_enforce_on_create": False,
-                    "workflows": [
-                        {
-                            "path": ".github/workflows/sandbox-image-merge-signal.yml",
-                            "ref": "refs/heads/main",
-                            "repository_id": 1_308_876_468,
-                        }
-                    ],
-                },
-            }
-        ],
-    }
-    runner = ScriptedRunner(
-        {
-            (
-                "gh",
-                "api",
-                "--paginate",
-                "--slurp",
-                "repos/kenn-io/ghosthub/rulesets?per_page=100",
-            ): json.dumps([rulesets]),
-            ("gh", "api", "repos/kenn-io/ghosthub/rulesets/42"): json.dumps(detail),
-        }
-    )
-
-    verify_required_merge_signal(runner)
-
-
-def test_required_merge_signal_accepts_protected_external_tag() -> None:
-    commit = github_module.MERGE_SIGNAL_COMMIT
     workflow_content = (
         "name: Sandbox image merge signal\n"
         "on:\n"
@@ -1184,11 +1161,10 @@ def test_required_merge_signal_accepts_protected_external_tag() -> None:
                     "do_not_enforce_on_create": False,
                     "workflows": [
                         {
-                            "path": github_module.MERGE_SIGNAL_WORKFLOW,
+                            "path": ".github/workflows/sandbox-image-merge-signal.yml",
                             "ref": github_module.MERGE_SIGNAL_REF,
-                            "repository_id": (
-                                github_module.MERGE_SIGNAL_REPOSITORY_ID
-                            ),
+                            "sha": "a" * 40,
+                            "repository_id": 1_334_318_821,
                         }
                     ],
                 },
@@ -1203,29 +1179,9 @@ def test_required_merge_signal_accepts_protected_external_tag() -> None:
                 "--paginate",
                 "--slurp",
                 "repos/kenn-io/ghosthub/rulesets?per_page=100",
-            ): json.dumps([[{"id": 42}]]),
+            ): json.dumps([rulesets]),
             ("gh", "api", "repos/kenn-io/ghosthub/rulesets/42"): json.dumps(detail),
-            (
-                "gh",
-                "api",
-                "repos/kenn-io/ghosthub-nightly/git/ref/tags/"
-                "sandbox-merge-signal-v1",
-            ): json.dumps({"object": {"type": "commit", "sha": commit}}),
-            (
-                "gh",
-                "api",
-                "repos/kenn-io/ghosthub-nightly/contents/"
-                ".github/workflows/sandbox-image-merge-signal.yml"
-                f"?ref={commit}",
-            ): json.dumps(
-                {
-                    "type": "file",
-                    "path": github_module.MERGE_SIGNAL_WORKFLOW,
-                    "encoding": "base64",
-                    "size": len(workflow_content.encode()),
-                    "content": base64.b64encode(workflow_content.encode()).decode(),
-                }
-            ),
+            **_merge_signal_source_responses(workflow_content),
         }
     )
 
@@ -1235,12 +1191,24 @@ def test_required_merge_signal_accepts_protected_external_tag() -> None:
 @pytest.mark.parametrize(
     ("source_type", "ref", "repository_id"),
     [
-        ("Repository", "refs/heads/main", 1_308_876_468),
-        ("Organization", "refs/heads/task", 1_308_876_468),
-        ("Organization", "refs/heads/main", 7),
+        (
+            "Repository",
+            github_module.MERGE_SIGNAL_REF,
+            1_334_318_821,
+        ),
+        (
+            "Organization",
+            "refs/heads/main",
+            1_334_318_821,
+        ),
+        (
+            "Organization",
+            github_module.MERGE_SIGNAL_REF,
+            1_308_876_468,
+        ),
     ],
 )
-def test_required_merge_signal_rejects_branch_controlled_authority(
+def test_required_merge_signal_rejects_the_wrong_authority(
     source_type: str,
     ref: str,
     repository_id: int,
@@ -1261,6 +1229,7 @@ def test_required_merge_signal_rejects_branch_controlled_authority(
                         {
                             "path": ".github/workflows/sandbox-image-merge-signal.yml",
                             "ref": ref,
+                            "sha": "a" * 40,
                             "repository_id": repository_id,
                         }
                     ],
@@ -1282,6 +1251,153 @@ def test_required_merge_signal_rejects_branch_controlled_authority(
     )
 
     with pytest.raises(ValueError, match="trusted merge-signal"):
+        verify_required_merge_signal(runner)
+
+
+def test_required_merge_signal_rejects_retargeted_source() -> None:
+    workflow_content = (
+        "name: Sandbox image merge signal\n"
+        "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
+        "permissions: {}\n"
+        "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n"
+    )
+    runner = ScriptedRunner(
+        {
+            (
+                "gh",
+                "api",
+                "--paginate",
+                "--slurp",
+                "repos/kenn-io/ghosthub/rulesets?per_page=100",
+            ): json.dumps([[{"id": 42}]]),
+            ("gh", "api", "repos/kenn-io/ghosthub/rulesets/42"): json.dumps(
+                {
+                    "source_type": "Organization",
+                    "source": "kenn-io",
+                    "target": "branch",
+                    "enforcement": "active",
+                    "bypass_actors": [],
+                    "conditions": {
+                        "ref_name": {
+                            "include": ["~DEFAULT_BRANCH"],
+                            "exclude": [],
+                        }
+                    },
+                    "rules": [
+                        {
+                            "type": "workflows",
+                            "parameters": {
+                                "workflows": [
+                                    {
+                                        "path": github_module.MERGE_SIGNAL_WORKFLOW,
+                                        "ref": github_module.MERGE_SIGNAL_REF,
+                                        "repository_id": 1_334_318_821,
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                }
+            ),
+            **_merge_signal_source_responses(
+                workflow_content,
+                tag_sha="b" * 40,
+            ),
+        }
+    )
+
+    with pytest.raises(ValueError, match="reviewed source"):
+        verify_required_merge_signal(runner)
+
+
+@pytest.mark.parametrize(
+    ("workflow_content", "message"),
+    [
+        (
+            "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
+            "permissions: {}\n"
+            "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n",
+            "name",
+        ),
+        (
+            "name: A different workflow\n"
+            "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
+            "permissions: {}\n"
+            "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n",
+            "name",
+        ),
+        (
+            "name: Sandbox image merge signal\n"
+            "on:\n  merge_group:\n    types: [checks_requested]\n"
+            "permissions: {}\n"
+            "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n",
+            "trigger",
+        ),
+        (
+            "name: Sandbox image merge signal\n"
+            "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
+            "permissions:\n  contents: read\n"
+            "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n",
+            "permissions",
+        ),
+        (
+            "name: Sandbox image merge signal\n"
+            "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
+            "permissions: {}\n"
+            "jobs:\n  signal:\n    environment: sandbox-image-production\n"
+            "    runs-on: ubuntu-24.04\n",
+            "job authority",
+        ),
+    ],
+)
+def test_required_merge_signal_rejects_external_workflow_authority(
+    workflow_content: str,
+    message: str,
+) -> None:
+    runner = ScriptedRunner(
+        {
+            (
+                "gh",
+                "api",
+                "--paginate",
+                "--slurp",
+                "repos/kenn-io/ghosthub/rulesets?per_page=100",
+            ): json.dumps([[{"id": 42}]]),
+            ("gh", "api", "repos/kenn-io/ghosthub/rulesets/42"): json.dumps(
+                {
+                    "source_type": "Organization",
+                    "source": "kenn-io",
+                    "target": "branch",
+                    "enforcement": "active",
+                    "bypass_actors": [],
+                    "conditions": {
+                        "ref_name": {
+                            "include": ["~DEFAULT_BRANCH"],
+                            "exclude": [],
+                        }
+                    },
+                    "rules": [
+                        {
+                            "type": "workflows",
+                            "parameters": {
+                                "workflows": [
+                                    {
+                                        "path": github_module.MERGE_SIGNAL_WORKFLOW,
+                                        "ref": github_module.MERGE_SIGNAL_REF,
+                                        "sha": "a" * 40,
+                                        "repository_id": 1_334_318_821,
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                }
+            ),
+            **_merge_signal_source_responses(workflow_content),
+        }
+    )
+
+    with pytest.raises(ValueError, match=message):
         verify_required_merge_signal(runner)
 
 
@@ -1408,6 +1524,47 @@ def test_promotion_workflow_audit_allows_trusted_read_only_planner(
     )
 
     github_module.verify_promotion_workflows(workflows)
+
+
+@pytest.mark.parametrize(
+    ("filename", "workflow_name"),
+    [
+        ("sandbox-image-merge-signal.yml", "Unrelated workflow"),
+        ("other.yml", "Sandbox image merge signal"),
+    ],
+)
+def test_promotion_workflow_audit_rejects_external_signal_impersonation(
+    tmp_path: Path,
+    filename: str,
+    workflow_name: str,
+) -> None:
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "sandbox-image-promotion-gate.yml").write_text(
+        "permissions: {}\njobs:\n"
+        "  audit:\n"
+        "    environment: sandbox-image-promotion-status\n"
+    )
+    (workflows / "sandbox-image-promote.yml").write_text(
+        "permissions: {}\njobs:\n"
+        "  audit:\n"
+        "    environment: sandbox-image-promotion-status\n"
+        "  retag:\n"
+        "    environment: sandbox-image-production\n"
+    )
+    (workflows / "sandbox-image-publish.yml").write_text(
+        "permissions: {}\njobs:\n"
+        "  publish:\n"
+        "    environment: sandbox-image-package-writer\n"
+    )
+    (workflows / filename).write_text(
+        f"name: {workflow_name}\npermissions: {{}}\njobs:\n"
+        "  signal:\n"
+        "    runs-on: ubuntu-24.04\n"
+    )
+
+    with pytest.raises(ValueError, match="reserved for external authority"):
+        github_module.verify_promotion_workflows(workflows)
 
 
 @pytest.mark.parametrize("other_name", ["other.yml", "other.yaml"])
@@ -1614,96 +1771,13 @@ def test_proposed_workflow_audit_rejects_changes_to_the_status_writer(
     (trusted / "sandbox-image-promotion-gate.yml").write_text(trusted_content)
     (trusted / "sandbox-image-promote.yml").write_text(promotion)
     (trusted / "sandbox-image-publish.yml").write_text(publisher)
-    (trusted / "sandbox-image-merge-signal.yml").write_text(MERGE_SIGNAL_WORKFLOW)
     (proposed / "sandbox-image-publish.yml").write_text(publisher)
     (proposed / "sandbox-image-promote.yml").write_text(promotion)
-    (proposed / "sandbox-image-merge-signal.yml").write_text(MERGE_SIGNAL_WORKFLOW)
     (proposed / "sandbox-image-promotion-gate.yml").write_text(
         trusted_content + "    steps:\n      - run: printenv\n"
     )
 
     with pytest.raises(ValueError, match="trusted status workflow changed"):
-        github_module.verify_promotion_workflows(
-            proposed,
-            trusted_workflow_root=trusted,
-        )
-
-
-def test_proposed_workflow_audit_allows_exact_gate_repair(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    trusted = tmp_path / "trusted"
-    proposed = tmp_path / "proposed"
-    trusted.mkdir()
-    proposed.mkdir()
-    status = (
-        "permissions: {}\njobs:\n"
-        "  reconcile:\n"
-        "    environment: sandbox-image-promotion-status\n"
-    )
-    repaired_status = status + "    timeout-minutes: 5\n"
-    promotion = (
-        status
-        + "  retag:\n"
-        "    environment: sandbox-image-production\n"
-    )
-    publisher = (
-        "permissions: {}\njobs:\n"
-        "  publish:\n"
-        "    environment: sandbox-image-package-writer\n"
-    )
-    for root in (trusted, proposed):
-        (root / "sandbox-image-promote.yml").write_text(promotion)
-        (root / "sandbox-image-publish.yml").write_text(publisher)
-        (root / "sandbox-image-merge-signal.yml").write_text(
-            MERGE_SIGNAL_WORKFLOW
-        )
-    (trusted / "sandbox-image-promotion-gate.yml").write_text(status)
-    (proposed / "sandbox-image-promotion-gate.yml").write_text(repaired_status)
-    monkeypatch.setattr(
-        github_module,
-        "PROMOTION_GATE_REPAIR_DIGEST",
-        hashlib.sha256(repaired_status.encode()).hexdigest(),
-    )
-
-    github_module.verify_promotion_workflows(
-        proposed,
-        trusted_workflow_root=trusted,
-    )
-
-
-def test_proposed_workflow_audit_rejects_merge_signal_changes(
-    tmp_path: Path,
-) -> None:
-    trusted = tmp_path / "trusted"
-    proposed = tmp_path / "proposed"
-    trusted.mkdir()
-    proposed.mkdir()
-    status = (
-        "permissions: {}\njobs:\n"
-        "  reconcile:\n"
-        "    environment: sandbox-image-promotion-status\n"
-    )
-    promotion = (
-        status
-        + "  retag:\n"
-        "    environment: sandbox-image-production\n"
-    )
-    publisher = (
-        "permissions: {}\njobs:\n"
-        "  publish:\n"
-        "    environment: sandbox-image-package-writer\n"
-    )
-    for root in (trusted, proposed):
-        (root / "sandbox-image-promotion-gate.yml").write_text(status)
-        (root / "sandbox-image-promote.yml").write_text(promotion)
-        (root / "sandbox-image-publish.yml").write_text(publisher)
-    (trusted / "sandbox-image-merge-signal.yml").write_text(MERGE_SIGNAL_WORKFLOW)
-    (proposed / "sandbox-image-merge-signal.yml").write_text(
-        MERGE_SIGNAL_WORKFLOW + "    timeout-minutes: 5\n"
-    )
-
-    with pytest.raises(ValueError, match="trusted merge signal workflow changed"):
         github_module.verify_promotion_workflows(
             proposed,
             trusted_workflow_root=trusted,
@@ -1744,7 +1818,6 @@ def test_proposed_authority_audit_rejects_policy_tampering(
             "  publish:\n"
             "    environment: sandbox-image-package-writer\n"
         ),
-        "sandbox-image-merge-signal.yml": MERGE_SIGNAL_WORKFLOW,
     }
     for root in (trusted_root, proposed_root):
         workflow_root = root / ".github/workflows"
@@ -1811,7 +1884,6 @@ def test_proposed_workflow_audit_rejects_symlinked_authority(
             "  publish:\n"
             "    environment: sandbox-image-package-writer\n"
         ),
-        "sandbox-image-merge-signal.yml": MERGE_SIGNAL_WORKFLOW,
     }
     for name, content in workflows.items():
         (trusted / name).write_text(content)
@@ -1835,45 +1907,6 @@ def test_proposed_workflow_audit_rejects_symlinked_authority(
             proposed,
             trusted_workflow_root=trusted,
         )
-
-
-@pytest.mark.parametrize(
-    "signal",
-    [
-        MERGE_SIGNAL_WORKFLOW.replace(
-            "name: Sandbox image merge signal",
-            "name: Different workflow",
-        ),
-        MERGE_SIGNAL_WORKFLOW.replace("merge_group", "pull_request"),
-    ],
-)
-def test_promotion_workflow_audit_rejects_invalid_merge_signal(
-    tmp_path: Path,
-    signal: str,
-) -> None:
-    workflows = tmp_path / ".github/workflows"
-    workflows.mkdir(parents=True)
-    (workflows / "sandbox-image-promotion-gate.yml").write_text(
-        "permissions: {}\njobs:\n"
-        "  reconcile:\n"
-        "    environment: sandbox-image-promotion-status\n"
-    )
-    (workflows / "sandbox-image-promote.yml").write_text(
-        "permissions: {}\njobs:\n"
-        "  plan:\n"
-        "    environment: sandbox-image-promotion-status\n"
-        "  retag:\n"
-        "    environment: sandbox-image-production\n"
-    )
-    (workflows / "sandbox-image-publish.yml").write_text(
-        "permissions: {}\njobs:\n"
-        "  publish:\n"
-        "    environment: sandbox-image-package-writer\n"
-    )
-    (workflows / "sandbox-image-merge-signal.yml").write_text(signal)
-
-    with pytest.raises(ValueError, match="merge signal workflow"):
-        github_module.verify_promotion_workflows(workflows)
 
 
 def test_production_environment_requires_reviewers_and_only_main() -> None:

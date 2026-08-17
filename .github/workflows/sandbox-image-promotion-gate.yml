@@ -15,6 +15,9 @@ on:
 
 permissions: {}
 
+env:
+  MERGE_SIGNAL_PATH: kenn-io/ghosthub-nightly/.github/workflows/sandbox-image-merge-signal.yml@refs/tags/sandbox-merge-signal-v1
+
 # Pull-request reconciliation is replaceable because every survivor audits every
 # open head. Each merge-group signal has its own lossless authorization lane.
 concurrency:
@@ -22,6 +25,7 @@ concurrency:
     sandbox-image-promotion-status-writer-${{
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.name == 'Sandbox image merge signal' &&
+      github.event.workflow_run.event == 'merge_group' &&
       github.event.workflow_run.head_sha || 'pull-requests'
     }}
   cancel-in-progress: false
@@ -67,7 +71,9 @@ jobs:
 
           if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
                 "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
-                'Sandbox image merge signal' ]]; then
+                'Sandbox image merge signal' && \
+                "$(jq -r '.workflow_run.event' "$GITHUB_EVENT_PATH")" == \
+                merge_group ]]; then
             merge_sha="$(jq -r '.workflow_run.head_sha // ""' \
               "$GITHUB_EVENT_PATH")"
             if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -118,12 +124,13 @@ jobs:
             cutoff="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
             created_filter="$(jq -rn --arg value ">=$cutoff" '$value | @uri')"
             gh api --paginate --slurp \
-              "repos/kenn-io/ghosthub/actions/workflows/sandbox-image-merge-signal.yml/runs?event=merge_group&created=$created_filter&per_page=100" \
-              | jq -r --slurpfile pulls "$pulls" '
+              "repos/kenn-io/ghosthub/actions/runs?event=merge_group&created=$created_filter&per_page=100" \
+              | jq -r --arg merge_signal_path "$MERGE_SIGNAL_PATH" \
+                  --slurpfile pulls "$pulls" '
                   ($pulls[0] | map(.number)) as $open_numbers |
                   .[].workflow_runs[] |
                   select(
-                    .path == ".github/workflows/sandbox-image-merge-signal.yml" and
+                    .path == $merge_signal_path and
                     .event == "merge_group" and
                     (.head_sha | test("^[0-9a-f]{40}$")) and
                     (.created_at | type == "string") and
@@ -249,7 +256,8 @@ jobs:
       - name: Check out proposed merge authority
         if: >-
           github.event_name == 'workflow_run' &&
-          github.event.workflow_run.name == 'Sandbox image merge signal'
+          github.event.workflow_run.name == 'Sandbox image merge signal' &&
+          github.event.workflow_run.event == 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -269,7 +277,8 @@ jobs:
       - name: Audit proposed merge authority
         if: >-
           github.event_name == 'workflow_run' &&
-          github.event.workflow_run.name == 'Sandbox image merge signal'
+          github.event.workflow_run.name == 'Sandbox image merge signal' &&
+          github.event.workflow_run.event == 'merge_group'
         env:
           GH_TOKEN: ${{ steps.audit-token.outputs.token }}
           STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
@@ -584,7 +593,9 @@ jobs:
           merge_signal=false
           if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
                 "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
-                'Sandbox image merge signal' ]]; then
+                'Sandbox image merge signal' && \
+                "$(jq -r '.workflow_run.event' "$GITHUB_EVENT_PATH")" == \
+                merge_group ]]; then
             merge_sha="$(jq -r '.workflow_run.head_sha // ""' \
               "$GITHUB_EVENT_PATH")"
             if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -640,15 +651,15 @@ jobs:
             cutoff="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
             created_filter="$(jq -rn --arg value ">=$cutoff" '$value | @uri')"
             gh api --paginate --slurp \
-              "repos/kenn-io/ghosthub/actions/workflows/sandbox-image-merge-signal.yml/runs?event=merge_group&created=$created_filter&per_page=100" \
+              "repos/kenn-io/ghosthub/actions/runs?event=merge_group&created=$created_filter&per_page=100" \
               | jq '[.[].workflow_runs[]]' > "$RUNNER_TEMP/merge-runs.json"
           fi
 
           if [[ "$merge_signal" == true ]]; then
-            if ! jq -e '
+            if ! jq -e --arg merge_signal_path "$MERGE_SIGNAL_PATH" '
               .workflow_run.event == "merge_group" and
               .workflow_run.conclusion == "success" and
-              .workflow_run.path == ".github/workflows/sandbox-image-merge-signal.yml" and
+              .workflow_run.path == $merge_signal_path and
               .workflow_run.head_repository.full_name == "kenn-io/ghosthub" and
               (.workflow_run.head_branch | startswith("gh-readonly-queue/main/")) and
               (.workflow_run.head_sha | test("^[0-9a-f]{40}$")) and
@@ -684,10 +695,11 @@ jobs:
                 echo "Pull request $number remains pending." >&2
               fi
             done
-            jq -c --slurpfile pulls "$pulls" '
+            jq -c --arg merge_signal_path "$MERGE_SIGNAL_PATH" \
+              --slurpfile pulls "$pulls" '
               ($pulls[0] | map(.number)) as $open_numbers |
               [.[] | select(
-                .path == ".github/workflows/sandbox-image-merge-signal.yml" and
+                .path == $merge_signal_path and
                 .event == "merge_group" and
                 .status == "completed" and
                 .conclusion == "success" and
