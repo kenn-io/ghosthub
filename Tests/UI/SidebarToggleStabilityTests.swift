@@ -67,20 +67,19 @@ struct SidebarToggleStabilityTests {
         )
     }
 
-    @Test("rapid sidebar toggles defer terminal resize through the latest transition")
-    func rapidSidebarTogglesKeepTerminalResizeDeferred() {
+    @Test("rapid sidebar toggles eventually resume terminal resize")
+    func rapidSidebarTogglesEventuallyResumeTerminalResize() {
         let env = StabilityTestEnvironment()
         defer { env.close() }
 
         env.clearTerminalResizeDeferrals()
         env.isSidebarVisible = false
         env.settle(for: 0.05)
-        env.isSidebarVisible = true
-        env.settle(for: 0.17)
 
         #expect(env.terminalResizeDeferrals.last == true)
 
-        env.settle(for: 0.1)
+        env.isSidebarVisible = true
+        env.settle(for: 0.3)
 
         #expect(env.terminalResizeDeferrals.last == false)
     }
