@@ -6,7 +6,7 @@ mod windows_key;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, FocusHandle, Focusable, FontWeight,
@@ -47,6 +47,7 @@ const SSH_PROMPT_CHARACTER_LIMIT: usize = 64 * 1024;
 const INPUT_BUFFERED_DIAGNOSTIC: &str = "Terminal is busy; input is buffered.";
 const INPUT_BUFFER_FULL_DIAGNOSTIC: &str =
     "Terminal input buffer is full; wait for pending input to be delivered.";
+const TERMINAL_NOTICE_DURATION: Duration = Duration::from_secs(5);
 
 actions!(ghosthub, [ToggleSidebar]);
 
@@ -297,6 +298,7 @@ pub struct RootView {
     ssh_prompt_focus: FocusHandle,
     kill_focus: FocusHandle,
     diagnostic: Option<String>,
+    terminal_notice: TransientNotice,
     paste_confirmation: bool,
     observed_presentation_id: Option<u64>,
     observed_revision: u64,
@@ -319,6 +321,36 @@ pub struct RootView {
     pending_worktree_navigation: Option<u64>,
     session_action_menu: Option<SessionActionMenu>,
     restore_focus: bool,
+}
+
+#[derive(Default)]
+struct TransientNotice {
+    source: Option<(Option<u64>, String)>,
+    expires_at: Option<Instant>,
+}
+
+impl TransientNotice {
+    fn synchronize(&mut self, presentation_id: Option<u64>, notice: Option<&str>, now: Instant) {
+        let source = notice.map(|notice| (presentation_id, notice.to_owned()));
+        if self.source != source {
+            self.source = source;
+            self.expires_at = self.source.as_ref().map(|_| now + TERMINAL_NOTICE_DURATION);
+        }
+    }
+
+    fn expire(&mut self, now: Instant) -> bool {
+        if self.expires_at.is_some_and(|deadline| now >= deadline) {
+            self.expires_at = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn visible(&self) -> Option<&str> {
+        self.expires_at
+            .and(self.source.as_ref().map(|(_, notice)| notice.as_str()))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1206,7 +1238,13 @@ impl RootView {
                         let scope_changed = view.sync_terminal_scope();
                         let handled = view.handle_events(cx);
                         let flushed = view.flush_pending_input();
-                        if scope_changed || handled || flushed || view.poll_changed() {
+                        let notice_expired = view.terminal_notice.expire(Instant::now());
+                        if scope_changed
+                            || handled
+                            || flushed
+                            || notice_expired
+                            || view.poll_changed()
+                        {
                             cx.notify();
                         }
                     })
@@ -1254,6 +1292,7 @@ impl RootView {
             ssh_prompt_focus: cx.focus_handle(),
             kill_focus: cx.focus_handle(),
             diagnostic: None,
+            terminal_notice: TransientNotice::default(),
             paste_confirmation: false,
             observed_presentation_id: None,
             observed_revision: u64::MAX,
@@ -5322,6 +5361,11 @@ impl RootView {
 
     fn synchronize_render_state(&mut self, snapshot: &workspace::WorkspaceSnapshot) {
         self.observed_revision = snapshot.revision();
+        self.terminal_notice.synchronize(
+            terminal_presentation_id(snapshot.content()),
+            snapshot.notice(),
+            Instant::now(),
+        );
         if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
             self.observed_surface_identity = None;
             self.observed_surface_generation = 0;
@@ -7251,7 +7295,7 @@ impl Render for RootView {
             .children(kill_overlay)
             .children(herdr_lifecycle_overlay);
 
-        if let Some(notice) = snapshot.notice() {
+        if let Some(notice) = self.terminal_notice.visible() {
             root = root.child(
                 div()
                     .absolute()
@@ -7925,22 +7969,23 @@ mod tests {
         HostHeaderAction, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal,
         LayoutKey, NewSessionDraft, NewSessionKind, NewWorktreeMode, PendingUiInput, ProjectDialog,
         QueuedUiInput, SessionGroup, SessionGroupKey, SessionRowAction, SettingsDialog,
-        SettingsPane, SshField, SshHostEditor, TerminalKeyIdentity, TerminalKeyboard,
-        TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
-        WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode,
-        WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence,
-        WorktreeSocket, active_session_selection, application_navigation_width,
-        apply_new_worktree_failure, apply_worktree_removal_failure, available_herdr_row_actions,
-        can_create_worktree, can_kill_worktree, canonical_terminal_key_with,
-        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
-        coalesce_last_resize, coalesce_last_wheel, has_ambiguous_worktree_source,
-        herdr_row_actions, herdr_session_menu_actions, host_header_action, host_landing_text,
-        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
-        kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
-        new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
-        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
-        session_action_menu_position, session_backend_id, session_creation_available,
-        session_group_visibility, session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        SettingsPane, SshField, SshHostEditor, TERMINAL_NOTICE_DURATION, TerminalKeyIdentity,
+        TerminalKeyboard, TerminalPointer, TerminalResize, TransientNotice, UI_INPUT_BYTE_CAPACITY,
+        UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext,
+        WorktreeOpenMode, WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget,
+        WorktreeSessionPresence, WorktreeSocket, active_session_selection,
+        application_navigation_width, apply_new_worktree_failure, apply_worktree_removal_failure,
+        available_herdr_row_actions, can_create_worktree, can_kill_worktree,
+        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
+        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
+        host_header_action, host_landing_text, input_queue_has_capacity,
+        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
+        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
+        owns_created_worktree_navigation, pull_request_import_selector,
+        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
+        session_backend_id, session_creation_available, session_group_visibility,
+        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
         terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
         terminal_line_height, terminal_wheel_steps, tmux_row_actions, toggle_session_group_state,
         transitioned_presentation, tree_herdr_sessions, tree_sessions, tree_zellij_sessions,
@@ -7949,6 +7994,7 @@ mod tests {
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
@@ -7956,6 +8002,34 @@ mod tests {
         MouseInput, NamedKey, ProjectItem, SessionItem, SessionSelection, SshHostDraft,
         WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
     };
+
+    #[test]
+    fn terminal_notice_expires_once_per_presentation_and_message() {
+        let now = Instant::now();
+        let mut notice = TransientNotice::default();
+
+        notice.synchronize(Some(7), Some("reduced color"), now);
+        assert_eq!(notice.visible(), Some("reduced color"));
+        assert!(
+            !notice.expire(now + TERMINAL_NOTICE_DURATION.saturating_sub(Duration::from_millis(1)))
+        );
+        assert!(notice.expire(now + TERMINAL_NOTICE_DURATION));
+        assert_eq!(notice.visible(), None);
+
+        notice.synchronize(
+            Some(7),
+            Some("reduced color"),
+            now + TERMINAL_NOTICE_DURATION,
+        );
+        assert_eq!(notice.visible(), None);
+        notice.synchronize(None, None, now + TERMINAL_NOTICE_DURATION);
+        notice.synchronize(
+            Some(8),
+            Some("reduced color"),
+            now + TERMINAL_NOTICE_DURATION,
+        );
+        assert_eq!(notice.visible(), Some("reduced color"));
+    }
 
     #[test]
     fn settings_shell_opens_the_hosts_pane_without_a_transient_editor() {

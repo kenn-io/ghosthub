@@ -448,12 +448,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 zellij::ExecutableProbe::Available(executable) => executable,
                 zellij::ExecutableProbe::Unavailable => return Ok(None),
             };
-            let command = multiplexer_command(
-                &zellij::CONTROL_VARIABLES,
-                None,
-                &executable,
-                ["list-sessions", "--no-formatting", "--short"],
-            );
+            let command = zellij_inventory_command(&executable);
             let output = self.run_framed_remote_shell(
                 lease,
                 &posix_command(&command),
@@ -835,6 +830,15 @@ fn zellij_launch_command(executable: &str, name: &ZellijSessionName, term: &str)
         Some(term),
         executable,
         [argument.as_str()],
+    )
+}
+
+fn zellij_inventory_command(executable: &str) -> Vec<String> {
+    multiplexer_command(
+        &zellij::CONTROL_VARIABLES,
+        None,
+        executable,
+        ["list-sessions", "--no-formatting"],
     )
 }
 
@@ -1432,6 +1436,30 @@ mod tests {
         assert_eq!(
             &command[command.len() - 2..],
             ["/usr/bin/zellij", "--session=review"]
+        );
+    }
+
+    #[test]
+    fn remote_zellij_inventory_keeps_status_metadata_for_active_filtering() {
+        let command = zellij_inventory_command("/usr/bin/zellij");
+
+        assert_eq!(
+            &command[command.len() - 3..],
+            ["/usr/bin/zellij", "list-sessions", "--no-formatting"]
+        );
+        assert!(!command.iter().any(|argument| argument == "--short"));
+        let sessions = zellij::parse_inventory(
+            0,
+            b"work [Created 2m ago]\nold [Created 3h ago] (EXITED - attach to resurrect)\n",
+            b"",
+        )
+        .expect("metadata-rich remote inventory");
+        assert_eq!(
+            sessions
+                .iter()
+                .map(ZellijSessionRecord::name)
+                .collect::<Vec<_>>(),
+            ["work"]
         );
     }
 

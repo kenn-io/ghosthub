@@ -1620,7 +1620,6 @@ struct RemotePublishError {
 enum RemoteAttachPlan {
     Tmux(session::AttachPlan),
     Herdr(session::HerdrAttachPlan),
-    Zellij(session::ZellijAttachPlan),
 }
 
 #[derive(Clone, Copy)]
@@ -2410,6 +2409,16 @@ struct RemoteZellijCreateRequest {
     snapshot: RemoteTmuxSnapshot,
     executable: String,
     name: ZellijSessionName,
+}
+
+#[derive(Clone)]
+struct RemoteZellijAttachRequest {
+    host_id: String,
+    selection: SessionSelection,
+    host: RuntimeRemoteHost,
+    snapshot: RemoteTmuxSnapshot,
+    executable: String,
+    name: String,
 }
 
 impl HerdrCreateRequest {
@@ -5033,9 +5042,13 @@ impl Workspace {
                 self.begin_navigation();
                 return self.refresh_active_remote_selection(selection, current_key.as_ref());
             }
-            self.begin_navigation();
+            let navigation_generation = self.begin_navigation();
             if self.activate_remote_retained(selection, current_key.as_ref())? {
                 return Ok(());
+            }
+            if selection.kind() == SessionKind::Zellij {
+                let request = capture_remote_zellij_attach_request(&self.inner, selection)?;
+                return self.start_remote_zellij_attachment(request, navigation_generation);
             }
             return self.attach_remote(selection);
         }
@@ -5308,32 +5321,9 @@ impl Workspace {
                     )
                 }
                 SessionKind::Zellij => {
-                    let executable = context.snapshot.zellij().executable().ok_or_else(|| {
-                        WorkspaceError::new("Zellij is unavailable on this SSH host")
-                    })?;
-                    let session = context
-                        .snapshot
-                        .zellij()
-                        .sessions()
-                        .iter()
-                        .find(|session| session.name() == selection.session())
-                        .ok_or_else(|| {
-                            WorkspaceError::new("Zellij session is not in current remote inventory")
-                        })?;
-                    let plan = context
-                        .host
-                        .zellij_attach_plan(
-                            &context.snapshot,
-                            executable,
-                            session,
-                            "xterm-256color",
-                        )
-                        .map_err(|error| WorkspaceError::new(error.to_string()))?;
-                    (
-                        RemoteAttachPlan::Zellij(plan),
-                        RemoteSessionIdentity::Zellij(session.name().to_owned()),
-                        None,
-                    )
+                    return Err(WorkspaceError::new(
+                        "remote Zellij attachment requires a fresh active-session probe",
+                    ));
                 }
             };
             (
@@ -5366,14 +5356,6 @@ impl Workspace {
                 colors,
             ),
             RemoteAttachPlan::Herdr(plan) => TerminalWorker::attach_herdr_with_metadata(
-                plan,
-                initial_geometry.grid,
-                initial_geometry.sequence,
-                initial_geometry.pixels,
-                clipboard,
-                colors,
-            ),
-            RemoteAttachPlan::Zellij(plan) => TerminalWorker::attach_zellij_with_metadata(
                 plan,
                 initial_geometry.grid,
                 initial_geometry.sequence,
@@ -5995,6 +5977,30 @@ impl Workspace {
             )));
         }
         drop(navigation);
+        Ok(())
+    }
+
+    fn start_remote_zellij_attachment(
+        &self,
+        request: RemoteZellijAttachRequest,
+        navigation_generation: u64,
+    ) -> Result<(), WorkspaceError> {
+        let inner = Arc::clone(&self.inner);
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-remote-zellij-attach".to_owned())
+            .spawn(move || {
+                run_remote_zellij_attach(
+                    &inner,
+                    &request,
+                    navigation_generation,
+                    &CancellationToken::new(),
+                );
+            })
+        {
+            return Err(WorkspaceError::new(format!(
+                "start remote Zellij attachment task: {error}"
+            )));
+        }
         Ok(())
     }
 
@@ -8622,6 +8628,52 @@ fn capture_remote_zellij_create_request(
         snapshot: context.snapshot.clone(),
         executable: executable.clone(),
         name,
+    })
+}
+
+fn capture_remote_zellij_attach_request(
+    inner: &Inner,
+    selection: &SessionSelection,
+) -> Result<RemoteZellijAttachRequest, WorkspaceError> {
+    if selection.kind() != SessionKind::Zellij {
+        return Err(WorkspaceError::new(
+            "the selected session is not a Zellij session",
+        ));
+    }
+    require_host_session_actions(inner, selection)?;
+    let entries = inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let context = entries
+        .get(selection.host_id())
+        .and_then(|entry| entry.context.as_ref())
+        .ok_or_else(|| WorkspaceError::new("Connect this SSH host before opening a session"))?;
+    if context.snapshot.endpoint() != selection.endpoint() {
+        return Err(WorkspaceError::new(
+            "SSH endpoint changed; refresh before opening the session",
+        ));
+    }
+    let ZellijInventory::Available {
+        executable,
+        sessions,
+    } = context.snapshot.zellij()
+    else {
+        return Err(WorkspaceError::new(
+            "Zellij is not available on this SSH host",
+        ));
+    };
+    let session = sessions
+        .iter()
+        .find(|session| session.name() == selection.session())
+        .ok_or_else(|| WorkspaceError::new("Zellij session is no longer active"))?;
+    Ok(RemoteZellijAttachRequest {
+        host_id: selection.host_id().to_owned(),
+        selection: selection.clone(),
+        host: context.host.clone(),
+        snapshot: context.snapshot.clone(),
+        executable: executable.clone(),
+        name: session.name().to_owned(),
     })
 }
 
@@ -11361,6 +11413,139 @@ impl Drop for RemoteConstructiveReset<'_> {
     }
 }
 
+fn run_remote_zellij_attach(
+    inner: &Inner,
+    request: &RemoteZellijAttachRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) {
+    let _operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let result =
+        prepare_remote_zellij_attachment(inner, request, navigation_generation, cancellation)
+            .and_then(|(worker, snapshot, session, geometry)| {
+                if let Err(error) =
+                    worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
+                {
+                    return Err(WorkspaceError::from_worker(&error));
+                }
+                let navigation = inner
+                    .navigation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+                    drop(worker);
+                    return Ok(());
+                }
+                let key = RemotePresentationKey {
+                    host_id: request.host_id.clone(),
+                    endpoint: snapshot.endpoint().to_owned(),
+                    route_identity: snapshot.route_identity().to_owned(),
+                    lease_generation: snapshot.lease_generation(),
+                    session_identity: RemoteSessionIdentity::Zellij(session.name().to_owned()),
+                };
+                let published = publish_remote_worker(
+                    inner,
+                    worker,
+                    key,
+                    &request.selection,
+                    snapshot.lease().clone(),
+                    next_presentation_id(inner),
+                    None,
+                )
+                .map_err(|error| error.error);
+                drop(navigation);
+                published
+            });
+    if let Err(error) = result
+        && inner.navigation_generation.load(Ordering::Acquire) == navigation_generation
+    {
+        push_operation_event(inner, WorkspaceEvent::Error(error.to_string()));
+        inner.revision.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn prepare_remote_zellij_attachment(
+    inner: &Inner,
+    request: &RemoteZellijAttachRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) -> Result<
+    (
+        TerminalWorker,
+        RemoteTmuxSnapshot,
+        session::ZellijSessionRecord,
+        TerminalGeometry,
+    ),
+    WorkspaceError,
+> {
+    let inventory = request
+        .host
+        .refresh(request.snapshot.lease(), cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let (executable, session) = resolve_remote_zellij_attach_target(
+        inventory.zellij(),
+        &request.executable,
+        &request.name,
+    )?;
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        return Err(WorkspaceError::new(
+            "remote Zellij attachment was superseded",
+        ));
+    }
+    let snapshot = publish_remote_inventory(inner, &request.host_id, &request.snapshot, inventory)?;
+    reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
+    let plan = request
+        .host
+        .zellij_attach_plan(&snapshot, &executable, &session, "xterm-256color")
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let worker = TerminalWorker::attach_zellij_with_metadata(
+        &plan,
+        geometry.grid,
+        geometry.sequence,
+        geometry.pixels,
+        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+        default_colors(&inner.appearance),
+    )
+    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    Ok((worker, snapshot, session, geometry))
+}
+
+fn resolve_remote_zellij_attach_target(
+    inventory: &ZellijInventory,
+    expected_executable: &str,
+    expected_name: &str,
+) -> Result<(String, session::ZellijSessionRecord), WorkspaceError> {
+    let ZellijInventory::Available {
+        executable,
+        sessions,
+    } = inventory
+    else {
+        return Err(WorkspaceError::new(
+            "Zellij is not available on this SSH host",
+        ));
+    };
+    if executable != expected_executable {
+        return Err(WorkspaceError::new(
+            "the remote Zellij executable changed; refresh before opening the session",
+        ));
+    }
+    let session = sessions
+        .iter()
+        .find(|session| session.name() == expected_name)
+        .cloned()
+        .ok_or_else(|| {
+            WorkspaceError::new("Zellij session is no longer active; refresh before opening it")
+        })?;
+    Ok((executable.clone(), session))
+}
+
 fn run_remote_herdr_create(
     inner: &Inner,
     request: &RemoteHerdrCreateRequest,
@@ -11374,12 +11559,8 @@ fn run_remote_herdr_create(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let result = create_remote_herdr_fresh(inner, request, navigation_generation, cancellation)
         .and_then(|(worker, inventory, session, geometry)| {
-            let snapshot = publish_remote_constructive_inventory(
-                inner,
-                &request.host_id,
-                &request.snapshot,
-                inventory,
-            )?;
+            let snapshot =
+                publish_remote_inventory(inner, &request.host_id, &request.snapshot, inventory)?;
             if let Err(error) =
                 worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
             {
@@ -11448,12 +11629,8 @@ fn run_remote_zellij_create(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let result = create_remote_zellij_fresh(inner, request, navigation_generation, cancellation)
         .and_then(|(worker, inventory, session, geometry)| {
-            let snapshot = publish_remote_constructive_inventory(
-                inner,
-                &request.host_id,
-                &request.snapshot,
-                inventory,
-            )?;
+            let snapshot =
+                publish_remote_inventory(inner, &request.host_id, &request.snapshot, inventory)?;
             if let Err(error) =
                 worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
             {
@@ -11694,7 +11871,7 @@ fn create_remote_zellij_fresh(
     }
 }
 
-fn publish_remote_constructive_inventory(
+fn publish_remote_inventory(
     inner: &Inner,
     host_id: &str,
     expected: &RemoteTmuxSnapshot,
@@ -14841,6 +15018,34 @@ fn default_terminal_geometry() -> TerminalGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_zellij_attachment_requires_fresh_executable_and_active_session() {
+        let available = ZellijInventory::Available {
+            executable: "/opt/homebrew/bin/zellij".to_owned(),
+            sessions: vec![session::ZellijSessionRecord::discovered("review")],
+        };
+
+        let (executable, session) =
+            resolve_remote_zellij_attach_target(&available, "/opt/homebrew/bin/zellij", "review")
+                .expect("fresh active session");
+        assert_eq!(executable, "/opt/homebrew/bin/zellij");
+        assert_eq!(session.name(), "review");
+        assert!(
+            resolve_remote_zellij_attach_target(&available, "/usr/bin/zellij", "review").is_err()
+        );
+        assert!(
+            resolve_remote_zellij_attach_target(
+                &ZellijInventory::Available {
+                    executable: "/opt/homebrew/bin/zellij".to_owned(),
+                    sessions: Vec::new(),
+                },
+                "/opt/homebrew/bin/zellij",
+                "review",
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn project_path_input_accepts_windows_and_wsl_absolute_paths() {
