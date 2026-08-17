@@ -1005,7 +1005,7 @@ def test_image_inputs_digest_covers_every_reviewed_input(tmp_path: Path) -> None
         path.write_bytes(before)
 
 
-def test_required_promotion_status_is_strict_and_bound_to_dedicated_app() -> None:
+def test_required_promotion_status_is_non_strict_and_bound_to_dedicated_app() -> None:
     ruleset_pages = [[{"id": 41}], [{"id": 42}]]
     detail = {
         "target": "branch",
@@ -1017,7 +1017,7 @@ def test_required_promotion_status_is_strict_and_bound_to_dedicated_app() -> Non
             {
                 "type": "required_status_checks",
                 "parameters": {
-                    "strict_required_status_checks_policy": True,
+                    "strict_required_status_checks_policy": False,
                     "required_status_checks": [
                         {
                             "context": "sandbox-image-promotion",
@@ -1048,9 +1048,9 @@ def test_required_promotion_status_is_strict_and_bound_to_dedicated_app() -> Non
 @pytest.mark.parametrize(
     ("strict", "integration_id", "exclude"),
     [
-        (False, 424242, []),
-        (True, None, []),
-        (True, 424242, ["refs/heads/main"]),
+        (True, 424242, []),
+        (False, None, []),
+        (False, 424242, ["refs/heads/main"]),
     ],
 )
 def test_required_promotion_status_rejects_weak_policy(
@@ -1099,7 +1099,7 @@ def test_required_promotion_status_rejects_weak_policy(
         }
     )
 
-    with pytest.raises(ValueError, match="strict.*check"):
+    with pytest.raises(ValueError, match="without global up-to-date enforcement"):
         verify_required_promotion_status(runner, 424242)
 
 

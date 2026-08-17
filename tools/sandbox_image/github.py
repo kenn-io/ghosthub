@@ -896,7 +896,10 @@ def verify_required_promotion_status(
         )
         if _ruleset_requires_promotion_status(ruleset, expected_integration_id):
             return
-    raise ValueError("main must require the strict sandbox-image-promotion check")
+    raise ValueError(
+        "main must require the App-bound sandbox-image-promotion check "
+        "without global up-to-date enforcement"
+    )
 
 
 def verify_required_merge_signal(runner: Runner) -> None:
@@ -1074,7 +1077,7 @@ def _rule_requires_promotion_status(
         return False
     checks = parameters.get("required_status_checks")
     return (
-        parameters.get("strict_required_status_checks_policy") is True
+        parameters.get("strict_required_status_checks_policy") is False
         and isinstance(checks, list)
         and any(
             isinstance(check, dict)
