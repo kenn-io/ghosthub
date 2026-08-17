@@ -8,6 +8,21 @@ import Testing
 
 @Suite("Workspace sidebar session actions")
 struct WorkspaceSidebarViewTests {
+    @Test("worktree rows omit inline session controls")
+    func worktreeRowsOmitInlineSessionControls() {
+        let hostID = UUID()
+
+        #expect(!WorkspaceSidebarRowActionModel.allowsInlineControl(
+            for: .worktree(UUID())
+        ))
+        #expect(WorkspaceSidebarRowActionModel.allowsInlineControl(
+            for: .tmuxSession(hostID: hostID, name: "ordinary")
+        ))
+        #expect(WorkspaceSidebarRowActionModel.allowsInlineControl(
+            for: .directoryWorkspace(UUID())
+        ))
+    }
+
     @Test("tmux preview disclosure requires mode and retained identity")
     func tmuxPreviewDisclosureEligibility() {
         let sessionID = "host:default:opened"

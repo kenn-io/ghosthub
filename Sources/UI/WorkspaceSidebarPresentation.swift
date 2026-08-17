@@ -237,6 +237,15 @@ enum WorkspaceSidebarRowAction: Hashable {
 }
 
 enum WorkspaceSidebarRowActionModel {
+    static func allowsInlineControl(
+        for target: WorkspaceNavigationTarget
+    ) -> Bool {
+        if case .worktree = target {
+            return false
+        }
+        return true
+    }
+
     static func actions(
         for row: WorkspaceSidebarRow,
         in snapshot: WorkspaceSnapshot,
