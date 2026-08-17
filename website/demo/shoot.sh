@@ -252,6 +252,21 @@ capture_worktree_window_counts() {
   sleep 0.5
 }
 
+capture_window_title() {
+  demo_input rename-window
+  sleep 1
+  demo_input expect-sheet
+  capture_state guide-window-title.png
+  demo_input escape
+  sleep 1
+}
+
+if [[ "${GHOSTHUB_DEMO_WINDOW_TITLE_ONLY:-}" == "1" ]]; then
+  echo "==> guide: editable workspace title"
+  capture_window_title
+  exit 0
+fi
+
 if [[ "${GHOSTHUB_DEMO_WORKTREE_COUNTS_ONLY:-}" == "1" ]]; then
   echo "==> guide: worktree window counts"
   capture_worktree_window_counts
@@ -290,6 +305,9 @@ capture_worktree_window_counts
 
 echo "==> guide: project removal"
 capture_project_removal
+
+echo "==> guide: editable workspace title"
+capture_window_title
 
 echo "==> hero: active coding-agent worktree"
 palette "fix-reconnect-backoff"

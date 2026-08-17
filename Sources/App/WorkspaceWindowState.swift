@@ -70,12 +70,24 @@ enum WorkspaceWindowLaunchIntent: Hashable, Sendable {
     case openWorktree
 }
 
+enum WorkspaceWindowTitle {
+    static func normalized(_ value: String?) -> String? {
+        guard let title = value?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !title.isEmpty else {
+            return nil
+        }
+        return title
+    }
+}
+
 struct WorkspaceWindowState: Codable, Hashable, Sendable {
     var windowID: UUID
     var navigation: WorkspaceNavigationDescriptor?
     var tmux: WorkspaceTmuxDescriptor?
     var herdr: WorkspaceHerdrDescriptor? = nil
     var zellij: WorkspaceZellijDescriptor? = nil
+    var customTitle: String? = nil
 
     static func fresh(windowID: UUID = UUID()) -> Self {
         Self(windowID: windowID, navigation: nil, tmux: nil)
@@ -217,6 +229,12 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
             herdr: herdr,
             zellij: zellij
         )
+    }
+
+    func withCustomTitle(_ value: String?) -> Self {
+        var copy = self
+        copy.customTitle = WorkspaceWindowTitle.normalized(value)
+        return copy
     }
 }
 

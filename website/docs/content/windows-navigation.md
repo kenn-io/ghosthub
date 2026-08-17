@@ -48,6 +48,16 @@ tab group. If a numbered shortcut is beyond the end of the current group, it
 selects the group's last tab. The tab bar shows the available numbered
 shortcuts and updates them when you reorder tabs.
 
+To give one workspace window or tab its own label, choose
+**Window → Rename Window…**. The label belongs only to that Ghosthub workspace
+and returns after restoration or an update relaunch. Save an empty title to
+return to the automatic session and host title. Renaming Ghosthub chrome never
+renames a tmux session or window, a Herdr or Zellij session, or a worktree.
+You can also hover the compact title and select either the title or its pencil
+to open the same editor.
+
+![Ghosthub's editor for a workspace window or tab title](assets/guide-window-title.png)
+
 ## Close a presentation
 
 ++cmd+w++ closes and detaches only the active session presentation. Other

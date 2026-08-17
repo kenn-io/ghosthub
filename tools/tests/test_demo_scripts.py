@@ -32,6 +32,7 @@ WEBSITE_ASSET_NAMES = (
     "guide-terminal.png",
     "guide-command-center.png",
     "guide-native-tabs.png",
+    "guide-window-title.png",
 )
 
 

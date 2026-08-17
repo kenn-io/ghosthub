@@ -9,6 +9,8 @@ extension Notification.Name {
         Notification.Name("ghosthubCommandPalette")
     public static let ghosthubToggleSidebar =
         Notification.Name("ghosthubToggleSidebar")
+    public static let ghosthubRenameWorkspaceWindow =
+        Notification.Name("ghosthubRenameWorkspaceWindow")
     public static let ghosthubApplyThemeToCurrentSession =
         Notification.Name("ghosthubApplyThemeToCurrentSession")
     public static let ghosthubApplicationShortcutRequest =

@@ -1043,6 +1043,24 @@ final class ApplicationDelegateTests: XCTestCase {
             "ghosthub / feature/api · studio-mac"
         )
         XCTAssertEqual(window.titleVisibility, .hidden)
+
+        controller.update(
+            isSidebarVisible: true,
+            canCreateWorktree: true,
+            sessionTitle: SessionTitlebarPresentation(
+                displayName: "ghosthub / feature/api",
+                hostname: "studio-mac",
+                icon: .tmuxSession
+            ),
+            customTitle: "Review logs",
+            onToggleSidebar: {},
+            onQuickLaunch: {},
+            onSettings: {},
+            onNewWorktree: {}
+        )
+        controller.install(on: window)
+
+        XCTAssertEqual(window.title, "Review logs")
     }
 
 }
