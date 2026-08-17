@@ -16,7 +16,7 @@ on:
 permissions: {}
 
 env:
-  MERGE_SIGNAL_PATH: kenn-io/ghosthub-nightly/.github/workflows/sandbox-image-merge-signal.yml@refs/heads/main
+  MERGE_SIGNAL_PATH: kenn-io/ghosthub-nightly/.github/workflows/sandbox-image-merge-signal.yml@refs/tags/sandbox-merge-signal-v1
 
 # Pull-request reconciliation is replaceable because every survivor audits every
 # open head. Each merge-group signal has its own lossless authorization lane.
@@ -25,6 +25,7 @@ concurrency:
     sandbox-image-promotion-status-writer-${{
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.name == 'Sandbox image merge signal' &&
+      github.event.workflow_run.event == 'merge_group' &&
       github.event.workflow_run.head_sha || 'pull-requests'
     }}
   cancel-in-progress: false
@@ -70,7 +71,9 @@ jobs:
 
           if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
                 "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
-                'Sandbox image merge signal' ]]; then
+                'Sandbox image merge signal' && \
+                "$(jq -r '.workflow_run.event' "$GITHUB_EVENT_PATH")" == \
+                merge_group ]]; then
             merge_sha="$(jq -r '.workflow_run.head_sha // ""' \
               "$GITHUB_EVENT_PATH")"
             if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -253,7 +256,8 @@ jobs:
       - name: Check out proposed merge authority
         if: >-
           github.event_name == 'workflow_run' &&
-          github.event.workflow_run.name == 'Sandbox image merge signal'
+          github.event.workflow_run.name == 'Sandbox image merge signal' &&
+          github.event.workflow_run.event == 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -273,7 +277,8 @@ jobs:
       - name: Audit proposed merge authority
         if: >-
           github.event_name == 'workflow_run' &&
-          github.event.workflow_run.name == 'Sandbox image merge signal'
+          github.event.workflow_run.name == 'Sandbox image merge signal' &&
+          github.event.workflow_run.event == 'merge_group'
         env:
           GH_TOKEN: ${{ steps.audit-token.outputs.token }}
           STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
@@ -588,7 +593,9 @@ jobs:
           merge_signal=false
           if [[ "$GITHUB_EVENT_NAME" == workflow_run && \
                 "$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")" == \
-                'Sandbox image merge signal' ]]; then
+                'Sandbox image merge signal' && \
+                "$(jq -r '.workflow_run.event' "$GITHUB_EVENT_PATH")" == \
+                merge_group ]]; then
             merge_sha="$(jq -r '.workflow_run.head_sha // ""' \
               "$GITHUB_EVENT_PATH")"
             if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then

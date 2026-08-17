@@ -1101,7 +1101,7 @@ def test_required_promotion_status_rejects_weak_policy(
         verify_required_promotion_status(runner, 424242)
 
 
-def test_required_merge_signal_uses_the_external_protected_branch() -> None:
+def test_required_merge_signal_uses_the_external_protected_tag() -> None:
     rulesets = [{"id": 42}]
     workflow_content = (
         "name: Sandbox image merge signal\n"
@@ -1154,7 +1154,8 @@ def test_required_merge_signal_uses_the_external_protected_branch() -> None:
                 "gh",
                 "api",
                 "repos/kenn-io/ghosthub-nightly/contents/"
-                ".github/workflows/sandbox-image-merge-signal.yml?ref=main",
+                ".github/workflows/sandbox-image-merge-signal.yml"
+                "?ref=sandbox-merge-signal-v1",
             ): json.dumps(
                 {
                     "type": "file",
@@ -1180,7 +1181,7 @@ def test_required_merge_signal_uses_the_external_protected_branch() -> None:
         ),
         (
             "Organization",
-            "refs/heads/topic",
+            "refs/heads/main",
             1_334_318_821,
         ),
         (
@@ -1323,7 +1324,8 @@ def test_required_merge_signal_rejects_external_workflow_authority(
                 "gh",
                 "api",
                 "repos/kenn-io/ghosthub-nightly/contents/"
-                ".github/workflows/sandbox-image-merge-signal.yml?ref=main",
+                ".github/workflows/sandbox-image-merge-signal.yml"
+                "?ref=sandbox-merge-signal-v1",
             ): json.dumps(
                 {
                     "type": "file",

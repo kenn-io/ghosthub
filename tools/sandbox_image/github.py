@@ -67,7 +67,7 @@ ALLOWED_REUSABLE_WORKFLOWS = {
     "kenn-io/ghosthub/.github/workflows/ci.yml@main",
 }
 MERGE_SIGNAL_REPOSITORY_ID = 1_334_318_821
-MERGE_SIGNAL_REF = "refs/heads/main"
+MERGE_SIGNAL_REF = "refs/tags/sandbox-merge-signal-v1"
 PROMOTION_AUTHORIZATION_WINDOW = timedelta(hours=23)
 PROMOTION_EVIDENCE_COVERAGE = timedelta(hours=24)
 
@@ -923,7 +923,7 @@ def verify_required_merge_signal(runner: Runner) -> None:
 def _verify_merge_signal_workflow(runner: Runner) -> None:
     endpoint = (
         f"repos/{MERGE_SIGNAL_REPOSITORY}/contents/{MERGE_SIGNAL_WORKFLOW}"
-        "?ref=main"
+        "?ref=sandbox-merge-signal-v1"
     )
     payload = _api_json(runner, endpoint)
     if (

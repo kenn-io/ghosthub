@@ -471,13 +471,14 @@ selection is
 rejected, every workflow declares explicit top-level permissions, the job
 refuses non-`main` effective refs, and no
 `GITHUB_TOKEN` has status-write or package-write authority. The GHCR package
-does not inherit repository Actions access. An organization ruleset requires the
-merge-signal workflow from the protected `main` branch of the separate public
-`kenn-io/ghosthub-nightly` repository. Trusted promotion and every
-reconciliation verify that source repository, protected branch, workflow path,
-required `pull_request` and `merge_group` triggers, empty token permissions, absence of environment use,
-live environments, parsed workflow authority, app integration
-ID, and ruleset. At the final production-tag mutation boundary,
+does not inherit repository Actions access. An organization ruleset requires
+the merge-signal workflow from the protected `sandbox-merge-signal-v1` tag of
+the separate public `kenn-io/ghosthub-nightly` repository. Trusted promotion
+and every reconciliation verify that source repository, protected tag,
+workflow path, required `pull_request` and `merge_group` triggers, empty token
+permissions, absence of environment use, live environments, parsed workflow
+authority, app integration ID, and ruleset. At the final production-tag
+mutation boundary,
 trusted promotion authenticates the App owner, slug, permissions, private key,
 and complete single-repository installation scope, then rechecks both required
 rulesets, pull-request evidence, and tag availability immediately before the
