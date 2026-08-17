@@ -33,15 +33,6 @@ from .report import (
 )
 from .trivy import scan_image, scan_reference
 
-MERGE_QUEUE_PARAMETERS = {
-    "check_response_timeout_minutes": 60,
-    "grouping_strategy": "ALLGREEN",
-    "max_entries_to_build": 1,
-    "max_entries_to_merge": 1,
-    "merge_method": "SQUASH",
-    "min_entries_to_merge": 1,
-    "min_entries_to_merge_wait_minutes": 0,
-}
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 REVIEWED_IMAGE_INPUTS = (
@@ -1066,17 +1057,11 @@ def _ruleset_requires_promotion_status(
             for rule in rules
         )
     )
-    requires_merge_queue = any(
-        isinstance(rule, dict)
-        and rule.get("type") == "merge_queue"
-        and rule.get("parameters") == MERGE_QUEUE_PARAMETERS
-        for rule in rules
-    )
     requires_pull_request = any(
         isinstance(rule, dict) and rule.get("type") == "pull_request"
         for rule in rules
     )
-    return requires_status and requires_merge_queue and requires_pull_request
+    return requires_status and requires_pull_request
 
 
 def _rule_requires_promotion_status(

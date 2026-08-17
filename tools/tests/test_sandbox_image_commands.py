@@ -1015,18 +1015,6 @@ def test_required_promotion_status_is_strict_and_bound_to_dedicated_app() -> Non
         "rules": [
             {"type": "pull_request", "parameters": {}},
             {
-                "type": "merge_queue",
-                "parameters": {
-                    "check_response_timeout_minutes": 60,
-                    "grouping_strategy": "ALLGREEN",
-                    "max_entries_to_build": 1,
-                    "max_entries_to_merge": 1,
-                    "merge_method": "SQUASH",
-                    "min_entries_to_merge": 1,
-                    "min_entries_to_merge_wait_minutes": 0,
-                },
-            },
-            {
                 "type": "required_status_checks",
                 "parameters": {
                     "strict_required_status_checks_policy": True,
@@ -1058,19 +1046,17 @@ def test_required_promotion_status_is_strict_and_bound_to_dedicated_app() -> Non
 
 
 @pytest.mark.parametrize(
-    ("strict", "integration_id", "exclude", "include_queue"),
+    ("strict", "integration_id", "exclude"),
     [
-        (False, 424242, [], True),
-        (True, None, [], True),
-        (True, 424242, ["refs/heads/main"], True),
-        (True, 424242, [], False),
+        (False, 424242, []),
+        (True, None, []),
+        (True, 424242, ["refs/heads/main"]),
     ],
 )
 def test_required_promotion_status_rejects_weak_policy(
     strict: bool,
     integration_id: int | None,
     exclude: list[str],
-    include_queue: bool,
 ) -> None:
     rules: list[dict[str, object]] = [
         {"type": "pull_request", "parameters": {}},
@@ -1087,21 +1073,6 @@ def test_required_promotion_status_rejects_weak_policy(
             },
         }
     ]
-    if include_queue:
-        rules.append(
-            {
-                "type": "merge_queue",
-                "parameters": {
-                    "check_response_timeout_minutes": 60,
-                    "grouping_strategy": "ALLGREEN",
-                    "max_entries_to_build": 1,
-                    "max_entries_to_merge": 1,
-                    "merge_method": "SQUASH",
-                    "min_entries_to_merge": 1,
-                    "min_entries_to_merge_wait_minutes": 0,
-                },
-            }
-        )
     runner = ScriptedRunner(
         {
             (

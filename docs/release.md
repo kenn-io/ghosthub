@@ -187,7 +187,7 @@ successful run of the exact trusted promotion workflow for that pull-request
 head. The gate verifies that run through the GitHub API; the status alone is
 not promotion authority. An active default-branch ruleset provisioned with no
 bypass actors or ref exclusions requires the status from a dedicated
-status-only GitHub App with strict checking and a single-entry merge queue. Its
+status-only GitHub App with strict checking. Its
 key is available only through a
 no-reviewer environment restricted to `main`; no `GITHUB_TOKEN` receives
 status-write or package-write authority. Candidate publication and production
@@ -195,19 +195,12 @@ retagging use a separate package-writer credential available only through
 exact-`main` environments, and the GHCR package does not inherit repository
 Actions access. Trusted promotion and every reconciliation audit the
 environment, parsed workflow authority, app integration ID, and repository
-policy. An organization ruleset requires the merge-signal workflow from the
-protected `sandbox-merge-signal-v1` tag in the separate public
-`kenn-io/ghosthub-nightly` repository, so merge-queue code cannot select its
-own signal logic. Promotion preflight and reconciliation verify the source
-identity, reviewed commit, and the workflow's restricted
-trigger, permissions, and environment authority.
-Reconciliation fences all open heads before file inspection. The merge queue
-generates a fresh SHA with its own reconciliation lane; trusted-main
-tooling audits the proposed workflow tree without executing it, refuses changes
-to the credential-bearing status workflow, and rechecks promotion and freshness
-before authorizing it. A GitHub or API failure therefore leaves the merge
-blocked. This makes the exact PR head, current `main` base, and a current
-merge-time evaluation part of authorization. Main changes invalidate the
+policy. Reconciliation fences all open heads before file inspection.
+Trusted-main tooling audits the proposed workflow tree without executing it,
+refuses changes to the credential-bearing status workflow, and rechecks
+promotion and freshness before authorizing the exact pull-request head. A
+GitHub or API failure therefore leaves the merge blocked. This makes the exact
+PR head and current `main` base part of authorization. Main changes invalidate the
 status, and successful promotion evidence expires after 24 hours.
 
 The scheduled and manually dispatchable maintenance workflow rescans the
