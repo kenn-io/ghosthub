@@ -1155,11 +1155,12 @@ def test_required_merge_signal_is_organization_owned_and_pinned_to_main() -> Non
     verify_required_merge_signal(runner)
 
 
-def test_required_merge_signal_accepts_pinned_external_authority() -> None:
+def test_required_merge_signal_accepts_protected_external_tag() -> None:
     commit = github_module.MERGE_SIGNAL_COMMIT
     workflow_content = (
         "name: Sandbox image merge signal\n"
         "on:\n"
+        "  pull_request:\n"
         "  merge_group:\n"
         "    types: [checks_requested]\n"
         "permissions: {}\n"
@@ -1184,8 +1185,7 @@ def test_required_merge_signal_accepts_pinned_external_authority() -> None:
                     "workflows": [
                         {
                             "path": github_module.MERGE_SIGNAL_WORKFLOW,
-                            "ref": commit,
-                            "sha": commit,
+                            "ref": github_module.MERGE_SIGNAL_REF,
                             "repository_id": (
                                 github_module.MERGE_SIGNAL_REPOSITORY_ID
                             ),
@@ -1205,6 +1205,12 @@ def test_required_merge_signal_accepts_pinned_external_authority() -> None:
                 "repos/kenn-io/ghosthub/rulesets?per_page=100",
             ): json.dumps([[{"id": 42}]]),
             ("gh", "api", "repos/kenn-io/ghosthub/rulesets/42"): json.dumps(detail),
+            (
+                "gh",
+                "api",
+                "repos/kenn-io/ghosthub-nightly/git/ref/tags/"
+                "sandbox-merge-signal-v1",
+            ): json.dumps({"object": {"type": "commit", "sha": commit}}),
             (
                 "gh",
                 "api",
