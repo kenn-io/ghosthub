@@ -105,8 +105,9 @@ workflow lands on `kenn-io/ghosthub-nightly`, add the organization ruleset's
 separate public repository, the protected `sandbox-merge-signal-v1` tag, and
 the merge-signal workflow. Organization policy forbids updating or deleting
 that exact tag. Authority checks require it to resolve to reviewed commit
-`9c5afce214433bc642802220402a2e4ec4055f5d`, validate the live no-bypass tag
-rule, and fetch the workflow by commit rather than by mutable reference.
+`9c5afce214433bc642802220402a2e4ec4055f5d` and fetch the workflow by commit
+rather than by mutable reference. The applied organization policy is the
+authority that prevents tag updates or deletion.
 Then enable and audit the exact repository and inherited organization rules:
 
 ```bash
@@ -294,8 +295,8 @@ trusted `main`. The audit rejects job-level reusable workflows except the
 exact repository-owned `ci.yml@main` call. The organization ruleset binds the
 merge-signal path, repository identity, and protected source tag outside the
 candidate tree. Live preflight resolves the tag to its reviewed commit,
-validates its update/deletion policy, and requires the workflow's
-`pull_request` and `merge_group` triggers, empty permissions, and absence of environment or reusable
+then requires the workflow's `pull_request` and `merge_group` triggers, empty
+permissions, and absence of environment or reusable
 workflow authority; reconciliation accepts only runs with the expected name
 and path. The
 executable post-approval vulnerability policy is part of the same

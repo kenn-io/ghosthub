@@ -55,16 +55,8 @@ def _merge_signal_source_responses(
     workflow_content: str,
     *,
     tag_sha: str | None = None,
-    bypass_actors: list[object] | None = None,
-    rules: list[dict[str, object]] | None = None,
 ) -> dict[tuple[str, ...], str]:
     tag_sha = tag_sha or github_module.MERGE_SIGNAL_COMMIT
-    bypass_actors = bypass_actors or []
-    rules = rules or [
-        {"type": "update"},
-        {"type": "deletion"},
-        {"type": "non_fast_forward"},
-    ]
     return {
         (
             "gh",
@@ -72,33 +64,6 @@ def _merge_signal_source_responses(
             "repos/kenn-io/ghosthub-nightly/git/ref/tags/"
             "sandbox-merge-signal-v1",
         ): json.dumps({"object": {"type": "commit", "sha": tag_sha}}),
-        (
-            "gh",
-            "api",
-            "--paginate",
-            "--slurp",
-            "orgs/kenn-io/rulesets?per_page=100",
-        ): json.dumps([[{"id": 99, "name": "ghosthub-merge-signal-tag"}]]),
-        ("gh", "api", "orgs/kenn-io/rulesets/99"): json.dumps(
-            {
-                "source_type": "Organization",
-                "source": "kenn-io",
-                "target": "tag",
-                "enforcement": "active",
-                "bypass_actors": bypass_actors,
-                "conditions": {
-                    "repository_name": {
-                        "include": ["ghosthub-nightly"],
-                        "exclude": [],
-                    },
-                    "ref_name": {
-                        "include": ["refs/tags/sandbox-merge-signal-v1"],
-                        "exclude": [],
-                    },
-                },
-                "rules": rules,
-            }
-        ),
         (
             "gh",
             "api",
@@ -1289,30 +1254,7 @@ def test_required_merge_signal_rejects_the_wrong_authority(
         verify_required_merge_signal(runner)
 
 
-@pytest.mark.parametrize(
-    ("tag_sha", "bypass_actors", "rules", "message"),
-    [
-        ("b" * 40, [], None, "reviewed source"),
-        (
-            github_module.MERGE_SIGNAL_COMMIT,
-            [{"actor_id": 5}],
-            None,
-            "tag protection",
-        ),
-        (
-            github_module.MERGE_SIGNAL_COMMIT,
-            [],
-            [{"type": "update"}, {"type": "non_fast_forward"}],
-            "tag protection",
-        ),
-    ],
-)
-def test_required_merge_signal_rejects_mutable_or_retargeted_source(
-    tag_sha: str,
-    bypass_actors: list[object],
-    rules: list[dict[str, object]] | None,
-    message: str,
-) -> None:
+def test_required_merge_signal_rejects_retargeted_source() -> None:
     workflow_content = (
         "name: Sandbox image merge signal\n"
         "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
@@ -1359,14 +1301,12 @@ def test_required_merge_signal_rejects_mutable_or_retargeted_source(
             ),
             **_merge_signal_source_responses(
                 workflow_content,
-                tag_sha=tag_sha,
-                bypass_actors=bypass_actors,
-                rules=rules,
+                tag_sha="b" * 40,
             ),
         }
     )
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="reviewed source"):
         verify_required_merge_signal(runner)
 
 

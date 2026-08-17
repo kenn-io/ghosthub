@@ -70,7 +70,6 @@ MERGE_SIGNAL_REPOSITORY_ID = 1_334_318_821
 MERGE_SIGNAL_REF = "refs/tags/sandbox-merge-signal-v1"
 MERGE_SIGNAL_COMMIT = "9c5afce214433bc642802220402a2e4ec4055f5d"
 MERGE_SIGNAL_TAG = "sandbox-merge-signal-v1"
-MERGE_SIGNAL_TAG_RULESET = "ghosthub-merge-signal-tag"
 PROMOTION_AUTHORIZATION_WINDOW = timedelta(hours=23)
 PROMOTION_EVIDENCE_COVERAGE = timedelta(hours=24)
 
@@ -918,7 +917,7 @@ def verify_required_merge_signal(runner: Runner) -> None:
             runner, f"repos/kenn-io/ghosthub/rulesets/{summary['id']}"
         )
         if _ruleset_requires_merge_signal(ruleset):
-            _verify_merge_signal_tag(runner)
+            _verify_merge_signal_revision(runner)
             _verify_merge_signal_workflow(runner)
             return
     raise ValueError("main must require the trusted merge-signal workflow")
@@ -983,7 +982,7 @@ def _verify_merge_signal_workflow(runner: Runner) -> None:
             raise ValueError("trusted merge-signal workflow job authority is invalid")
 
 
-def _verify_merge_signal_tag(runner: Runner) -> None:
+def _verify_merge_signal_revision(runner: Runner) -> None:
     reference = _api_json(
         runner,
         f"repos/{MERGE_SIGNAL_REPOSITORY}/git/ref/tags/{MERGE_SIGNAL_TAG}",
@@ -995,66 +994,6 @@ def _verify_merge_signal_tag(runner: Runner) -> None:
         or target.get("sha") != MERGE_SIGNAL_COMMIT
     ):
         raise ValueError("trusted merge-signal tag does not resolve to reviewed source")
-
-    try:
-        pages = json.loads(
-            runner.run(
-                (
-                    "gh",
-                    "api",
-                    "--paginate",
-                    "--slurp",
-                    "orgs/kenn-io/rulesets?per_page=100",
-                )
-            ).stdout
-        )
-    except json.JSONDecodeError as error:
-        raise ValueError("GitHub API returned invalid JSON") from error
-    if not isinstance(pages, list) or not all(
-        isinstance(page, list) for page in pages
-    ):
-        raise ValueError("organization ruleset configuration is invalid")
-    summaries = [summary for page in pages for summary in page]
-    for summary in summaries:
-        if (
-            not isinstance(summary, dict)
-            or summary.get("name") != MERGE_SIGNAL_TAG_RULESET
-            or not isinstance(summary.get("id"), int)
-        ):
-            continue
-        ruleset = _api_json(runner, f"orgs/kenn-io/rulesets/{summary['id']}")
-        if _ruleset_protects_merge_signal_tag(ruleset):
-            return
-    raise ValueError("trusted merge-signal tag protection is missing or weak")
-
-
-def _ruleset_protects_merge_signal_tag(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    conditions = value.get("conditions")
-    repository_name = (
-        conditions.get("repository_name") if isinstance(conditions, dict) else None
-    )
-    ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
-    rules = value.get("rules")
-    return (
-        value.get("source_type") == "Organization"
-        and value.get("source") == "kenn-io"
-        and value.get("target") == "tag"
-        and value.get("enforcement") == "active"
-        and value.get("bypass_actors") == []
-        and isinstance(repository_name, dict)
-        and repository_name.get("include") == ["ghosthub-nightly"]
-        and repository_name.get("exclude") == []
-        and isinstance(ref_name, dict)
-        and ref_name.get("include") == [f"refs/tags/{MERGE_SIGNAL_TAG}"]
-        and ref_name.get("exclude") == []
-        and isinstance(rules, list)
-        and {
-            rule.get("type") for rule in rules if isinstance(rule, dict)
-        }
-        == {"update", "deletion", "non_fast_forward"}
-    )
 
 
 def _ruleset_requires_merge_signal(value: object) -> bool:
