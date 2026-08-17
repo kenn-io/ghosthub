@@ -51,7 +51,7 @@ public struct RootView: View {
     // Retain the first confirmed generation for every runtime ID encountered
     // while reconfirming so ID reuse cannot disguise a displaced target.
     @State private var pendingWorktreeRemovals:
-        [UUID: PendingWorktreeRemovalIdentity] = [:]
+        [UUID: WorkspacePresentationLifecycle.PendingWorktreeRemovalIdentity] = [:]
     @State private var sessionRecoveryRequestRouter =
         SessionConnectionRecoveryRequestRouter()
     @StateObject private var sshHostKeyReview =
@@ -309,12 +309,13 @@ public struct RootView: View {
                 )
             }
             .onChange(of: snapshot) { _, updatedSnapshot in
-                selection = Self.selectionAfterSnapshotChange(
-                    selection,
-                    in: updatedSnapshot,
-                    visibility: worktreeVisibility,
-                    pendingRemovals: pendingWorktreeRemovals
-                )
+                selection = WorkspacePresentationLifecycle
+                    .selectionAfterSnapshotChange(
+                        selection,
+                        in: updatedSnapshot,
+                        visibility: worktreeVisibility,
+                        pendingRemovals: pendingWorktreeRemovals
+                    )
                 synchronizeSelectedWorktreeSession()
             }
             .modifier(
@@ -323,7 +324,7 @@ public struct RootView: View {
                     selectionBaseline: tmuxSelectionBaseline,
                     activeSession: activeTmuxSession,
                     suppressesHide:
-                    Self.isPeerTakeoverNavigation(
+                    WorkspacePresentationLifecycle.isPeerTakeoverNavigation(
                         selection,
                         pending: peerTakeoverNavigationSelection
                     ),
@@ -335,7 +336,7 @@ public struct RootView: View {
                     selection: selection,
                     activeSession: activeHerdrSession,
                     suppressesDeactivation:
-                    Self.isPeerTakeoverNavigation(
+                    WorkspacePresentationLifecycle.isPeerTakeoverNavigation(
                         selection,
                         pending: peerTakeoverNavigationSelection
                     ),
@@ -347,7 +348,7 @@ public struct RootView: View {
                     selection: selection,
                     activeSession: activeZellijSession,
                     suppressesDeactivation:
-                    Self.isPeerTakeoverNavigation(
+                    WorkspacePresentationLifecycle.isPeerTakeoverNavigation(
                         selection,
                         pending: peerTakeoverNavigationSelection
                     ),
@@ -355,7 +356,7 @@ public struct RootView: View {
                 )
             )
             .onChange(of: selection) { _, newSelection in
-                guard !Self.isPeerTakeoverNavigation(
+                guard !WorkspacePresentationLifecycle.isPeerTakeoverNavigation(
                     newSelection,
                     pending: peerTakeoverNavigationSelection
                 ) else {
@@ -932,7 +933,7 @@ public struct RootView: View {
             selectedHostID: session.hostID
         )
         // The scene model closes the current peer only after validation.
-        Self.transitionHerdrSession(
+        WorkspacePresentationLifecycle.transitionHerdrSession(
             to: session,
             from: activeHerdrSession,
             deactivate: deactivateHerdrSession(_:)
@@ -948,7 +949,7 @@ public struct RootView: View {
             selectedHostID: session.hostID
         )
         // The scene model closes the current peer only after validation.
-        Self.startZellijSessionActivation(
+        WorkspacePresentationLifecycle.startZellijSessionActivation(
             session,
             open: { handlers.openZellijSession?($0) }
         )
@@ -963,7 +964,7 @@ public struct RootView: View {
                 guard let open = handlers.openHerdrSession else {
                     throw HerdrLifecycleUnavailableError()
                 }
-                _ = try await Self.openHerdrSession(
+                _ = try await WorkspacePresentationLifecycle.openHerdrSession(
                     session,
                     replacing: replacedTmuxSession,
                     open: open,
@@ -998,12 +999,13 @@ public struct RootView: View {
             hostID: host.id,
             name: name
         )
-        let routeSelection = Self.selectionForHostTmuxSession(
-            session,
-            from: selection,
-            in: snapshot,
-            visibility: worktreeVisibility
-        )
+        let routeSelection = WorkspacePresentationLifecycle
+            .selectionForHostTmuxSession(
+                session,
+                from: selection,
+                in: snapshot,
+                visibility: worktreeVisibility
+            )
         selectWorkspace(routeSelection)
         tmuxSelectionBaseline = routeSelection
         handlers.createTmuxSession?(WorkspaceTmuxSessionCreationRequest(
@@ -1111,7 +1113,7 @@ public struct RootView: View {
     private func restartHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
-        Self.transitionHerdrSession(
+        WorkspacePresentationLifecycle.transitionHerdrSession(
             to: session,
             from: activeHerdrSession,
             deactivate: deactivateHerdrSession(_:)
@@ -1250,7 +1252,7 @@ public struct RootView: View {
 
     private func cancelZellijKillPreparation() {
         zellijKillPreparation.cancel()
-        Self.cancelPreparedZellijKill(
+        WorkspacePresentationLifecycle.cancelPreparedZellijKill(
             workspaceAlert: &workspaceAlert,
             cancel: { request in
                 handlers.cancelZellijSessionKill?(request)
@@ -1279,29 +1281,18 @@ public struct RootView: View {
     }
 
     private func presentNonWorktreeWorkspaceAlert(_ alert: WorkspaceAlert) {
-        Self.cancelPreparedZellijKill(
+        WorkspacePresentationLifecycle.cancelPreparedZellijKill(
             workspaceAlert: &workspaceAlert,
             cancel: { request in
                 handlers.cancelZellijSessionKill?(request)
             }
         )
-        Self.presentNonWorktreeWorkspaceAlert(
+        WorkspacePresentationLifecycle.presentNonWorktreeWorkspaceAlert(
             alert,
             workspaceAlert: &workspaceAlert,
             pendingWorktreeRemoval: &pendingWorktreeRemoval,
             pendingWorktrees: &pendingWorktreeRemovals
         )
-    }
-
-    @MainActor
-    static func cancelPreparedZellijKill(
-        workspaceAlert: inout WorkspaceAlert?,
-        cancel: (ZellijSessionKillRequest) -> Void
-    ) {
-        guard case let .zellijKillConfirmation(request) = workspaceAlert
-        else { return }
-        cancel(request)
-        workspaceAlert = nil
     }
 
     private func workspaceAlertView(
@@ -1443,9 +1434,10 @@ public struct RootView: View {
                         + " The Git branch will be kept."
                 ),
                 primaryButton: .destructive(Text("Remove Worktree")) {
-                    Self.beginWorktreeRemovalResolution(
-                        pendingWorktreeRemoval: &pendingWorktreeRemoval
-                    )
+                    WorkspacePresentationLifecycle
+                        .beginWorktreeRemovalResolution(
+                            pendingWorktreeRemoval: &pendingWorktreeRemoval
+                        )
                     Task {
                         do {
                             guard let remove = handlers.removeWorktree else {
@@ -1456,25 +1448,27 @@ public struct RootView: View {
                                 pendingWorktreeRemoval = nil
                                 pendingWorktreeRemovals.removeAll()
                             case let .confirmationRequired(updatedRequest):
-                                Self.transitionWorktreeRemovalConfirmation(
-                                    to: updatedRequest,
-                                    pendingWorktreeRemoval: &pendingWorktreeRemoval,
-                                    pendingWorktrees: &pendingWorktreeRemovals
-                                )
+                                WorkspacePresentationLifecycle
+                                    .transitionWorktreeRemovalConfirmation(
+                                        to: updatedRequest,
+                                        pendingWorktreeRemoval: &pendingWorktreeRemoval,
+                                        pendingWorktrees: &pendingWorktreeRemovals
+                                    )
                                 workspaceAlert = .worktreeRemovalConfirmation(
                                     updatedRequest
                                 )
                             }
                         } catch {
                             pendingWorktreeRemoval = nil
-                            selection = Self.finishFailedWorktreeRemoval(
-                                selection,
-                                in: snapshot,
-                                currentSnapshot:
-                                handlers.currentWorkspaceSnapshot,
-                                visibility: worktreeVisibility,
-                                pendingWorktrees: &pendingWorktreeRemovals
-                            )
+                            selection = WorkspacePresentationLifecycle
+                                .finishFailedWorktreeRemoval(
+                                    selection,
+                                    in: snapshot,
+                                    currentSnapshot:
+                                    handlers.currentWorkspaceSnapshot,
+                                    visibility: worktreeVisibility,
+                                    pendingWorktrees: &pendingWorktreeRemovals
+                                )
                             workspaceAlert = .worktreeRemovalFailure(
                                 worktree: request.worktree.name,
                                 message: error.localizedDescription
@@ -1551,12 +1545,13 @@ public struct RootView: View {
     }
 
     private func requestWorktreeRemoval(_ worktree: WorktreeSummary) {
-        guard Self.reserveWorktreeRemovalPreparation(
-            worktree,
-            pendingWorktrees: &pendingWorktreeRemovals
-        ) else { return }
+        guard WorkspacePresentationLifecycle
+            .reserveWorktreeRemovalPreparation(
+                worktree,
+                pendingWorktrees: &pendingWorktreeRemovals
+            ) else { return }
         guard let prepare = handlers.prepareWorktreeRemoval else {
-            Self.clearWorktreeRemovalPreparation(
+            WorkspacePresentationLifecycle.clearWorktreeRemovalPreparation(
                 worktree,
                 pendingWorktrees: &pendingWorktreeRemovals
             )
@@ -1568,14 +1563,16 @@ public struct RootView: View {
         }
         Task {
             do {
-                let request = try await Self.prepareWorktreeRemoval(
-                    worktree,
-                    using: prepare
-                )
-                guard Self.holdsWorktreeRemovalReservation(
-                    worktree,
-                    pendingWorktrees: pendingWorktreeRemovals
-                ) else {
+                let request = try await WorkspacePresentationLifecycle
+                    .prepareWorktreeRemoval(
+                        worktree,
+                        using: prepare
+                    )
+                guard WorkspacePresentationLifecycle
+                    .holdsWorktreeRemovalReservation(
+                        worktree,
+                        pendingWorktrees: pendingWorktreeRemovals
+                    ) else {
                     return
                 }
                 pendingWorktreeRemoval = request
@@ -1583,17 +1580,19 @@ public struct RootView: View {
                     request
                 )
             } catch {
-                guard Self.holdsWorktreeRemovalReservation(
-                    worktree,
-                    pendingWorktrees: pendingWorktreeRemovals
-                ) else { return }
-                selection = Self.finishFailedWorktreeRemoval(
-                    selection,
-                    in: snapshot,
-                    currentSnapshot: handlers.currentWorkspaceSnapshot,
-                    visibility: worktreeVisibility,
-                    pendingWorktrees: &pendingWorktreeRemovals
-                )
+                guard WorkspacePresentationLifecycle
+                    .holdsWorktreeRemovalReservation(
+                        worktree,
+                        pendingWorktrees: pendingWorktreeRemovals
+                    ) else { return }
+                selection = WorkspacePresentationLifecycle
+                    .finishFailedWorktreeRemoval(
+                        selection,
+                        in: snapshot,
+                        currentSnapshot: handlers.currentWorkspaceSnapshot,
+                        visibility: worktreeVisibility,
+                        pendingWorktrees: &pendingWorktreeRemovals
+                    )
                 pendingWorktreeRemoval = nil
                 if !(error is CancellationError) {
                     workspaceAlert = .worktreeRemovalFailure(
@@ -1603,145 +1602,6 @@ public struct RootView: View {
                 }
             }
         }
-    }
-
-    @MainActor
-    static func prepareWorktreeRemoval(
-        _ worktree: WorktreeSummary,
-        using prepare: (UUID) async throws -> WorktreeRemovalRequest
-    ) async throws -> WorktreeRemovalRequest {
-        try await prepare(worktree.id)
-    }
-
-    struct PendingWorktreeRemovalIdentity: Equatable {
-        let generation: String?
-
-        init(_ worktree: WorktreeSummary) {
-            generation = worktree.generation
-        }
-    }
-
-    @MainActor
-    static func reserveWorktreeRemovalPreparation(
-        _ worktree: WorktreeSummary,
-        pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
-    ) -> Bool {
-        guard pendingWorktrees.isEmpty else { return false }
-        pendingWorktrees[worktree.id] = PendingWorktreeRemovalIdentity(
-            worktree
-        )
-        return true
-    }
-
-    @MainActor
-    static func holdsWorktreeRemovalReservation(
-        _ worktree: WorktreeSummary,
-        pendingWorktrees: [UUID: PendingWorktreeRemovalIdentity]
-    ) -> Bool {
-        pendingWorktrees == [
-            worktree.id: PendingWorktreeRemovalIdentity(worktree),
-        ]
-    }
-
-    @MainActor
-    @discardableResult
-    static func clearWorktreeRemovalPreparation(
-        _ worktree: WorktreeSummary,
-        pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
-    ) -> Bool {
-        guard holdsWorktreeRemovalReservation(
-            worktree,
-            pendingWorktrees: pendingWorktrees
-        ) else { return false }
-        pendingWorktrees.removeAll()
-        return true
-    }
-
-    @MainActor
-    static func presentNonWorktreeWorkspaceAlert(
-        _ alert: WorkspaceAlert,
-        workspaceAlert: inout WorkspaceAlert?,
-        pendingWorktreeRemoval: inout WorktreeRemovalRequest?,
-        pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
-    ) {
-        if pendingWorktreeRemoval != nil {
-            pendingWorktreeRemoval = nil
-            pendingWorktrees.removeAll()
-        }
-        workspaceAlert = alert
-    }
-
-    @MainActor
-    static func beginWorktreeRemovalResolution(
-        pendingWorktreeRemoval: inout WorktreeRemovalRequest?
-    ) {
-        pendingWorktreeRemoval = nil
-    }
-
-    @MainActor
-    static func transitionWorktreeRemovalConfirmation(
-        to request: WorktreeRemovalRequest,
-        pendingWorktreeRemoval: inout WorktreeRemovalRequest?,
-        pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
-    ) {
-        pendingWorktreeRemoval = request
-        if pendingWorktrees[request.worktree.id] == nil {
-            pendingWorktrees[request.worktree.id] =
-                PendingWorktreeRemovalIdentity(request.worktree)
-        }
-    }
-
-    @MainActor
-    static func finishFailedWorktreeRemoval(
-        _ current: WorkspaceSelection,
-        in snapshot: WorkspaceSnapshot,
-        currentSnapshot: (() -> WorkspaceSnapshot)? = nil,
-        visibility: WorktreeVisibility,
-        pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
-    ) -> WorkspaceSelection {
-        let updated = selectionAfterSnapshotChange(
-            current,
-            in: currentSnapshot?() ?? snapshot,
-            visibility: visibility,
-            pendingRemovals: pendingWorktrees
-        )
-        pendingWorktrees.removeAll()
-        return updated
-    }
-
-    static func selectionForHostTmuxSession(
-        _ session: WorkspaceTmuxSessionSelection,
-        from current: WorkspaceSelection,
-        in snapshot: WorkspaceSnapshot,
-        visibility: WorktreeVisibility
-    ) -> WorkspaceSelection {
-        var updated = current
-        updated.select(
-            .tmuxSession(hostID: session.hostID, name: session.name),
-            in: snapshot,
-            visibility: visibility
-        )
-        return updated
-    }
-
-    static func selectionForTmuxCommand(
-        _ session: WorkspaceTmuxSessionSelection,
-        from current: WorkspaceSelection,
-        in snapshot: WorkspaceSnapshot,
-        visibility: WorktreeVisibility
-    ) -> WorkspaceSelection {
-        let target: WorkspaceNavigationTarget
-        if let worktreeID = session.worktreeID {
-            target = .worktree(worktreeID)
-        } else if let directoryWorkspaceID = session.directoryWorkspaceID {
-            target = .directoryWorkspace(directoryWorkspaceID)
-        } else {
-            target = .tmuxSession(hostID: session.hostID, name: session.name)
-        }
-
-        var updated = current
-        updated.select(target, in: snapshot, visibility: visibility)
-        return updated
     }
 
     private func deactivateTmuxSession() {
@@ -2085,12 +1945,13 @@ public struct RootView: View {
             guard let host = snapshot.host(id: hostID) else { return }
             addProjectHost = host
         case let .openTmuxSession(tmuxSession):
-            let routeSelection = Self.selectionForTmuxCommand(
-                tmuxSession,
-                from: selection,
-                in: snapshot,
-                visibility: worktreeVisibility
-            )
+            let routeSelection = WorkspacePresentationLifecycle
+                .selectionForTmuxCommand(
+                    tmuxSession,
+                    from: selection,
+                    in: snapshot,
+                    visibility: worktreeVisibility
+                )
             selectWorkspace(routeSelection)
             activateTmuxSession(
                 tmuxSession,
@@ -2133,7 +1994,7 @@ public struct RootView: View {
         case let .setInterfaceAppearance(appearance):
             settingsStore.setInterfaceAppearance(appearance)
         case let .select(target):
-            Self.deactivateSessionsForNavigation(
+            WorkspacePresentationLifecycle.deactivateSessionsForNavigation(
                 hideTmux: hideTmuxSession,
                 deactivateHerdr: deactivateHerdrSession,
                 deactivateZellij: deactivateZellijSession
@@ -2216,40 +2077,6 @@ public struct RootView: View {
         selection = selection.normalizedBySelectingVisibleFallback(
             in: snapshot,
             visibility: worktreeVisibility
-        )
-    }
-
-    static func selectionAfterSnapshotChange(
-        _ current: WorkspaceSelection,
-        in snapshot: WorkspaceSnapshot,
-        visibility: WorktreeVisibility,
-        pendingRemovals: [UUID: PendingWorktreeRemovalIdentity]
-    ) -> WorkspaceSelection {
-        if let selectedWorktreeID = current.selectedWorktreeID,
-           let pending = pendingRemovals[selectedWorktreeID],
-           let projectID = current.selectedProjectID,
-           snapshot.project(id: projectID) != nil {
-            let worktree = snapshot.worktree(id: selectedWorktreeID)
-            let generationChanged = pending.generation.map {
-                worktree?.generation != $0
-            } ?? false
-            guard worktree == nil || generationChanged else {
-                return current.normalizedBySelectingVisibleFallback(
-                    in: snapshot,
-                    visibility: visibility
-                )
-            }
-            var updated = current
-            updated.select(
-                .project(projectID),
-                in: snapshot,
-                visibility: visibility
-            )
-            return updated
-        }
-        return current.normalizedBySelectingVisibleFallback(
-            in: snapshot,
-            visibility: visibility
         )
     }
 
@@ -2361,7 +2188,7 @@ public struct RootView: View {
             deactivateZellijSession()
             return
         }
-        if Self.closeBorrowedSessionIfActive(
+        if WorkspacePresentationLifecycle.closeBorrowedSessionIfActive(
             activeTmuxSession,
             deactivate: deactivateTmuxSession
         ) {
@@ -2370,76 +2197,8 @@ public struct RootView: View {
         handlers.closeWindow?()
     }
 
-    /// Borrowed sessions are presentation attachments rather than owned tmux
-    /// tabs. Cmd-W and pane-originated close requests detach that presentation
-    /// as one unit; they must never locally remove a leaf from tmux's
-    /// authoritative layout or kill the borrowed pane.
-    static func closeBorrowedSessionIfActive(
-        _ activeSession: WorkspaceTmuxSessionSelection?,
-        deactivate: () -> Void
-    ) -> Bool {
-        guard activeSession != nil else { return false }
-        deactivate()
-        return true
-    }
-
-    static func deactivateSessionsForNavigation(
-        hideTmux: () -> Void,
-        deactivateHerdr: () -> Void,
-        deactivateZellij: () -> Void
-    ) {
-        hideTmux()
-        deactivateHerdr()
-        deactivateZellij()
-    }
-
-    static func openHerdrSession(
-        _ session: WorkspaceHerdrSessionSelection,
-        replacing tmuxSession: WorkspaceTmuxSessionSelection?,
-        open: (WorkspaceHerdrSessionSelection) async throws -> Void,
-        isCurrent: () -> Bool = { true },
-        hideTmux: (WorkspaceTmuxSessionSelection) -> Void
-    ) async throws -> Bool {
-        try await open(session)
-        guard isCurrent() else { return false }
-        if let tmuxSession {
-            hideTmux(tmuxSession)
-        }
-        return true
-    }
-
-    static func startZellijSessionActivation(
-        _ session: WorkspaceZellijSessionSelection,
-        open: (WorkspaceZellijSessionSelection) -> Void
-    ) {
-        open(session)
-    }
-
-    static func isPeerTakeoverNavigation(
-        _ selection: WorkspaceSelection,
-        pending: WorkspaceSelection?
-    ) -> Bool {
-        pending?.navigationTarget == selection.navigationTarget
-    }
-
-    static func transitionHerdrSession(
-        to target: WorkspaceHerdrSessionSelection,
-        from active: WorkspaceHerdrSessionSelection?,
-        deactivate: (WorkspaceHerdrSessionSelection) -> Void,
-        start: () -> Void
-    ) {
-        if let active, active.hostID != target.hostID {
-            deactivate(active)
-        }
-        start()
-    }
-
 }
 
-/// Hides the active tmux presentation when navigation leaves its route while
-/// retaining the underlying attachment for a later return. Kept as a small
-/// modifier so route behavior can be exercised without constructing the
-/// entire sidebar hierarchy.
 private struct SessionKillUnavailableError: LocalizedError {
     var errorDescription: String? {
         "Session termination is unavailable."

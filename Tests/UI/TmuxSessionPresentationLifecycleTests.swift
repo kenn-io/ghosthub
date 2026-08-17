@@ -8,9 +8,12 @@ import Testing
 
 private func pendingRemovalIdentities(
     _ worktrees: WorktreeSummary...
-) -> [UUID: RootView.PendingWorktreeRemovalIdentity] {
+) -> [UUID: WorkspacePresentationLifecycle.PendingWorktreeRemovalIdentity] {
     Dictionary(uniqueKeysWithValues: worktrees.map {
-        ($0.id, RootView.PendingWorktreeRemovalIdentity($0))
+        (
+            $0.id,
+            WorkspacePresentationLifecycle.PendingWorktreeRemovalIdentity($0)
+        )
     })
 }
 
@@ -46,7 +49,7 @@ struct TmuxSessionPresentationLifecycleTests {
             selectedWorktreeID: worktree.id
         )
 
-        let updated = RootView.selectionForHostTmuxSession(
+        let updated = WorkspacePresentationLifecycle.selectionForHostTmuxSession(
             WorkspaceTmuxSessionSelection(
                 hostID: hostID,
                 name: "release-work"
@@ -64,7 +67,7 @@ struct TmuxSessionPresentationLifecycleTests {
     @Test("Cmd-W detaches an active tmux presentation")
     func closeDetachesActivePresentation() {
         var didDetach = false
-        let handled = RootView.closeBorrowedSessionIfActive(
+        let handled = WorkspacePresentationLifecycle.closeBorrowedSessionIfActive(
             WorkspaceTmuxSessionSelection(hostID: UUID(), name: "docbank")
         ) {
             didDetach = true
@@ -77,9 +80,10 @@ struct TmuxSessionPresentationLifecycleTests {
     @Test("Cmd-W falls through when no tmux presentation is active")
     func closeFallsThroughWithoutPresentation() {
         var didDetach = false
-        let handled = RootView.closeBorrowedSessionIfActive(nil) {
-            didDetach = true
-        }
+        let handled = WorkspacePresentationLifecycle
+            .closeBorrowedSessionIfActive(nil) {
+                didDetach = true
+            }
 
         #expect(!handled)
         #expect(!didDetach)
@@ -89,7 +93,7 @@ struct TmuxSessionPresentationLifecycleTests {
     func commandPaletteNavigationDeactivatesEverySessionBackend() {
         var deactivated: [String] = []
 
-        RootView.deactivateSessionsForNavigation(
+        WorkspacePresentationLifecycle.deactivateSessionsForNavigation(
             hideTmux: { deactivated.append("tmux") },
             deactivateHerdr: { deactivated.append("herdr") },
             deactivateZellij: { deactivated.append("zellij") }
@@ -111,27 +115,29 @@ struct TmuxSessionPresentationLifecycleTests {
         )
         var hiddenTmuxSessions: [WorkspaceTmuxSessionSelection] = []
 
-        let didActivate = try await RootView.openHerdrSession(
-            herdr,
-            replacing: tmux,
-            open: { _ in },
-            hideTmux: { hiddenTmuxSessions.append($0) }
-        )
+        let didActivate = try await WorkspacePresentationLifecycle
+            .openHerdrSession(
+                herdr,
+                replacing: tmux,
+                open: { _ in },
+                hideTmux: { hiddenTmuxSessions.append($0) }
+            )
         #expect(didActivate)
         #expect(hiddenTmuxSessions == [tmux])
 
-        let staleActivation = try await RootView.openHerdrSession(
-            herdr,
-            replacing: tmux,
-            open: { _ in },
-            isCurrent: { false },
-            hideTmux: { hiddenTmuxSessions.append($0) }
-        )
+        let staleActivation = try await WorkspacePresentationLifecycle
+            .openHerdrSession(
+                herdr,
+                replacing: tmux,
+                open: { _ in },
+                isCurrent: { false },
+                hideTmux: { hiddenTmuxSessions.append($0) }
+            )
         #expect(!staleActivation)
         #expect(hiddenTmuxSessions == [tmux])
 
         await #expect(throws: CancellationError.self) {
-            try await RootView.openHerdrSession(
+            try await WorkspacePresentationLifecycle.openHerdrSession(
                 herdr,
                 replacing: tmux,
                 open: { _ in throw CancellationError() },
@@ -149,7 +155,7 @@ struct TmuxSessionPresentationLifecycleTests {
         )
         var events: [String] = []
 
-        RootView.startZellijSessionActivation(
+        WorkspacePresentationLifecycle.startZellijSessionActivation(
             session,
             open: {
                 #expect($0 == session)
@@ -175,7 +181,7 @@ struct TmuxSessionPresentationLifecycleTests {
         )
         var events: [HerdrTransitionEvent] = []
 
-        RootView.transitionHerdrSession(
+        WorkspacePresentationLifecycle.transitionHerdrSession(
             to: target,
             from: active,
             deactivate: { session in
@@ -406,7 +412,7 @@ struct TmuxSessionPresentationLifecycleTests {
         var alert: WorkspaceAlert? = .zellijKillConfirmation(request)
         var cancelled: [ZellijSessionKillRequest] = []
 
-        RootView.cancelPreparedZellijKill(
+        WorkspacePresentationLifecycle.cancelPreparedZellijKill(
             workspaceAlert: &alert,
             cancel: { cancelled.append($0) }
         )
@@ -591,7 +597,7 @@ struct TmuxSessionPresentationLifecycleTests {
             pinnedConsoleHostID: UUID()
         )
 
-        #expect(RootView.isPeerTakeoverNavigation(
+        #expect(WorkspacePresentationLifecycle.isPeerTakeoverNavigation(
             selection,
             pending: pending
         ))
@@ -922,7 +928,7 @@ struct TmuxSessionPresentationLifecycleTests {
         let model = WorktreeRemovalPresentationModel()
         model.refreshMovedTarget()
 
-        let updated = RootView.selectionAfterSnapshotChange(
+        let updated = WorkspacePresentationLifecycle.selectionAfterSnapshotChange(
             model.selection,
             in: model.display.snapshot,
             visibility: .default,
@@ -940,7 +946,7 @@ struct TmuxSessionPresentationLifecycleTests {
             .worktree(primary.id),
             in: model.display.snapshot
         )
-        let preserved = RootView.selectionAfterSnapshotChange(
+        let preserved = WorkspacePresentationLifecycle.selectionAfterSnapshotChange(
             newerSelection,
             in: model.display.snapshot,
             visibility: .default,
@@ -954,7 +960,7 @@ struct TmuxSessionPresentationLifecycleTests {
         let model = WorktreeRemovalPresentationModel()
         model.reuseRemovedWorktreeID()
 
-        let updated = RootView.selectionAfterSnapshotChange(
+        let updated = WorkspacePresentationLifecycle.selectionAfterSnapshotChange(
             model.selection,
             in: model.display.snapshot,
             visibility: .default,
@@ -971,18 +977,19 @@ struct TmuxSessionPresentationLifecycleTests {
         model.removeTargetDuringPreparation()
         var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
 
-        let updated = RootView.finishFailedWorktreeRemoval(
+        let updated = WorkspacePresentationLifecycle.finishFailedWorktreeRemoval(
             model.selection,
             in: model.display.snapshot,
             visibility: .default,
             pendingWorktrees: &pendingWorktrees
         )
-        let afterDelayedSnapshot = RootView.selectionAfterSnapshotChange(
-            updated,
-            in: model.display.snapshot,
-            visibility: .default,
-            pendingRemovals: pendingWorktrees
-        )
+        let afterDelayedSnapshot = WorkspacePresentationLifecycle
+            .selectionAfterSnapshotChange(
+                updated,
+                in: model.display.snapshot,
+                visibility: .default,
+                pendingRemovals: pendingWorktrees
+            )
 
         #expect(updated.selectedProjectID == model.projectID)
         #expect(updated.selectedWorktreeID == nil)
@@ -1005,7 +1012,7 @@ struct TmuxSessionPresentationLifecycleTests {
         )
         var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
 
-        let updated = RootView.finishFailedWorktreeRemoval(
+        let updated = WorkspacePresentationLifecycle.finishFailedWorktreeRemoval(
             newerSelection,
             in: model.display.snapshot,
             visibility: .default,
@@ -1040,12 +1047,12 @@ struct TmuxSessionPresentationLifecycleTests {
             confirmedHost: host
         )
 
-        RootView.transitionWorktreeRemovalConfirmation(
+        WorkspacePresentationLifecycle.transitionWorktreeRemovalConfirmation(
             to: updatedRequest,
             pendingWorktreeRemoval: &pendingRemoval,
             pendingWorktrees: &pendingWorktrees
         )
-        selection = RootView.selectionAfterSnapshotChange(
+        selection = WorkspacePresentationLifecycle.selectionAfterSnapshotChange(
             selection,
             in: model.display.snapshot,
             visibility: .default,
@@ -1066,13 +1073,13 @@ struct TmuxSessionPresentationLifecycleTests {
         let model = WorktreeRemovalPresentationModel()
         let preparation = WorktreeRemovalPreparationHold()
         var pendingWorktrees:
-            [UUID: RootView.PendingWorktreeRemovalIdentity] = [:]
-        #expect(RootView.reserveWorktreeRemovalPreparation(
+            [UUID: WorkspacePresentationLifecycle.PendingWorktreeRemovalIdentity] = [:]
+        #expect(WorkspacePresentationLifecycle.reserveWorktreeRemovalPreparation(
             model.request.worktree,
             pendingWorktrees: &pendingWorktrees
         ))
         let preparationTask = Task { @MainActor in
-            try await RootView.prepareWorktreeRemoval(
+            try await WorkspacePresentationLifecycle.prepareWorktreeRemoval(
                 model.request.worktree,
                 using: { _ in
                     try await preparation.prepare(model.request)
@@ -1085,7 +1092,7 @@ struct TmuxSessionPresentationLifecycleTests {
         )
 
         model.removeTargetDuringPreparation()
-        let updated = RootView.selectionAfterSnapshotChange(
+        let updated = WorkspacePresentationLifecycle.selectionAfterSnapshotChange(
             model.selection,
             in: model.display.snapshot,
             visibility: .default,
@@ -1099,7 +1106,7 @@ struct TmuxSessionPresentationLifecycleTests {
         await #expect(throws: CancellationError.self) {
             try await preparationTask.value
         }
-        RootView.clearWorktreeRemovalPreparation(
+        WorkspacePresentationLifecycle.clearWorktreeRemovalPreparation(
             model.request.worktree,
             pendingWorktrees: &pendingWorktrees
         )
@@ -1117,14 +1124,14 @@ struct TmuxSessionPresentationLifecycleTests {
             path: "/tmp/project-a-second"
         )
         var pendingWorktrees:
-            [UUID: RootView.PendingWorktreeRemovalIdentity] = [:]
+            [UUID: WorkspacePresentationLifecycle.PendingWorktreeRemovalIdentity] = [:]
         var preparedWorktreeIDs: [UUID] = []
-        #expect(RootView.reserveWorktreeRemovalPreparation(
+        #expect(WorkspacePresentationLifecycle.reserveWorktreeRemovalPreparation(
             model.request.worktree,
             pendingWorktrees: &pendingWorktrees
         ))
         let firstTask = Task { @MainActor in
-            try await RootView.prepareWorktreeRemoval(
+            try await WorkspacePresentationLifecycle.prepareWorktreeRemoval(
                 model.request.worktree,
                 using: { worktreeID in
                     preparedWorktreeIDs.append(worktreeID)
@@ -1134,11 +1141,11 @@ struct TmuxSessionPresentationLifecycleTests {
         }
         await preparation.waitUntilStarted()
 
-        #expect(!RootView.reserveWorktreeRemovalPreparation(
+        #expect(!WorkspacePresentationLifecycle.reserveWorktreeRemovalPreparation(
             secondWorktree,
             pendingWorktrees: &pendingWorktrees
         ))
-        #expect(!RootView.clearWorktreeRemovalPreparation(
+        #expect(!WorkspacePresentationLifecycle.clearWorktreeRemovalPreparation(
             secondWorktree,
             pendingWorktrees: &pendingWorktrees
         ))
@@ -1152,7 +1159,7 @@ struct TmuxSessionPresentationLifecycleTests {
         await #expect(throws: CancellationError.self) {
             try await firstTask.value
         }
-        #expect(RootView.clearWorktreeRemovalPreparation(
+        #expect(WorkspacePresentationLifecycle.clearWorktreeRemovalPreparation(
             model.request.worktree,
             pendingWorktrees: &pendingWorktrees
         ))
@@ -1167,7 +1174,7 @@ struct TmuxSessionPresentationLifecycleTests {
         var pendingWorktreeRemoval: WorktreeRemovalRequest? = model.request
         var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
 
-        RootView.presentNonWorktreeWorkspaceAlert(
+        WorkspacePresentationLifecycle.presentNonWorktreeWorkspaceAlert(
             .sessionThemeFailure(
                 session: "project-a-feature",
                 message: "theme failed"
@@ -1193,7 +1200,7 @@ struct TmuxSessionPresentationLifecycleTests {
         var pendingWorktreeRemoval: WorktreeRemovalRequest? = model.request
         var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
 
-        RootView.presentNonWorktreeWorkspaceAlert(
+        WorkspacePresentationLifecycle.presentNonWorktreeWorkspaceAlert(
             .herdrLifecycleFailure(
                 session: "build",
                 action: "stop",
@@ -1209,7 +1216,7 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(
             workspaceAlert?.id == "herdr:failure:stop:build:stop failed"
         )
-        #expect(RootView.reserveWorktreeRemovalPreparation(
+        #expect(WorkspacePresentationLifecycle.reserveWorktreeRemovalPreparation(
             model.request.worktree,
             pendingWorktrees: &pendingWorktrees
         ))
@@ -1222,11 +1229,11 @@ struct TmuxSessionPresentationLifecycleTests {
         var pendingWorktreeRemoval: WorktreeRemovalRequest? = model.request
         var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
 
-        RootView.beginWorktreeRemovalResolution(
+        WorkspacePresentationLifecycle.beginWorktreeRemovalResolution(
             pendingWorktreeRemoval: &pendingWorktreeRemoval
         )
 
-        RootView.presentNonWorktreeWorkspaceAlert(
+        WorkspacePresentationLifecycle.presentNonWorktreeWorkspaceAlert(
             .sessionKillFailure(
                 session: "project-a-feature",
                 message: "kill failed"
@@ -1929,13 +1936,14 @@ private struct AsynchronousFailedWorktreeRemovalPresentationHarness: View {
             do {
                 try await model.failRemovalAfterSnapshotUpdate()
             } catch {
-                model.selection = RootView.finishFailedWorktreeRemoval(
-                    model.selection,
-                    in: renderedSnapshot,
-                    currentSnapshot: currentSnapshot,
-                    visibility: .default,
-                    pendingWorktrees: &pending
-                )
+                model.selection = WorkspacePresentationLifecycle
+                    .finishFailedWorktreeRemoval(
+                        model.selection,
+                        in: renderedSnapshot,
+                        currentSnapshot: currentSnapshot,
+                        visibility: .default,
+                        pendingWorktrees: &pending
+                    )
             }
         }
     }
