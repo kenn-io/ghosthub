@@ -49,13 +49,7 @@ Never use `latest`.
   that app's client ID and private key
 - an active default-branch ruleset with no bypass actors or ref exclusions that
   requires `sandbox-image-promotion`, enables strict required-status-check
-  policy, binds the context to that dedicated app's numeric integration ID,
-  and requires the merge queue with one pull request per group
-- an organization-owned ruleset with no bypass actors or ref exclusions that
-  targets Ghosthub's default branch and requires
-  `.github/workflows/sandbox-image-merge-signal.yml` from
-  the protected `sandbox-merge-signal-v1` tag of
-  `kenn-io/ghosthub-nightly`
+  policy, and binds the context to that dedicated app's numeric integration ID
 - approval authority, or an available reviewer, for that environment
 
 The promotion preflight reads the live rulesets through the GitHub API and
@@ -63,8 +57,8 @@ fails before registry mutation if that exact required-check policy is absent.
 The operator-side enable path creates and verifies an empty bypass-actor list.
 GitHub redacts that field as `null` from installation-token responses, so
 recurring App audits accept either visible empty actors or the redacted value;
-they still verify the exact enforcement, ref, status, App, merge-queue, and
-workflow requirements. Repository and organization administrators remain
+they still verify the exact enforcement, ref, status, and App requirements.
+Repository and organization administrators remain
 trusted to preserve the provisioned bypass policy.
 Every reconciliation also audits both credential-bearing environments, their
 exact secret sets and `main` branch policies, the status App variables, the
@@ -287,46 +281,33 @@ run expires before retag or merge, rerun
 `sandbox-image-promote` and approve the idempotent promotion again.
 
 The repository ruleset is provisioned with no bypass actors and must require
-this status from the dedicated app with strict checking enabled, an empty
-exclusion list, and a single-entry merge queue. Queue the pull request with
-**Merge when ready** rather than merging its head directly. The organization
-ruleset separately
-requires the merge-signal workflow from the protected
-`sandbox-merge-signal-v1` tag of the public source repository. The queue
-creates a fresh synthetic SHA; that workflow requests a SHA-specific
-reconciliation.
+this status from the dedicated app with strict checking enabled and an empty
+exclusion list. Merge the authorized pull-request head through the repository's
+normal squash-merge path.
 Trusted-main code checks out the proposed merge tree without executing it,
 structurally audits every proposed workflow, and requires every workflow that
 can reference a credential-bearing environment to remain byte-identical to
 trusted `main`. The audit rejects job-level reusable workflows except the
-exact repository-owned `ci.yml@main` call. The organization ruleset binds the
-merge-signal path, repository identity, and protected source tag outside the
-candidate tree. Live preflight resolves the tag to its reviewed commit,
-then requires the workflow's `pull_request` and `merge_group` triggers, empty
-permissions, and absence of environment or reusable
-workflow authority; reconciliation accepts only runs with the expected name
-and path. The
+exact repository-owned `ci.yml@main` call. The
 executable post-approval vulnerability policy is part of the same
 byte-identical authority closure, and changing it is promotion-relevant.
 It then rechecks the complete App, environment, ruleset, file, base,
 promotion-run, and freshness authority before the dedicated App authorizes that
-queue SHA. If GitHub cannot run reconciliation, the queue SHA never succeeds
-and times out closed. Strict checking also makes the current `main` revision
-part of authorization. Any push creates a new head without authorization.
+pull-request head. Strict checking also makes the current `main` revision part
+of authorization. Any push creates a new head without authorization.
 Trusted promotion verifies the same live authority before it can write a
 production tag.
 
 The pull-request gate runs only for pull requests targeting `main`. Every open,
 head update, reopen, ready-for-review transition, or edit fences every open head
 pending before it inspects file metadata. Push, schedule, workflow completion,
-and manual events perform the same full reconciliation. Merge-signal events use
-an isolated lane that fences and reconciles only their own queue SHA. Recurring
-reconciliation also fences prior queue SHAs and restores only a recently
+and manual events perform the same full reconciliation. Recurring
+reconciliation restores only a recently
 audited authorization that still satisfies current policy. A pull request whose file list exceeds
 GitHub's 3,000-file API limit remains pending without preventing other pull
 requests from being reconciled. Only current evidence from the trusted
 default-branch promotion workflow may cause the dedicated App to record success
-on either a pull-request head or its fresh merge-group SHA.
+on a pull-request head.
 
 ## Status, Recovery, and Maintenance
 

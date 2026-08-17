@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .github import (
-    MERGE_QUEUE_PARAMETERS,
     list_ruleset_summaries,
     verify_package_writer_environment,
     verify_production_environment,
@@ -310,10 +309,6 @@ def promotion_ruleset_payload(value: object, app_id: int) -> dict[str, object]:
                     "do_not_enforce_on_create": False,
                     "required_status_checks": [required],
                 },
-            },
-            {
-                "type": "merge_queue",
-                "parameters": dict(MERGE_QUEUE_PARAMETERS),
             },
         ],
     }

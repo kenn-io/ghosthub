@@ -301,8 +301,6 @@ class AppleVettingHarness:
             )
             if len(values) != 1:
                 raise ValueError("Apple image inspect identity is ambiguous")
-            configuration = values[0]["configuration"]
-            digest = configuration["descriptor"]["digest"]
             variants = values[0]["variants"]
             arm64 = next(
                 variant
@@ -310,6 +308,7 @@ class AppleVettingHarness:
                 if variant["config"]["architecture"] == "arm64"
                 and variant["config"]["os"] == "linux"
             )
+            digest = arm64["digest"]
             labels = arm64["config"]["config"]["Labels"]
             source_commit = labels["org.opencontainers.image.revision"]
             image_version = labels["org.opencontainers.image.version"]

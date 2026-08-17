@@ -454,7 +454,7 @@ status-signing environment. The approved runner requires exact matches and an
 unchanged trusted-main workflow authority immediately before registry mutation.
 A repository ruleset provisioned with no bypass actors or ref exclusions
 requires that status from a dedicated status-only GitHub App with strict
-checking and a single-entry merge queue. The app private key exists only in a
+checking. The app private key exists only in a
 no-reviewer
 environment restricted by an exact branch policy to the `main` branch, never a
 same-named tag. A pinned token action consumes that key; repository Python
@@ -471,14 +471,7 @@ selection is
 rejected, every workflow declares explicit top-level permissions, the job
 refuses non-`main` effective refs, and no
 `GITHUB_TOKEN` has status-write or package-write authority. The GHCR package
-does not inherit repository Actions access. An organization ruleset requires
-the merge-signal workflow from the protected `sandbox-merge-signal-v1` tag of
-the separate public `kenn-io/ghosthub-nightly` repository. Trusted promotion
-and every reconciliation verify that source repository, protected tag,
-reviewed commit, workflow path, required `pull_request` and `merge_group`
-triggers, empty token permissions, absence of environment use, live
-environments, parsed workflow authority, app integration ID, and ruleset. The
-organization tag policy is trusted infrastructure. At the final production-tag
+does not inherit repository Actions access. At the final production-tag
 mutation boundary,
 trusted promotion authenticates the App owner, slug, permissions, private key,
 and complete single-repository installation scope, then rechecks both required
@@ -486,15 +479,11 @@ rulesets, pull-request evidence, and tag availability immediately before the
 registry write. The completed run records an App-authenticated production
 environment fingerprint and the exact promotion run; reconciliation requires
 both to match current live authority before restoring merge authorization.
-Reconciliation fences all open heads and prior merge-group SHAs before
-inspecting their metadata. At
-merge time, an unprivileged merge-group signal receives a SHA-specific trusted
-reconciliation. Trusted-main tooling audits the proposed workflow tree without
-executing it and refuses any change to a credential-bearing workflow before
-authorizing the queue's fresh synthetic SHA. The candidate tree cannot change
-the external merge signal or claim its reserved workflow path or
-public name; inability to reconcile
-therefore leaves that SHA blocked rather than preserving an old head status.
+Reconciliation fences all open heads before inspecting their metadata.
+Trusted-main tooling audits the proposed workflow tree without executing it and
+refuses any change to a credential-bearing workflow before authorizing the
+exact pull-request head. Inability to reconcile leaves that head blocked rather
+than preserving an old status.
 Main changes, a new pin PR head SHA, the immutable promotion-plan deadline, and
 the 24-hour run-age limit invalidate authorization. A
 registry, tag, report, workflow-run, environment, ruleset, or attestation

@@ -369,18 +369,7 @@ jobs:
                 any(.parameters.required_status_checks[]?;
                   .context == "sandbox-image-promotion" and
                   .integration_id == $app_id)) and
-              any(.rules[]?; .type == "pull_request") and
-              any(.rules[]?;
-                .type == "merge_queue" and
-                .parameters == {
-                  check_response_timeout_minutes: 60,
-                  grouping_strategy: "ALLGREEN",
-                  max_entries_to_build: 1,
-                  max_entries_to_merge: 1,
-                  merge_method: "SQUASH",
-                  min_entries_to_merge: 1,
-                  min_entries_to_merge_wait_minutes: 0
-                });
+              any(.rules[]?; .type == "pull_request");
             def merge_signal:
               default_branch and
               .source_type == "Organization" and

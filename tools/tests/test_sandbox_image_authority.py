@@ -263,18 +263,7 @@ def test_promotion_ruleset_is_narrow_and_pins_app() -> None:
             "integration_id": 424242,
         }
     ]
-    assert rules[2] == {
-        "type": "merge_queue",
-        "parameters": {
-            "check_response_timeout_minutes": 60,
-            "grouping_strategy": "ALLGREEN",
-            "max_entries_to_build": 1,
-            "max_entries_to_merge": 1,
-            "merge_method": "SQUASH",
-            "min_entries_to_merge": 1,
-            "min_entries_to_merge_wait_minutes": 0,
-        },
-    }
+    assert len(rules) == 2
 
 
 @pytest.mark.parametrize("existing_id", [None, 99])
