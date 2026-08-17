@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use model::DiagnosticKind;
 use session::{
-    AttachPlan, DiscoveredSession, HerdrAttachPlan, HerdrSessionRecord, SessionIdentity,
-    ZellijAttachPlan, ZellijSessionRecord,
+    AttachPlan, DiscoveredSession, HerdrAttachPlan, HerdrLaunchOnce, HerdrLaunchTarget,
+    HerdrSessionRecord, SessionIdentity, ZellijAttachPlan, ZellijLaunchOnce, ZellijSessionName,
+    ZellijSessionRecord,
 };
 
 use crate::{
@@ -262,6 +263,23 @@ impl RemoteTmuxSnapshot {
     #[must_use]
     pub const fn lease(&self) -> &SshLease {
         &self.lease
+    }
+
+    /// Replace only the multiplexer inventory while preserving the reviewed
+    /// route and lease identity that authorized the refresh.
+    #[must_use]
+    pub fn with_inventory(&self, inventory: RemoteSessionInventory) -> Self {
+        Self {
+            endpoint: self.endpoint.clone(),
+            route_identity: self.route_identity.clone(),
+            lease_generation: self.lease_generation,
+            tmux_binary: inventory.tmux_binary,
+            tmux_diagnostic: inventory.tmux_diagnostic,
+            sessions: inventory.sessions,
+            herdr: inventory.herdr,
+            zellij: inventory.zellij,
+            lease: self.lease.clone(),
+        }
     }
 }
 
@@ -615,6 +633,36 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         ))
     }
 
+    /// Build one remote Herdr launch through the reviewed SSH lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed lease is no longer live.
+    pub fn herdr_launch_once(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        target: HerdrLaunchTarget,
+        is_default: bool,
+        term: &str,
+    ) -> Result<HerdrLaunchOnce, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let command = herdr_launch_command(executable, &target, is_default, term);
+        Ok(HerdrLaunchOnce::launch_or_attach(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&posix_command(&command)),
+            )),
+            target,
+        ))
+    }
+
     /// Build an ordinary remote Zellij client over the reviewed SSH lease.
     ///
     /// # Errors
@@ -645,6 +693,35 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 true,
                 &account_login_shell_command(&posix_command(&command)),
             )),
+        ))
+    }
+
+    /// Build one remote Zellij creation through the reviewed SSH lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed lease is no longer live.
+    pub fn zellij_launch_once(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        name: ZellijSessionName,
+        term: &str,
+    ) -> Result<ZellijLaunchOnce, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let command = zellij_launch_command(executable, &name, term);
+        Ok(ZellijLaunchOnce::create(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&posix_command(&command)),
+            )),
+            name,
         ))
     }
 
@@ -736,6 +813,29 @@ fn multiplexer_command<'a>(
     command.push(executable.to_owned());
     command.extend(args.into_iter().map(str::to_owned));
     command
+}
+
+fn herdr_launch_command(
+    executable: &str,
+    target: &HerdrLaunchTarget,
+    is_default: bool,
+    term: &str,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if !is_default {
+        args.extend(["--session", target.as_str()]);
+    }
+    multiplexer_command(&herdr::CONTROL_VARIABLES, Some(term), executable, args)
+}
+
+fn zellij_launch_command(executable: &str, name: &ZellijSessionName, term: &str) -> Vec<String> {
+    let argument = format!("--session={}", name.as_str());
+    multiplexer_command(
+        &zellij::CONTROL_VARIABLES,
+        Some(term),
+        executable,
+        [argument.as_str()],
+    )
 }
 
 fn ssh_arguments(
@@ -1272,6 +1372,66 @@ mod tests {
                 "review",
             ]
             .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn remote_herdr_launch_uses_exact_nondefault_target_and_scrubbed_environment() {
+        let name = session::HerdrSessionName::parse("review").expect("name");
+        let command = herdr_launch_command(
+            "/usr/local/bin/herdr",
+            &HerdrLaunchTarget::created(name),
+            false,
+            "xterm",
+        );
+
+        assert_eq!(command[0], "/usr/bin/env");
+        assert!(
+            command
+                .windows(2)
+                .any(|pair| pair == ["-u", "HERDR_SESSION"])
+        );
+        assert!(command.iter().any(|value| value == "TERM=xterm"));
+        assert_eq!(
+            &command[command.len() - 3..],
+            ["/usr/local/bin/herdr", "--session", "review"]
+        );
+    }
+
+    #[test]
+    fn remote_herdr_default_launch_does_not_invent_a_session_selector() {
+        let record = HerdrSessionRecord::new(
+            "default",
+            true,
+            session::HerdrSessionState::Stopped,
+            "/home/test/.local/share/herdr/default",
+            "/tmp/herdr.sock",
+        );
+        let command = herdr_launch_command(
+            "/usr/local/bin/herdr",
+            &HerdrLaunchTarget::discovered(&record),
+            true,
+            "xterm",
+        );
+
+        assert_eq!(
+            command.last().map(String::as_str),
+            Some("/usr/local/bin/herdr")
+        );
+        assert!(!command.iter().any(|value| value == "--session"));
+    }
+
+    #[test]
+    fn remote_zellij_creation_uses_one_exact_session_argument() {
+        let name = ZellijSessionName::parse("review").expect("name");
+        let command = zellij_launch_command("/usr/bin/zellij", &name, "xterm");
+
+        assert_eq!(command[0], "/usr/bin/env");
+        assert!(command.windows(2).any(|pair| pair == ["-u", "ZELLIJ"]));
+        assert!(command.iter().any(|value| value == "TERM=xterm"));
+        assert_eq!(
+            &command[command.len() - 2..],
+            ["/usr/bin/zellij", "--session=review"]
         );
     }
 

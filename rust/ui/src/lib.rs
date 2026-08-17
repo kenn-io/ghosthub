@@ -5650,14 +5650,7 @@ impl RootView {
                     cx,
                 ))
                 .child(div().flex_1().child(create_kind.group_title()));
-            let create_available = match create_kind {
-                NewSessionKind::Tmux => !host.is_ssh(),
-                NewSessionKind::Zellij => {
-                    !host.is_ssh() && host.zellij_available() && host.zellij_diagnostic().is_none()
-                }
-                NewSessionKind::Herdr => false,
-            };
-            if host.connection() == HostConnectionState::Ready && create_available {
+            if session_creation_available(host, create_kind) {
                 let host_id = host.id().to_owned();
                 let endpoint = host.endpoint().to_owned();
                 header = header.child(
@@ -6182,11 +6175,7 @@ impl RootView {
                     cx,
                 ))
                 .child(div().flex_1().child("HERDR SESSIONS"));
-            if host.connection() == HostConnectionState::Ready
-                && !host.is_ssh()
-                && host.herdr_available()
-                && host.herdr_diagnostic().is_none()
-            {
+            if session_creation_available(host, NewSessionKind::Herdr) {
                 let host_id = host_id.clone();
                 let endpoint = endpoint.clone();
                 header = header.child(
@@ -6295,18 +6284,16 @@ impl RootView {
         let operation_pending = operation_label.is_some();
         let selection = session.selection.clone();
         let active = session.active;
-        let actions = if session.access.can_mutate() {
-            session
-                .inventory
-                .as_ref()
-                .map_or_else(Vec::new, herdr_row_actions)
-        } else {
-            Vec::new()
-        };
+        let actions = session
+            .inventory
+            .as_ref()
+            .map_or_else(Vec::new, |inventory| {
+                available_herdr_row_actions(session.access, inventory)
+            });
         let row_is_actionable = if running {
             session.access.can_open()
         } else {
-            session.access.can_mutate()
+            session.access.can_restart()
         };
         let row_group = format!("herdr-session-actions-{host_index}-{index}");
         let mut row = div()
@@ -6380,7 +6367,7 @@ impl RootView {
             row.on_click(cx.listener(move |this, _, window, cx| {
                 this.select_session(&selection, window, cx);
             }))
-        } else if session.access.can_mutate() {
+        } else if session.access.can_restart() {
             row.on_click(cx.listener(move |this, _, window, cx| {
                 this.restart_herdr_session(&selection, window, cx);
             }))
@@ -6650,6 +6637,7 @@ struct TreeHerdrSession {
 enum HerdrRowAccess {
     Cached,
     OpenOnly,
+    Constructive,
     Mutable,
 }
 
@@ -6660,6 +6648,10 @@ impl HerdrRowAccess {
 
     const fn can_mutate(self) -> bool {
         matches!(self, Self::Mutable)
+    }
+
+    const fn can_restart(self) -> bool {
+        matches!(self, Self::Constructive | Self::Mutable)
     }
 }
 
@@ -6750,6 +6742,19 @@ fn herdr_row_actions(session: &workspace::HerdrSessionItem) -> Vec<HerdrRowActio
     }
 }
 
+fn available_herdr_row_actions(
+    access: HerdrRowAccess,
+    session: &workspace::HerdrSessionItem,
+) -> Vec<HerdrRowAction> {
+    if access.can_mutate() {
+        herdr_row_actions(session)
+    } else if access.can_restart() && session.state() == HerdrSessionState::Stopped {
+        vec![HerdrRowAction::Restart]
+    } else {
+        Vec::new()
+    }
+}
+
 fn tmux_row_actions(active: bool, can_kill: bool) -> Vec<SessionRowAction> {
     let mut actions = Vec::with_capacity(2);
     if active {
@@ -6811,6 +6816,17 @@ fn session_group_visibility(
         zellij: host.zellij_available()
             || !zellij_sessions.is_empty()
             || host.zellij_diagnostic().is_some(),
+    }
+}
+
+fn session_creation_available(host: &HostItem, kind: NewSessionKind) -> bool {
+    if host.connection() != HostConnectionState::Ready {
+        return false;
+    }
+    match kind {
+        NewSessionKind::Tmux => !host.is_ssh(),
+        NewSessionKind::Herdr => host.herdr_available() && host.herdr_diagnostic().is_none(),
+        NewSessionKind::Zellij => host.zellij_available() && host.zellij_diagnostic().is_none(),
     }
 }
 
@@ -7015,6 +7031,8 @@ fn tree_herdr_sessions(
         let retained = retained.contains(&session.selection);
         session.access = if session.inventory.is_some() && host_accepts_mutation {
             HerdrRowAccess::Mutable
+        } else if session.inventory.is_some() && host_can_open && host.is_ssh() {
+            HerdrRowAccess::Constructive
         } else if (session.inventory.is_some() && host_can_open) || session.active || retained {
             HerdrRowAccess::OpenOnly
         } else {
@@ -7912,17 +7930,17 @@ mod tests {
         WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode,
         WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence,
         WorktreeSocket, active_session_selection, application_navigation_width,
-        apply_new_worktree_failure, apply_worktree_removal_failure, can_create_worktree,
-        can_kill_worktree, canonical_terminal_key_with, clear_terminal_input_state,
-        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
-        herdr_session_menu_actions, host_header_action, host_landing_text,
+        apply_new_worktree_failure, apply_worktree_removal_failure, available_herdr_row_actions,
+        can_create_worktree, can_kill_worktree, canonical_terminal_key_with,
+        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
+        coalesce_last_resize, coalesce_last_wheel, has_ambiguous_worktree_source,
+        herdr_row_actions, herdr_session_menu_actions, host_header_action, host_landing_text,
         input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
         kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
         new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
         pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
-        session_action_menu_position, session_backend_id, session_group_visibility,
-        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        session_action_menu_position, session_backend_id, session_creation_available,
+        session_group_visibility, session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
         terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
         terminal_line_height, terminal_wheel_steps, tmux_row_actions, toggle_session_group_state,
         transitioned_presentation, tree_herdr_sessions, tree_sessions, tree_zellij_sessions,
@@ -8900,7 +8918,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_herdr_sessions_are_openable_without_remote_lifecycle_actions() {
+    fn remote_herdr_sessions_allow_attach_and_constructive_restart_only() {
         let host = HostItem::ssh(
             "ssh:studio",
             "Studio",
@@ -8909,17 +8927,25 @@ mod tests {
             Vec::new(),
             None,
         )
-        .with_herdr_sessions(vec![HerdrSessionItem::new(
-            "review",
-            false,
-            HerdrSessionState::Running,
-        )]);
+        .with_herdr_sessions(vec![
+            HerdrSessionItem::new("review", false, HerdrSessionState::Running),
+            HerdrSessionItem::new("stopped", false, HerdrSessionState::Stopped),
+        ]);
 
         let rows = tree_herdr_sessions(&host, None, &[]);
 
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert!(rows[0].access.can_open());
+        assert!(rows[0].access.can_restart());
         assert!(!rows[0].access.can_mutate());
+        assert!(rows[1].access.can_restart());
+        assert_eq!(
+            available_herdr_row_actions(
+                rows[1].access,
+                rows[1].inventory.as_ref().expect("inventory")
+            ),
+            vec![HerdrRowAction::Restart]
+        );
     }
 
     #[test]
@@ -8939,6 +8965,28 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].state.can_open());
         assert!(!rows[0].state.can_kill());
+    }
+
+    #[test]
+    fn ready_remote_hosts_offer_constructive_herdr_and_zellij_actions() {
+        let host = HostItem::ssh(
+            "ssh:studio",
+            "Studio",
+            "studio.example",
+            HostConnectionState::Ready,
+            Vec::new(),
+            None,
+        )
+        .with_herdr_sessions(vec![HerdrSessionItem::new(
+            "default",
+            true,
+            HerdrSessionState::Stopped,
+        )])
+        .with_zellij_sessions(Vec::new());
+
+        assert!(session_creation_available(&host, NewSessionKind::Herdr));
+        assert!(session_creation_available(&host, NewSessionKind::Zellij));
+        assert!(!session_creation_available(&host, NewSessionKind::Tmux));
     }
 
     #[test]

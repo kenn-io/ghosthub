@@ -470,10 +470,13 @@ their host generation, so cancellation or a replacement attempt cannot apply
 late trust or authentication input. Each host publishes independently and a
 remote failure remains host-scoped.
 
-The initial remote product boundary is tmux discovery and exact attach only.
-Remote creation, killing, Herdr, Zellij, KWT project/worktree management,
-managed-helper installation, reconnect, and restoration remain unavailable in
-the UI until their own identity and lifecycle contracts are implemented.
+The initial remote product boundary includes discovery and exact attachment for
+tmux, Herdr, and Zellij. Herdr create/restart and Zellij create are one-shot
+constructive actions over the existing reviewed KWT lease: they require a
+fresh backend preflight and an exact post-launch inventory match before the new
+client is published. Remote destruction, tmux creation, KWT project/worktree
+management, reconnect, and restoration remain unavailable until their own
+identity and lifecycle contracts are implemented.
 
 Before opening that channel, Ghosthub reads the effective destination policy
 with `ssh -G`. It tightens `accept-new` to an explicit review but does not

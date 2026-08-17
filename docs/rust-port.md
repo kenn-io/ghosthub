@@ -888,10 +888,14 @@ Each host's tmux, Herdr, and Zellij groups have independent disclosure controls;
 collapsing navigation never detaches a client or changes session lifetime.
 
 The current remote UI supports discovery, attach-only presentation, retained
-switching, and detach. It deliberately withholds remote creation, tmux/Zellij
-kill, Herdr create/stop/restart/delete, worktrees, reconnect/backoff, and
-restoration until each operation has fresh remote identity and lifecycle
-fencing. An absent control cannot silently fall back to WSL or unguarded SSH.
+switching, detach, one-shot Herdr creation/restart, and one-shot Zellij
+creation. Constructive operations re-probe the backend through the existing
+reviewed lease before launch, publish only an exact post-launch inventory
+match, and run entirely off the UI thread. It deliberately withholds remote
+tmux creation, tmux/Zellij kill, Herdr stop/delete, worktrees,
+reconnect/backoff, and restoration until each operation has fresh remote
+identity and lifecycle fencing. An absent control cannot silently fall back to
+WSL or unguarded SSH.
 
 Rust config resolution is:
 
