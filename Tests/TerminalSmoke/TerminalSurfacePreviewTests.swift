@@ -997,7 +997,9 @@ final class TerminalSurfacePreviewTests: XCTestCase {
                 at: pipeline.paths.configDirectory,
                 withIntermediateDirectories: true
             )
-            try! "shell = /bin/zsh\n".write(
+            let config = LibghosttyConfigPipeline.defaultGlobalConfigContents
+                + "\nshell = /bin/zsh\n"
+            try! config.write(
                 to: pipeline.paths.globalConfigFile,
                 atomically: true,
                 encoding: .utf8
