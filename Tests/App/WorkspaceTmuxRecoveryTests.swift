@@ -479,7 +479,10 @@ extension WorkspaceTmuxDiscoveryTests {
             selection: selection,
             initialCommand: "exec codex"
         ))
-        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 1
+        }
         try await Task.sleep(for: .milliseconds(30))
 
         #expect(model.pendingCreatedTmuxSessionCount == 1)

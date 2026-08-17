@@ -78,6 +78,7 @@ func launchActiveTmuxSurface(
     await waitUntilMainActor(timeout: .seconds(15)) {
         model.prepareActiveBorrowedTmuxSurface()
         return store.requestCount > 0
+            && !store.surface.closeObservers.isEmpty
     }
 }
 
