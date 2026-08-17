@@ -25,7 +25,10 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const INVENTORY_FORMAT: &str =
     "#{pid}|#{session_id}|#{session_created}|#{session_attached}|#{n:session_name}|#{session_name}";
 const TMUX_PATH_MARKER: &str = "GHOSTHUB_TMUX_PATH=";
+const TMUX_PROBE_PREFIX: &str = "GHOSTHUB_TMUX_PROBE_";
+const HERDR_PROBE_PREFIX: &str = "GHOSTHUB_HERDR_PROBE_";
 const HERDR_INVENTORY_PREFIX: &str = "GHOSTHUB_HERDR_INVENTORY_";
+const ZELLIJ_PROBE_PREFIX: &str = "GHOSTHUB_ZELLIJ_PROBE_";
 const ZELLIJ_INVENTORY_PREFIX: &str = "GHOSTHUB_ZELLIJ_INVENTORY_";
 const IDENTITY_MISMATCH_PREFIX: &str = "GHOSTHUB_REMOTE_IDENTITY_MISMATCH_";
 
@@ -398,7 +401,12 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<HerdrInventory, RemoteTmuxError> {
         let result: Result<Option<(String, Vec<HerdrSessionRecord>)>, RemoteTmuxError> = (|| {
-            let probe = self.run_remote_shell(lease, herdr::RESOLVE_SCRIPT, cancellation)?;
+            let probe = self.run_framed_remote_shell(
+                lease,
+                herdr::RESOLVE_SCRIPT,
+                HERDR_PROBE_PREFIX,
+                cancellation,
+            )?;
             if probe.status != 0 && probe.status != 127 {
                 return Err(command_failure(&probe, "remote Herdr probe failed"));
             }
@@ -444,7 +452,12 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<ZellijInventory, RemoteTmuxError> {
         let result: Result<Option<(String, Vec<ZellijSessionRecord>)>, RemoteTmuxError> = (|| {
-            let probe = self.run_remote_shell(lease, zellij::RESOLVE_SCRIPT, cancellation)?;
+            let probe = self.run_framed_remote_shell(
+                lease,
+                zellij::RESOLVE_SCRIPT,
+                ZELLIJ_PROBE_PREFIX,
+                cancellation,
+            )?;
             if probe.status != 0 && probe.status != 127 {
                 return Err(command_failure(&probe, "remote Zellij probe failed"));
             }
@@ -484,7 +497,8 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<String, RemoteTmuxError> {
         let probe = tmux_probe_command(self.config.tmux_binary());
-        let output = self.run_remote_shell(lease, &probe, cancellation)?;
+        let output =
+            self.run_framed_remote_shell(lease, &probe, TMUX_PROBE_PREFIX, cancellation)?;
         if output.status != 0 {
             return Err(RemoteTmuxError::new(
                 if output.status == 127 {
@@ -1010,13 +1024,25 @@ fn extract_framed_command_output(
     if output.status == 255 {
         return Err(command_failure(&output, "SSH connection failed"));
     }
-    output.stdout = extract_framed_payload(&output.stdout, begin_marker, end_marker)?;
+    output.stdout = match extract_framed_payload(&output.stdout, begin_marker, end_marker) {
+        Ok(payload) => payload,
+        Err(_error) if output.status != 0 => {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                nonempty_diagnostic(
+                    &output.stderr,
+                    "remote command wrapper failed before starting the requested command",
+                ),
+            ));
+        }
+        Err(error) => return Err(error),
+    };
     Ok(output)
 }
 
 fn command_failure(output: &crate::CommandOutput, fallback: &str) -> RemoteTmuxError {
     RemoteTmuxError::new(
-        if output.status == 255 {
+        if output.status == 255 || output.status == 125 {
             DiagnosticKind::Transport
         } else if output.status == 127 {
             DiagnosticKind::ExecutableNotFound
@@ -1517,6 +1543,58 @@ mod tests {
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
         assert_eq!(error.to_string(), "connection closed");
+    }
+
+    #[test]
+    fn command_wrapper_failure_is_host_transport_even_when_status_looks_optional() {
+        let error = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 127,
+                stdout: Vec::new(),
+                stderr: b"wsl runtime guard did not start SSH".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect_err("missing framing proves the backend command never started");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(error.to_string(), "wsl runtime guard did not start SSH");
+    }
+
+    #[test]
+    fn framed_missing_backend_remains_backend_scoped() {
+        let output = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 127,
+                stdout: b"noise\nBEGIN\nGHOSTHUB_ZELLIJ_UNAVAILABLE\nEND\n".to_vec(),
+                stderr: Vec::new(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect("the remote command started and reported backend absence");
+
+        assert_eq!(output.status, 127);
+        assert_eq!(output.stdout, b"GHOSTHUB_ZELLIJ_UNAVAILABLE\n");
+        assert_eq!(
+            command_failure(&output, "missing backend").kind(),
+            DiagnosticKind::ExecutableNotFound
+        );
+    }
+
+    #[test]
+    fn wsl_runtime_guard_status_is_transport() {
+        let error = command_failure(
+            &crate::CommandOutput {
+                status: 125,
+                stdout: Vec::new(),
+                stderr: b"WSL runtime changed".to_vec(),
+            },
+            "runtime guard failed",
+        );
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
     }
 
     #[test]

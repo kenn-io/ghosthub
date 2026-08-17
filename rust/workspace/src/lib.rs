@@ -1617,26 +1617,39 @@ struct RemotePublishError {
     worker: TerminalWorker,
 }
 
-enum RemoteAttachPlan {
-    Tmux(session::AttachPlan),
-    Herdr(session::HerdrAttachPlan),
-}
-
 #[derive(Clone, Copy)]
 struct RemoteInventory<'a> {
-    tmux: &'a [session::DiscoveredSession],
-    herdr: &'a [session::HerdrSessionRecord],
-    zellij: &'a [session::ZellijSessionRecord],
+    tmux: Option<&'a [session::DiscoveredSession]>,
+    herdr: Option<&'a [session::HerdrSessionRecord]>,
+    zellij: Option<&'a [session::ZellijSessionRecord]>,
 }
 
 impl<'a> From<&'a RemoteTmuxSnapshot> for RemoteInventory<'a> {
     fn from(snapshot: &'a RemoteTmuxSnapshot) -> Self {
         Self {
-            tmux: snapshot.sessions(),
-            herdr: snapshot.herdr().sessions(),
-            zellij: snapshot.zellij().sessions(),
+            tmux: snapshot
+                .tmux_diagnostic()
+                .is_none()
+                .then(|| snapshot.sessions()),
+            herdr: match snapshot.herdr() {
+                HerdrInventory::Available { sessions, .. } => Some(sessions),
+                HerdrInventory::Unavailable => Some(&[]),
+                HerdrInventory::Failed(_) => None,
+            },
+            zellij: match snapshot.zellij() {
+                ZellijInventory::Available { sessions, .. } => Some(sessions),
+                ZellijInventory::Unavailable => Some(&[]),
+                ZellijInventory::Failed(_) => None,
+            },
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RemoteReconcile {
+    Found(SessionKind, String),
+    Unknown,
+    Stale,
 }
 
 impl RemotePresentationKey {
@@ -1646,17 +1659,25 @@ impl RemotePresentationKey {
         route_identity: &str,
         lease_generation: u64,
         inventory: Option<RemoteInventory<'_>>,
-    ) -> Option<(SessionKind, String)> {
+    ) -> RemoteReconcile {
         if self.endpoint != endpoint || self.route_identity != route_identity {
-            return None;
+            return RemoteReconcile::Stale;
         }
-        let inventory = inventory?;
+        let Some(inventory) = inventory else {
+            return RemoteReconcile::Stale;
+        };
         let (kind, name) = match &self.session_identity {
             RemoteSessionIdentity::Tmux(identity) => {
-                let session = inventory
-                    .tmux
+                let Some(sessions) = inventory.tmux else {
+                    self.lease_generation = lease_generation;
+                    return RemoteReconcile::Unknown;
+                };
+                let Some(session) = sessions
                     .iter()
-                    .find(|session| session.identity() == identity)?;
+                    .find(|session| session.identity() == identity)
+                else {
+                    return RemoteReconcile::Stale;
+                };
                 (SessionKind::Tmux, session.name().to_owned())
             }
             RemoteSessionIdentity::Herdr {
@@ -1665,26 +1686,39 @@ impl RemotePresentationKey {
                 session_directory,
                 socket_path,
             } => {
-                let session = inventory.herdr.iter().find(|session| {
+                let Some(sessions) = inventory.herdr else {
+                    self.lease_generation = lease_generation;
+                    return RemoteReconcile::Unknown;
+                };
+                let Some(session) = sessions.iter().find(|session| {
                     session.name() == name
                         && session.is_default() == *is_default
                         && session.session_directory() == session_directory
                         && session.socket_path() == socket_path
                         && session.state() == HerdrSessionState::Running
-                })?;
+                }) else {
+                    return RemoteReconcile::Stale;
+                };
                 (SessionKind::Herdr, session.name().to_owned())
             }
             RemoteSessionIdentity::Zellij(name) => {
-                let session = inventory
-                    .zellij
-                    .iter()
-                    .find(|session| session.name() == name)?;
+                let Some(sessions) = inventory.zellij else {
+                    self.lease_generation = lease_generation;
+                    return RemoteReconcile::Unknown;
+                };
+                let Some(session) = sessions.iter().find(|session| session.name() == name) else {
+                    return RemoteReconcile::Stale;
+                };
                 (SessionKind::Zellij, session.name().to_owned())
             }
         };
         self.lease_generation = lease_generation;
-        Some((kind, name))
+        RemoteReconcile::Found(kind, name)
     }
+}
+
+const fn retain_remote_session(kind: SessionKind) -> bool {
+    matches!(kind, SessionKind::Tmux)
 }
 
 impl RemoteRetainedPresentations {
@@ -1759,12 +1793,14 @@ impl RemoteRetainedPresentations {
                 lease_generation,
                 inventory,
             );
-            if let Some((kind, name)) = resolved {
-                self.entries[index].active.selection =
-                    SessionSelection::for_kind(host_id, endpoint, name, kind);
-                index += 1;
-            } else {
-                stale.push(self.entries.remove(index));
+            match resolved {
+                RemoteReconcile::Found(kind, name) => {
+                    self.entries[index].active.selection =
+                        SessionSelection::for_kind(host_id, endpoint, name, kind);
+                    index += 1;
+                }
+                RemoteReconcile::Unknown => index += 1,
+                RemoteReconcile::Stale => stale.push(self.entries.remove(index)),
             }
         }
         stale
@@ -2419,6 +2455,16 @@ struct RemoteZellijAttachRequest {
     snapshot: RemoteTmuxSnapshot,
     executable: String,
     name: String,
+}
+
+#[derive(Clone)]
+struct RemoteHerdrAttachRequest {
+    host_id: String,
+    selection: SessionSelection,
+    host: RuntimeRemoteHost,
+    snapshot: RemoteTmuxSnapshot,
+    executable: String,
+    session: session::HerdrSessionRecord,
 }
 
 impl HerdrCreateRequest {
@@ -3354,36 +3400,39 @@ fn reconcile_remote_presentations(
                     inventory,
                 );
         };
-        if let Some((kind, name)) =
-            active
-                .key
-                .reconcile(endpoint, route_identity, lease_generation, inventory)
+        match active
+            .key
+            .reconcile(endpoint, route_identity, lease_generation, inventory)
         {
-            active.retainable = true;
-            let selection = SessionSelection::for_kind(host_id, endpoint, name, kind);
-            if active.selection == selection {
-                None
-            } else {
-                active.selection = selection;
-                let worker = inner
-                    .worker
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if worker.generation() == active.worker_generation {
-                    worker.active().map(|worker| {
-                        (
-                            active.selection.clone(),
-                            active.presentation_id,
-                            worker.surface_handle(),
-                        )
-                    })
-                } else {
+            RemoteReconcile::Found(kind, name) => {
+                active.retainable = retain_remote_session(kind);
+                let selection = SessionSelection::for_kind(host_id, endpoint, name, kind);
+                if active.selection == selection {
                     None
+                } else {
+                    active.selection = selection;
+                    let worker = inner
+                        .worker
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if worker.generation() == active.worker_generation {
+                        worker.active().map(|worker| {
+                            (
+                                active.selection.clone(),
+                                active.presentation_id,
+                                worker.surface_handle(),
+                            )
+                        })
+                    } else {
+                        None
+                    }
                 }
             }
-        } else {
-            active.retainable = false;
-            None
+            RemoteReconcile::Unknown => None,
+            RemoteReconcile::Stale => {
+                active.retainable = false;
+                None
+            }
         }
     };
     let stale = inner
@@ -5046,6 +5095,10 @@ impl Workspace {
             if self.activate_remote_retained(selection, current_key.as_ref())? {
                 return Ok(());
             }
+            if selection.kind() == SessionKind::Herdr {
+                let request = capture_remote_herdr_attach_request(&self.inner, selection)?;
+                return self.start_remote_herdr_attachment(request, navigation_generation);
+            }
             if selection.kind() == SessionKind::Zellij {
                 let request = capture_remote_zellij_attach_request(&self.inner, selection)?;
                 return self.start_remote_zellij_attachment(request, navigation_generation);
@@ -5282,47 +5335,14 @@ impl Workspace {
                         .attach_plan(&context.snapshot, session, "xterm-256color")
                         .map_err(|error| WorkspaceError::new(error.to_string()))?;
                     (
-                        RemoteAttachPlan::Tmux(plan),
+                        plan,
                         RemoteSessionIdentity::Tmux(session.identity().clone()),
                         Some(marker),
                     )
                 }
-                SessionKind::Herdr => {
-                    let executable = context.snapshot.herdr().executable().ok_or_else(|| {
-                        WorkspaceError::new("Herdr is unavailable on this SSH host")
-                    })?;
-                    let session = context
-                        .snapshot
-                        .herdr()
-                        .sessions()
-                        .iter()
-                        .find(|session| {
-                            session.name() == selection.session()
-                                && session.state() == HerdrSessionState::Running
-                        })
-                        .ok_or_else(|| {
-                            WorkspaceError::new(
-                                "running Herdr session is not in current remote inventory",
-                            )
-                        })?;
-                    let plan = context
-                        .host
-                        .herdr_attach_plan(&context.snapshot, executable, session, "xterm-256color")
-                        .map_err(|error| WorkspaceError::new(error.to_string()))?;
-                    (
-                        RemoteAttachPlan::Herdr(plan),
-                        RemoteSessionIdentity::Herdr {
-                            name: session.name().to_owned(),
-                            is_default: session.is_default(),
-                            session_directory: session.session_directory().to_owned(),
-                            socket_path: session.socket_path().to_owned(),
-                        },
-                        None,
-                    )
-                }
-                SessionKind::Zellij => {
+                SessionKind::Herdr | SessionKind::Zellij => {
                     return Err(WorkspaceError::new(
-                        "remote Zellij attachment requires a fresh active-session probe",
+                        "remote non-tmux attachment requires a fresh active-session probe",
                     ));
                 }
             };
@@ -5346,24 +5366,14 @@ impl Workspace {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let clipboard = ClipboardPolicy::remote(self.inner.allow_remote_clipboard_write);
         let colors = default_colors(&self.inner.appearance);
-        let worker = match &plan {
-            RemoteAttachPlan::Tmux(plan) => TerminalWorker::attach_with_metadata(
-                plan,
-                initial_geometry.grid,
-                initial_geometry.sequence,
-                initial_geometry.pixels,
-                clipboard,
-                colors,
-            ),
-            RemoteAttachPlan::Herdr(plan) => TerminalWorker::attach_herdr_with_metadata(
-                plan,
-                initial_geometry.grid,
-                initial_geometry.sequence,
-                initial_geometry.pixels,
-                clipboard,
-                colors,
-            ),
-        }
+        let worker = TerminalWorker::attach_with_metadata(
+            &plan,
+            initial_geometry.grid,
+            initial_geometry.sequence,
+            initial_geometry.pixels,
+            clipboard,
+            colors,
+        )
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
         let presentation_id = next_presentation_id(&self.inner);
         publish_remote_worker(
@@ -5999,6 +6009,30 @@ impl Workspace {
         {
             return Err(WorkspaceError::new(format!(
                 "start remote Zellij attachment task: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn start_remote_herdr_attachment(
+        &self,
+        request: RemoteHerdrAttachRequest,
+        navigation_generation: u64,
+    ) -> Result<(), WorkspaceError> {
+        let inner = Arc::clone(&self.inner);
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-remote-herdr-attach".to_owned())
+            .spawn(move || {
+                run_remote_herdr_attach(
+                    &inner,
+                    &request,
+                    navigation_generation,
+                    &CancellationToken::new(),
+                );
+            })
+        {
+            return Err(WorkspaceError::new(format!(
+                "start remote Herdr attachment task: {error}"
             )));
         }
         Ok(())
@@ -8674,6 +8708,55 @@ fn capture_remote_zellij_attach_request(
         snapshot: context.snapshot.clone(),
         executable: executable.clone(),
         name: session.name().to_owned(),
+    })
+}
+
+fn capture_remote_herdr_attach_request(
+    inner: &Inner,
+    selection: &SessionSelection,
+) -> Result<RemoteHerdrAttachRequest, WorkspaceError> {
+    if selection.kind() != SessionKind::Herdr {
+        return Err(WorkspaceError::new(
+            "the selected session is not a Herdr session",
+        ));
+    }
+    require_host_session_actions(inner, selection)?;
+    let entries = inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let context = entries
+        .get(selection.host_id())
+        .and_then(|entry| entry.context.as_ref())
+        .ok_or_else(|| WorkspaceError::new("Connect this SSH host before opening a session"))?;
+    if context.snapshot.endpoint() != selection.endpoint() {
+        return Err(WorkspaceError::new(
+            "SSH endpoint changed; refresh before opening the session",
+        ));
+    }
+    let HerdrInventory::Available {
+        executable,
+        sessions,
+    } = context.snapshot.herdr()
+    else {
+        return Err(WorkspaceError::new(
+            "Herdr is not available on this SSH host",
+        ));
+    };
+    let session = sessions
+        .iter()
+        .find(|session| {
+            session.name() == selection.session() && session.state() == HerdrSessionState::Running
+        })
+        .cloned()
+        .ok_or_else(|| WorkspaceError::new("Herdr session is no longer running"))?;
+    Ok(RemoteHerdrAttachRequest {
+        host_id: selection.host_id().to_owned(),
+        selection: selection.clone(),
+        host: context.host.clone(),
+        snapshot: context.snapshot.clone(),
+        executable: executable.clone(),
+        session,
     })
 }
 
@@ -11413,6 +11496,150 @@ impl Drop for RemoteConstructiveReset<'_> {
     }
 }
 
+fn run_remote_herdr_attach(
+    inner: &Inner,
+    request: &RemoteHerdrAttachRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) {
+    let _operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let result =
+        prepare_remote_herdr_attachment(inner, request, navigation_generation, cancellation)
+            .and_then(|(worker, snapshot, session, geometry)| {
+                if let Err(error) =
+                    worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
+                {
+                    return Err(WorkspaceError::from_worker(&error));
+                }
+                let navigation = inner
+                    .navigation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+                    drop(worker);
+                    return Ok(());
+                }
+                let key = RemotePresentationKey {
+                    host_id: request.host_id.clone(),
+                    endpoint: snapshot.endpoint().to_owned(),
+                    route_identity: snapshot.route_identity().to_owned(),
+                    lease_generation: snapshot.lease_generation(),
+                    session_identity: RemoteSessionIdentity::Herdr {
+                        name: session.name().to_owned(),
+                        is_default: session.is_default(),
+                        session_directory: session.session_directory().to_owned(),
+                        socket_path: session.socket_path().to_owned(),
+                    },
+                };
+                let published = publish_remote_worker(
+                    inner,
+                    worker,
+                    key,
+                    &request.selection,
+                    snapshot.lease().clone(),
+                    next_presentation_id(inner),
+                    None,
+                )
+                .map_err(|error| error.error);
+                drop(navigation);
+                published
+            });
+    if let Err(error) = result
+        && inner.navigation_generation.load(Ordering::Acquire) == navigation_generation
+    {
+        push_operation_event(inner, WorkspaceEvent::Error(error.to_string()));
+        inner.revision.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn prepare_remote_herdr_attachment(
+    inner: &Inner,
+    request: &RemoteHerdrAttachRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) -> Result<
+    (
+        TerminalWorker,
+        RemoteTmuxSnapshot,
+        session::HerdrSessionRecord,
+        TerminalGeometry,
+    ),
+    WorkspaceError,
+> {
+    let inventory = request
+        .host
+        .refresh(request.snapshot.lease(), cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let (executable, session) = resolve_remote_herdr_attach_target(
+        inventory.herdr(),
+        &request.executable,
+        &request.session,
+    )?;
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        return Err(WorkspaceError::new(
+            "remote Herdr attachment was superseded",
+        ));
+    }
+    let snapshot = publish_remote_inventory(inner, &request.host_id, &request.snapshot, inventory)?;
+    reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
+    let plan = request
+        .host
+        .herdr_attach_plan(&snapshot, &executable, &session, "xterm-256color")
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let worker = TerminalWorker::attach_herdr_with_metadata(
+        &plan,
+        geometry.grid,
+        geometry.sequence,
+        geometry.pixels,
+        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+        default_colors(&inner.appearance),
+    )
+    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    Ok((worker, snapshot, session, geometry))
+}
+
+fn resolve_remote_herdr_attach_target(
+    inventory: &HerdrInventory,
+    expected_executable: &str,
+    expected: &session::HerdrSessionRecord,
+) -> Result<(String, session::HerdrSessionRecord), WorkspaceError> {
+    let HerdrInventory::Available {
+        executable,
+        sessions,
+    } = inventory
+    else {
+        return Err(WorkspaceError::new(
+            "Herdr is not available on this SSH host",
+        ));
+    };
+    if executable != expected_executable {
+        return Err(WorkspaceError::new(
+            "the remote Herdr executable changed; refresh before opening the session",
+        ));
+    }
+    let session = sessions
+        .iter()
+        .find(|session| session.name() == expected.name())
+        .ok_or_else(|| WorkspaceError::new("Herdr session is no longer available"))?;
+    if session.state() != HerdrSessionState::Running
+        || session.is_default() != expected.is_default()
+        || session.session_directory() != expected.session_directory()
+        || session.socket_path() != expected.socket_path()
+    {
+        return Err(WorkspaceError::new(
+            "Herdr session identity changed; refresh before opening it",
+        ));
+    }
+    Ok((executable.clone(), session.clone()))
+}
+
 fn run_remote_zellij_attach(
     inner: &Inner,
     request: &RemoteZellijAttachRequest,
@@ -12887,7 +13114,7 @@ fn publish_remote_worker(
         worker_generation,
         lease,
         presentation_id,
-        retainable: true,
+        retainable: retain_remote_session(selection.kind()),
         identity_mismatch_marker,
     });
     clear_pending_paste(inner);
@@ -15045,6 +15272,73 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn remote_herdr_attachment_requires_fresh_running_identity() {
+        let expected = session::HerdrSessionRecord::new(
+            "review",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/herdr/review",
+            "/tmp/herdr/review.sock",
+        );
+        let available = HerdrInventory::Available {
+            executable: "/usr/local/bin/herdr".to_owned(),
+            sessions: vec![expected.clone()],
+        };
+
+        let (executable, session) =
+            resolve_remote_herdr_attach_target(&available, "/usr/local/bin/herdr", &expected)
+                .expect("fresh running session");
+        assert_eq!(executable, "/usr/local/bin/herdr");
+        assert_eq!(session, expected);
+
+        for replacement in [
+            session::HerdrSessionRecord::new(
+                "review",
+                false,
+                HerdrSessionState::Stopped,
+                "/tmp/herdr/review",
+                "/tmp/herdr/review.sock",
+            ),
+            session::HerdrSessionRecord::new(
+                "review",
+                true,
+                HerdrSessionState::Running,
+                "/tmp/herdr/review",
+                "/tmp/herdr/review.sock",
+            ),
+            session::HerdrSessionRecord::new(
+                "review",
+                false,
+                HerdrSessionState::Running,
+                "/tmp/herdr/replacement",
+                "/tmp/herdr/replacement.sock",
+            ),
+        ] {
+            assert!(
+                resolve_remote_herdr_attach_target(
+                    &HerdrInventory::Available {
+                        executable: "/usr/local/bin/herdr".to_owned(),
+                        sessions: vec![replacement],
+                    },
+                    "/usr/local/bin/herdr",
+                    &expected,
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            resolve_remote_herdr_attach_target(&available, "/usr/bin/herdr", &expected).is_err()
+        );
+    }
+
+    #[test]
+    fn only_remote_tmux_presentations_are_retainable() {
+        assert!(retain_remote_session(SessionKind::Tmux));
+        assert!(!retain_remote_session(SessionKind::Herdr));
+        assert!(!retain_remote_session(SessionKind::Zellij));
     }
 
     #[test]
@@ -17943,28 +18237,86 @@ mod tests {
                 "route-a",
                 8,
                 Some(RemoteInventory {
-                    tmux: &sessions,
-                    herdr: &[],
-                    zellij: &[],
+                    tmux: Some(&sessions),
+                    herdr: Some(&[]),
+                    zellij: Some(&[]),
                 }),
             ),
-            Some((SessionKind::Tmux, "renamed".to_owned()))
+            RemoteReconcile::Found(SessionKind::Tmux, "renamed".to_owned())
         );
         assert_eq!(key.lease_generation, 8);
         assert_eq!(
             key.reconcile(
                 "studio.example",
-                "route-b",
+                "route-a",
                 9,
                 Some(RemoteInventory {
-                    tmux: &sessions,
-                    herdr: &[],
-                    zellij: &[],
+                    tmux: None,
+                    herdr: Some(&[]),
+                    zellij: Some(&[]),
                 }),
             ),
-            None
+            RemoteReconcile::Unknown
+        );
+        assert_eq!(key.lease_generation, 9);
+        assert_eq!(
+            key.reconcile(
+                "studio.example",
+                "route-b",
+                10,
+                Some(RemoteInventory {
+                    tmux: Some(&sessions),
+                    herdr: Some(&[]),
+                    zellij: Some(&[]),
+                }),
+            ),
+            RemoteReconcile::Stale
+        );
+        assert_eq!(key.lease_generation, 9);
+    }
+
+    #[test]
+    fn failed_remote_backend_inventory_preserves_known_presentation_identity() {
+        let mut key = RemotePresentationKey {
+            host_id: "ssh:studio".to_owned(),
+            endpoint: "studio.example".to_owned(),
+            route_identity: "route-a".to_owned(),
+            lease_generation: 7,
+            session_identity: RemoteSessionIdentity::Herdr {
+                name: "review".to_owned(),
+                is_default: false,
+                session_directory: "/tmp/herdr/review".to_owned(),
+                socket_path: "/tmp/herdr/review.sock".to_owned(),
+            },
+        };
+
+        assert_eq!(
+            key.reconcile(
+                "studio.example",
+                "route-a",
+                8,
+                Some(RemoteInventory {
+                    tmux: Some(&[]),
+                    herdr: None,
+                    zellij: Some(&[]),
+                }),
+            ),
+            RemoteReconcile::Unknown
         );
         assert_eq!(key.lease_generation, 8);
+        assert_eq!(
+            key.reconcile(
+                "studio.example",
+                "route-a",
+                9,
+                Some(RemoteInventory {
+                    tmux: Some(&[]),
+                    herdr: Some(&[]),
+                    zellij: Some(&[]),
+                }),
+            ),
+            RemoteReconcile::Stale
+        );
     }
 
     #[test]
