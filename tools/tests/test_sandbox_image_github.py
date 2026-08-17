@@ -140,6 +140,42 @@ class EvidenceRunner:
         return CompletedCommand(call, 0, self.responses[call], "")
 
 
+def test_candidate_identity_accepts_single_arm64_manifest() -> None:
+    image = ImageReference.parse(
+        f"ghcr.io/kenn-io/ghosthub-sandbox:candidate-{SOURCE}@{DIGEST}"
+    )
+    command = (
+        "docker",
+        "buildx",
+        "imagetools",
+        "inspect",
+        image.canonical,
+        "--format",
+        "{{json .Image}}",
+    )
+    runner = EvidenceRunner(
+        {
+            command: json.dumps(
+                {
+                    "architecture": "arm64",
+                    "config": {
+                        "Labels": {
+                            "org.opencontainers.image.url": (
+                                "https://github.com/kenn-io/ghosthub"
+                            ),
+                            "org.opencontainers.image.revision": SOURCE,
+                            "org.opencontainers.image.version": "0.1.0",
+                        }
+                    },
+                    "os": "linux",
+                }
+            )
+        }
+    )
+
+    github.verify_candidate_identity(image, SOURCE, "0.1.0", runner)
+
+
 def test_evidence_reader_rejects_symlink_entry() -> None:
     commit = "c" * 40
     path = Path("SANDBOX_IMAGE")
