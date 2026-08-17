@@ -358,7 +358,7 @@ jobs:
             def default_branch:
               .target == "branch" and
               .enforcement == "active" and
-              .bypass_actors == [] and
+              (.bypass_actors == null or .bypass_actors == []) and
               (.conditions.ref_name.include | index("~DEFAULT_BRANCH")) != null and
               .conditions.ref_name.exclude == [];
             def promotion_status:
