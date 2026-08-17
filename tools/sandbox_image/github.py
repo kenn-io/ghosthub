@@ -1296,9 +1296,20 @@ def verify_candidate_identity(
     )
     try:
         payload = json.loads(result.stdout)
-        if set(payload) not in ({"linux/arm64"}, {"linux/arm64/v8"}):
-            raise ValueError("candidate image must contain only linux/arm64")
-        config = next(iter(payload.values()))["config"]
+        if not isinstance(payload, dict):
+            raise TypeError
+        if "os" in payload or "architecture" in payload:
+            if (
+                payload.get("os") != "linux"
+                or payload.get("architecture") != "arm64"
+                or payload.get("variant") not in (None, "", "v8")
+            ):
+                raise ValueError("candidate image must contain only linux/arm64")
+            config = payload["config"]
+        else:
+            if set(payload) not in ({"linux/arm64"}, {"linux/arm64/v8"}):
+                raise ValueError("candidate image must contain only linux/arm64")
+            config = next(iter(payload.values()))["config"]
         labels = config["Labels"]
     except (json.JSONDecodeError, KeyError, StopIteration, TypeError) as error:
         raise ValueError("candidate image metadata is invalid") from error
