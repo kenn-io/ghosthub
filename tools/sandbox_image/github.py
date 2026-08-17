@@ -77,7 +77,7 @@ MERGE_SIGNAL_TRANSITION_WORKFLOW_DIGESTS = {
     ),
 }
 PROMOTION_GATE_REPAIR_DIGEST = (
-    "09a0d39bf4527d2cfec188dcaee522170af3817ab19de5c35d465730bfc60e56"
+    "ccea76000ecbdee9e2ff58b78b430dd89b9a475bd66ec8a341788f6071988afe"
 )
 ALLOWED_REUSABLE_WORKFLOWS = {
     "kenn-io/ghosthub/.github/workflows/ci.yml@main",
