@@ -37,13 +37,14 @@ let environment = ProcessInfo.processInfo.environment
 guard let pid = environment["GHOSTHUB_DEMO_PID"],
       let output = environment["GHOSTHUB_DEMO_CAPTURE_OUT"]
 else { exit(1) }
-DistributedNotificationCenter.default().post(
-    name: Notification.Name("com.ghosthub.demo.capture"),
+DistributedNotificationCenter.default().postNotificationName(
+    Notification.Name("com.ghosthub.demo.capture"),
     object: pid,
     userInfo: [
         "path": output,
         "mode": environment["GHOSTHUB_DEMO_CAPTURE_MODE"] ?? "window",
-    ]
+    ],
+    deliverImmediately: true
 )
 EOF
 

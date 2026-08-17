@@ -24,6 +24,7 @@ WEBSITE_ASSET_NAMES = (
     "guide-session-previews.png",
     "guide-session-activity.png",
     "guide-hosts.png",
+    "guide-tailscale-import.png",
     "guide-exe-dev.png",
     "guide-worktree.png",
     "guide-worktree-window-counts.png",

@@ -64,8 +64,8 @@ notifications.addObserver(
     name: Notification.Name("com.ghosthub.demo.input.ack"),
     object: pid
 )
-notifications.post(
-    name: Notification.Name("com.ghosthub.demo.input"),
+notifications.postNotificationName(
+    Notification.Name("com.ghosthub.demo.input"),
     object: pid,
     userInfo: [
         "requestID": requestID,
@@ -73,7 +73,8 @@ notifications.post(
         "text": environment["GHOSTHUB_DEMO_TEXT"] ?? "",
         "submit": environment["GHOSTHUB_DEMO_SUBMIT"] ?? "false",
         "expectKind": environment["GHOSTHUB_DEMO_EXPECT_KIND"] ?? "",
-    ]
+    ],
+    deliverImmediately: true
 )
 let deadline = Date(timeIntervalSinceNow: 60)
 while acknowledgement.result == nil && Date() < deadline {
@@ -261,6 +262,25 @@ capture_window_title() {
   sleep 1
 }
 
+capture_host_settings() {
+  palette "Open Hosts Settings" true sheet
+  sleep 2
+  echo "==> guide: selective Tailscale import"
+  # The Settings sheet is fixed at 1040×744. SwiftUI does not expose this
+  # toolbar button as a pressable node on every supported macOS build.
+  demo_input click-sheet "396,634"
+  sleep 2
+  capture_state guide-tailscale-import.png
+  dismiss_sheet
+  # Bring the Verification actions above the settings toolbar. The Hosts
+  # detail is taller than the fixed demo sheet, so its initial top position
+  # clips those controls in the capture even though they are scrollable.
+  demo_input scroll-detail "120"
+  sleep 1
+  capture_state guide-hosts.png
+  dismiss_sheet
+}
+
 if [[ "${GHOSTHUB_DEMO_WINDOW_TITLE_ONLY:-}" == "1" ]]; then
   echo "==> guide: editable workspace title"
   capture_window_title
@@ -285,6 +305,13 @@ if [[ "${GHOSTHUB_DEMO_EXE_ONLY:-}" == "1" ]]; then
   sleep 2
   capture_state guide-exe-dev.png
   echo "captured exe.dev website asset -> $out_dir"
+  exit 0
+fi
+
+if [[ "${GHOSTHUB_DEMO_TAILSCALE_ONLY:-}" == "1" ]]; then
+  echo "==> guide: remote host settings"
+  capture_host_settings
+  echo "captured Tailscale import website asset -> $out_dir"
   exit 0
 fi
 
@@ -357,15 +384,7 @@ demo_input click "31,746"
 sleep 0.5
 
 echo "==> guide: remote host settings"
-palette "Open Hosts Settings" true sheet
-sleep 2
-# Bring the Verification actions above the settings toolbar. The Hosts detail
-# is taller than the fixed demo sheet, so its initial top position clips those
-# controls in the capture even though they are available by scrolling.
-demo_input scroll-detail "120"
-sleep 1
-capture_state guide-hosts.png
-dismiss_sheet
+capture_host_settings
 
 echo "==> guide: existing branch picker"
 palette "fix-reconnect-backoff"

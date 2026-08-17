@@ -301,24 +301,31 @@ public struct HostsSettingsView: View {
                     Button {
                         requestTailscalePeers()
                     } label: {
-                        Image(systemName: "network")
+                        Label("Tailscale", systemImage: "network")
+                            .frame(height: 16)
                     }
                     .help("Import from Tailscale")
-                    .disabled(isLoadingTailscale)
+                    .disabled(
+                        isLoadingTailscale || isTailscaleSheetPresented
+                    )
                     Button {
                         addSSHHost()
                     } label: {
                         Image(systemName: "plus")
+                            .frame(width: 16, height: 16)
                     }
                     .help("Add Host")
                     Button {
                         removeSelectedSSHHost()
                     } label: {
                         Image(systemName: "minus")
+                            .frame(width: 16, height: 16)
                     }
                     .help("Remove Host")
                     .disabled(sshHosts.isEmpty)
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
 
                 List(selection: $selectedSSHHostDraftID) {
                     ForEach(sshHosts) { host in
@@ -686,7 +693,10 @@ public struct HostsSettingsView: View {
                             ) {
                                 requestTailscalePeers()
                             }
-                            .disabled(isLoadingTailscale)
+                            .disabled(
+                                isLoadingTailscale
+                                    || isTailscaleSheetPresented
+                            )
                             Button(
                                 "Add Host Manually",
                                 action: addSSHHost
@@ -856,7 +866,6 @@ public struct HostsSettingsView: View {
         tailscaleError = nil
         Task {
             let result = await loadTailscalePeers()
-            isLoadingTailscale = false
             switch result {
             case let .success(peers):
                 tailscalePeers = peers
@@ -869,6 +878,7 @@ public struct HostsSettingsView: View {
             case let .failure(message):
                 tailscaleError = message
             }
+            isLoadingTailscale = false
         }
     }
 

@@ -35,10 +35,21 @@ enum TailscaleDiscovery {
     static func discoverPeers() async -> Result<
         [TailscalePeer], TailscaleError
     > {
-        await discoverPeers(
-            tailscalePaths: tailscalePaths,
-            environment: ProcessInfo.processInfo.environment
+        let environment = ProcessInfo.processInfo.environment
+        return await discoverPeers(
+            tailscalePaths: candidatePaths(environment: environment),
+            environment: environment
         )
+    }
+
+    static func candidatePaths(
+        environment: [String: String]
+    ) -> [String] {
+        guard let demoRoot = environment["GHOSTHUB_DEMO_ROOT"],
+              demoRoot.hasPrefix("/")
+        else { return tailscalePaths }
+
+        return ["\(demoRoot)/bin/tailscale"]
     }
 
     static func discoverPeers(

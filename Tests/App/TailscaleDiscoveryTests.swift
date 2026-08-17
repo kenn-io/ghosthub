@@ -4,6 +4,15 @@ import Testing
 
 @Suite("Tailscale discovery")
 struct TailscaleDiscoveryTests {
+    @Test("isolated demo never falls back to installed Tailscale paths")
+    func isolatesDemoBinary() {
+        #expect(TailscaleDiscovery.candidatePaths(environment: [
+            "GHOSTHUB_DEMO_ROOT": "/tmp/ghosthub-demo-root",
+        ]) == [
+            "/tmp/ghosthub-demo-root/bin/tailscale",
+        ])
+    }
+
     @Test("forces the macOS application binary into CLI mode")
     func forcesCLIEnvironment() async throws {
         let fixture = try TempDirectoryFixture()
