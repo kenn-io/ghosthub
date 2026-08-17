@@ -748,11 +748,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<crate::CommandOutput, RemoteTmuxError> {
         let (begin, end) = payload_markers(prefix)?;
-        let framed = format!(
-            "printf '%s\\n' {}; {command}; ghosthub_status=$?; printf '%s\\n' {}; exit $ghosthub_status",
-            shell_quoted_argument(&begin),
-            shell_quoted_argument(&end),
-        );
+        let framed = framed_remote_shell_command(command, &begin, &end);
         let output = self.run_remote_shell(lease, &framed, cancellation)?;
         extract_framed_command_output(output, &begin, &end)
     }
@@ -785,6 +781,14 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
         Ok(output)
     }
+}
+
+fn framed_remote_shell_command(command: &str, begin_marker: &str, end_marker: &str) -> String {
+    let begin = shell_quoted_argument(begin_marker);
+    let end = shell_quoted_argument(end_marker);
+    format!(
+        "printf '%s\\n' {begin}; printf '%s\\n' {begin} >&2; ( {command} ); ghosthub_status=$?; printf '%s\\n' {end}; printf '%s\\n' {end} >&2; exit $ghosthub_status"
+    )
 }
 
 fn tmux_command<'a>(
@@ -1024,7 +1028,7 @@ fn extract_framed_command_output(
     if output.status == 255 {
         return Err(command_failure(&output, "SSH connection failed"));
     }
-    output.stdout = match extract_framed_payload(&output.stdout, begin_marker, end_marker) {
+    let stdout = match extract_framed_payload(&output.stdout, begin_marker, end_marker) {
         Ok(payload) => payload,
         Err(_error) if output.status != 0 => {
             return Err(RemoteTmuxError::new(
@@ -1037,6 +1041,21 @@ fn extract_framed_command_output(
         }
         Err(error) => return Err(error),
     };
+    let stderr = match extract_framed_payload(&output.stderr, begin_marker, end_marker) {
+        Ok(payload) => payload,
+        Err(_error) if output.status != 0 => {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                nonempty_diagnostic(
+                    &output.stderr,
+                    "remote command wrapper failed before starting the requested command",
+                ),
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+    output.stdout = stdout;
+    output.stderr = stderr;
     Ok(output)
 }
 
@@ -1568,7 +1587,7 @@ mod tests {
             crate::CommandOutput {
                 status: 127,
                 stdout: b"noise\nBEGIN\nGHOSTHUB_ZELLIJ_UNAVAILABLE\nEND\n".to_vec(),
-                stderr: Vec::new(),
+                stderr: b"login warning\nBEGIN\nbackend missing\nEND\nlogout noise\n".to_vec(),
             },
             "BEGIN",
             "END",
@@ -1577,10 +1596,62 @@ mod tests {
 
         assert_eq!(output.status, 127);
         assert_eq!(output.stdout, b"GHOSTHUB_ZELLIJ_UNAVAILABLE\n");
+        assert_eq!(output.stderr, b"backend missing\n");
         assert_eq!(
             command_failure(&output, "missing backend").kind(),
             DiagnosticKind::ExecutableNotFound
         );
+    }
+
+    #[test]
+    fn framed_zellij_stderr_ignores_login_shell_noise() {
+        let output = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 1,
+                stdout: b"profile output\nBEGIN\nEND\n".to_vec(),
+                stderr:
+                    b"startup warning\nBEGIN\nNo active zellij sessions found.\nEND\nlogout noise\n"
+                        .to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect("both command streams are framed");
+
+        assert_eq!(
+            zellij::parse_inventory(output.status, &output.stdout, &output.stderr)
+                .expect("empty Zellij inventory"),
+            Vec::<ZellijSessionRecord>::new()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn framed_shell_emits_both_markers_after_probe_exits_127() {
+        let command = framed_remote_shell_command(
+            "printf 'backend missing\\n' >&2; exit 127",
+            "BEGIN",
+            "END",
+        );
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .output()
+            .expect("run framed shell boundary");
+        let output = extract_framed_command_output(
+            crate::CommandOutput {
+                status: u32::try_from(output.status.code().expect("shell exit status"))
+                    .expect("nonnegative exit status"),
+                stdout: output.stdout,
+                stderr: output.stderr,
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect("subshell exit preserves the parent framing shell");
+
+        assert_eq!(output.status, 127);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"backend missing\n");
     }
 
     #[test]
