@@ -84,6 +84,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     var onQuickLaunch: () -> Void
     var onSettings: () -> Void
     var onNewWorktree: () -> Void
+    var onRenameWindow: () -> Void
     var onWindowChanged: (NSWindow?) -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -115,7 +116,8 @@ private struct WindowFocusTracker: NSViewRepresentable {
             onToggleSidebar: onToggleSidebar,
             onQuickLaunch: onQuickLaunch,
             onSettings: onSettings,
-            onNewWorktree: onNewWorktree
+            onNewWorktree: onNewWorktree,
+            onRenameWindow: onRenameWindow
         )
         if let window = view.window {
             view.titlebarController.install(on: window)
@@ -242,7 +244,17 @@ private struct WindowFocusTracker: NSViewRepresentable {
 @MainActor
 private final class DraggableTitlebarHostingView:
     NSHostingView<AnyView> {
+    var onDoubleClick: () -> Void = {}
+
     override var mouseDownCanMoveWindow: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 2 else {
+            super.mouseDown(with: event)
+            return
+        }
+        onDoubleClick()
+    }
 }
 
 @MainActor
@@ -353,6 +365,7 @@ final class CompactWorkspaceTitlebarController {
     private var onQuickLaunch: () -> Void = {}
     private var onSettings: () -> Void = {}
     private var onNewWorktree: () -> Void = {}
+    private var onRenameWindow: () -> Void = {}
 
     init(applicationDelegate: ApplicationDelegate? = nil) {
         closeDelegate.applicationDelegate = applicationDelegate
@@ -463,7 +476,8 @@ final class CompactWorkspaceTitlebarController {
         onToggleSidebar: @escaping () -> Void,
         onQuickLaunch: @escaping () -> Void,
         onSettings: @escaping () -> Void,
-        onNewWorktree: @escaping () -> Void
+        onNewWorktree: @escaping () -> Void,
+        onRenameWindow: @escaping () -> Void = {}
     ) {
         let sidebarVisibilityChanged = self.isSidebarVisible
             != isSidebarVisible
@@ -478,6 +492,8 @@ final class CompactWorkspaceTitlebarController {
         self.onQuickLaunch = onQuickLaunch
         self.onSettings = onSettings
         self.onNewWorktree = onNewWorktree
+        self.onRenameWindow = onRenameWindow
+        titleHost.onDoubleClick = onRenameWindow
         refreshHosts()
         let titleLeadingOffset = Self.titleLeadingOffset(
             isSidebarVisible: isSidebarVisible,
@@ -538,8 +554,52 @@ final class CompactWorkspaceTitlebarController {
         }
     }
 
-    @ViewBuilder
     private var titleView: some View {
+        EditableWindowTitleView(
+            customTitle: customTitle,
+            sessionTitle: sessionTitle,
+            onRename: onRenameWindow
+        )
+    }
+
+    private func removeControlsFromInstalledWindow() {
+        titleLeadingConstraint = nil
+        sidebarHost.removeFromSuperview()
+        titleHost.removeFromSuperview()
+        actionsHost.removeFromSuperview()
+    }
+}
+
+private struct EditableWindowTitleView: View {
+    let customTitle: String?
+    let sessionTitle: SessionTitlebarPresentation?
+    let onRename: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            title
+            if isHovered {
+                Button(action: onRename) {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 10, weight: .medium))
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Rename Window")
+                .accessibilityLabel("Rename Window")
+                .transition(.opacity)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .accessibilityAction(named: "Rename Window", onRename)
+    }
+
+    @ViewBuilder
+    private var title: some View {
         if let customTitle {
             Text(customTitle)
                 .font(.system(size: 12, weight: .semibold))
@@ -573,13 +633,6 @@ final class CompactWorkspaceTitlebarController {
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Ghosthub")
         }
-    }
-
-    private func removeControlsFromInstalledWindow() {
-        titleLeadingConstraint = nil
-        sidebarHost.removeFromSuperview()
-        titleHost.removeFromSuperview()
-        actionsHost.removeFromSuperview()
     }
 }
 
@@ -1205,6 +1258,7 @@ struct WorkspaceWindow: View {
                         object: nil
                     )
                 },
+                onRenameWindow: requestWindowTitleRename,
                 onWindowChanged: { window in
                     sceneModel.workspaceWindow = window
                 }
@@ -1214,14 +1268,9 @@ struct WorkspaceWindow: View {
             for: .ghosthubRenameWorkspaceWindow
         )) { notification in
             guard let requestedWindow = notification.object as? NSWindow,
-                  requestedWindow === sceneModel.workspaceWindow,
-                  requestedWindow.isKeyWindow,
-                  requestedWindow.attachedSheet == nil
+                  requestedWindow === sceneModel.workspaceWindow
             else { return }
-            windowTitleRenameRequest = WorkspaceWindowTitleRenameRequest(
-                currentTitle: customWindowTitle ?? "",
-                automaticTitle: automaticWindowTitle
-            )
+            requestWindowTitleRename()
         }
         .sheet(item: $windowTitleRenameRequest) { request in
             RenameWorkspaceWindowSheet(
@@ -1422,6 +1471,17 @@ struct WorkspaceWindow: View {
             activeZellijSession: sceneModel.activeBorrowedZellijSelection,
             in: sceneModel.snapshot
         )?.title ?? "Ghosthub"
+    }
+
+    private func requestWindowTitleRename() {
+        guard let window = sceneModel.workspaceWindow,
+              window.isKeyWindow,
+              window.attachedSheet == nil
+        else { return }
+        windowTitleRenameRequest = WorkspaceWindowTitleRenameRequest(
+            currentTitle: customWindowTitle ?? "",
+            automaticTitle: automaticWindowTitle
+        )
     }
 }
 
