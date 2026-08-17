@@ -65,7 +65,7 @@ struct ApplicationShortcutRoutingTests {
             name: "standalone"
         )
 
-        let worktreeRoute = RootView.selectionForTmuxCommand(
+        let worktreeRoute = WorkspacePresentationLifecycle.selectionForTmuxCommand(
             worktreeSession,
             from: current,
             in: snapshot,
@@ -74,7 +74,7 @@ struct ApplicationShortcutRoutingTests {
         #expect(worktreeRoute.selectedProjectID == project.id)
         #expect(worktreeRoute.selectedWorktreeID == worktree.id)
 
-        let directoryRoute = RootView.selectionForTmuxCommand(
+        let directoryRoute = WorkspacePresentationLifecycle.selectionForTmuxCommand(
             directorySession,
             from: current,
             in: snapshot,
@@ -84,7 +84,7 @@ struct ApplicationShortcutRoutingTests {
         #expect(directoryRoute.selectedWorktreeID == nil)
         #expect(directoryRoute.selectedDirectoryWorkspaceID == directory.id)
 
-        let standaloneRoute = RootView.selectionForTmuxCommand(
+        let standaloneRoute = WorkspacePresentationLifecycle.selectionForTmuxCommand(
             standaloneSession,
             from: current,
             in: snapshot,

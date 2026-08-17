@@ -424,12 +424,13 @@ private final class StabilityTestEnvironment {
     }
 
     func switchToSession(_ session: WorkspaceTmuxSessionSelection) {
-        model.selection = RootView.selectionForHostTmuxSession(
-            session,
-            from: model.selection,
-            in: model.snapshot,
-            visibility: .default
-        )
+        model.selection = WorkspacePresentationLifecycle
+            .selectionForHostTmuxSession(
+                session,
+                from: model.selection,
+                in: model.snapshot,
+                visibility: .default
+            )
         model.activeSession = session
         settle()
     }
