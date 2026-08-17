@@ -1629,6 +1629,13 @@ struct RemotePublishError {
     worker: TerminalWorker,
 }
 
+struct RemotePublicationFence<'a> {
+    host_id: &'a str,
+    connection_generation: u64,
+    snapshot: &'a RemoteTmuxSnapshot,
+    cancellation: &'a CancellationToken,
+}
+
 #[derive(Clone, Copy)]
 struct RemoteInventory<'a> {
     tmux: Option<&'a [session::DiscoveredSession]>,
@@ -2464,6 +2471,7 @@ struct RemoteZellijCreateRequest {
 #[derive(Clone)]
 struct RemoteZellijAttachRequest {
     host_id: String,
+    connection_generation: u64,
     selection: SessionSelection,
     host: RuntimeRemoteHost,
     snapshot: RemoteTmuxSnapshot,
@@ -2474,6 +2482,7 @@ struct RemoteZellijAttachRequest {
 #[derive(Clone)]
 struct RemoteHerdrAttachRequest {
     host_id: String,
+    connection_generation: u64,
     selection: SessionSelection,
     host: RuntimeRemoteHost,
     snapshot: RemoteTmuxSnapshot,
@@ -5095,6 +5104,8 @@ impl Workspace {
                 .navigation
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let navigation_generation = self.begin_navigation();
+            self.settle_local_navigation_before_remote()?;
             let current_key = self.remote_presentation_key(selection);
             let active_matches = self
                 .inner
@@ -5108,10 +5119,8 @@ impl Workspace {
                         .map_or_else(|| active.selection == *selection, |key| active.key == *key)
                 });
             if active_matches {
-                self.begin_navigation();
                 return self.refresh_active_remote_selection(selection, current_key.as_ref());
             }
-            let navigation_generation = self.begin_navigation();
             if self.activate_remote_retained(selection, current_key.as_ref())? {
                 return Ok(());
             }
@@ -5304,6 +5313,7 @@ impl Workspace {
             presentation.active.lease.clone(),
             presentation.active.presentation_id,
             presentation.active.identity_mismatch_marker.clone(),
+            None,
         ) {
             let RemotePublishError { error, worker } = *error;
             presentation.worker = worker;
@@ -5323,7 +5333,7 @@ impl Workspace {
         reason = "remote attachment keeps preparation and the atomic worker swap in one boundary"
     )]
     fn attach_remote(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
-        let (plan, lease, key, identity_mismatch_marker) = {
+        let (plan, lease, key, connection_generation, snapshot, identity_mismatch_marker) = {
             let entries = self
                 .inner
                 .remote_hosts
@@ -5376,6 +5386,8 @@ impl Workspace {
                     lease_generation: context.snapshot.lease_generation(),
                     session_identity,
                 },
+                entry.generation,
+                context.snapshot.clone(),
                 identity_mismatch_marker,
             )
         };
@@ -5396,6 +5408,7 @@ impl Workspace {
         )
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
         let presentation_id = next_presentation_id(&self.inner);
+        let cancellation = CancellationToken::new();
         publish_remote_worker(
             &self.inner,
             worker,
@@ -5404,6 +5417,12 @@ impl Workspace {
             lease,
             presentation_id,
             identity_mismatch_marker,
+            Some(&RemotePublicationFence {
+                host_id: selection.host_id(),
+                connection_generation,
+                snapshot: &snapshot,
+                cancellation: &cancellation,
+            }),
         )
         .map_err(|error| {
             let RemotePublishError { error, .. } = *error;
@@ -5963,10 +5982,18 @@ impl Workspace {
                 .store(false, Ordering::Release);
             return Err(error);
         }
+        let navigation_generation = self.begin_navigation();
+        if let Err(error) = self.settle_local_navigation_before_remote() {
+            cancellation.cancel();
+            clear_remote_constructive_registration(&self.inner, &request.host_id);
+            self.inner
+                .remote_constructive_in_flight
+                .store(false, Ordering::Release);
+            return Err(error);
+        }
         set_remote_herdr_launch_pending(&self.inner, &request.host_id, request.name.as_str(), true);
         let pending_host_id = request.host_id.clone();
         let pending_name = request.name.as_str().to_owned();
-        let navigation_generation = self.begin_navigation();
         let inner = Arc::clone(&self.inner);
         if let Err(error) = thread::Builder::new()
             .name("ghosthub-remote-herdr-launch".to_owned())
@@ -6007,8 +6034,16 @@ impl Workspace {
                 .store(false, Ordering::Release);
             return Err(error);
         }
-        let pending_host_id = request.host_id.clone();
         let navigation_generation = self.begin_navigation();
+        if let Err(error) = self.settle_local_navigation_before_remote() {
+            cancellation.cancel();
+            clear_remote_constructive_registration(&self.inner, &request.host_id);
+            self.inner
+                .remote_constructive_in_flight
+                .store(false, Ordering::Release);
+            return Err(error);
+        }
+        let pending_host_id = request.host_id.clone();
         let inner = Arc::clone(&self.inner);
         if let Err(error) = thread::Builder::new()
             .name("ghosthub-remote-zellij-launch".to_owned())
@@ -6234,6 +6269,19 @@ impl Workspace {
         clear_pending_paste(&self.inner);
         self.restore_inventory_state();
         Ok(fallback)
+    }
+
+    fn settle_local_navigation_before_remote(&self) -> Result<(), WorkspaceError> {
+        let Some(fallback) = self.supersede_inflight_attachment()? else {
+            return Ok(());
+        };
+        if self.activate_retained_presentation(&fallback, None)? {
+            Ok(())
+        } else {
+            Err(WorkspaceError::new(
+                "the previous terminal presentation is no longer available",
+            ))
+        }
     }
 
     fn retain_active_presentation(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
@@ -8751,6 +8799,10 @@ fn capture_remote_zellij_attach_request(
         .ok_or_else(|| WorkspaceError::new("Zellij session is no longer active"))?;
     Ok(RemoteZellijAttachRequest {
         host_id: selection.host_id().to_owned(),
+        connection_generation: entries
+            .get(selection.host_id())
+            .expect("remote context came from this entry")
+            .generation,
         selection: selection.clone(),
         host: context.host.clone(),
         snapshot: context.snapshot.clone(),
@@ -8800,6 +8852,10 @@ fn capture_remote_herdr_attach_request(
         .ok_or_else(|| WorkspaceError::new("Herdr session is no longer running"))?;
     Ok(RemoteHerdrAttachRequest {
         host_id: selection.host_id().to_owned(),
+        connection_generation: entries
+            .get(selection.host_id())
+            .expect("remote context came from this entry")
+            .generation,
         selection: selection.clone(),
         host: context.host.clone(),
         snapshot: context.snapshot.clone(),
@@ -11622,6 +11678,25 @@ fn remote_snapshot_authority_matches(
         && current.lease_generation() == expected.lease_generation()
 }
 
+fn validate_remote_publication_fence(
+    entry: &RemoteEntry,
+    fence: &RemotePublicationFence<'_>,
+) -> Result<(), WorkspaceError> {
+    let context = entry
+        .context
+        .as_ref()
+        .ok_or_else(|| WorkspaceError::new("the SSH host disconnected during the operation"))?;
+    if fence.cancellation.is_cancelled()
+        || entry.generation != fence.connection_generation
+        || !remote_snapshot_authority_matches(&context.snapshot, fence.snapshot)
+    {
+        return Err(WorkspaceError::new(
+            "the SSH connection changed during the operation; refresh before trying again",
+        ));
+    }
+    Ok(())
+}
+
 fn with_current_remote_constructive<T>(
     inner: &Inner,
     host_id: &str,
@@ -11699,6 +11774,12 @@ fn run_remote_herdr_attach(
                     snapshot.lease().clone(),
                     next_presentation_id(inner),
                     None,
+                    Some(&RemotePublicationFence {
+                        host_id: &request.host_id,
+                        connection_generation: request.connection_generation,
+                        snapshot: &snapshot,
+                        cancellation,
+                    }),
                 )
                 .map_err(|error| error.error);
                 drop(navigation);
@@ -11735,7 +11816,14 @@ fn prepare_remote_herdr_attachment(
             "remote Herdr attachment was superseded",
         ));
     }
-    let snapshot = publish_remote_inventory(inner, &request.host_id, &request.snapshot, inventory)?;
+    let snapshot = publish_remote_inventory(
+        inner,
+        &request.host_id,
+        request.connection_generation,
+        &request.snapshot,
+        cancellation,
+        inventory,
+    )?;
     reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
     let (executable, session) = resolve_remote_herdr_attach_target(
         snapshot.herdr(),
@@ -11838,6 +11926,12 @@ fn run_remote_zellij_attach(
                     snapshot.lease().clone(),
                     next_presentation_id(inner),
                     None,
+                    Some(&RemotePublicationFence {
+                        host_id: &request.host_id,
+                        connection_generation: request.connection_generation,
+                        snapshot: &snapshot,
+                        cancellation,
+                    }),
                 )
                 .map_err(|error| error.error);
                 drop(navigation);
@@ -11874,7 +11968,14 @@ fn prepare_remote_zellij_attachment(
             "remote Zellij attachment was superseded",
         ));
     }
-    let snapshot = publish_remote_inventory(inner, &request.host_id, &request.snapshot, inventory)?;
+    let snapshot = publish_remote_inventory(
+        inner,
+        &request.host_id,
+        request.connection_generation,
+        &request.snapshot,
+        cancellation,
+        inventory,
+    )?;
     reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
     let (executable, session) =
         resolve_remote_zellij_attach_target(snapshot.zellij(), &request.executable, &request.name)?;
@@ -11943,8 +12044,14 @@ fn run_remote_herdr_create(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let result = create_remote_herdr_fresh(inner, request, navigation_generation, cancellation)
         .and_then(|(worker, inventory, session, geometry)| {
-            let snapshot =
-                publish_remote_inventory(inner, &request.host_id, &request.snapshot, inventory)?;
+            let snapshot = publish_remote_inventory(
+                inner,
+                &request.host_id,
+                request.connection_generation,
+                &request.snapshot,
+                cancellation,
+                inventory,
+            )?;
             if let Err(error) =
                 worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
             {
@@ -11983,6 +12090,12 @@ fn run_remote_herdr_create(
                 snapshot.lease().clone(),
                 next_presentation_id(inner),
                 None,
+                Some(&RemotePublicationFence {
+                    host_id: &request.host_id,
+                    connection_generation: request.connection_generation,
+                    snapshot: &snapshot,
+                    cancellation,
+                }),
             )
             .map_err(|error| error.error);
             drop(navigation);
@@ -12016,8 +12129,14 @@ fn run_remote_zellij_create(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let result = create_remote_zellij_fresh(inner, request, navigation_generation, cancellation)
         .and_then(|(worker, inventory, session, geometry)| {
-            let snapshot =
-                publish_remote_inventory(inner, &request.host_id, &request.snapshot, inventory)?;
+            let snapshot = publish_remote_inventory(
+                inner,
+                &request.host_id,
+                request.connection_generation,
+                &request.snapshot,
+                cancellation,
+                inventory,
+            )?;
             if let Err(error) =
                 worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
             {
@@ -12051,6 +12170,12 @@ fn run_remote_zellij_create(
                 snapshot.lease().clone(),
                 next_presentation_id(inner),
                 None,
+                Some(&RemotePublicationFence {
+                    host_id: &request.host_id,
+                    connection_generation: request.connection_generation,
+                    snapshot: &snapshot,
+                    cancellation,
+                }),
             )
             .map_err(|error| error.error);
             drop(navigation);
@@ -12279,7 +12404,9 @@ fn create_remote_zellij_fresh(
 fn publish_remote_inventory(
     inner: &Inner,
     host_id: &str,
+    connection_generation: u64,
     expected: &RemoteTmuxSnapshot,
+    cancellation: &CancellationToken,
     inventory: RemoteSessionInventory,
 ) -> Result<RemoteTmuxSnapshot, WorkspaceError> {
     let snapshot_write = begin_snapshot_write(inner);
@@ -12287,22 +12414,24 @@ fn publish_remote_inventory(
         .remote_hosts
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let context = entries
+    let entry = entries
         .get_mut(host_id)
-        .and_then(|entry| entry.context.as_mut())
-        .ok_or_else(|| WorkspaceError::new("the SSH host disconnected during session creation"))?;
-    if context.snapshot.endpoint() != expected.endpoint()
-        || context.snapshot.route_identity() != expected.route_identity()
-        || context.snapshot.lease_generation() != expected.lease_generation()
-    {
-        return Err(WorkspaceError::new(
-            "the SSH connection changed during session creation; refresh before trying again",
-        ));
-    }
+        .ok_or_else(|| WorkspaceError::new("the SSH host disconnected during the operation"))?;
+    let fence = RemotePublicationFence {
+        host_id,
+        connection_generation,
+        snapshot: expected,
+        cancellation,
+    };
+    validate_remote_publication_fence(entry, &fence)?;
+    let context = entry
+        .context
+        .as_mut()
+        .expect("the publication fence requires a remote context");
     let snapshot = expected.with_inventory(inventory);
     context.snapshot = snapshot.clone();
-    drop(entries);
     set_remote_host_snapshot(inner, host_id, &snapshot);
+    drop(entries);
     drop(snapshot_write);
     Ok(snapshot)
 }
@@ -13208,8 +13337,9 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
 }
 
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "remote publication keeps the old and new presentation swap atomic"
+    reason = "remote publication keeps explicit worker, presentation, and connection authority in one atomic swap"
 )]
 fn publish_remote_worker(
     inner: &Inner,
@@ -13219,9 +13349,34 @@ fn publish_remote_worker(
     lease: host::SshLease,
     presentation_id: u64,
     identity_mismatch_marker: Option<String>,
+    fence: Option<&RemotePublicationFence<'_>>,
 ) -> Result<(), Box<RemotePublishError>> {
     let surface = worker.surface_handle();
     let snapshot_write = begin_snapshot_write(inner);
+    let remote_entries = if let Some(fence) = fence {
+        if fence.host_id != selection.host_id() || fence.host_id != key.host_id {
+            return Err(Box::new(RemotePublishError {
+                error: WorkspaceError::new("the remote publication target changed"),
+                worker,
+            }));
+        }
+        let entries = inner
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = entries.get(fence.host_id) else {
+            return Err(Box::new(RemotePublishError {
+                error: WorkspaceError::new("the SSH host disconnected during the operation"),
+                worker,
+            }));
+        };
+        if let Err(error) = validate_remote_publication_fence(entry, fence) {
+            return Err(Box::new(RemotePublishError { error, worker }));
+        }
+        Some(entries)
+    } else {
+        None
+    };
     let mut attachment = inner
         .attachment
         .lock()
@@ -13308,6 +13463,7 @@ fn publish_remote_worker(
             surface,
         },
     );
+    drop(remote_entries);
     drop(workers);
     drop(remote_active);
     drop(geometry);
@@ -18999,6 +19155,56 @@ mod tests {
                 if sessions.iter().any(|session| session.name() == "selected")
         ));
         assert_eq!(workspace.snapshot().notice(), None);
+    }
+
+    #[test]
+    fn remote_navigation_cancels_and_settles_pending_local_creation() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            vec![SessionItem::new("selected", 0)],
+        ));
+        let creation_navigation = workspace.begin_navigation();
+        let cancellation = CancellationToken::new();
+        *workspace
+            .inner
+            .pending_creation
+            .lock()
+            .expect("pending creation") = Some(PendingCreation {
+            navigation_generation: creation_navigation,
+            previous: None,
+            cancellation: cancellation.clone(),
+            herdr_operation: None,
+        });
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Attaching {
+                host_id: "wsl".to_owned(),
+                endpoint: "Ubuntu".to_owned(),
+                session: "creating".to_owned(),
+                kind: SessionKind::Tmux,
+            },
+        );
+
+        workspace.begin_navigation();
+        workspace
+            .settle_local_navigation_before_remote()
+            .expect("remote navigation settles local creation");
+
+        assert!(cancellation.is_cancelled());
+        assert!(
+            workspace
+                .inner
+                .pending_creation
+                .lock()
+                .expect("pending creation")
+                .is_none()
+        );
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Ready { sessions, .. }
+                if sessions.iter().any(|session| session.name() == "selected")
+        ));
     }
 
     #[test]
