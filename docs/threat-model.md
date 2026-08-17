@@ -475,9 +475,10 @@ does not inherit repository Actions access. An organization ruleset requires
 the merge-signal workflow from the protected `sandbox-merge-signal-v1` tag of
 the separate public `kenn-io/ghosthub-nightly` repository. Trusted promotion
 and every reconciliation verify that source repository, protected tag,
-workflow path, required `pull_request` and `merge_group` triggers, empty token
-permissions, absence of environment use, live environments, parsed workflow
-authority, app integration ID, and ruleset. At the final production-tag
+reviewed commit, no-bypass update/deletion policy, workflow path, required
+`pull_request` and `merge_group` triggers, empty token permissions, absence of
+environment use, live environments, parsed workflow authority, app
+integration ID, and ruleset. At the final production-tag
 mutation boundary,
 trusted promotion authenticates the App owner, slug, permissions, private key,
 and complete single-repository installation scope, then rechecks both required

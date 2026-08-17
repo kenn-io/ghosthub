@@ -198,7 +198,7 @@ policy. An organization ruleset requires the merge-signal workflow from the
 protected `sandbox-merge-signal-v1` tag in the separate public
 `kenn-io/ghosthub-nightly` repository, so merge-queue code cannot select its
 own signal logic. Promotion preflight and reconciliation verify the source
-identity, protected tag, and the workflow's restricted
+identity, live tag protection, reviewed commit, and the workflow's restricted
 trigger, permissions, and environment authority.
 Reconciliation fences all open heads before file inspection. The merge queue
 generates a fresh SHA with its own reconciliation lane; trusted-main

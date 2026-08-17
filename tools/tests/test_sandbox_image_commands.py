@@ -51,6 +51,72 @@ ARM64_DIGEST = "sha256:" + "a" * 64
 REFRESHED_ARM64_DIGEST = "sha256:" + "c" * 64
 
 
+def _merge_signal_source_responses(
+    workflow_content: str,
+    *,
+    tag_sha: str | None = None,
+    bypass_actors: list[object] | None = None,
+    rules: list[dict[str, object]] | None = None,
+) -> dict[tuple[str, ...], str]:
+    tag_sha = tag_sha or github_module.MERGE_SIGNAL_COMMIT
+    bypass_actors = bypass_actors or []
+    rules = rules or [
+        {"type": "update"},
+        {"type": "deletion"},
+        {"type": "non_fast_forward"},
+    ]
+    return {
+        (
+            "gh",
+            "api",
+            "repos/kenn-io/ghosthub-nightly/git/ref/tags/"
+            "sandbox-merge-signal-v1",
+        ): json.dumps({"object": {"type": "commit", "sha": tag_sha}}),
+        (
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            "orgs/kenn-io/rulesets?per_page=100",
+        ): json.dumps([[{"id": 99, "name": "ghosthub-merge-signal-tag"}]]),
+        ("gh", "api", "orgs/kenn-io/rulesets/99"): json.dumps(
+            {
+                "source_type": "Organization",
+                "source": "kenn-io",
+                "target": "tag",
+                "enforcement": "active",
+                "bypass_actors": bypass_actors,
+                "conditions": {
+                    "repository_name": {
+                        "include": ["ghosthub-nightly"],
+                        "exclude": [],
+                    },
+                    "ref_name": {
+                        "include": ["refs/tags/sandbox-merge-signal-v1"],
+                        "exclude": [],
+                    },
+                },
+                "rules": rules,
+            }
+        ),
+        (
+            "gh",
+            "api",
+            "repos/kenn-io/ghosthub-nightly/contents/"
+            ".github/workflows/sandbox-image-merge-signal.yml"
+            f"?ref={github_module.MERGE_SIGNAL_COMMIT}",
+        ): json.dumps(
+            {
+                "type": "file",
+                "path": ".github/workflows/sandbox-image-merge-signal.yml",
+                "encoding": "base64",
+                "size": len(workflow_content.encode()),
+                "content": base64.b64encode(workflow_content.encode()).decode(),
+            }
+        ),
+    }
+
+
 def test_policy_date_is_normalized_to_utc() -> None:
     chicago = timezone(-timedelta(hours=5))
 
@@ -1150,21 +1216,7 @@ def test_required_merge_signal_uses_the_external_protected_tag() -> None:
                 "repos/kenn-io/ghosthub/rulesets?per_page=100",
             ): json.dumps([rulesets]),
             ("gh", "api", "repos/kenn-io/ghosthub/rulesets/42"): json.dumps(detail),
-            (
-                "gh",
-                "api",
-                "repos/kenn-io/ghosthub-nightly/contents/"
-                ".github/workflows/sandbox-image-merge-signal.yml"
-                "?ref=sandbox-merge-signal-v1",
-            ): json.dumps(
-                {
-                    "type": "file",
-                    "path": ".github/workflows/sandbox-image-merge-signal.yml",
-                    "encoding": "base64",
-                    "size": len(workflow_content.encode()),
-                    "content": base64.b64encode(workflow_content.encode()).decode(),
-                }
-            ),
+            **_merge_signal_source_responses(workflow_content),
         }
     )
 
@@ -1234,6 +1286,87 @@ def test_required_merge_signal_rejects_the_wrong_authority(
     )
 
     with pytest.raises(ValueError, match="trusted merge-signal"):
+        verify_required_merge_signal(runner)
+
+
+@pytest.mark.parametrize(
+    ("tag_sha", "bypass_actors", "rules", "message"),
+    [
+        ("b" * 40, [], None, "reviewed source"),
+        (
+            github_module.MERGE_SIGNAL_COMMIT,
+            [{"actor_id": 5}],
+            None,
+            "tag protection",
+        ),
+        (
+            github_module.MERGE_SIGNAL_COMMIT,
+            [],
+            [{"type": "update"}, {"type": "non_fast_forward"}],
+            "tag protection",
+        ),
+    ],
+)
+def test_required_merge_signal_rejects_mutable_or_retargeted_source(
+    tag_sha: str,
+    bypass_actors: list[object],
+    rules: list[dict[str, object]] | None,
+    message: str,
+) -> None:
+    workflow_content = (
+        "name: Sandbox image merge signal\n"
+        "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
+        "permissions: {}\n"
+        "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n"
+    )
+    runner = ScriptedRunner(
+        {
+            (
+                "gh",
+                "api",
+                "--paginate",
+                "--slurp",
+                "repos/kenn-io/ghosthub/rulesets?per_page=100",
+            ): json.dumps([[{"id": 42}]]),
+            ("gh", "api", "repos/kenn-io/ghosthub/rulesets/42"): json.dumps(
+                {
+                    "source_type": "Organization",
+                    "source": "kenn-io",
+                    "target": "branch",
+                    "enforcement": "active",
+                    "bypass_actors": [],
+                    "conditions": {
+                        "ref_name": {
+                            "include": ["~DEFAULT_BRANCH"],
+                            "exclude": [],
+                        }
+                    },
+                    "rules": [
+                        {
+                            "type": "workflows",
+                            "parameters": {
+                                "workflows": [
+                                    {
+                                        "path": github_module.MERGE_SIGNAL_WORKFLOW,
+                                        "ref": github_module.MERGE_SIGNAL_REF,
+                                        "repository_id": 1_334_318_821,
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                }
+            ),
+            **_merge_signal_source_responses(
+                workflow_content,
+                tag_sha=tag_sha,
+                bypass_actors=bypass_actors,
+                rules=rules,
+            ),
+        }
+    )
+
+    with pytest.raises(ValueError, match=message):
         verify_required_merge_signal(runner)
 
 
@@ -1320,21 +1453,7 @@ def test_required_merge_signal_rejects_external_workflow_authority(
                     ],
                 }
             ),
-            (
-                "gh",
-                "api",
-                "repos/kenn-io/ghosthub-nightly/contents/"
-                ".github/workflows/sandbox-image-merge-signal.yml"
-                "?ref=sandbox-merge-signal-v1",
-            ): json.dumps(
-                {
-                    "type": "file",
-                    "path": ".github/workflows/sandbox-image-merge-signal.yml",
-                    "encoding": "base64",
-                    "size": len(workflow_content.encode()),
-                    "content": base64.b64encode(workflow_content.encode()).decode(),
-                }
-            ),
+            **_merge_signal_source_responses(workflow_content),
         }
     )
 
