@@ -56,6 +56,8 @@ renames a tmux session or window, a Herdr or Zellij session, or a worktree.
 You can also hover the compact title and select either the title or its pencil
 to open the same editor.
 
+![Ghosthub's editor for a workspace window or tab title](assets/guide-window-title.png)
+
 ## Close a presentation
 
 ++cmd+w++ closes and detaches only the active session presentation. Other

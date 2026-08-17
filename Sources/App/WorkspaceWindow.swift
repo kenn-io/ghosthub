@@ -581,6 +581,7 @@ private struct EditableWindowTitleView: View {
         }
         .buttonStyle(.plain)
         .help("Rename Window")
+        .accessibilityLabel("Rename Window")
         .onHover { isHovered = $0 }
     }
 

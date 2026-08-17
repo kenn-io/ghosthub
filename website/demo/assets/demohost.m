@@ -828,6 +828,12 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                               : [NSString stringWithFormat:
                                   @"expected %@ but active title is %@",
                                   text, activeTitle]];
+    } else if ([action isEqualToString:@"expect-sheet"]) {
+      BOOL found = DemoRootWindow().attachedSheet != nil;
+      [self acknowledge:requestID
+                success:found
+                message:found ? @"sheet is visible"
+                              : @"no workspace sheet is visible"];
     } else if ([action isEqualToString:@"click"]) {
       NSArray<NSString *> *parts =
           [text componentsSeparatedByString:@","];
@@ -839,6 +845,20 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                 success:clicked
                 message:clicked ? @"click sent"
                                 : @"click requires x,y and a workspace window"];
+    } else if ([action isEqualToString:@"rename-window"]) {
+      NSWindow *window = DemoRootWindow();
+      NSView *title = DemoTitlebarView(
+          window, @"GhosthubCompactSessionTitle");
+      NSPoint point = title == nil
+          ? NSZeroPoint
+          : [title convertPoint:NSMakePoint(
+              NSMidX(title.bounds), NSMidY(title.bounds))
+                            toView:nil];
+      BOOL clicked = title != nil && DemoClickWindow(window, point);
+      [self acknowledge:requestID
+                success:clicked
+                message:clicked ? @"window title clicked"
+                                : @"workspace title was not available"];
     } else if ([action isEqualToString:@"scroll-detail"]) {
       BOOL scrolled = text.length > 0 && DemoScrollDetail(text.doubleValue);
       [self acknowledge:requestID
