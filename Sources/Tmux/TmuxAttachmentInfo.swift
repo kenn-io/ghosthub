@@ -49,7 +49,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         workingDirectory: String? = nil,
         sshConnectionArguments: [String] = demoSSHIsolationArguments(),
         remoteExitStatusPath: String? = nil,
-        clientTTYToken: String? = nil
+        clientTTYToken: String? = nil,
+        localClientTTYDirectory: String? = nil
     ) -> String {
         switch host {
         case .local:
@@ -60,7 +61,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             )
             return recordedClientTTYCommand(
                 command,
-                token: clientTTYToken
+                token: clientTTYToken,
+                directory: localClientTTYDirectory
             )
         case let .ssh(info):
             let command: String
@@ -674,21 +676,24 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
 
     private func recordedClientTTYCommand(
         _ command: String,
-        token: String?
+        token: String?,
+        directory: String? = nil
     ) -> String {
         guard let token else { return command }
         return shellCommand([
             "/bin/sh", "-c",
             recordedClientTTYBody(
                 command,
-                token: token
+                token: token,
+                directory: directory
             ),
         ])
     }
 
     private func recordedClientTTYBody(
         _ command: String,
-        token: String?
+        token: String?,
+        directory: String? = nil
     ) -> String {
         guard let token,
               !token.isEmpty,
@@ -699,9 +704,11 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
               })
         else { return command }
         let nestedCommand = shellCommand(["/bin/sh", "-c", command])
+        let clientTTYDirectory = directory.map(shellQuotedCommandArgument)
+            ?? "\"$HOME/.ghosthub/tmux-clients\""
         return [
             "unset TMUX TMUX_PANE",
-            "ghosthub_client_tty_dir=\"$HOME/.ghosthub/tmux-clients\"",
+            "ghosthub_client_tty_dir=\(clientTTYDirectory)",
             "ghosthub_client_tty_path=\"$ghosthub_client_tty_dir/\(token)\"",
             "ghosthub_client_tty_tmp=\"$ghosthub_client_tty_path.$$\"",
             "ghosthub_client_pid=",
