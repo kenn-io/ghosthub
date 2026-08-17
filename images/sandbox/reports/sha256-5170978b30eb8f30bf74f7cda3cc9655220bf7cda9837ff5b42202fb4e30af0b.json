@@ -1,0 +1,764 @@
+{
+  "architecture": "arm64",
+  "attestations": [
+    "https://slsa.dev/provenance/v0.2",
+    "https://spdx.dev/Document/v2.3"
+  ],
+  "candidate_tag": "candidate-6fec74ec3198d2ab1a067f2ace59edb9e112fa5b",
+  "checks": [
+    {
+      "detail": "Apple silicon arm64",
+      "name": "architecture",
+      "status": "pass"
+    },
+    {
+      "detail": "provenance and SBOM verified",
+      "name": "attestations",
+      "status": "pass"
+    },
+    {
+      "detail": "managed fixture removed",
+      "name": "cleanup",
+      "status": "pass"
+    },
+    {
+      "detail": "exact digest reference accepted",
+      "name": "digest",
+      "status": "pass"
+    },
+    {
+      "detail": "exec user is ghosthub",
+      "name": "explicit-exec-user",
+      "status": "pass"
+    },
+    {
+      "detail": "shared commit succeeded",
+      "name": "git-linked",
+      "status": "pass"
+    },
+    {
+      "detail": "shared commit succeeded",
+      "name": "git-standard",
+      "status": "pass"
+    },
+    {
+      "detail": "HTTPS request succeeded",
+      "name": "https",
+      "status": "pass"
+    },
+    {
+      "detail": "PID 1 reaped an orphan",
+      "name": "init",
+      "status": "pass"
+    },
+    {
+      "detail": "live APT install succeeded",
+      "name": "live-apt",
+      "status": "pass"
+    },
+    {
+      "detail": "default locale is UTF-8",
+      "name": "locale",
+      "status": "pass"
+    },
+    {
+      "detail": "Git protection attempts failed",
+      "name": "mount-protection",
+      "status": "pass"
+    },
+    {
+      "detail": "default user is ghosthub",
+      "name": "ordinary-user",
+      "status": "pass"
+    },
+    {
+      "detail": "Apple container 1.2.2",
+      "name": "provider-version",
+      "status": "pass"
+    },
+    {
+      "detail": "OpenSSH client is installed",
+      "name": "ssh-client",
+      "status": "pass"
+    },
+    {
+      "detail": "shared commit succeeded after restart",
+      "name": "stop-start-git-linked",
+      "status": "pass"
+    },
+    {
+      "detail": "shared commit succeeded after restart",
+      "name": "stop-start-git-standard",
+      "status": "pass"
+    },
+    {
+      "detail": "home marker survived restart",
+      "name": "stop-start-home",
+      "status": "pass"
+    },
+    {
+      "detail": "Git protection attempts failed after restart",
+      "name": "stop-start-mount-protection",
+      "status": "pass"
+    },
+    {
+      "detail": "installed package survived restart",
+      "name": "stop-start-package",
+      "status": "pass"
+    },
+    {
+      "detail": "passwordless sudo works",
+      "name": "sudo",
+      "status": "pass"
+    },
+    {
+      "detail": "tmux-256color is installed",
+      "name": "terminfo",
+      "status": "pass"
+    },
+    {
+      "detail": "current dispositions accepted",
+      "name": "vulnerability-policy",
+      "status": "pass"
+    },
+    {
+      "detail": "candidate digest scanned",
+      "name": "vulnerability-scan",
+      "status": "pass"
+    }
+  ],
+  "completed_at": "2026-08-17T22:39:08.397599Z",
+  "digest": "sha256:5170978b30eb8f30bf74f7cda3cc9655220bf7cda9837ff5b42202fb4e30af0b",
+  "dispositions": [],
+  "findings": [
+    {
+      "fixed_version": null,
+      "package": "bsdutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-27456"
+    },
+    {
+      "fixed_version": null,
+      "package": "bsdutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-3184"
+    },
+    {
+      "fixed_version": null,
+      "package": "git",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2024-52005"
+    },
+    {
+      "fixed_version": null,
+      "package": "git-man",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2024-52005"
+    },
+    {
+      "fixed_version": null,
+      "package": "libblkid1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-27456"
+    },
+    {
+      "fixed_version": null,
+      "package": "libblkid1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-3184"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-bin",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-4046"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-bin",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-5435"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-bin",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-5450"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-bin",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-5928"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-bin",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-6238"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-gconv-modules-extra",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-4046"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-gconv-modules-extra",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-5435"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-gconv-modules-extra",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-5450"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-gconv-modules-extra",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-5928"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc-gconv-modules-extra",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-6238"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc6",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-4046"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc6",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-5435"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc6",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-5450"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc6",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-5928"
+    },
+    {
+      "fixed_version": "2.43-2ubuntu2.3",
+      "package": "libc6",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-6238"
+    },
+    {
+      "fixed_version": null,
+      "package": "libexpat1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2025-66382"
+    },
+    {
+      "fixed_version": null,
+      "package": "libgcrypt20",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "LOW",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2024-2236"
+    },
+    {
+      "fixed_version": null,
+      "package": "libmount1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-27456"
+    },
+    {
+      "fixed_version": null,
+      "package": "libmount1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-3184"
+    },
+    {
+      "fixed_version": null,
+      "package": "libp11-kit0",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-13757"
+    },
+    {
+      "fixed_version": null,
+      "package": "libsmartcols1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-27456"
+    },
+    {
+      "fixed_version": null,
+      "package": "libsmartcols1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-3184"
+    },
+    {
+      "fixed_version": "259.5-0ubuntu3.4",
+      "package": "libsystemd0",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-15059"
+    },
+    {
+      "fixed_version": "259.5-0ubuntu3.4",
+      "package": "libsystemd0",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-15060"
+    },
+    {
+      "fixed_version": "259.5-0ubuntu3.4",
+      "package": "libsystemd0",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-16742"
+    },
+    {
+      "fixed_version": null,
+      "package": "libsystemd0",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "LOW",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-40228"
+    },
+    {
+      "fixed_version": "259.5-0ubuntu3.4",
+      "package": "libudev1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-15059"
+    },
+    {
+      "fixed_version": "259.5-0ubuntu3.4",
+      "package": "libudev1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-15060"
+    },
+    {
+      "fixed_version": "259.5-0ubuntu3.4",
+      "package": "libudev1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-16742"
+    },
+    {
+      "fixed_version": null,
+      "package": "libudev1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "LOW",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-40228"
+    },
+    {
+      "fixed_version": null,
+      "package": "libuuid1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-27456"
+    },
+    {
+      "fixed_version": null,
+      "package": "libuuid1",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-3184"
+    },
+    {
+      "fixed_version": null,
+      "package": "login",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-27456"
+    },
+    {
+      "fixed_version": null,
+      "package": "login",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-3184"
+    },
+    {
+      "fixed_version": null,
+      "package": "login.defs",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "LOW",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2024-56433"
+    },
+    {
+      "fixed_version": null,
+      "package": "mount",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-27456"
+    },
+    {
+      "fixed_version": null,
+      "package": "mount",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-3184"
+    },
+    {
+      "fixed_version": null,
+      "package": "openssh-client",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-55655"
+    },
+    {
+      "fixed_version": null,
+      "package": "openssh-client",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "LOW",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-55654"
+    },
+    {
+      "fixed_version": null,
+      "package": "passwd",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "LOW",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2024-56433"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35341"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35344"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35345"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35348"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35350"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35351"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35352"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35354"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35357"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35359"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35360"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35363"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35364"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35367"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35368"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35370"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35371"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35373"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35374"
+    },
+    {
+      "fixed_version": null,
+      "package": "rust-coreutils",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-35377"
+    },
+    {
+      "fixed_version": null,
+      "package": "util-linux",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-27456"
+    },
+    {
+      "fixed_version": null,
+      "package": "util-linux",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "MEDIUM",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-3184"
+    },
+    {
+      "fixed_version": null,
+      "package": "zlib1g",
+      "result_class": "os-pkgs",
+      "result_type": "ubuntu",
+      "severity": "LOW",
+      "target": "rootfs",
+      "vulnerability_id": "CVE-2026-27171"
+    }
+  ],
+  "image_version": "0.1.0",
+  "macos_version": "26.5.1",
+  "provider_version": "1.2.2",
+  "repository": "ghcr.io/kenn-io/ghosthub-sandbox",
+  "scan_database_timestamp": "2026-08-17T12:53:50.888177762Z",
+  "schema_version": 1,
+  "source_commit": "6fec74ec3198d2ab1a067f2ace59edb9e112fa5b",
+  "status": "pass"
+}
