@@ -65,15 +65,17 @@ MERGE_SIGNAL_WORKFLOW_NAME = Path(MERGE_SIGNAL_WORKFLOW).name
 MERGE_SIGNAL_NAME = "Sandbox image merge signal"
 MERGE_SIGNAL_REPOSITORY = "kenn-io/ghosthub-nightly"
 MERGE_SIGNAL_REPOSITORY_ID = 1_334_318_821
-MERGE_SIGNAL_COMMIT = "67ead910ccc186d9ffe543c32721d359b3eea80e"
+MERGE_SIGNAL_COMMIT = "9c5afce214433bc642802220402a2e4ec4055f5d"
+MERGE_SIGNAL_REF = "refs/tags/sandbox-merge-signal-v1"
+MERGE_SIGNAL_TAG = "sandbox-merge-signal-v1"
 # One-time bridge for the reviewed external-authority migration. The follow-up
 # removes this allowlist after these exact workflow bytes reach main.
 MERGE_SIGNAL_TRANSITION_WORKFLOW_DIGESTS = {
     PROMOTION_STATUS_WORKFLOW: (
-        "146626c9c1c9af80fde30390a9863446a1fa775ccb56a73e516a23c2197aaaa7"
+        "40c50f6ceff1f8b8a9756c1fa2ab7ac5f5d7b21b4ddd0d74c4a9063c191bf1f7"
     ),
     PROMOTION_WORKFLOW: (
-        "ce76e031de835ffc4a56035cd5d402a5c0eae779926f44bfef7ffa6d5bbbf8b4"
+        "11124ed801d881cb9e8a64809eaa3f5b4e3cf7e536d710bfa58871e287053f2d"
     ),
 }
 PROMOTION_GATE_REPAIR_DIGEST = (
@@ -997,6 +999,17 @@ def verify_required_merge_signal(runner: Runner) -> None:
 
 
 def _verify_external_merge_signal_workflow(runner: Runner) -> None:
+    reference = _api_json(
+        runner,
+        f"repos/{MERGE_SIGNAL_REPOSITORY}/git/ref/tags/{MERGE_SIGNAL_TAG}",
+    )
+    target = reference.get("object") if isinstance(reference, dict) else None
+    if (
+        not isinstance(target, dict)
+        or target.get("type") != "commit"
+        or target.get("sha") != MERGE_SIGNAL_COMMIT
+    ):
+        raise ValueError("trusted merge-signal tag does not resolve to reviewed source")
     endpoint = (
         f"repos/{MERGE_SIGNAL_REPOSITORY}/contents/{MERGE_SIGNAL_WORKFLOW}"
         f"?ref={MERGE_SIGNAL_COMMIT}"
@@ -1035,7 +1048,10 @@ def _verify_external_merge_signal_workflow(runner: Runner) -> None:
     if workflow.get("name") != MERGE_SIGNAL_NAME:
         raise ValueError("trusted merge-signal workflow name is invalid")
     trigger = workflow.get("on", workflow.get(True))
-    if trigger != {"merge_group": {"types": ["checks_requested"]}}:
+    if trigger != {
+        "pull_request": None,
+        "merge_group": {"types": ["checks_requested"]},
+    }:
         raise ValueError("trusted merge-signal workflow trigger is invalid")
     if workflow.get("permissions") != {}:
         raise ValueError("trusted merge-signal workflow permissions are invalid")
@@ -1098,8 +1114,7 @@ def _ruleset_requires_external_merge_signal(value: object) -> bool:
     return workflows is not None and any(
         isinstance(workflow, dict)
         and workflow.get("path") == MERGE_SIGNAL_WORKFLOW
-        and workflow.get("sha") == MERGE_SIGNAL_COMMIT
-        and workflow.get("ref") in (None, "", MERGE_SIGNAL_COMMIT)
+        and workflow.get("ref") == MERGE_SIGNAL_REF
         and workflow.get("repository_id") == MERGE_SIGNAL_REPOSITORY_ID
         for workflow in workflows
     )
