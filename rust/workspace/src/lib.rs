@@ -20607,7 +20607,7 @@ mod tests {
             "studio.example",
             Some("deploy".to_owned()),
             Some(22),
-            "/usr/bin/tmux",
+            "",
             None,
         )
         .expect("valid settings");

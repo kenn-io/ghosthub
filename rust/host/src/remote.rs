@@ -381,16 +381,22 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                         .map(|sessions| (binary, sessions))
                 }),
         )?;
+        let herdr = self.discover_herdr(lease, cancellation)?;
+        let zellij = self.discover_zellij(lease, cancellation)?;
         Ok(RemoteSessionInventory {
             tmux_binary,
             tmux_diagnostic,
             sessions,
-            herdr: self.discover_herdr(lease, cancellation),
-            zellij: self.discover_zellij(lease, cancellation),
+            herdr,
+            zellij,
         })
     }
 
-    fn discover_herdr(&self, lease: &SshLease, cancellation: &CancellationToken) -> HerdrInventory {
+    fn discover_herdr(
+        &self,
+        lease: &SshLease,
+        cancellation: &CancellationToken,
+    ) -> Result<HerdrInventory, RemoteTmuxError> {
         let result: Result<Option<(String, Vec<HerdrSessionRecord>)>, RemoteTmuxError> = (|| {
             let probe = self.run_remote_shell(lease, herdr::RESOLVE_SCRIPT, cancellation)?;
             if probe.status != 0 && probe.status != 127 {
@@ -422,21 +428,21 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             Ok(Some((executable, sessions)))
         })(
         );
-        match result {
+        Ok(match result {
             Ok(Some((executable, sessions))) => HerdrInventory::Available {
                 executable,
                 sessions,
             },
             Ok(None) => HerdrInventory::Unavailable,
-            Err(error) => HerdrInventory::Failed(HostError::new(error.kind(), error.to_string())),
-        }
+            Err(error) => HerdrInventory::Failed(scope_backend_failure(error)?),
+        })
     }
 
     fn discover_zellij(
         &self,
         lease: &SshLease,
         cancellation: &CancellationToken,
-    ) -> ZellijInventory {
+    ) -> Result<ZellijInventory, RemoteTmuxError> {
         let result: Result<Option<(String, Vec<ZellijSessionRecord>)>, RemoteTmuxError> = (|| {
             let probe = self.run_remote_shell(lease, zellij::RESOLVE_SCRIPT, cancellation)?;
             if probe.status != 0 && probe.status != 127 {
@@ -462,14 +468,14 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             Ok(Some((executable, sessions)))
         })(
         );
-        match result {
+        Ok(match result {
             Ok(Some((executable, sessions))) => ZellijInventory::Available {
                 executable,
                 sessions,
             },
             Ok(None) => ZellijInventory::Unavailable,
-            Err(error) => ZellijInventory::Failed(HostError::new(error.kind(), error.to_string())),
-        }
+            Err(error) => ZellijInventory::Failed(scope_backend_failure(error)?),
+        })
     }
 
     fn resolve_tmux_binary(
@@ -733,9 +739,8 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             shell_quoted_argument(&begin),
             shell_quoted_argument(&end),
         );
-        let mut output = self.run_remote_shell(lease, &framed, cancellation)?;
-        output.stdout = extract_framed_payload(&output.stdout, &begin, &end)?;
-        Ok(output)
+        let output = self.run_remote_shell(lease, &framed, cancellation)?;
+        extract_framed_command_output(output, &begin, &end)
     }
 
     fn run_remote_shell(
@@ -997,6 +1002,18 @@ fn extract_framed_payload(
     Ok(output.as_bytes()[start..finish].to_vec())
 }
 
+fn extract_framed_command_output(
+    mut output: crate::CommandOutput,
+    begin_marker: &str,
+    end_marker: &str,
+) -> Result<crate::CommandOutput, RemoteTmuxError> {
+    if output.status == 255 {
+        return Err(command_failure(&output, "SSH connection failed"));
+    }
+    output.stdout = extract_framed_payload(&output.stdout, begin_marker, end_marker)?;
+    Ok(output)
+}
+
 fn command_failure(output: &crate::CommandOutput, fallback: &str) -> RemoteTmuxError {
     RemoteTmuxError::new(
         if output.status == 255 {
@@ -1023,6 +1040,14 @@ fn scope_tmux_inventory(
             Vec::new(),
             Some(HostError::new(error.kind(), error.to_string())),
         )),
+    }
+}
+
+fn scope_backend_failure(error: RemoteTmuxError) -> Result<HostError, RemoteTmuxError> {
+    if error.kind() == DiagnosticKind::Transport {
+        Err(error)
+    } else {
+        Ok(HostError::new(error.kind(), error.to_string()))
     }
 }
 
@@ -1475,6 +1500,40 @@ mod tests {
             b"{\"sessions\":[]}\n"
         );
         assert!(extract_framed_payload(b"BEGIN\npayload\n", "BEGIN", "END").is_err());
+    }
+
+    #[test]
+    fn framed_transport_failure_is_not_misclassified_as_malformed_output() {
+        let error = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 255,
+                stdout: Vec::new(),
+                stderr: b"connection closed".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect_err("SSH status bypasses payload framing");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(error.to_string(), "connection closed");
+    }
+
+    #[test]
+    fn optional_backend_failures_scope_only_non_transport_diagnostics() {
+        let diagnostic = scope_backend_failure(RemoteTmuxError::new(
+            DiagnosticKind::ExecutableNotFound,
+            "Zellij is missing",
+        ))
+        .expect("backend absence remains scoped");
+        assert_eq!(diagnostic.kind(), DiagnosticKind::ExecutableNotFound);
+
+        let error = scope_backend_failure(RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "SSH connection failed",
+        ))
+        .expect_err("transport failure invalidates the host");
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
     }
 
     #[test]

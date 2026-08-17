@@ -146,7 +146,7 @@ fn ssh_hosts_discover_tmux_automatically_by_default() {
 
     assert_eq!(parsed.ssh_hosts()[0].tmux_binary(), "");
 
-    let migrated = ApplicationConfig::from_toml(
+    let explicit = ApplicationConfig::from_toml(
         r#"
             [[ssh-host]]
             name = "Studio"
@@ -154,9 +154,9 @@ fn ssh_hosts_discover_tmux_automatically_by_default() {
             tmux-binary = "/usr/bin/tmux"
         "#,
     )
-    .expect("migrate generated Linux default");
+    .expect("parse explicit Linux path");
 
-    assert_eq!(migrated.ssh_hosts()[0].tmux_binary(), "");
+    assert_eq!(explicit.ssh_hosts()[0].tmux_binary(), "/usr/bin/tmux");
 }
 
 #[test]
@@ -181,6 +181,7 @@ fn saving_over_an_existing_config_replaces_it_without_temporary_files() {
 
     let loaded = ApplicationConfig::load(&roots).expect("load replaced config");
     assert_eq!(loaded.ssh_hosts()[0].hostname(), "studio.example");
+    assert_eq!(loaded.ssh_hosts()[0].tmux_binary(), "/usr/bin/tmux");
     let entries = fs::read_dir(&root)
         .expect("read config directory")
         .collect::<Result<Vec<_>, _>>()

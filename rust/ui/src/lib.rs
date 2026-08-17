@@ -5734,7 +5734,11 @@ impl RootView {
                 NewSessionKind::Zellij => "retry-zellij",
             };
             tree = tree.child(Self::capability_diagnostic_row(
-                host_index, retry_id, message, cx,
+                host_index,
+                host.id(),
+                retry_id,
+                message,
+                cx,
             ));
         } else if sessions.is_empty() {
             tree = tree.child(
@@ -6254,6 +6258,7 @@ impl RootView {
         if let Some(diagnostic) = host.herdr_diagnostic() {
             tree = tree.child(Self::capability_diagnostic_row(
                 host_index,
+                &host_id,
                 "retry-herdr",
                 diagnostic.message().to_owned(),
                 cx,
@@ -6278,10 +6283,12 @@ impl RootView {
 
     fn capability_diagnostic_row(
         host_index: usize,
+        host_id: &str,
         retry_id: &'static str,
         message: String,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let host_id = host_id.to_owned();
         div()
             .mx_2()
             .mb_1()
@@ -6308,7 +6315,9 @@ impl RootView {
                     .text_xs()
                     .text_color(rgb(0x79_aee3))
                     .child("Retry")
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.connect_host(&host_id, cx);
+                    })),
             )
             .into_any_element()
     }
