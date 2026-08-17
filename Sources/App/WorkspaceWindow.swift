@@ -244,17 +244,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
 @MainActor
 private final class DraggableTitlebarHostingView:
     NSHostingView<AnyView> {
-    var onDoubleClick: () -> Void = {}
-
     override var mouseDownCanMoveWindow: Bool { true }
-
-    override func mouseDown(with event: NSEvent) {
-        guard event.clickCount == 2 else {
-            super.mouseDown(with: event)
-            return
-        }
-        onDoubleClick()
-    }
 }
 
 @MainActor
@@ -493,7 +483,6 @@ final class CompactWorkspaceTitlebarController {
         self.onSettings = onSettings
         self.onNewWorktree = onNewWorktree
         self.onRenameWindow = onRenameWindow
-        titleHost.onDoubleClick = onRenameWindow
         refreshHosts()
         let titleLeadingOffset = Self.titleLeadingOffset(
             isSidebarVisible: isSidebarVisible,
@@ -578,24 +567,21 @@ private struct EditableWindowTitleView: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            title
-            if isHovered {
-                Button(action: onRename) {
+        Button(action: onRename) {
+            HStack(spacing: 5) {
+                title
+                if isHovered {
                     Image(systemName: "pencil")
                         .font(.system(size: 10, weight: .medium))
                         .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
+                        .transition(.opacity)
                 }
-                .buttonStyle(.plain)
-                .help("Rename Window")
-                .accessibilityLabel("Rename Window")
-                .transition(.opacity)
             }
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .help("Rename Window")
         .onHover { isHovered = $0 }
-        .accessibilityAction(named: "Rename Window", onRename)
     }
 
     @ViewBuilder

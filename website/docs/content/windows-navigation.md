@@ -53,8 +53,8 @@ To give one workspace window or tab its own label, choose
 and returns after restoration or an update relaunch. Save an empty title to
 return to the automatic session and host title. Renaming Ghosthub chrome never
 renames a tmux session or window, a Herdr or Zellij session, or a worktree.
-You can also hover the compact title and select its pencil, or double-click the
-title, to open the same editor.
+You can also hover the compact title and select either the title or its pencil
+to open the same editor.
 
 ## Close a presentation
 
