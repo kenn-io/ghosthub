@@ -60,6 +60,12 @@ Never use `latest`.
 
 The promotion preflight reads the live rulesets through the GitHub API and
 fails before registry mutation if that exact required-check policy is absent.
+The operator-side enable path creates and verifies an empty bypass-actor list.
+GitHub redacts that field as `null` from installation-token responses, so
+recurring App audits accept either visible empty actors or the redacted value;
+they still verify the exact enforcement, ref, status, App, merge-queue, and
+workflow requirements. Repository and organization administrators remain
+trusted to preserve the provisioned bypass policy.
 Every reconciliation also audits both credential-bearing environments, their
 exact secret sets and `main` branch policies, the status App variables, the
 lack of package-writer reviewers, and the parsed structure of both `.yml` and
@@ -280,10 +286,11 @@ cutoff to leave one hour of scheduling margin before the 24-hour limit. If the
 run expires before retag or merge, rerun
 `sandbox-image-promote` and approve the idempotent promotion again.
 
-The repository ruleset must require this status from the dedicated app with
-strict checking enabled, no bypass actors, an empty exclusion list, and a
-single-entry merge queue. Queue the pull request with **Merge when ready**
-rather than merging its head directly. The organization ruleset separately
+The repository ruleset is provisioned with no bypass actors and must require
+this status from the dedicated app with strict checking enabled, an empty
+exclusion list, and a single-entry merge queue. Queue the pull request with
+**Merge when ready** rather than merging its head directly. The organization
+ruleset separately
 requires the merge-signal workflow from the protected
 `sandbox-merge-signal-v1` tag of the public source repository. The queue
 creates a fresh synthetic SHA; that workflow requests a SHA-specific
