@@ -3,6 +3,15 @@ import Testing
 @testable import GhosthubTerminalSupport
 
 struct LibghosttyEmbeddedResourcesLocatorTests {
+    private func missingAppExecutablePath() -> String {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "missing-ghosthub-\(UUID().uuidString)/Ghosthub.app/Contents/MacOS/Ghosthub",
+                isDirectory: false
+            )
+            .path
+    }
+
     private func assertResolvesToLayoutResources(
         share: MockLibghosttyLayout.SharePrefix = .repoLocalBootstrap,
         executablePath: (MockLibghosttyLayout) -> String,
@@ -35,9 +44,7 @@ struct LibghosttyEmbeddedResourcesLocatorTests {
     @Test("resolveResourcesDirectory falls back to the current directory")
     func resolveResourcesDirectoryFallsBackToCurrentDirectory() throws {
         try assertResolvesToLayoutResources(
-            executablePath: { _ in
-                "/Applications/Ghosthub.app/Contents/MacOS/Ghosthub"
-            },
+            executablePath: { _ in missingAppExecutablePath() },
             currentDirectoryPath: { $0.root.path }
         )
     }
@@ -80,7 +87,7 @@ struct LibghosttyEmbeddedResourcesLocatorTests {
 
         let resolved = LibghosttyEmbeddedResourcesLocator
             .effectiveResourcesDirectory(
-                executablePath: "/Applications/Ghosthub.app/Contents/MacOS/Ghosthub",
+                executablePath: missingAppExecutablePath(),
                 currentDirectoryPath: "/tmp",
                 inheritedResourcesPath: inherited
             )
