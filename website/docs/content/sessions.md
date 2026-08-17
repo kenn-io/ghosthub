@@ -156,7 +156,7 @@ open or reopen it.
 
 To end a standalone session that Ghosthub knows is running, hover over its
 sidebar row and choose the subtle **×** control. For a kwt-backed session, use
-**Kill Session…** from the worktree row's right-click menu.
+**Kill Session…** in its workspace action menu.
 
 Ghosthub confirms the host and exact tmux session before it sends
 `kill-session`. Ending a session terminates all of its windows, panes, and

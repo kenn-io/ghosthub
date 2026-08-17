@@ -145,10 +145,9 @@ hosts cannot populate the sidebar.
 Expand your Mac in the sidebar and select an existing tmux session. Use the
 host's **+** menu to create a named session. Closing its Ghosthub window or tab
 only detaches. To end a standalone session, hover its sidebar row and click the
-**×**; for a worktree-backed session, right-click its worktree row and choose
-**Kill Session…**. Both paths confirm the exact host and session before
-terminating it. If a bare session exits on its own, **Reopen** creates the same
-named session again.
+**×**; worktree-backed sessions keep **Kill Session…** in their action menu.
+Both paths confirm the exact host and session before terminating it. If a bare
+session exits on its own, **Reopen** creates the same named session again.
 
 ### Add an SSH host
 

@@ -895,17 +895,13 @@ struct WorkspaceSidebarView: View {
         } else {
             usesDirectKillAction = false
         }
-        let hasInlineSessionActions = (
-            runningTmuxSession != nil
-                || !herdrActions.isEmpty
-                || zellijSelection != nil
-        ) && WorkspaceSidebarRowActionModel.allowsInlineControl(
-            for: row.target
-        )
-        let isActionHovered = hasInlineSessionActions
+        let hasSessionActions = runningTmuxSession != nil
+            || !herdrActions.isEmpty
+            || zellijSelection != nil
+        let isActionHovered = hasSessionActions
             && hoveredSessionActionControlRowID == row.id
         let actionPresentation = WorkspaceSessionActionPresentation(
-            hasActions: hasInlineSessionActions,
+            hasActions: hasSessionActions,
             isRowHovered: hoveredSessionActionRowID == row.id,
             isActionHovered: isActionHovered,
             isSelected: herdrSelection != nil && isSelected
@@ -1074,7 +1070,7 @@ struct WorkspaceSidebarView: View {
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
         .overlay(alignment: .trailing) {
-            if hasInlineSessionActions {
+            if hasSessionActions {
                 Group {
                     if let tmuxSession = runningTmuxSession,
                        usesDirectKillAction {
@@ -1170,7 +1166,7 @@ struct WorkspaceSidebarView: View {
             }
         }
         .onHover { isHovered in
-            guard hasInlineSessionActions else { return }
+            guard hasSessionActions else { return }
             if isHovered {
                 sessionActionHoverDismissTask?.cancel()
                 hoveredSessionActionRowID = row.id
