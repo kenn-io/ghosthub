@@ -16,7 +16,7 @@ on:
 permissions: {}
 
 env:
-  MERGE_SIGNAL_PATH: kenn-io/ghosthub-nightly/.github/workflows/sandbox-image-merge-signal.yml@67ead910ccc186d9ffe543c32721d359b3eea80e
+  MERGE_SIGNAL_PATH: kenn-io/ghosthub-nightly/.github/workflows/sandbox-image-merge-signal.yml@refs/heads/main
 
 # Pull-request reconciliation is replaceable because every survivor audits every
 # open head. Each merge-group signal has its own lossless authorization lane.

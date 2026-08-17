@@ -471,11 +471,11 @@ selection is
 rejected, every workflow declares explicit top-level permissions, the job
 refuses non-`main` effective refs, and no
 `GITHUB_TOKEN` has status-write or package-write authority. The GHCR package
-does not inherit repository Actions access. An organization ruleset pins the
-merge-signal workflow to a reviewed immutable commit in the separate public
+does not inherit repository Actions access. An organization ruleset requires the
+merge-signal workflow from the protected `main` branch of the separate public
 `kenn-io/ghosthub-nightly` repository. Trusted promotion and every
-reconciliation verify that exact source repository, commit, workflow path,
-sole `merge_group` trigger, empty token permissions, absence of environment use,
+reconciliation verify that source repository, protected branch, workflow path,
+required `pull_request` and `merge_group` triggers, empty token permissions, absence of environment use,
 live environments, parsed workflow authority, app integration
 ID, and ruleset. At the final production-tag mutation boundary,
 trusted promotion authenticates the App owner, slug, permissions, private key,
@@ -490,7 +490,7 @@ merge time, an unprivileged merge-group signal receives a SHA-specific trusted
 reconciliation. Trusted-main tooling audits the proposed workflow tree without
 executing it and refuses any change to a credential-bearing workflow before
 authorizing the queue's fresh synthetic SHA. The candidate tree cannot change
-the externally pinned merge signal or claim its reserved workflow path or
+the external merge signal or claim its reserved workflow path or
 public name; inability to reconcile
 therefore leaves that SHA blocked rather than preserving an old head status.
 Main changes, a new pin PR head SHA, the immutable promotion-plan deadline, and

@@ -1101,12 +1101,12 @@ def test_required_promotion_status_rejects_weak_policy(
         verify_required_promotion_status(runner, 424242)
 
 
-def test_required_merge_signal_is_organization_owned_and_pinned_to_commit() -> None:
+def test_required_merge_signal_uses_the_external_protected_branch() -> None:
     rulesets = [{"id": 42}]
-    commit = github_module.MERGE_SIGNAL_COMMIT
     workflow_content = (
         "name: Sandbox image merge signal\n"
         "on:\n"
+        "  pull_request:\n"
         "  merge_group:\n"
         "    types: [checks_requested]\n"
         "permissions: {}\n"
@@ -1131,8 +1131,8 @@ def test_required_merge_signal_is_organization_owned_and_pinned_to_commit() -> N
                     "workflows": [
                         {
                             "path": ".github/workflows/sandbox-image-merge-signal.yml",
-                            "ref": commit,
-                            "sha": commit,
+                            "ref": github_module.MERGE_SIGNAL_REF,
+                            "sha": "a" * 40,
                             "repository_id": 1_334_318_821,
                         }
                     ],
@@ -1154,8 +1154,7 @@ def test_required_merge_signal_is_organization_owned_and_pinned_to_commit() -> N
                 "gh",
                 "api",
                 "repos/kenn-io/ghosthub-nightly/contents/"
-                ".github/workflows/sandbox-image-merge-signal.yml"
-                f"?ref={commit}",
+                ".github/workflows/sandbox-image-merge-signal.yml?ref=main",
             ): json.dumps(
                 {
                     "type": "file",
@@ -1172,38 +1171,28 @@ def test_required_merge_signal_is_organization_owned_and_pinned_to_commit() -> N
 
 
 @pytest.mark.parametrize(
-    ("source_type", "ref", "sha", "repository_id"),
+    ("source_type", "ref", "repository_id"),
     [
         (
             "Repository",
-            github_module.MERGE_SIGNAL_COMMIT,
-            github_module.MERGE_SIGNAL_COMMIT,
+            github_module.MERGE_SIGNAL_REF,
             1_334_318_821,
         ),
         (
             "Organization",
-            "refs/heads/main",
-            github_module.MERGE_SIGNAL_COMMIT,
+            "refs/heads/topic",
             1_334_318_821,
         ),
         (
             "Organization",
-            github_module.MERGE_SIGNAL_COMMIT,
-            "a" * 40,
-            1_334_318_821,
-        ),
-        (
-            "Organization",
-            github_module.MERGE_SIGNAL_COMMIT,
-            github_module.MERGE_SIGNAL_COMMIT,
+            github_module.MERGE_SIGNAL_REF,
             1_308_876_468,
         ),
     ],
 )
-def test_required_merge_signal_rejects_branch_controlled_authority(
+def test_required_merge_signal_rejects_the_wrong_authority(
     source_type: str,
     ref: str,
-    sha: str,
     repository_id: int,
 ) -> None:
     detail = {
@@ -1222,7 +1211,7 @@ def test_required_merge_signal_rejects_branch_controlled_authority(
                         {
                             "path": ".github/workflows/sandbox-image-merge-signal.yml",
                             "ref": ref,
-                            "sha": sha,
+                            "sha": "a" * 40,
                             "repository_id": repository_id,
                         }
                     ],
@@ -1251,34 +1240,35 @@ def test_required_merge_signal_rejects_branch_controlled_authority(
     ("workflow_content", "message"),
     [
         (
-            "on:\n  merge_group:\n    types: [checks_requested]\n"
+            "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
             "permissions: {}\n"
             "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n",
             "name",
         ),
         (
             "name: A different workflow\n"
-            "on:\n  merge_group:\n    types: [checks_requested]\n"
+            "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
             "permissions: {}\n"
             "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n",
             "name",
         ),
         (
             "name: Sandbox image merge signal\n"
-            "on:\n  pull_request: {}\npermissions: {}\n"
+            "on:\n  merge_group:\n    types: [checks_requested]\n"
+            "permissions: {}\n"
             "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n",
             "trigger",
         ),
         (
             "name: Sandbox image merge signal\n"
-            "on:\n  merge_group:\n    types: [checks_requested]\n"
+            "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
             "permissions:\n  contents: read\n"
             "jobs:\n  signal:\n    runs-on: ubuntu-24.04\n",
             "permissions",
         ),
         (
             "name: Sandbox image merge signal\n"
-            "on:\n  merge_group:\n    types: [checks_requested]\n"
+            "on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
             "permissions: {}\n"
             "jobs:\n  signal:\n    environment: sandbox-image-production\n"
             "    runs-on: ubuntu-24.04\n",
@@ -1290,7 +1280,6 @@ def test_required_merge_signal_rejects_external_workflow_authority(
     workflow_content: str,
     message: str,
 ) -> None:
-    commit = github_module.MERGE_SIGNAL_COMMIT
     runner = ScriptedRunner(
         {
             (
@@ -1320,8 +1309,8 @@ def test_required_merge_signal_rejects_external_workflow_authority(
                                 "workflows": [
                                     {
                                         "path": github_module.MERGE_SIGNAL_WORKFLOW,
-                                        "ref": commit,
-                                        "sha": commit,
+                                        "ref": github_module.MERGE_SIGNAL_REF,
+                                        "sha": "a" * 40,
                                         "repository_id": 1_334_318_821,
                                     }
                                 ]
@@ -1334,8 +1323,7 @@ def test_required_merge_signal_rejects_external_workflow_authority(
                 "gh",
                 "api",
                 "repos/kenn-io/ghosthub-nightly/contents/"
-                ".github/workflows/sandbox-image-merge-signal.yml"
-                f"?ref={commit}",
+                ".github/workflows/sandbox-image-merge-signal.yml?ref=main",
             ): json.dumps(
                 {
                     "type": "file",

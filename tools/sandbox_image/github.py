@@ -67,7 +67,7 @@ ALLOWED_REUSABLE_WORKFLOWS = {
     "kenn-io/ghosthub/.github/workflows/ci.yml@main",
 }
 MERGE_SIGNAL_REPOSITORY_ID = 1_334_318_821
-MERGE_SIGNAL_COMMIT = "67ead910ccc186d9ffe543c32721d359b3eea80e"
+MERGE_SIGNAL_REF = "refs/heads/main"
 PROMOTION_AUTHORIZATION_WINDOW = timedelta(hours=23)
 PROMOTION_EVIDENCE_COVERAGE = timedelta(hours=24)
 
@@ -923,7 +923,7 @@ def verify_required_merge_signal(runner: Runner) -> None:
 def _verify_merge_signal_workflow(runner: Runner) -> None:
     endpoint = (
         f"repos/{MERGE_SIGNAL_REPOSITORY}/contents/{MERGE_SIGNAL_WORKFLOW}"
-        f"?ref={MERGE_SIGNAL_COMMIT}"
+        "?ref=main"
     )
     payload = _api_json(runner, endpoint)
     if (
@@ -959,7 +959,10 @@ def _verify_merge_signal_workflow(runner: Runner) -> None:
     if workflow.get("name") != MERGE_SIGNAL_NAME:
         raise ValueError("trusted merge-signal workflow name is invalid")
     trigger = workflow.get("on", workflow.get(True))
-    if trigger != {"merge_group": {"types": ["checks_requested"]}}:
+    if trigger != {
+        "pull_request": None,
+        "merge_group": {"types": ["checks_requested"]},
+    }:
         raise ValueError("trusted merge-signal workflow trigger is invalid")
     if workflow.get("permissions") != {}:
         raise ValueError("trusted merge-signal workflow permissions are invalid")
@@ -1006,8 +1009,7 @@ def _ruleset_requires_merge_signal(value: object) -> bool:
         if any(
             isinstance(workflow, dict)
             and workflow.get("path") == MERGE_SIGNAL_WORKFLOW
-            and workflow.get("sha") == MERGE_SIGNAL_COMMIT
-            and workflow.get("ref") in (None, "", MERGE_SIGNAL_COMMIT)
+            and workflow.get("ref") == MERGE_SIGNAL_REF
             and workflow.get("repository_id") == MERGE_SIGNAL_REPOSITORY_ID
             for workflow in workflows
         ):
