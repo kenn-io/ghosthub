@@ -1007,7 +1007,9 @@ def _ruleset_requires_merge_signal(value: object) -> bool:
         or value.get("source") != "kenn-io"
         or value.get("target") != "branch"
         or value.get("enforcement") != "active"
-        or value.get("bypass_actors") != []
+        # GitHub redacts bypass actors as null from installation tokens. The
+        # operator-side provisioning still requires an empty list.
+        or value.get("bypass_actors") not in (None, [])
         or not isinstance(ref_name, dict)
         or "~DEFAULT_BRANCH" not in ref_name.get("include", [])
         or ref_name.get("exclude") != []
@@ -1055,7 +1057,9 @@ def _ruleset_requires_promotion_status(
     requires_status = (
         value.get("target") == "branch"
         and value.get("enforcement") == "active"
-        and value.get("bypass_actors") == []
+        # GitHub redacts bypass actors as null from installation tokens. The
+        # operator-side enable command still requires and writes an empty list.
+        and value.get("bypass_actors") in (None, [])
         and "~DEFAULT_BRANCH" in includes
         and any(
             _rule_requires_promotion_status(rule, expected_integration_id)

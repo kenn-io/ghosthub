@@ -185,9 +185,10 @@ workflow-enforced immutable policy; GHCR tag settings are not treated as the
 authority. The `sandbox-image-promotion` status points to a completed
 successful run of the exact trusted promotion workflow for that pull-request
 head. The gate verifies that run through the GitHub API; the status alone is
-not promotion authority. An active no-bypass, no-exclusion default-branch
-ruleset requires the status from a dedicated status-only GitHub App with strict
-checking and a single-entry merge queue. Its key is available only through a
+not promotion authority. An active default-branch ruleset provisioned with no
+bypass actors or ref exclusions requires the status from a dedicated
+status-only GitHub App with strict checking and a single-entry merge queue. Its
+key is available only through a
 no-reviewer environment restricted to `main`; no `GITHUB_TOKEN` receives
 status-write or package-write authority. Candidate publication and production
 retagging use a separate package-writer credential available only through

@@ -1010,7 +1010,7 @@ def test_required_promotion_status_is_strict_and_bound_to_dedicated_app() -> Non
     detail = {
         "target": "branch",
         "enforcement": "active",
-        "bypass_actors": [],
+        "bypass_actors": None,
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
         "rules": [
             {"type": "pull_request", "parameters": {}},
@@ -1152,7 +1152,7 @@ def test_required_merge_signal_uses_the_external_protected_tag() -> None:
         "source": "kenn-io",
         "target": "branch",
         "enforcement": "active",
-        "bypass_actors": [],
+        "bypass_actors": None,
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
         "rules": [
             {
