@@ -79,6 +79,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     var sidebarWidth: CGFloat
     var canCreateWorktree: Bool
     var sessionTitle: SessionTitlebarPresentation?
+    var customTitle: String?
     var onToggleSidebar: () -> Void
     var onQuickLaunch: () -> Void
     var onSettings: () -> Void
@@ -110,6 +111,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
             sidebarWidth: sidebarWidth,
             canCreateWorktree: canCreateWorktree,
             sessionTitle: sessionTitle,
+            customTitle: customTitle,
             onToggleSidebar: onToggleSidebar,
             onQuickLaunch: onQuickLaunch,
             onSettings: onSettings,
@@ -346,6 +348,7 @@ final class CompactWorkspaceTitlebarController {
     private var sidebarWidth = WorkspaceSidebarWidthPolicy.defaultWidth
     private var canCreateWorktree = false
     private var sessionTitle: SessionTitlebarPresentation?
+    private var customTitle: String?
     private var onToggleSidebar: () -> Void = {}
     private var onQuickLaunch: () -> Void = {}
     private var onSettings: () -> Void = {}
@@ -367,7 +370,7 @@ final class CompactWorkspaceTitlebarController {
 
     func install(on window: NSWindow) {
         WorkspaceWindowChrome.apply(to: window)
-        window.title = sessionTitle?.title ?? "Ghosthub"
+        window.title = customTitle ?? sessionTitle?.title ?? "Ghosthub"
         titleHost.isHidden = !Self.showsTitle(
             tabCount: window.tabbedWindows?.count ?? 1
         )
@@ -456,6 +459,7 @@ final class CompactWorkspaceTitlebarController {
         sidebarWidth: CGFloat = WorkspaceSidebarWidthPolicy.defaultWidth,
         canCreateWorktree: Bool,
         sessionTitle: SessionTitlebarPresentation?,
+        customTitle: String? = nil,
         onToggleSidebar: @escaping () -> Void,
         onQuickLaunch: @escaping () -> Void,
         onSettings: @escaping () -> Void,
@@ -469,6 +473,7 @@ final class CompactWorkspaceTitlebarController {
         )
         self.canCreateWorktree = canCreateWorktree
         self.sessionTitle = sessionTitle
+        self.customTitle = customTitle
         self.onToggleSidebar = onToggleSidebar
         self.onQuickLaunch = onQuickLaunch
         self.onSettings = onSettings
@@ -535,7 +540,14 @@ final class CompactWorkspaceTitlebarController {
 
     @ViewBuilder
     private var titleView: some View {
-        if let sessionTitle {
+        if let customTitle {
+            Text(customTitle)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(customTitle)
+                .accessibilityLabel(customTitle)
+        } else if let sessionTitle {
             HStack(spacing: 5) {
                 Image(systemName: sessionTitle.icon.systemImageName)
                     .font(.system(size: 11, weight: .medium))
@@ -611,6 +623,9 @@ struct WorkspaceWindow: View {
         LibghosttyConfigReloadNotice?
     @State private var titlebarSidebarWidth =
         WorkspaceSidebarWidthPolicy.defaultWidth
+    @State private var customWindowTitle: String?
+    @State private var windowTitleRenameRequest:
+        WorkspaceWindowTitleRenameRequest?
     private let registry = WindowRegistry.shared
 
     #if canImport(AppKit)
@@ -1168,6 +1183,7 @@ struct WorkspaceWindow: View {
                     sceneModel.activeBorrowedZellijSelection,
                     in: sceneModel.snapshot
                 ),
+                customTitle: customWindowTitle,
                 onToggleSidebar: {
                     NotificationCenter.default.post(
                         name: .ghosthubToggleSidebar,
@@ -1194,11 +1210,40 @@ struct WorkspaceWindow: View {
                 }
             )
         )
+        .onReceive(NotificationCenter.default.publisher(
+            for: .ghosthubRenameWorkspaceWindow
+        )) { notification in
+            guard let requestedWindow = notification.object as? NSWindow,
+                  requestedWindow === sceneModel.workspaceWindow,
+                  requestedWindow.isKeyWindow,
+                  requestedWindow.attachedSheet == nil
+            else { return }
+            windowTitleRenameRequest = WorkspaceWindowTitleRenameRequest(
+                currentTitle: customWindowTitle ?? "",
+                automaticTitle: automaticWindowTitle
+            )
+        }
+        .sheet(item: $windowTitleRenameRequest) { request in
+            RenameWorkspaceWindowSheet(
+                initialTitle: request.currentTitle,
+                automaticTitle: request.automaticTitle,
+                onSave: { title in
+                    customWindowTitle = WorkspaceWindowTitle.normalized(title)
+                    windowTitleRenameRequest = nil
+                    refreshWindowState()
+                },
+                onCancel: {
+                    windowTitleRenameRequest = nil
+                }
+            )
+        }
         #endif
         .onChange(of: sceneModel.restorationState(
             windowID: resolvedWindowState.wrappedValue.windowID
         )) { _, state in
-            resolvedWindowState.wrappedValue = state
+            resolvedWindowState.wrappedValue = state.withCustomTitle(
+                customWindowTitle
+            )
         }
         .onChange(of: windowState) { _, state in
             #if canImport(AppKit)
@@ -1229,7 +1274,7 @@ struct WorkspaceWindow: View {
                    presented: state,
                    current: sceneModel.restorationState(
                        windowID: updateRelaunchWindowID
-                   )
+                   ).withCustomTitle(customWindowTitle)
                ) {
                 resolvedWindowState.wrappedValue = replacement
                 return
@@ -1310,6 +1355,9 @@ struct WorkspaceWindow: View {
     }
 
     private func beginRestoration(_ state: WorkspaceWindowState) {
+        customWindowTitle = WorkspaceWindowTitle.normalized(
+            state.customTitle
+        )
         sceneModel.beginRestoration(
             state,
             launchIntent: applicationDelegate
@@ -1338,7 +1386,7 @@ struct WorkspaceWindow: View {
     private func captureWindowState() -> WorkspaceWindowState {
         let state = sceneModel.restorationState(
             windowID: resolvedWindowState.wrappedValue.windowID
-        )
+        ).withCustomTitle(customWindowTitle)
         resolvedWindowState.wrappedValue = state
         return state
     }
@@ -1365,6 +1413,68 @@ struct WorkspaceWindow: View {
             selection: sceneModel.selection
         ) else { return false }
         return sceneModel.snapshot.canCreateWorktree(in: project)
+    }
+
+    private var automaticWindowTitle: String {
+        SessionTitlebarPresentation.resolve(
+            activeTmuxSession: sceneModel.activeBorrowedTmuxSelection,
+            activeHerdrSession: sceneModel.activeBorrowedHerdrSelection,
+            activeZellijSession: sceneModel.activeBorrowedZellijSelection,
+            in: sceneModel.snapshot
+        )?.title ?? "Ghosthub"
+    }
+}
+
+private struct WorkspaceWindowTitleRenameRequest: Identifiable {
+    let id = UUID()
+    let currentTitle: String
+    let automaticTitle: String
+}
+
+private struct RenameWorkspaceWindowSheet: View {
+    let automaticTitle: String
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var title: String
+    @FocusState private var titleIsFocused: Bool
+
+    init(
+        initialTitle: String,
+        automaticTitle: String,
+        onSave: @escaping (String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        _title = State(initialValue: initialTitle)
+        self.automaticTitle = automaticTitle
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Rename window")
+                .font(.headline)
+            TextField("Custom title", text: $title)
+                .focused($titleIsFocused)
+                .onSubmit { onSave(title) }
+            Text("Leave blank to use “\(automaticTitle)”.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    onSave(title)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+        .onAppear { titleIsFocused = true }
     }
 }
 

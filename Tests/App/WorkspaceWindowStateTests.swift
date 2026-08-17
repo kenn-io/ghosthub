@@ -5,6 +5,21 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
+@Suite("Workspace window titles")
+struct WorkspaceWindowTitleTests {
+    @Test("Custom titles trim and blank titles restore automatic naming")
+    func normalization() {
+        let state = WorkspaceWindowState.fresh()
+
+        #expect(
+            state.withCustomTitle("  Review logs  ").customTitle
+                == "Review logs"
+        )
+        #expect(state.withCustomTitle(" \n ").customTitle == nil)
+        #expect(state.customTitle == nil)
+    }
+}
+
 private struct RestorationFixture {
     static let worktreeGeneration =
         "0123456789abcdef0123456789abcdef"

@@ -218,6 +218,15 @@ struct GhosthubApp: App {
             SessionMenuCommands()
             ViewMenuCommands()
             CommandGroup(after: .windowArrangement) {
+                Button("Rename Window…") {
+                    NotificationCenter.default.post(
+                        name: .ghosthubRenameWorkspaceWindow,
+                        object: NSApplication.shared.keyWindow
+                    )
+                }
+
+                Divider()
+
                 Button("Previous Tab") {
                     NativeTabCommands.selectPrevious()
                 }
