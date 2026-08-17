@@ -168,6 +168,40 @@ def test_canonical_report_path_uses_digest_only(tmp_path: Path) -> None:
     )
 
 
+def test_image_identity_uses_arm64_manifest_digest(tmp_path: Path) -> None:
+    image = "ghcr.io/kenn-io/ghosthub-sandbox@" + DIGEST
+    inspect_call = ("container", "image", "inspect", image)
+    payload = [
+        {
+            "configuration": {
+                "descriptor": {"digest": "sha256:" + "a" * 64}
+            },
+            "variants": [
+                {
+                    "digest": DIGEST,
+                    "config": {
+                        "architecture": "arm64",
+                        "os": "linux",
+                        "config": {
+                            "Labels": {
+                                "org.opencontainers.image.revision": "c" * 40,
+                                "org.opencontainers.image.version": "0.1.0",
+                            }
+                        },
+                    },
+                }
+            ],
+        }
+    ]
+    runner = ResponseRunner(
+        {inspect_call: response(inspect_call, json.dumps(payload))}
+    )
+
+    identity = AppleVettingHarness(tmp_path, runner)._inspect_image_identity(image)
+
+    assert identity == AppleImageIdentity(DIGEST, "c" * 40, "0.1.0")
+
+
 def test_vetting_rechecks_mount_protection_after_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
