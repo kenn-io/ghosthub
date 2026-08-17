@@ -171,13 +171,48 @@ jobs:
       - name: Audit full App installation
         shell: bash
         env:
+          APP_CLIENT_ID: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}
           AUDIT_TOKEN: ${{ steps.audit-token.outputs.token }}
+          INSTALLATION_ID: ${{ steps.audit-token.outputs.installation-id }}
           STATUS_APP_ID: ${{ vars.SANDBOX_PROMOTION_APP_ID }}
+          STATUS_APP_SLUG: ${{ steps.audit-token.outputs.app-slug }}
         run: |
           set -euo pipefail
 
-          installation="$(GH_TOKEN="$AUDIT_TOKEN" gh api /installation)"
-          if ! jq -e --arg app_id "$STATUS_APP_ID" '
+          if [[ "$STATUS_APP_SLUG" != ghosthub-sandbox-promotion ||
+                ! "$INSTALLATION_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Promotion-status app identity drifted." >&2
+            exit 1
+          fi
+          base64url() {
+            openssl base64 -A | tr '+/' '-_' | tr -d '='
+          }
+          now="$(date +%s)"
+          header="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | base64url)"
+          payload="$(jq -cn \
+            --arg iss "$APP_CLIENT_ID" \
+            --argjson iat "$((now - 60))" \
+            --argjson exp "$((now + 480))" \
+            '{iat: $iat, exp: $exp, iss: $iss}' | base64url)"
+          unsigned="$header.$payload"
+          key_file="$RUNNER_TEMP/promotion-app-key.pem"
+          umask 077
+          printf '%s' "$APP_PRIVATE_KEY" > "$key_file"
+          trap 'rm -f "$key_file"' EXIT
+          signature="$(printf '%s' "$unsigned" | \
+            openssl dgst -sha256 -sign "$key_file" | base64url)"
+          app_jwt="$unsigned.$signature"
+          echo "::add-mask::$app_jwt"
+          installation="$(curl --disable --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $app_jwt" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/app/installations/$INSTALLATION_ID")"
+          if ! jq -e \
+            --arg app_id "$STATUS_APP_ID" \
+            --arg installation_id "$INSTALLATION_ID" '
+            .id == ($installation_id | tonumber) and
             .app_id == ($app_id | tonumber) and
             .app_slug == "ghosthub-sandbox-promotion" and
             .account.login == "kenn-io" and
@@ -194,7 +229,7 @@ jobs:
               statuses: "write"
             }
           ' <<< "$installation" > /dev/null; then
-            echo "Promotion-status app identity or permissions drifted." >&2
+            echo "Promotion-status App installation permissions drifted." >&2
             exit 1
           fi
           repositories="$(GH_TOKEN="$AUDIT_TOKEN" gh api --paginate --slurp \
