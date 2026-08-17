@@ -327,20 +327,29 @@ pub struct RootView {
 struct TransientNotice {
     source: Option<(Option<u64>, String)>,
     expires_at: Option<Instant>,
+    visible: bool,
 }
 
 impl TransientNotice {
-    fn synchronize(&mut self, presentation_id: Option<u64>, notice: Option<&str>, now: Instant) {
+    fn synchronize(
+        &mut self,
+        presentation_id: Option<u64>,
+        notice: Option<&str>,
+        transient: bool,
+        now: Instant,
+    ) {
         let source = notice.map(|notice| (presentation_id, notice.to_owned()));
         if self.source != source {
             self.source = source;
-            self.expires_at = self.source.as_ref().map(|_| now + TERMINAL_NOTICE_DURATION);
+            self.visible = self.source.is_some();
+            self.expires_at = (self.visible && transient).then(|| now + TERMINAL_NOTICE_DURATION);
         }
     }
 
     fn expire(&mut self, now: Instant) -> bool {
         if self.expires_at.is_some_and(|deadline| now >= deadline) {
             self.expires_at = None;
+            self.visible = false;
             true
         } else {
             false
@@ -348,8 +357,9 @@ impl TransientNotice {
     }
 
     fn visible(&self) -> Option<&str> {
-        self.expires_at
-            .and(self.source.as_ref().map(|(_, notice)| notice.as_str()))
+        self.visible
+            .then(|| self.source.as_ref().map(|(_, notice)| notice.as_str()))
+            .flatten()
     }
 }
 
@@ -5364,6 +5374,7 @@ impl RootView {
         self.terminal_notice.synchronize(
             terminal_presentation_id(snapshot.content()),
             snapshot.notice(),
+            snapshot.notice_is_transient(),
             Instant::now(),
         );
         if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
@@ -8017,7 +8028,7 @@ mod tests {
         let now = Instant::now();
         let mut notice = TransientNotice::default();
 
-        notice.synchronize(Some(7), Some("reduced color"), now);
+        notice.synchronize(Some(7), Some("reduced color"), true, now);
         assert_eq!(notice.visible(), Some("reduced color"));
         assert!(
             !notice.expire(now + TERMINAL_NOTICE_DURATION.saturating_sub(Duration::from_millis(1)))
@@ -8028,16 +8039,32 @@ mod tests {
         notice.synchronize(
             Some(7),
             Some("reduced color"),
+            true,
             now + TERMINAL_NOTICE_DURATION,
         );
         assert_eq!(notice.visible(), None);
-        notice.synchronize(None, None, now + TERMINAL_NOTICE_DURATION);
+        notice.synchronize(None, None, false, now + TERMINAL_NOTICE_DURATION);
         notice.synchronize(
             Some(8),
             Some("reduced color"),
+            true,
             now + TERMINAL_NOTICE_DURATION,
         );
         assert_eq!(notice.visible(), Some("reduced color"));
+    }
+
+    #[test]
+    fn operational_failure_notice_remains_visible_until_cleared() {
+        let now = Instant::now();
+        let mut notice = TransientNotice::default();
+
+        notice.synchronize(None, Some("session launch failed"), false, now);
+        assert_eq!(notice.visible(), Some("session launch failed"));
+        assert!(!notice.expire(now + TERMINAL_NOTICE_DURATION * 10));
+        assert_eq!(notice.visible(), Some("session launch failed"));
+
+        notice.synchronize(None, None, false, now + TERMINAL_NOTICE_DURATION * 10);
+        assert_eq!(notice.visible(), None);
     }
 
     #[test]

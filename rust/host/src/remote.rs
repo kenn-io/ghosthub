@@ -503,8 +503,6 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             return Err(RemoteTmuxError::new(
                 if output.status == 127 {
                     DiagnosticKind::ExecutableNotFound
-                } else if output.status == 255 {
-                    DiagnosticKind::Transport
                 } else {
                     DiagnosticKind::UnsupportedEnvironment
                 },
@@ -526,21 +524,16 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             tmux_binary,
             ["-f", "/dev/null", "list-sessions", "-F", INVENTORY_FORMAT],
         ));
-        let framed = format!(
-            "printf '%s\\n' {}; {command}; ghosthub_status=$?; printf '%s\\n' {}; exit $ghosthub_status",
-            shell_quoted_argument(&begin_marker),
-            shell_quoted_argument(&end_marker),
-        );
+        let framed = framed_remote_shell_command(&command, &begin_marker, &end_marker);
         let output = self.run_remote_shell(lease, &framed, cancellation)?;
+        let output = extract_framed_command_output(output, &begin_marker, &end_marker)?;
         if output.status != 0 {
             let diagnostic = String::from_utf8_lossy(&output.stderr);
             if is_missing_tmux_server(&diagnostic) {
                 return Ok(Vec::new());
             }
             return Err(RemoteTmuxError::new(
-                if output.status == 255 {
-                    DiagnosticKind::Transport
-                } else if output.status == 127 {
+                if output.status == 127 {
                     DiagnosticKind::ExecutableNotFound
                 } else {
                     DiagnosticKind::UnsupportedEnvironment
@@ -548,7 +541,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 nonempty_diagnostic(&output.stderr, "remote tmux inventory failed"),
             ));
         }
-        parse_inventory(&output.stdout, &begin_marker, &end_marker)
+        parse_inventory_payload(&output.stdout)
     }
 
     /// Build an ordinary PTY client plan over the existing KWT lease.
@@ -1025,9 +1018,6 @@ fn extract_framed_command_output(
     begin_marker: &str,
     end_marker: &str,
 ) -> Result<crate::CommandOutput, RemoteTmuxError> {
-    if output.status == 255 {
-        return Err(command_failure(&output, "SSH connection failed"));
-    }
     let stdout = match extract_framed_payload(&output.stdout, begin_marker, end_marker) {
         Ok(payload) => payload,
         Err(_error) if output.status != 0 => {
@@ -1061,9 +1051,7 @@ fn extract_framed_command_output(
 
 fn command_failure(output: &crate::CommandOutput, fallback: &str) -> RemoteTmuxError {
     RemoteTmuxError::new(
-        if output.status == 255 || output.status == 125 {
-            DiagnosticKind::Transport
-        } else if output.status == 127 {
+        if output.status == 127 {
             DiagnosticKind::ExecutableNotFound
         } else {
             DiagnosticKind::UnsupportedEnvironment
@@ -1145,31 +1133,24 @@ fn is_missing_tmux_server(diagnostic: &str) -> bool {
             && diagnostic.contains(" (No such file or directory)"))
 }
 
+#[cfg(test)]
 fn parse_inventory(
     bytes: &[u8],
     begin_marker: &str,
     end_marker: &str,
 ) -> Result<Vec<DiscoveredSession>, RemoteTmuxError> {
-    let output = std::str::from_utf8(bytes).map_err(|_| {
+    let payload = extract_framed_payload(bytes, begin_marker, end_marker)
+        .map_err(|_| malformed_inventory())?;
+    parse_inventory_payload(&payload)
+}
+
+fn parse_inventory_payload(bytes: &[u8]) -> Result<Vec<DiscoveredSession>, RemoteTmuxError> {
+    let mut remaining = std::str::from_utf8(bytes).map_err(|_| {
         RemoteTmuxError::new(
             DiagnosticKind::MalformedOutput,
             "remote tmux inventory is not UTF-8",
         )
     })?;
-    let begin = format!("{begin_marker}\n");
-    let end = format!("{end_marker}\n");
-    let payload_start = output.find(&begin).ok_or_else(malformed_inventory)? + begin.len();
-    if output[payload_start..].contains(&begin) {
-        return Err(malformed_inventory());
-    }
-    let payload_end = output[payload_start..]
-        .find(&end)
-        .map(|offset| payload_start + offset)
-        .ok_or_else(malformed_inventory)?;
-    if output[payload_end + end.len()..].contains(&end) {
-        return Err(malformed_inventory());
-    }
-    let mut remaining = &output[payload_start..payload_end];
     let mut sessions = Vec::new();
     while !remaining.is_empty() {
         let mut fields = Vec::with_capacity(4);
@@ -1639,8 +1620,7 @@ mod tests {
             .expect("run framed shell boundary");
         let output = extract_framed_command_output(
             crate::CommandOutput {
-                status: u32::try_from(output.status.code().expect("shell exit status"))
-                    .expect("nonnegative exit status"),
+                status: output.status.code().expect("shell exit status"),
                 stdout: output.stdout,
                 stderr: output.stderr,
             },
@@ -1656,16 +1636,39 @@ mod tests {
 
     #[test]
     fn wsl_runtime_guard_status_is_transport() {
-        let error = command_failure(
-            &crate::CommandOutput {
+        let error = extract_framed_command_output(
+            crate::CommandOutput {
                 status: 125,
                 stdout: Vec::new(),
                 stderr: b"WSL runtime changed".to_vec(),
             },
-            "runtime guard failed",
-        );
+            "BEGIN",
+            "END",
+        )
+        .expect_err("an unframed wrapper failure is transport-level");
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
+    }
+
+    #[test]
+    fn framed_backend_statuses_do_not_invalidate_the_transport() {
+        for status in [125, 255] {
+            let output = extract_framed_command_output(
+                crate::CommandOutput {
+                    status,
+                    stdout: b"BEGIN\nbackend output\nEND\n".to_vec(),
+                    stderr: b"BEGIN\nbackend failure\nEND\n".to_vec(),
+                },
+                "BEGIN",
+                "END",
+            )
+            .expect("valid framing proves the backend command ran");
+
+            assert_eq!(
+                command_failure(&output, "backend failed").kind(),
+                DiagnosticKind::UnsupportedEnvironment
+            );
+        }
     }
 
     #[test]
