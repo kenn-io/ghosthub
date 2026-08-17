@@ -11,6 +11,7 @@ struct TmuxPaneSplitTarget: Sendable {
     var sshConnectionArguments: [String]
     var expectedIdentity: TmuxSessionIdentity?
     var clientToken: String?
+    var clientTTYDirectory: String?
     var expectedClient: TmuxPaneSplitClientIdentity?
 }
 
@@ -283,6 +284,7 @@ struct TmuxPaneSplitter: Sendable {
             tmuxPath: target.tmuxPath,
             socketName: target.socketName,
             clientToken: clientToken,
+            clientTTYDirectory: target.clientTTYDirectory,
             platform: Self.platform(for: target.host)
         )
         let result = await run(
@@ -337,6 +339,7 @@ struct TmuxPaneSplitter: Sendable {
         tmuxPath: String,
         socketName: String?,
         clientToken: String,
+        clientTTYDirectory: String?,
         platform: SSHHostInfo.Platform
     ) -> String {
         guard platform == .posix,
@@ -379,7 +382,15 @@ struct TmuxPaneSplitter: Sendable {
                 + "\"$ghosthub_identity_session_id\" "
                 + "\"$ghosthub_identity_session_created\" "
                 + "\"$ghosthub_identity_pane_id\"; break; done"
-        let path = "\"$HOME/.ghosthub/tmux-clients/\(clientToken)\""
+        let path: String
+        if let clientTTYDirectory {
+            let separator = clientTTYDirectory.hasSuffix("/") ? "" : "/"
+            path = shellQuotedCommandArgument(
+                clientTTYDirectory + separator + clientToken
+            )
+        } else {
+            path = "\"$HOME/.ghosthub/tmux-clients/\(clientToken)\""
+        }
         return "ghosthub_client_tty=; "
             + "for ghosthub_client_probe_delay in "
             + "0.01 0.02 0.04 0.08 0.16 0.32 0.64 1 1 1 1; do "

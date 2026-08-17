@@ -63,6 +63,7 @@ private struct NativeTmuxAttachment {
     var sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
     var sessionIdentity: TmuxSessionIdentity?
     var paneSplitClientToken: String
+    var clientTTYDirectory: String?
     var supportsPaneSplitting: Bool
     var remoteExitStatusURL: URL?
 }
@@ -383,6 +384,10 @@ final class NativeTmuxSessionCoordinator {
                 sshConnectionSnapshot: sshConnectionSnapshot,
                 sessionIdentity: sessionIdentity,
                 paneSplitClientToken: attachmentID.uuidString.lowercased(),
+                clientTTYDirectory: host.isRemote ? nil : StateHome.resolved()
+                    .appendingPathComponent(
+                        "tmux-clients", isDirectory: true
+                    ).path,
                 supportsPaneSplitting: TmuxPaneSplitter
                     .supportsPaneSplitting(
                         version: resolved.version,
@@ -517,7 +522,8 @@ final class NativeTmuxSessionCoordinator {
                     attachment.sshConnectionSnapshot.arguments,
                     remoteExitStatusPath:
                     attachment.remoteExitStatusURL?.path,
-                    clientTTYToken: attachment.paneSplitClientToken
+                    clientTTYToken: attachment.paneSplitClientToken,
+                    localClientTTYDirectory: attachment.clientTTYDirectory
                 )
             )
         )
@@ -550,6 +556,7 @@ final class NativeTmuxSessionCoordinator {
             sshConnectionArguments: attachment.sshConnectionSnapshot.arguments,
             expectedIdentity: attachment.sessionIdentity,
             clientToken: attachment.paneSplitClientToken,
+            clientTTYDirectory: attachment.clientTTYDirectory,
             expectedClient: paneSplitClients[handle.id]
         )
         if attachment.supportsPaneSplitting {
@@ -650,6 +657,7 @@ final class NativeTmuxSessionCoordinator {
             sshConnectionArguments: attachment.sshConnectionSnapshot.arguments,
             expectedIdentity: expectedIdentity,
             clientToken: attachment.paneSplitClientToken,
+            clientTTYDirectory: attachment.clientTTYDirectory,
             expectedClient: paneSplitClients[handle.id]
         )
     }

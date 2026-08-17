@@ -54,17 +54,19 @@ struct TmuxAttachmentInfoTests {
             ofItemAtPath: tmux.path
         )
         let token = "slow-\(UUID().uuidString.lowercased())"
-        let shellHome = try #require(
-            ProcessInfo.processInfo.environment["HOME"]
+        let clientTTYDirectory = directory.appendingPathComponent(
+            "isolated-state/tmux-clients", isDirectory: true
         )
-        let tokenPath = URL(fileURLWithPath: shellHome, isDirectory: true)
-            .appendingPathComponent(".ghosthub/tmux-clients/\(token)")
-        defer { try? FileManager.default.removeItem(at: tokenPath) }
+        let tokenPath = clientTTYDirectory.appendingPathComponent(token)
         let command = TmuxAttachmentInfo(
             sessionName: "unpublished",
             host: .local,
             launchMode: .attachOnly
-        ).attachCommand(tmuxPath: tmux.path, clientTTYToken: token)
+        ).attachCommand(
+            tmuxPath: tmux.path,
+            clientTTYToken: token,
+            localClientTTYDirectory: clientTTYDirectory.path
+        )
         let process = Process()
         let input = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/script")

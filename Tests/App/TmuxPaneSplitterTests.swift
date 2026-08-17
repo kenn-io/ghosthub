@@ -16,7 +16,13 @@ private let testSplitClient = TmuxPaneSplitClientIdentity(
     paneID: "%9"
 )
 
-private func testClientTokenPath(_ token: String) throws -> URL {
+private func testClientTokenPath(
+    _ token: String,
+    directory: URL? = nil
+) throws -> URL {
+    if let directory {
+        return directory.appendingPathComponent(token)
+    }
     let shellHome = try #require(
         ProcessInfo.processInfo.environment["HOME"]
     )
@@ -73,9 +79,13 @@ private final class TestTmuxClient {
         tmuxPath: String,
         socketName: String,
         sessionName: String,
-        clientToken: String
+        clientToken: String,
+        clientTTYDirectory: URL? = nil
     ) throws {
-        tokenPath = try testClientTokenPath(clientToken)
+        tokenPath = try testClientTokenPath(
+            clientToken,
+            directory: clientTTYDirectory
+        )
         let command = TmuxAttachmentInfo(
             sessionName: sessionName,
             host: .local,
@@ -83,7 +93,8 @@ private final class TestTmuxClient {
             launchMode: .attachOnly
         ).attachCommand(
             tmuxPath: tmuxPath,
-            clientTTYToken: clientToken
+            clientTTYToken: clientToken,
+            localClientTTYDirectory: clientTTYDirectory?.path
         )
         process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
         process.arguments = [
@@ -503,14 +514,21 @@ struct TmuxPaneSplitterTests {
         defer { server.stop() }
         let socketName = server.socketName
 
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let token = UUID().uuidString.lowercased()
+        let clientTTYDirectory = stateDirectory.appendingPathComponent(
+            "isolated-state/tmux-clients", isDirectory: true
+        )
         let target = TmuxPaneSplitTarget(
             host: .local,
             tmuxPath: tmuxPath,
             sessionName: "token-race",
             socketName: socketName,
             sshConnectionArguments: [],
-            clientToken: token
+            clientToken: token,
+            clientTTYDirectory: clientTTYDirectory.path
         )
         let runnerStarted = LockedValue(false)
         let releaseRunner = DispatchSemaphore(value: 0)
@@ -537,7 +555,8 @@ struct TmuxPaneSplitterTests {
             tmuxPath: tmuxPath,
             socketName: socketName,
             sessionName: "token-race",
-            clientToken: token
+            clientToken: token,
+            clientTTYDirectory: clientTTYDirectory
         )
         defer { clientProcess.stop() }
         let client = try await pendingIdentity.get()
