@@ -365,7 +365,7 @@ jobs:
               default_branch and
               any(.rules[]?;
                 .type == "required_status_checks" and
-                .parameters.strict_required_status_checks_policy == true and
+                .parameters.strict_required_status_checks_policy == false and
                 any(.parameters.required_status_checks[]?;
                   .context == "sandbox-image-promotion" and
                   .integration_id == $app_id)) and

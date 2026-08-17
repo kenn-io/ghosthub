@@ -305,7 +305,7 @@ def promotion_ruleset_payload(value: object, app_id: int) -> dict[str, object]:
             {
                 "type": "required_status_checks",
                 "parameters": {
-                    "strict_required_status_checks_policy": True,
+                    "strict_required_status_checks_policy": False,
                     "do_not_enforce_on_create": False,
                     "required_status_checks": [required],
                 },

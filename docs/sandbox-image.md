@@ -48,8 +48,8 @@ Never use `latest`.
   an exact branch policy to the `main` branch (not a same-named tag), containing
   that app's client ID and private key
 - an active default-branch ruleset with no bypass actors or ref exclusions that
-  requires `sandbox-image-promotion`, enables strict required-status-check
-  policy, and binds the context to that dedicated app's numeric integration ID
+  requires `sandbox-image-promotion`, binds the context to that dedicated app's
+  numeric integration ID, and leaves global up-to-date enforcement disabled
 - approval authority, or an available reviewer, for that environment
 
 The promotion preflight reads the live rulesets through the GitHub API and
@@ -281,9 +281,10 @@ run expires before retag or merge, rerun
 `sandbox-image-promote` and approve the idempotent promotion again.
 
 The repository ruleset is provisioned with no bypass actors and must require
-this status from the dedicated app with strict checking enabled and an empty
-exclusion list. Merge the authorized pull-request head through the repository's
-normal squash-merge path.
+this status from the dedicated app with an empty exclusion list. Its global
+up-to-date option stays disabled so unrelated `main` changes never force every
+open pull request through another rebase. Merge the authorized pull-request
+head through the repository's normal squash-merge path.
 Trusted-main code checks out the proposed merge tree without executing it,
 structurally audits every proposed workflow, and requires every workflow that
 can reference a credential-bearing environment to remain byte-identical to
@@ -293,8 +294,10 @@ executable post-approval vulnerability policy is part of the same
 byte-identical authority closure, and changing it is promotion-relevant.
 It then rechecks the complete App, environment, ruleset, file, base,
 promotion-run, and freshness authority before the dedicated App authorizes that
-pull-request head. Strict checking also makes the current `main` revision part
-of authorization. Any push creates a new head without authorization.
+pull-request head. Reconciliation makes the current `main` revision part of
+promotion authorization without turning ordinary branch freshness into a
+repository-wide merge requirement. Any push creates a new head without
+authorization.
 Trusted promotion verifies the same live authority before it can write a
 production tag.
 

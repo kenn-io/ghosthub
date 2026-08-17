@@ -453,8 +453,10 @@ also fingerprints the full reviewer, deployment, and branch policy and the
 status-signing environment. The approved runner requires exact matches and an
 unchanged trusted-main workflow authority immediately before registry mutation.
 A repository ruleset provisioned with no bypass actors or ref exclusions
-requires that status from a dedicated status-only GitHub App with strict
-checking. The app private key exists only in a
+requires that status from a dedicated status-only GitHub App. Global up-to-date
+enforcement stays disabled; trusted reconciliation invalidates stale promotion
+evidence without forcing unrelated pull requests to rebase after every `main`
+change. The app private key exists only in a
 no-reviewer
 environment restricted by an exact branch policy to the `main` branch, never a
 same-named tag. A pinned token action consumes that key; repository Python

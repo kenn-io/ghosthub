@@ -256,7 +256,7 @@ def test_promotion_ruleset_is_narrow_and_pins_app() -> None:
     assert isinstance(required_rule, dict)
     required = required_rule["parameters"]
     assert isinstance(required, dict)
-    assert required["strict_required_status_checks_policy"] is True
+    assert required["strict_required_status_checks_policy"] is False
     assert required["required_status_checks"] == [
         {
             "context": "sandbox-image-promotion",
