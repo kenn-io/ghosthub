@@ -124,22 +124,10 @@ public enum TailscalePeerImportSelection {
     }
 
     public static func defaultSelectedPeerIDs(
-        peers: [TailscalePeer],
-        existingAddresses: Set<String>
+        peers _: [TailscalePeer],
+        existingAddresses _: Set<String>
     ) -> Set<String> {
-        let normalizedExisting = normalizedExistingAddresses(
-            existingAddresses
-        )
-        return Set(
-            peers
-                .filter {
-                    $0.isOnline
-                        && !normalizedExisting.contains(
-                            normalizedHost($0.sshAddress)
-                        )
-                }
-                .map(\.id)
-        )
+        []
     }
 
     public static func selectedPeers(

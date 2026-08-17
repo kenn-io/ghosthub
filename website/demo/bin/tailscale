@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Faux Tailscale status for the isolated website screenshot environment.
+set -euo pipefail
+
+scratch="${GHOSTHUB_DEMO_SCRATCH:?GHOSTHUB_DEMO_SCRATCH is not set}"
+if [[ ! -f "$scratch/.ghosthub-demo-scratch" ]]; then
+  echo "faux tailscale: demo scratch is not staged" >&2
+  exit 64
+fi
+if [[ "${TAILSCALE_BE_CLI:-}" != "1" ]]; then
+  echo "faux tailscale: CLI mode is required" >&2
+  exit 64
+fi
+if [[ "${1:-}" != "status" || "${2:-}" != "--json" || "$#" -ne 2 ]]; then
+  echo "faux tailscale: unsupported command" >&2
+  exit 64
+fi
+
+cat <<'EOF'
+{"Peer":{"build-node":{"ID":"build-node","HostName":"build-node","DNSName":"build-node.demo.example.","OS":"linux","Online":true},"studio-mini":{"ID":"studio-mini","HostName":"studio-mini","DNSName":"studio-mini.demo.example.","OS":"macos","Online":true},"windows-lab":{"ID":"windows-lab","HostName":"windows-lab","DNSName":"windows-lab.demo.example.","OS":"windows","Online":false},"phone":{"ID":"phone","HostName":"phone","DNSName":"phone.demo.example.","OS":"iOS","Online":true}}}
+EOF

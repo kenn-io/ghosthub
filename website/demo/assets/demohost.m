@@ -25,8 +25,11 @@ static __weak NSWindow *DemoControlledWindow;
 static NSWindow *DemoRootWindow(void);
 
 static NSWindow *DemoEventWindow(void) {
-  NSWindow *root = DemoRootWindow();
-  return root.attachedSheet ?: root ?: [NSApp keyWindow] ?: [NSApp mainWindow];
+  NSWindow *window = DemoRootWindow() ?: [NSApp keyWindow] ?: [NSApp mainWindow];
+  while (window.attachedSheet != nil) {
+    window = window.attachedSheet;
+  }
+  return window;
 }
 
 static NSString *DemoHostName(id self, SEL _cmd) {
@@ -108,6 +111,32 @@ static BOOL DemoClickWindow(NSWindow *window, NSPoint point) {
                                    pressure:0];
   [NSApp sendEvent:down];
   [NSApp sendEvent:up];
+  return YES;
+}
+
+static BOOL DemoQueuedClickWindow(NSWindow *window, NSPoint point) {
+  if (window == nil) return NO;
+  NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
+  NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                     location:point
+                                modifierFlags:0
+                                    timestamp:now
+                                 windowNumber:window.windowNumber
+                                      context:nil
+                                  eventNumber:0
+                                   clickCount:1
+                                     pressure:1];
+  NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp
+                                   location:point
+                              modifierFlags:0
+                                  timestamp:now
+                               windowNumber:window.windowNumber
+                                    context:nil
+                                eventNumber:0
+                                 clickCount:1
+                                   pressure:0];
+  [NSApp postEvent:up atStart:YES];
+  [NSApp sendEvent:down];
   return YES;
 }
 
@@ -547,7 +576,8 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                     @"requestID": requestID,
                     @"success": @(success),
                     @"message": message ?: @"",
-                  }];
+                  }
+        deliverImmediately:YES];
 }
 
 - (void)capture:(NSNotification *)notification {
@@ -572,49 +602,59 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
 
   dispatch_async(dispatch_get_main_queue(), ^{
     if ([action isEqualToString:@"palette"]) {
-      [[NSNotificationCenter defaultCenter]
-          postNotificationName:@"ghosthubCommandPalette"
-                        object:nil];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+      [NSApp activateIgnoringOtherApps:YES];
+#pragma clang diagnostic pop
+      [DemoRootWindow() makeKeyAndOrderFront:nil];
       dispatch_after(
-          dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+          dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
           dispatch_get_main_queue(), ^{
-            if (!DemoInsertText(text)) {
-              [self acknowledge:requestID
-                        success:NO
-                        message:@"command palette did not accept text"];
-              return;
-            }
-            NSWindow *paletteSheet = DemoRootWindow().attachedSheet;
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:@"ghosthubCommandPalette"
+                              object:nil];
             dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
                 dispatch_get_main_queue(), ^{
-                  if (!submit) {
-                    BOOL matched = DemoPalettePostcondition(
-                        expectKind, paletteSheet);
+                  if (!DemoInsertText(text)) {
                     [self acknowledge:requestID
-                              success:matched
-                              message:matched
-                                  ? @"command palette matched requested state"
-                                  : @"command palette did not match requested state"];
+                              success:NO
+                              message:@"command palette did not accept text"];
                     return;
                   }
+                  NSWindow *paletteSheet = DemoRootWindow().attachedSheet;
                   dispatch_after(
-                      dispatch_time(
-                          DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                      dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
                       dispatch_get_main_queue(), ^{
-                        if (!DemoSendKey(@"\r", 36, 0)) {
+                        if (!submit) {
+                          BOOL matched = DemoPalettePostcondition(
+                              expectKind, paletteSheet);
                           [self acknowledge:requestID
-                                    success:NO
-                                    message:@"command palette lost its window"];
+                                    success:matched
+                                    message:matched
+                                        ? @"command palette matched requested state"
+                                        : @"command palette did not match requested state"];
                           return;
                         }
-                        DemoWaitForPalettePostcondition(
-                            expectKind, paletteSheet, 50, ^(BOOL matched) {
-                              [self acknowledge:requestID
-                                        success:matched
-                                        message:matched
-                                            ? @"command reached requested state"
-                                            : @"command did not reach requested state"];
+                        dispatch_after(
+                            dispatch_time(
+                                DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                            dispatch_get_main_queue(), ^{
+                              if (!DemoSendKey(@"\r", 36, 0)) {
+                                [self acknowledge:requestID
+                                          success:NO
+                                          message:@"command palette lost its window"];
+                                return;
+                              }
+                              DemoWaitForPalettePostcondition(
+                                  expectKind, paletteSheet, 50,
+                                  ^(BOOL matched) {
+                                    [self acknowledge:requestID
+                                              success:matched
+                                              message:matched
+                                                  ? @"command reached requested state"
+                                                  : @"command did not reach requested state"];
+                                  });
                             });
                       });
                 });
@@ -814,7 +854,7 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                                       : @"no workspace window"];
     } else if ([action isEqualToString:@"expect-text"]) {
       BOOL found = text.length > 0 &&
-          DemoContainsText(DemoRootWindow(), text, 0);
+          DemoContainsText(DemoEventWindow(), text, 0);
       [self acknowledge:requestID
                 success:found
                 message:found ? @"expected text is visible"
@@ -859,6 +899,19 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                 success:clicked
                 message:clicked ? @"window title clicked"
                                 : @"workspace title was not available"];
+    } else if ([action isEqualToString:@"click-sheet"]) {
+      NSArray<NSString *> *parts =
+          [text componentsSeparatedByString:@","];
+      BOOL clicked =
+          parts.count == 2 &&
+          DemoQueuedClickWindow(
+              DemoEventWindow(),
+              NSMakePoint(parts[0].doubleValue,
+                          parts[1].doubleValue));
+      [self acknowledge:requestID
+                success:clicked
+                message:clicked ? @"sheet click sent"
+                                : @"sheet click requires x,y and a window"];
     } else if ([action isEqualToString:@"scroll-detail"]) {
       BOOL scrolled = text.length > 0 && DemoScrollDetail(text.doubleValue);
       [self acknowledge:requestID
@@ -868,7 +921,7 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
     } else if ([action isEqualToString:@"press"]) {
       BOOL pressed =
           text.length > 0 &&
-          DemoPressLabel(DemoRootWindow().contentView, text, 0);
+          DemoPressLabel(DemoEventWindow().contentView, text, 0);
       [self acknowledge:requestID
                 success:pressed
                 message:pressed ? @"accessibility control pressed"

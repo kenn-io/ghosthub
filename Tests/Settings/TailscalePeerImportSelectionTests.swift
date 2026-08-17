@@ -33,10 +33,6 @@ struct TailscalePeerImportSelectionTests {
             peer,
             existingAddresses: ["builder"]
         ))
-        #expect(TailscalePeerImportSelection.defaultSelectedPeerIDs(
-            peers: [peer],
-            existingAddresses: ["builder"]
-        ) == ["builder"])
     }
 
     @Test("marks existing peers after normalizing SSH destinations")
@@ -55,8 +51,8 @@ struct TailscalePeerImportSelectionTests {
         )
     }
 
-    @Test("default selection includes only online peers not already imported")
-    func defaultSelectionIncludesOnlyOnlineNewPeers() {
+    @Test("default selection leaves every peer unselected")
+    func defaultSelectionIsEmpty() {
         let selectedIDs =
             TailscalePeerImportSelection.defaultSelectedPeerIDs(
                 peers: [
@@ -73,7 +69,7 @@ struct TailscalePeerImportSelectionTests {
                 ]
             )
 
-        #expect(selectedIDs == ["online"])
+        #expect(selectedIDs.isEmpty)
     }
 
     @Test("selected peers preserve discovery order")

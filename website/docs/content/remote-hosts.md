@@ -130,7 +130,10 @@ Ghosthub never scans a remote filesystem. See
 
 Importing a Tailscale peer preserves its full MagicDNS name. Ghosthub uses the
 user selected by OpenSSH configuration and falls back to the local macOS user
-name when none is configured.
+name when none is configured. The import picker starts with every peer
+unselected so you can choose only the hosts you want to add.
+
+![Host Settings with explicit Tailscale import controls](assets/guide-tailscale-import.png)
 
 ## Experimental Windows hosts
 

@@ -1,4 +1,4 @@
-Host ghosthub-demo-remote exe.dev exe-gpu-east exe-builder
+Host ghosthub-demo-remote exe.dev exe-gpu-east exe-builder build-node.demo.example studio-mini.demo.example windows-lab.demo.example
     HostName 127.0.0.1
     Port 2201
     User demo
