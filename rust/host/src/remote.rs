@@ -6,11 +6,16 @@ use std::path::Path;
 use std::time::Duration;
 
 use model::DiagnosticKind;
-use session::{AttachPlan, DiscoveredSession, SessionIdentity};
+use session::{
+    AttachPlan, DiscoveredSession, HerdrAttachPlan, HerdrLaunchOnce, HerdrLaunchTarget,
+    HerdrSessionRecord, SessionIdentity, ZellijAttachPlan, ZellijLaunchOnce, ZellijSessionName,
+    ZellijSessionRecord,
+};
 
 use crate::{
-    CancellationToken, CommandPrefix, CommandRunner, KwtSshExecutable, KwtSshLeaseClient,
-    KwtSshResolver, SshLease, SshLeaseEvent, SshLeasePrompt, SshTarget,
+    AttachTerm, CancellationToken, CommandPrefix, CommandRunner, HerdrInventory, HostError,
+    KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshLease, SshLeaseEvent, SshLeasePrompt,
+    SshTarget, ZellijInventory, herdr, zellij,
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
@@ -19,11 +24,25 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 // length-prefixed, so it may contain the separator or any other non-NUL byte.
 const INVENTORY_FORMAT: &str =
     "#{pid}|#{session_id}|#{session_created}|#{session_attached}|#{n:session_name}|#{session_name}";
-const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const TMUX_PATH_MARKER: &str = "GHOSTHUB_TMUX_PATH=";
-const INVENTORY_BEGIN_PREFIX: &str = "GHOSTHUB_TMUX_INVENTORY_BEGIN_";
-const INVENTORY_END_PREFIX: &str = "GHOSTHUB_TMUX_INVENTORY_END_";
+const TMUX_PROBE_PREFIX: &str = "GHOSTHUB_TMUX_PROBE_";
+const HERDR_PROBE_PREFIX: &str = "GHOSTHUB_HERDR_PROBE_";
+const HERDR_INVENTORY_PREFIX: &str = "GHOSTHUB_HERDR_INVENTORY_";
+const ZELLIJ_PROBE_PREFIX: &str = "GHOSTHUB_ZELLIJ_PROBE_";
+const ZELLIJ_INVENTORY_PREFIX: &str = "GHOSTHUB_ZELLIJ_INVENTORY_";
+const TERMINFO_PROBE_PREFIX: &str = "GHOSTHUB_TERMINFO_PROBE_";
 const IDENTITY_MISMATCH_PREFIX: &str = "GHOSTHUB_REMOTE_IDENTITY_MISMATCH_";
+const TERMINFO_PROBE_SCRIPT: &str = "\
+if command -v infocmp >/dev/null 2>&1; then \
+  if infocmp xterm-256color >/dev/null 2>&1; then printf 'xterm-256color\\n'; exit 0; fi; \
+  if infocmp xterm >/dev/null 2>&1; then printf 'xterm\\n'; exit 0; fi; \
+elif command -v tput >/dev/null 2>&1; then \
+  if tput -T xterm-256color longname >/dev/null 2>&1; then printf 'xterm-256color\\n'; exit 0; fi; \
+  if tput -T xterm longname >/dev/null 2>&1; then printf 'xterm\\n'; exit 0; fi; \
+else \
+  printf 'neither infocmp nor tput is available\\n' >&2; exit 127; \
+fi; \
+printf 'neither xterm-256color nor xterm terminfo is available\\n' >&2; exit 1";
 
 /// Absolute system OpenSSH client used only with KWT-issued lease arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,8 +57,8 @@ impl SshExecutable {
     /// resolved or does not contain an executable.
     pub fn system() -> Result<Self, RemoteTmuxError> {
         #[cfg(windows)]
-        let path =
-            crate::windows_system::ssh_executable().map_err(|error| RemoteTmuxError::io(&error))?;
+        let path = crate::windows_system::ssh_executable()
+            .map_err(|error| RemoteTmuxError::local_executable(&error))?;
         #[cfg(not(windows))]
         let path = OsString::from("/usr/bin/ssh");
         Self::from_absolute(path)
@@ -104,7 +123,9 @@ impl RemoteTmuxConfig {
         };
         require_safe("remote host ID", &config.id)?;
         require_safe("remote host name", &config.name)?;
-        require_absolute("remote tmux binary", &config.tmux_binary)?;
+        if !config.tmux_binary.is_empty() {
+            require_absolute("remote tmux binary", &config.tmux_binary)?;
+        }
         if let Some(path) = &config.socket_directory {
             require_absolute("remote tmux socket directory", path)?;
         }
@@ -157,7 +178,7 @@ impl Default for RemoteTmuxConfig {
             id: "ssh:example".to_owned(),
             name: "Remote host".to_owned(),
             target: SshTarget::new("example.invalid", None, None).expect("static SSH target"),
-            tmux_binary: DEFAULT_TMUX.to_owned(),
+            tmux_binary: String::new(),
             socket_directory: None,
         }
     }
@@ -168,12 +189,94 @@ pub struct RemoteTmuxSnapshot {
     endpoint: String,
     route_identity: String,
     lease_generation: u64,
-    tmux_binary: String,
+    inventory_generation: u64,
+    tmux_binary: Option<String>,
+    tmux_diagnostic: Option<HostError>,
     sessions: Vec<DiscoveredSession>,
+    herdr: HerdrInventory,
+    zellij: ZellijInventory,
     lease: SshLease,
 }
 
+/// Multiplexer inventory captured through one reviewed SSH lease.
+#[derive(Clone, Debug)]
+pub struct RemoteSessionInventory {
+    tmux_binary: Option<String>,
+    tmux_diagnostic: Option<HostError>,
+    sessions: Vec<DiscoveredSession>,
+    herdr: HerdrInventory,
+    zellij: ZellijInventory,
+}
+
+impl RemoteSessionInventory {
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_fixture(
+        tmux_binary: Option<String>,
+        sessions: Vec<DiscoveredSession>,
+        herdr: HerdrInventory,
+        zellij: ZellijInventory,
+    ) -> Self {
+        Self {
+            tmux_binary,
+            tmux_diagnostic: None,
+            sessions,
+            herdr,
+            zellij,
+        }
+    }
+
+    #[must_use]
+    pub fn tmux_binary(&self) -> Option<&str> {
+        self.tmux_binary.as_deref()
+    }
+
+    #[must_use]
+    pub const fn tmux_diagnostic(&self) -> Option<&HostError> {
+        self.tmux_diagnostic.as_ref()
+    }
+
+    #[must_use]
+    pub fn sessions(&self) -> &[DiscoveredSession] {
+        &self.sessions
+    }
+
+    #[must_use]
+    pub const fn herdr(&self) -> &HerdrInventory {
+        &self.herdr
+    }
+
+    #[must_use]
+    pub const fn zellij(&self) -> &ZellijInventory {
+        &self.zellij
+    }
+}
+
 impl RemoteTmuxSnapshot {
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_fixture(
+        endpoint: &str,
+        route_identity: &str,
+        lease_generation: u64,
+        sessions: Vec<DiscoveredSession>,
+        herdr: HerdrInventory,
+        zellij: ZellijInventory,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.to_owned(),
+            route_identity: route_identity.to_owned(),
+            lease_generation,
+            inventory_generation: 0,
+            tmux_binary: Some("/usr/bin/tmux".to_owned()),
+            tmux_diagnostic: None,
+            sessions,
+            herdr,
+            zellij,
+            lease: SshLease::test_fixture(route_identity, lease_generation),
+        }
+    }
+
     #[must_use]
     pub fn endpoint(&self) -> &str {
         &self.endpoint
@@ -190,8 +293,18 @@ impl RemoteTmuxSnapshot {
     }
 
     #[must_use]
-    pub fn tmux_binary(&self) -> &str {
-        &self.tmux_binary
+    pub const fn inventory_generation(&self) -> u64 {
+        self.inventory_generation
+    }
+
+    #[must_use]
+    pub fn tmux_binary(&self) -> Option<&str> {
+        self.tmux_binary.as_deref()
+    }
+
+    #[must_use]
+    pub const fn tmux_diagnostic(&self) -> Option<&HostError> {
+        self.tmux_diagnostic.as_ref()
     }
 
     #[must_use]
@@ -200,8 +313,44 @@ impl RemoteTmuxSnapshot {
     }
 
     #[must_use]
+    pub const fn herdr(&self) -> &HerdrInventory {
+        &self.herdr
+    }
+
+    #[must_use]
+    pub const fn zellij(&self) -> &ZellijInventory {
+        &self.zellij
+    }
+
+    #[must_use]
     pub const fn lease(&self) -> &SshLease {
         &self.lease
+    }
+
+    /// Replace only the multiplexer inventory while preserving the reviewed
+    /// route and lease identity that authorized the refresh.
+    ///
+    /// # Panics
+    ///
+    /// Panics if one SSH lease produces more than `u64::MAX` accepted
+    /// inventory publications.
+    #[must_use]
+    pub fn with_inventory(&self, inventory: RemoteSessionInventory) -> Self {
+        Self {
+            endpoint: self.endpoint.clone(),
+            route_identity: self.route_identity.clone(),
+            lease_generation: self.lease_generation,
+            inventory_generation: self
+                .inventory_generation
+                .checked_add(1)
+                .expect("remote inventory generation overflow"),
+            tmux_binary: inventory.tmux_binary,
+            tmux_diagnostic: inventory.tmux_diagnostic,
+            sessions: inventory.sessions,
+            herdr: inventory.herdr,
+            zellij: inventory.zellij,
+            lease: self.lease.clone(),
+        }
     }
 }
 
@@ -272,14 +421,17 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         let lease = KwtSshLeaseClient::with_command(self.controller.clone())
             .acquire(&route, cancellation, prompt, status)
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
-        let tmux_binary = self.resolve_tmux_binary(&lease, cancellation)?;
-        let sessions = self.discover_sessions(&lease, &tmux_binary, cancellation)?;
+        let inventory = self.refresh(&lease, cancellation)?;
         Ok(RemoteTmuxSnapshot {
             endpoint: self.config.endpoint(),
             route_identity: route.route_identity().to_owned(),
             lease_generation: lease.result().generation(),
-            tmux_binary,
-            sessions,
+            inventory_generation: 0,
+            tmux_binary: inventory.tmux_binary,
+            tmux_diagnostic: inventory.tmux_diagnostic,
+            sessions: inventory.sessions,
+            herdr: inventory.herdr,
+            zellij: inventory.zellij,
             lease,
         })
     }
@@ -293,9 +445,146 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         &self,
         lease: &SshLease,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<DiscoveredSession>, RemoteTmuxError> {
-        let tmux_binary = self.resolve_tmux_binary(lease, cancellation)?;
-        self.discover_sessions(lease, &tmux_binary, cancellation)
+    ) -> Result<RemoteSessionInventory, RemoteTmuxError> {
+        let (tmux_binary, sessions, tmux_diagnostic) = scope_tmux_inventory(
+            self.resolve_tmux_binary(lease, cancellation)
+                .and_then(|binary| {
+                    self.discover_sessions(lease, &binary, cancellation)
+                        .map(|sessions| (binary, sessions))
+                }),
+        )?;
+        let herdr = self.discover_herdr(lease, cancellation)?;
+        let zellij = self.discover_zellij(lease, cancellation)?;
+        Ok(RemoteSessionInventory {
+            tmux_binary,
+            tmux_diagnostic,
+            sessions,
+            herdr,
+            zellij,
+        })
+    }
+
+    /// Select a terminal type proven usable by the remote terminfo database.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified remote-command failure when neither required
+    /// terminal entry can be verified.
+    pub fn probe_terminal_term(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        cancellation: &CancellationToken,
+    ) -> Result<AttachTerm, RemoteTmuxError> {
+        let output = self.run_framed_remote_shell(
+            snapshot.lease(),
+            TERMINFO_PROBE_SCRIPT,
+            TERMINFO_PROBE_PREFIX,
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(command_failure(
+                &output,
+                "remote terminal capability probe failed",
+            ));
+        }
+        parse_terminal_term(&output.stdout)
+    }
+
+    fn discover_herdr(
+        &self,
+        lease: &SshLease,
+        cancellation: &CancellationToken,
+    ) -> Result<HerdrInventory, RemoteTmuxError> {
+        let result: Result<Option<(String, Vec<HerdrSessionRecord>)>, RemoteTmuxError> = (|| {
+            let probe = self.run_framed_remote_shell(
+                lease,
+                herdr::RESOLVE_SCRIPT,
+                HERDR_PROBE_PREFIX,
+                cancellation,
+            )?;
+            if probe.status != 0 && probe.status != 127 {
+                return Err(command_failure(&probe, "remote Herdr probe failed"));
+            }
+            let executable = match herdr::parse_executable(probe.status, &probe.stdout)
+                .map_err(|detail| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, detail))?
+            {
+                herdr::ExecutableProbe::Available(executable) => executable,
+                herdr::ExecutableProbe::Unavailable => return Ok(None),
+            };
+            let command = multiplexer_command(
+                &herdr::CONTROL_VARIABLES,
+                RemoteCommandLocale::StableOutput,
+                None,
+                &executable,
+                ["session", "list", "--json"],
+            );
+            let output = self.run_framed_remote_shell(
+                lease,
+                &posix_command(&command),
+                HERDR_INVENTORY_PREFIX,
+                cancellation,
+            )?;
+            if output.status != 0 {
+                return Err(command_failure(&output, "remote Herdr inventory failed"));
+            }
+            let sessions = herdr::parse_inventory(&output.stdout)
+                .map_err(|detail| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, detail))?;
+            Ok(Some((executable, sessions)))
+        })(
+        );
+        Ok(match result {
+            Ok(Some((executable, sessions))) => HerdrInventory::Available {
+                executable,
+                sessions,
+            },
+            Ok(None) => HerdrInventory::Unavailable,
+            Err(error) => HerdrInventory::Failed(scope_backend_failure(error)?),
+        })
+    }
+
+    fn discover_zellij(
+        &self,
+        lease: &SshLease,
+        cancellation: &CancellationToken,
+    ) -> Result<ZellijInventory, RemoteTmuxError> {
+        let result: Result<Option<(String, Vec<ZellijSessionRecord>)>, RemoteTmuxError> = (|| {
+            let probe = self.run_framed_remote_shell(
+                lease,
+                zellij::RESOLVE_SCRIPT,
+                ZELLIJ_PROBE_PREFIX,
+                cancellation,
+            )?;
+            if probe.status != 0 && probe.status != 127 {
+                return Err(command_failure(&probe, "remote Zellij probe failed"));
+            }
+            let executable = match zellij::parse_executable(probe.status, &probe.stdout)
+                .map_err(|detail| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, detail))?
+            {
+                zellij::ExecutableProbe::Available(executable) => executable,
+                zellij::ExecutableProbe::Unavailable => return Ok(None),
+            };
+            let command = zellij_inventory_command(&executable);
+            let output = self.run_framed_remote_shell(
+                lease,
+                &posix_command(&command),
+                ZELLIJ_INVENTORY_PREFIX,
+                cancellation,
+            )?;
+            let sessions = zellij::parse_inventory(output.status, &output.stdout, &output.stderr)
+                .map_err(|detail| {
+                RemoteTmuxError::new(DiagnosticKind::MalformedOutput, detail)
+            })?;
+            Ok(Some((executable, sessions)))
+        })(
+        );
+        Ok(match result {
+            Ok(Some((executable, sessions))) => ZellijInventory::Available {
+                executable,
+                sessions,
+            },
+            Ok(None) => ZellijInventory::Unavailable,
+            Err(error) => ZellijInventory::Failed(scope_backend_failure(error)?),
+        })
     }
 
     fn resolve_tmux_binary(
@@ -304,13 +593,12 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<String, RemoteTmuxError> {
         let probe = tmux_probe_command(self.config.tmux_binary());
-        let output = self.run_remote_shell(lease, &probe, cancellation)?;
+        let output =
+            self.run_framed_remote_shell(lease, &probe, TMUX_PROBE_PREFIX, cancellation)?;
         if output.status != 0 {
             return Err(RemoteTmuxError::new(
                 if output.status == 127 {
                     DiagnosticKind::ExecutableNotFound
-                } else if output.status == 255 {
-                    DiagnosticKind::Transport
                 } else {
                     DiagnosticKind::UnsupportedEnvironment
                 },
@@ -332,21 +620,16 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             tmux_binary,
             ["-f", "/dev/null", "list-sessions", "-F", INVENTORY_FORMAT],
         ));
-        let framed = format!(
-            "printf '%s\\n' {}; {command}; ghosthub_status=$?; printf '%s\\n' {}; exit $ghosthub_status",
-            shell_quoted_argument(&begin_marker),
-            shell_quoted_argument(&end_marker),
-        );
+        let framed = framed_remote_shell_command(&command, &begin_marker, &end_marker);
         let output = self.run_remote_shell(lease, &framed, cancellation)?;
+        let output = extract_framed_command_output(output, &begin_marker, &end_marker)?;
         if output.status != 0 {
             let diagnostic = String::from_utf8_lossy(&output.stderr);
             if is_missing_tmux_server(&diagnostic) {
                 return Ok(Vec::new());
             }
             return Err(RemoteTmuxError::new(
-                if output.status == 255 {
-                    DiagnosticKind::Transport
-                } else if output.status == 127 {
+                if output.status == 127 {
                     DiagnosticKind::ExecutableNotFound
                 } else {
                     DiagnosticKind::UnsupportedEnvironment
@@ -354,7 +637,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 nonempty_diagnostic(&output.stderr, "remote tmux inventory failed"),
             ));
         }
-        parse_inventory(&output.stdout, &begin_marker, &end_marker)
+        parse_inventory_payload(&output.stdout)
     }
 
     /// Build an ordinary PTY client plan over the existing KWT lease.
@@ -387,7 +670,12 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         let attach = format!("attach-session -E -t ={}", identity.session_id());
         let command = tmux_command(
             &self.config,
-            snapshot.tmux_binary(),
+            snapshot.tmux_binary().ok_or_else(|| {
+                RemoteTmuxError::new(
+                    DiagnosticKind::ExecutableNotFound,
+                    "tmux is unavailable on the remote host",
+                )
+            })?,
             [
                 "if-shell",
                 "-F",
@@ -416,6 +704,146 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok((plan, identity_mismatch_marker))
     }
 
+    /// Build an ordinary remote Herdr client over the reviewed SSH lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed lease is no longer live.
+    pub fn herdr_attach_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        session: &HerdrSessionRecord,
+        term: &str,
+    ) -> Result<HerdrAttachPlan, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let command = multiplexer_command(
+            &herdr::CONTROL_VARIABLES,
+            RemoteCommandLocale::Login,
+            Some(term),
+            executable,
+            ["session", "attach", session.name()],
+        );
+        Ok(HerdrAttachPlan::attach_only(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&posix_command(&command)),
+            )),
+        ))
+    }
+
+    /// Build one remote Herdr launch through the reviewed SSH lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed lease is no longer live.
+    pub fn herdr_launch_once(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        target: HerdrLaunchTarget,
+        is_default: bool,
+        term: &str,
+    ) -> Result<HerdrLaunchOnce, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let command = herdr_launch_command(executable, &target, is_default, term);
+        Ok(HerdrLaunchOnce::launch_or_attach(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&posix_command(&command)),
+            )),
+            target,
+        ))
+    }
+
+    /// Build an ordinary remote Zellij client over the reviewed SSH lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed lease is no longer live.
+    pub fn zellij_attach_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        session: &ZellijSessionRecord,
+        term: &str,
+    ) -> Result<ZellijAttachPlan, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let command = multiplexer_command(
+            &zellij::CONTROL_VARIABLES,
+            RemoteCommandLocale::Login,
+            Some(term),
+            executable,
+            ["attach", "--", session.name()],
+        );
+        Ok(ZellijAttachPlan::attach_only(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&posix_command(&command)),
+            )),
+        ))
+    }
+
+    /// Build one remote Zellij creation through the reviewed SSH lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed lease is no longer live.
+    pub fn zellij_launch_once(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        name: ZellijSessionName,
+        term: &str,
+    ) -> Result<ZellijLaunchOnce, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let command = zellij_launch_command(executable, &name, term);
+        Ok(ZellijLaunchOnce::create(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&posix_command(&command)),
+            )),
+            name,
+        ))
+    }
+
+    fn run_framed_remote_shell(
+        &self,
+        lease: &SshLease,
+        command: &str,
+        prefix: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::CommandOutput, RemoteTmuxError> {
+        let (begin, end) = payload_markers(prefix)?;
+        let framed = framed_remote_shell_command(command, &begin, &end);
+        let output = self.run_remote_shell(lease, &framed, cancellation)?;
+        extract_framed_command_output(output, &begin, &end)
+    }
+
     fn run_remote_shell(
         &self,
         lease: &SshLease,
@@ -438,12 +866,25 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 cancellation,
                 COMMAND_TIMEOUT,
             )
-            .map_err(|error| RemoteTmuxError::io(&error))?;
+            .map_err(|error| RemoteTmuxError::command_execution(&error))?;
         lease
             .ensure_live()
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
         Ok(output)
     }
+}
+
+fn framed_remote_shell_command(command: &str, begin_marker: &str, end_marker: &str) -> String {
+    let begin = shell_quoted_argument(begin_marker);
+    let end = shell_quoted_argument(end_marker);
+    let status = shell_quoted_argument(&framed_status_marker(end_marker));
+    format!(
+        "printf '%s\\n' {begin}; printf '%s\\n' {begin} >&2; ( {command} ); ghosthub_status=$?; printf '%s%d\\n' {status} \"$ghosthub_status\"; printf '%s\\n' {end}; printf '%s\\n' {end} >&2; exit 0"
+    )
+}
+
+fn framed_status_marker(end_marker: &str) -> String {
+    format!("{end_marker}_STATUS_")
 }
 
 fn tmux_command<'a>(
@@ -467,6 +908,74 @@ fn tmux_command<'a>(
     command.push(tmux_binary.to_owned());
     command.extend(args.into_iter().map(str::to_owned));
     command
+}
+
+#[derive(Clone, Copy)]
+enum RemoteCommandLocale {
+    Login,
+    StableOutput,
+}
+
+fn multiplexer_command<'a>(
+    scrubbed: &[&str],
+    locale: RemoteCommandLocale,
+    term: Option<&str>,
+    executable: &str,
+    args: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut command = vec!["/usr/bin/env".to_owned()];
+    for variable in scrubbed {
+        command.extend(["-u".to_owned(), (*variable).to_owned()]);
+    }
+    if matches!(locale, RemoteCommandLocale::StableOutput) {
+        command.push("LC_ALL=C".to_owned());
+    }
+    if let Some(term) = term {
+        command.push(format!("TERM={term}"));
+    }
+    command.push(executable.to_owned());
+    command.extend(args.into_iter().map(str::to_owned));
+    command
+}
+
+fn herdr_launch_command(
+    executable: &str,
+    target: &HerdrLaunchTarget,
+    is_default: bool,
+    term: &str,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if !is_default {
+        args.extend(["--session", target.as_str()]);
+    }
+    multiplexer_command(
+        &herdr::CONTROL_VARIABLES,
+        RemoteCommandLocale::Login,
+        Some(term),
+        executable,
+        args,
+    )
+}
+
+fn zellij_launch_command(executable: &str, name: &ZellijSessionName, term: &str) -> Vec<String> {
+    let argument = format!("--session={}", name.as_str());
+    multiplexer_command(
+        &zellij::CONTROL_VARIABLES,
+        RemoteCommandLocale::Login,
+        Some(term),
+        executable,
+        [argument.as_str()],
+    )
+}
+
+fn zellij_inventory_command(executable: &str) -> Vec<String> {
+    multiplexer_command(
+        &zellij::CONTROL_VARIABLES,
+        RemoteCommandLocale::StableOutput,
+        None,
+        executable,
+        ["list-sessions", "--no-formatting"],
+    )
 }
 
 fn ssh_arguments(
@@ -545,7 +1054,11 @@ fn account_login_shell_command(command: &str) -> String {
 }
 
 fn tmux_probe_command(configured: &str) -> String {
-    let selection = format!("ghosthub_tmux_path={}", shell_quoted_argument(configured));
+    let selection = if configured.is_empty() {
+        "ghosthub_tmux_path=$(command -v tmux) || exit 127".to_owned()
+    } else {
+        format!("ghosthub_tmux_path={}", shell_quoted_argument(configured))
+    };
     format!(
         "{selection}; test -x \"$ghosthub_tmux_path\" || exit 127; \
          printf '{TMUX_PATH_MARKER}%s\\n' \"$ghosthub_tmux_path\"; \
@@ -565,6 +1078,10 @@ fn identity_mismatch_marker() -> Result<String, RemoteTmuxError> {
 }
 
 fn inventory_markers() -> Result<(String, String), RemoteTmuxError> {
+    payload_markers("GHOSTHUB_TMUX_INVENTORY_")
+}
+
+fn payload_markers(prefix: &str) -> Result<(String, String), RemoteTmuxError> {
     let mut nonce = [0_u8; 16];
     getrandom::fill(&mut nonce).map_err(|error| {
         RemoteTmuxError::new(
@@ -574,9 +1091,181 @@ fn inventory_markers() -> Result<(String, String), RemoteTmuxError> {
     })?;
     let nonce = hex::encode(nonce);
     Ok((
-        format!("{INVENTORY_BEGIN_PREFIX}{nonce}"),
-        format!("{INVENTORY_END_PREFIX}{nonce}"),
+        format!("{prefix}BEGIN_{nonce}"),
+        format!("{prefix}END_{nonce}"),
     ))
+}
+
+fn extract_framed_payload(
+    bytes: &[u8],
+    begin_marker: &str,
+    end_marker: &str,
+) -> Result<Vec<u8>, RemoteTmuxError> {
+    let begin = format!("{begin_marker}\n");
+    let end = format!("{end_marker}\n");
+    let start = find_bytes(bytes, begin.as_bytes()).ok_or_else(|| {
+        RemoteTmuxError::new(
+            DiagnosticKind::MalformedOutput,
+            "remote output framing is invalid",
+        )
+    })? + begin.len();
+    let finish = find_bytes(&bytes[start..], end.as_bytes())
+        .map(|offset| start + offset)
+        .ok_or_else(|| {
+            RemoteTmuxError::new(
+                DiagnosticKind::MalformedOutput,
+                "remote output framing is invalid",
+            )
+        })?;
+    if find_bytes(&bytes[start..finish], begin.as_bytes()).is_some()
+        || find_bytes(&bytes[finish + end.len()..], end.as_bytes()).is_some()
+    {
+        return Err(RemoteTmuxError::new(
+            DiagnosticKind::MalformedOutput,
+            "remote output framing is invalid",
+        ));
+    }
+    Ok(bytes[start..finish].to_vec())
+}
+
+fn find_bytes(bytes: &[u8], needle: &[u8]) -> Option<usize> {
+    bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn extract_framed_command_output(
+    mut output: crate::CommandOutput,
+    begin_marker: &str,
+    end_marker: &str,
+) -> Result<crate::CommandOutput, RemoteTmuxError> {
+    if output.status != 0 {
+        return Err(RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            nonempty_diagnostic(&output.stderr, "SSH command transport failed"),
+        ));
+    }
+    let stdout_framed = extract_framed_stdout(&output.stdout, begin_marker, end_marker);
+    let stderr_framed = has_complete_frame(&output.stderr, begin_marker, end_marker);
+    if stdout_framed.is_err() || !stderr_framed {
+        let diagnostic = stderr_framed
+            .then(|| extract_framed_payload(&output.stderr, begin_marker, end_marker).ok())
+            .flatten()
+            .unwrap_or_else(|| output.stderr.clone());
+        return Err(RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            nonempty_diagnostic(
+                &diagnostic,
+                "remote command wrapper failed before starting the requested command",
+            ),
+        ));
+    }
+    let (stdout, command_status) = stdout_framed.expect("the framed status was checked above");
+    let stderr = extract_framed_payload(&output.stderr, begin_marker, end_marker)?;
+    output.status = command_status;
+    output.stdout = stdout;
+    output.stderr = stderr;
+    Ok(output)
+}
+
+fn extract_framed_stdout(
+    bytes: &[u8],
+    begin_marker: &str,
+    end_marker: &str,
+) -> Result<(Vec<u8>, i32), RemoteTmuxError> {
+    let begin = format!("{begin_marker}\n");
+    let status_marker = framed_status_marker(end_marker);
+    let start = find_bytes(bytes, begin.as_bytes()).ok_or_else(|| {
+        RemoteTmuxError::new(DiagnosticKind::Transport, "remote stdout frame is missing")
+    })? + begin.len();
+    let status_offset = find_bytes(&bytes[start..], status_marker.as_bytes()).ok_or_else(|| {
+        RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "remote command status frame is missing",
+        )
+    })?;
+    let status_start = start + status_offset + status_marker.len();
+    let status_end = bytes[status_start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|offset| status_start + offset)
+        .ok_or_else(|| {
+            RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "remote command status frame is incomplete",
+            )
+        })?;
+    let status_text = std::str::from_utf8(&bytes[status_start..status_end]).map_err(|_| {
+        RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "remote command status is not UTF-8",
+        )
+    })?;
+    let status = status_text.parse::<u8>().map_err(|_| {
+        RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "remote command status is invalid",
+        )
+    })?;
+    let end = format!("{end_marker}\n");
+    if !bytes[status_end + 1..].starts_with(end.as_bytes()) {
+        return Err(RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "remote stdout end frame is missing",
+        ));
+    }
+    Ok((
+        bytes[start..start + status_offset].to_vec(),
+        i32::from(status),
+    ))
+}
+
+fn has_complete_frame(bytes: &[u8], begin_marker: &str, end_marker: &str) -> bool {
+    let begin = format!("{begin_marker}\n");
+    let end = format!("{end_marker}\n");
+    bytes
+        .windows(begin.len())
+        .position(|window| window == begin.as_bytes())
+        .is_some_and(|start| {
+            bytes[start + begin.len()..]
+                .windows(end.len())
+                .any(|window| window == end.as_bytes())
+        })
+}
+
+fn command_failure(output: &crate::CommandOutput, fallback: &str) -> RemoteTmuxError {
+    RemoteTmuxError::new(
+        if output.status == 127 {
+            DiagnosticKind::ExecutableNotFound
+        } else {
+            DiagnosticKind::UnsupportedEnvironment
+        },
+        nonempty_diagnostic(&output.stderr, fallback),
+    )
+}
+
+type OptionalTmuxInventory = (Option<String>, Vec<DiscoveredSession>, Option<HostError>);
+
+fn scope_tmux_inventory(
+    result: Result<(String, Vec<DiscoveredSession>), RemoteTmuxError>,
+) -> Result<OptionalTmuxInventory, RemoteTmuxError> {
+    match result {
+        Ok((binary, sessions)) => Ok((Some(binary), sessions, None)),
+        Err(error) if error.kind() == DiagnosticKind::Transport => Err(error),
+        Err(error) => Ok((
+            None,
+            Vec::new(),
+            Some(HostError::new(error.kind(), error.to_string())),
+        )),
+    }
+}
+
+fn scope_backend_failure(error: RemoteTmuxError) -> Result<HostError, RemoteTmuxError> {
+    if error.kind() == DiagnosticKind::Transport {
+        Err(error)
+    } else {
+        Ok(HostError::new(error.kind(), error.to_string()))
+    }
 }
 
 fn parse_tmux_probe(bytes: &[u8]) -> Result<String, RemoteTmuxError> {
@@ -621,6 +1310,17 @@ fn parse_tmux_probe(bytes: &[u8]) -> Result<String, RemoteTmuxError> {
     Ok(paths[0].to_owned())
 }
 
+fn parse_terminal_term(bytes: &[u8]) -> Result<AttachTerm, RemoteTmuxError> {
+    match std::str::from_utf8(bytes).map(str::trim) {
+        Ok("xterm-256color") => Ok(AttachTerm::Xterm256Color),
+        Ok("xterm") => Ok(AttachTerm::Xterm),
+        _ => Err(RemoteTmuxError::new(
+            DiagnosticKind::MalformedOutput,
+            "remote terminal capability probe returned an invalid terminal type",
+        )),
+    }
+}
+
 fn is_missing_tmux_server(diagnostic: &str) -> bool {
     diagnostic.contains("no server running on ")
         || diagnostic.contains("failed to connect to server: No such file or directory")
@@ -628,31 +1328,24 @@ fn is_missing_tmux_server(diagnostic: &str) -> bool {
             && diagnostic.contains(" (No such file or directory)"))
 }
 
+#[cfg(test)]
 fn parse_inventory(
     bytes: &[u8],
     begin_marker: &str,
     end_marker: &str,
 ) -> Result<Vec<DiscoveredSession>, RemoteTmuxError> {
-    let output = std::str::from_utf8(bytes).map_err(|_| {
+    let payload = extract_framed_payload(bytes, begin_marker, end_marker)
+        .map_err(|_| malformed_inventory())?;
+    parse_inventory_payload(&payload)
+}
+
+fn parse_inventory_payload(bytes: &[u8]) -> Result<Vec<DiscoveredSession>, RemoteTmuxError> {
+    let mut remaining = std::str::from_utf8(bytes).map_err(|_| {
         RemoteTmuxError::new(
             DiagnosticKind::MalformedOutput,
             "remote tmux inventory is not UTF-8",
         )
     })?;
-    let begin = format!("{begin_marker}\n");
-    let end = format!("{end_marker}\n");
-    let payload_start = output.find(&begin).ok_or_else(malformed_inventory)? + begin.len();
-    if output[payload_start..].contains(&begin) {
-        return Err(malformed_inventory());
-    }
-    let payload_end = output[payload_start..]
-        .find(&end)
-        .map(|offset| payload_start + offset)
-        .ok_or_else(malformed_inventory)?;
-    if output[payload_end + end.len()..].contains(&end) {
-        return Err(malformed_inventory());
-    }
-    let mut remaining = &output[payload_start..payload_end];
     let mut sessions = Vec::new();
     while !remaining.is_empty() {
         let mut fields = Vec::with_capacity(4);
@@ -763,10 +1456,22 @@ impl RemoteTmuxError {
         }
     }
 
-    fn io(error: &std::io::Error) -> Self {
+    #[cfg(windows)]
+    fn local_executable(error: &std::io::Error) -> Self {
         Self::new(
             if error.kind() == std::io::ErrorKind::NotFound {
                 DiagnosticKind::ExecutableNotFound
+            } else {
+                DiagnosticKind::Transport
+            },
+            error.to_string(),
+        )
+    }
+
+    fn command_execution(error: &std::io::Error) -> Self {
+        Self::new(
+            if error.kind() == std::io::ErrorKind::TimedOut {
+                DiagnosticKind::Timeout
             } else {
                 DiagnosticKind::Transport
             },
@@ -810,6 +1515,13 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    fn framed_stdout(payload: &[u8], status: u8) -> Vec<u8> {
+        let mut framed = b"BEGIN\n".to_vec();
+        framed.extend_from_slice(payload);
+        framed.extend_from_slice(format!("END_STATUS_{status}\nEND\n").as_bytes());
+        framed
+    }
 
     fn exited_lease() -> SshLease {
         let target = SshTarget::new("host-alias", None, None).expect("target");
@@ -876,6 +1588,55 @@ mod tests {
     }
 
     #[test]
+    fn terminal_probe_accepts_only_verified_supported_terms() {
+        assert_eq!(
+            parse_terminal_term(b"xterm-256color\n").expect("preferred term"),
+            AttachTerm::Xterm256Color
+        );
+        assert_eq!(
+            parse_terminal_term(b"xterm\n").expect("fallback term"),
+            AttachTerm::Xterm
+        );
+        assert!(parse_terminal_term(b"screen-256color\n").is_err());
+        assert!(parse_terminal_term(b"xterm\nxterm-256color\n").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_probe_selects_the_verified_fallback() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "ghosthub-terminfo-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).expect("create probe fixture");
+        let infocmp = directory.join("infocmp");
+        std::fs::write(&infocmp, "#!/bin/sh\n[ \"$1\" = xterm ]\n").expect("write probe fixture");
+        let mut permissions = std::fs::metadata(&infocmp)
+            .expect("probe fixture metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&infocmp, permissions).expect("make probe fixture executable");
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", TERMINFO_PROBE_SCRIPT])
+            .env_clear()
+            .env("PATH", &directory)
+            .output()
+            .expect("run terminal capability probe");
+        std::fs::remove_dir_all(&directory).expect("remove probe fixture");
+        assert!(output.status.success());
+        assert_eq!(
+            parse_terminal_term(&output.stdout).expect("verified fallback"),
+            AttachTerm::Xterm
+        );
+    }
+
+    #[test]
     fn tmux_environment_options_precede_assignments() {
         let config = RemoteTmuxConfig::new(
             "ssh:test",
@@ -903,6 +1664,429 @@ mod tests {
                 "list-sessions",
             ]
             .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn remote_interactive_commands_scrub_backend_state_and_preserve_login_locale() {
+        assert_eq!(
+            multiplexer_command(
+                &["HERDR_SESSION", "HERDR_SOCKET_PATH"],
+                RemoteCommandLocale::Login,
+                Some("xterm-256color"),
+                "/usr/bin/herdr",
+                ["session", "attach", "review"],
+            ),
+            [
+                "/usr/bin/env",
+                "-u",
+                "HERDR_SESSION",
+                "-u",
+                "HERDR_SOCKET_PATH",
+                "TERM=xterm-256color",
+                "/usr/bin/herdr",
+                "session",
+                "attach",
+                "review",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn remote_inventory_commands_use_a_stable_locale() {
+        let command = zellij_inventory_command("/usr/bin/zellij");
+
+        assert!(command.iter().any(|argument| argument == "LC_ALL=C"));
+        assert!(!command.iter().any(|argument| argument.starts_with("TERM=")));
+    }
+
+    #[test]
+    fn remote_herdr_launch_uses_exact_nondefault_target_and_scrubbed_environment() {
+        let name = session::HerdrSessionName::parse("review").expect("name");
+        let command = herdr_launch_command(
+            "/usr/local/bin/herdr",
+            &HerdrLaunchTarget::created(name),
+            false,
+            "xterm",
+        );
+
+        assert_eq!(command[0], "/usr/bin/env");
+        assert!(
+            command
+                .windows(2)
+                .any(|pair| pair == ["-u", "HERDR_SESSION"])
+        );
+        assert!(!command.iter().any(|value| value.starts_with("LC_ALL=")));
+        assert!(command.iter().any(|value| value == "TERM=xterm"));
+        assert_eq!(
+            &command[command.len() - 3..],
+            ["/usr/local/bin/herdr", "--session", "review"]
+        );
+    }
+
+    #[test]
+    fn remote_herdr_default_launch_does_not_invent_a_session_selector() {
+        let record = HerdrSessionRecord::new(
+            "default",
+            true,
+            session::HerdrSessionState::Stopped,
+            "/home/test/.local/share/herdr/default",
+            "/tmp/herdr.sock",
+        );
+        let command = herdr_launch_command(
+            "/usr/local/bin/herdr",
+            &HerdrLaunchTarget::discovered(&record),
+            true,
+            "xterm",
+        );
+
+        assert_eq!(
+            command.last().map(String::as_str),
+            Some("/usr/local/bin/herdr")
+        );
+        assert!(!command.iter().any(|value| value == "--session"));
+    }
+
+    #[test]
+    fn remote_zellij_creation_uses_one_exact_session_argument() {
+        let name = ZellijSessionName::parse("review").expect("name");
+        let command = zellij_launch_command("/usr/bin/zellij", &name, "xterm");
+
+        assert_eq!(command[0], "/usr/bin/env");
+        assert!(command.windows(2).any(|pair| pair == ["-u", "ZELLIJ"]));
+        assert!(!command.iter().any(|value| value.starts_with("LC_ALL=")));
+        assert!(command.iter().any(|value| value == "TERM=xterm"));
+        assert_eq!(
+            &command[command.len() - 2..],
+            ["/usr/bin/zellij", "--session=review"]
+        );
+    }
+
+    #[test]
+    fn remote_zellij_inventory_keeps_status_metadata_for_active_filtering() {
+        let command = zellij_inventory_command("/usr/bin/zellij");
+
+        assert_eq!(
+            &command[command.len() - 3..],
+            ["/usr/bin/zellij", "list-sessions", "--no-formatting"]
+        );
+        assert!(!command.iter().any(|argument| argument == "--short"));
+        let sessions = zellij::parse_inventory(
+            0,
+            b"work [Created 2m ago]\nold [Created 3h ago] (EXITED - attach to resurrect)\n",
+            b"",
+        )
+        .expect("metadata-rich remote inventory");
+        assert_eq!(
+            sessions
+                .iter()
+                .map(ZellijSessionRecord::name)
+                .collect::<Vec<_>>(),
+            ["work"]
+        );
+    }
+
+    #[test]
+    fn optional_inventory_framing_ignores_login_shell_noise() {
+        assert_eq!(
+            extract_framed_payload(
+                b"startup banner\nBEGIN\n{\"sessions\":[]}\nEND\nlogout noise\n",
+                "BEGIN",
+                "END",
+            )
+            .expect("framed payload"),
+            b"{\"sessions\":[]}\n"
+        );
+        assert!(extract_framed_payload(b"BEGIN\npayload\n", "BEGIN", "END").is_err());
+    }
+
+    #[test]
+    fn framing_ignores_non_utf8_login_shell_noise() {
+        let output = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 0,
+                stdout: [
+                    b"\xffstartup\n".as_slice(),
+                    framed_stdout(b"backend output\n", 0).as_slice(),
+                    b"\xfelogout\n".as_slice(),
+                ]
+                .concat(),
+                stderr: b"\x80warning\nBEGIN\nEND\n\x81logout\n".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect("only framed payload bytes belong to the backend command");
+
+        assert_eq!(output.stdout, b"backend output\n");
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn framed_transport_failure_is_not_misclassified_as_malformed_output() {
+        let error = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 255,
+                stdout: Vec::new(),
+                stderr: b"connection closed".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect_err("SSH status bypasses payload framing");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(error.to_string(), "connection closed");
+    }
+
+    #[test]
+    fn local_ssh_failure_overrides_complete_remote_frames() {
+        let error = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 255,
+                stdout: framed_stdout(b"backend output\n", 0),
+                stderr: b"BEGIN\nremote stderr\nEND\nconnection closed\n".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect_err("the local SSH status owns transport success");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+    }
+
+    #[test]
+    fn command_wrapper_failure_is_host_transport_even_when_status_looks_optional() {
+        let error = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 127,
+                stdout: Vec::new(),
+                stderr: b"wsl runtime guard did not start SSH".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect_err("missing framing proves the backend command never started");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(error.to_string(), "wsl runtime guard did not start SSH");
+    }
+
+    #[test]
+    fn successful_unframed_shell_exit_is_a_transport_failure() {
+        for (stdout, stderr) in [
+            (Vec::new(), b"login shell exited early".to_vec()),
+            (b"BEGIN\nbackend output\nEND\n".to_vec(), Vec::new()),
+        ] {
+            let error = extract_framed_command_output(
+                crate::CommandOutput {
+                    status: 0,
+                    stdout,
+                    stderr,
+                },
+                "BEGIN",
+                "END",
+            )
+            .expect_err("both streams must prove the wrapper ran");
+
+            assert_eq!(error.kind(), DiagnosticKind::Transport);
+        }
+    }
+
+    #[test]
+    fn framed_missing_backend_remains_backend_scoped() {
+        let output = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 0,
+                stdout: [
+                    b"noise\n".as_slice(),
+                    framed_stdout(b"GHOSTHUB_ZELLIJ_UNAVAILABLE\n", 127).as_slice(),
+                ]
+                .concat(),
+                stderr: b"login warning\nBEGIN\nbackend missing\nEND\nlogout noise\n".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect("the remote command started and reported backend absence");
+
+        assert_eq!(output.status, 127);
+        assert_eq!(output.stdout, b"GHOSTHUB_ZELLIJ_UNAVAILABLE\n");
+        assert_eq!(output.stderr, b"backend missing\n");
+        assert_eq!(
+            command_failure(&output, "missing backend").kind(),
+            DiagnosticKind::ExecutableNotFound
+        );
+    }
+
+    #[test]
+    fn local_ssh_launch_failure_is_transport_not_backend_absence() {
+        let error = RemoteTmuxError::command_execution(&std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "local SSH executable could not be launched",
+        ));
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert!(scope_backend_failure(error).is_err());
+    }
+
+    #[test]
+    fn post_launch_timeout_remains_scoped_to_the_backend() {
+        let backend_timeout = RemoteTmuxError::command_execution(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "remote backend command timed out",
+        ));
+        let diagnostic =
+            scope_backend_failure(backend_timeout).expect("timeout remains backend-scoped");
+        assert_eq!(diagnostic.kind(), DiagnosticKind::Timeout);
+
+        let tmux_timeout = RemoteTmuxError::command_execution(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "remote tmux command timed out",
+        ));
+        let (_, sessions, diagnostic) =
+            scope_tmux_inventory(Err(tmux_timeout)).expect("timeout remains tmux-scoped");
+        assert!(sessions.is_empty());
+        assert_eq!(
+            diagnostic.expect("tmux timeout diagnostic").kind(),
+            DiagnosticKind::Timeout
+        );
+    }
+
+    #[test]
+    fn framed_zellij_stderr_ignores_login_shell_noise() {
+        let output = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 0,
+                stdout: [
+                    b"profile output\n".as_slice(),
+                    framed_stdout(b"", 1).as_slice(),
+                ]
+                .concat(),
+                stderr:
+                    b"startup warning\nBEGIN\nNo active zellij sessions found.\nEND\nlogout noise\n"
+                        .to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect("both command streams are framed");
+
+        assert_eq!(
+            zellij::parse_inventory(output.status, &output.stdout, &output.stderr)
+                .expect("empty Zellij inventory"),
+            Vec::<ZellijSessionRecord>::new()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn framed_shell_emits_both_markers_after_probe_exits_127() {
+        let command = framed_remote_shell_command(
+            "printf 'backend missing\\n' >&2; exit 127",
+            "BEGIN",
+            "END",
+        );
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .output()
+            .expect("run framed shell boundary");
+        assert!(
+            output.status.success(),
+            "the wrapper owns transport success"
+        );
+        let output = extract_framed_command_output(
+            crate::CommandOutput {
+                status: output.status.code().expect("shell exit status"),
+                stdout: output.stdout,
+                stderr: output.stderr,
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect("subshell exit preserves the parent framing shell");
+
+        assert_eq!(output.status, 127);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"backend missing\n");
+    }
+
+    #[test]
+    fn wsl_runtime_guard_status_is_transport() {
+        let error = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 125,
+                stdout: Vec::new(),
+                stderr: b"WSL runtime changed".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect_err("an unframed wrapper failure is transport-level");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+    }
+
+    #[test]
+    fn framed_backend_statuses_do_not_invalidate_the_transport() {
+        for status in [125, 255] {
+            let output = extract_framed_command_output(
+                crate::CommandOutput {
+                    status: 0,
+                    stdout: framed_stdout(b"backend output\n", status),
+                    stderr: b"BEGIN\nbackend failure\nEND\n".to_vec(),
+                },
+                "BEGIN",
+                "END",
+            )
+            .expect("valid framing proves the backend command ran");
+
+            assert_eq!(
+                command_failure(&output, "backend failed").kind(),
+                DiagnosticKind::UnsupportedEnvironment
+            );
+        }
+    }
+
+    #[test]
+    fn optional_backend_failures_scope_only_non_transport_diagnostics() {
+        let diagnostic = scope_backend_failure(RemoteTmuxError::new(
+            DiagnosticKind::ExecutableNotFound,
+            "Zellij is missing",
+        ))
+        .expect("backend absence remains scoped");
+        assert_eq!(diagnostic.kind(), DiagnosticKind::ExecutableNotFound);
+
+        let error = scope_backend_failure(RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "SSH connection failed",
+        ))
+        .expect_err("transport failure invalidates the host");
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+    }
+
+    #[test]
+    fn missing_tmux_is_backend_scoped_but_transport_failure_is_not() {
+        let (_, sessions, diagnostic) = scope_tmux_inventory(Err(RemoteTmuxError::new(
+            DiagnosticKind::ExecutableNotFound,
+            "tmux is unavailable on the remote host",
+        )))
+        .expect("missing optional tmux remains host-usable");
+        assert!(sessions.is_empty());
+        assert_eq!(
+            diagnostic.expect("tmux diagnostic").kind(),
+            DiagnosticKind::ExecutableNotFound
+        );
+
+        assert_eq!(
+            scope_tmux_inventory(Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "SSH connection failed",
+            )))
+            .expect_err("transport failure invalidates the host")
+            .kind(),
+            DiagnosticKind::Transport
         );
     }
 
@@ -1014,8 +2198,12 @@ mod tests {
             route_identity: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_owned(),
             lease_generation: 7,
-            tmux_binary: "/usr/bin/tmux".to_owned(),
+            inventory_generation: 0,
+            tmux_binary: Some("/usr/bin/tmux".to_owned()),
+            tmux_diagnostic: None,
             sessions: vec![session.clone()],
+            herdr: HerdrInventory::Unavailable,
+            zellij: ZellijInventory::Unavailable,
             lease: exited_lease(),
         };
 
@@ -1024,6 +2212,34 @@ mod tests {
             .expect_err("exited controller cannot issue stale SSH arguments");
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
+    }
+
+    #[test]
+    fn inventory_refresh_advances_snapshot_authority() {
+        let snapshot = RemoteTmuxSnapshot {
+            endpoint: "host-alias".to_owned(),
+            route_identity: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
+            lease_generation: 7,
+            inventory_generation: 11,
+            tmux_binary: Some("/usr/bin/tmux".to_owned()),
+            tmux_diagnostic: None,
+            sessions: Vec::new(),
+            herdr: HerdrInventory::Unavailable,
+            zellij: ZellijInventory::Unavailable,
+            lease: exited_lease(),
+        };
+        let refreshed = snapshot.with_inventory(RemoteSessionInventory {
+            tmux_binary: Some("/usr/bin/tmux".to_owned()),
+            tmux_diagnostic: None,
+            sessions: Vec::new(),
+            herdr: HerdrInventory::Unavailable,
+            zellij: ZellijInventory::Unavailable,
+        });
+
+        assert_eq!(snapshot.inventory_generation(), 11);
+        assert_eq!(refreshed.inventory_generation(), 12);
+        assert_eq!(refreshed.lease_generation(), snapshot.lease_generation());
     }
 
     #[test]
@@ -1037,11 +2253,20 @@ mod tests {
     }
 
     #[test]
-    fn default_tmux_probe_honors_the_explicit_system_path() {
-        let probe = tmux_probe_command(DEFAULT_TMUX);
+    fn system_tmux_probe_honors_the_explicit_path() {
+        let probe = tmux_probe_command("/usr/bin/tmux");
 
         assert!(!probe.contains("command -v tmux"));
         assert!(probe.contains("ghosthub_tmux_path='/usr/bin/tmux'"));
+        assert!(probe.contains(TMUX_PATH_MARKER));
+    }
+
+    #[test]
+    fn automatic_tmux_probe_uses_the_remote_login_path() {
+        let probe = tmux_probe_command("");
+
+        assert!(probe.contains("command -v tmux"));
+        assert!(probe.contains("test -x \"$ghosthub_tmux_path\""));
         assert!(probe.contains(TMUX_PATH_MARKER));
     }
 

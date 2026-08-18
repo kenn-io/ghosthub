@@ -81,12 +81,13 @@ impl SshHostSettings {
         tmux_binary: impl Into<String>,
         socket_directory: Option<String>,
     ) -> Result<Self, ConfigError> {
+        let tmux_binary = tmux_binary.into();
         let host = Self {
             name: name.into(),
             hostname: hostname.into(),
             user,
             port,
-            tmux_binary: tmux_binary.into(),
+            tmux_binary: tmux_binary.trim().to_owned(),
             socket_directory,
         };
         host.validate("ssh-host")?;
@@ -104,7 +105,9 @@ impl SshHostSettings {
                 "{prefix}.port must be greater than zero"
             )));
         }
-        require_posix_absolute(&format!("{prefix}.tmux-binary"), &self.tmux_binary)?;
+        if !self.tmux_binary.is_empty() {
+            require_posix_absolute(&format!("{prefix}.tmux-binary"), &self.tmux_binary)?;
+        }
         if let Some(path) = &self.socket_directory {
             require_posix_absolute(&format!("{prefix}.socket-directory"), path)?;
         }
@@ -349,7 +352,10 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
                     port: host.port,
                     tmux_binary: host
                         .tmux_binary
-                        .unwrap_or_else(|| DEFAULT_TMUX_BINARY.to_owned()),
+                        .as_deref()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned(),
                     socket_directory: host.socket_directory,
                 };
                 host.validate(&format!("ssh-host[{index}]"))?;
@@ -429,7 +435,7 @@ impl From<&ApplicationConfig> for ConfigFile {
                     hostname: host.hostname.clone(),
                     user: host.user.clone(),
                     port: host.port,
-                    tmux_binary: Some(host.tmux_binary.clone()),
+                    tmux_binary: (!host.tmux_binary.is_empty()).then(|| host.tmux_binary.clone()),
                     socket_directory: host.socket_directory.clone(),
                 })
                 .collect(),

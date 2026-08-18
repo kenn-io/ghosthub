@@ -134,6 +134,32 @@ fn ssh_hosts_round_trip_through_the_application_config() {
 }
 
 #[test]
+fn ssh_hosts_discover_tmux_automatically_by_default() {
+    let parsed = ApplicationConfig::from_toml(
+        r#"
+            [[ssh-host]]
+            name = "Studio"
+            hostname = "studio.example"
+        "#,
+    )
+    .expect("parse automatic SSH host");
+
+    assert_eq!(parsed.ssh_hosts()[0].tmux_binary(), "");
+
+    let explicit = ApplicationConfig::from_toml(
+        r#"
+            [[ssh-host]]
+            name = "Studio"
+            hostname = "studio.example"
+            tmux-binary = "/usr/bin/tmux"
+        "#,
+    )
+    .expect("parse explicit Linux path");
+
+    assert_eq!(explicit.ssh_hosts()[0].tmux_binary(), "/usr/bin/tmux");
+}
+
+#[test]
 fn saving_over_an_existing_config_replaces_it_without_temporary_files() {
     let root = temporary_root("atomic-replace");
     let roots = roots_at(&root);
@@ -155,6 +181,7 @@ fn saving_over_an_existing_config_replaces_it_without_temporary_files() {
 
     let loaded = ApplicationConfig::load(&roots).expect("load replaced config");
     assert_eq!(loaded.ssh_hosts()[0].hostname(), "studio.example");
+    assert_eq!(loaded.ssh_hosts()[0].tmux_binary(), "/usr/bin/tmux");
     let entries = fs::read_dir(&root)
         .expect("read config directory")
         .collect::<Result<Vec<_>, _>>()

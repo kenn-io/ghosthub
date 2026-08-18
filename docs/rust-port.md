@@ -828,8 +828,9 @@ Connection establishment uses the matching long-lived `kwt ssh lease --json`
 operation bound to that route identity and projection policy. Its NDJSON
 stream must retain one operation ID, contiguous sequence numbers, exact
 prompt-to-hop attribution, and one terminal result. Host-key prompts are
-non-sensitive; authentication prompts are sensitive; both retain KWT's
-deadline and exact logical, effective, and display target. A changed route,
+non-sensitive and display KWT's structured host, algorithm, and fingerprint;
+authentication prompts are sensitive. Both retain KWT's deadline and exact
+logical, effective, and display target. A changed route,
 unsupported masterless result, malformed event, or attribution mismatch fails
 closed.
 
@@ -858,8 +859,9 @@ Settings shell modeled on the Swift app. The shell owns stable domain
 navigation plus a consistent page header and detail area, so later settings
 panes extend the container rather than replace it. Hosts is the first
 implemented pane: its host list and selected-host editor add, edit, or remove
-a named POSIX SSH endpoint with an optional user and port plus an explicit
-absolute tmux binary and optional absolute `TMUX_TMPDIR`. Saving rewrites only
+a named POSIX SSH endpoint with an optional user and port plus optional
+absolute tmux and `TMUX_TMPDIR` overrides. Tmux, Herdr, and Zellij otherwise
+resolve through the remote account's login environment. Saving rewrites only
 the Rust application configuration. Each configured endpoint appears as a
 disconnected host and connects only after an explicit Connect action; merely
 starting Ghosthub or opening Settings never opens a network connection.
@@ -873,14 +875,32 @@ to disconnected state without affecting WSL or another SSH host. A changed or
 late prompt generation is rejected rather than applied to a replacement
 connection.
 
-After admission, Host discovers ordinary tmux sessions through the lease and
-builds an attach-only argv plan for the exact server PID, session ID, and
-creation time. Terminal launches the resolved client through ConPTY and
-remains unaware of WSL, KWT, routing, or SSH configuration.
-The v0 remote UI intentionally supports discovery and attachment only. It
-does not expose remote session creation or destruction, Herdr, Zellij,
-managed remote KWT helpers, worktrees, reconnect/backoff, or restoration.
-Those absent controls cannot silently fall back to WSL or unguarded SSH.
+After admission, Host independently discovers tmux, Herdr, and Zellij inventory
+through the same reviewed lease. A missing or failed backend is backend-scoped
+and never disables the host or hides another backend; configured tmux failures
+remain visible beside the tmux group so its path can be corrected. Tmux
+attachment retains exact server PID, session ID,
+and creation-time authority. Running Herdr and active Zellij rows build their
+ordinary attach-only client argv after scrubbing inherited backend routing
+variables. Terminal launches each resolved client through ConPTY and remains
+unaware of WSL, KWT, routing, SSH configuration, or multiplexer selection.
+Before any remote tmux, Herdr, or Zellij client is launched, Host verifies the
+remote terminfo database and selects `xterm-256color` when available, otherwise
+the verified `xterm` baseline. Attach and constructive paths use that same
+selection, and the reduced-color notice is published only after a fallback
+client is successfully presented.
+Each host's tmux, Herdr, and Zellij groups have independent disclosure controls;
+collapsing navigation never detaches a client or changes session lifetime.
+
+The current remote UI supports discovery, attach-only presentation, retained
+switching, detach, one-shot Herdr creation/restart, and one-shot Zellij
+creation. Constructive operations re-probe the backend through the existing
+reviewed lease before launch, publish only an exact post-launch inventory
+match, and run entirely off the UI thread. It deliberately withholds remote
+tmux creation, tmux/Zellij kill, Herdr stop/delete, worktrees,
+reconnect/backoff, and restoration until each operation has fresh remote
+identity and lifecycle fencing. An absent control cannot silently fall back to
+WSL or unguarded SSH.
 
 Rust config resolution is:
 
@@ -1102,10 +1122,24 @@ Slice 1 reads font family, font size, and theme through:
 config → workspace projection → UI-facing state → GPUI
 ~~~
 
-The Settings shell exposes only the Hosts pane in this slice, and that pane
-owns only `[[ssh-host]]` records. WSL and terminal appearance remain startup
-configuration rather than mutable UI settings; adding those panes later does
-not change the shell's navigation or page-layout contract.
+The Settings shell currently exposes the Hosts pane, and that pane owns only
+`[[ssh-host]]` records. Its stable navigation, page header, list, and detail
+regions are the permanent container for the remaining Swift settings domains.
+The parity inventory is:
+
+| Swift domain | Rust state |
+| --- | --- |
+| Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
+| Appearance | Startup configuration only; pane not yet implemented |
+| Terminal | Startup configuration only; pane not yet implemented |
+| Keyboard | Runtime shortcuts exist; pane not yet implemented |
+| Worktrees | Project/worktree workflows exist; preferences pane not yet implemented |
+| Agents | Not yet implemented |
+| Privacy | Clipboard policy exists in configuration; pane not yet implemented |
+| Integrations | Not yet implemented |
+
+Adding these panes extends the existing shell rather than replacing it. WSL
+and terminal appearance remain startup configuration until their panes land.
 
 Read-only configuration may select a distro name, an absolute POSIX tmux
 binary, and an absolute POSIX `TMUX_TMPDIR`. Defaults are the current WSL
@@ -1138,15 +1172,18 @@ name = "Studio"
 hostname = "studio.example"
 user = "wesm"
 port = 22
-tmux-binary = "/usr/bin/tmux"
+# Optional: otherwise resolved through the remote login environment.
+tmux-binary = "/opt/homebrew/bin/tmux"
 socket-directory = "/run/user/1000/tmux"
 ~~~
 
 Every WSL and terminal field is optional. SSH host name and hostname are
-required, while user, port, and socket directory are optional and the tmux
-binary defaults to `/usr/bin/tmux`. SSH endpoint identity is user, hostname,
-and port; duplicates are rejected. `clipboard-write` governs remote OSC 52
-writes; remote OSC 52 reads remain denied regardless of configuration.
+required, while user, port, tmux path override, and socket directory are
+optional. Ghosthub resolves tmux, Herdr, and Zellij through the remote login
+environment by default; an explicit tmux path remains available for unusual
+installations. SSH endpoint identity is user, hostname, and port; duplicates
+are rejected. `clipboard-write` governs remote OSC 52 writes; remote OSC 52
+reads remain denied regardless of configuration.
 
 Windows manual acceptance requires WSL2 and tmux. Ghosthub can create the first
 session itself; setup remains documented as deterministic commands for tests
@@ -1249,11 +1286,11 @@ After Slice 1:
    session creation already ships through CreateOnce in the WSL slice.
 3. Remaining local work adds project settings, Console Panel, and broader
    command and accessibility surfaces.
-4. Remote POSIX tmux host settings, explicit connect, KWT-owned prompts,
-   inventory, and attach-only presentation now ship as the first remote slice.
-   Follow-on remote work adds managed-helper installation, attach-only
-   transport reconnect, repair/open reconnect, other multiplexers, and remote
-   Windows.
+4. Remote POSIX host settings, explicit connect, KWT-owned prompts, tmux plus
+   optional Herdr/Zellij inventory, and attach-only presentation now ship.
+   Follow-on remote work adds identity-fenced lifecycle operations,
+   managed-helper installation, transport reconnect, repair/open reconnect,
+   worktrees, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.

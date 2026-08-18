@@ -165,9 +165,13 @@ consumed through kwt's machine-readable CLI surfaces.
 ### Windows and Linux Rust applications
 
 The first Rust product slice is a native Windows GPUI application attaching to
-tmux and discovering optional Herdr sessions inside WSL2. It also has an
-explicitly configured POSIX SSH host slice for remote tmux discovery and
-attach-only presentation. Linux remains a
+tmux and discovering optional Herdr and Zellij sessions inside WSL2. It also
+has explicitly configured POSIX SSH hosts that independently discover tmux,
+Herdr, and Zellij sessions through one KWT-owned lease. A missing or broken
+backend is scoped to its own inventory and does not disable the host or another
+backend. All three backends use
+ordinary attach-only presentation; remote lifecycle controls remain withheld
+until they have fresh backend-specific identity fencing. Linux remains a
 compile-and-contract target until a native Linux product slice is authorized.
 Neither replaces the macOS SwiftUI
 application or embeds a Rust runtime into it. Cross-platform parity is enforced
@@ -466,10 +470,17 @@ their host generation, so cancellation or a replacement attempt cannot apply
 late trust or authentication input. Each host publishes independently and a
 remote failure remains host-scoped.
 
-The initial remote product boundary is tmux discovery and exact attach only.
-Remote creation, killing, Herdr, Zellij, KWT project/worktree management,
-managed-helper installation, reconnect, and restoration remain unavailable in
-the UI until their own identity and lifecycle contracts are implemented.
+The initial remote product boundary includes discovery and exact attachment for
+tmux, Herdr, and Zellij. Herdr create/restart and Zellij create are one-shot
+constructive actions over the existing reviewed KWT lease: they require a
+fresh backend preflight and an exact post-launch inventory match before the new
+client is published. Every remote client uses a terminal type verified against
+the host's terminfo database; `xterm-256color` is preferred and the verified
+`xterm` fallback is disclosed only after successful presentation. Superseding
+navigation cancels queued and running attachment probes before they can retain
+the shared session-operation lane. Remote destruction, tmux creation, KWT
+project/worktree management, reconnect, and restoration remain unavailable
+until their own identity and lifecycle contracts are implemented.
 
 Before opening that channel, Ghosthub reads the effective destination policy
 with `ssh -G`. It tightens `accept-new` to an explicit review but does not

@@ -216,6 +216,14 @@ pub enum AttachTerm {
 }
 
 impl AttachTerm {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Xterm256Color => "xterm-256color",
+            Self::Xterm => "xterm",
+        }
+    }
+
     const fn environment(self) -> &'static str {
         match self {
             Self::Xterm256Color => "TERM=xterm-256color",
@@ -549,7 +557,7 @@ pub struct HostError {
 }
 
 impl HostError {
-    fn new(kind: DiagnosticKind, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: DiagnosticKind, detail: impl Into<String>) -> Self {
         Self {
             kind,
             detail: detail.into(),
