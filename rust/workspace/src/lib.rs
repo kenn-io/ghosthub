@@ -3216,6 +3216,7 @@ struct Inner {
     inventory_state: Mutex<WorkspaceContent>,
     revision: AtomicU64,
     snapshot_writers: AtomicUsize,
+    remote_publication: Mutex<()>,
     presentation_generation: AtomicU64,
     operation_sequence: AtomicU64,
     navigation_generation: AtomicU64,
@@ -3383,6 +3384,10 @@ fn publish_remote_connection(
     generation: u64,
     result: Result<(RuntimeRemoteHost, RemoteTmuxSnapshot), host::RemoteTmuxError>,
 ) {
+    let publication = inner
+        .remote_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let snapshot_write = begin_snapshot_write(inner);
     let mut stale_presentations = Vec::new();
     let pending_reconciliation;
@@ -3444,11 +3449,13 @@ fn publish_remote_connection(
             drop(snapshot_write);
             drop(stale_context);
             drop(stale_presentations);
+            drop(publication);
             return;
         }
     }
     drop(snapshot_write);
     drop(stale_presentations);
+    drop(publication);
     if let Some((host, snapshot, target)) = pending_reconciliation {
         reconcile_remote_constructive_after_connection(
             inner, host_id, generation, &host, snapshot, &target,
@@ -3488,7 +3495,6 @@ fn reconcile_remote_constructive_after_connection(
             return;
         };
         snapshot = refreshed;
-        reconcile_remote_snapshot(inner, host_id, &snapshot);
         if remote_constructive_target_is_present(&snapshot, target) {
             clear_pending_remote_constructive(inner, host_id, generation, target);
             return;
@@ -3805,6 +3811,7 @@ impl Workspace {
                 inventory_state: Mutex::new(snapshot.content),
                 revision: AtomicU64::new(snapshot.revision),
                 snapshot_writers: AtomicUsize::new(0),
+                remote_publication: Mutex::new(()),
                 presentation_generation: AtomicU64::new(presentation_generation),
                 operation_sequence: AtomicU64::new(0),
                 navigation_generation: AtomicU64::new(0),
@@ -3961,6 +3968,7 @@ impl Workspace {
                 inventory_state: Mutex::new(WorkspaceContent::Shell),
                 revision: AtomicU64::new(0),
                 snapshot_writers: AtomicUsize::new(0),
+                remote_publication: Mutex::new(()),
                 presentation_generation: AtomicU64::new(0),
                 operation_sequence: AtomicU64::new(0),
                 navigation_generation: AtomicU64::new(0),
@@ -4031,6 +4039,7 @@ impl Workspace {
                 inventory_state: Mutex::new(WorkspaceContent::Loading),
                 revision: AtomicU64::new(0),
                 snapshot_writers: AtomicUsize::new(0),
+                remote_publication: Mutex::new(()),
                 presentation_generation: AtomicU64::new(0),
                 operation_sequence: AtomicU64::new(0),
                 navigation_generation: AtomicU64::new(0),
@@ -7639,6 +7648,12 @@ impl Workspace {
     }
 
     fn monitor_remote_lease_liveness(&self) {
+        let _publication = self
+            .inner
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let failed = {
             let mut entries = self
                 .inner
@@ -12077,6 +12092,7 @@ fn remote_snapshot_authority_matches(
     current.endpoint() == expected.endpoint()
         && current.route_identity() == expected.route_identity()
         && current.lease_generation() == expected.lease_generation()
+        && current.inventory_generation() == expected.inventory_generation()
 }
 
 fn validate_remote_publication_fence(
@@ -12363,7 +12379,6 @@ fn prepare_remote_herdr_attachment(
         cancellation,
         inventory,
     )?;
-    reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
     let (executable, session) = resolve_remote_herdr_attach_target(
         snapshot.herdr(),
         &request.executable,
@@ -12543,7 +12558,6 @@ fn prepare_remote_zellij_attachment(
         cancellation,
         inventory,
     )?;
-    reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
     let (executable, session) =
         resolve_remote_zellij_attach_target(snapshot.zellij(), &request.executable, &request.name)?;
     let term = request
@@ -12641,7 +12655,6 @@ fn run_remote_herdr_create(
         if let Err(error) =
             worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
         {
-            reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
             return Err(WorkspaceError::from_worker(&error));
         }
         let navigation = inner
@@ -12651,7 +12664,6 @@ fn run_remote_herdr_create(
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
             drop(worker);
             drop(navigation);
-            reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
             return Ok(());
         }
         let selection =
@@ -12686,7 +12698,6 @@ fn run_remote_herdr_create(
         )
         .map_err(|error| error.error);
         drop(navigation);
-        reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
         published?;
         Ok(())
     });
@@ -12734,7 +12745,6 @@ fn run_remote_zellij_create(
         if let Err(error) =
             worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
         {
-            reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
             return Err(WorkspaceError::from_worker(&error));
         }
         let navigation = inner
@@ -12744,7 +12754,6 @@ fn run_remote_zellij_create(
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
             drop(worker);
             drop(navigation);
-            reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
             return Ok(());
         }
         let selection =
@@ -12774,7 +12783,6 @@ fn run_remote_zellij_create(
         )
         .map_err(|error| error.error);
         drop(navigation);
-        reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
         published?;
         Ok(())
     });
@@ -13020,6 +13028,10 @@ fn publish_remote_inventory(
     cancellation: &CancellationToken,
     inventory: RemoteSessionInventory,
 ) -> Result<RemoteTmuxSnapshot, WorkspaceError> {
+    let _publication = inner
+        .remote_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let snapshot_write = begin_snapshot_write(inner);
     let mut entries = inner
         .remote_hosts
@@ -13041,22 +13053,19 @@ fn publish_remote_inventory(
         .expect("the publication fence requires a remote context");
     let snapshot = expected.with_inventory(inventory);
     context.snapshot = snapshot.clone();
-    set_remote_host_snapshot(inner, host_id, &snapshot);
     drop(entries);
-    drop(snapshot_write);
-    Ok(snapshot)
-}
-
-fn reconcile_remote_snapshot(inner: &Inner, host_id: &str, snapshot: &RemoteTmuxSnapshot) {
-    let stale = reconcile_remote_presentations(
+    let stale_presentations = reconcile_remote_presentations(
         inner,
         host_id,
         snapshot.endpoint(),
         snapshot.route_identity(),
         snapshot.lease_generation(),
-        Some(RemoteInventory::from(snapshot)),
+        Some(RemoteInventory::from(&snapshot)),
     );
-    drop(stale);
+    set_remote_host_snapshot(inner, host_id, &snapshot);
+    drop(snapshot_write);
+    drop(stale_presentations);
+    Ok(snapshot)
 }
 
 fn run_herdr_create(
@@ -22172,6 +22181,109 @@ mod tests {
         assert_eq!(
             pending_remote_constructive_target(&workspace.inner, "ssh:studio"),
             Some(target)
+        );
+    }
+
+    #[test]
+    fn stale_remote_inventory_cannot_overwrite_the_published_generation() {
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid remote host");
+        let controller =
+            KwtSshExecutable::from_absolute(std::env::current_exe().expect("test executable path"))
+                .expect("absolute controller path");
+        let ssh = SshExecutable::system().expect("system SSH");
+        let runner: SharedCommandRunner = Arc::new(StdCommandRunner);
+        let host = RemoteTmuxHost::new(config.clone(), &controller, &ssh, runner);
+        let identity = session::SessionIdentity::new(42, "$1", 100);
+        let initial = RemoteTmuxSnapshot::test_fixture(
+            "studio.example",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            7,
+            vec![session::DiscoveredSession::new(
+                "initial",
+                identity.clone(),
+                0,
+            )],
+            HerdrInventory::Unavailable,
+            ZellijInventory::Unavailable,
+        );
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Ready,
+                vec![SessionItem::new("initial", 0)],
+                None,
+            )],
+        ));
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                config.id().to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: Some(host.clone()),
+                    context: Some(RemoteHostContext {
+                        generation: 7,
+                        host,
+                        snapshot: initial.clone(),
+                    }),
+                    cancellation: None,
+                    constructive_cancellation: None,
+                    attachment_attempt: None,
+                    generation: 7,
+                },
+            );
+        let cancellation = CancellationToken::new();
+        let winner = publish_remote_inventory(
+            &workspace.inner,
+            "ssh:studio",
+            7,
+            &initial,
+            &cancellation,
+            RemoteSessionInventory::test_fixture(
+                Some("/usr/bin/tmux".to_owned()),
+                vec![session::DiscoveredSession::new(
+                    "winner",
+                    identity.clone(),
+                    0,
+                )],
+                HerdrInventory::Unavailable,
+                ZellijInventory::Unavailable,
+            ),
+        )
+        .expect("first publication wins");
+
+        let stale = publish_remote_inventory(
+            &workspace.inner,
+            "ssh:studio",
+            7,
+            &initial,
+            &cancellation,
+            RemoteSessionInventory::test_fixture(
+                Some("/usr/bin/tmux".to_owned()),
+                vec![session::DiscoveredSession::new("stale", identity, 0)],
+                HerdrInventory::Unavailable,
+                ZellijInventory::Unavailable,
+            ),
+        );
+
+        assert!(stale.is_err());
+        assert_eq!(winner.inventory_generation(), 1);
+        assert_eq!(
+            workspace.snapshot().hosts()[0].sessions()[0].name(),
+            "winner"
         );
     }
 

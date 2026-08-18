@@ -1143,6 +1143,22 @@ pub struct SshLease {
 }
 
 impl SshLease {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_fixture(route_identity: &str, generation: u64) -> Self {
+        Self {
+            result: SshLeaseResult {
+                lease_id: "test-lease".to_owned(),
+                route_identity: route_identity.to_owned(),
+                generation,
+                mode: SshLeaseMode::Multiplexed,
+                arguments: Vec::new(),
+            },
+            process: Arc::new(LeaseState {
+                process: Mutex::new(None),
+            }),
+        }
+    }
+
     #[must_use]
     pub const fn result(&self) -> &SshLeaseResult {
         &self.result

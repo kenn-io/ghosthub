@@ -189,6 +189,7 @@ pub struct RemoteTmuxSnapshot {
     endpoint: String,
     route_identity: String,
     lease_generation: u64,
+    inventory_generation: u64,
     tmux_binary: Option<String>,
     tmux_diagnostic: Option<HostError>,
     sessions: Vec<DiscoveredSession>,
@@ -208,6 +209,23 @@ pub struct RemoteSessionInventory {
 }
 
 impl RemoteSessionInventory {
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_fixture(
+        tmux_binary: Option<String>,
+        sessions: Vec<DiscoveredSession>,
+        herdr: HerdrInventory,
+        zellij: ZellijInventory,
+    ) -> Self {
+        Self {
+            tmux_binary,
+            tmux_diagnostic: None,
+            sessions,
+            herdr,
+            zellij,
+        }
+    }
+
     #[must_use]
     pub fn tmux_binary(&self) -> Option<&str> {
         self.tmux_binary.as_deref()
@@ -235,6 +253,30 @@ impl RemoteSessionInventory {
 }
 
 impl RemoteTmuxSnapshot {
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_fixture(
+        endpoint: &str,
+        route_identity: &str,
+        lease_generation: u64,
+        sessions: Vec<DiscoveredSession>,
+        herdr: HerdrInventory,
+        zellij: ZellijInventory,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.to_owned(),
+            route_identity: route_identity.to_owned(),
+            lease_generation,
+            inventory_generation: 0,
+            tmux_binary: Some("/usr/bin/tmux".to_owned()),
+            tmux_diagnostic: None,
+            sessions,
+            herdr,
+            zellij,
+            lease: SshLease::test_fixture(route_identity, lease_generation),
+        }
+    }
+
     #[must_use]
     pub fn endpoint(&self) -> &str {
         &self.endpoint
@@ -248,6 +290,11 @@ impl RemoteTmuxSnapshot {
     #[must_use]
     pub const fn lease_generation(&self) -> u64 {
         self.lease_generation
+    }
+
+    #[must_use]
+    pub const fn inventory_generation(&self) -> u64 {
+        self.inventory_generation
     }
 
     #[must_use]
@@ -282,12 +329,21 @@ impl RemoteTmuxSnapshot {
 
     /// Replace only the multiplexer inventory while preserving the reviewed
     /// route and lease identity that authorized the refresh.
+    ///
+    /// # Panics
+    ///
+    /// Panics if one SSH lease produces more than `u64::MAX` accepted
+    /// inventory publications.
     #[must_use]
     pub fn with_inventory(&self, inventory: RemoteSessionInventory) -> Self {
         Self {
             endpoint: self.endpoint.clone(),
             route_identity: self.route_identity.clone(),
             lease_generation: self.lease_generation,
+            inventory_generation: self
+                .inventory_generation
+                .checked_add(1)
+                .expect("remote inventory generation overflow"),
             tmux_binary: inventory.tmux_binary,
             tmux_diagnostic: inventory.tmux_diagnostic,
             sessions: inventory.sessions,
@@ -370,6 +426,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             endpoint: self.config.endpoint(),
             route_identity: route.route_identity().to_owned(),
             lease_generation: lease.result().generation(),
+            inventory_generation: 0,
             tmux_binary: inventory.tmux_binary,
             tmux_diagnostic: inventory.tmux_diagnostic,
             sessions: inventory.sessions,
@@ -2006,6 +2063,7 @@ mod tests {
             route_identity: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_owned(),
             lease_generation: 7,
+            inventory_generation: 0,
             tmux_binary: Some("/usr/bin/tmux".to_owned()),
             tmux_diagnostic: None,
             sessions: vec![session.clone()],
@@ -2019,6 +2077,34 @@ mod tests {
             .expect_err("exited controller cannot issue stale SSH arguments");
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
+    }
+
+    #[test]
+    fn inventory_refresh_advances_snapshot_authority() {
+        let snapshot = RemoteTmuxSnapshot {
+            endpoint: "host-alias".to_owned(),
+            route_identity: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
+            lease_generation: 7,
+            inventory_generation: 11,
+            tmux_binary: Some("/usr/bin/tmux".to_owned()),
+            tmux_diagnostic: None,
+            sessions: Vec::new(),
+            herdr: HerdrInventory::Unavailable,
+            zellij: ZellijInventory::Unavailable,
+            lease: exited_lease(),
+        };
+        let refreshed = snapshot.with_inventory(RemoteSessionInventory {
+            tmux_binary: Some("/usr/bin/tmux".to_owned()),
+            tmux_diagnostic: None,
+            sessions: Vec::new(),
+            herdr: HerdrInventory::Unavailable,
+            zellij: ZellijInventory::Unavailable,
+        });
+
+        assert_eq!(snapshot.inventory_generation(), 11);
+        assert_eq!(refreshed.inventory_generation(), 12);
+        assert_eq!(refreshed.lease_generation(), snapshot.lease_generation());
     }
 
     #[test]
