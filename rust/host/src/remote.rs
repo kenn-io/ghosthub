@@ -1056,35 +1056,39 @@ fn extract_framed_command_output(
     begin_marker: &str,
     end_marker: &str,
 ) -> Result<crate::CommandOutput, RemoteTmuxError> {
-    let stdout = match extract_framed_payload(&output.stdout, begin_marker, end_marker) {
-        Ok(payload) => payload,
-        Err(_error) if output.status != 0 => {
-            return Err(RemoteTmuxError::new(
-                DiagnosticKind::Transport,
-                nonempty_diagnostic(
-                    &output.stderr,
-                    "remote command wrapper failed before starting the requested command",
-                ),
-            ));
-        }
-        Err(error) => return Err(error),
-    };
-    let stderr = match extract_framed_payload(&output.stderr, begin_marker, end_marker) {
-        Ok(payload) => payload,
-        Err(_error) if output.status != 0 => {
-            return Err(RemoteTmuxError::new(
-                DiagnosticKind::Transport,
-                nonempty_diagnostic(
-                    &output.stderr,
-                    "remote command wrapper failed before starting the requested command",
-                ),
-            ));
-        }
-        Err(error) => return Err(error),
-    };
+    let stdout_framed = has_complete_frame(&output.stdout, begin_marker, end_marker);
+    let stderr_framed = has_complete_frame(&output.stderr, begin_marker, end_marker);
+    if !stdout_framed || !stderr_framed {
+        let diagnostic = stderr_framed
+            .then(|| extract_framed_payload(&output.stderr, begin_marker, end_marker).ok())
+            .flatten()
+            .unwrap_or_else(|| output.stderr.clone());
+        return Err(RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            nonempty_diagnostic(
+                &diagnostic,
+                "remote command wrapper failed before starting the requested command",
+            ),
+        ));
+    }
+    let stdout = extract_framed_payload(&output.stdout, begin_marker, end_marker)?;
+    let stderr = extract_framed_payload(&output.stderr, begin_marker, end_marker)?;
     output.stdout = stdout;
     output.stderr = stderr;
     Ok(output)
+}
+
+fn has_complete_frame(bytes: &[u8], begin_marker: &str, end_marker: &str) -> bool {
+    let begin = format!("{begin_marker}\n");
+    let end = format!("{end_marker}\n");
+    bytes
+        .windows(begin.len())
+        .position(|window| window == begin.as_bytes())
+        .is_some_and(|start| {
+            bytes[start + begin.len()..]
+                .windows(end.len())
+                .any(|window| window == end.as_bytes())
+        })
 }
 
 fn command_failure(output: &crate::CommandOutput, fallback: &str) -> RemoteTmuxError {
@@ -1658,6 +1662,27 @@ mod tests {
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
         assert_eq!(error.to_string(), "wsl runtime guard did not start SSH");
+    }
+
+    #[test]
+    fn successful_unframed_shell_exit_is_a_transport_failure() {
+        for (stdout, stderr) in [
+            (Vec::new(), b"login shell exited early".to_vec()),
+            (b"BEGIN\nbackend output\nEND\n".to_vec(), Vec::new()),
+        ] {
+            let error = extract_framed_command_output(
+                crate::CommandOutput {
+                    status: 0,
+                    stdout,
+                    stderr,
+                },
+                "BEGIN",
+                "END",
+            )
+            .expect_err("both streams must prove the wrapper ran");
+
+            assert_eq!(error.kind(), DiagnosticKind::Transport);
+        }
     }
 
     #[test]
