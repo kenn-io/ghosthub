@@ -1596,8 +1596,17 @@ struct RemoteEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RemoteConstructiveTarget {
-    Herdr(String),
-    Zellij(String),
+    Herdr {
+        route_identity: String,
+        executable: String,
+        name: String,
+        precondition: HerdrLaunchPrecondition,
+    },
+    Zellij {
+        route_identity: String,
+        executable: String,
+        name: String,
+    },
 }
 
 enum RemoteConstructiveState {
@@ -2548,7 +2557,7 @@ impl HerdrCreateRequest {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum HerdrLaunchPrecondition {
     Absent,
     Stopped(session::HerdrSessionRecord),
@@ -2559,6 +2568,27 @@ impl HerdrLaunchPrecondition {
         match self {
             Self::Absent => false,
             Self::Stopped(record) => record.is_default(),
+        }
+    }
+}
+
+impl RemoteHerdrCreateRequest {
+    fn constructive_target(&self) -> RemoteConstructiveTarget {
+        RemoteConstructiveTarget::Herdr {
+            route_identity: self.snapshot.route_identity().to_owned(),
+            executable: self.executable.clone(),
+            name: self.name.as_str().to_owned(),
+            precondition: self.precondition.clone(),
+        }
+    }
+}
+
+impl RemoteZellijCreateRequest {
+    fn constructive_target(&self) -> RemoteConstructiveTarget {
+        RemoteConstructiveTarget::Zellij {
+            route_identity: self.snapshot.route_identity().to_owned(),
+            executable: self.executable.clone(),
+            name: self.name.as_str().to_owned(),
         }
     }
 }
@@ -3543,16 +3573,39 @@ fn remote_constructive_target_is_present(
     target: &RemoteConstructiveTarget,
 ) -> bool {
     match target {
-        RemoteConstructiveTarget::Herdr(expected) => {
-            snapshot.herdr().sessions().iter().any(|session| {
-                session.name() == expected && session.state() == HerdrSessionState::Running
-            })
+        RemoteConstructiveTarget::Herdr {
+            route_identity,
+            executable,
+            name,
+            precondition,
+        } => {
+            snapshot.route_identity() == route_identity
+                && matches!(
+                    snapshot.herdr(),
+                    HerdrInventory::Available {
+                        executable: current_executable,
+                        sessions,
+                    } if current_executable == executable
+                        && sessions.iter().any(|session| {
+                            herdr_launch_result_matches(precondition, name, session)
+                        })
+                )
         }
-        RemoteConstructiveTarget::Zellij(expected) => snapshot
-            .zellij()
-            .sessions()
-            .iter()
-            .any(|session| session.name() == expected),
+        RemoteConstructiveTarget::Zellij {
+            route_identity,
+            executable,
+            name,
+        } => {
+            snapshot.route_identity() == route_identity
+                && matches!(
+                    snapshot.zellij(),
+                    ZellijInventory::Available {
+                        executable: current_executable,
+                        sessions,
+                    } if current_executable == executable
+                        && sessions.iter().any(|session| session.name() == name)
+                )
+        }
     }
 }
 
@@ -6114,7 +6167,7 @@ impl Workspace {
             &request.snapshot,
             navigation_generation,
             &cancellation,
-            RemoteConstructiveTarget::Herdr(request.name.as_str().to_owned()),
+            request.constructive_target(),
         ) {
             Ok(launched) => launched,
             Err(error) => {
@@ -6177,7 +6230,7 @@ impl Workspace {
             &request.snapshot,
             navigation_generation,
             &cancellation,
-            RemoteConstructiveTarget::Zellij(request.name.as_str().to_owned()),
+            request.constructive_target(),
         ) {
             Ok(launched) => launched,
             Err(error) => {
@@ -11862,6 +11915,7 @@ fn run_create(
 struct RemoteConstructiveReset<'a> {
     inner: &'a Inner,
     host_id: &'a str,
+    navigation_generation: u64,
 }
 
 struct RemoteAttachmentReset<'a> {
@@ -11878,19 +11932,12 @@ impl Drop for RemoteAttachmentReset<'_> {
 
 impl Drop for RemoteConstructiveReset<'_> {
     fn drop(&mut self) {
-        if let Some(entry) = self
-            .inner
-            .remote_hosts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_mut(self.host_id)
-            && matches!(
-                entry.constructive_cancellation,
-                Some(RemoteConstructiveState::Active { .. })
-            )
-        {
-            entry.constructive_cancellation = None;
-        }
+        let _pending = settle_remote_constructive_task(
+            self.inner,
+            self.host_id,
+            self.navigation_generation,
+            false,
+        );
         self.inner
             .remote_constructive_in_flight
             .store(false, Ordering::Release);
@@ -11947,6 +11994,41 @@ fn clear_remote_constructive_registration(inner: &Inner, host_id: &str) {
         .get_mut(host_id)
     {
         entry.constructive_cancellation = None;
+    }
+}
+
+fn settle_remote_constructive_task(
+    inner: &Inner,
+    host_id: &str,
+    navigation_generation: u64,
+    succeeded: bool,
+) -> Option<RemoteConstructiveTarget> {
+    let mut entries = inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = entries.get_mut(host_id)?;
+    let operation = entry.constructive_cancellation.take()?;
+    match operation {
+        RemoteConstructiveState::Active {
+            navigation_generation: current_generation,
+            launched,
+            target,
+            ..
+        } if current_generation == navigation_generation => {
+            if succeeded || !launched.load(Ordering::Acquire) {
+                None
+            } else {
+                entry.constructive_cancellation = Some(
+                    RemoteConstructiveState::PendingReconciliation(target.clone()),
+                );
+                Some(target)
+            }
+        }
+        current => {
+            entry.constructive_cancellation = Some(current);
+            None
+        }
     }
 }
 
@@ -12714,8 +12796,9 @@ fn run_remote_herdr_create(
     let _reset = RemoteConstructiveReset {
         inner,
         host_id: &request.host_id,
+        navigation_generation,
     };
-    let Some(_operation) = lock_session_operations(inner, cancellation) else {
+    let Some(operation) = lock_session_operations(inner, cancellation) else {
         return;
     };
     let result = create_remote_herdr_fresh(
@@ -12783,7 +12866,7 @@ fn run_remote_herdr_create(
         published?;
         Ok(())
     });
-    if let Err(error) = result
+    if let Err(error) = &result
         && inner.navigation_generation.load(Ordering::Acquire) == navigation_generation
         && remote_constructive_is_current(inner, &request.host_id, cancellation)
     {
@@ -12791,6 +12874,23 @@ fn run_remote_herdr_create(
         inner.revision.fetch_add(1, Ordering::Release);
     }
     set_remote_herdr_launch_pending(inner, &request.host_id, request.name.as_str(), false);
+    let pending = settle_remote_constructive_task(
+        inner,
+        &request.host_id,
+        navigation_generation,
+        result.is_ok(),
+    );
+    drop(operation);
+    if let Some(target) = pending {
+        reconcile_remote_constructive_after_connection(
+            inner,
+            &request.host_id,
+            request.connection_generation,
+            &request.host,
+            request.snapshot.clone(),
+            &target,
+        );
+    }
 }
 
 fn run_remote_zellij_create(
@@ -12803,8 +12903,9 @@ fn run_remote_zellij_create(
     let _reset = RemoteConstructiveReset {
         inner,
         host_id: &request.host_id,
+        navigation_generation,
     };
-    let Some(_operation) = lock_session_operations(inner, cancellation) else {
+    let Some(operation) = lock_session_operations(inner, cancellation) else {
         return;
     };
     let result = create_remote_zellij_fresh(
@@ -12867,12 +12968,29 @@ fn run_remote_zellij_create(
         published?;
         Ok(())
     });
-    if let Err(error) = result
+    if let Err(error) = &result
         && inner.navigation_generation.load(Ordering::Acquire) == navigation_generation
         && remote_constructive_is_current(inner, &request.host_id, cancellation)
     {
         push_operation_event(inner, WorkspaceEvent::Error(error.to_string()));
         inner.revision.fetch_add(1, Ordering::Release);
+    }
+    let pending = settle_remote_constructive_task(
+        inner,
+        &request.host_id,
+        navigation_generation,
+        result.is_ok(),
+    );
+    drop(operation);
+    if let Some(target) = pending {
+        reconcile_remote_constructive_after_connection(
+            inner,
+            &request.host_id,
+            request.connection_generation,
+            &request.host,
+            request.snapshot.clone(),
+            &target,
+        );
     }
 }
 
@@ -12960,6 +13078,9 @@ fn create_remote_herdr_fresh(
                     term.as_str(),
                 )
                 .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            // Constructing the worker consumes the one-shot launch authority
+            // even when PTY or containment setup subsequently fails.
+            launched.store(true, Ordering::Release);
             let worker = TerminalWorker::launch_herdr_with_metadata(
                 authority,
                 geometry.grid,
@@ -12969,7 +13090,6 @@ fn create_remote_herdr_fresh(
                 default_colors(&inner.appearance),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
-            launched.store(true, Ordering::Release);
             Ok(worker)
         },
     )?;
@@ -13075,6 +13195,9 @@ fn create_remote_zellij_fresh(
                     term.as_str(),
                 )
                 .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            // Constructing the worker consumes the one-shot launch authority
+            // even when PTY or containment setup subsequently fails.
+            launched.store(true, Ordering::Release);
             let worker = TerminalWorker::launch_zellij_with_metadata(
                 authority,
                 geometry.grid,
@@ -13084,7 +13207,6 @@ fn create_remote_zellij_fresh(
                 default_colors(&inner.appearance),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
-            launched.store(true, Ordering::Release);
             Ok(worker)
         },
     )?;
@@ -16309,6 +16431,9 @@ fn default_terminal_geometry() -> TerminalGeometry {
 mod tests {
     use super::*;
 
+    const TEST_REMOTE_ROUTE: &str =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     fn remote_host_fixture(config: &RemoteTmuxConfig) -> RuntimeRemoteHost {
         let controller =
             KwtSshExecutable::from_absolute(std::env::current_exe().expect("test executable path"))
@@ -16320,6 +16445,158 @@ mod tests {
             &ssh,
             Arc::new(StdCommandRunner),
         )
+    }
+
+    fn remote_herdr_target(name: &str) -> RemoteConstructiveTarget {
+        RemoteConstructiveTarget::Herdr {
+            route_identity: TEST_REMOTE_ROUTE.to_owned(),
+            executable: "/usr/bin/herdr".to_owned(),
+            name: name.to_owned(),
+            precondition: HerdrLaunchPrecondition::Absent,
+        }
+    }
+
+    fn remote_zellij_target(name: &str) -> RemoteConstructiveTarget {
+        RemoteConstructiveTarget::Zellij {
+            route_identity: TEST_REMOTE_ROUTE.to_owned(),
+            executable: "/usr/bin/zellij".to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn remote_constructive_reconciliation_requires_original_authority() {
+        let route = TEST_REMOTE_ROUTE;
+        let stopped = session::HerdrSessionRecord::new(
+            "agents",
+            false,
+            HerdrSessionState::Stopped,
+            "/srv/herdr/agents",
+            "/srv/herdr/agents/herdr.sock",
+        );
+        let target = RemoteConstructiveTarget::Herdr {
+            route_identity: route.to_owned(),
+            executable: "/usr/bin/herdr".to_owned(),
+            name: "agents".to_owned(),
+            precondition: HerdrLaunchPrecondition::Stopped(stopped),
+        };
+        let matching = RemoteTmuxSnapshot::test_fixture(
+            "studio.example",
+            route,
+            7,
+            Vec::new(),
+            HerdrInventory::Available {
+                executable: "/usr/bin/herdr".to_owned(),
+                sessions: vec![session::HerdrSessionRecord::new(
+                    "agents",
+                    false,
+                    HerdrSessionState::Running,
+                    "/srv/herdr/agents",
+                    "/srv/herdr/agents/herdr.sock",
+                )],
+            },
+            ZellijInventory::Unavailable,
+        );
+        assert!(remote_constructive_target_is_present(&matching, &target));
+
+        let changed_route = RemoteTmuxSnapshot::test_fixture(
+            "replacement.example",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            8,
+            Vec::new(),
+            matching.herdr().clone(),
+            ZellijInventory::Unavailable,
+        );
+        assert!(!remote_constructive_target_is_present(
+            &changed_route,
+            &target
+        ));
+
+        let changed_executable = RemoteTmuxSnapshot::test_fixture(
+            "studio.example",
+            route,
+            8,
+            Vec::new(),
+            HerdrInventory::Available {
+                executable: "/opt/homebrew/bin/herdr".to_owned(),
+                sessions: match matching.herdr() {
+                    HerdrInventory::Available { sessions, .. } => sessions.clone(),
+                    _ => unreachable!("matching fixture has Herdr inventory"),
+                },
+            },
+            ZellijInventory::Unavailable,
+        );
+        assert!(!remote_constructive_target_is_present(
+            &changed_executable,
+            &target
+        ));
+
+        let replacement = RemoteTmuxSnapshot::test_fixture(
+            "studio.example",
+            route,
+            8,
+            Vec::new(),
+            HerdrInventory::Available {
+                executable: "/usr/bin/herdr".to_owned(),
+                sessions: vec![session::HerdrSessionRecord::new(
+                    "agents",
+                    false,
+                    HerdrSessionState::Running,
+                    "/srv/herdr/replacement",
+                    "/srv/herdr/replacement/herdr.sock",
+                )],
+            },
+            ZellijInventory::Unavailable,
+        );
+        assert!(!remote_constructive_target_is_present(
+            &replacement,
+            &target
+        ));
+    }
+
+    #[test]
+    fn consumed_remote_launch_failure_remains_pending_for_reconciliation() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "",
+            None,
+        )
+        .expect("valid remote host");
+        let target = remote_zellij_target("review");
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                config.id().to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: None,
+                    context: None,
+                    cancellation: None,
+                    constructive_cancellation: Some(RemoteConstructiveState::Active {
+                        navigation_generation: 6,
+                        cancellation: CancellationToken::new(),
+                        launched: Arc::new(AtomicBool::new(true)),
+                        target: target.clone(),
+                    }),
+                    attachment_attempt: None,
+                    generation: 7,
+                },
+            );
+
+        let pending = settle_remote_constructive_task(&workspace.inner, "ssh:studio", 6, false);
+
+        assert_eq!(pending, Some(target.clone()));
+        assert_eq!(
+            pending_remote_constructive_target(&workspace.inner, "ssh:studio"),
+            Some(target)
+        );
     }
 
     #[test]
@@ -22312,7 +22589,7 @@ mod tests {
         )
         .expect("valid remote host");
         let cancellation = CancellationToken::new();
-        let target = RemoteConstructiveTarget::Herdr("agents".to_owned());
+        let target = remote_herdr_target("agents");
         workspace
             .inner
             .remote_hosts
@@ -22352,6 +22629,7 @@ mod tests {
         drop(RemoteConstructiveReset {
             inner: &workspace.inner,
             host_id: "ssh:studio",
+            navigation_generation: 6,
         });
         assert_eq!(
             pending_remote_constructive_target(&workspace.inner, "ssh:studio"),
@@ -22389,7 +22667,7 @@ mod tests {
                         navigation_generation: 7,
                         cancellation: cancellation.clone(),
                         launched: Arc::clone(&launched),
-                        target: RemoteConstructiveTarget::Zellij("review".to_owned()),
+                        target: remote_zellij_target("review"),
                     }),
                     attachment_attempt: None,
                     generation: 1,
@@ -22412,7 +22690,7 @@ mod tests {
                 navigation_generation: 7,
                 cancellation: post_launch_cancellation.clone(),
                 launched,
-                target: RemoteConstructiveTarget::Zellij("review".to_owned()),
+                target: remote_zellij_target("review"),
             });
         }
 
@@ -22475,7 +22753,7 @@ mod tests {
             HerdrInventory::Unavailable,
             ZellijInventory::Unavailable,
         );
-        let target = RemoteConstructiveTarget::Herdr("agents".to_owned());
+        let target = remote_herdr_target("agents");
         workspace
             .inner
             .remote_hosts
@@ -22698,7 +22976,7 @@ mod tests {
                         navigation_generation: 6,
                         cancellation: constructive_cancellation.clone(),
                         launched: Arc::new(AtomicBool::new(false)),
-                        target: RemoteConstructiveTarget::Zellij("review".to_owned()),
+                        target: remote_zellij_target("review"),
                     }),
                     attachment_attempt: None,
                     generation: 7,
@@ -22772,7 +23050,7 @@ mod tests {
                         navigation_generation: 6,
                         cancellation: constructive_cancellation.clone(),
                         launched: Arc::new(AtomicBool::new(false)),
-                        target: RemoteConstructiveTarget::Zellij("review".to_owned()),
+                        target: remote_zellij_target("review"),
                     }),
                     attachment_attempt: None,
                     generation: 7,
