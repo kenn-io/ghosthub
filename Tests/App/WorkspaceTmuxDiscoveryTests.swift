@@ -293,6 +293,81 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @Test("Always Live detaches unavailable identity and recovers a replacement")
+    @MainActor
+    func alwaysLiveDetachesUnavailableIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let sessionID = LockedValue("$1")
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "identity-retry"
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            guard command.contains(
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+            ) else { return (0, "") }
+            let currentSessionID = sessionID.load()
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t101\t789\t321"
+                    + "\t/dev/ttys001\t\(currentSessionID)"
+                    + "\t\(currentSessionID == "$1" ? "1001" : "2002")"
+                    + "\t%9\n"
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in
+                let currentSessionID = sessionID.load()
+                return .success([DiscoveredTmuxSession(
+                    name: "identity-retry",
+                    windowCount: 1,
+                    serverPID: "101",
+                    sessionID: currentSessionID,
+                    createdAt: currentSessionID == "$1" ? "1001" : "2002",
+                    activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+                    previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+                    managed: false
+                )])
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 1
+        }
+        let initialHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+        model.tmuxAttachedSessionIdentityBecameUnavailable(initialHandle)
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(surfaceStore.removedKeys.count == 1)
+
+        sessionID.withLock { $0 = "$2" }
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 1
+                && model.retainedBorrowedTmuxHandle(for: selection)
+                != initialHandle
+        }
+
+        await model.shutdown()
+    }
+
     @Test("stale Always Live promotion cannot activate after navigation")
     @MainActor
     func staleAlwaysLivePromotionRestoresPreviewSizing() async throws {

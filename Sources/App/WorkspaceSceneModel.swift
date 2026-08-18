@@ -1406,10 +1406,7 @@ final class WorkspaceSceneModel: ObservableObject {
         nativeTmuxSessionCoordinatorBacking?
             .onAttachedSessionIdentityUnavailable = {
                 [weak self] handle in
-                guard let self,
-                      let presentation = retainedTmuxPresentation(for: handle)
-                else { return }
-                readTmuxPreviewIdentityIfNeeded(presentation)
+                self?.tmuxAttachedSessionIdentityBecameUnavailable(handle)
             }
         nativeHerdrSessionCoordinatorBacking = NativeHerdrSessionCoordinator(
             terminalCoordinator: nativeHerdrSurfaceStore
@@ -8967,6 +8964,20 @@ final class WorkspaceSceneModel: ObservableObject {
                 identityIsResolved: false
             )
         }
+    }
+
+    func tmuxAttachedSessionIdentityBecameUnavailable(
+        _ handle: BorrowedTmuxSessionHandle
+    ) {
+        guard let presentation = retainedTmuxPresentation(for: handle) else {
+            return
+        }
+        let key = TmuxPresentationKey(presentation.selection)
+        if alwaysLiveManagedTmuxPresentationKeys.contains(key) {
+            excludeAlwaysLiveTmuxPresentation(presentation, key: key)
+            return
+        }
+        readTmuxPreviewIdentityIfNeeded(presentation)
     }
 
     private func revalidateTmuxPreviewIdentity(
