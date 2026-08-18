@@ -1019,22 +1019,15 @@ fn extract_framed_payload(
     begin_marker: &str,
     end_marker: &str,
 ) -> Result<Vec<u8>, RemoteTmuxError> {
-    let output = std::str::from_utf8(bytes).map_err(|_| {
-        RemoteTmuxError::new(
-            DiagnosticKind::MalformedOutput,
-            "remote output is not UTF-8",
-        )
-    })?;
     let begin = format!("{begin_marker}\n");
     let end = format!("{end_marker}\n");
-    let start = output.find(&begin).ok_or_else(|| {
+    let start = find_bytes(bytes, begin.as_bytes()).ok_or_else(|| {
         RemoteTmuxError::new(
             DiagnosticKind::MalformedOutput,
             "remote output framing is invalid",
         )
     })? + begin.len();
-    let finish = output[start..]
-        .find(&end)
+    let finish = find_bytes(&bytes[start..], end.as_bytes())
         .map(|offset| start + offset)
         .ok_or_else(|| {
             RemoteTmuxError::new(
@@ -1042,13 +1035,21 @@ fn extract_framed_payload(
                 "remote output framing is invalid",
             )
         })?;
-    if output[start..finish].contains(&begin) || output[finish + end.len()..].contains(&end) {
+    if find_bytes(&bytes[start..finish], begin.as_bytes()).is_some()
+        || find_bytes(&bytes[finish + end.len()..], end.as_bytes()).is_some()
+    {
         return Err(RemoteTmuxError::new(
             DiagnosticKind::MalformedOutput,
             "remote output framing is invalid",
         ));
     }
-    Ok(output.as_bytes()[start..finish].to_vec())
+    Ok(bytes[start..finish].to_vec())
+}
+
+fn find_bytes(bytes: &[u8], needle: &[u8]) -> Option<usize> {
+    bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn extract_framed_command_output(
@@ -1632,6 +1633,23 @@ mod tests {
             b"{\"sessions\":[]}\n"
         );
         assert!(extract_framed_payload(b"BEGIN\npayload\n", "BEGIN", "END").is_err());
+    }
+
+    #[test]
+    fn framing_ignores_non_utf8_login_shell_noise() {
+        let output = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 0,
+                stdout: b"\xffstartup\nBEGIN\nbackend output\nEND\n\xfelogout\n".to_vec(),
+                stderr: b"\x80warning\nBEGIN\nEND\n\x81logout\n".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect("only framed payload bytes belong to the backend command");
+
+        assert_eq!(output.stdout, b"backend output\n");
+        assert!(output.stderr.is_empty());
     }
 
     #[test]
