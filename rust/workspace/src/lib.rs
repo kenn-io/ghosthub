@@ -2486,6 +2486,16 @@ struct RemoteZellijAttachRequest {
 }
 
 #[derive(Clone)]
+struct RemoteTmuxAttachRequest {
+    host_id: String,
+    connection_generation: u64,
+    selection: SessionSelection,
+    host: RuntimeRemoteHost,
+    snapshot: RemoteTmuxSnapshot,
+    session: session::DiscoveredSession,
+}
+
+#[derive(Clone)]
 struct RemoteHerdrAttachRequest {
     host_id: String,
     connection_generation: u64,
@@ -5143,7 +5153,8 @@ impl Workspace {
                 let request = capture_remote_zellij_attach_request(&self.inner, selection)?;
                 return self.start_remote_zellij_attachment(request, navigation_generation);
             }
-            return self.attach_remote(selection);
+            let request = capture_remote_tmux_attach_request(&self.inner, selection)?;
+            return self.start_remote_tmux_attachment(request, navigation_generation);
         }
         if self
             .inner
@@ -5337,106 +5348,6 @@ impl Workspace {
             return Err(error);
         }
         Ok(true)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "remote attachment keeps preparation and the atomic worker swap in one boundary"
-    )]
-    fn attach_remote(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
-        let cancellation = CancellationToken::new();
-        let (host, snapshot, connection_generation, session) = {
-            let entries = self
-                .inner
-                .remote_hosts
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let entry = entries
-                .get(selection.host_id())
-                .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
-            let context = entry.context.as_ref().ok_or_else(|| {
-                WorkspaceError::new("Connect this SSH host before opening a session")
-            })?;
-            if context.snapshot.endpoint() != selection.endpoint() {
-                return Err(WorkspaceError::new(
-                    "SSH endpoint changed; refresh the session selection",
-                ));
-            }
-            let session = match selection.kind() {
-                SessionKind::Tmux => context
-                    .snapshot
-                    .sessions()
-                    .iter()
-                    .find(|session| session.name() == selection.session())
-                    .cloned()
-                    .ok_or_else(|| {
-                        WorkspaceError::new("session is not in current remote inventory")
-                    })?,
-                SessionKind::Herdr | SessionKind::Zellij => {
-                    return Err(WorkspaceError::new(
-                        "remote non-tmux attachment requires a fresh active-session probe",
-                    ));
-                }
-            };
-            (
-                context.host.clone(),
-                context.snapshot.clone(),
-                entry.generation,
-                session,
-            )
-        };
-        let term = host
-            .probe_terminal_term(&snapshot, &cancellation)
-            .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        let (plan, identity_mismatch_marker) = host
-            .attach_plan(&snapshot, &session, term.as_str())
-            .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        let lease = snapshot.lease().clone();
-        let key = RemotePresentationKey {
-            host_id: selection.host_id().to_owned(),
-            endpoint: selection.endpoint().to_owned(),
-            route_identity: snapshot.route_identity().to_owned(),
-            lease_generation: snapshot.lease_generation(),
-            session_identity: RemoteSessionIdentity::Tmux(session.identity().clone()),
-        };
-        let initial_geometry = *self
-            .inner
-            .terminal_geometry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let clipboard = ClipboardPolicy::remote(self.inner.allow_remote_clipboard_write);
-        let colors = default_colors(&self.inner.appearance);
-        let worker = TerminalWorker::attach_with_metadata(
-            &plan,
-            initial_geometry.grid,
-            initial_geometry.sequence,
-            initial_geometry.pixels,
-            clipboard,
-            colors,
-        )
-        .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        let presentation_id = next_presentation_id(&self.inner);
-        publish_remote_worker(
-            &self.inner,
-            worker,
-            key,
-            selection,
-            lease,
-            presentation_id,
-            Some(identity_mismatch_marker),
-            Some(&RemotePublicationFence {
-                host_id: selection.host_id(),
-                connection_generation,
-                snapshot: &snapshot,
-                cancellation: &cancellation,
-            }),
-        )
-        .map_err(|error| {
-            let RemotePublishError { error, .. } = *error;
-            error
-        })?;
-        set_terminal_notice(&self.inner, term);
-        Ok(())
     }
 
     fn start_attachment_over_remote(
@@ -6098,6 +6009,36 @@ impl Workspace {
             clear_remote_attachment_registration(&self.inner, &host_id, navigation_generation);
             return Err(WorkspaceError::new(format!(
                 "start remote Zellij attachment task: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn start_remote_tmux_attachment(
+        &self,
+        request: RemoteTmuxAttachRequest,
+        navigation_generation: u64,
+    ) -> Result<(), WorkspaceError> {
+        let cancellation = CancellationToken::new();
+        register_remote_attachment(
+            &self.inner,
+            &request.host_id,
+            request.connection_generation,
+            &request.snapshot,
+            navigation_generation,
+            &cancellation,
+        )?;
+        let inner = Arc::clone(&self.inner);
+        let host_id = request.host_id.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-remote-tmux-attach".to_owned())
+            .spawn(move || {
+                run_remote_tmux_attach(&inner, &request, navigation_generation, &cancellation);
+            })
+        {
+            clear_remote_attachment_registration(&self.inner, &host_id, navigation_generation);
+            return Err(WorkspaceError::new(format!(
+                "start remote tmux attachment task: {error}"
             )));
         }
         Ok(())
@@ -8781,6 +8722,49 @@ fn capture_remote_zellij_create_request(
         snapshot: context.snapshot.clone(),
         executable: executable.clone(),
         name,
+    })
+}
+
+fn capture_remote_tmux_attach_request(
+    inner: &Inner,
+    selection: &SessionSelection,
+) -> Result<RemoteTmuxAttachRequest, WorkspaceError> {
+    if selection.kind() != SessionKind::Tmux {
+        return Err(WorkspaceError::new(
+            "the selected session is not a tmux session",
+        ));
+    }
+    require_host_session_actions(inner, selection)?;
+    let entries = inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = entries
+        .get(selection.host_id())
+        .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+    let context = entry
+        .context
+        .as_ref()
+        .ok_or_else(|| WorkspaceError::new("Connect this SSH host before opening a session"))?;
+    if context.snapshot.endpoint() != selection.endpoint() {
+        return Err(WorkspaceError::new(
+            "SSH endpoint changed; refresh before opening the session",
+        ));
+    }
+    let session = context
+        .snapshot
+        .sessions()
+        .iter()
+        .find(|session| session.name() == selection.session())
+        .cloned()
+        .ok_or_else(|| WorkspaceError::new("session is not in current remote inventory"))?;
+    Ok(RemoteTmuxAttachRequest {
+        host_id: selection.host_id().to_owned(),
+        connection_generation: entry.generation,
+        selection: selection.clone(),
+        host: context.host.clone(),
+        snapshot: context.snapshot.clone(),
+        session,
     })
 }
 
@@ -11760,6 +11744,67 @@ fn remote_attachment_is_current(
             })
 }
 
+fn with_current_remote_attachment_launch<T>(
+    inner: &Inner,
+    host_id: &str,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+    launch: impl FnOnce() -> Result<T, WorkspaceError>,
+) -> Result<T, WorkspaceError> {
+    let _navigation = inner
+        .navigation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        return Err(WorkspaceError::new("remote attachment was superseded"));
+    }
+    let entries = inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let current = entries
+        .get(host_id)
+        .and_then(|entry| entry.attachment_attempt.as_ref())
+        .is_some_and(|attempt| {
+            attempt.navigation_generation == navigation_generation
+                && !attempt.cancellation.is_cancelled()
+        });
+    if cancellation.is_cancelled() || !current {
+        return Err(WorkspaceError::new("remote attachment was superseded"));
+    }
+    launch()
+}
+
+fn with_current_remote_constructive_launch<T>(
+    inner: &Inner,
+    request_host_id: &str,
+    connection_generation: u64,
+    expected: &RemoteTmuxSnapshot,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+    launch: impl FnOnce() -> Result<T, WorkspaceError>,
+) -> Result<T, WorkspaceError> {
+    let _navigation = inner
+        .navigation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cancellation.is_cancelled()
+        || inner.navigation_generation.load(Ordering::Acquire) != navigation_generation
+    {
+        return Err(WorkspaceError::new(
+            "remote session creation was superseded",
+        ));
+    }
+    with_current_remote_constructive(
+        inner,
+        request_host_id,
+        connection_generation,
+        expected,
+        cancellation,
+        launch,
+    )
+}
+
 fn clear_remote_attachment_registration(inner: &Inner, host_id: &str, navigation_generation: u64) {
     let mut entries = inner
         .remote_hosts
@@ -11849,6 +11894,116 @@ fn with_current_remote_constructive<T>(
         ));
     }
     launch()
+}
+
+fn run_remote_tmux_attach(
+    inner: &Inner,
+    request: &RemoteTmuxAttachRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) {
+    let _reset = RemoteAttachmentReset {
+        inner,
+        host_id: &request.host_id,
+        navigation_generation,
+    };
+    let _operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !remote_attachment_is_current(inner, &request.host_id, navigation_generation, cancellation) {
+        return;
+    }
+    let result =
+        prepare_remote_tmux_attachment(inner, request, navigation_generation, cancellation)
+            .and_then(|(worker, term, identity_mismatch_marker)| {
+                let navigation = inner
+                    .navigation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+                    drop(worker);
+                    return Ok(());
+                }
+                let key = RemotePresentationKey {
+                    host_id: request.host_id.clone(),
+                    endpoint: request.snapshot.endpoint().to_owned(),
+                    route_identity: request.snapshot.route_identity().to_owned(),
+                    lease_generation: request.snapshot.lease_generation(),
+                    session_identity: RemoteSessionIdentity::Tmux(
+                        request.session.identity().clone(),
+                    ),
+                };
+                let published = publish_remote_worker(
+                    inner,
+                    worker,
+                    key,
+                    &request.selection,
+                    request.snapshot.lease().clone(),
+                    next_presentation_id(inner),
+                    Some(identity_mismatch_marker),
+                    Some(&RemotePublicationFence {
+                        host_id: &request.host_id,
+                        connection_generation: request.connection_generation,
+                        snapshot: &request.snapshot,
+                        cancellation,
+                    }),
+                )
+                .map_err(|error| error.error);
+                drop(navigation);
+                published?;
+                set_terminal_notice(inner, term);
+                Ok(())
+            });
+    if let Err(error) = result
+        && remote_attachment_is_current(
+            inner,
+            &request.host_id,
+            navigation_generation,
+            cancellation,
+        )
+    {
+        push_operation_event(inner, WorkspaceEvent::Error(error.to_string()));
+        inner.revision.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn prepare_remote_tmux_attachment(
+    inner: &Inner,
+    request: &RemoteTmuxAttachRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) -> Result<(TerminalWorker, AttachTerm, String), WorkspaceError> {
+    let term = request
+        .host
+        .probe_terminal_term(&request.snapshot, cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let (plan, identity_mismatch_marker) = request
+        .host
+        .attach_plan(&request.snapshot, &request.session, term.as_str())
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let worker = with_current_remote_attachment_launch(
+        inner,
+        &request.host_id,
+        navigation_generation,
+        cancellation,
+        || {
+            TerminalWorker::attach_with_metadata(
+                &plan,
+                geometry.grid,
+                geometry.sequence,
+                geometry.pixels,
+                ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+                default_colors(&inner.appearance),
+            )
+            .map_err(|error| WorkspaceError::new(error.to_string()))
+        },
+    )?;
+    Ok((worker, term, identity_mismatch_marker))
 }
 
 fn run_remote_herdr_attach(
@@ -11981,15 +12136,23 @@ fn prepare_remote_herdr_attachment(
         .terminal_geometry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let worker = TerminalWorker::attach_herdr_with_metadata(
-        &plan,
-        geometry.grid,
-        geometry.sequence,
-        geometry.pixels,
-        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
-    )
-    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let worker = with_current_remote_attachment_launch(
+        inner,
+        &request.host_id,
+        navigation_generation,
+        cancellation,
+        || {
+            TerminalWorker::attach_herdr_with_metadata(
+                &plan,
+                geometry.grid,
+                geometry.sequence,
+                geometry.pixels,
+                ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+                default_colors(&inner.appearance),
+            )
+            .map_err(|error| WorkspaceError::new(error.to_string()))
+        },
+    )?;
     Ok((worker, snapshot, session, geometry, term))
 }
 
@@ -12150,15 +12313,23 @@ fn prepare_remote_zellij_attachment(
         .terminal_geometry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let worker = TerminalWorker::attach_zellij_with_metadata(
-        &plan,
-        geometry.grid,
-        geometry.sequence,
-        geometry.pixels,
-        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
-    )
-    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let worker = with_current_remote_attachment_launch(
+        inner,
+        &request.host_id,
+        navigation_generation,
+        cancellation,
+        || {
+            TerminalWorker::attach_zellij_with_metadata(
+                &plan,
+                geometry.grid,
+                geometry.sequence,
+                geometry.pixels,
+                ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+                default_colors(&inner.appearance),
+            )
+            .map_err(|error| WorkspaceError::new(error.to_string()))
+        },
+    )?;
     Ok((worker, snapshot, session, geometry, term))
 }
 
@@ -12403,11 +12574,12 @@ fn create_remote_herdr_fresh(
         .host
         .probe_terminal_term(&request.snapshot, cancellation)
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
-    let worker = with_current_remote_constructive(
+    let worker = with_current_remote_constructive_launch(
         inner,
         &request.host_id,
         request.connection_generation,
         &request.snapshot,
+        navigation_generation,
         cancellation,
         || {
             let authority = request
@@ -12516,11 +12688,12 @@ fn create_remote_zellij_fresh(
         .host
         .probe_terminal_term(&request.snapshot, cancellation)
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
-    let worker = with_current_remote_constructive(
+    let worker = with_current_remote_constructive_launch(
         inner,
         &request.host_id,
         request.connection_generation,
         &request.snapshot,
+        navigation_generation,
         cancellation,
         || {
             let authority = request
@@ -21541,6 +21714,70 @@ mod tests {
                 .attachment_attempt
                 .is_none()
         );
+    }
+
+    #[test]
+    fn superseded_remote_attachment_cannot_cross_the_launch_fence() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Ready,
+                Vec::new(),
+                None,
+            )],
+        ));
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "",
+            None,
+        )
+        .expect("valid remote host");
+        let cancellation = CancellationToken::new();
+        workspace
+            .inner
+            .navigation_generation
+            .store(7, Ordering::Release);
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                "ssh:studio".to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: None,
+                    context: None,
+                    cancellation: None,
+                    constructive_cancellation: None,
+                    attachment_attempt: Some(RemoteAttachmentAttempt {
+                        navigation_generation: 7,
+                        cancellation: cancellation.clone(),
+                    }),
+                    generation: 1,
+                },
+            );
+        workspace.begin_navigation();
+        let launched = AtomicBool::new(false);
+
+        let result = with_current_remote_attachment_launch(
+            &workspace.inner,
+            "ssh:studio",
+            7,
+            &cancellation,
+            || {
+                launched.store(true, Ordering::Release);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!launched.load(Ordering::Acquire));
     }
 
     #[test]
