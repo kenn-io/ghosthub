@@ -608,8 +608,11 @@ client before activating its retained surface. The client never detaches during
 this promotion, so servers using `destroy-unattached` cannot destroy the session
 between preview and interactive presentation. A promotion that finishes after
 newer navigation restores `ignore-size` on the same verified client and never
-activates the stale surface. Parked surfaces cannot receive
-focus, pointer input, or accessibility actions. Parking applies the destination
+activates the stale surface. If the attachment changes during promotion,
+Ghosthub retries the exact-client mutation against the replacement before it
+can activate. If stale sizing cannot be restored, Ghosthub marks the preview
+ineligible and detaches it instead of retaining a hidden sizing client. Parked
+surfaces cannot receive focus, pointer input, or accessibility actions. Parking applies the destination
 window's stable backing scale and ignores hidden-host layout changes; only an
 explicit Always Live preview-grid update may change its pixel size. AppKit reparenting
 callbacks never publish transient DPI or resize values to libghostty. App

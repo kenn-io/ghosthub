@@ -100,6 +100,12 @@ enum TmuxAttachedSessionIdentityResolution: Equatable {
     case unavailable
 }
 
+enum TmuxClientSizingTransitionResult: Equatable {
+    case applied
+    case stale
+    case failure(TmuxPaneSplitFailure)
+}
+
 /// Hosts ordinary tmux clients for kwt workspaces and unbound sessions.
 /// Tmux owns every window, pane, and byte of history; this coordinator owns
 /// only binary resolution and the disposable local libghostty presentation.
@@ -544,26 +550,26 @@ final class NativeTmuxSessionCoordinator {
 
     func enableInteractiveSizing(
         for handle: BorrowedTmuxSessionHandle
-    ) async -> TmuxPaneSplitFailure? {
+    ) async -> TmuxClientSizingTransitionResult {
         guard var attachment = attachments[handle.id] else {
             if provisioningHandles.contains(handle.id) {
                 interactiveSizingHandles.insert(handle.id)
-                return nil
+                return .applied
             }
-            return TmuxPaneSplitFailure(
+            return .failure(TmuxPaneSplitFailure(
                 host: targetHostsByHandle[handle.id]?.displayName
                     ?? "the selected host",
                 sessionName: handle.name,
                 status: 75,
                 diagnostic: "The tmux attachment is unavailable."
-            )
+            ))
         }
-        guard attachment.ignoresClientSize else { return nil }
+        guard attachment.ignoresClientSize else { return .applied }
         guard launchedHandles.contains(handle.id) else {
             attachment.ignoresClientSize = false
             attachment.previewGridSize = nil
             attachments[handle.id] = attachment
-            return nil
+            return .applied
         }
         let attachmentID = attachment.id
         var target = paneSplitTarget(
@@ -571,65 +577,72 @@ final class NativeTmuxSessionCoordinator {
             attachment: attachment,
             expectedIdentity: attachment.sessionIdentity
         )
-        switch await paneSplitter.clientIdentity(target: target) {
+        let identityResult = await paneSplitter.clientIdentity(target: target)
+        guard !Task.isCancelled,
+              attachments[handle.id]?.id == attachmentID
+        else { return .stale }
+        switch identityResult {
         case let .success(client):
-            guard !Task.isCancelled,
-                  attachments[handle.id]?.id == attachmentID
-            else { return nil }
             if let expectedClient = target.expectedClient,
                !client.matchesClient(expectedClient) {
-                return TmuxPaneSplitFailure(
+                return .failure(TmuxPaneSplitFailure(
                     host: target.host.displayName,
                     sessionName: target.sessionName,
                     status: 75,
                     diagnostic: "The attached tmux session changed."
-                )
+                ))
             }
             paneSplitClients[handle.id] = client
             target.expectedIdentity = client.sessionIdentity
             target.expectedClient = client
         case let .failure(failure):
-            return failure
+            return .failure(failure)
         }
         let failure = await paneSplitter.enableSizing(target: target)
         guard !Task.isCancelled,
               attachments[handle.id]?.id == attachmentID
-        else { return nil }
-        guard failure == nil else { return failure }
-        var promoted = attachment
-        promoted.ignoresClientSize = false
-        promoted.previewGridSize = nil
-        attachments[handle.id] = promoted
-        terminalCoordinator.paneSurfaceIfPresent(
-            for: surfaceKey(handle)
-        )?.clearPreviewGridSize()
-        return nil
+        else { return .stale }
+        guard let failure else {
+            var promoted = attachment
+            promoted.ignoresClientSize = false
+            promoted.previewGridSize = nil
+            attachments[handle.id] = promoted
+            terminalCoordinator.paneSurfaceIfPresent(
+                for: surfaceKey(handle)
+            )?.clearPreviewGridSize()
+            return .applied
+        }
+        return .failure(failure)
     }
 
     func restorePreviewSizing(
         _ gridSize: TmuxGridSize?,
         for handle: BorrowedTmuxSessionHandle
-    ) async -> TmuxPaneSplitFailure? {
+    ) async -> TmuxClientSizingTransitionResult {
         guard var attachment = attachments[handle.id] else {
-            return TmuxPaneSplitFailure(
+            if provisioningHandles.contains(handle.id) {
+                interactiveSizingHandles.remove(handle.id)
+                return .applied
+            }
+            return .failure(TmuxPaneSplitFailure(
                 host: targetHostsByHandle[handle.id]?.displayName
                     ?? "the selected host",
                 sessionName: handle.name,
                 status: 75,
                 diagnostic: "The tmux attachment is unavailable."
-            )
+            ))
         }
         if attachment.ignoresClientSize {
             attachment.previewGridSize = gridSize
             attachments[handle.id] = attachment
             applyPreviewGridSize(gridSize, for: handle)
-            return nil
+            return .applied
         }
         guard launchedHandles.contains(handle.id) else {
             attachment.ignoresClientSize = true
             attachment.previewGridSize = gridSize
             attachments[handle.id] = attachment
-            return nil
+            return .applied
         }
         let attachmentID = attachment.id
         var target = paneSplitTarget(
@@ -638,26 +651,33 @@ final class NativeTmuxSessionCoordinator {
             expectedIdentity: attachment.sessionIdentity
         )
         if target.expectedClient == nil {
-            switch await paneSplitter.clientIdentity(target: target) {
+            let identityResult = await paneSplitter.clientIdentity(
+                target: target
+            )
+            guard !Task.isCancelled,
+                  attachments[handle.id]?.id == attachmentID
+            else { return .stale }
+            switch identityResult {
             case let .success(client):
-                guard attachments[handle.id]?.id == attachmentID else {
-                    return nil
-                }
                 paneSplitClients[handle.id] = client
                 target.expectedIdentity = client.sessionIdentity
                 target.expectedClient = client
             case let .failure(failure):
-                return failure
+                return .failure(failure)
             }
         }
         let failure = await paneSplitter.disableSizing(target: target)
-        guard attachments[handle.id]?.id == attachmentID else { return nil }
-        guard failure == nil else { return failure }
-        attachment.ignoresClientSize = true
-        attachment.previewGridSize = gridSize
-        attachments[handle.id] = attachment
-        applyPreviewGridSize(gridSize, for: handle)
-        return nil
+        guard !Task.isCancelled,
+              attachments[handle.id]?.id == attachmentID
+        else { return .stale }
+        guard let failure else {
+            attachment.ignoresClientSize = true
+            attachment.previewGridSize = gridSize
+            attachments[handle.id] = attachment
+            applyPreviewGridSize(gridSize, for: handle)
+            return .applied
+        }
+        return .failure(failure)
     }
 
     private func applyPreviewGridSize(

@@ -8732,17 +8732,24 @@ final class WorkspaceSceneModel: ObservableObject {
         presentation.previewPromotionID = promotionID
         presentation.previewPromotionTask = Task { @MainActor [weak self, weak presentation] in
             guard let self, let presentation else { return }
-            let failure = await nativeTmuxSessionCoordinator
-                .enableInteractiveSizing(for: presentation.handle)
-            guard presentation.previewPromotionID == promotionID else {
-                return
-            }
+            var promotionResult: TmuxClientSizingTransitionResult
+            repeat {
+                promotionResult = await nativeTmuxSessionCoordinator
+                    .enableInteractiveSizing(for: presentation.handle)
+                guard !Task.isCancelled,
+                      presentation.previewPromotionID == promotionID,
+                      retainedTmuxPresentations[key] === presentation,
+                      alwaysLiveManagedTmuxPresentationKeys.contains(key)
+                else { return }
+            } while promotionResult == .stale
             presentation.previewPromotionID = nil
             presentation.previewPromotionTask = nil
-            guard retainedTmuxPresentations[key] === presentation,
-                  alwaysLiveManagedTmuxPresentationKeys.contains(key)
-            else { return }
-            if let failure {
+            switch promotionResult {
+            case .applied:
+                break
+            case .stale:
+                return
+            case let .failure(failure):
                 AppLogger.shared.error(
                     "tmux preview promotion: \(failure.localizedDescription)",
                     context: "tmux"
@@ -8753,19 +8760,26 @@ final class WorkspaceSceneModel: ObservableObject {
                 == userNavigationRevision
             else {
                 presentation.previewPromotionNavigationRevision = nil
-                let restoreFailure = await nativeTmuxSessionCoordinator
-                    .restorePreviewSizing(
-                        previewGridSize(for: presentation.selection),
-                        for: presentation.handle
+                var restoreResult: TmuxClientSizingTransitionResult
+                repeat {
+                    restoreResult = await nativeTmuxSessionCoordinator
+                        .restorePreviewSizing(
+                            previewGridSize(for: presentation.selection),
+                            for: presentation.handle
+                        )
+                    guard !Task.isCancelled,
+                          retainedTmuxPresentations[key] === presentation,
+                          alwaysLiveManagedTmuxPresentationKeys.contains(key)
+                    else { return }
+                } while restoreResult == .stale
+                if case let .failure(failure) = restoreResult {
+                    excludeAlwaysLiveTmuxPresentation(
+                        presentation,
+                        key: key
                     )
-                guard retainedTmuxPresentations[key] === presentation,
-                      alwaysLiveManagedTmuxPresentationKeys.contains(key)
-                else { return }
-                if let restoreFailure {
-                    alwaysLiveManagedTmuxPresentationKeys.remove(key)
                     AppLogger.shared.error(
                         "tmux preview sizing restore: "
-                            + restoreFailure.localizedDescription,
+                            + failure.localizedDescription,
                         context: "tmux"
                     )
                 }
