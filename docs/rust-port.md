@@ -1125,12 +1125,13 @@ config → workspace projection → UI-facing state → GPUI
 The Settings shell exposes durable Appearance and Hosts panes. Appearance
 offers the same built-in terminal color families as Swift plus a Custom
 fallback, enumerates installed fixed-pitch fonts, offers standard terminal font
-sizes, and renders a substantial live preview before saving. Theme selection
-is persisted by name; custom colors are stored only for Custom. Older
-color-only configuration loads as Custom. Saves persist the complete
-configuration atomically and publish the projection to the running GPUI
+sizes, and renders a substantial live preview. Valid appearance changes apply
+and persist immediately; incomplete Custom color input remains editable until
+it forms a valid color. Theme selection is persisted by name, and custom colors
+are stored only for Custom. Older color-only configuration loads as Custom.
+Each persisted change atomically publishes the projection to the running GPUI
 workspace. Existing terminal clients keep the palette they negotiated until
-reopened; new clients use the saved defaults. Hosts owns only
+reopened; new clients use the current defaults. Hosts owns only
 `[[ssh-host]]` records. The shell's stable navigation, page header, list, and
 detail regions are the permanent container for the remaining Swift settings
 domains.

@@ -617,6 +617,23 @@ fn appearance_preview_color(value: &str, fallback: u32) -> u32 {
         .unwrap_or(fallback)
 }
 
+fn appearance_draft_is_persistable(draft: &AppearanceSettingsDraft) -> bool {
+    let valid_font_size = draft
+        .font_size
+        .trim()
+        .parse::<u16>()
+        .is_ok_and(|size| size > 0);
+    let valid_color = |value: &str| {
+        value
+            .strip_prefix('#')
+            .is_some_and(|digits| digits.len() == 6 && u32::from_str_radix(digits, 16).is_ok())
+    };
+    !draft.font_family.trim().is_empty()
+        && valid_font_size
+        && (draft.theme != TerminalTheme::Custom
+            || (valid_color(&draft.background) && valid_color(&draft.foreground)))
+}
+
 fn appearance_preview_colors(draft: &AppearanceSettingsDraft) -> (u32, u32) {
     draft.theme.colors().unwrap_or_else(|| {
         (
@@ -1685,22 +1702,18 @@ impl RootView {
         cx.notify();
     }
 
-    fn save_appearance(&mut self, cx: &mut Context<Self>) {
-        let Some(draft) = self
-            .settings_dialog
-            .as_ref()
-            .map(|dialog| dialog.appearance_editor.draft.clone())
-        else {
+    fn persist_appearance(&mut self, draft: &AppearanceSettingsDraft, cx: &mut Context<Self>) {
+        if !appearance_draft_is_persistable(draft) {
+            if let Some(dialog) = &mut self.settings_dialog {
+                dialog.appearance_editor.error = None;
+            }
+            cx.notify();
             return;
-        };
-        match self.workspace.save_appearance(&draft) {
+        }
+        match self.workspace.save_appearance(draft) {
             Ok(()) => {
                 if let Some(dialog) = &mut self.settings_dialog {
-                    let font_families = std::mem::take(&mut dialog.appearance_editor.font_families);
-                    dialog.appearance_editor = AppearanceEditor::new(
-                        self.workspace.configured_appearance(),
-                        font_families,
-                    );
+                    dialog.appearance_editor.error = None;
                 }
             }
             Err(error) => {
@@ -1770,7 +1783,8 @@ impl RootView {
                 _ => {}
             }
             editor.open_picker = None;
-            cx.notify();
+            let draft = editor.draft.clone();
+            self.persist_appearance(&draft, cx);
             cx.stop_propagation();
             return;
         }
@@ -1796,7 +1810,8 @@ impl RootView {
         {
             append_non_control_characters(value, text, SETTINGS_FIELD_CHARACTER_LIMIT);
         }
-        cx.notify();
+        let draft = editor.draft.clone();
+        self.persist_appearance(&draft, cx);
         cx.stop_propagation();
     }
 
@@ -1890,7 +1905,8 @@ impl RootView {
         }
         if key == "enter" && !event.is_held {
             if pane == SettingsPane::Appearance {
-                self.save_appearance(cx);
+                cx.stop_propagation();
+                return;
             } else if self
                 .settings_dialog
                 .as_ref()
@@ -4717,7 +4733,13 @@ impl RootView {
                     dialog.appearance_editor.error = None;
                 }
                 window.focus(&this.settings_focus);
-                cx.notify();
+                let draft = this
+                    .settings_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.appearance_editor.draft.clone());
+                if let Some(draft) = draft {
+                    this.persist_appearance(&draft, cx);
+                }
             }))
             .into_any_element()
     }
@@ -4812,7 +4834,13 @@ impl RootView {
                             dialog.appearance_editor.open_picker = None;
                             dialog.appearance_editor.error = None;
                         }
-                        cx.notify();
+                        let draft = this
+                            .settings_dialog
+                            .as_ref()
+                            .map(|dialog| dialog.appearance_editor.draft.clone());
+                        if let Some(draft) = draft {
+                            this.persist_appearance(&draft, cx);
+                        }
                     })),
             );
         }
@@ -4853,7 +4881,13 @@ impl RootView {
                             dialog.appearance_editor.open_picker = None;
                             dialog.appearance_editor.error = None;
                         }
-                        cx.notify();
+                        let draft = this
+                            .settings_dialog
+                            .as_ref()
+                            .map(|dialog| dialog.appearance_editor.draft.clone());
+                        if let Some(draft) = draft {
+                            this.persist_appearance(&draft, cx);
+                        }
                     })),
             );
         }
@@ -5018,25 +5052,6 @@ impl RootView {
             .into_any_element()
     }
 
-    fn appearance_save_controls(cx: &mut Context<Self>) -> gpui::AnyElement {
-        div()
-            .pb_2()
-            .flex()
-            .justify_end()
-            .child(
-                div()
-                    .id("save-appearance")
-                    .px_4()
-                    .py_2()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .bg(rgb(0x1d_5f9a))
-                    .child("Save")
-                    .on_click(cx.listener(|this, _, _, cx| this.save_appearance(cx))),
-            )
-            .into_any_element()
-    }
-
     fn settings_appearance_editor(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let Some(editor) = self
             .settings_dialog
@@ -5066,8 +5081,6 @@ impl RootView {
                     .child(error.clone()),
             );
         }
-        form = form.child(Self::appearance_save_controls(cx));
-
         div()
             .id("settings-appearance-editor")
             .flex_1()
@@ -5575,6 +5588,31 @@ impl RootView {
                 .child(self.settings_host_editor(cx))
                 .into_any_element(),
         };
+        let pane_header = div()
+            .px_6()
+            .py_4()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_between()
+            .border_b_1()
+            .border_color(rgb(0x2a_2f39))
+            .child(
+                div()
+                    .child(
+                        div()
+                            .text_2xl()
+                            .font_weight(FontWeight::BOLD)
+                            .child(pane.title()),
+                    )
+                    .child(
+                        div()
+                            .pt_1()
+                            .text_sm()
+                            .text_color(rgb(0x8f_96_a3))
+                            .child(pane.subtitle()),
+                    ),
+            );
         let confirmation = self.settings_remove_confirmation(cx);
 
         Some(
@@ -5644,27 +5682,7 @@ impl RootView {
                                         .min_w_0()
                                         .flex()
                                         .flex_col()
-                                        .child(
-                                            div()
-                                                .px_6()
-                                                .py_4()
-                                                .flex_none()
-                                                .border_b_1()
-                                                .border_color(rgb(0x2a_2f39))
-                                                .child(
-                                                    div()
-                                                        .text_2xl()
-                                                        .font_weight(FontWeight::BOLD)
-                                                        .child(pane.title()),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .pt_1()
-                                                        .text_sm()
-                                                        .text_color(rgb(0x8f_96_a3))
-                                                        .child(pane.subtitle()),
-                                                ),
-                                        )
+                                        .child(pane_header)
                                         .child(detail),
                                 ),
                         )
@@ -8764,18 +8782,19 @@ mod tests {
         UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext,
         WorktreeOpenMode, WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget,
         WorktreeSessionPresence, WorktreeSocket, active_session_selection,
-        adjacent_appearance_field, appearance_preview_color, application_navigation_width,
-        apply_new_worktree_failure, apply_worktree_removal_failure, available_herdr_row_actions,
-        can_create_worktree, can_kill_worktree, canonical_terminal_key_with,
-        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
-        coalesce_last_resize, coalesce_last_wheel, has_ambiguous_worktree_source,
-        herdr_row_actions, herdr_session_menu_actions, host_header_action, host_landing_text,
-        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
-        kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
-        new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
-        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
-        session_action_menu_position, session_backend_id, session_creation_available,
-        session_group_visibility, session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        adjacent_appearance_field, appearance_draft_is_persistable, appearance_preview_color,
+        application_navigation_width, apply_new_worktree_failure, apply_worktree_removal_failure,
+        available_herdr_row_actions, can_create_worktree, can_kill_worktree,
+        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
+        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
+        host_header_action, host_landing_text, input_queue_has_capacity,
+        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
+        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
+        owns_created_worktree_navigation, pull_request_import_selector,
+        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
+        session_backend_id, session_creation_available, session_group_visibility,
+        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
         terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
         terminal_line_height, terminal_wheel_steps, tmux_row_actions, toggle_session_group_state,
         transitioned_presentation, tree_herdr_sessions, tree_sessions, tree_zellij_sessions,
@@ -8875,6 +8894,25 @@ mod tests {
         );
         assert_eq!(appearance_preview_color("#102030", 0), 0x10_20_30);
         assert_eq!(appearance_preview_color("102030", 0x12_34_56), 0x12_34_56);
+    }
+
+    #[test]
+    fn appearance_auto_persistence_waits_for_complete_custom_colors() {
+        let mut draft = AppearanceSettingsDraft {
+            theme: TerminalTheme::ClearDark,
+            font_family: "Cascadia Mono".to_owned(),
+            font_size: "14".to_owned(),
+            background: "#12".to_owned(),
+            foreground: "#d8dee9".to_owned(),
+        };
+
+        assert!(appearance_draft_is_persistable(&draft));
+        draft.theme = TerminalTheme::Custom;
+        assert!(!appearance_draft_is_persistable(&draft));
+        draft.background = "#102030".to_owned();
+        assert!(appearance_draft_is_persistable(&draft));
+        draft.font_size = "0".to_owned();
+        assert!(!appearance_draft_is_persistable(&draft));
     }
 
     #[test]
