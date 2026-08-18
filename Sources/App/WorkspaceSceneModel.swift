@@ -468,6 +468,10 @@ final class WorkspaceSceneModel: ObservableObject {
         var previewPromotionTask: Task<Void, Never>?
         var previewPromotionNavigationRevision: UInt64?
 
+        var expectedPreviewIdentity: TmuxSessionIdentity? {
+            verifiedPreviewIdentity ?? reconnectExpectedIdentity
+        }
+
         init(
             selection: WorkspaceTmuxSessionSelection,
             handle: BorrowedTmuxSessionHandle,
@@ -7009,7 +7013,10 @@ final class WorkspaceSceneModel: ObservableObject {
                   != discoveredIdentity
             else { continue }
             if let retained = retainedTmuxPresentations[key],
-               let attachedIdentity = retained.verifiedPreviewIdentity,
+               !nativeTmuxSessionCoordinator.hasClosedAttachment(
+                   retained.handle
+               ),
+               let attachedIdentity = retained.expectedPreviewIdentity,
                attachedIdentity != discoveredIdentity {
                 invalidateBorrowedTmuxSession(retained.selection)
             }
@@ -9070,12 +9077,7 @@ final class WorkspaceSceneModel: ObservableObject {
         _ presentation: RetainedTmuxPresentation,
         key: TmuxPresentationKey
     ) {
-        if let identity = snapshot.host(id: key.hostID).flatMap({ host in
-            Self.discoveredTmuxSessionIdentity(
-                presentation.selection,
-                hostSummary: host
-            )
-        }) {
+        if let identity = presentation.expectedPreviewIdentity {
             alwaysLiveIneligibleTmuxPresentationIdentities[key] = identity
         }
         invalidateBorrowedTmuxSession(presentation.selection)
