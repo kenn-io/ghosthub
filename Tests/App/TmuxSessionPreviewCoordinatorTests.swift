@@ -823,6 +823,28 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test("non-key app reactivation releases retained preview budget")
+    func nonKeyApplicationReactivationReleasesParking() {
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.coordinator.applicationDidResignActive()
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.budget.granted.count == 1)
+
+        harness.keyWindow = false
+        harness.coordinator.applicationDidBecomeActive()
+
+        #expect(harness.parks.isEmpty)
+        #expect(harness.unparks == [presentation.key])
+        #expect(harness.budget.granted.isEmpty)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.isLive
+                == false
+        )
+    }
+
     @Test("removed Always Live rows can clear expansion before re-registering")
     func removedAlwaysLiveRowsClearExpansion() async {
         let harness = PreviewCoordinatorHarness(mode: .alwaysLive)

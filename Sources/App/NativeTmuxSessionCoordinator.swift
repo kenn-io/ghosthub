@@ -60,7 +60,10 @@ private final class NativeTmuxResolutionCache: @unchecked Sendable {
             if let existing = caches[key] {
                 return existing
             }
-            let created = TmuxPathCache(resolve: resolver)
+            let created = TmuxPathCache(
+                cancellationShell: key.host.displayName,
+                resolve: resolver
+            )
             caches[key] = created
             return created
         }

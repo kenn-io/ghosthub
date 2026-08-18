@@ -7,33 +7,104 @@ import Foundation
 /// (tmux not on PATH) must NOT be cached the same way: installing tmux after
 /// the first failed resolve (`brew install tmux`) should be picked up on the
 /// next resolve instead of requiring an app restart.
+/// Concurrent callers share the active result, including a failure, without
+/// retaining that failure for later calls.
 ///
 /// Lock-guarded and `Sendable` so the first (blocking) resolve can run off the
 /// main actor — a slow login shell must never beachball the UI on first open.
 final class TmuxPathCache: @unchecked Sendable {
+    private final class Resolution: @unchecked Sendable {
+        private let condition = NSCondition()
+        private var result:
+            Result<ResolvedTmuxBinary, TmuxBinaryError>?
+
+        func wait() -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
+            condition.lock()
+            defer { condition.unlock() }
+            while result == nil {
+                condition.wait()
+            }
+            return result!
+        }
+
+        func complete(
+            with result: Result<ResolvedTmuxBinary, TmuxBinaryError>
+        ) {
+            condition.lock()
+            self.result = result
+            condition.broadcast()
+            condition.unlock()
+        }
+    }
+
     private let lock = NSLock()
     private var cachedBinary: ResolvedTmuxBinary?
+    private var activeResolution: Resolution?
+    private let cancellationShell: String
     private let resolve:
         @Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>
 
     init(
+        cancellationShell: String = AccountCommandRunner.loginShell(),
         resolve: @escaping @Sendable ()
             -> Result<ResolvedTmuxBinary, TmuxBinaryError>
     ) {
+        self.cancellationShell = cancellationShell
         self.resolve = resolve
     }
 
     func resolveTmuxBinary()
         -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
         lock.lock()
-        defer { lock.unlock() }
         if let cachedBinary {
+            lock.unlock()
             return .success(cachedBinary)
         }
+        if isCurrentTaskCancelled {
+            lock.unlock()
+            return cancellationFailure
+        }
+        if let activeResolution {
+            lock.unlock()
+            return activeResolution.wait()
+        }
+        let resolution = Resolution()
+        activeResolution = resolution
+        lock.unlock()
+
+        guard !isCurrentTaskCancelled else {
+            let result = cancellationFailure
+            finish(resolution, with: result)
+            return result
+        }
         let resolved = resolve()
-        if case let .success(binary) = resolved {
+        finish(resolution, with: resolved)
+        return resolved
+    }
+
+    private var isCurrentTaskCancelled: Bool {
+        withUnsafeCurrentTask { task in
+            task?.isCancelled == true
+        }
+    }
+
+    private var cancellationFailure:
+        Result<ResolvedTmuxBinary, TmuxBinaryError> {
+        .failure(.probeCancelled(shell: cancellationShell))
+    }
+
+    private func finish(
+        _ resolution: Resolution,
+        with result: Result<ResolvedTmuxBinary, TmuxBinaryError>
+    ) {
+        lock.lock()
+        if case let .success(binary) = result {
             cachedBinary = binary
         }
-        return resolved
+        if activeResolution === resolution {
+            activeResolution = nil
+        }
+        lock.unlock()
+        resolution.complete(with: result)
     }
 }

@@ -436,7 +436,11 @@ final class TmuxSessionPreviewCoordinator {
         retryDeferredEfficientCaptures()
         retryDeferredNavigationCaptures()
         presentations.keys.forEach(publish)
-        guard sceneIsKeyWindow() else { return }
+        guard sceneIsKeyWindow() else {
+            invalidateAllEligibility()
+            releaseAllParking()
+            return
+        }
         scheduleParkingReacquisition()
     }
 

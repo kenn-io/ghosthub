@@ -1056,6 +1056,70 @@ struct TmuxPathCacheTests {
         #expect(counter.count == 1)
     }
 
+    @Test("concurrent failed resolutions share one probe but later calls retry")
+    func coalescesConcurrentFailure() async throws {
+        let counter = Counter()
+        let gate = BlockingGate()
+        let cache = TmuxPathCache {
+            if counter.increment() == 1 {
+                gate.block()
+                return .failure(.notFound(shell: "/bin/zsh"))
+            }
+            return .success(ResolvedTmuxBinary(
+                path: "/opt/homebrew/bin/tmux",
+                version: "tmux 3.4"
+            ))
+        }
+
+        let first = Task.detached { cache.resolveTmuxBinary() }
+        await gate.waitUntilBlocked()
+        let secondStarted = LockedValue(false)
+        let second = Task.detached {
+            secondStarted.store(true)
+            return cache.resolveTmuxBinary()
+        }
+        await waitUntil { secondStarted.load() }
+
+        gate.open()
+        #expect(
+            await first.value
+                == .failure(.notFound(shell: "/bin/zsh"))
+        )
+        #expect(
+            await second.value
+                == .failure(.notFound(shell: "/bin/zsh"))
+        )
+        #expect(counter.count == 1)
+        #expect(
+            try cache.resolveTmuxBinary().get().path
+                == "/opt/homebrew/bin/tmux"
+        )
+        #expect(counter.count == 2)
+    }
+
+    @Test("a cancelled caller does not start a probe")
+    func cancellationSkipsProbe() async {
+        let counter = Counter()
+        let cache = TmuxPathCache(cancellationShell: "Build Host") {
+            _ = counter.increment()
+            return .failure(.notFound(shell: "/bin/zsh"))
+        }
+        let task = Task.detached {
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+            return cache.resolveTmuxBinary()
+        }
+
+        task.cancel()
+
+        #expect(
+            await task.value
+                == .failure(.probeCancelled(shell: "Build Host"))
+        )
+        #expect(counter.count == 0)
+    }
+
     @Test("a failed resolution is not cached, so a later install recovers without a restart")
     func doesNotCacheFailure() throws {
         let counter = Counter()
