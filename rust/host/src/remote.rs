@@ -13,9 +13,9 @@ use session::{
 };
 
 use crate::{
-    CancellationToken, CommandPrefix, CommandRunner, HerdrInventory, HostError, KwtSshExecutable,
-    KwtSshLeaseClient, KwtSshResolver, SshLease, SshLeaseEvent, SshLeasePrompt, SshTarget,
-    ZellijInventory, herdr, zellij,
+    AttachTerm, CancellationToken, CommandPrefix, CommandRunner, HerdrInventory, HostError,
+    KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshLease, SshLeaseEvent, SshLeasePrompt,
+    SshTarget, ZellijInventory, herdr, zellij,
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
@@ -30,7 +30,19 @@ const HERDR_PROBE_PREFIX: &str = "GHOSTHUB_HERDR_PROBE_";
 const HERDR_INVENTORY_PREFIX: &str = "GHOSTHUB_HERDR_INVENTORY_";
 const ZELLIJ_PROBE_PREFIX: &str = "GHOSTHUB_ZELLIJ_PROBE_";
 const ZELLIJ_INVENTORY_PREFIX: &str = "GHOSTHUB_ZELLIJ_INVENTORY_";
+const TERMINFO_PROBE_PREFIX: &str = "GHOSTHUB_TERMINFO_PROBE_";
 const IDENTITY_MISMATCH_PREFIX: &str = "GHOSTHUB_REMOTE_IDENTITY_MISMATCH_";
+const TERMINFO_PROBE_SCRIPT: &str = "\
+if command -v infocmp >/dev/null 2>&1; then \
+  if infocmp xterm-256color >/dev/null 2>&1; then printf 'xterm-256color\\n'; exit 0; fi; \
+  if infocmp xterm >/dev/null 2>&1; then printf 'xterm\\n'; exit 0; fi; \
+elif command -v tput >/dev/null 2>&1; then \
+  if tput -T xterm-256color longname >/dev/null 2>&1; then printf 'xterm-256color\\n'; exit 0; fi; \
+  if tput -T xterm longname >/dev/null 2>&1; then printf 'xterm\\n'; exit 0; fi; \
+else \
+  printf 'neither infocmp nor tput is available\\n' >&2; exit 127; \
+fi; \
+printf 'neither xterm-256color nor xterm terminfo is available\\n' >&2; exit 1";
 
 /// Absolute system OpenSSH client used only with KWT-issued lease arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -393,6 +405,32 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             herdr,
             zellij,
         })
+    }
+
+    /// Select a terminal type proven usable by the remote terminfo database.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified remote-command failure when neither required
+    /// terminal entry can be verified.
+    pub fn probe_terminal_term(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        cancellation: &CancellationToken,
+    ) -> Result<AttachTerm, RemoteTmuxError> {
+        let output = self.run_framed_remote_shell(
+            snapshot.lease(),
+            TERMINFO_PROBE_SCRIPT,
+            TERMINFO_PROBE_PREFIX,
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(command_failure(
+                &output,
+                "remote terminal capability probe failed",
+            ));
+        }
+        parse_terminal_term(&output.stdout)
     }
 
     fn discover_herdr(
@@ -1126,6 +1164,17 @@ fn parse_tmux_probe(bytes: &[u8]) -> Result<String, RemoteTmuxError> {
     Ok(paths[0].to_owned())
 }
 
+fn parse_terminal_term(bytes: &[u8]) -> Result<AttachTerm, RemoteTmuxError> {
+    match std::str::from_utf8(bytes).map(str::trim) {
+        Ok("xterm-256color") => Ok(AttachTerm::Xterm256Color),
+        Ok("xterm") => Ok(AttachTerm::Xterm),
+        _ => Err(RemoteTmuxError::new(
+            DiagnosticKind::MalformedOutput,
+            "remote terminal capability probe returned an invalid terminal type",
+        )),
+    }
+}
+
 fn is_missing_tmux_server(diagnostic: &str) -> bool {
     diagnostic.contains("no server running on ")
         || diagnostic.contains("failed to connect to server: No such file or directory")
@@ -1370,6 +1419,55 @@ mod tests {
         assert_eq!(
             posix_command(&["printf".to_owned(), "a b'c".to_owned()]),
             "'printf' 'a b'\\''c'"
+        );
+    }
+
+    #[test]
+    fn terminal_probe_accepts_only_verified_supported_terms() {
+        assert_eq!(
+            parse_terminal_term(b"xterm-256color\n").expect("preferred term"),
+            AttachTerm::Xterm256Color
+        );
+        assert_eq!(
+            parse_terminal_term(b"xterm\n").expect("fallback term"),
+            AttachTerm::Xterm
+        );
+        assert!(parse_terminal_term(b"screen-256color\n").is_err());
+        assert!(parse_terminal_term(b"xterm\nxterm-256color\n").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_probe_selects_the_verified_fallback() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "ghosthub-terminfo-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).expect("create probe fixture");
+        let infocmp = directory.join("infocmp");
+        std::fs::write(&infocmp, "#!/bin/sh\n[ \"$1\" = xterm ]\n").expect("write probe fixture");
+        let mut permissions = std::fs::metadata(&infocmp)
+            .expect("probe fixture metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&infocmp, permissions).expect("make probe fixture executable");
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", TERMINFO_PROBE_SCRIPT])
+            .env_clear()
+            .env("PATH", &directory)
+            .output()
+            .expect("run terminal capability probe");
+        std::fs::remove_dir_all(&directory).expect("remove probe fixture");
+        assert!(output.status.success());
+        assert_eq!(
+            parse_terminal_term(&output.stdout).expect("verified fallback"),
+            AttachTerm::Xterm
         );
     }
 

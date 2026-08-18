@@ -474,9 +474,13 @@ The initial remote product boundary includes discovery and exact attachment for
 tmux, Herdr, and Zellij. Herdr create/restart and Zellij create are one-shot
 constructive actions over the existing reviewed KWT lease: they require a
 fresh backend preflight and an exact post-launch inventory match before the new
-client is published. Remote destruction, tmux creation, KWT project/worktree
-management, reconnect, and restoration remain unavailable until their own
-identity and lifecycle contracts are implemented.
+client is published. Every remote client uses a terminal type verified against
+the host's terminfo database; `xterm-256color` is preferred and the verified
+`xterm` fallback is disclosed only after successful presentation. Superseding
+navigation cancels queued and running attachment probes before they can retain
+the shared session-operation lane. Remote destruction, tmux creation, KWT
+project/worktree management, reconnect, and restoration remain unavailable
+until their own identity and lifecycle contracts are implemented.
 
 Before opening that channel, Ghosthub reads the effective destination policy
 with `ssh -G`. It tightens `accept-new` to an explicit review but does not

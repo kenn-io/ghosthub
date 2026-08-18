@@ -1575,7 +1575,13 @@ struct RemoteEntry {
     context: Option<RemoteHostContext>,
     cancellation: Option<CancellationToken>,
     constructive_cancellation: Option<CancellationToken>,
+    attachment_attempt: Option<RemoteAttachmentAttempt>,
     generation: u64,
+}
+
+struct RemoteAttachmentAttempt {
+    navigation_generation: u64,
+    cancellation: CancellationToken,
 }
 
 struct RemoteActive {
@@ -3372,6 +3378,7 @@ fn publish_remote_connection(
         Err(error) => {
             let diagnostic = HostDiagnostic::new(error.kind(), error.to_string());
             cancel_remote_constructive(entry);
+            cancel_remote_attachment(entry);
             let stale_context = entry.context.take();
             drop(entries);
             set_remote_host_state(
@@ -3728,6 +3735,7 @@ impl Workspace {
                         context: None,
                         cancellation: None,
                         constructive_cancellation: None,
+                        attachment_attempt: None,
                         generation: 0,
                     },
                 );
@@ -4078,6 +4086,7 @@ impl Workspace {
                 .get_mut(id)
                 .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
             cancel_remote_constructive(entry);
+            cancel_remote_attachment(entry);
             if let Some(previous) = entry.cancellation.replace(cancellation.clone()) {
                 previous.cancel();
             }
@@ -4298,6 +4307,7 @@ impl Workspace {
                         context: None,
                         cancellation: None,
                         constructive_cancellation: None,
+                        attachment_attempt: None,
                         generation: 0,
                     },
                 );
@@ -4331,6 +4341,7 @@ impl Workspace {
                 cancellation.cancel();
             }
             cancel_remote_constructive(&mut entry);
+            cancel_remote_attachment(&mut entry);
         }
         let active_matches = self
             .inner
@@ -5333,7 +5344,8 @@ impl Workspace {
         reason = "remote attachment keeps preparation and the atomic worker swap in one boundary"
     )]
     fn attach_remote(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
-        let (plan, lease, key, connection_generation, snapshot, identity_mismatch_marker) = {
+        let cancellation = CancellationToken::new();
+        let (host, snapshot, connection_generation, session) = {
             let entries = self
                 .inner
                 .remote_hosts
@@ -5350,26 +5362,16 @@ impl Workspace {
                     "SSH endpoint changed; refresh the session selection",
                 ));
             }
-            let (plan, session_identity, identity_mismatch_marker) = match selection.kind() {
-                SessionKind::Tmux => {
-                    let session = context
-                        .snapshot
-                        .sessions()
-                        .iter()
-                        .find(|session| session.name() == selection.session())
-                        .ok_or_else(|| {
-                            WorkspaceError::new("session is not in current remote inventory")
-                        })?;
-                    let (plan, marker) = context
-                        .host
-                        .attach_plan(&context.snapshot, session, "xterm-256color")
-                        .map_err(|error| WorkspaceError::new(error.to_string()))?;
-                    (
-                        plan,
-                        RemoteSessionIdentity::Tmux(session.identity().clone()),
-                        Some(marker),
-                    )
-                }
+            let session = match selection.kind() {
+                SessionKind::Tmux => context
+                    .snapshot
+                    .sessions()
+                    .iter()
+                    .find(|session| session.name() == selection.session())
+                    .cloned()
+                    .ok_or_else(|| {
+                        WorkspaceError::new("session is not in current remote inventory")
+                    })?,
                 SessionKind::Herdr | SessionKind::Zellij => {
                     return Err(WorkspaceError::new(
                         "remote non-tmux attachment requires a fresh active-session probe",
@@ -5377,19 +5379,25 @@ impl Workspace {
                 }
             };
             (
-                plan,
-                context.snapshot.lease().clone(),
-                RemotePresentationKey {
-                    host_id: selection.host_id().to_owned(),
-                    endpoint: selection.endpoint().to_owned(),
-                    route_identity: context.snapshot.route_identity().to_owned(),
-                    lease_generation: context.snapshot.lease_generation(),
-                    session_identity,
-                },
-                entry.generation,
+                context.host.clone(),
                 context.snapshot.clone(),
-                identity_mismatch_marker,
+                entry.generation,
+                session,
             )
+        };
+        let term = host
+            .probe_terminal_term(&snapshot, &cancellation)
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let (plan, identity_mismatch_marker) = host
+            .attach_plan(&snapshot, &session, term.as_str())
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let lease = snapshot.lease().clone();
+        let key = RemotePresentationKey {
+            host_id: selection.host_id().to_owned(),
+            endpoint: selection.endpoint().to_owned(),
+            route_identity: snapshot.route_identity().to_owned(),
+            lease_generation: snapshot.lease_generation(),
+            session_identity: RemoteSessionIdentity::Tmux(session.identity().clone()),
         };
         let initial_geometry = *self
             .inner
@@ -5408,7 +5416,6 @@ impl Workspace {
         )
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
         let presentation_id = next_presentation_id(&self.inner);
-        let cancellation = CancellationToken::new();
         publish_remote_worker(
             &self.inner,
             worker,
@@ -5416,7 +5423,7 @@ impl Workspace {
             selection,
             lease,
             presentation_id,
-            identity_mismatch_marker,
+            Some(identity_mismatch_marker),
             Some(&RemotePublicationFence {
                 host_id: selection.host_id(),
                 connection_generation,
@@ -5427,7 +5434,9 @@ impl Workspace {
         .map_err(|error| {
             let RemotePublishError { error, .. } = *error;
             error
-        })
+        })?;
+        set_terminal_notice(&self.inner, term);
+        Ok(())
     }
 
     fn start_attachment_over_remote(
@@ -6069,18 +6078,24 @@ impl Workspace {
         request: RemoteZellijAttachRequest,
         navigation_generation: u64,
     ) -> Result<(), WorkspaceError> {
+        let cancellation = CancellationToken::new();
+        register_remote_attachment(
+            &self.inner,
+            &request.host_id,
+            request.connection_generation,
+            &request.snapshot,
+            navigation_generation,
+            &cancellation,
+        )?;
         let inner = Arc::clone(&self.inner);
+        let host_id = request.host_id.clone();
         if let Err(error) = thread::Builder::new()
             .name("ghosthub-remote-zellij-attach".to_owned())
             .spawn(move || {
-                run_remote_zellij_attach(
-                    &inner,
-                    &request,
-                    navigation_generation,
-                    &CancellationToken::new(),
-                );
+                run_remote_zellij_attach(&inner, &request, navigation_generation, &cancellation);
             })
         {
+            clear_remote_attachment_registration(&self.inner, &host_id, navigation_generation);
             return Err(WorkspaceError::new(format!(
                 "start remote Zellij attachment task: {error}"
             )));
@@ -6093,18 +6108,24 @@ impl Workspace {
         request: RemoteHerdrAttachRequest,
         navigation_generation: u64,
     ) -> Result<(), WorkspaceError> {
+        let cancellation = CancellationToken::new();
+        register_remote_attachment(
+            &self.inner,
+            &request.host_id,
+            request.connection_generation,
+            &request.snapshot,
+            navigation_generation,
+            &cancellation,
+        )?;
         let inner = Arc::clone(&self.inner);
+        let host_id = request.host_id.clone();
         if let Err(error) = thread::Builder::new()
             .name("ghosthub-remote-herdr-attach".to_owned())
             .spawn(move || {
-                run_remote_herdr_attach(
-                    &inner,
-                    &request,
-                    navigation_generation,
-                    &CancellationToken::new(),
-                );
+                run_remote_herdr_attach(&inner, &request, navigation_generation, &cancellation);
             })
         {
+            clear_remote_attachment_registration(&self.inner, &host_id, navigation_generation);
             return Err(WorkspaceError::new(format!(
                 "start remote Herdr attachment task: {error}"
             )));
@@ -6203,6 +6224,7 @@ impl Workspace {
     fn begin_navigation(&self) -> u64 {
         invalidate_pending_kill(&self.inner);
         invalidate_pending_herdr_lifecycle(&self.inner);
+        cancel_remote_attachments(&self.inner);
         let generation = next_operation_id(&self.inner);
         self.inner
             .navigation_generation
@@ -7509,6 +7531,7 @@ impl Workspace {
                         cancellation.cancel();
                     }
                     cancel_remote_constructive(entry);
+                    cancel_remote_attachment(entry);
                     let context = entry.context.take()?;
                     Some((host_id.clone(), error, context))
                 })
@@ -11601,6 +11624,18 @@ struct RemoteConstructiveReset<'a> {
     host_id: &'a str,
 }
 
+struct RemoteAttachmentReset<'a> {
+    inner: &'a Inner,
+    host_id: &'a str,
+    navigation_generation: u64,
+}
+
+impl Drop for RemoteAttachmentReset<'_> {
+    fn drop(&mut self) {
+        clear_remote_attachment_registration(self.inner, self.host_id, self.navigation_generation);
+    }
+}
+
 impl Drop for RemoteConstructiveReset<'_> {
     fn drop(&mut self) {
         if let Some(entry) = self
@@ -11669,6 +11704,94 @@ fn cancel_remote_constructive(entry: &mut RemoteEntry) {
     }
 }
 
+fn register_remote_attachment(
+    inner: &Inner,
+    host_id: &str,
+    connection_generation: u64,
+    expected: &RemoteTmuxSnapshot,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) -> Result<(), WorkspaceError> {
+    let mut entries = inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = entries
+        .get_mut(host_id)
+        .ok_or_else(|| WorkspaceError::new("the SSH host is no longer configured"))?;
+    let context = entry
+        .context
+        .as_ref()
+        .ok_or_else(|| WorkspaceError::new("the SSH host disconnected before attachment"))?;
+    if entry.generation != connection_generation
+        || !remote_snapshot_authority_matches(&context.snapshot, expected)
+    {
+        return Err(WorkspaceError::new(
+            "the SSH connection changed before attachment; refresh before trying again",
+        ));
+    }
+    if let Some(previous) = entry.attachment_attempt.take() {
+        previous.cancellation.cancel();
+    }
+    entry.attachment_attempt = Some(RemoteAttachmentAttempt {
+        navigation_generation,
+        cancellation: cancellation.clone(),
+    });
+    Ok(())
+}
+
+fn remote_attachment_is_current(
+    inner: &Inner,
+    host_id: &str,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) -> bool {
+    !cancellation.is_cancelled()
+        && inner.navigation_generation.load(Ordering::Acquire) == navigation_generation
+        && inner
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(host_id)
+            .and_then(|entry| entry.attachment_attempt.as_ref())
+            .is_some_and(|attempt| {
+                attempt.navigation_generation == navigation_generation
+                    && !attempt.cancellation.is_cancelled()
+            })
+}
+
+fn clear_remote_attachment_registration(inner: &Inner, host_id: &str, navigation_generation: u64) {
+    let mut entries = inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(entry) = entries.get_mut(host_id)
+        && entry
+            .attachment_attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.navigation_generation == navigation_generation)
+    {
+        entry.attachment_attempt = None;
+    }
+}
+
+fn cancel_remote_attachment(entry: &mut RemoteEntry) {
+    if let Some(attempt) = entry.attachment_attempt.take() {
+        attempt.cancellation.cancel();
+    }
+}
+
+fn cancel_remote_attachments(inner: &Inner) {
+    for entry in inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values_mut()
+    {
+        cancel_remote_attachment(entry);
+    }
+}
+
 fn remote_snapshot_authority_matches(
     current: &RemoteTmuxSnapshot,
     expected: &RemoteTmuxSnapshot,
@@ -11734,13 +11857,21 @@ fn run_remote_herdr_attach(
     navigation_generation: u64,
     cancellation: &CancellationToken,
 ) {
+    let _reset = RemoteAttachmentReset {
+        inner,
+        host_id: &request.host_id,
+        navigation_generation,
+    };
     let _operation = inner
         .session_operations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !remote_attachment_is_current(inner, &request.host_id, navigation_generation, cancellation) {
+        return;
+    }
     let result =
         prepare_remote_herdr_attachment(inner, request, navigation_generation, cancellation)
-            .and_then(|(worker, snapshot, session, geometry)| {
+            .and_then(|(worker, snapshot, session, geometry, term)| {
                 if let Err(error) =
                     worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
                 {
@@ -11783,10 +11914,17 @@ fn run_remote_herdr_attach(
                 )
                 .map_err(|error| error.error);
                 drop(navigation);
-                published
+                published?;
+                set_terminal_notice(inner, term);
+                Ok(())
             });
     if let Err(error) = result
-        && inner.navigation_generation.load(Ordering::Acquire) == navigation_generation
+        && remote_attachment_is_current(
+            inner,
+            &request.host_id,
+            navigation_generation,
+            cancellation,
+        )
     {
         push_operation_event(inner, WorkspaceEvent::Error(error.to_string()));
         inner.revision.fetch_add(1, Ordering::Release);
@@ -11804,6 +11942,7 @@ fn prepare_remote_herdr_attachment(
         RemoteTmuxSnapshot,
         session::HerdrSessionRecord,
         TerminalGeometry,
+        AttachTerm,
     ),
     WorkspaceError,
 > {
@@ -11830,9 +11969,13 @@ fn prepare_remote_herdr_attachment(
         &request.executable,
         &request.session,
     )?;
+    let term = request
+        .host
+        .probe_terminal_term(&snapshot, cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let plan = request
         .host
-        .herdr_attach_plan(&snapshot, &executable, &session, "xterm-256color")
+        .herdr_attach_plan(&snapshot, &executable, &session, term.as_str())
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let geometry = *inner
         .terminal_geometry
@@ -11847,7 +11990,7 @@ fn prepare_remote_herdr_attachment(
         default_colors(&inner.appearance),
     )
     .map_err(|error| WorkspaceError::new(error.to_string()))?;
-    Ok((worker, snapshot, session, geometry))
+    Ok((worker, snapshot, session, geometry, term))
 }
 
 fn resolve_remote_herdr_attach_target(
@@ -11891,13 +12034,21 @@ fn run_remote_zellij_attach(
     navigation_generation: u64,
     cancellation: &CancellationToken,
 ) {
+    let _reset = RemoteAttachmentReset {
+        inner,
+        host_id: &request.host_id,
+        navigation_generation,
+    };
     let _operation = inner
         .session_operations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !remote_attachment_is_current(inner, &request.host_id, navigation_generation, cancellation) {
+        return;
+    }
     let result =
         prepare_remote_zellij_attachment(inner, request, navigation_generation, cancellation)
-            .and_then(|(worker, snapshot, session, geometry)| {
+            .and_then(|(worker, snapshot, session, geometry, term)| {
                 if let Err(error) =
                     worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
                 {
@@ -11935,10 +12086,17 @@ fn run_remote_zellij_attach(
                 )
                 .map_err(|error| error.error);
                 drop(navigation);
-                published
+                published?;
+                set_terminal_notice(inner, term);
+                Ok(())
             });
     if let Err(error) = result
-        && inner.navigation_generation.load(Ordering::Acquire) == navigation_generation
+        && remote_attachment_is_current(
+            inner,
+            &request.host_id,
+            navigation_generation,
+            cancellation,
+        )
     {
         push_operation_event(inner, WorkspaceEvent::Error(error.to_string()));
         inner.revision.fetch_add(1, Ordering::Release);
@@ -11956,6 +12114,7 @@ fn prepare_remote_zellij_attachment(
         RemoteTmuxSnapshot,
         session::ZellijSessionRecord,
         TerminalGeometry,
+        AttachTerm,
     ),
     WorkspaceError,
 > {
@@ -11979,9 +12138,13 @@ fn prepare_remote_zellij_attachment(
     reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
     let (executable, session) =
         resolve_remote_zellij_attach_target(snapshot.zellij(), &request.executable, &request.name)?;
+    let term = request
+        .host
+        .probe_terminal_term(&snapshot, cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let plan = request
         .host
-        .zellij_attach_plan(&snapshot, &executable, &session, "xterm-256color")
+        .zellij_attach_plan(&snapshot, &executable, &session, term.as_str())
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let geometry = *inner
         .terminal_geometry
@@ -11996,7 +12159,7 @@ fn prepare_remote_zellij_attachment(
         default_colors(&inner.appearance),
     )
     .map_err(|error| WorkspaceError::new(error.to_string()))?;
-    Ok((worker, snapshot, session, geometry))
+    Ok((worker, snapshot, session, geometry, term))
 }
 
 fn resolve_remote_zellij_attach_target(
@@ -12043,7 +12206,7 @@ fn run_remote_herdr_create(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let result = create_remote_herdr_fresh(inner, request, navigation_generation, cancellation)
-        .and_then(|(worker, inventory, session, geometry)| {
+        .and_then(|(worker, inventory, session, geometry, term)| {
             let snapshot = publish_remote_inventory(
                 inner,
                 &request.host_id,
@@ -12101,7 +12264,7 @@ fn run_remote_herdr_create(
             drop(navigation);
             reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
             published?;
-            set_terminal_notice(inner, AttachTerm::Xterm);
+            set_terminal_notice(inner, term);
             Ok(())
         });
     if let Err(error) = result
@@ -12128,7 +12291,7 @@ fn run_remote_zellij_create(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let result = create_remote_zellij_fresh(inner, request, navigation_generation, cancellation)
-        .and_then(|(worker, inventory, session, geometry)| {
+        .and_then(|(worker, inventory, session, geometry, term)| {
             let snapshot = publish_remote_inventory(
                 inner,
                 &request.host_id,
@@ -12181,7 +12344,7 @@ fn run_remote_zellij_create(
             drop(navigation);
             reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
             published?;
-            set_terminal_notice(inner, AttachTerm::Xterm);
+            set_terminal_notice(inner, term);
             Ok(())
         });
     if let Err(error) = result
@@ -12203,6 +12366,7 @@ fn create_remote_herdr_fresh(
         RemoteSessionInventory,
         session::HerdrSessionRecord,
         TerminalGeometry,
+        AttachTerm,
     ),
     WorkspaceError,
 > {
@@ -12235,6 +12399,10 @@ fn create_remote_herdr_fresh(
         .terminal_geometry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let term = request
+        .host
+        .probe_terminal_term(&request.snapshot, cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let worker = with_current_remote_constructive(
         inner,
         &request.host_id,
@@ -12249,7 +12417,7 @@ fn create_remote_herdr_fresh(
                     &request.executable,
                     request.name.clone(),
                     request.precondition.is_default(),
-                    "xterm",
+                    term.as_str(),
                 )
                 .map_err(|error| WorkspaceError::new(error.to_string()))?;
             TerminalWorker::launch_herdr_with_metadata(
@@ -12287,7 +12455,7 @@ fn create_remote_herdr_fresh(
         Ok(session.map(|session| (inventory, session)))
     })?;
     if let Some((inventory, session)) = discovered {
-        Ok((worker, inventory, session, geometry))
+        Ok((worker, inventory, session, geometry, term))
     } else {
         drop(worker);
         Err(WorkspaceError::new(
@@ -12307,6 +12475,7 @@ fn create_remote_zellij_fresh(
         RemoteSessionInventory,
         session::ZellijSessionRecord,
         TerminalGeometry,
+        AttachTerm,
     ),
     WorkspaceError,
 > {
@@ -12343,6 +12512,10 @@ fn create_remote_zellij_fresh(
         .terminal_geometry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let term = request
+        .host
+        .probe_terminal_term(&request.snapshot, cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let worker = with_current_remote_constructive(
         inner,
         &request.host_id,
@@ -12356,7 +12529,7 @@ fn create_remote_zellij_fresh(
                     &request.snapshot,
                     &request.executable,
                     request.name.clone(),
-                    "xterm",
+                    term.as_str(),
                 )
                 .map_err(|error| WorkspaceError::new(error.to_string()))?;
             TerminalWorker::launch_zellij_with_metadata(
@@ -12392,7 +12565,7 @@ fn create_remote_zellij_fresh(
         Ok(session.map(|session| (inventory, session)))
     })?;
     if let Some((inventory, session)) = discovered {
-        Ok((worker, inventory, session, geometry))
+        Ok((worker, inventory, session, geometry, term))
     } else {
         drop(worker);
         Err(WorkspaceError::new(
@@ -21289,6 +21462,7 @@ mod tests {
                     context: None,
                     cancellation: Some(cancellation.clone()),
                     constructive_cancellation: None,
+                    attachment_attempt: None,
                     generation: 7,
                 },
             );
@@ -21308,6 +21482,65 @@ mod tests {
             HostConnectionState::Disconnected
         );
         assert!(snapshot.hosts()[0].diagnostic().is_none());
+    }
+
+    #[test]
+    fn newer_navigation_cancels_a_queued_remote_attachment() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Ready,
+                Vec::new(),
+                None,
+            )],
+        ));
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "",
+            None,
+        )
+        .expect("valid remote host");
+        let cancellation = CancellationToken::new();
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                "ssh:studio".to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: None,
+                    context: None,
+                    cancellation: None,
+                    constructive_cancellation: None,
+                    attachment_attempt: Some(RemoteAttachmentAttempt {
+                        navigation_generation: 7,
+                        cancellation: cancellation.clone(),
+                    }),
+                    generation: 1,
+                },
+            );
+
+        workspace.begin_navigation();
+
+        assert!(cancellation.is_cancelled());
+        assert!(
+            workspace
+                .inner
+                .remote_hosts
+                .lock()
+                .expect("remote hosts")
+                .get("ssh:studio")
+                .expect("remote entry")
+                .attachment_attempt
+                .is_none()
+        );
     }
 
     #[test]
@@ -21347,6 +21580,7 @@ mod tests {
                     context: None,
                     cancellation: Some(cancellation.clone()),
                     constructive_cancellation: Some(constructive_cancellation.clone()),
+                    attachment_attempt: None,
                     generation: 7,
                 },
             );
@@ -21415,6 +21649,7 @@ mod tests {
                     context: None,
                     cancellation: Some(cancellation.clone()),
                     constructive_cancellation: Some(constructive_cancellation.clone()),
+                    attachment_attempt: None,
                     generation: 7,
                 },
             );

@@ -884,6 +884,11 @@ and creation-time authority. Running Herdr and active Zellij rows build their
 ordinary attach-only client argv after scrubbing inherited backend routing
 variables. Terminal launches each resolved client through ConPTY and remains
 unaware of WSL, KWT, routing, SSH configuration, or multiplexer selection.
+Before any remote tmux, Herdr, or Zellij client is launched, Host verifies the
+remote terminfo database and selects `xterm-256color` when available, otherwise
+the verified `xterm` baseline. Attach and constructive paths use that same
+selection, and the reduced-color notice is published only after a fallback
+client is successfully presented.
 Each host's tmux, Herdr, and Zellij groups have independent disclosure controls;
 collapsing navigation never detaches a client or changes session lifetime.
 
