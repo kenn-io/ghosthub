@@ -4355,23 +4355,32 @@ impl Workspace {
         let generation = self.inner.operation_sequence.fetch_add(1, Ordering::AcqRel) + 1;
         let cancellation = CancellationToken::new();
         let (config, native_host) = {
-            let mut entries = self
+            let _publication = self
                 .inner
-                .remote_hosts
+                .remote_publication
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let entry = entries
-                .get_mut(id)
-                .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
-            cancel_remote_constructive(entry);
-            cancel_remote_attachment(entry);
-            if let Some(previous) = entry.cancellation.replace(cancellation.clone()) {
-                previous.cancel();
-            }
-            entry.generation = generation;
-            (entry.config.clone(), entry.native_host.clone())
+            let _snapshot_write = begin_snapshot_write(&self.inner);
+            let connection = {
+                let mut entries = self
+                    .inner
+                    .remote_hosts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let entry = entries
+                    .get_mut(id)
+                    .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
+                cancel_remote_constructive(entry);
+                cancel_remote_attachment(entry);
+                if let Some(previous) = entry.cancellation.replace(cancellation.clone()) {
+                    previous.cancel();
+                }
+                entry.generation = generation;
+                (entry.config.clone(), entry.native_host.clone())
+            };
+            set_remote_host_state(&self.inner, id, HostConnectionState::Connecting, None, None);
+            connection
         };
-        set_remote_host_state(&self.inner, id, HostConnectionState::Connecting, None, None);
         let inner = Arc::clone(&self.inner);
         let host_id = id.to_owned();
         if let Err(error) = self.inner.refresh_runtime.spawn(
@@ -4400,24 +4409,35 @@ impl Workspace {
                 publish_remote_connection(&inner, &host_id, generation, result);
             }),
         ) {
-            let stale_context = self
-                .inner
-                .remote_hosts
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_mut(id)
-                .filter(|entry| entry.generation == generation)
-                .and_then(|entry| {
-                    entry.cancellation.take();
-                    entry.context.take()
-                });
-            set_remote_host_state(
-                &self.inner,
-                id,
-                HostConnectionState::Disconnected,
-                None,
-                None,
-            );
+            let stale_context = {
+                let _publication = self
+                    .inner
+                    .remote_publication
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _snapshot_write = begin_snapshot_write(&self.inner);
+                let stale_context = self
+                    .inner
+                    .remote_hosts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_mut(id)
+                    .filter(|entry| entry.generation == generation)
+                    .map(|entry| {
+                        entry.cancellation.take();
+                        entry.context.take()
+                    });
+                if stale_context.is_some() {
+                    set_remote_host_state(
+                        &self.inner,
+                        id,
+                        HostConnectionState::Disconnected,
+                        None,
+                        None,
+                    );
+                }
+                stale_context.flatten()
+            };
             drop(stale_context);
             return Err(WorkspaceError::new(format!(
                 "start SSH connection: {error}"
@@ -4432,26 +4452,37 @@ impl Workspace {
             return self.cancel_refresh();
         }
         let cancelled = {
-            let mut entries = self
+            let _publication = self
                 .inner
-                .remote_hosts
+                .remote_publication
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            entries.get_mut(id).and_then(|entry| {
-                let cancellation = entry.cancellation.take()?;
-                entry.generation = entry.generation.wrapping_add(1).max(1);
-                Some((cancellation, entry.context.take()))
-            })
+            let _snapshot_write = begin_snapshot_write(&self.inner);
+            let cancelled = {
+                let mut entries = self
+                    .inner
+                    .remote_hosts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                entries.get_mut(id).and_then(|entry| {
+                    let cancellation = entry.cancellation.take()?;
+                    entry.generation = entry.generation.wrapping_add(1).max(1);
+                    Some((cancellation, entry.context.take()))
+                })
+            };
+            if cancelled.is_some() {
+                set_remote_host_state(
+                    &self.inner,
+                    id,
+                    HostConnectionState::Disconnected,
+                    None,
+                    None,
+                );
+            }
+            cancelled
         };
         if let Some((cancellation, stale_context)) = cancelled {
             cancellation.cancel();
-            set_remote_host_state(
-                &self.inner,
-                id,
-                HostConnectionState::Disconnected,
-                None,
-                None,
-            );
             drop(stale_context);
             true
         } else {
@@ -22617,6 +22648,94 @@ mod tests {
             HostConnectionState::Disconnected
         );
         assert!(snapshot.hosts()[0].diagnostic().is_none());
+    }
+
+    #[test]
+    fn remote_cancellation_waits_for_inventory_publication() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Connecting,
+                Vec::new(),
+                None,
+            )],
+        ));
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid remote host");
+        let cancellation = CancellationToken::new();
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                "ssh:studio".to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: None,
+                    context: None,
+                    cancellation: Some(cancellation.clone()),
+                    constructive_cancellation: None,
+                    attachment_attempt: None,
+                    generation: 7,
+                },
+            );
+
+        let publication = workspace
+            .inner
+            .remote_publication
+            .lock()
+            .expect("hold inventory publication");
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+        thread::scope(|scope| {
+            let cancellation_task = scope.spawn(|| {
+                entered_tx.send(()).expect("announce cancellation");
+                completed_tx
+                    .send(workspace.cancel_host_connection("ssh:studio"))
+                    .expect("report cancellation");
+            });
+            entered_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cancellation task started");
+            assert_eq!(
+                completed_rx.recv_timeout(Duration::from_millis(50)),
+                Err(RecvTimeoutError::Timeout),
+                "cancellation cannot cross an in-progress inventory publication"
+            );
+
+            set_remote_host_state(
+                &workspace.inner,
+                "ssh:studio",
+                HostConnectionState::Ready,
+                None,
+                None,
+            );
+            drop(publication);
+
+            assert!(
+                completed_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("cancellation completes after publication")
+            );
+            cancellation_task.join().expect("cancellation task");
+        });
+
+        assert!(cancellation.is_cancelled());
+        assert_eq!(
+            workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Disconnected,
+            "the newer cancellation transition wins over the completed publication"
+        );
     }
 
     #[test]
