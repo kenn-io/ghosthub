@@ -689,6 +689,20 @@ impl HostItem {
         self.connection
     }
 
+    /// Whether cached session inventory may authorize a new host action.
+    ///
+    /// WSL refreshes retain their admitted local runtime and may continue to
+    /// use cached inventory. SSH refreshes are a connection boundary and must
+    /// finish before another action can use the replacement lease.
+    #[must_use]
+    pub fn accepts_session_actions(&self) -> bool {
+        match self.connection {
+            HostConnectionState::Ready => true,
+            HostConnectionState::Connecting => !self.is_ssh(),
+            HostConnectionState::Disconnected | HostConnectionState::Unavailable => false,
+        }
+    }
+
     #[must_use]
     pub fn sessions(&self) -> &[SessionItem] {
         &self.sessions
@@ -8981,7 +8995,7 @@ fn require_host_session_actions(
         .iter()
         .find(|host| host.id == selection.host_id() && host.endpoint == selection.endpoint())
         .ok_or_else(|| WorkspaceError::new("the selected host is not available"))?;
-    if !matches!(host.connection, HostConnectionState::Ready) {
+    if !host.accepts_session_actions() {
         let message = if host.id == "wsl" {
             "connect the WSL host before changing a session"
         } else {
@@ -21828,6 +21842,24 @@ mod tests {
             .expect_err("connecting hosts cannot authorize fresh actions");
 
         assert!(error.to_string().contains("ready"));
+    }
+
+    #[test]
+    fn connecting_wsl_host_preserves_cached_session_actions() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::wsl(
+                "Ubuntu",
+                None,
+                HostConnectionState::Connecting,
+                vec![SessionItem::new("build", 0)],
+                None,
+            )],
+        ));
+        let selection = SessionSelection::new("wsl", "Ubuntu", "build");
+
+        require_host_session_actions(&workspace.inner, &selection)
+            .expect("WSL cached inventory remains actionable during refresh");
     }
 
     #[test]

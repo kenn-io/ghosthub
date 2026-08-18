@@ -1123,6 +1123,8 @@ fn lease_arguments(route: &SshRouteSnapshot) -> Vec<OsString> {
         route.route_identity().into(),
         "--projection-policy".into(),
         route.projection_policy().into(),
+        "--host-key-policy".into(),
+        "review".into(),
     ];
     if let Some(user) = route.logical_target().user() {
         args.extend(["--user".into(), user.into()]);
@@ -1965,6 +1967,8 @@ mod tests {
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "--projection-policy",
                 "kwt.openssh.projection.v1",
+                "--host-key-policy",
+                "review",
                 "--user",
                 "deploy",
                 "--port",

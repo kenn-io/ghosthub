@@ -5962,10 +5962,7 @@ impl RootView {
                 let is_active = active == Some(&selection);
                 let is_retained = retained.contains(&selection);
                 let has_generation = worktree.generation().is_some();
-                let host_can_attach = !matches!(
-                    host.connection(),
-                    HostConnectionState::Disconnected | HostConnectionState::Unavailable
-                );
+                let host_can_attach = host.accepts_session_actions();
                 let authority = if has_generation {
                     WorktreeAuthority::Generation
                 } else {
@@ -6082,16 +6079,8 @@ impl RootView {
             let is_retained = retained.contains(&selection);
             let can_open = is_active
                 || is_retained
-                || (workspace.session_available()
-                    && !matches!(
-                        host.connection(),
-                        HostConnectionState::Disconnected | HostConnectionState::Unavailable
-                    ));
-            let can_kill = workspace.session_available()
-                && !matches!(
-                    host.connection(),
-                    HostConnectionState::Disconnected | HostConnectionState::Unavailable
-                );
+                || (workspace.session_available() && host.accepts_session_actions());
+            let can_kill = workspace.session_available() && host.accepts_session_actions();
             rows.push(Self::worktree_row(
                 host_index,
                 usize::MAX,
@@ -6884,7 +6873,7 @@ fn session_group_visibility(
 }
 
 fn session_creation_available(host: &HostItem, kind: NewSessionKind) -> bool {
-    if host.connection() != HostConnectionState::Ready {
+    if !host.accepts_session_actions() {
         return false;
     }
     match kind {
@@ -7018,10 +7007,7 @@ fn tree_sessions(
             selections.push((selection.clone(), false));
         }
     }
-    let host_accepts_actions = !matches!(
-        host.connection(),
-        HostConnectionState::Disconnected | HostConnectionState::Unavailable
-    );
+    let host_accepts_actions = host.accepts_session_actions();
     selections
         .into_iter()
         .map(|(selection, discovered)| {
@@ -7085,10 +7071,7 @@ fn tree_herdr_sessions(
             });
         }
     }
-    let host_can_open = !matches!(
-        host.connection(),
-        HostConnectionState::Disconnected | HostConnectionState::Unavailable
-    ) && host.herdr_diagnostic().is_none();
+    let host_can_open = host.accepts_session_actions() && host.herdr_diagnostic().is_none();
     let host_accepts_mutation = host_can_open && !host.is_ssh();
     for session in &mut sessions {
         session.active = active == Some(&session.selection);
@@ -7138,10 +7121,7 @@ fn tree_zellij_sessions(
             selections.push((selection.clone(), false));
         }
     }
-    let host_accepts_actions = !matches!(
-        host.connection(),
-        HostConnectionState::Disconnected | HostConnectionState::Unavailable
-    ) && host.zellij_diagnostic().is_none();
+    let host_accepts_actions = host.accepts_session_actions() && host.zellij_diagnostic().is_none();
     selections
         .into_iter()
         .map(|(selection, discovered)| {
@@ -7445,11 +7425,12 @@ fn new_session_validation(
             "The WSL endpoint changed. Close this dialog and choose the host again.".to_owned(),
         );
     }
-    if matches!(
-        host.connection(),
-        HostConnectionState::Disconnected | HostConnectionState::Unavailable
-    ) {
-        return Some("Reconnect the WSL host before creating a session.".to_owned());
+    if !host.accepts_session_actions() {
+        return Some(if host.is_ssh() {
+            "Wait for the SSH host connection before creating a session.".to_owned()
+        } else {
+            "Reconnect the WSL host before creating a session.".to_owned()
+        });
     }
     if draft.name.trim().is_empty() {
         return None;
@@ -8587,6 +8568,24 @@ mod tests {
         assert_eq!(new_session_validation(&refreshing, &draft), None);
         draft.endpoint = "Debian".to_owned();
         assert!(new_session_validation(&refreshing, &draft).is_some());
+
+        let connecting_ssh = WorkspaceSnapshot::shell(
+            workspace::Appearance::default(),
+            vec![HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Connecting,
+                vec![SessionItem::new("existing", 0)],
+                None,
+            )],
+        );
+        draft.host_id = "ssh:studio".to_owned();
+        draft.endpoint = "studio.example".to_owned();
+        assert_eq!(
+            new_session_validation(&connecting_ssh, &draft).as_deref(),
+            Some("Wait for the SSH host connection before creating a session.")
+        );
     }
 
     #[test]
@@ -8628,6 +8627,35 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].state.can_open());
         assert!(!rows[0].state.can_kill());
+    }
+
+    #[test]
+    fn connecting_hosts_apply_transport_specific_cached_action_policy() {
+        let wsl = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Connecting,
+            vec![SessionItem::new("local", 0)],
+            None,
+        );
+        let ssh = HostItem::ssh(
+            "ssh:studio",
+            "Studio",
+            "studio.example",
+            HostConnectionState::Connecting,
+            vec![SessionItem::new("remote", 0)],
+            None,
+        );
+
+        let wsl_rows = tree_sessions(&wsl, None, &[]);
+        let ssh_rows = tree_sessions(&ssh, None, &[]);
+
+        assert!(wsl_rows[0].state.can_open());
+        assert!(wsl_rows[0].state.can_kill());
+        assert!(session_creation_available(&wsl, NewSessionKind::Tmux));
+        assert!(!ssh_rows[0].state.can_open());
+        assert!(!ssh_rows[0].state.can_kill());
+        assert!(!session_creation_available(&ssh, NewSessionKind::Tmux));
     }
 
     #[test]
