@@ -7758,9 +7758,7 @@ impl Workspace {
             entries
                 .iter_mut()
                 .filter_map(|(host_id, entry)| {
-                    let error = entry
-                        .context
-                        .as_ref()?
+                    let error = current_remote_context(entry)?
                         .snapshot
                         .lease()
                         .ensure_live()
@@ -22619,6 +22617,73 @@ mod tests {
             HostConnectionState::Disconnected
         );
         assert!(snapshot.hosts()[0].diagnostic().is_none());
+    }
+
+    #[test]
+    fn stale_lease_exit_cannot_cancel_its_replacement_connection() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Connecting,
+                Vec::new(),
+                None,
+            )],
+        ));
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "",
+            None,
+        )
+        .expect("valid remote host");
+        let host = remote_host_fixture(&config);
+        let stale = RemoteTmuxSnapshot::test_fixture(
+            "studio.example",
+            TEST_REMOTE_ROUTE,
+            7,
+            Vec::new(),
+            HerdrInventory::Unavailable,
+            ZellijInventory::Unavailable,
+        );
+        let replacement = CancellationToken::new();
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                "ssh:studio".to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: Some(host.clone()),
+                    context: Some(RemoteHostContext {
+                        generation: 7,
+                        host,
+                        snapshot: stale,
+                    }),
+                    cancellation: Some(replacement.clone()),
+                    constructive_cancellation: None,
+                    attachment_attempt: None,
+                    generation: 8,
+                },
+            );
+
+        workspace.monitor_remote_lease_liveness();
+
+        let entries = workspace.inner.remote_hosts.lock().expect("remote hosts");
+        let entry = entries.get("ssh:studio").expect("remote entry");
+        assert_eq!(entry.generation, 8);
+        assert!(!replacement.is_cancelled());
+        assert!(entry.context.is_some());
+        drop(entries);
+        assert_eq!(
+            workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Connecting
+        );
     }
 
     #[test]
