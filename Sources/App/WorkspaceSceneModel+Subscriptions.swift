@@ -28,8 +28,7 @@ extension WorkspaceSceneModel {
                 self?.handleApplicationDidBecomeActiveForResourceMonitoring()
             }
         appDidResignActiveCancellable = center
-            .publisher(for: NSApplication.didResignActiveNotification)
-            .receive(on: DispatchQueue.main)
+            .publisher(for: NSApplication.willResignActiveNotification)
             .sink { [weak self] _ in
                 self?.handleApplicationDidResignActiveForResourceMonitoring()
             }

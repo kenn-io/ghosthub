@@ -18,6 +18,7 @@ protocol NativeSessionPaneSurfacing: AnyObject {
     var childExitCode: UInt32? { get }
     @discardableResult
     func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool
+    func clearPreviewGridSize()
     func registerSurfaceCloseObserver(
         id: UUID,
         onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
@@ -43,6 +44,8 @@ extension NativeSessionPaneSurfacing {
     func sizeForPreviewGrid(columns _: Int, rows _: Int) -> Bool {
         false
     }
+
+    func clearPreviewGridSize() {}
 }
 
 extension TerminalSurfaceView: NativeSessionPaneSurfacing {

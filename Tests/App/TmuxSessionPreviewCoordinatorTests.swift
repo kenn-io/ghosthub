@@ -1458,6 +1458,35 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.parks == [presentation.key])
         #expect(harness.budget.granted.count == 1)
     }
+
+    @Test("will-resign activity reaches previews before window focus loss")
+    func applicationResignationPrecedesWindowFocusLoss() async throws {
+        let workspace = try seededWorkspace()
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        let model = try makeModel(
+            database: workspace.database,
+            localHostID: workspace.hostID,
+            sessionPreviewCoordinator: harness.coordinator
+        )
+        model.subscribeAppActivity()
+        model.isFocusedWindow = true
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        #expect(harness.parks == [presentation.key])
+
+        NotificationCenter.default.post(
+            name: NSApplication.willResignActiveNotification,
+            object: NSApp
+        )
+        #expect(model.isAppActive == false)
+        model.isFocusedWindow = false
+
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.unparks.isEmpty)
+        #expect(harness.budget.granted.count == 1)
+        await model.shutdown()
+    }
 }
 
 @MainActor

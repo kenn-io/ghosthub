@@ -603,10 +603,11 @@ fleet is still connecting. Before a hidden client attaches with tmux's
 the discovered tmux status rows. This exact client grid is also reapplied after
 font and backing-scale changes. The client therefore starts at the server's
 existing size even when it is the only attached client and does not resize the
-tmux window. Opening one detaches that hidden client and
-launches a normally sized replacement before it becomes interactive, avoiding
-a dependency on client-identity mutation. Parked surfaces cannot receive focus,
-pointer input, or accessibility actions. Parking applies the destination
+tmux window. Opening one atomically clears `ignore-size` on that exact verified
+client before activating its retained surface. The client never detaches during
+this promotion, so servers using `destroy-unattached` cannot destroy the session
+between preview and interactive presentation. Parked surfaces cannot receive
+focus, pointer input, or accessibility actions. Parking applies the destination
 window's stable backing scale and ignores hidden-host layout changes; only an
 explicit Always Live preview-grid update may change its pixel size. AppKit reparenting
 callbacks never publish transient DPI or resize values to libghostty. App
@@ -632,8 +633,8 @@ delayed parking reconciliation for newly available surfaces in the key scene;
 already parked surfaces remain mounted across application deactivation.
 Selecting an ordinary parked
 preview unparks and activates its retained surface synchronously. Selecting an
-Always Live client replaces its non-sizing attachment before activation;
-snapshot and identity work never gate the replacement.
+Always Live client promotes its verified retained attachment to normal sizing
+before activation.
 An explicit, confirmed Kill Session action
 targets the exact session (`=<name>:`) on its selected default or protected
 socket only when discovery or a currently connected active attachment

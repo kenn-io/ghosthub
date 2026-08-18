@@ -1068,6 +1068,77 @@ struct TmuxPaneSplitterTests {
         #expect(!down.contains("=review"))
     }
 
+    @Test("client sizing promotion keeps the exact client attached")
+    func sizingPromotionPreservesDestroyUnattachedSession() async throws {
+        guard case let .success(tmuxPath) =
+            TmuxBinaryResolver().resolveTmuxPath()
+        else { return }
+        guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "sizing-promotion",
+            sessions: ["promoted"]
+        )
+        defer { server.stop() }
+        let token = UUID().uuidString.lowercased()
+        let clientProcess = try TestTmuxClient(
+            tmuxPath: tmuxPath,
+            socketName: server.socketName,
+            sessionName: "promoted",
+            clientToken: token,
+            ignoresClientSize: true
+        )
+        defer { clientProcess.stop() }
+        _ = try await clientProcess.publishedTTY()
+        let splitter = TmuxPaneSplitter()
+        let target = TmuxPaneSplitTarget(
+            host: .local,
+            tmuxPath: tmuxPath,
+            sessionName: "promoted",
+            socketName: server.socketName,
+            sshConnectionArguments: [],
+            clientToken: token
+        )
+        let client = try await splitter.clientIdentity(target: target).get()
+        let destroyUnattached = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName, "set-option", "-g",
+                "destroy-unattached", "on",
+            ],
+            timeout: 5
+        )
+        #expect(destroyUnattached.status == 0)
+
+        var verifiedTarget = target
+        verifiedTarget.expectedIdentity = client.sessionIdentity
+        verifiedTarget.expectedClient = client
+        let failure = await splitter.enableSizing(target: verifiedTarget)
+
+        #expect(failure == nil)
+        let session = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName, "has-session", "-t", "=promoted:",
+            ],
+            timeout: 5
+        )
+        #expect(session.status == 0)
+        let clients = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName, "list-clients", "-F",
+                "#{client_tty}\t#{client_flags}",
+            ],
+            timeout: 5
+        )
+        let promotedFlags = clients.stdout.split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .first { $0.hasPrefix(client.clientTTY + "\t") }
+        #expect(promotedFlags != nil)
+        #expect(promotedFlags?.contains("ignore-size") == false)
+    }
+
     @Test("atomic validation rejects a replacement on the expected TTY")
     func replacementClientOnExpectedTTYIsRejected() async throws {
         guard case let .success(tmuxPath) =

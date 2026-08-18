@@ -600,6 +600,13 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         return applyPreviewGridSize()
     }
 
+    /// Returns a promoted preview client to ordinary interactive layout
+    /// sizing. The caller must first clear tmux's `ignore-size` client flag.
+    public func clearPreviewGridSize() {
+        previewGridSize = nil
+        refreshGridSize()
+    }
+
     @discardableResult
     private func applyPreviewGridSize() -> Bool {
         guard let surface, let previewGridSize else {

@@ -13,7 +13,7 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
-    @Test("Always Live connects sessions and relaunches an opened client with normal sizing")
+    @Test("Always Live promotes an opened client to normal sizing in place")
     @MainActor
     func alwaysLiveConnectsEveryDiscoveredSession() async throws {
         let environment = try setupStandardEnvironment()
@@ -50,6 +50,12 @@ struct WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$1",
+                    createdAt: "1000"
+                )),
             tmuxSessionDiscovery: { _ in .success(sessions) },
             sessionPreviewCoordinator: previewCoordinator,
             sessionPreviewModePublisher: mode.eraseToAnyPublisher()
@@ -80,26 +86,24 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             model.prepareActiveBorrowedTmuxSurface()
             return model.activeBorrowedTmuxSelection == opened
-                && surfaceStore.requestCount == 3
+                && surfaceStore.surface.clearPreviewGridCount == 1
         }
 
-        #expect(surfaceStore.removedKeys.count == 1)
-        #expect(surfaceStore.lastConfiguration?.command?.contains(
-            "ignore-size"
-        ) == false)
+        #expect(surfaceStore.requestCount == 2)
+        #expect(surfaceStore.removedKeys.isEmpty)
 
         mode.send(.live)
         await waitUntilMainActor {
             model.retainedBorrowedTmuxPresentationCount == 1
         }
 
-        #expect(surfaceStore.removedKeys.count == 2)
+        #expect(surfaceStore.removedKeys.count == 1)
         await model.shutdown()
     }
 
-    @Test("restoration replaces a policy-owned preview client before activation")
+    @Test("restoration promotes a policy-owned preview client before activation")
     @MainActor
-    func restorationReplacesAlwaysLiveClient() async throws {
+    func restorationPromotesAlwaysLiveClient() async throws {
         let environment = try setupStandardEnvironment()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let session = DiscoveredTmuxSession(
@@ -120,6 +124,12 @@ struct WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$1",
+                    createdAt: "1001"
+                )),
             tmuxSessionDiscovery: { _ in .success([session]) },
             sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
                 mode: .alwaysLive,
@@ -146,13 +156,11 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             model.prepareActiveBorrowedTmuxSurface()
             return model.activeBorrowedTmuxSelection?.name == session.name
-                && surfaceStore.requestCount == 2
+                && surfaceStore.surface.clearPreviewGridCount == 1
         }
 
-        #expect(surfaceStore.removedKeys.count == 1)
-        #expect(surfaceStore.lastConfiguration?.command?.contains(
-            "ignore-size"
-        ) == false)
+        #expect(surfaceStore.requestCount == 1)
+        #expect(surfaceStore.removedKeys.isEmpty)
         await model.shutdown()
     }
 
