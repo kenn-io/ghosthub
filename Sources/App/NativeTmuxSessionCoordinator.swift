@@ -764,7 +764,8 @@ final class NativeTmuxSessionCoordinator {
             deferredPresentationStyleHandles.insert(handle.id)
         }
         surface.blocksClipboardReads = attachment.host.isRemote
-        if attachment.ignoresClientSize,
+        if isFirstLaunch,
+           attachment.ignoresClientSize,
            let previewGridSize = attachment.previewGridSize {
             _ = surface.sizeForPreviewGrid(
                 columns: previewGridSize.columns,

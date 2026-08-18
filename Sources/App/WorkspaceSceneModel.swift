@@ -3398,6 +3398,11 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
 
+        let invalidatedHostIDs = Set(inventoryHosts.compactMap {
+            hostID, previousHost in
+            resolved[hostID] != previousHost ? hostID : nil
+        })
+        invalidateAlwaysLiveTmuxPresentations(for: invalidatedHostIDs)
         let retainedHostIDs = Set(resolved.compactMap { hostID, target in
             inventoryHosts[hostID] == target ? hostID : nil
         })
@@ -6951,6 +6956,18 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    private func invalidateAlwaysLiveTmuxPresentations(
+        for hostIDs: Set<UUID>
+    ) {
+        guard !hostIDs.isEmpty else { return }
+        let selections = alwaysLiveManagedTmuxPresentationKeys
+            .filter { hostIDs.contains($0.hostID) }
+            .compactMap { retainedTmuxPresentations[$0]?.selection }
+        for selection in selections {
+            invalidateBorrowedTmuxSession(selection)
+        }
+    }
+
     private func reconcileAlwaysLiveTmuxPresentations(for hostID: UUID) {
         let supportsNonSizingClients = snapshot.host(id: hostID).map {
             $0.platform != .windows
@@ -8750,10 +8767,22 @@ final class WorkspaceSceneModel: ObservableObject {
             case .stale:
                 return
             case let .failure(failure):
+                let retriesInteractiveAttachment =
+                    presentation.previewPromotionNavigationRevision
+                        == userNavigationRevision
+                let selection = presentation.selection
+                presentation.previewPromotionNavigationRevision = nil
+                excludeAlwaysLiveTmuxPresentation(
+                    presentation,
+                    key: key
+                )
                 AppLogger.shared.error(
                     "tmux preview promotion: \(failure.localizedDescription)",
                     context: "tmux"
                 )
+                if retriesInteractiveAttachment {
+                    openBorrowedTmuxSession(selection)
+                }
                 return
             }
             guard presentation.previewPromotionNavigationRevision

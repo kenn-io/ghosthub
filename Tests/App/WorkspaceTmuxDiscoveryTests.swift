@@ -13,6 +13,142 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
+    @Test("failed Always Live promotion retries an interactive attachment")
+    @MainActor
+    func failedAlwaysLivePromotionRetriesInteractiveAttachment() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let session = DiscoveredTmuxSession(
+            name: "build",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            if command.contains("'!ignore-size'") {
+                return (1, "promotion rejected")
+            }
+            guard command.contains(
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+            ) else { return (0, "") }
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t101\t789\t321\t/dev/ttys001\t$1\t1001\t%9\n"
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return model.activeBorrowedTmuxSelection == selection
+                && surfaceStore.requestCount == 2
+        }
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(surfaceStore.removedKeys.count == 1)
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == false)
+        await model.shutdown()
+    }
+
+    @Test("host changes immediately detach Always Live clients")
+    @MainActor
+    func hostChangesDetachAlwaysLiveClients() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let removedHost = HostSummary(
+            id: UUID(),
+            configKey: "removed-builder",
+            name: "Removed Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "user@removed-builder",
+            preferredTransport: .ssh
+        )
+        var snapshot = environment.snapshot
+        snapshot.hosts.append(removedHost)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let session = DiscoveredTmuxSession(
+            name: "build",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$1",
+                    createdAt: "1001"
+                )),
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { host in
+                host.isRemote ? .success([session]) : .success([])
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 2
+                && surfaceStore.requestCount == 2
+        }
+
+        var updatedSnapshot = model.snapshot
+        updatedSnapshot.hosts.removeAll { $0.id == removedHost.id }
+        let changedIndex = try #require(updatedSnapshot.hosts.firstIndex {
+            $0.id == environment.remoteHost.id
+        })
+        updatedSnapshot.hosts[changedIndex].sshDestination =
+            "user@replacement-builder"
+        model.snapshot = updatedSnapshot
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(surfaceStore.removedKeys.count == 2)
+        await model.shutdown()
+    }
+
     @Test("stale Always Live promotion cannot activate after navigation")
     @MainActor
     func staleAlwaysLivePromotionRestoresPreviewSizing() async throws {

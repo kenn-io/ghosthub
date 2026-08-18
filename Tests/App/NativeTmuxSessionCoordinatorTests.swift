@@ -1474,6 +1474,7 @@ struct NativeTmuxSessionCoordinatorTests {
         )
         await waitUntilMainActor { isSurfaceReady }
         _ = coordinator.surface(handle: handle)
+        _ = coordinator.surface(handle: handle)
 
         coordinator.updatePreviewGridSize(initialGrid, for: handle)
         coordinator.updatePreviewGridSize(
