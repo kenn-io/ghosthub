@@ -8440,6 +8440,7 @@ fn capture_kill_request(
     selection: &SessionSelection,
     generation: u64,
 ) -> Result<KillCaptureRequest, WorkspaceError> {
+    require_wsl_host_id(selection.host_id())?;
     if !matches!(selection.kind(), SessionKind::Tmux | SessionKind::Zellij) {
         return Err(WorkspaceError::new(
             "Kill Session is available only for tmux and Zellij sessions",
@@ -8576,6 +8577,7 @@ fn capture_herdr_lifecycle(
     action: HerdrLifecycleAction,
     generation: u64,
 ) -> Result<PendingHerdrLifecycle, WorkspaceError> {
+    require_wsl_host_id(selection.host_id())?;
     if selection.kind() != SessionKind::Herdr {
         return Err(WorkspaceError::new(
             "Herdr lifecycle actions require a Herdr session",
@@ -8640,6 +8642,7 @@ fn capture_create_request(
     endpoint: &str,
     name: SessionName,
 ) -> Result<CreateRequest, WorkspaceError> {
+    require_wsl_host_id(host_id)?;
     let selected_host = inner
         .selected_host
         .read()
@@ -8707,6 +8710,7 @@ fn capture_herdr_create_request(
     endpoint: &str,
     name: HerdrSessionName,
 ) -> Result<HerdrCreateRequest, WorkspaceError> {
+    require_wsl_host_id(host_id)?;
     if inner
         .selected_host
         .read()
@@ -8819,6 +8823,7 @@ fn capture_zellij_create_request(
     endpoint: &str,
     name: ZellijSessionName,
 ) -> Result<ZellijCreateRequest, WorkspaceError> {
+    require_wsl_host_id(host_id)?;
     if inner
         .selected_host
         .read()
@@ -9068,6 +9073,7 @@ fn capture_herdr_restart_request(
     inner: &Inner,
     selection: &SessionSelection,
 ) -> Result<HerdrCreateRequest, WorkspaceError> {
+    require_wsl_host_id(selection.host_id())?;
     if selection.kind() != SessionKind::Herdr {
         return Err(WorkspaceError::new(
             "the selected session is not a Herdr session",
@@ -9202,6 +9208,16 @@ fn require_host_session_actions(
         SessionKind::Tmux | SessionKind::Herdr | SessionKind::Zellij => {}
     }
     Ok(())
+}
+
+fn require_wsl_host_id(host_id: &str) -> Result<(), WorkspaceError> {
+    if host_id == "wsl" {
+        Ok(())
+    } else {
+        Err(WorkspaceError::new(
+            "this session action requires the local WSL host",
+        ))
+    }
 }
 
 fn current_remote_context(entry: &RemoteEntry) -> Option<&RemoteHostContext> {
@@ -20343,6 +20359,69 @@ mod tests {
 
         assert_eq!(created.term, AttachTerm::Xterm);
         assert_eq!(restarted.term, AttachTerm::Xterm);
+    }
+
+    #[test]
+    fn wsl_capture_rejects_remote_host_ids_even_when_inventory_identity_collides() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
+        let remote_host = "ssh:collision";
+        *workspace
+            .inner
+            .selected_host
+            .write()
+            .expect("selected host") = Some(remote_host.to_owned());
+
+        assert!(
+            capture_kill_request(
+                &workspace.inner,
+                &SessionSelection::new(remote_host, "Ubuntu", "work"),
+                1,
+            )
+            .is_err()
+        );
+        assert!(
+            capture_herdr_lifecycle(
+                &workspace.inner,
+                &SessionSelection::herdr(remote_host, "Ubuntu", "default"),
+                HerdrLifecycleAction::Stop,
+                1,
+            )
+            .is_err()
+        );
+        assert!(
+            capture_create_request(
+                &workspace.inner,
+                remote_host,
+                "Ubuntu",
+                SessionName::parse("created").expect("valid tmux name"),
+            )
+            .is_err()
+        );
+        assert!(
+            capture_herdr_create_request(
+                &workspace.inner,
+                remote_host,
+                "Ubuntu",
+                HerdrSessionName::parse("created").expect("valid Herdr name"),
+            )
+            .is_err()
+        );
+        assert!(
+            capture_zellij_create_request(
+                &workspace.inner,
+                remote_host,
+                "Ubuntu",
+                ZellijSessionName::parse("created").expect("valid Zellij name"),
+            )
+            .is_err()
+        );
+        assert!(
+            capture_herdr_restart_request(
+                &workspace.inner,
+                &SessionSelection::herdr(remote_host, "Ubuntu", "review"),
+            )
+            .is_err()
+        );
     }
 
     #[test]

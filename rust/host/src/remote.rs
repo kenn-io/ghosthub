@@ -877,9 +877,14 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
 fn framed_remote_shell_command(command: &str, begin_marker: &str, end_marker: &str) -> String {
     let begin = shell_quoted_argument(begin_marker);
     let end = shell_quoted_argument(end_marker);
+    let status = shell_quoted_argument(&framed_status_marker(end_marker));
     format!(
-        "printf '%s\\n' {begin}; printf '%s\\n' {begin} >&2; ( {command} ); ghosthub_status=$?; printf '%s\\n' {end}; printf '%s\\n' {end} >&2; exit $ghosthub_status"
+        "printf '%s\\n' {begin}; printf '%s\\n' {begin} >&2; ( {command} ); ghosthub_status=$?; printf '%s%d\\n' {status} \"$ghosthub_status\"; printf '%s\\n' {end}; printf '%s\\n' {end} >&2; exit 0"
     )
+}
+
+fn framed_status_marker(end_marker: &str) -> String {
+    format!("{end_marker}_STATUS_")
 }
 
 fn tmux_command<'a>(
@@ -1134,9 +1139,15 @@ fn extract_framed_command_output(
     begin_marker: &str,
     end_marker: &str,
 ) -> Result<crate::CommandOutput, RemoteTmuxError> {
-    let stdout_framed = has_complete_frame(&output.stdout, begin_marker, end_marker);
+    if output.status != 0 {
+        return Err(RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            nonempty_diagnostic(&output.stderr, "SSH command transport failed"),
+        ));
+    }
+    let stdout_framed = extract_framed_stdout(&output.stdout, begin_marker, end_marker);
     let stderr_framed = has_complete_frame(&output.stderr, begin_marker, end_marker);
-    if !stdout_framed || !stderr_framed {
+    if stdout_framed.is_err() || !stderr_framed {
         let diagnostic = stderr_framed
             .then(|| extract_framed_payload(&output.stderr, begin_marker, end_marker).ok())
             .flatten()
@@ -1149,11 +1160,64 @@ fn extract_framed_command_output(
             ),
         ));
     }
-    let stdout = extract_framed_payload(&output.stdout, begin_marker, end_marker)?;
+    let (stdout, command_status) = stdout_framed.expect("the framed status was checked above");
     let stderr = extract_framed_payload(&output.stderr, begin_marker, end_marker)?;
+    output.status = command_status;
     output.stdout = stdout;
     output.stderr = stderr;
     Ok(output)
+}
+
+fn extract_framed_stdout(
+    bytes: &[u8],
+    begin_marker: &str,
+    end_marker: &str,
+) -> Result<(Vec<u8>, i32), RemoteTmuxError> {
+    let begin = format!("{begin_marker}\n");
+    let status_marker = framed_status_marker(end_marker);
+    let start = find_bytes(bytes, begin.as_bytes()).ok_or_else(|| {
+        RemoteTmuxError::new(DiagnosticKind::Transport, "remote stdout frame is missing")
+    })? + begin.len();
+    let status_offset = find_bytes(&bytes[start..], status_marker.as_bytes()).ok_or_else(|| {
+        RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "remote command status frame is missing",
+        )
+    })?;
+    let status_start = start + status_offset + status_marker.len();
+    let status_end = bytes[status_start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|offset| status_start + offset)
+        .ok_or_else(|| {
+            RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "remote command status frame is incomplete",
+            )
+        })?;
+    let status_text = std::str::from_utf8(&bytes[status_start..status_end]).map_err(|_| {
+        RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "remote command status is not UTF-8",
+        )
+    })?;
+    let status = status_text.parse::<u8>().map_err(|_| {
+        RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "remote command status is invalid",
+        )
+    })?;
+    let end = format!("{end_marker}\n");
+    if !bytes[status_end + 1..].starts_with(end.as_bytes()) {
+        return Err(RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "remote stdout end frame is missing",
+        ));
+    }
+    Ok((
+        bytes[start..start + status_offset].to_vec(),
+        i32::from(status),
+    ))
 }
 
 fn has_complete_frame(bytes: &[u8], begin_marker: &str, end_marker: &str) -> bool {
@@ -1392,6 +1456,7 @@ impl RemoteTmuxError {
         }
     }
 
+    #[cfg(windows)]
     fn local_executable(error: &std::io::Error) -> Self {
         Self::new(
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -1443,6 +1508,13 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    fn framed_stdout(payload: &[u8], status: u8) -> Vec<u8> {
+        let mut framed = b"BEGIN\n".to_vec();
+        framed.extend_from_slice(payload);
+        framed.extend_from_slice(format!("END_STATUS_{status}\nEND\n").as_bytes());
+        framed
+    }
 
     fn exited_lease() -> SshLease {
         let target = SshTarget::new("host-alias", None, None).expect("target");
@@ -1727,7 +1799,12 @@ mod tests {
         let output = extract_framed_command_output(
             crate::CommandOutput {
                 status: 0,
-                stdout: b"\xffstartup\nBEGIN\nbackend output\nEND\n\xfelogout\n".to_vec(),
+                stdout: [
+                    b"\xffstartup\n".as_slice(),
+                    framed_stdout(b"backend output\n", 0).as_slice(),
+                    b"\xfelogout\n".as_slice(),
+                ]
+                .concat(),
                 stderr: b"\x80warning\nBEGIN\nEND\n\x81logout\n".to_vec(),
             },
             "BEGIN",
@@ -1754,6 +1831,22 @@ mod tests {
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
         assert_eq!(error.to_string(), "connection closed");
+    }
+
+    #[test]
+    fn local_ssh_failure_overrides_complete_remote_frames() {
+        let error = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 255,
+                stdout: framed_stdout(b"backend output\n", 0),
+                stderr: b"BEGIN\nremote stderr\nEND\nconnection closed\n".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .expect_err("the local SSH status owns transport success");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
     }
 
     #[test]
@@ -1798,8 +1891,12 @@ mod tests {
     fn framed_missing_backend_remains_backend_scoped() {
         let output = extract_framed_command_output(
             crate::CommandOutput {
-                status: 127,
-                stdout: b"noise\nBEGIN\nGHOSTHUB_ZELLIJ_UNAVAILABLE\nEND\n".to_vec(),
+                status: 0,
+                stdout: [
+                    b"noise\n".as_slice(),
+                    framed_stdout(b"GHOSTHUB_ZELLIJ_UNAVAILABLE\n", 127).as_slice(),
+                ]
+                .concat(),
                 stderr: b"login warning\nBEGIN\nbackend missing\nEND\nlogout noise\n".to_vec(),
             },
             "BEGIN",
@@ -1831,8 +1928,12 @@ mod tests {
     fn framed_zellij_stderr_ignores_login_shell_noise() {
         let output = extract_framed_command_output(
             crate::CommandOutput {
-                status: 1,
-                stdout: b"profile output\nBEGIN\nEND\n".to_vec(),
+                status: 0,
+                stdout: [
+                    b"profile output\n".as_slice(),
+                    framed_stdout(b"", 1).as_slice(),
+                ]
+                .concat(),
                 stderr:
                     b"startup warning\nBEGIN\nNo active zellij sessions found.\nEND\nlogout noise\n"
                         .to_vec(),
@@ -1861,6 +1962,10 @@ mod tests {
             .args(["-c", &command])
             .output()
             .expect("run framed shell boundary");
+        assert!(
+            output.status.success(),
+            "the wrapper owns transport success"
+        );
         let output = extract_framed_command_output(
             crate::CommandOutput {
                 status: output.status.code().expect("shell exit status"),
@@ -1898,8 +2003,8 @@ mod tests {
         for status in [125, 255] {
             let output = extract_framed_command_output(
                 crate::CommandOutput {
-                    status,
-                    stdout: b"BEGIN\nbackend output\nEND\n".to_vec(),
+                    status: 0,
+                    stdout: framed_stdout(b"backend output\n", status),
                     stderr: b"BEGIN\nbackend failure\nEND\n".to_vec(),
                 },
                 "BEGIN",
