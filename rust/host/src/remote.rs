@@ -866,7 +866,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 cancellation,
                 COMMAND_TIMEOUT,
             )
-            .map_err(|error| RemoteTmuxError::command_launch(&error))?;
+            .map_err(|error| RemoteTmuxError::command_execution(&error))?;
         lease
             .ensure_live()
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
@@ -1468,8 +1468,15 @@ impl RemoteTmuxError {
         )
     }
 
-    fn command_launch(error: &std::io::Error) -> Self {
-        Self::new(DiagnosticKind::Transport, error.to_string())
+    fn command_execution(error: &std::io::Error) -> Self {
+        Self::new(
+            if error.kind() == std::io::ErrorKind::TimedOut {
+                DiagnosticKind::Timeout
+            } else {
+                DiagnosticKind::Transport
+            },
+            error.to_string(),
+        )
     }
 
     fn ssh(error: &crate::SshError) -> Self {
@@ -1915,13 +1922,36 @@ mod tests {
 
     #[test]
     fn local_ssh_launch_failure_is_transport_not_backend_absence() {
-        let error = RemoteTmuxError::command_launch(&std::io::Error::new(
+        let error = RemoteTmuxError::command_execution(&std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "local SSH executable could not be launched",
         ));
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
         assert!(scope_backend_failure(error).is_err());
+    }
+
+    #[test]
+    fn post_launch_timeout_remains_scoped_to_the_backend() {
+        let backend_timeout = RemoteTmuxError::command_execution(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "remote backend command timed out",
+        ));
+        let diagnostic =
+            scope_backend_failure(backend_timeout).expect("timeout remains backend-scoped");
+        assert_eq!(diagnostic.kind(), DiagnosticKind::Timeout);
+
+        let tmux_timeout = RemoteTmuxError::command_execution(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "remote tmux command timed out",
+        ));
+        let (_, sessions, diagnostic) =
+            scope_tmux_inventory(Err(tmux_timeout)).expect("timeout remains tmux-scoped");
+        assert!(sessions.is_empty());
+        assert_eq!(
+            diagnostic.expect("tmux timeout diagnostic").kind(),
+            DiagnosticKind::Timeout
+        );
     }
 
     #[test]
