@@ -323,6 +323,7 @@ struct WslFile {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 struct TerminalFile {
+    theme: Option<TerminalTheme>,
     font_family: Option<String>,
     font_size: Option<u16>,
     background: Option<String>,
@@ -382,32 +383,40 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
             .collect::<Result<Vec<_>, ConfigError>>()?;
         validate_unique_ssh_hosts(&ssh_hosts)?;
 
-        let font_family = file
-            .terminal
+        let terminal = file.terminal;
+        let has_configured_colors = terminal.background.is_some() || terminal.foreground.is_some();
+        let font_family = terminal
             .font_family
             .unwrap_or_else(|| defaults.terminal.font_family.clone());
         require_nonempty("terminal.font-family", &font_family)?;
-        let font_size = file
-            .terminal
-            .font_size
-            .unwrap_or(defaults.terminal.font_size);
+        let font_size = terminal.font_size.unwrap_or(defaults.terminal.font_size);
         if font_size == 0 {
             return Err(ConfigError::new(
                 "terminal.font-size must be greater than zero",
             ));
         }
-        let background = file
-            .terminal
+        let configured_background = terminal
             .background
             .map_or(Ok(defaults.terminal.background), |value| {
                 parse_rgb("terminal.background", &value)
             })?;
-        let foreground = file
-            .terminal
+        let configured_foreground = terminal
             .foreground
             .map_or(Ok(defaults.terminal.foreground), |value| {
                 parse_rgb("terminal.foreground", &value)
             })?;
+
+        let theme = terminal.theme.unwrap_or_else(|| {
+            if has_configured_colors {
+                TerminalTheme::from_colors(configured_background, configured_foreground)
+                    .unwrap_or(TerminalTheme::Custom)
+            } else {
+                defaults.terminal.theme
+            }
+        });
+        let (background, foreground) = theme
+            .colors()
+            .unwrap_or((configured_background, configured_foreground));
 
         Ok(Self {
             wsl: WslSettings {
@@ -416,12 +425,12 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
                 socket_directory: file.wsl.socket_directory,
             },
             terminal: TerminalAppearance {
+                theme,
                 font_family,
                 font_size,
                 background,
                 foreground,
-                allow_remote_clipboard_write: file
-                    .terminal
+                allow_remote_clipboard_write: terminal
                     .clipboard_write
                     .unwrap_or(defaults.terminal.allow_remote_clipboard_write),
             },
@@ -439,10 +448,13 @@ impl From<&ApplicationConfig> for ConfigFile {
                 socket_directory: config.wsl.socket_directory.clone(),
             },
             terminal: TerminalFile {
+                theme: Some(config.terminal.theme),
                 font_family: Some(config.terminal.font_family.clone()),
                 font_size: Some(config.terminal.font_size),
-                background: Some(format!("#{:06x}", config.terminal.background)),
-                foreground: Some(format!("#{:06x}", config.terminal.foreground)),
+                background: (config.terminal.theme == TerminalTheme::Custom)
+                    .then(|| format!("#{:06x}", config.terminal.background)),
+                foreground: (config.terminal.theme == TerminalTheme::Custom)
+                    .then(|| format!("#{:06x}", config.terminal.foreground)),
                 clipboard_write: Some(config.terminal.allow_remote_clipboard_write),
             },
             ssh_hosts: config
@@ -550,8 +562,87 @@ fn current_roots() -> Result<Roots, ConfigError> {
     .map_err(|error| ConfigError::new(error.to_string()))
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminalTheme {
+    Pro,
+    Homebrew,
+    ClearDark,
+    ClearLight,
+    Novel,
+    Ocean,
+    Custom,
+}
+
+impl TerminalTheme {
+    pub const ALL: [Self; 7] = [
+        Self::Pro,
+        Self::Homebrew,
+        Self::ClearDark,
+        Self::ClearLight,
+        Self::Novel,
+        Self::Ocean,
+        Self::Custom,
+    ];
+
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Pro => "Pro",
+            Self::Homebrew => "Homebrew",
+            Self::ClearDark => "Clear Dark",
+            Self::ClearLight => "Clear Light",
+            Self::Novel => "Novel",
+            Self::Ocean => "Ocean",
+            Self::Custom => "Custom",
+        }
+    }
+
+    #[must_use]
+    pub const fn summary(self) -> &'static str {
+        match self {
+            Self::Pro => "Black glass with bright monochrome text.",
+            Self::Homebrew => "Classic green-on-black terminal colors.",
+            Self::ClearDark => "A subtle blue-black palette.",
+            Self::ClearLight => "An airy light palette with steel-blue text.",
+            Self::Novel => "Paper-like sepia colors for long reading.",
+            Self::Ocean => "Bright ocean blue with white text.",
+            Self::Custom => "Choose your own foreground and background colors.",
+        }
+    }
+
+    #[must_use]
+    pub const fn colors(self) -> Option<(u32, u32)> {
+        match self {
+            Self::Pro => Some((0x00_00_00, 0xf4_f4_f4)),
+            Self::Homebrew => Some((0x00_00_00, 0x28_fe_14)),
+            Self::ClearDark => Some((0x21_27_34, 0xe6_e6_e6)),
+            Self::ClearLight => Some((0xff_ff_ff, 0x3a_48_51)),
+            Self::Novel => Some((0xdf_db_c3, 0x4d_2f_2d)),
+            Self::Ocean => Some((0x2b_66_c9, 0xff_ff_ff)),
+            Self::Custom => None,
+        }
+    }
+
+    const fn from_colors(background: u32, foreground: u32) -> Option<Self> {
+        let mut index = 0;
+        while index < Self::ALL.len() {
+            let theme = Self::ALL[index];
+            if let Some((theme_background, theme_foreground)) = theme.colors()
+                && theme_background == background
+                && theme_foreground == foreground
+            {
+                return Some(theme);
+            }
+            index += 1;
+        }
+        None
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalAppearance {
+    theme: TerminalTheme,
     font_family: String,
     font_size: u16,
     background: u32,
@@ -581,12 +672,55 @@ impl TerminalAppearance {
             ));
         }
         Ok(Self {
+            theme: TerminalTheme::Custom,
             font_family,
             font_size,
             background: parse_rgb("terminal.background", background)?,
             foreground: parse_rgb("terminal.foreground", foreground)?,
             allow_remote_clipboard_write,
         })
+    }
+
+    /// Build a validated appearance from a built-in theme or custom colors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid font settings or invalid custom colors.
+    pub fn themed(
+        theme: TerminalTheme,
+        font_family: impl Into<String>,
+        font_size: u16,
+        custom_background: &str,
+        custom_foreground: &str,
+        allow_remote_clipboard_write: bool,
+    ) -> Result<Self, ConfigError> {
+        let font_family = font_family.into();
+        require_nonempty("terminal.font-family", &font_family)?;
+        if font_size == 0 {
+            return Err(ConfigError::new(
+                "terminal.font-size must be greater than zero",
+            ));
+        }
+        let (background, foreground) = match theme.colors() {
+            Some(colors) => colors,
+            None => (
+                parse_rgb("terminal.background", custom_background)?,
+                parse_rgb("terminal.foreground", custom_foreground)?,
+            ),
+        };
+        Ok(Self {
+            theme,
+            font_family,
+            font_size,
+            background,
+            foreground,
+            allow_remote_clipboard_write,
+        })
+    }
+
+    #[must_use]
+    pub const fn theme(&self) -> TerminalTheme {
+        self.theme
     }
 
     #[must_use]
@@ -624,10 +758,11 @@ impl TerminalAppearance {
 impl Default for TerminalAppearance {
     fn default() -> Self {
         Self {
+            theme: TerminalTheme::ClearDark,
             font_family: "Cascadia Mono".to_owned(),
             font_size: 14,
-            background: 0x0c_0f_14,
-            foreground: 0xd8_de_e9,
+            background: 0x21_27_34,
+            foreground: 0xe6_e6_e6,
             allow_remote_clipboard_write: true,
         }
     }

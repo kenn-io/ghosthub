@@ -1,4 +1,4 @@
-use config::TerminalAppearance;
+use config::{TerminalAppearance, TerminalTheme};
 
 #[test]
 fn default_terminal_appearance_is_projectable_without_ui_dependencies() {
@@ -6,8 +6,9 @@ fn default_terminal_appearance_is_projectable_without_ui_dependencies() {
 
     assert_eq!(appearance.font_family(), "Cascadia Mono");
     assert_eq!(appearance.font_size(), 14);
-    assert_eq!(appearance.background(), 0x0c_0f_14);
-    assert_eq!(appearance.foreground(), 0xd8_de_e9);
+    assert_eq!(appearance.theme(), TerminalTheme::ClearDark);
+    assert_eq!(appearance.background(), 0x21_27_34);
+    assert_eq!(appearance.foreground(), 0xe6_e6_e6);
 }
 
 #[test]
@@ -17,6 +18,7 @@ fn user_authored_terminal_appearance_is_validated() {
 
     assert_eq!(appearance.font_family(), "Iosevka Term");
     assert_eq!(appearance.font_size(), 16);
+    assert_eq!(appearance.theme(), TerminalTheme::Custom);
     assert_eq!(appearance.background(), 0x10_20_30);
     assert_eq!(appearance.foreground(), 0xf0_e0_d0);
     assert!(!appearance.allow_remote_clipboard_write());
@@ -29,4 +31,21 @@ fn user_authored_terminal_appearance_is_validated() {
     ] {
         assert!(invalid.is_err());
     }
+}
+
+#[test]
+fn built_in_themes_supply_their_own_colors() {
+    let appearance = TerminalAppearance::themed(
+        TerminalTheme::Ocean,
+        "Cascadia Mono",
+        14,
+        "not-a-color",
+        "also-not-a-color",
+        true,
+    )
+    .expect("built-in themes do not require custom colors");
+
+    assert_eq!(appearance.theme(), TerminalTheme::Ocean);
+    assert_eq!(appearance.background(), 0x2b_66_c9);
+    assert_eq!(appearance.foreground(), 0xff_ff_ff);
 }

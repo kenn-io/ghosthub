@@ -1122,11 +1122,15 @@ Slice 1 reads font family, font size, and theme through:
 config → workspace projection → UI-facing state → GPUI
 ~~~
 
-The Settings shell exposes durable Appearance and Hosts panes. Appearance edits
-the validated terminal font and default colors, previews the draft, persists
-the complete configuration atomically, and publishes the saved projection to
-the running GPUI workspace. Existing terminal clients keep the palette they
-negotiated until reopened; new clients use the saved defaults. Hosts owns only
+The Settings shell exposes durable Appearance and Hosts panes. Appearance
+offers the same built-in terminal color families as Swift plus a Custom
+fallback, enumerates installed fixed-pitch fonts, offers standard terminal font
+sizes, and renders a substantial live preview before saving. Theme selection
+is persisted by name; custom colors are stored only for Custom. Older
+color-only configuration loads as Custom. Saves persist the complete
+configuration atomically and publish the projection to the running GPUI
+workspace. Existing terminal clients keep the palette they negotiated until
+reopened; new clients use the saved defaults. Hosts owns only
 `[[ssh-host]]` records. The shell's stable navigation, page header, list, and
 detail regions are the permanent container for the remaining Swift settings
 domains.
@@ -1135,7 +1139,7 @@ The parity inventory is:
 | Swift domain | Rust state |
 | --- | --- |
 | Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
-| Appearance | Native font and default-color editor with preview and atomic persistence |
+| Appearance | Built-in themes, Custom colors, installed-font and size pickers, live preview, and atomic persistence |
 | Terminal | Startup configuration only; pane not yet implemented |
 | Keyboard | Runtime shortcuts exist; pane not yet implemented |
 | Worktrees | Project/worktree workflows exist; preferences pane not yet implemented |

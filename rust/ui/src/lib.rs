@@ -21,7 +21,7 @@ use workspace::{
     AppearanceSettingsDraft, ConfiguredSshHost, HerdrSessionState, HostConnectionState, HostItem,
     KeyEvent as InputKeyEvent, KeyInput, KwtProjectAction, Modifiers as InputModifiers,
     MouseAction, MouseButton, MouseInput, NamedKey, SessionName, SessionSelection, SshHostDraft,
-    SshPromptRequest, Workspace, WorkspaceContent, WorkspaceEvent,
+    SshPromptRequest, TerminalTheme, Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
@@ -43,6 +43,7 @@ const MOUSE_RELEASE_RESERVE: usize = 3;
 const MAX_WHEEL_EVENTS_PER_CALLBACK: usize = 64;
 const UI_INPUT_BYTE_CAPACITY: usize = 512 * 1024;
 const SETTINGS_FIELD_CHARACTER_LIMIT: usize = 4 * 1024;
+const TERMINAL_FONT_SIZES: [u16; 10] = [10, 11, 12, 13, 14, 15, 16, 18, 20, 24];
 const SSH_PROMPT_CHARACTER_LIMIT: usize = 64 * 1024;
 const INPUT_BUFFERED_DIAGNOSTIC: &str = "Terminal is busy; input is buffered.";
 const INPUT_BUFFER_FULL_DIAGNOSTIC: &str =
@@ -452,7 +453,7 @@ impl SettingsPane {
 
     const fn subtitle(self) -> &'static str {
         match self {
-            Self::Appearance => "Choose the font and colors used by terminal presentations.",
+            Self::Appearance => "Choose a terminal theme and installed monospace font.",
             Self::Hosts => "Connect the machines and tmux sessions in your SSH network.",
         }
     }
@@ -460,6 +461,7 @@ impl SettingsPane {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AppearanceField {
+    Theme,
     FontFamily,
     FontSize,
     Background,
@@ -470,34 +472,63 @@ impl AppearanceField {
     const fn adjacent(self, reverse: bool) -> Self {
         if reverse {
             match self {
-                Self::FontFamily => Self::Foreground,
+                Self::Theme => Self::Foreground,
+                Self::FontFamily => Self::Theme,
                 Self::FontSize => Self::FontFamily,
                 Self::Background => Self::FontSize,
                 Self::Foreground => Self::Background,
             }
         } else {
             match self {
+                Self::Theme => Self::FontFamily,
                 Self::FontFamily => Self::FontSize,
                 Self::FontSize => Self::Background,
                 Self::Background => Self::Foreground,
-                Self::Foreground => Self::FontFamily,
+                Self::Foreground => Self::Theme,
             }
         }
     }
+}
+
+fn adjacent_appearance_field(
+    field: AppearanceField,
+    reverse: bool,
+    custom_theme: bool,
+) -> AppearanceField {
+    let mut adjacent = field.adjacent(reverse);
+    while !custom_theme
+        && matches!(
+            adjacent,
+            AppearanceField::Background | AppearanceField::Foreground
+        )
+    {
+        adjacent = adjacent.adjacent(reverse);
+    }
+    adjacent
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AppearancePicker {
+    FontFamily,
+    FontSize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AppearanceEditor {
     draft: AppearanceSettingsDraft,
     field: AppearanceField,
+    open_picker: Option<AppearancePicker>,
+    font_families: Vec<String>,
     error: Option<String>,
 }
 
 impl AppearanceEditor {
-    fn new(draft: AppearanceSettingsDraft) -> Self {
+    fn new(draft: AppearanceSettingsDraft, font_families: Vec<String>) -> Self {
         Self {
             draft,
-            field: AppearanceField::FontFamily,
+            field: AppearanceField::Theme,
+            open_picker: None,
+            font_families,
             error: None,
         }
     }
@@ -533,11 +564,15 @@ struct SettingsDialog {
 }
 
 impl SettingsDialog {
-    fn new(hosts: &[ConfiguredSshHost], appearance: AppearanceSettingsDraft) -> Self {
+    fn new(
+        hosts: &[ConfiguredSshHost],
+        appearance: AppearanceSettingsDraft,
+        font_families: Vec<String>,
+    ) -> Self {
         let selected = hosts.first();
         Self {
             pane: SettingsPane::Appearance,
-            appearance_editor: AppearanceEditor::new(appearance),
+            appearance_editor: AppearanceEditor::new(appearance, font_families),
             selected_host_id: selected.map(|host| host.id().to_owned()),
             host_editor: selected.map(|host| SshHostEditor::new(Some(host))),
             pending_remove: None,
@@ -566,21 +601,11 @@ fn ssh_draft_field_mut(draft: &mut SshHostDraft, field: SshField) -> &mut String
 fn appearance_draft_field_mut(
     draft: &mut AppearanceSettingsDraft,
     field: AppearanceField,
-) -> &mut String {
+) -> Option<&mut String> {
     match field {
-        AppearanceField::FontFamily => &mut draft.font_family,
-        AppearanceField::FontSize => &mut draft.font_size,
-        AppearanceField::Background => &mut draft.background,
-        AppearanceField::Foreground => &mut draft.foreground,
-    }
-}
-
-fn appearance_draft_field(draft: &AppearanceSettingsDraft, field: AppearanceField) -> &str {
-    match field {
-        AppearanceField::FontFamily => &draft.font_family,
-        AppearanceField::FontSize => &draft.font_size,
-        AppearanceField::Background => &draft.background,
-        AppearanceField::Foreground => &draft.foreground,
+        AppearanceField::Background => Some(&mut draft.background),
+        AppearanceField::Foreground => Some(&mut draft.foreground),
+        AppearanceField::Theme | AppearanceField::FontFamily | AppearanceField::FontSize => None,
     }
 }
 
@@ -590,6 +615,42 @@ fn appearance_preview_color(value: &str, fallback: u32) -> u32 {
         .filter(|digits| digits.len() == 6)
         .and_then(|digits| u32::from_str_radix(digits, 16).ok())
         .unwrap_or(fallback)
+}
+
+fn appearance_preview_colors(draft: &AppearanceSettingsDraft) -> (u32, u32) {
+    draft.theme.colors().unwrap_or_else(|| {
+        (
+            appearance_preview_color(&draft.background, 0x0c_0f_14),
+            appearance_preview_color(&draft.foreground, 0xd8_de_e9),
+        )
+    })
+}
+
+fn terminal_font_families(cx: &Context<RootView>, configured: &str) -> Vec<String> {
+    let text_system = cx.text_system();
+    let mut families = text_system
+        .all_font_names()
+        .into_iter()
+        .filter(|family| !family.starts_with('.'))
+        .filter(|family| {
+            let font_id = text_system.resolve_font(&font(family.clone()));
+            let advances = ['i', 'W', '0', 'm', ' '].map(|character| {
+                text_system
+                    .advance(font_id, px(14.0), character)
+                    .map(|advance| f32::from(advance.width))
+                    .unwrap_or_default()
+            });
+            let minimum = advances.iter().copied().fold(f32::INFINITY, f32::min);
+            let maximum = advances.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            minimum > 0.0 && maximum - minimum < 0.1
+        })
+        .collect::<Vec<_>>();
+    if !configured.trim().is_empty() && !families.iter().any(|family| family == configured) {
+        families.push(configured.to_owned());
+    }
+    families.sort_by_key(|family| family.to_ascii_lowercase());
+    families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    families
 }
 
 fn ssh_draft_field(draft: &SshHostDraft, field: SshField) -> &str {
@@ -1538,7 +1599,8 @@ impl RootView {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let hosts = self.workspace.configured_ssh_hosts();
         let appearance = self.workspace.configured_appearance();
-        self.settings_dialog = Some(SettingsDialog::new(&hosts, appearance));
+        let font_families = terminal_font_families(cx, &appearance.font_family);
+        self.settings_dialog = Some(SettingsDialog::new(&hosts, appearance, font_families));
         self.session_action_menu = None;
         window.focus(&self.settings_focus);
         cx.notify();
@@ -1634,8 +1696,11 @@ impl RootView {
         match self.workspace.save_appearance(&draft) {
             Ok(()) => {
                 if let Some(dialog) = &mut self.settings_dialog {
-                    dialog.appearance_editor =
-                        AppearanceEditor::new(self.workspace.configured_appearance());
+                    let font_families = std::mem::take(&mut dialog.appearance_editor.font_families);
+                    dialog.appearance_editor = AppearanceEditor::new(
+                        self.workspace.configured_appearance(),
+                        font_families,
+                    );
                 }
             }
             Err(error) => {
@@ -1656,8 +1721,65 @@ impl RootView {
         else {
             return;
         };
-        let value = appearance_draft_field_mut(&mut editor.draft, editor.field);
         editor.error = None;
+        if !event.is_held && matches!(key.as_str(), "up" | "down" | "left" | "right") {
+            let reverse = matches!(key.as_str(), "up" | "left");
+            match editor.field {
+                AppearanceField::Theme => {
+                    let current = TerminalTheme::ALL
+                        .iter()
+                        .position(|theme| *theme == editor.draft.theme)
+                        .unwrap_or_default();
+                    let offset = if reverse {
+                        TerminalTheme::ALL.len() - 1
+                    } else {
+                        1
+                    };
+                    editor.draft.theme =
+                        TerminalTheme::ALL[(current + offset) % TerminalTheme::ALL.len()];
+                }
+                AppearanceField::FontFamily if !editor.font_families.is_empty() => {
+                    let current = editor
+                        .font_families
+                        .iter()
+                        .position(|family| family == &editor.draft.font_family)
+                        .unwrap_or_default();
+                    let offset = if reverse {
+                        editor.font_families.len() - 1
+                    } else {
+                        1
+                    };
+                    editor.draft.font_family = editor.font_families
+                        [(current + offset) % editor.font_families.len()]
+                    .clone();
+                }
+                AppearanceField::FontSize => {
+                    let current = TERMINAL_FONT_SIZES
+                        .iter()
+                        .position(|size| size.to_string() == editor.draft.font_size)
+                        .unwrap_or_default();
+                    let offset = if reverse {
+                        TERMINAL_FONT_SIZES.len() - 1
+                    } else {
+                        1
+                    };
+                    editor.draft.font_size = TERMINAL_FONT_SIZES
+                        [(current + offset) % TERMINAL_FONT_SIZES.len()]
+                    .to_string();
+                }
+                _ => {}
+            }
+            editor.open_picker = None;
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if editor.draft.theme != TerminalTheme::Custom {
+            return;
+        }
+        let Some(value) = appearance_draft_field_mut(&mut editor.draft, editor.field) else {
+            return;
+        };
         if is_paste_shortcut(&event.keystroke) {
             if !event.is_held
                 && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
@@ -1784,10 +1906,13 @@ impl RootView {
         if key == "tab" {
             if let Some(dialog) = &mut self.settings_dialog {
                 if pane == SettingsPane::Appearance {
-                    dialog.appearance_editor.field = dialog
-                        .appearance_editor
-                        .field
-                        .adjacent(event.keystroke.modifiers.shift);
+                    let custom = dialog.appearance_editor.draft.theme == TerminalTheme::Custom;
+                    dialog.appearance_editor.field = adjacent_appearance_field(
+                        dialog.appearance_editor.field,
+                        event.keystroke.modifiers.shift,
+                        custom,
+                    );
+                    dialog.appearance_editor.open_picker = None;
                     dialog.appearance_editor.error = None;
                 } else if let Some(editor) = &mut dialog.host_editor {
                     editor.field = editor.field.adjacent(event.keystroke.modifiers.shift);
@@ -4533,26 +4658,220 @@ impl RootView {
             .into_any_element()
     }
 
-    fn appearance_field_row(
+    fn appearance_theme_card(
+        theme: TerminalTheme,
+        draft: &AppearanceSettingsDraft,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let selected = draft.theme == theme;
+        let (background, foreground) = theme
+            .colors()
+            .unwrap_or_else(|| appearance_preview_colors(draft));
+        div()
+            .id(("appearance-theme", theme as usize))
+            .w(px(154.0))
+            .h(px(88.0))
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(if selected { 0x4a_8f_cf } else { 0x34_3a46 }))
+            .bg(rgb(if selected { 0x20_2b3a } else { 0x11_141a }))
+            .cursor_pointer()
+            .child(
+                div()
+                    .h(px(34.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_sm()
+                    .bg(rgb(background))
+                    .child(
+                        div()
+                            .font_family(draft.font_family.clone())
+                            .text_sm()
+                            .text_color(rgb(foreground))
+                            .child("$ _"),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_sm()
+                    .text_color(rgb(if selected { 0xe8_ec_f3 } else { 0xb8_be_c9 }))
+                    .child(theme.title())
+                    .when(selected, |element| {
+                        element.child(div().text_color(rgb(0x79_b8_f3)).child("✓"))
+                    }),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if let Some(dialog) = &mut this.settings_dialog {
+                    dialog.appearance_editor.draft.theme = theme;
+                    dialog.appearance_editor.field = AppearanceField::Theme;
+                    dialog.appearance_editor.open_picker = None;
+                    dialog.appearance_editor.error = None;
+                }
+                window.focus(&this.settings_focus);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    fn appearance_select(
         &self,
         label: &'static str,
+        value: String,
         field: AppearanceField,
-        draft: &AppearanceSettingsDraft,
+        picker: AppearancePicker,
+        open: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let selected = self
             .settings_dialog
             .as_ref()
             .is_some_and(|dialog| dialog.appearance_editor.field == field);
-        let value = appearance_draft_field(draft, field);
-        let placeholder = match field {
-            AppearanceField::FontFamily => "Font family",
-            AppearanceField::FontSize => "14",
-            AppearanceField::Background | AppearanceField::Foreground => "#RRGGBB",
-        };
-        let display = if value.is_empty() {
-            if selected { "▏" } else { placeholder }.to_owned()
-        } else if selected {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(label))
+            .child(
+                div()
+                    .id(("appearance-select", field as usize))
+                    .h(px(38.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(if selected { 0x4a_8f_cf } else { 0x3a_404c }))
+                    .bg(rgb(0x0f_1218))
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(rgb(0xe1_e5ec))
+                    .child(value)
+                    .child(if open { "▴" } else { "▾" })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(dialog) = &mut this.settings_dialog {
+                            let editor = &mut dialog.appearance_editor;
+                            editor.field = field;
+                            editor.open_picker =
+                                (editor.open_picker != Some(picker)).then_some(picker);
+                            editor.error = None;
+                        }
+                        window.focus(&this.settings_focus);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn appearance_font_options(
+        editor: &AppearanceEditor,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let mut options = div()
+            .id("appearance-font-options")
+            .max_h(px(220.0))
+            .overflow_y_scroll()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(0x3a_404c))
+            .bg(rgb(0x0f_1218));
+        for (index, family) in editor.font_families.iter().enumerate() {
+            let selected = family == &editor.draft.font_family;
+            let selected_family = family.clone();
+            options = options.child(
+                div()
+                    .id(("appearance-font-option", index))
+                    .h(px(30.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .cursor_pointer()
+                    .bg(rgb(if selected { 0x25_3448 } else { 0x0f_1218 }))
+                    .font_family(family.clone())
+                    .text_sm()
+                    .text_color(rgb(0xd8_dd_e6))
+                    .child(family.clone())
+                    .when(selected, |element| element.child("✓"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(dialog) = &mut this.settings_dialog {
+                            dialog
+                                .appearance_editor
+                                .draft
+                                .font_family
+                                .clone_from(&selected_family);
+                            dialog.appearance_editor.open_picker = None;
+                            dialog.appearance_editor.error = None;
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        options.into_any_element()
+    }
+
+    fn appearance_size_options(
+        editor: &AppearanceEditor,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let mut options = div()
+            .flex()
+            .flex_wrap()
+            .gap_1()
+            .p_2()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(0x3a_404c))
+            .bg(rgb(0x0f_1218));
+        for size in TERMINAL_FONT_SIZES {
+            let selected = editor.draft.font_size == size.to_string();
+            options = options.child(
+                div()
+                    .id(("appearance-size-option", usize::from(size)))
+                    .w(px(54.0))
+                    .h(px(30.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .bg(rgb(if selected { 0x2b_6495 } else { 0x19_1d25 }))
+                    .text_sm()
+                    .child(format!("{size} pt"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(dialog) = &mut this.settings_dialog {
+                            dialog.appearance_editor.draft.font_size = size.to_string();
+                            dialog.appearance_editor.open_picker = None;
+                            dialog.appearance_editor.error = None;
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        options.into_any_element()
+    }
+
+    fn appearance_color_field(
+        &self,
+        label: &'static str,
+        value: &str,
+        field: AppearanceField,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let selected = self
+            .settings_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.appearance_editor.field == field);
+        let display = if selected {
             format!("{value}▏")
         } else {
             value.to_owned()
@@ -4564,8 +4883,8 @@ impl RootView {
             .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(label))
             .child(
                 div()
-                    .id(("appearance-setting-field", field as usize))
-                    .h(px(36.0))
+                    .id(("appearance-color-field", field as usize))
+                    .h(px(38.0))
                     .px_3()
                     .flex()
                     .items_center()
@@ -4575,20 +4894,145 @@ impl RootView {
                     .bg(rgb(0x0f_1218))
                     .cursor_text()
                     .text_sm()
-                    .text_color(rgb(if value.is_empty() && !selected {
-                        0x72_7986
-                    } else {
-                        0xe1_e5ec
-                    }))
                     .child(display)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(dialog) = &mut this.settings_dialog {
                             dialog.appearance_editor.field = field;
+                            dialog.appearance_editor.open_picker = None;
                             dialog.appearance_editor.error = None;
                         }
                         window.focus(&this.settings_focus);
                         cx.notify();
                     })),
+            )
+            .into_any_element()
+    }
+
+    fn appearance_theme_section(
+        draft: &AppearanceSettingsDraft,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let mut themes = div().flex().flex_wrap().gap_2();
+        for theme in TerminalTheme::ALL {
+            themes = themes.child(Self::appearance_theme_card(theme, draft, cx));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Terminal theme"),
+            )
+            .child(themes)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x8f_96_a3))
+                    .child(draft.theme.summary()),
+            )
+            .into_any_element()
+    }
+
+    fn appearance_font_section(
+        &self,
+        editor: &AppearanceEditor,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let draft = &editor.draft;
+        let font_open = editor.open_picker == Some(AppearancePicker::FontFamily);
+        let size_open = editor.open_picker == Some(AppearancePicker::FontSize);
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Terminal font"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(div().flex_1().child(self.appearance_select(
+                        "Font family",
+                        draft.font_family.clone(),
+                        AppearanceField::FontFamily,
+                        AppearancePicker::FontFamily,
+                        font_open,
+                        cx,
+                    )))
+                    .child(div().w(px(170.0)).child(self.appearance_select(
+                        "Font size",
+                        format!("{} pt", draft.font_size),
+                        AppearanceField::FontSize,
+                        AppearancePicker::FontSize,
+                        size_open,
+                        cx,
+                    ))),
+            );
+        if font_open {
+            section = section.child(Self::appearance_font_options(editor, cx));
+        } else if size_open {
+            section = section.child(Self::appearance_size_options(editor, cx));
+        }
+        section.into_any_element()
+    }
+
+    fn appearance_custom_color_section(
+        &self,
+        draft: &AppearanceSettingsDraft,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Custom colors"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(div().flex_1().child(self.appearance_color_field(
+                        "Background",
+                        &draft.background,
+                        AppearanceField::Background,
+                        cx,
+                    )))
+                    .child(div().flex_1().child(self.appearance_color_field(
+                        "Foreground",
+                        &draft.foreground,
+                        AppearanceField::Foreground,
+                        cx,
+                    ))),
+            )
+            .into_any_element()
+    }
+
+    fn appearance_save_controls(cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .pb_2()
+            .flex()
+            .justify_end()
+            .child(
+                div()
+                    .id("save-appearance")
+                    .px_4()
+                    .py_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .bg(rgb(0x1d_5f9a))
+                    .child("Save")
+                    .on_click(cx.listener(|this, _, _, cx| this.save_appearance(cx))),
             )
             .into_any_element()
     }
@@ -4604,45 +5048,16 @@ impl RootView {
         let draft = &editor.draft;
         let mut form = div()
             .w_full()
-            .max_w(px(680.0))
+            .max_w(px(1080.0))
             .flex()
             .flex_col()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .child(div().flex_1().child(self.appearance_field_row(
-                        "Font family",
-                        AppearanceField::FontFamily,
-                        draft,
-                        cx,
-                    )))
-                    .child(div().w(px(150.0)).child(self.appearance_field_row(
-                        "Font size",
-                        AppearanceField::FontSize,
-                        draft,
-                        cx,
-                    ))),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .child(div().flex_1().child(self.appearance_field_row(
-                        "Background",
-                        AppearanceField::Background,
-                        draft,
-                        cx,
-                    )))
-                    .child(div().flex_1().child(self.appearance_field_row(
-                        "Foreground",
-                        AppearanceField::Foreground,
-                        draft,
-                        cx,
-                    ))),
-            )
-            .child(Self::appearance_preview(draft));
+            .gap_6()
+            .child(Self::appearance_theme_section(draft, cx))
+            .child(self.appearance_font_section(editor, cx));
+        if draft.theme == TerminalTheme::Custom {
+            form = form.child(self.appearance_custom_color_section(draft, cx));
+        }
+        form = form.child(Self::appearance_preview(draft));
         if let Some(error) = &editor.error {
             form = form.child(
                 div()
@@ -4651,19 +5066,7 @@ impl RootView {
                     .child(error.clone()),
             );
         }
-        form = form.child(
-            div().pt_1().flex().justify_end().child(
-                div()
-                    .id("save-appearance")
-                    .px_4()
-                    .py_2()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .bg(rgb(0x1d_5f9a))
-                    .child("Save Appearance")
-                    .on_click(cx.listener(|this, _, _, cx| this.save_appearance(cx))),
-            ),
-        );
+        form = form.child(Self::appearance_save_controls(cx));
 
         div()
             .id("settings-appearance-editor")
@@ -4678,8 +5081,7 @@ impl RootView {
     }
 
     fn appearance_preview(draft: &AppearanceSettingsDraft) -> gpui::AnyElement {
-        let background = appearance_preview_color(&draft.background, 0x0c_0f_14);
-        let foreground = appearance_preview_color(&draft.foreground, 0xd8_de_e9);
+        let (background, foreground) = appearance_preview_colors(draft);
         let font_size = draft
             .font_size
             .parse::<f32>()
@@ -4692,24 +5094,80 @@ impl RootView {
         } else {
             draft.font_family.clone()
         };
+        let red = (foreground >> 16) & 0xff;
+        let green = (foreground >> 8) & 0xff;
+        let blue = foreground & 0xff;
+        let light_foreground = red + green + blue > 0x17f;
+        let accent = if light_foreground {
+            0x78_b5_ff
+        } else {
+            0x1d_5f_9a
+        };
         div()
             .flex()
             .flex_col()
-            .gap_1()
-            .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child("Preview"))
+            .gap_2()
             .child(
                 div()
-                    .h(px(132.0))
-                    .px_4()
-                    .py_3()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Preview"),
+            )
+            .child(
+                div()
+                    .h(px(230.0))
                     .rounded_md()
                     .border_1()
                     .border_color(rgb(0x3a_404c))
                     .bg(rgb(background))
-                    .text_color(rgb(foreground))
-                    .font_family(font_family)
-                    .text_size(px(font_size))
-                    .child("Ghosthub terminal\n$ cargo test --workspace\nAll checks passed"),
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(34.0))
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .border_b_1()
+                            .border_color(rgba(0xff_ff_ff_18))
+                            .text_xs()
+                            .text_color(rgb(foreground))
+                            .child("ghosthub — workspace")
+                            .child(draft.theme.title()),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .py_3()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .font_family(font_family)
+                            .text_size(px(font_size))
+                            .text_color(rgb(foreground))
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(div().text_color(rgb(accent)).child("~/ghosthub"))
+                                    .child("on rust-port"),
+                            )
+                            .child("❯ cargo test --workspace")
+                            .child(
+                                div()
+                                    .text_color(rgb(accent))
+                                    .child("   Compiling ghosthub-ui v0.0.0"),
+                            )
+                            .child("   Finished test profile in 2.14s")
+                            .child("   248 tests passed")
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_1()
+                                    .child(div().text_color(rgb(accent)).child("❯"))
+                                    .child("▏"),
+                            ),
+                    ),
             )
             .into_any_element()
     }
@@ -8306,12 +8764,12 @@ mod tests {
         UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext,
         WorktreeOpenMode, WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget,
         WorktreeSessionPresence, WorktreeSocket, active_session_selection,
-        appearance_preview_color, application_navigation_width, apply_new_worktree_failure,
-        apply_worktree_removal_failure, available_herdr_row_actions, can_create_worktree,
-        can_kill_worktree, canonical_terminal_key_with, clear_terminal_input_state,
-        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
-        herdr_session_menu_actions, host_header_action, host_landing_text,
+        adjacent_appearance_field, appearance_preview_color, application_navigation_width,
+        apply_new_worktree_failure, apply_worktree_removal_failure, available_herdr_row_actions,
+        can_create_worktree, can_kill_worktree, canonical_terminal_key_with,
+        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
+        coalesce_last_resize, coalesce_last_wheel, has_ambiguous_worktree_source,
+        herdr_row_actions, herdr_session_menu_actions, host_header_action, host_landing_text,
         input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
         kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
         new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
@@ -8332,7 +8790,7 @@ mod tests {
         AppearanceSettingsDraft, HerdrSessionItem, HerdrSessionState, HostConnectionState,
         HostDiagnostic, HostItem, KeyEvent, KeyInput, KwtBranchItem, KwtPullRequestItem, Modifiers,
         MouseAction, MouseButton, MouseInput, NamedKey, ProjectItem, SessionItem, SessionSelection,
-        SshHostDraft, WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
+        SshHostDraft, TerminalTheme, WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
     };
 
     #[test]
@@ -8382,12 +8840,13 @@ mod tests {
     #[test]
     fn settings_shell_opens_the_appearance_pane_without_a_transient_host_editor() {
         let appearance = AppearanceSettingsDraft {
+            theme: TerminalTheme::Custom,
             font_family: "Cascadia Mono".to_owned(),
             font_size: "14".to_owned(),
             background: "#0c0f14".to_owned(),
             foreground: "#d8dee9".to_owned(),
         };
-        let dialog = SettingsDialog::new(&[], appearance.clone());
+        let dialog = SettingsDialog::new(&[], appearance.clone(), vec!["Cascadia Mono".to_owned()]);
 
         assert_eq!(
             SettingsPane::ALL,
@@ -8403,11 +8862,15 @@ mod tests {
     #[test]
     fn appearance_fields_follow_tab_order_and_preview_only_accepts_rgb_hex() {
         assert_eq!(
-            AppearanceField::FontFamily.adjacent(false),
+            adjacent_appearance_field(AppearanceField::Theme, false, false),
+            AppearanceField::FontFamily
+        );
+        assert_eq!(
+            adjacent_appearance_field(AppearanceField::Theme, true, false),
             AppearanceField::FontSize
         );
         assert_eq!(
-            AppearanceField::FontFamily.adjacent(true),
+            adjacent_appearance_field(AppearanceField::Theme, true, true),
             AppearanceField::Foreground
         );
         assert_eq!(appearance_preview_color("#102030", 0), 0x10_20_30);

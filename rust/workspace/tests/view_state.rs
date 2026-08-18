@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use config::{ApplicationConfig, Roots, TerminalAppearance};
+use config::{ApplicationConfig, Roots, TerminalAppearance, TerminalTheme};
 use host::{WslConfig, WslExecutable};
 use model::DiagnosticKind;
 use workspace::{
@@ -167,6 +167,7 @@ fn saved_appearance_is_persisted_and_published_without_rebuilding_hosts() {
 
     workspace
         .save_appearance(&AppearanceSettingsDraft {
+            theme: TerminalTheme::Custom,
             font_family: "Iosevka Term".to_owned(),
             font_size: "16".to_owned(),
             background: "#102030".to_owned(),

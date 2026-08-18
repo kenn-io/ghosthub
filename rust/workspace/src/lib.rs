@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub use config::TerminalTheme;
 use config::{ApplicationConfig, Roots, SshHostSettings, TerminalAppearance};
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
@@ -66,6 +67,7 @@ const PENDING_KWT_CREATION_LIFETIME: Duration = Duration::from_mins(3);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
+    theme: TerminalTheme,
     font_family: String,
     font_size: u16,
     background: u32,
@@ -74,6 +76,7 @@ pub struct Appearance {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppearanceSettingsDraft {
+    pub theme: TerminalTheme,
     pub font_family: String,
     pub font_size: String,
     pub background: String,
@@ -83,6 +86,7 @@ pub struct AppearanceSettingsDraft {
 impl From<&TerminalAppearance> for AppearanceSettingsDraft {
     fn from(value: &TerminalAppearance) -> Self {
         Self {
+            theme: value.theme(),
             font_family: value.font_family().to_owned(),
             font_size: value.font_size().to_string(),
             background: format!("#{:06x}", value.background()),
@@ -94,6 +98,7 @@ impl From<&TerminalAppearance> for AppearanceSettingsDraft {
 impl From<&Appearance> for AppearanceSettingsDraft {
     fn from(value: &Appearance) -> Self {
         Self {
+            theme: value.theme(),
             font_family: value.font_family().to_owned(),
             font_size: value.font_size().to_string(),
             background: format!("#{:06x}", value.background()),
@@ -103,6 +108,11 @@ impl From<&Appearance> for AppearanceSettingsDraft {
 }
 
 impl Appearance {
+    #[must_use]
+    pub const fn theme(&self) -> TerminalTheme {
+        self.theme
+    }
+
     #[must_use]
     pub fn font_family(&self) -> &str {
         &self.font_family
@@ -127,6 +137,7 @@ impl Appearance {
 impl From<TerminalAppearance> for Appearance {
     fn from(value: TerminalAppearance) -> Self {
         Self {
+            theme: value.theme(),
             font_family: value.font_family().to_owned(),
             font_size: value.font_size(),
             background: value.background(),
@@ -4298,7 +4309,8 @@ impl Workspace {
             let settings = settings
                 .as_mut()
                 .ok_or_else(|| WorkspaceError::new("Appearance settings storage is unavailable"))?;
-            let appearance = TerminalAppearance::new(
+            let appearance = TerminalAppearance::themed(
+                draft.theme,
                 draft.font_family.trim(),
                 font_size,
                 draft.background.trim(),
@@ -18423,6 +18435,7 @@ mod tests {
     #[test]
     fn appearance_projects_terminal_default_colors() {
         let appearance = Appearance {
+            theme: TerminalTheme::Custom,
             font_family: "monospace".to_owned(),
             font_size: 14,
             background: 0x12_34_56,
