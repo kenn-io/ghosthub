@@ -3468,21 +3468,51 @@ fn reconcile_remote_constructive_after_connection(
     host_id: &str,
     generation: u64,
     host: &RuntimeRemoteHost,
+    snapshot: RemoteTmuxSnapshot,
+    target: &RemoteConstructiveTarget,
+) {
+    reconcile_remote_constructive_with_backoff(
+        inner,
+        host_id,
+        generation,
+        snapshot,
+        target,
+        &HERDR_STARTUP_BACKOFF,
+        |snapshot, cancellation| host.refresh(snapshot.lease(), cancellation),
+    );
+}
+
+fn reconcile_remote_constructive_with_backoff<E>(
+    inner: &Inner,
+    host_id: &str,
+    generation: u64,
     mut snapshot: RemoteTmuxSnapshot,
     target: &RemoteConstructiveTarget,
+    backoff: &[Duration],
+    mut refresh: impl FnMut(
+        &RemoteTmuxSnapshot,
+        &CancellationToken,
+    ) -> Result<RemoteSessionInventory, E>,
 ) {
     if remote_constructive_target_is_present(&snapshot, target) {
         clear_pending_remote_constructive(inner, host_id, generation, target);
         return;
     }
     let cancellation = CancellationToken::new();
-    for delay in HERDR_STARTUP_BACKOFF {
-        if !pending_remote_constructive_is_current(inner, host_id, generation, target) {
+    for delay in backoff {
+        thread::sleep(*delay);
+        let Some(current) =
+            pending_remote_constructive_snapshot(inner, host_id, generation, target)
+        else {
+            return;
+        };
+        snapshot = current;
+        if remote_constructive_target_is_present(&snapshot, target) {
+            clear_pending_remote_constructive(inner, host_id, generation, target);
             return;
         }
-        thread::sleep(delay);
-        let Ok(inventory) = host.refresh(snapshot.lease(), &cancellation) else {
-            return;
+        let Ok(inventory) = refresh(&snapshot, &cancellation) else {
+            continue;
         };
         let Ok(refreshed) = publish_remote_inventory(
             inner,
@@ -3492,7 +3522,11 @@ fn reconcile_remote_constructive_after_connection(
             &cancellation,
             inventory,
         ) else {
-            return;
+            // Another same-connection probe may have published first. The
+            // next attempt must reconcile against that authoritative snapshot
+            // rather than leaving the constructive operation permanently
+            // reserved by stale publication authority.
+            continue;
         };
         snapshot = refreshed;
         if remote_constructive_target_is_present(&snapshot, target) {
@@ -3521,24 +3555,28 @@ fn remote_constructive_target_is_present(
     }
 }
 
-fn pending_remote_constructive_is_current(
+fn pending_remote_constructive_snapshot(
     inner: &Inner,
     host_id: &str,
     generation: u64,
     target: &RemoteConstructiveTarget,
-) -> bool {
+) -> Option<RemoteTmuxSnapshot> {
     inner
         .remote_hosts
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(host_id)
-        .is_some_and(|entry| {
-            entry.generation == generation
+        .and_then(|entry| {
+            (entry.generation == generation
                 && matches!(
                     entry.constructive_cancellation.as_ref(),
                     Some(RemoteConstructiveState::PendingReconciliation(current))
                         if current == target
-                )
+                ))
+            .then_some(entry.context.as_ref())
+            .flatten()
+            .filter(|context| context.generation == generation)
+            .map(|context| context.snapshot.clone())
         })
 }
 
@@ -16227,6 +16265,19 @@ fn default_terminal_geometry() -> TerminalGeometry {
 mod tests {
     use super::*;
 
+    fn remote_host_fixture(config: &RemoteTmuxConfig) -> RuntimeRemoteHost {
+        let controller =
+            KwtSshExecutable::from_absolute(std::env::current_exe().expect("test executable path"))
+                .expect("absolute controller path");
+        let ssh = SshExecutable::system().expect("system SSH");
+        RemoteTmuxHost::new(
+            config.clone(),
+            &controller,
+            &ssh,
+            Arc::new(StdCommandRunner),
+        )
+    }
+
     #[test]
     fn remote_zellij_attachment_requires_fresh_executable_and_active_session() {
         let available = ZellijInventory::Available {
@@ -22264,6 +22315,112 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_remote_inventory_publication_settles_pending_reconciliation() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid remote host");
+        let host = remote_host_fixture(&config);
+        let initial = RemoteTmuxSnapshot::test_fixture(
+            "studio.example",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            7,
+            Vec::new(),
+            HerdrInventory::Unavailable,
+            ZellijInventory::Unavailable,
+        );
+        let target = RemoteConstructiveTarget::Herdr("agents".to_owned());
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                config.id().to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: Some(host.clone()),
+                    context: Some(RemoteHostContext {
+                        generation: 7,
+                        host: host.clone(),
+                        snapshot: initial.clone(),
+                    }),
+                    cancellation: None,
+                    constructive_cancellation: Some(
+                        RemoteConstructiveState::PendingReconciliation(target.clone()),
+                    ),
+                    attachment_attempt: None,
+                    generation: 7,
+                },
+            );
+
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        thread::scope(|scope| {
+            let inner = &workspace.inner;
+            let reconciliation_initial = initial.clone();
+            let reconciliation_target = target.clone();
+            let reconciliation = scope.spawn(move || {
+                reconcile_remote_constructive_with_backoff(
+                    inner,
+                    "ssh:studio",
+                    7,
+                    reconciliation_initial,
+                    &reconciliation_target,
+                    &[Duration::ZERO, Duration::ZERO],
+                    |_snapshot, _cancellation| {
+                        entered_tx.send(()).expect("announce stale probe");
+                        release_rx.recv().expect("release stale probe");
+                        Err::<RemoteSessionInventory, ()>(())
+                    },
+                );
+            });
+            entered_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("reconciliation entered remote discovery");
+            publish_remote_inventory(
+                &workspace.inner,
+                "ssh:studio",
+                7,
+                &initial,
+                &CancellationToken::new(),
+                RemoteSessionInventory::test_fixture(
+                    Some("/usr/bin/tmux".to_owned()),
+                    Vec::new(),
+                    HerdrInventory::Available {
+                        executable: "/usr/bin/herdr".to_owned(),
+                        sessions: vec![session::HerdrSessionRecord::new(
+                            "agents",
+                            false,
+                            HerdrSessionState::Running,
+                            "/tmp/herdr/agents",
+                            "/tmp/herdr/agents/herdr.sock",
+                        )],
+                    },
+                    ZellijInventory::Unavailable,
+                ),
+            )
+            .expect("concurrent inventory publication wins");
+            release_tx
+                .send(())
+                .expect("release stale reconciliation probe");
+            reconciliation.join().expect("reconciliation completes");
+        });
+
+        assert_eq!(
+            pending_remote_constructive_target(&workspace.inner, "ssh:studio"),
+            None,
+            "the authoritative concurrent snapshot settles the pending launch"
+        );
+    }
+
+    #[test]
     fn stale_remote_inventory_cannot_overwrite_the_published_generation() {
         let config = RemoteTmuxConfig::new(
             "ssh:studio",
@@ -22273,12 +22430,7 @@ mod tests {
             None,
         )
         .expect("valid remote host");
-        let controller =
-            KwtSshExecutable::from_absolute(std::env::current_exe().expect("test executable path"))
-                .expect("absolute controller path");
-        let ssh = SshExecutable::system().expect("system SSH");
-        let runner: SharedCommandRunner = Arc::new(StdCommandRunner);
-        let host = RemoteTmuxHost::new(config.clone(), &controller, &ssh, runner);
+        let host = remote_host_fixture(&config);
         let identity = session::SessionIdentity::new(42, "$1", 100);
         let initial = RemoteTmuxSnapshot::test_fixture(
             "studio.example",
