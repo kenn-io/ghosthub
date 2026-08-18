@@ -1263,8 +1263,10 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("authoritative inventory refreshes a retained canonical generation")
-    func authoritativeInventoryRefreshesRetainedGeneration() async throws {
+    @Test(
+        "authoritative inventory enriches missing generation and invalidates changes"
+    )
+    func authoritativeInventoryReconcilesRetainedGeneration() async throws {
         let environment = try setupStandardEnvironment()
         let firstGeneration = "0123456789abcdef0123456789abcdef"
         let replacementGeneration = "fedcba9876543210fedcba9876543210"
@@ -1329,14 +1331,10 @@ struct WorkspaceTmuxDiscoveryTests {
         model.refreshKwtInventory()
         await waitUntilMainActor {
             model.snapshot.worktrees[0].generation == replacementGeneration
-                && model.activeBorrowedTmuxSelection?.worktreeGeneration
-                == replacementGeneration
+                && model.activeBorrowedTmuxSelection == nil
+                && model.retainedBorrowedTmuxPresentationCount == 0
         }
-        let refreshed = try #require(model.activeBorrowedTmuxSelection)
-        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
-        #expect(
-            model.retainedBorrowedTmuxHandle(for: refreshed) == originalHandle
-        )
+        #expect(model.retainedBorrowedTmuxHandle(for: enriched) == nil)
         await model.shutdown()
     }
 

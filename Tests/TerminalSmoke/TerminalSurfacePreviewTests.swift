@@ -962,7 +962,8 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let coordinator = TmuxSessionPreviewCoordinator(
             mode: .live,
             budget: LivePreviewBudget(limit: 1),
-            capture: { _, _ in nil }
+            capture: { _, _ in nil },
+            isKeyWindow: { true }
         )
         coordinator.installParkingHost(parkingHost)
         coordinator.register(.init(
@@ -1041,7 +1042,8 @@ final class TerminalSurfacePreviewTests: XCTestCase {
                         seed: 1
                     )
                 )
-            }
+            },
+            isKeyWindow: { true }
         )
         coordinator.installParkingHost(parkingHost)
         coordinator.register(.init(
@@ -1105,7 +1107,8 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let coordinator = TmuxSessionPreviewCoordinator(
             mode: .live,
             budget: LivePreviewBudget(limit: 1),
-            capture: { _, _ in nil }
+            capture: { _, _ in nil },
+            isKeyWindow: { true }
         )
         coordinator.register(.init(
             key: key,

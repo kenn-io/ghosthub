@@ -159,7 +159,8 @@ extension WorkspaceTmuxDiscoveryTests {
                 events.append(
                     "unpark:\(weakModel?.activeBorrowedTmuxSelection?.name ?? "none")"
                 )
-            }
+            },
+            isKeyWindow: { true }
         )
         let model = try makeModel(
             database: environment.database,
@@ -815,8 +816,8 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("returning after a generation refresh reuses the retained client")
-    func returningAfterGenerationRefreshReusesRetainedClient() async throws {
+    @Test("returning after a generation refresh replaces the retained client")
+    func returningAfterGenerationRefreshReplacesRetainedClient() async throws {
         let environment = try setupStandardEnvironment()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
@@ -854,14 +855,17 @@ extension WorkspaceTmuxDiscoveryTests {
         refreshed.worktreeGeneration =
             "fedcba9876543210fedcba9876543210"
         model.openBorrowedTmuxSession(refreshed)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 3
+        }
 
         #expect(
-            model.retainedBorrowedTmuxHandle(for: refreshed) == originalHandle
+            model.retainedBorrowedTmuxHandle(for: refreshed) != originalHandle
         )
         #expect(model.activeBorrowedTmuxSelection == refreshed)
         #expect(model.retainedBorrowedTmuxPresentationCount == 2)
-        #expect(surfaceStore.requestCount == 2)
-        #expect(surfaceStore.removedKeys.isEmpty)
+        #expect(surfaceStore.removedKeys.count == 1)
         await model.shutdown()
     }
 

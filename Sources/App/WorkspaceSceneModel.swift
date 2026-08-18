@@ -8524,7 +8524,14 @@ final class WorkspaceSceneModel: ObservableObject {
                         retained,
                         selection
                     )
-                    return endpointChanged ? retained : nil
+                    let generationChanged = Self
+                        .hasDifferentKnownWorktreeGeneration(
+                            retained,
+                            selection
+                        )
+                    return endpointChanged || generationChanged
+                        ? retained
+                        : nil
                 }
             for replaced in replacedSelections {
                 invalidateBorrowedTmuxSession(replaced)
@@ -9072,6 +9079,12 @@ final class WorkspaceSceneModel: ObservableObject {
                           .tmuxSessionSelection(for: worktree),
                           Self.sameTmuxEndpoint(retained, current)
                     else { return retained }
+                    if Self.hasDifferentKnownWorktreeGeneration(
+                        retained,
+                        current
+                    ) {
+                        return retained
+                    }
                     if retained.worktreeGeneration == nil,
                        let canonicalGeneration = WorktreeGeneration.canonical(
                            current.worktreeGeneration
@@ -9080,15 +9093,6 @@ final class WorkspaceSceneModel: ObservableObject {
                         presentation.selection = retained
                         if activeBorrowedTmuxHandle == presentation.handle {
                             activeBorrowedTmuxSelection = retained
-                        }
-                    }
-                    if let retainedGeneration = retained.worktreeGeneration,
-                       let currentGeneration = current.worktreeGeneration,
-                       retainedGeneration != currentGeneration {
-                        presentation.selection = current
-                        presentation.reconnectContext?.selection = current
-                        if activeBorrowedTmuxHandle == presentation.handle {
-                            activeBorrowedTmuxSelection = current
                         }
                     }
                     return nil
@@ -9234,6 +9238,18 @@ final class WorkspaceSceneModel: ObservableObject {
     ) -> Bool {
         sameTmuxEndpoint(lhs, rhs)
             && lhs.worktreeGeneration == rhs.worktreeGeneration
+    }
+
+    private static func hasDifferentKnownWorktreeGeneration(
+        _ lhs: WorkspaceTmuxSessionSelection,
+        _ rhs: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        guard lhs.worktreeID != nil,
+              lhs.worktreeID == rhs.worktreeID,
+              let lhsGeneration = lhs.worktreeGeneration,
+              let rhsGeneration = rhs.worktreeGeneration
+        else { return false }
+        return lhsGeneration != rhsGeneration
     }
 
     /// Kill targets a live tmux endpoint; inventory can change the owning
