@@ -1602,6 +1602,7 @@ enum RemoteConstructiveTarget {
 
 enum RemoteConstructiveState {
     Active {
+        navigation_generation: u64,
         cancellation: CancellationToken,
         launched: Arc<AtomicBool>,
         target: RemoteConstructiveTarget,
@@ -6104,12 +6105,14 @@ impl Workspace {
         navigation: std::sync::MutexGuard<'_, ()>,
     ) -> Result<(), WorkspaceError> {
         self.reserve_remote_constructive()?;
+        let navigation_generation = self.begin_navigation();
         let cancellation = CancellationToken::new();
         let launched = match register_remote_constructive(
             &self.inner,
             &request.host_id,
             request.connection_generation,
             &request.snapshot,
+            navigation_generation,
             &cancellation,
             RemoteConstructiveTarget::Herdr(request.name.as_str().to_owned()),
         ) {
@@ -6121,7 +6124,6 @@ impl Workspace {
                 return Err(error);
             }
         };
-        let navigation_generation = self.begin_navigation();
         if let Err(error) = self.settle_local_navigation_before_remote() {
             cancellation.cancel();
             clear_remote_constructive_registration(&self.inner, &request.host_id);
@@ -6166,12 +6168,14 @@ impl Workspace {
         navigation: std::sync::MutexGuard<'_, ()>,
     ) -> Result<(), WorkspaceError> {
         self.reserve_remote_constructive()?;
+        let navigation_generation = self.begin_navigation();
         let cancellation = CancellationToken::new();
         let launched = match register_remote_constructive(
             &self.inner,
             &request.host_id,
             request.connection_generation,
             &request.snapshot,
+            navigation_generation,
             &cancellation,
             RemoteConstructiveTarget::Zellij(request.name.as_str().to_owned()),
         ) {
@@ -6183,7 +6187,6 @@ impl Workspace {
                 return Err(error);
             }
         };
-        let navigation_generation = self.begin_navigation();
         if let Err(error) = self.settle_local_navigation_before_remote() {
             cancellation.cancel();
             clear_remote_constructive_registration(&self.inner, &request.host_id);
@@ -6405,6 +6408,7 @@ impl Workspace {
         self.inner
             .navigation_generation
             .fetch_max(generation, Ordering::AcqRel);
+        cancel_superseded_remote_constructive_navigation(&self.inner, generation);
         generation
     }
 
@@ -11898,6 +11902,7 @@ fn register_remote_constructive(
     host_id: &str,
     connection_generation: u64,
     expected: &RemoteTmuxSnapshot,
+    navigation_generation: u64,
     cancellation: &CancellationToken,
     target: RemoteConstructiveTarget,
 ) -> Result<Arc<AtomicBool>, WorkspaceError> {
@@ -11926,6 +11931,7 @@ fn register_remote_constructive(
     }
     let launched = Arc::new(AtomicBool::new(false));
     entry.constructive_cancellation = Some(RemoteConstructiveState::Active {
+        navigation_generation,
         cancellation: cancellation.clone(),
         launched: Arc::clone(&launched),
         target,
@@ -11953,6 +11959,7 @@ fn cancel_remote_constructive(entry: &mut RemoteEntry) {
             cancellation,
             launched,
             target,
+            ..
         } => {
             let launched = launched.load(Ordering::Acquire);
             cancellation.cancel();
@@ -11963,6 +11970,28 @@ fn cancel_remote_constructive(entry: &mut RemoteEntry) {
         }
         pending @ RemoteConstructiveState::PendingReconciliation(_) => {
             entry.constructive_cancellation = Some(pending);
+        }
+    }
+}
+
+fn cancel_superseded_remote_constructive_navigation(inner: &Inner, generation: u64) {
+    for entry in inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values_mut()
+    {
+        let Some(RemoteConstructiveState::Active {
+            navigation_generation,
+            cancellation,
+            launched,
+            ..
+        }) = entry.constructive_cancellation.as_ref()
+        else {
+            continue;
+        };
+        if *navigation_generation < generation && !launched.load(Ordering::Acquire) {
+            cancellation.cancel();
         }
     }
 }
@@ -12686,10 +12715,9 @@ fn run_remote_herdr_create(
         inner,
         host_id: &request.host_id,
     };
-    let _operation = inner
-        .session_operations
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(_operation) = lock_session_operations(inner, cancellation) else {
+        return;
+    };
     let result = create_remote_herdr_fresh(
         inner,
         request,
@@ -12776,10 +12804,9 @@ fn run_remote_zellij_create(
         inner,
         host_id: &request.host_id,
     };
-    let _operation = inner
-        .session_operations
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(_operation) = lock_session_operations(inner, cancellation) else {
+        return;
+    };
     let result = create_remote_zellij_fresh(
         inner,
         request,
@@ -12846,6 +12873,23 @@ fn run_remote_zellij_create(
     {
         push_operation_event(inner, WorkspaceEvent::Error(error.to_string()));
         inner.revision.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn lock_session_operations<'a>(
+    inner: &'a Inner,
+    cancellation: &CancellationToken,
+) -> Option<std::sync::MutexGuard<'a, ()>> {
+    loop {
+        match inner.session_operations.try_lock() {
+            Ok(operation) => return Some(operation),
+            Err(TryLockError::Poisoned(error)) => return Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) => {
+                if cancellation.wait_cancelled(Duration::from_millis(10)) {
+                    return None;
+                }
+            }
+        }
     }
 }
 
@@ -22282,6 +22326,7 @@ mod tests {
                     context: None,
                     cancellation: None,
                     constructive_cancellation: Some(RemoteConstructiveState::Active {
+                        navigation_generation: 6,
                         cancellation: cancellation.clone(),
                         launched: Arc::new(AtomicBool::new(true)),
                         target: target.clone(),
@@ -22312,6 +22357,101 @@ mod tests {
             pending_remote_constructive_target(&workspace.inner, "ssh:studio"),
             Some(target)
         );
+    }
+
+    #[test]
+    fn navigation_cancels_only_prelaunch_remote_construction() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "",
+            None,
+        )
+        .expect("valid remote host");
+        let cancellation = CancellationToken::new();
+        let launched = Arc::new(AtomicBool::new(false));
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                config.id().to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: None,
+                    context: None,
+                    cancellation: None,
+                    constructive_cancellation: Some(RemoteConstructiveState::Active {
+                        navigation_generation: 7,
+                        cancellation: cancellation.clone(),
+                        launched: Arc::clone(&launched),
+                        target: RemoteConstructiveTarget::Zellij("review".to_owned()),
+                    }),
+                    attachment_attempt: None,
+                    generation: 1,
+                },
+            );
+
+        cancel_superseded_remote_constructive_navigation(&workspace.inner, 8);
+        assert!(cancellation.is_cancelled());
+
+        let post_launch_cancellation = CancellationToken::new();
+        launched.store(true, Ordering::Release);
+        if let Some(entry) = workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .get_mut("ssh:studio")
+        {
+            entry.constructive_cancellation = Some(RemoteConstructiveState::Active {
+                navigation_generation: 7,
+                cancellation: post_launch_cancellation.clone(),
+                launched,
+                target: RemoteConstructiveTarget::Zellij("review".to_owned()),
+            });
+        }
+
+        cancel_superseded_remote_constructive_navigation(&workspace.inner, 8);
+        assert!(
+            !post_launch_cancellation.is_cancelled(),
+            "post-launch polling must survive navigation"
+        );
+    }
+
+    #[test]
+    fn cancelled_remote_construction_stops_waiting_for_the_operation_lane() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let occupied = workspace
+            .inner
+            .session_operations
+            .lock()
+            .expect("occupy session operation lane");
+        let cancellation = CancellationToken::new();
+
+        thread::scope(|scope| {
+            let (settled_tx, settled_rx) = mpsc::sync_channel(1);
+            let inner = &workspace.inner;
+            let waiter_cancellation = cancellation.clone();
+            scope.spawn(move || {
+                let operation = lock_session_operations(inner, &waiter_cancellation);
+                settled_tx
+                    .send(operation.is_none())
+                    .expect("report cancelled wait");
+            });
+            cancellation.cancel();
+            assert!(
+                settled_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("cancelled waiter settles promptly")
+            );
+        });
+        drop(occupied);
     }
 
     #[test]
@@ -22555,6 +22695,7 @@ mod tests {
                     context: None,
                     cancellation: Some(cancellation.clone()),
                     constructive_cancellation: Some(RemoteConstructiveState::Active {
+                        navigation_generation: 6,
                         cancellation: constructive_cancellation.clone(),
                         launched: Arc::new(AtomicBool::new(false)),
                         target: RemoteConstructiveTarget::Zellij("review".to_owned()),
@@ -22628,6 +22769,7 @@ mod tests {
                     context: None,
                     cancellation: Some(cancellation.clone()),
                     constructive_cancellation: Some(RemoteConstructiveState::Active {
+                        navigation_generation: 6,
                         cancellation: constructive_cancellation.clone(),
                         launched: Arc::new(AtomicBool::new(false)),
                         target: RemoteConstructiveTarget::Zellij("review".to_owned()),
