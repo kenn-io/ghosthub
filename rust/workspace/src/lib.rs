@@ -12604,9 +12604,8 @@ fn create_remote_herdr_fresh(
     )?;
     let expected_name = request.name.as_str();
     let discovered = poll_session_startup("Herdr", cancellation, &HERDR_STARTUP_BACKOFF, || {
-        if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
-            return Err(WorkspaceError::new("remote Herdr creation was superseded"));
-        }
+        // Launch authority has already been consumed. Navigation may suppress
+        // presentation, but inventory must still converge on the mutation.
         let inventory = request
             .host
             .refresh(request.snapshot.lease(), cancellation)
@@ -12717,9 +12716,8 @@ fn create_remote_zellij_fresh(
     )?;
     let expected_name = request.name.as_str();
     let discovered = poll_session_startup("Zellij", cancellation, &HERDR_STARTUP_BACKOFF, || {
-        if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
-            return Err(WorkspaceError::new("remote Zellij creation was superseded"));
-        }
+        // Launch authority has already been consumed. Navigation may suppress
+        // presentation, but inventory must still converge on the mutation.
         let inventory = request
             .host
             .refresh(request.snapshot.lease(), cancellation)
@@ -20629,6 +20627,36 @@ mod tests {
 
         assert_eq!(result, Some("running"));
         assert_eq!(probes, 6);
+    }
+
+    #[test]
+    fn launched_remote_session_polling_outlives_navigation_intent() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let cancellation = CancellationToken::new();
+        let launch_navigation = workspace.begin_navigation();
+        let mut probes = 0;
+
+        let result = poll_session_startup(
+            "remote multiplexer",
+            &cancellation,
+            &[Duration::ZERO],
+            || -> Result<Option<&'static str>, WorkspaceError> {
+                probes += 1;
+                if probes == 1 {
+                    workspace.begin_navigation();
+                    assert!(!workspace.navigation_intent_is_current(launch_navigation));
+                    Ok(None)
+                } else {
+                    Ok(Some("published"))
+                }
+            },
+        )
+        .expect("connection-scoped polling survives navigation");
+
+        assert_eq!(result, Some("published"));
+        assert_eq!(probes, 2);
+        assert!(!cancellation.is_cancelled());
     }
 
     #[test]
