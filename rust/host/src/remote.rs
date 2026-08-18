@@ -456,6 +456,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             };
             let command = multiplexer_command(
                 &herdr::CONTROL_VARIABLES,
+                RemoteCommandLocale::StableOutput,
                 None,
                 &executable,
                 ["session", "list", "--json"],
@@ -664,6 +665,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
         let command = multiplexer_command(
             &herdr::CONTROL_VARIABLES,
+            RemoteCommandLocale::Login,
             Some(term),
             executable,
             ["session", "attach", session.name()],
@@ -727,6 +729,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
         let command = multiplexer_command(
             &zellij::CONTROL_VARIABLES,
+            RemoteCommandLocale::Login,
             Some(term),
             executable,
             ["attach", "--", session.name()],
@@ -845,8 +848,15 @@ fn tmux_command<'a>(
     command
 }
 
+#[derive(Clone, Copy)]
+enum RemoteCommandLocale {
+    Login,
+    StableOutput,
+}
+
 fn multiplexer_command<'a>(
     scrubbed: &[&str],
+    locale: RemoteCommandLocale,
     term: Option<&str>,
     executable: &str,
     args: impl IntoIterator<Item = &'a str>,
@@ -855,7 +865,9 @@ fn multiplexer_command<'a>(
     for variable in scrubbed {
         command.extend(["-u".to_owned(), (*variable).to_owned()]);
     }
-    command.push("LC_ALL=C".to_owned());
+    if matches!(locale, RemoteCommandLocale::StableOutput) {
+        command.push("LC_ALL=C".to_owned());
+    }
     if let Some(term) = term {
         command.push(format!("TERM={term}"));
     }
@@ -874,13 +886,20 @@ fn herdr_launch_command(
     if !is_default {
         args.extend(["--session", target.as_str()]);
     }
-    multiplexer_command(&herdr::CONTROL_VARIABLES, Some(term), executable, args)
+    multiplexer_command(
+        &herdr::CONTROL_VARIABLES,
+        RemoteCommandLocale::Login,
+        Some(term),
+        executable,
+        args,
+    )
 }
 
 fn zellij_launch_command(executable: &str, name: &ZellijSessionName, term: &str) -> Vec<String> {
     let argument = format!("--session={}", name.as_str());
     multiplexer_command(
         &zellij::CONTROL_VARIABLES,
+        RemoteCommandLocale::Login,
         Some(term),
         executable,
         [argument.as_str()],
@@ -890,6 +909,7 @@ fn zellij_launch_command(executable: &str, name: &ZellijSessionName, term: &str)
 fn zellij_inventory_command(executable: &str) -> Vec<String> {
     multiplexer_command(
         &zellij::CONTROL_VARIABLES,
+        RemoteCommandLocale::StableOutput,
         None,
         executable,
         ["list-sessions", "--no-formatting"],
@@ -1512,10 +1532,11 @@ mod tests {
     }
 
     #[test]
-    fn remote_multiplexer_commands_scrub_backend_state_before_terminal_assignments() {
+    fn remote_interactive_commands_scrub_backend_state_and_preserve_login_locale() {
         assert_eq!(
             multiplexer_command(
                 &["HERDR_SESSION", "HERDR_SOCKET_PATH"],
+                RemoteCommandLocale::Login,
                 Some("xterm-256color"),
                 "/usr/bin/herdr",
                 ["session", "attach", "review"],
@@ -1526,7 +1547,6 @@ mod tests {
                 "HERDR_SESSION",
                 "-u",
                 "HERDR_SOCKET_PATH",
-                "LC_ALL=C",
                 "TERM=xterm-256color",
                 "/usr/bin/herdr",
                 "session",
@@ -1535,6 +1555,14 @@ mod tests {
             ]
             .map(str::to_owned)
         );
+    }
+
+    #[test]
+    fn remote_inventory_commands_use_a_stable_locale() {
+        let command = zellij_inventory_command("/usr/bin/zellij");
+
+        assert!(command.iter().any(|argument| argument == "LC_ALL=C"));
+        assert!(!command.iter().any(|argument| argument.starts_with("TERM=")));
     }
 
     #[test]
@@ -1553,6 +1581,7 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair == ["-u", "HERDR_SESSION"])
         );
+        assert!(!command.iter().any(|value| value.starts_with("LC_ALL=")));
         assert!(command.iter().any(|value| value == "TERM=xterm"));
         assert_eq!(
             &command[command.len() - 3..],
@@ -1590,6 +1619,7 @@ mod tests {
 
         assert_eq!(command[0], "/usr/bin/env");
         assert!(command.windows(2).any(|pair| pair == ["-u", "ZELLIJ"]));
+        assert!(!command.iter().any(|value| value.starts_with("LC_ALL=")));
         assert!(command.iter().any(|value| value == "TERM=xterm"));
         assert_eq!(
             &command[command.len() - 2..],
