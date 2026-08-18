@@ -607,13 +607,7 @@ extension WorkspaceTmuxDiscoveryTests {
             budget: LivePreviewBudget(limit: 4),
             capture: { _, _ in
                 _ = captures.increment()
-                return TerminalSurfaceSnapshot(
-                    image: NSImage(size: CGSize(width: 32, height: 20)),
-                    captureToken: TerminalSurfaceCaptureToken(
-                        surfaceID: 1,
-                        seed: 1
-                    )
-                )
+                return try makePreviewSnapshot()
             }
         )
         let surfaceStore = SceneTmuxSurfaceStoreStub()
@@ -759,11 +753,6 @@ extension WorkspaceTmuxDiscoveryTests {
                 Optional("replacement-socket"),
                 "0123456789abcdef0123456789abcdef"
             ),
-            (
-                "kwt-ghosthub-main",
-                String?.none,
-                "fedcba9876543210fedcba9876543210"
-            ),
         ]
     )
     func returningToReplacedWorktreeInvalidatesRetainedClient(
@@ -822,6 +811,57 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(model.activeBorrowedTmuxSelection == replacement)
         #expect(model.retainedBorrowedTmuxPresentationCount == 2)
         #expect(surfaceStore.removedKeys.count == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("returning after a generation refresh reuses the retained client")
+    func returningAfterGenerationRefreshReusesRetainedClient() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        let worktree = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            worktreeGeneration: "0123456789abcdef0123456789abcdef"
+        )
+        let other = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other"
+        )
+        model.openBorrowedTmuxSession(worktree)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let originalHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: worktree)
+        )
+        model.openBorrowedTmuxSession(other)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+
+        var refreshed = worktree
+        refreshed.worktreeGeneration =
+            "fedcba9876543210fedcba9876543210"
+        model.openBorrowedTmuxSession(refreshed)
+
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: refreshed) == originalHandle
+        )
+        #expect(model.activeBorrowedTmuxSelection == refreshed)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+        #expect(surfaceStore.requestCount == 2)
+        #expect(surfaceStore.removedKeys.isEmpty)
         await model.shutdown()
     }
 

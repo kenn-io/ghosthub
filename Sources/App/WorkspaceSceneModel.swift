@@ -492,6 +492,13 @@ final class WorkspaceSceneModel: ObservableObject {
         [TmuxPresentationKey: RetainedTmuxPresentation] = [:]
     private var retainedTmuxPresentationKeysByHandle:
         [UUID: TmuxPresentationKey] = [:]
+    private var alwaysLiveManagedTmuxPresentationKeys:
+        Set<TmuxPresentationKey> = []
+    private var pendingAlwaysLiveTmuxSurfaceHandles:
+        [BorrowedTmuxSessionHandle] = []
+    private var pendingAlwaysLiveTmuxSurfaceHandleIDs: Set<UUID> = []
+    private var alwaysLiveTmuxSurfaceLaunchTask: Task<Void, Never>?
+    private var alwaysLiveTmuxSurfaceLaunchID: UUID?
     private var protectedTmuxAttachmentScopesByHandle:
         [UUID: WorktreeMutationCoordinator.Scope] = [:]
     private var pendingProtectedTmuxAttachmentScopesByHandle:
@@ -1389,17 +1396,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         nativeTmuxSessionCoordinatorBacking?.onSurfaceReady = {
             [weak self] handle in
-            guard let self,
-                  let presentation = retainedTmuxPresentation(for: handle),
-                  acquireProtectedTmuxAttachmentScopeIfNeeded(
-                      for: presentation
-                  )
-            else { return }
-            _ = protectedTmuxSurface(handle: handle)
-            readTmuxPreviewIdentityIfNeeded(presentation)
-            if activeBorrowedTmuxHandle == handle {
-                objectWillChange.send()
-            }
+            self?.tmuxSurfaceBecameReady(handle)
         }
         nativeTmuxSessionCoordinatorBacking?
             .onAttachedSessionIdentityUnavailable = {
@@ -1625,7 +1622,7 @@ final class WorkspaceSceneModel: ObservableObject {
             sessionPreviewModeCancellable = previewModePublisher?
                 .removeDuplicates()
                 .sink { [weak self] mode in
-                    self?.tmuxSessionPreviewCoordinator.setMode(mode)
+                    self?.sessionPreviewModeDidChange(mode)
                 }
             configuredSSHHostsCancellable = sshHostsPublisher.sink {
                 [weak self] hosts in
@@ -2270,6 +2267,11 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         sceneActivityGeneration &+= 1
         userNavigationRevision &+= 1
+        alwaysLiveTmuxSurfaceLaunchTask?.cancel()
+        alwaysLiveTmuxSurfaceLaunchTask = nil
+        alwaysLiveTmuxSurfaceLaunchID = nil
+        pendingAlwaysLiveTmuxSurfaceHandles.removeAll()
+        pendingAlwaysLiveTmuxSurfaceHandleIDs.removeAll()
         cancelPendingRestoration()
         cancelPendingHerdrShortcutNavigation()
         for presentation in retainedTmuxPresentations.values {
@@ -5179,6 +5181,7 @@ final class WorkspaceSceneModel: ObservableObject {
             applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
             updateWorkspaceInventoryState()
             applyDeferredTmuxPresentationsIfReady()
+            reconcileAlwaysLiveTmuxPresentations(hostID: hostID)
         }
     }
 
@@ -5470,6 +5473,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     .removeValue(forKey: handle.id),
                     let presentation = retainedTmuxPresentations
                     .removeValue(forKey: key) {
+                    alwaysLiveManagedTmuxPresentationKeys.remove(key)
                     tmuxSessionPreviewCoordinator.remove(
                         key.previewKey,
                         reason: .replacement
@@ -6883,6 +6887,8 @@ final class WorkspaceSceneModel: ObservableObject {
         cancelPendingRestoration()
         invalidateZellijPresentationIntent()
         userNavigationRevision &+= 1
+        let presentationKey = TmuxPresentationKey(selection)
+        replaceAlwaysLiveManagedPresentationBeforeActivation(presentationKey)
         if let worktreeID = selection.worktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
         }
@@ -6906,6 +6912,151 @@ final class WorkspaceSceneModel: ObservableObject {
             commandReplayAuthorized:
             pendingCreation?.commandReplayAuthorized == true
         )
+    }
+
+    private func sessionPreviewModeDidChange(_ mode: SessionPreviewMode) {
+        let wasAlwaysLive = tmuxSessionPreviewCoordinator.mode == .alwaysLive
+        tmuxSessionPreviewCoordinator.setMode(mode)
+        if mode == .alwaysLive {
+            reconcileAlwaysLiveTmuxPresentations()
+        } else if wasAlwaysLive {
+            closeAlwaysLiveManagedTmuxPresentations()
+        }
+    }
+
+    private func reconcileAlwaysLiveTmuxPresentations(hostID: UUID? = nil) {
+        guard tmuxSessionPreviewCoordinator.mode == .alwaysLive else { return }
+
+        let targetHostIDs = hostID.map { Set([$0]) } ?? tmuxFreshHostIDs
+        for targetHostID in targetHostIDs
+            where tmuxFreshHostIDs.contains(targetHostID) {
+            reconcileAlwaysLiveTmuxPresentations(for: targetHostID)
+        }
+
+        guard hostID == nil else { return }
+        let removedHostSelections = alwaysLiveManagedTmuxPresentationKeys
+            .filter { !inventoryHosts.keys.contains($0.hostID) }
+            .compactMap { retainedTmuxPresentations[$0]?.selection }
+        for selection in removedHostSelections {
+            invalidateBorrowedTmuxSession(selection)
+        }
+    }
+
+    private func reconcileAlwaysLiveTmuxPresentations(for hostID: UUID) {
+        let supportsNonSizingClients = snapshot.host(id: hostID).map {
+            $0.platform != .windows
+        } ?? false
+        let sessions = (supportsNonSizingClients
+            ? tmuxSessionsByHost[hostID]?.filter {
+                $0.previewClientSize != nil
+            } ?? []
+            : []).sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        let selections = sessions.map {
+            alwaysLiveTmuxSelection(hostID: hostID, name: $0.name)
+        }
+        let desiredKeys = Set(selections.map(TmuxPresentationKey.init))
+        let obsoleteSelections = alwaysLiveManagedTmuxPresentationKeys
+            .filter { $0.hostID == hostID && !desiredKeys.contains($0) }
+            .compactMap { retainedTmuxPresentations[$0]?.selection }
+        for selection in obsoleteSelections {
+            invalidateBorrowedTmuxSession(selection)
+        }
+
+        for (session, selection) in zip(sessions, selections) {
+            let key = TmuxPresentationKey(selection)
+            let wasRetained = retainedTmuxPresentations[key] != nil
+            guard let handle = presentTmuxSession(
+                selection,
+                launchMode: .attachOnly,
+                intent: .restoreOnly,
+                activatesPresentation: false,
+                ignoresClientSize: true,
+                previewGridSize: session.previewClientSize
+            ) else { continue }
+            if !wasRetained {
+                alwaysLiveManagedTmuxPresentationKeys.insert(key)
+            }
+            if alwaysLiveManagedTmuxPresentationKeys.contains(key) {
+                nativeTmuxSessionCoordinator.updatePreviewGridSize(
+                    session.previewClientSize,
+                    for: handle
+                )
+            }
+            guard canAttachToDisplay,
+                  let presentation = retainedTmuxPresentation(for: handle)
+            else { continue }
+            if nativeTmuxSessionCoordinator.hasClosedAttachment(handle) {
+                guard activeBorrowedTmuxHandle != handle,
+                      let host = snapshot.host(id: selection.hostID),
+                      let discoveredIdentity = Self
+                      .discoveredTmuxSessionIdentity(
+                          selection,
+                          hostSummary: host
+                      ),
+                      discoveredIdentity
+                      != presentation.reconnectExpectedIdentity
+                else { continue }
+                // A closed hidden client stays closed for the same server-side
+                // session. This respects an explicit detach and prevents a
+                // persistent attach failure from becoming a spawn loop. A
+                // same-name session with a new stable identity gets one fresh
+                // attachment attempt.
+                presentation.reconnectExpectedIdentity = discoveredIdentity
+                relaunchTmuxSession(
+                    presentation,
+                    launchMode: .attachOnly,
+                    intent: .restoreOnly
+                )
+            } else if !nativeTmuxSessionCoordinator.hasLaunched(handle) {
+                enqueueAlwaysLiveTmuxSurface(handle)
+            } else {
+                _ = protectedTmuxSurface(handle: handle)
+            }
+        }
+    }
+
+    private func alwaysLiveTmuxSelection(
+        hostID: UUID,
+        name: String
+    ) -> WorkspaceTmuxSessionSelection {
+        if let worktree = snapshot.worktrees.first(where: {
+            $0.hostID == hostID
+                && !$0.isStale
+                && $0.tmuxSocketName == nil
+                && $0.tmuxSessionName == name
+        }),
+            let selection = WorkspaceSidebarModel.tmuxSessionSelection(
+                for: worktree
+            ) {
+            return selection
+        }
+        if let workspace = snapshot.directoryWorkspaces.first(where: {
+            $0.hostID == hostID && $0.tmuxSessionName == name
+        }) {
+            return WorkspaceSidebarModel.tmuxSessionSelection(for: workspace)
+        }
+        return WorkspaceTmuxSessionSelection(hostID: hostID, name: name)
+    }
+
+    private func closeAlwaysLiveManagedTmuxPresentations() {
+        alwaysLiveTmuxSurfaceLaunchTask?.cancel()
+        alwaysLiveTmuxSurfaceLaunchTask = nil
+        alwaysLiveTmuxSurfaceLaunchID = nil
+        pendingAlwaysLiveTmuxSurfaceHandles.removeAll()
+        pendingAlwaysLiveTmuxSurfaceHandleIDs.removeAll()
+        let selections = alwaysLiveManagedTmuxPresentationKeys.compactMap {
+            retainedTmuxPresentations[$0]?.selection
+        }
+        for selection in selections {
+            tmuxSessionPreviewCoordinator.setExpanded(
+                false,
+                for: TmuxPresentationKey(selection).previewKey
+            )
+            invalidateBorrowedTmuxSession(selection)
+        }
+        alwaysLiveManagedTmuxPresentationKeys.removeAll()
     }
 
     func borrowedHerdrSessionView(
@@ -8337,12 +8488,15 @@ final class WorkspaceSceneModel: ObservableObject {
         initialCommand: String? = nil,
         commandReplayAuthorized: Bool = false,
         intent: TmuxPresentationIntent = .userInitiated,
-        activatesPresentation: Bool = true
+        activatesPresentation: Bool = true,
+        ignoresClientSize: Bool = false,
+        previewGridSize: TmuxGridSize? = nil
     ) -> BorrowedTmuxSessionHandle? {
-        if let activeHerdr = activeBorrowedHerdrSelection {
+        if activatesPresentation, let activeHerdr = activeBorrowedHerdrSelection {
             closeBorrowedHerdrSession(activeHerdr)
         }
-        if let activeZellij = activeBorrowedZellijSelection {
+        if activatesPresentation,
+           let activeZellij = activeBorrowedZellijSelection {
             closeBorrowedZellijSession(activeZellij)
         }
         var selection = selection
@@ -8370,23 +8524,16 @@ final class WorkspaceSceneModel: ObservableObject {
                         retained,
                         selection
                     )
-                    let generationChanged = if let retainedGeneration =
-                        retained.worktreeGeneration,
-                        let selectionGeneration = selection
-                        .worktreeGeneration {
-                        retainedGeneration != selectionGeneration
-                    } else {
-                        false
-                    }
-                    return endpointChanged || generationChanged
-                        ? retained
-                        : nil
+                    return endpointChanged ? retained : nil
                 }
             for replaced in replacedSelections {
                 invalidateBorrowedTmuxSession(replaced)
             }
         }
         let key = TmuxPresentationKey(selection)
+        if activatesPresentation {
+            replaceAlwaysLiveManagedPresentationBeforeActivation(key)
+        }
         if let retained = retainedTmuxPresentations[key] {
             let recreatesClosedAttachment = effectiveLaunchMode == .create
                 && nativeTmuxSessionCoordinator.hasClosedAttachment(
@@ -8477,7 +8624,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 : nil,
             workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace,
-            sessionIdentity: discoveredIdentity
+            sessionIdentity: discoveredIdentity,
+            ignoresClientSize: ignoresClientSize,
+            previewGridSize: previewGridSize
         )
         let phase: RemoteTmuxEstablishmentPhase
         if openWorkspace || protectedSessionNeedsEstablishment {
@@ -8541,6 +8690,22 @@ final class WorkspaceSceneModel: ObservableObject {
         return handle
     }
 
+    private func replaceAlwaysLiveManagedPresentationBeforeActivation(
+        _ key: TmuxPresentationKey
+    ) {
+        guard alwaysLiveManagedTmuxPresentationKeys.remove(key) != nil,
+              let presentation = retainedTmuxPresentations[key]
+        else { return }
+        pendingAlwaysLiveTmuxSurfaceHandleIDs.remove(presentation.handle.id)
+        pendingAlwaysLiveTmuxSurfaceHandles.removeAll {
+            $0.id == presentation.handle.id
+        }
+        // Policy-owned clients carry ignore-size and a sticky preview grid.
+        // Replace them before any interactive activation, including delayed
+        // scene restoration paths that did not enter through a sidebar click.
+        invalidateBorrowedTmuxSession(presentation.selection)
+    }
+
     private func retainedTmuxPresentation(
         for handle: BorrowedTmuxSessionHandle
     ) -> RetainedTmuxPresentation? {
@@ -8581,6 +8746,12 @@ final class WorkspaceSceneModel: ObservableObject {
                 connectionState: { [weak self, weak presentation] in
                     guard let self, let presentation else { return nil }
                     return borrowedTmuxConnectionStates[presentation.handle.id]
+                },
+                hasLaunched: { [weak self, weak presentation] in
+                    guard let self, let presentation else { return false }
+                    return nativeTmuxSessionCoordinator.hasLaunched(
+                        presentation.handle
+                    )
                 },
                 isActive: { [weak self, weak presentation] in
                     guard let self, let presentation else { return false }
@@ -8703,6 +8874,83 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             }
         )
+    }
+
+    private func tmuxSurfaceBecameReady(
+        _ handle: BorrowedTmuxSessionHandle
+    ) {
+        guard let presentation = retainedTmuxPresentation(for: handle) else {
+            return
+        }
+        let key = TmuxPresentationKey(presentation.selection)
+        if alwaysLiveManagedTmuxPresentationKeys.contains(key),
+           activeBorrowedTmuxHandle != handle,
+           !nativeTmuxSessionCoordinator.hasLaunched(handle) {
+            enqueueAlwaysLiveTmuxSurface(handle)
+            return
+        }
+        finishTmuxSurfaceReadiness(handle)
+    }
+
+    private func enqueueAlwaysLiveTmuxSurface(
+        _ handle: BorrowedTmuxSessionHandle
+    ) {
+        guard pendingAlwaysLiveTmuxSurfaceHandleIDs.insert(handle.id).inserted
+        else { return }
+        pendingAlwaysLiveTmuxSurfaceHandles.append(handle)
+        startAlwaysLiveTmuxSurfaceLaunchIfNeeded()
+    }
+
+    private func startAlwaysLiveTmuxSurfaceLaunchIfNeeded() {
+        guard canAttachToDisplay,
+              !pendingAlwaysLiveTmuxSurfaceHandles.isEmpty,
+              alwaysLiveTmuxSurfaceLaunchTask == nil
+        else { return }
+        let launchID = UUID()
+        alwaysLiveTmuxSurfaceLaunchID = launchID
+        alwaysLiveTmuxSurfaceLaunchTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if alwaysLiveTmuxSurfaceLaunchID == launchID {
+                    alwaysLiveTmuxSurfaceLaunchTask = nil
+                    alwaysLiveTmuxSurfaceLaunchID = nil
+                }
+            }
+            while !Task.isCancelled,
+                  canAttachToDisplay,
+                  !pendingAlwaysLiveTmuxSurfaceHandles.isEmpty {
+                let next = pendingAlwaysLiveTmuxSurfaceHandles.removeFirst()
+                pendingAlwaysLiveTmuxSurfaceHandleIDs.remove(next.id)
+                finishTmuxSurfaceReadiness(next)
+                if !pendingAlwaysLiveTmuxSurfaceHandles.isEmpty {
+                    do {
+                        // Give AppKit a render opportunity between expensive
+                        // libghostty surface creations for large fleets.
+                        try await Task.sleep(for: .milliseconds(10))
+                    } catch {
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    private func finishTmuxSurfaceReadiness(
+        _ handle: BorrowedTmuxSessionHandle
+    ) {
+        guard let presentation = retainedTmuxPresentation(for: handle),
+              acquireProtectedTmuxAttachmentScopeIfNeeded(
+                  for: presentation
+              )
+        else { return }
+        _ = protectedTmuxSurface(handle: handle)
+        tmuxSessionPreviewCoordinator.presentationDidChange(
+            TmuxPresentationKey(presentation.selection).previewKey
+        )
+        readTmuxPreviewIdentityIfNeeded(presentation)
+        if activeBorrowedTmuxHandle == handle {
+            objectWillChange.send()
+        }
     }
 
     private func protectedTmuxSurface(
@@ -8837,7 +9085,11 @@ final class WorkspaceSceneModel: ObservableObject {
                     if let retainedGeneration = retained.worktreeGeneration,
                        let currentGeneration = current.worktreeGeneration,
                        retainedGeneration != currentGeneration {
-                        return retained
+                        presentation.selection = current
+                        presentation.reconnectContext?.selection = current
+                        if activeBorrowedTmuxHandle == presentation.handle {
+                            activeBorrowedTmuxSelection = current
+                        }
                     }
                     return nil
                 }
@@ -9034,6 +9286,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func closeBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
+        cancelPendingRestoration()
         closeBorrowedTmuxSession(
             selection,
             recordsExplicitDismissal: true,
@@ -9056,7 +9309,6 @@ final class WorkspaceSceneModel: ObservableObject {
         recordsExplicitDismissal: Bool,
         previewRemovalReason: TmuxSessionPreviewCoordinator.RemovalReason
     ) {
-        cancelPendingRestoration()
         if recordsExplicitDismissal, let worktreeID = selection.worktreeID {
             explicitlyDismissedWorktreePresentationIDs.insert(worktreeID)
         }
@@ -9065,6 +9317,7 @@ final class WorkspaceSceneModel: ObservableObject {
             explicitlyDismissedDirectoryPresentationIDs.insert(directoryID)
         }
         let key = TmuxPresentationKey(selection)
+        alwaysLiveManagedTmuxPresentationKeys.remove(key)
         if activeBorrowedTmuxSelection == selection {
             prepareActiveTmuxPreviewForDeactivation()
         }
@@ -10259,6 +10512,8 @@ final class WorkspaceSceneModel: ObservableObject {
         if zellijReconnectSupervisor.isRunning {
             zellijReconnectSupervisor.reconnectNow()
         }
+        reconcileAlwaysLiveTmuxPresentations()
+        startAlwaysLiveTmuxSurfaceLaunchIfNeeded()
     }
 
     private func attemptTmuxReconnect(
@@ -10558,6 +10813,12 @@ final class WorkspaceSceneModel: ObservableObject {
             && selection.socketName != nil
             && selection.workspacePath != nil
         let previousHandle = presentation.handle
+        let presentationKey = TmuxPresentationKey(selection)
+        let isAlwaysLiveManaged = alwaysLiveManagedTmuxPresentationKeys
+            .contains(presentationKey)
+        let previewGridSize = (tmuxSessionsByHost[selection.hostID]
+            ?? host.tmuxSessions).first { $0.name == selection.name }?
+            .previewClientSize
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -10567,7 +10828,10 @@ final class WorkspaceSceneModel: ObservableObject {
             initialCommand: launchMode == .create ? initialCommand : nil,
             workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace,
-            sessionIdentity: presentation.reconnectExpectedIdentity
+            sessionIdentity: presentation.reconnectExpectedIdentity,
+            ignoresClientSize: isAlwaysLiveManaged
+                && host.platform != .windows,
+            previewGridSize: isAlwaysLiveManaged ? previewGridSize : nil
         )
         if handle.id != previousHandle.id {
             retainedTmuxPresentationKeysByHandle.removeValue(
@@ -11112,7 +11376,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 },
                 serverPID: session.serverPID,
                 sessionID: session.sessionID,
-                createdAt: session.createdAt
+                createdAt: session.createdAt,
+                activeWindowSize: session.activeWindowSize,
+                previewClientSize: session.previewClientSize
             )
         }
         let discoveredNames = Set(summaries.map(\.name))

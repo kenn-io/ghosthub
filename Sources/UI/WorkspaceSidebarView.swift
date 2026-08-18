@@ -1529,14 +1529,20 @@ struct WorkspaceSidebarView: View {
                   previewableSessionIDs: previewableTmuxSessionIDs
               )
         else { return content }
-        let isExpanded = tmuxPreviewExpansion.isExpanded(tmuxSession.id)
+        let isExpanded = TmuxSessionPreviewRowPresentation.isExpanded(
+            mode: sessionPreviewMode,
+            sessionID: tmuxSession.id,
+            expansion: tmuxPreviewExpansion
+        )
         return AnyView(
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 0) {
                     Button {
                         tmuxPreviewExpansion.setExpanded(
                             !isExpanded,
-                            sessionID: tmuxSession.id
+                            sessionID: tmuxSession.id,
+                            defaultExpanded:
+                            sessionPreviewMode.expandsEverySession
                         )
                         onTmuxSessionPreviewExpanded(
                             tmuxSession,

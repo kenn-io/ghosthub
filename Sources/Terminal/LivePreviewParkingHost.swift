@@ -52,8 +52,7 @@ public final class LivePreviewParkingHost: NSView {
         )
         surface.setParkedForPreview(true)
         addSubview(surface)
-        surface.bounds = geometry.bounds
-        surface.frame = geometry.frame
+        surface.completePreviewParkingMount()
         geometryBySurface[identifier] = geometry
     }
 

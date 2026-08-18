@@ -59,6 +59,10 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         surface, width, height in
         ghostty_surface_set_size(surface, width, height)
     }
+    static var contentScaleSetter: (ghostty_surface_t, Double, Double) -> Void = {
+        surface, xScale, yScale in
+        ghostty_surface_set_content_scale(surface, xScale, yScale)
+    }
     typealias ClipboardConfirmationPresenter = (
         _ view: TerminalSurfaceView,
         _ contents: String,
@@ -154,6 +158,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     private var consumedCommandKeyCodes: Set<UInt16> = []
     private var consumedPaneSplitKeyCodes: Set<UInt16> = []
     private var surfaceResizeState = SurfaceResizeState()
+    private var previewGridSize: (columns: Int, rows: Int)?
     private var isDeferringLiveResize = false
     private var isDeferringPresentationResize = false
     private var isDeferringSurfaceResize: Bool {
@@ -232,11 +237,16 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             setSurfaceOcclusion(false)
             return
         }
-        if bounds.size.width > 0, bounds.size.height > 0 {
+        if !isParkedForPreview,
+           !applyPreviewGridSize(),
+           bounds.size.width > 0, bounds.size.height > 0 {
             handleSizeChange(bounds.size)
         }
         syncInitialOcclusionState(for: window)
-        guard !suppressAutoFocus, window.isKeyWindow else { return }
+        guard !isParkedForPreview,
+              !suppressAutoFocus,
+              window.isKeyWindow
+        else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.suppressAutoFocus,
                   let currentWindow = self.window,
@@ -439,7 +449,8 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     override public func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        guard window != nil,
+        guard !isParkedForPreview,
+              window != nil,
               newSize.width > 0, newSize.height > 0
         else { return }
         handleSizeChange(newSize)
@@ -459,10 +470,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     private func handleSizeChange(_ size: CGSize) {
         let scaledSize = convertToBacking(size)
-        guard scaledSize.width >= 1, scaledSize.height >= 1
-        else { return }
-        let width = UInt32(scaledSize.width)
-        let height = UInt32(scaledSize.height)
+        guard let pixelSize = SurfacePixelSize(scaledSize) else { return }
+        let width = pixelSize.width
+        let height = pixelSize.height
         guard surfaceResizeState.needsResize(
             width: width,
             height: height
@@ -504,11 +514,14 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// fit in the existing bounds, so control-mode panes must report a fresh
     /// grid to tmux immediately after the binding action lands.
     func refreshGridSize() {
+        if previewGridSize != nil, applyPreviewGridSize() {
+            return
+        }
         let backingSize = convertToBacking(bounds.size)
-        guard backingSize.width > 0, backingSize.height > 0 else { return }
+        guard let pixelSize = SurfacePixelSize(backingSize) else { return }
         setSurfaceSize(
-            width: UInt32(backingSize.width),
-            height: UInt32(backingSize.height)
+            width: pixelSize.width,
+            height: pixelSize.height
         )
     }
 
@@ -553,6 +566,86 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             isParkedForPreview = false
             updateTrackingAreas()
         }
+    }
+
+    /// Completes a preview mount after AppKit has finished reparenting the
+    /// view. Automatic backing and frame callbacks stay suppressed while a
+    /// surface is parked: their intermediate geometry is not a valid terminal
+    /// DPI or resize source, and parked previews do not need to track window
+    /// layout changes.
+    public func completePreviewParkingMount() {
+        guard isParkedForPreview, let window else { return }
+        let contentScale = window.backingScaleFactor
+        guard contentScale.isFinite,
+              contentScale >= 1,
+              contentScale <= 8
+        else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contentsScale = contentScale
+        CATransaction.commit()
+        if let surface {
+            Self.contentScaleSetter(surface, contentScale, contentScale)
+        }
+        _ = applyPreviewGridSize()
+    }
+
+    /// Sizes a hidden preview surface to the tmux window's existing grid.
+    /// The preview client must have tmux's `ignore-size` flag while this is
+    /// applied so the local rendering surface cannot change the shared window.
+    @discardableResult
+    public func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool {
+        guard columns > 0, rows > 0 else { return false }
+        previewGridSize = (columns, rows)
+        return applyPreviewGridSize()
+    }
+
+    @discardableResult
+    private func applyPreviewGridSize() -> Bool {
+        guard let surface, let previewGridSize else {
+            return false
+        }
+        let current = ghostty_surface_size(surface)
+        guard current.columns > 0, current.rows > 0,
+              current.width_px > 0, current.height_px > 0,
+              current.cell_width_px > 0, current.cell_height_px > 0
+        else { return false }
+        let horizontalSlack = Int64(current.width_px)
+            - Int64(current.cell_width_px) * Int64(current.columns)
+        let verticalSlack = Int64(current.height_px)
+            - Int64(current.cell_height_px) * Int64(current.rows)
+        let targetWidth = Int64(current.cell_width_px)
+            * Int64(previewGridSize.columns) + horizontalSlack
+        let targetHeight = Int64(current.cell_height_px)
+            * Int64(previewGridSize.rows) + verticalSlack
+        guard targetWidth > 0,
+              targetHeight > 0,
+              targetWidth <= Int64(UInt32.max),
+              targetHeight <= Int64(UInt32.max)
+        else { return false }
+        let backingSize = NSSize(
+            width: CGFloat(targetWidth),
+            height: CGFloat(targetHeight)
+        )
+        guard SurfacePixelSize(backingSize) != nil else { return false }
+        applySurfaceSize(
+            width: UInt32(targetWidth),
+            height: UInt32(targetHeight)
+        )
+        if let window {
+            let targetSize = window.convertFromBacking(
+                NSRect(origin: .zero, size: backingSize)
+            ).size
+            guard targetSize.width.isFinite,
+                  targetSize.height.isFinite,
+                  targetSize.width > 0,
+                  targetSize.height > 0
+            else {
+                return false
+            }
+            setFrameSize(targetSize)
+        }
+        return true
     }
 
     /// Inject bytes into the terminal as OUTPUT (as if read from the pty).
@@ -973,22 +1066,39 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     override public func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
 
-        if let window {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            layer?.contentsScale = window.backingScaleFactor
-            CATransaction.commit()
-        }
+        // Reparenting a parked view can briefly expose a degenerate AppKit
+        // transform. Publishing a scale derived from that transition can make
+        // libghostty's DPI conversion abort. A parked preview retains its last
+        // terminal scale and pixel size until it becomes interactive again.
+        guard !isParkedForPreview,
+              let window,
+              let surface
+        else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contentsScale = window.backingScaleFactor
+        CATransaction.commit()
 
-        guard let surface else { return }
-
-        let fbFrame = convertToBacking(frame)
-        let xScale = fbFrame.size.width / frame.size.width
-        let yScale = fbFrame.size.height / frame.size.height
-        ghostty_surface_set_content_scale(surface, xScale, yScale)
+        let logicalSize = bounds.size
+        guard logicalSize.width.isFinite,
+              logicalSize.height.isFinite,
+              logicalSize.width > 0,
+              logicalSize.height > 0
+        else { return }
+        let fbFrame = convertToBacking(NSRect(
+            origin: .zero,
+            size: logicalSize
+        ))
+        guard let pixelSize = SurfacePixelSize(fbFrame.size) else { return }
+        let contentScale = window.backingScaleFactor
+        guard contentScale.isFinite,
+              contentScale >= 1,
+              contentScale <= 8
+        else { return }
+        Self.contentScaleSetter(surface, contentScale, contentScale)
         applySurfaceSize(
-            width: UInt32(fbFrame.size.width),
-            height: UInt32(fbFrame.size.height)
+            width: pixelSize.width,
+            height: pixelSize.height
         )
     }
 

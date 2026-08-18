@@ -3,19 +3,43 @@ import AppKit
 import Foundation
 import GhosthubSettings
 import GhosthubTerminal
+import GhosthubTerminalSupport
 import GhosthubTmux
 import GhosthubTransport
 
-struct TmuxPreviewViewState {
-    let image: NSImage?
+struct TmuxPreviewViewState: Equatable {
+    let frame: TerminalSurfacePreviewFrame?
     let capturedAt: Date?
     let placeholder: TmuxPreviewPlaceholder?
     let connectionState: ConnectionState?
     let isLive: Bool
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        let framesMatch = switch (lhs.frame, rhs.frame) {
+        case (nil, nil): true
+        case let (lhsFrame?, rhsFrame?): lhsFrame === rhsFrame
+        default: false
+        }
+        return framesMatch
+            && lhs.capturedAt == rhs.capturedAt
+            && lhs.placeholder == rhs.placeholder
+            && lhs.connectionState == rhs.connectionState
+            && lhs.isLive == rhs.isLive
+    }
 }
 
 @MainActor
-final class TmuxSessionPreviewCoordinator: ObservableObject {
+final class TmuxPreviewViewModel: ObservableObject {
+    @Published private(set) var state: TmuxPreviewViewState?
+
+    func setState(_ state: TmuxPreviewViewState?) {
+        guard self.state != state else { return }
+        self.state = state
+    }
+}
+
+@MainActor
+final class TmuxSessionPreviewCoordinator {
     struct Presentation {
         let key: TmuxPreviewKey
         let surface: () -> TerminalSurfaceView?
@@ -23,6 +47,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         let generation: () -> String?
         let identity: @MainActor () -> TmuxSessionIdentity?
         let connectionState: () -> ConnectionState?
+        let hasLaunched: () -> Bool
         let isActive: () -> Bool
         let activate: () -> Void
         let ensureIdentity: () -> Void
@@ -35,6 +60,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             generation: @escaping () -> String?,
             identity: @escaping @MainActor () -> TmuxSessionIdentity?,
             connectionState: @escaping () -> ConnectionState?,
+            hasLaunched: @escaping () -> Bool = { true },
             isActive: @escaping () -> Bool,
             activate: @escaping () -> Void,
             ensureIdentity: @escaping () -> Void = {},
@@ -47,6 +73,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             self.generation = generation
             self.identity = identity
             self.connectionState = connectionState
+            self.hasLaunched = hasLaunched
             self.isActive = isActive
             self.activate = activate
             self.ensureIdentity = ensureIdentity
@@ -84,8 +111,6 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     let sceneID: UUID
-    @Published private(set) var viewStates: [TmuxPreviewKey: TmuxPreviewViewState] = [:]
-
     private let budget: LivePreviewBudget
     private let capture: Capture
     private let finalCapture: Capture
@@ -94,12 +119,16 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private let injectedIsKeyWindow: (() -> Bool)?
     private let sleep: Sleep
     private let activationDelay: Duration
+    private let parkingInterval: Duration
     private let liveInterval: Duration
     private let now: () -> Date
     private weak var parkingHost: LivePreviewParkingHost?
     private var presentations: [TmuxPreviewKey: Presentation] = [:]
     private var registeredVersions: [TmuxPreviewKey: PresentationVersion] = [:]
-    private var previewStates: [TmuxPreviewKey: TmuxSessionPreviewState<NSImage>] = [:]
+    private var previewStates:
+        [TmuxPreviewKey: TmuxSessionPreviewState<TerminalSurfacePreviewFrame>]
+        = [:]
+    private var viewModels: [TmuxPreviewKey: TmuxPreviewViewModel] = [:]
     private var expandedKeys: Set<TmuxPreviewKey> = []
     private var parkedKeys: Set<TmuxPreviewKey> = []
     private var parkedSurfaces: [TmuxPreviewKey: TerminalSurfaceView] = [:]
@@ -143,6 +172,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             try await Task.sleep(for: duration)
         },
         activationDelay: Duration = .milliseconds(250),
+        parkingInterval: Duration = .milliseconds(10),
         liveInterval: Duration = .milliseconds(500),
         now: @escaping () -> Date = Date.init
     ) {
@@ -181,6 +211,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         injectedIsKeyWindow = isKeyWindow
         self.sleep = sleep
         self.activationDelay = activationDelay
+        self.parkingInterval = parkingInterval
         self.liveInterval = max(liveInterval, .milliseconds(500))
         self.now = now
         lastGranted = budget.granted
@@ -198,7 +229,16 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     func viewState(for key: TmuxPreviewKey) -> TmuxPreviewViewState? {
-        viewStates[key]
+        viewModels[key]?.state
+    }
+
+    func viewModel(for key: TmuxPreviewKey) -> TmuxPreviewViewModel {
+        if let viewModel = viewModels[key] {
+            return viewModel
+        }
+        let viewModel = TmuxPreviewViewModel()
+        viewModels[key] = viewModel
+        return viewModel
     }
 
     func register(
@@ -283,7 +323,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     func setExpanded(_ expanded: Bool, for key: TmuxPreviewKey) {
-        guard presentations[key] != nil else { return }
+        if expanded, presentations[key] == nil {
+            return
+        }
         let changed = expanded
             ? expandedKeys.insert(key).inserted
             : expandedKeys.remove(key) != nil
@@ -311,7 +353,8 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         guard mode != newMode else { return }
         let keys = Array(presentations.keys)
         let formerlyParked = parkedKeys
-        let isLeavingOff = mode == .off
+        let oldMode = mode
+        let isLeavingOff = oldMode == .off
         mode = newMode
         deactivatingKeys.removeAll()
         navigationCaptureCompletions.removeAll()
@@ -345,11 +388,14 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             }
             keys.filter { !formerlyParked.contains($0) }
                 .forEach(unparkAndRelease)
-        case .live:
+        case .live, .alwaysLive:
             deferredEfficientCaptureKeys.removeAll()
             deferredNavigationCaptureKeys.removeAll()
             if isLeavingOff {
                 keys.forEach(restorePreviewState)
+            }
+            if newMode == .live, oldMode == .alwaysLive {
+                keys.forEach(unparkAndRelease)
             }
             reconcileEligibility()
         }
@@ -379,9 +425,9 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         guard isApplicationActive else { return }
         isApplicationActive = false
         invalidateAllEligibility()
-        releaseAllParking()
         liveTask?.cancel()
         liveTask = nil
+        presentations.keys.forEach(publish)
     }
 
     func applicationDidBecomeActive() {
@@ -389,6 +435,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         isApplicationActive = true
         retryDeferredEfficientCaptures()
         retryDeferredNavigationCaptures()
+        presentations.keys.forEach(publish)
         guard sceneIsKeyWindow() else { return }
         scheduleParkingReacquisition()
     }
@@ -397,9 +444,16 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         guard isApplicationActive else { return }
         guard isKey else {
             invalidateActivationDelay()
+            invalidateAllEligibility()
+            releaseAllParking()
+            liveTask?.cancel()
+            liveTask = nil
+            presentations.keys.forEach(publish)
             return
         }
+        presentations.keys.forEach(publish)
         scheduleParkingReacquisition()
+        restartLiveTaskIfNeeded()
     }
 
     func cancelPendingActivation() {
@@ -434,7 +488,8 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         presentations.removeAll()
         registeredVersions.removeAll()
         previewStates.removeAll()
-        viewStates.removeAll()
+        viewModels.values.forEach { $0.setState(nil) }
+        viewModels.removeAll()
         expandedKeys.removeAll()
         parkedKeys.removeAll()
         parkedSurfaces.removeAll()
@@ -450,7 +505,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     private func scheduleParkingReacquisition() {
-        guard mode == .live,
+        guard mode.usesLiveRefresh,
               isApplicationActive,
               isSidebarVisible,
               activationTask == nil
@@ -459,20 +514,29 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         let generation = activationGeneration
         activationTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer {
+                if generation == activationGeneration {
+                    activationTask = nil
+                    restartLiveTaskIfNeeded()
+                }
+            }
             do {
                 try await sleep(activationDelay)
             } catch {
                 return
             }
-            guard generation == activationGeneration else { return }
-            activationTask = nil
-            guard isApplicationActive,
+            while generation == activationGeneration,
+                  isApplicationActive,
                   isSidebarVisible,
-                  mode == .live,
-                  sceneIsKeyWindow()
-            else { return }
-            reconcileEligibility()
-            restartLiveTaskIfNeeded()
+                  mode.usesLiveRefresh,
+                  sceneIsKeyWindow() {
+                guard reacquireNextParkingSurface() else { return }
+                do {
+                    try await sleep(parkingInterval)
+                } catch {
+                    return
+                }
+            }
         }
     }
 
@@ -558,7 +622,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             presentations.removeValue(forKey: key)
             registeredVersions.removeValue(forKey: key)
             previewStates.removeValue(forKey: key)
-            viewStates.removeValue(forKey: key)
+            viewModels.removeValue(forKey: key)?.setState(nil)
             generations.removeValue(forKey: key)
             unresolvedIdentityKeys.remove(key)
             unavailableIdentityKeys.remove(key)
@@ -571,7 +635,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             presentations.removeValue(forKey: key)
             registeredVersions.removeValue(forKey: key)
             previewStates.removeValue(forKey: key)
-            viewStates.removeValue(forKey: key)
+            viewModels[key]?.setState(nil)
             generations.removeValue(forKey: key)
             unresolvedIdentityKeys.remove(key)
             unavailableIdentityKeys.remove(key)
@@ -600,20 +664,24 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     func refreshLivePreviews() async {
-        guard mode == .live,
+        guard mode.usesLiveRefresh,
               isApplicationActive,
               isSidebarVisible,
+              sceneIsKeyWindow(),
               !isParkingHostChanging
         else { return }
         presentations.keys.forEach(requestIdentityIfNeeded)
         reconcileEligibility()
-        for key in expandedKeys {
+        for key in presentations.keys where isExpanded(key) {
             guard let presentation = presentations[key],
                   isConnected(presentation),
                   presentation.identity() != nil
             else { continue }
             if presentation.isActive()
-                || (parkedKeys.contains(key) && isGranted(key)) {
+                || (
+                    parkedKeys.contains(key)
+                        && (mode == .alwaysLive || isGranted(key))
+                ) {
                 startCapture(key, reason: .scheduled)
             }
         }
@@ -681,7 +749,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
                         reason: reason
                     ) {
                     previewStates[key]?.recordCapture(
-                        image: snapshot.image,
+                        image: snapshot.frame,
                         capturedAt: now(),
                         captureToken: snapshot.captureToken,
                         identity: identity
@@ -735,17 +803,17 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
         case .scheduled:
             guard isApplicationActive,
                   isSidebarVisible,
-                  expandedKeys.contains(key)
+                  isExpanded(key)
             else { return false }
             if presentation.isActive() {
-                return mode == .efficient || mode == .live
+                return mode == .efficient || mode.usesLiveRefresh
             }
-            return mode == .live
+            return mode.usesLiveRefresh
                 && parkedKeys.contains(key)
-                && isGranted(key)
+                && (mode == .alwaysLive || isGranted(key))
         case .navigationAway:
             guard isApplicationActive else { return false }
-            return mode == .efficient || expandedKeys.contains(key)
+            return mode == .efficient || isExpanded(key)
         case .finalBeforeUnpark:
             return mode == .efficient && parkedKeys.contains(key)
         }
@@ -769,61 +837,114 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     }
 
     private func reconcileEligibility() {
-        guard !isShutDown,
-              mode == .live,
-              isApplicationActive,
-              isSidebarVisible,
-              !isParkingHostChanging
-        else {
+        guard prepareParkingEligibility() else {
             restartLiveTaskIfNeeded()
             return
         }
+
+        // App activation owns incremental reacquisition while its task is
+        // alive. Other presentation updates may still invalidate parking, but
+        // must not mount the remaining fleet in the same main-thread turn.
+        guard activationTask == nil else {
+            restartLiveTaskIfNeeded()
+            return
+        }
+
+        _ = parkEligiblePresentations(limit: nil)
+        restartLiveTaskIfNeeded()
+    }
+
+    private func reacquireNextParkingSurface() -> Bool {
+        guard prepareParkingEligibility() else { return false }
+        return parkEligiblePresentations(limit: 1)
+    }
+
+    private func prepareParkingEligibility() -> Bool {
+        guard !isShutDown,
+              mode.usesLiveRefresh,
+              isApplicationActive,
+              isSidebarVisible,
+              sceneIsKeyWindow(),
+              !isParkingHostChanging
+        else { return false }
 
         for key in presentations.keys {
             guard let presentation = presentations[key] else { continue }
             if deactivatingKeys.contains(key) {
                 continue
             }
-            let eligible = expandedKeys.contains(key)
-                && isConnected(presentation)
-                && presentation.identity() != nil
-                && !reconnectingKeys.contains(key)
-                && !parkingBlockedKeys.contains(key)
+            let eligible = canPark(key, presentation: presentation)
             if activatingKeys.contains(key) {
                 continue
             }
             if !eligible || presentation.isActive() {
                 unparkAndRelease(key)
+            } else if mode == .alwaysLive {
+                budget.release(requestID(for: key))
             } else {
                 budget.request(requestID(for: key))
             }
         }
 
+        return true
+    }
+
+    /// Parks at most `limit` new surfaces and reports whether another eligible
+    /// surface remains. Parking reparents an AppKit terminal view and can
+    /// synchronously resize libghostty, so activation deliberately performs
+    /// only one of these operations per main-thread turn.
+    private func parkEligiblePresentations(limit: Int?) -> Bool {
+        var parkedCount = 0
+        var hasRemaining = false
         for key in presentations.keys {
             guard let presentation = presentations[key],
-                  expandedKeys.contains(key),
-                  !presentation.isActive(),
-                  !activatingKeys.contains(key),
-                  !deactivatingKeys.contains(key),
-                  !reconnectingKeys.contains(key),
-                  !parkingBlockedKeys.contains(key),
-                  isConnected(presentation),
-                  presentation.identity() != nil
+                  canPark(key, presentation: presentation)
             else { continue }
-            if isGranted(key) {
-                do {
-                    try park(key, presentation: presentation)
-                } catch {
-                    parkingBlockedKeys.insert(key)
-                    budget.release(requestID(for: key))
+            if mode == .alwaysLive || isGranted(key) {
+                if !parkedKeys.contains(key) {
+                    if let limit, parkedCount >= limit {
+                        hasRemaining = true
+                    } else {
+                        do {
+                            try park(key, presentation: presentation)
+                            parkedCount += 1
+                        } catch {
+                            parkingBlockedKeys.insert(key)
+                            budget.release(requestID(for: key))
+                        }
+                    }
                 }
             }
             previewStates[key]?.setLiveLimitReached(
-                budget.isWaiting(requestID(for: key))
+                mode == .live && budget.isWaiting(requestID(for: key))
             )
             publish(key)
         }
-        restartLiveTaskIfNeeded()
+        return hasRemaining
+    }
+
+    private func canPark(
+        _ key: TmuxPreviewKey,
+        presentation: Presentation
+    ) -> Bool {
+        guard isExpanded(key),
+              presentation.hasLaunched(),
+              !presentation.isActive(),
+              !activatingKeys.contains(key),
+              !deactivatingKeys.contains(key),
+              !unavailableIdentityKeys.contains(key),
+              !parkingBlockedKeys.contains(key)
+        else { return false }
+
+        if mode == .alwaysLive {
+            return switch presentation.connectionState() {
+            case .connecting, .reconnecting, .connected: true
+            case .disconnected, nil: false
+            }
+        }
+        return !reconnectingKeys.contains(key)
+            && isConnected(presentation)
+            && presentation.identity() != nil
     }
 
     private func park(
@@ -865,10 +986,12 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 
     private func restartLiveTaskIfNeeded() {
         let shouldRun = !isShutDown
-            && mode == .live
+            && mode.usesLiveRefresh
             && isApplicationActive
             && isSidebarVisible
-            && !expandedKeys.isEmpty
+            && sceneIsKeyWindow()
+            && activationTask == nil
+            && presentations.keys.contains(where: isExpanded)
         guard shouldRun else {
             liveTask?.cancel()
             liveTask = nil
@@ -894,10 +1017,11 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private func budgetGrantsChanged(
         _ granted: Set<LivePreviewRequestID>
     ) {
-        guard !isShutDown else { return }
-        let lost = lastGranted.subtracting(granted)
-            .filter { $0.sceneID == sceneID }
+        let previousGrants = lastGranted
         lastGranted = granted
+        guard !isShutDown, mode == .live else { return }
+        let lost = previousGrants.subtracting(granted)
+            .filter { $0.sceneID == sceneID }
         for request in lost {
             if activatingKeys.contains(request.presentation)
                 || deactivatingKeys.contains(request.presentation) {
@@ -959,6 +1083,10 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 
     private func isGranted(_ key: TmuxPreviewKey) -> Bool {
         budget.isGranted(requestID(for: key))
+    }
+
+    private func isExpanded(_ key: TmuxPreviewKey) -> Bool {
+        expandedKeys.contains(key)
     }
 
     private func isConnected(_ presentation: Presentation) -> Bool {
@@ -1038,7 +1166,7 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
             && unresolvedIdentityKeys.contains(key)
             && presentations[key].map(isConnected) == true
             && (
-                expandedKeys.contains(key)
+                isExpanded(key)
                     || (
                         mode == .efficient
                             && presentations[key]?.isActive() == true
@@ -1063,18 +1191,20 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
     private func publish(_ key: TmuxPreviewKey) {
         guard let state = previewStates[key] else { return }
         let presentation = presentations[key]
-        viewStates[key] = TmuxPreviewViewState(
-            image: state.visibleFrame?.image,
+        viewModel(for: key).setState(TmuxPreviewViewState(
+            frame: state.visibleFrame?.image,
             capturedAt: state.visibleFrame?.capturedAt,
             placeholder: state.placeholder,
             connectionState: presentation?.connectionState(),
-            isLive: mode == .live
+            isLive: mode.usesLiveRefresh
                 && isApplicationActive
                 && isSidebarVisible
+                && sceneIsKeyWindow()
                 && presentation.map(isConnected) == true
                 && !reconnectingKeys.contains(key)
                 && !unresolvedIdentityKeys.contains(key)
+                && !unavailableIdentityKeys.contains(key)
                 && (presentation?.isActive() == true || parkedKeys.contains(key))
-        )
+        ))
     }
 }

@@ -27,24 +27,6 @@ struct WorkspaceSidebarViewTests {
             sessionID: sessionID,
             previewableSessionIDs: []
         ))
-        #expect(TmuxSessionPreviewRowPresentation.placeholderAspectRatio == 1.6)
-    }
-
-    @Test("tmux preview height follows captured geometry within limits")
-    func tmuxPreviewAdaptiveAspectRatio() {
-        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
-            for: CGSize(width: 4, height: 3)
-        ) == CGFloat(4) / 3)
-        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
-            for: CGSize(width: 16, height: 9)
-        ) == CGFloat(16) / 9)
-        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
-            for: CGSize(width: 1, height: 1)
-        ) == CGFloat(4) / 3)
-        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(
-            for: CGSize(width: 3, height: 1)
-        ) == 2)
-        #expect(TmuxSessionPreviewRowPresentation.aspectRatio(for: nil) == 1.6)
     }
 
     @Test("Off hides previews without discarding scene expansion")
@@ -66,6 +48,31 @@ struct WorkspaceSidebarViewTests {
             previewableSessionIDs: [sessionID],
             expansion: state
         ))
+    }
+
+    @Test("Always Live expands by default and honors a collapsed override")
+    func alwaysLivePreviewCanCollapse() {
+        let sessionID = "host:default:opened"
+        var state = TmuxSessionPreviewExpansionState()
+
+        #expect(TmuxSessionPreviewRowPresentation.isExpanded(
+            mode: .alwaysLive,
+            sessionID: sessionID,
+            expansion: state
+        ))
+
+        state.setExpanded(
+            false,
+            sessionID: sessionID,
+            defaultExpanded: true
+        )
+
+        #expect(!TmuxSessionPreviewRowPresentation.isExpanded(
+            mode: .alwaysLive,
+            sessionID: sessionID,
+            expansion: state
+        ))
+        #expect(!state.isExpanded(sessionID))
     }
 
     @MainActor

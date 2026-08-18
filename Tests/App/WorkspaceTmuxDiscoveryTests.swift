@@ -13,6 +13,361 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
+    @Test("Always Live connects sessions and relaunches an opened client with normal sizing")
+    @MainActor
+    func alwaysLiveConnectsEveryDiscoveredSession() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let mode = CurrentValueSubject<SessionPreviewMode, Never>(.alwaysLive)
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .alwaysLive,
+            budget: LivePreviewBudget(limit: 0),
+            capture: { _, _ in nil }
+        )
+        let sessions = ["build", "review"].enumerated().map { index, name in
+            DiscoveredTmuxSession(
+                name: name,
+                windowCount: index + 1,
+                serverPID: "101",
+                sessionID: "$\(index + 1)",
+                createdAt: "100\(index)",
+                activeWindowSize: TmuxGridSize(
+                    columns: 120 + index * 20,
+                    rows: 36 + index * 4
+                ),
+                previewClientSize: TmuxGridSize(
+                    columns: 120 + index * 20,
+                    rows: 37 + index * 4
+                ),
+                managed: false
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in .success(sessions) },
+            sessionPreviewCoordinator: previewCoordinator,
+            sessionPreviewModePublisher: mode.eraseToAnyPublisher()
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 2
+                && surfaceStore.requestCount == 2
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.previewableTmuxSessionIDs.count == 2)
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == true)
+        #expect(model.snapshot.host(id: environment.host.id)?
+            .tmuxSessions.map(\.activeWindowSize) == [
+                TmuxGridSize(columns: 120, rows: 36),
+                TmuxGridSize(columns: 140, rows: 40),
+            ])
+
+        let opened = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "build"
+        )
+        model.openBorrowedTmuxSession(opened)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return model.activeBorrowedTmuxSelection == opened
+                && surfaceStore.requestCount == 3
+        }
+
+        #expect(surfaceStore.removedKeys.count == 1)
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == false)
+
+        mode.send(.live)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 1
+        }
+
+        #expect(surfaceStore.removedKeys.count == 2)
+        await model.shutdown()
+    }
+
+    @Test("restoration replaces a policy-owned preview client before activation")
+    @MainActor
+    func restorationReplacesAlwaysLiveClient() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let session = DiscoveredTmuxSession(
+            name: "review",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == true)
+
+        model.beginRestoration(WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: .init(hostKey: environment.host.configKey),
+            tmux: .init(
+                hostKey: environment.host.configKey,
+                sessionName: session.name,
+                socketName: nil,
+                owner: .unbound
+            )
+        ))
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return model.activeBorrowedTmuxSelection?.name == session.name
+                && surfaceStore.requestCount == 2
+        }
+
+        #expect(surfaceStore.removedKeys.count == 1)
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == false)
+        await model.shutdown()
+    }
+
+    @Test("Always Live leaves a closed client detached until identity changes")
+    @MainActor
+    func alwaysLiveClosedClientRelaunchesOnlyForNewIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let discoveries = Counter()
+        let sessionID = LockedValue("$1")
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                _ = discoveries.increment()
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "review",
+                        windowCount: 1,
+                        serverPID: "101",
+                        sessionID: sessionID.load(),
+                        createdAt: sessionID.load() == "$1"
+                            ? "1001"
+                            : "2002",
+                        activeWindowSize: TmuxGridSize(
+                            columns: 120,
+                            rows: 36
+                        ),
+                        previewClientSize: TmuxGridSize(
+                            columns: 120,
+                            rows: 37
+                        ),
+                        managed: false
+                    ),
+                ])
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 1
+                && !surfaceStore.surface.closeObservers.isEmpty
+        }
+
+        surfaceStore.surface.closeObservers.values.first?(false, 0)
+        await waitUntilMainActor { discoveries.count >= 2 }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(surfaceStore.requestCount == 1)
+
+        sessionID.withLock { $0 = "$2" }
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor { surfaceStore.requestCount == 2 }
+        #expect(surfaceStore.removedKeys.count == 1)
+        await model.shutdown()
+    }
+
+    @Test("removing a preview client preserves unrelated pending restoration")
+    @MainActor
+    func previewRemovalPreservesPendingRestoration() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let session = DiscoveredTmuxSession(
+            name: "review",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let discoveries = TmuxDiscoveryResultQueue([
+            .success([session]),
+            .success([]),
+        ])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+        let pending = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: .init(hostKey: "unavailable-host"),
+            tmux: nil
+        )
+        model.beginRestoration(pending)
+
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            discoveries.count == 2
+                && model.retainedBorrowedTmuxPresentationCount == 0
+        }
+
+        #expect(model.restorationState(windowID: pending.windowID) == pending)
+        await model.shutdown()
+    }
+
+    @Test("Always Live waits for a display before creating terminal surfaces")
+    @MainActor
+    func alwaysLiveWaitsForDisplayBeforeCreatingSurfaces() async throws {
+        let environment = try setupStandardEnvironment()
+        let displays = Mutex(0)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let mode = CurrentValueSubject<SessionPreviewMode, Never>(.alwaysLive)
+        let session = DiscoveredTmuxSession(
+            name: "build",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            activeDisplayCount: { displays.withLock { $0 } },
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            ),
+            sessionPreviewModePublisher: mode.eraseToAnyPublisher()
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 1
+                && model.snapshot.host(id: environment.host.id)?
+                .tmuxInventoryIsAuthoritative == true
+        }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(surfaceStore.requestCount == 0)
+
+        displays.withLock { $0 = 1 }
+        model.handleDisplayParametersChanged()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+
+        await model.shutdown()
+    }
+
+    @Test("Always Live does not attach Windows psmux sessions")
+    @MainActor
+    func alwaysLiveExcludesWindowsSessions() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].platform = .windows
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let session = DiscoveredTmuxSession(
+            name: "windows-work",
+            windowCount: 1,
+            createdAt: "1001",
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("C:\\tools\\psmux.exe")
+            },
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.host.id)?
+                .tmuxInventoryIsAuthoritative == true
+        }
+
+        #expect(model.snapshot.host(id: environment.host.id)?
+            .tmuxSessions.map(\.name) == [session.name])
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(model.previewableTmuxSessionIDs.isEmpty)
+        #expect(surfaceStore.requestCount == 0)
+        await model.shutdown()
+    }
+
     @Test("application activation does not refresh tmux inventory")
     @MainActor
     func applicationActivationDoesNotRefreshTmuxInventory() async throws {
@@ -908,8 +1263,8 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("authoritative inventory latches a retained canonical generation")
-    func authoritativeInventoryLatchesRetainedGeneration() async throws {
+    @Test("authoritative inventory refreshes a retained canonical generation")
+    func authoritativeInventoryRefreshesRetainedGeneration() async throws {
         let environment = try setupStandardEnvironment()
         let firstGeneration = "0123456789abcdef0123456789abcdef"
         let replacementGeneration = "fedcba9876543210fedcba9876543210"
@@ -974,8 +1329,14 @@ struct WorkspaceTmuxDiscoveryTests {
         model.refreshKwtInventory()
         await waitUntilMainActor {
             model.snapshot.worktrees[0].generation == replacementGeneration
-                && model.retainedBorrowedTmuxPresentationCount == 0
+                && model.activeBorrowedTmuxSelection?.worktreeGeneration
+                == replacementGeneration
         }
+        let refreshed = try #require(model.activeBorrowedTmuxSelection)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: refreshed) == originalHandle
+        )
         await model.shutdown()
     }
 
@@ -986,10 +1347,6 @@ struct WorkspaceTmuxDiscoveryTests {
             (
                 "kwt-ghosthub-replacement",
                 "0123456789abcdef0123456789abcdef"
-            ),
-            (
-                "kwt-ghosthub-main",
-                "fedcba9876543210fedcba9876543210"
             ),
         ]
     )

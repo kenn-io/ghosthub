@@ -1381,6 +1381,41 @@ struct NativeTmuxSessionCoordinatorTests {
                 == .processExited(code: 255)
         )
     }
+
+    @Test("unchanged preview grids do not resize live surfaces")
+    func unchangedPreviewGridDoesNotResizeSurface() async {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                successfulTmuxResolution("/opt/homebrew/bin/tmux")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let initialGrid = TmuxGridSize(columns: 180, rows: 50)
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "stable-preview",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: initialGrid
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        coordinator.updatePreviewGridSize(initialGrid, for: handle)
+        coordinator.updatePreviewGridSize(
+            TmuxGridSize(columns: 160, rows: 48),
+            for: handle
+        )
+
+        #expect(store.surface.previewGridSizes == [
+            initialGrid,
+            TmuxGridSize(columns: 160, rows: 48),
+        ])
+    }
 }
 
 private enum SurfaceLaunchTestError: LocalizedError {

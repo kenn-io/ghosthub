@@ -21,8 +21,10 @@ Worktrees are optional; Ghosthub remains fully useful without them.
 - **Sessions:** Worktree sessions and otherwise-unbound tmux sessions open through an ordinary tmux client. Running and stopped Herdr sessions are host inventory; opening a running session attaches, while creating or restarting uses Herdr's launch path. Active Zellij sessions are separate host inventory and open through an ordinary Zellij client. Each backend owns its windows, tabs, panes, layout, history, key bindings, and process lifetime.
 - **Attachment:** Each scene has at most one active interactive native tmux,
   Herdr, or Zellij presentation. Already-opened tmux clients may remain retained
-  and noninteractive, and may render only when the user explicitly enables
-  session previews. Previews never create another client. Ghosthub owns
+  and noninteractive. The explicit Always Live preview mode may also connect
+  every freshly discovered tmux session in the scene without activating it.
+  Preview rendering reuses that session's retained client rather than creating
+  a second client. Ghosthub owns
   discovery, local/SSH client presentation, keepalives, and reconnect. Closing
   a presentation detaches. Tmux and Zellij destruction require explicit,
   confirmed Kill Session actions. Herdr Stop and Delete are separate confirmed

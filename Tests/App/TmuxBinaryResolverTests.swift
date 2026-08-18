@@ -2,6 +2,7 @@ import GhosthubTransport
 import Darwin
 import Foundation
 import GhosthubTmux
+import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
@@ -446,8 +447,8 @@ struct TmuxBinaryResolverTests {
                 stdout: """
                 /opt/homebrew/bin/tmux
                 tmux 3.7b
-                GHOSTHUB_TMUX_SESSION\t2\t101\t$1\t1783344091\t\tdocbank
-                GHOSTHUB_TMUX_SESSION\t4\t101\t$2\t1783344092\towner-token\tGhosthub\twork
+                GHOSTHUB_TMUX_SESSION\t2\t101\t$1\t1783344091\t120\t36\ton\t\tproject-a
+                GHOSTHUB_TMUX_SESSION\t4\t101\t$2\t1783344092\t200\t50\t3\towner-token\tGhosthub\twork
 
                 """
             )
@@ -456,14 +457,20 @@ struct TmuxBinaryResolverTests {
         #expect(
             try resolver.discoverSessions().get() == [
                 DiscoveredTmuxSession(
-                    name: "docbank", windowCount: 2,
+                    name: "project-a", windowCount: 2,
                     serverPID: "101",
-                    sessionID: "$1", createdAt: "1783344091", managed: false
+                    sessionID: "$1", createdAt: "1783344091",
+                    activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+                    previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+                    managed: false
                 ),
                 DiscoveredTmuxSession(
                     name: "Ghosthub\twork", windowCount: 4,
                     serverPID: "101",
-                    sessionID: "$2", createdAt: "1783344092", managed: true
+                    sessionID: "$2", createdAt: "1783344092",
+                    activeWindowSize: TmuxGridSize(columns: 200, rows: 50),
+                    previewClientSize: TmuxGridSize(columns: 200, rows: 53),
+                    managed: true
                 ),
             ]
         )
@@ -509,7 +516,7 @@ struct TmuxBinaryResolverTests {
                     stdout: """
                     /usr/local/bin/tmux
                     tmux 3.6
-                    GHOSTHUB_TMUX_SESSION\t3\t202\t$7\t99\t\tremote-work
+                    GHOSTHUB_TMUX_SESSION\t3\t202\t$7\t99\t132\t42\toff\t\tremote-work
 
                     """,
 
@@ -523,7 +530,10 @@ struct TmuxBinaryResolverTests {
                 == [DiscoveredTmuxSession(
                     name: "remote-work", windowCount: 3,
                     serverPID: "202",
-                    sessionID: "$7", createdAt: "99", managed: false
+                    sessionID: "$7", createdAt: "99",
+                    activeWindowSize: TmuxGridSize(columns: 132, rows: 42),
+                    previewClientSize: TmuxGridSize(columns: 132, rows: 42),
+                    managed: false
                 )]
         )
     }
@@ -550,7 +560,7 @@ struct TmuxBinaryResolverTests {
                     stdout: "C:\\Tools\\psmux\\tmux.exe\r\n"
                         + "tmux 3.6.7\r\n"
                         + "GHOSTHUB_TMUX_SESSION\t2\t202\t$7"
-                        + "\t1783344091\t\twindows-work\r\n",
+                        + "\t1783344091\t160\t48\t\t\twindows-work\r\n",
                     stderr: ""
                 )
             }
@@ -564,6 +574,7 @@ struct TmuxBinaryResolverTests {
                     serverPID: "202",
                     sessionID: "$7",
                     createdAt: "1783344091",
+                    activeWindowSize: TmuxGridSize(columns: 160, rows: 48),
                     managed: false
                 )]
         )
@@ -1013,6 +1024,35 @@ struct TmuxPathCacheTests {
         )
         #expect(try cache.resolveTmuxBinary().get() == expected)
         #expect(try cache.resolveTmuxBinary().get() == expected)
+        #expect(counter.count == 1)
+    }
+
+    @Test("concurrent successful resolutions share one probe")
+    func coalescesConcurrentSuccess() async throws {
+        let counter = Counter()
+        let gate = BlockingGate()
+        let cache = TmuxPathCache {
+            _ = counter.increment()
+            gate.block()
+            return .success(ResolvedTmuxBinary(
+                path: "/opt/homebrew/bin/tmux",
+                version: "tmux 3.4a"
+            ))
+        }
+
+        let first = Task.detached { cache.resolveTmuxBinary() }
+        await gate.waitUntilBlocked()
+        let secondStarted = LockedValue(false)
+        let second = Task.detached {
+            secondStarted.store(true)
+            return cache.resolveTmuxBinary()
+        }
+        await waitUntil { secondStarted.load() }
+        #expect(counter.count == 1)
+
+        gate.open()
+        #expect(try await first.value.get().path == "/opt/homebrew/bin/tmux")
+        #expect(try await second.value.get().path == "/opt/homebrew/bin/tmux")
         #expect(counter.count == 1)
     }
 

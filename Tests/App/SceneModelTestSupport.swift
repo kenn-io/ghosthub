@@ -623,6 +623,7 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     private var closeOnRegistrationCode: UInt32?
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
+    private(set) var previewGridSizes: [TmuxGridSize] = []
 
     init(
         launchError: Error? = nil,
@@ -632,6 +633,12 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
         self.launchError = launchError
         self.launchFailureIsRetryable = launchFailureIsRetryable
         self.closeOnRegistrationCode = closeOnRegistrationCode
+    }
+
+    @discardableResult
+    func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool {
+        previewGridSizes.append(TmuxGridSize(columns: columns, rows: rows))
+        return true
     }
 
     func registerSurfaceCloseObserver(

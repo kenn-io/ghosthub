@@ -16,6 +16,8 @@ protocol NativeSessionPaneSurfacing: AnyObject {
     /// attach can recover from, rather than a rejected launch.
     var launchFailureIsRetryable: Bool { get }
     var childExitCode: UInt32? { get }
+    @discardableResult
+    func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool
     func registerSurfaceCloseObserver(
         id: UUID,
         onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
@@ -36,6 +38,11 @@ extension NativeSessionPaneSurfacing {
     var hasEffectiveKeyboardFocus: Bool { false }
 
     var launchFailureIsRetryable: Bool { false }
+
+    @discardableResult
+    func sizeForPreviewGrid(columns _: Int, rows _: Int) -> Bool {
+        false
+    }
 }
 
 extension TerminalSurfaceView: NativeSessionPaneSurfacing {

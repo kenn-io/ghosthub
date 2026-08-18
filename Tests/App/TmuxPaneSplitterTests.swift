@@ -80,7 +80,8 @@ private final class TestTmuxClient {
         socketName: String,
         sessionName: String,
         clientToken: String,
-        clientTTYDirectory: URL? = nil
+        clientTTYDirectory: URL? = nil,
+        ignoresClientSize: Bool = false
     ) throws {
         tokenPath = try testClientTokenPath(
             clientToken,
@@ -90,7 +91,8 @@ private final class TestTmuxClient {
             sessionName: sessionName,
             host: .local,
             socketName: socketName,
-            launchMode: .attachOnly
+            launchMode: .attachOnly,
+            ignoresClientSize: ignoresClientSize
         ).attachCommand(
             tmuxPath: tmuxPath,
             clientTTYToken: clientToken,
@@ -214,6 +216,54 @@ private func nativePaneSplitsAreAvailable(_ tmuxPath: String) -> Bool {
 
 @Suite("tmux pane splitting", .serialized)
 struct TmuxPaneSplitterTests {
+    @Test("a preview client preserves the existing tmux window size")
+    func previewClientPreservesWindowSize() async throws {
+        guard case let .success(tmuxPath) =
+            TmuxBinaryResolver().resolveTmuxPath()
+        else { return }
+        guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "preview-size",
+            sessions: ["preview"]
+        )
+        defer { server.stop() }
+        let resized = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName,
+                "resize-window", "-t", "preview:", "-x", "180", "-y", "50",
+            ],
+            timeout: 5
+        )
+        #expect(resized.status == 0)
+        let token = UUID().uuidString.lowercased()
+        let client = try TestTmuxClient(
+            tmuxPath: tmuxPath,
+            socketName: server.socketName,
+            sessionName: "preview",
+            clientToken: token,
+            ignoresClientSize: true
+        )
+        defer { client.stop() }
+
+        _ = try await client.publishedTTY()
+        let measured = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName,
+                "display-message", "-p", "-t", "preview:",
+                "#{window_width}x#{window_height}",
+            ],
+            timeout: 5
+        )
+
+        #expect(measured.status == 0)
+        #expect(measured.stdout.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) == "180x50")
+    }
+
     @Test("version capability requires tmux 3.4")
     func versionCapabilityRequiresTmux34() {
         #expect(TmuxPaneSplitter.supportsPaneSplitting(

@@ -86,13 +86,7 @@ extension WorkspaceTmuxDiscoveryTests {
             budget: LivePreviewBudget(limit: 4),
             capture: { _, _ in
                 _ = captures.increment()
-                return TerminalSurfaceSnapshot(
-                    image: NSImage(size: CGSize(width: 32, height: 20)),
-                    captureToken: TerminalSurfaceCaptureToken(
-                        surfaceID: 1,
-                        seed: 1
-                    )
-                )
+                return try makePreviewSnapshot()
             }
         )
         let model = try makeModel(
@@ -137,11 +131,11 @@ extension WorkspaceTmuxDiscoveryTests {
         previewCoordinator.setExpanded(true, for: key)
         await waitUntilMainActor {
             captures.count == 1
-                && previewCoordinator.viewState(for: key)?.image != nil
+                && previewCoordinator.viewState(for: key)?.frame != nil
         }
 
         #expect(identityReads.count == 0)
-        #expect(previewCoordinator.viewState(for: key)?.image != nil)
+        #expect(previewCoordinator.viewState(for: key)?.frame != nil)
         await model.shutdown()
     }
 
@@ -181,13 +175,7 @@ extension WorkspaceTmuxDiscoveryTests {
             budget: LivePreviewBudget(limit: 4),
             capture: { _, _ in
                 _ = captures.increment()
-                return TerminalSurfaceSnapshot(
-                    image: NSImage(size: CGSize(width: 32, height: 20)),
-                    captureToken: TerminalSurfaceCaptureToken(
-                        surfaceID: 1,
-                        seed: 1
-                    )
-                )
+                return try makePreviewSnapshot()
             }
         )
         let model = try makeModel(
@@ -221,7 +209,7 @@ extension WorkspaceTmuxDiscoveryTests {
         }
 
         #expect(captures.count == 1)
-        #expect(previewCoordinator.viewState(for: key)?.image == nil)
+        #expect(previewCoordinator.viewState(for: key)?.frame == nil)
         #expect(
             previewCoordinator.viewState(for: key)?.placeholder
                 == .unavailable
@@ -245,13 +233,7 @@ extension WorkspaceTmuxDiscoveryTests {
             budget: LivePreviewBudget(limit: 4),
             capture: { _, _ in
                 let sequence = captures.increment()
-                return TerminalSurfaceSnapshot(
-                    image: NSImage(size: CGSize(width: 32, height: 20)),
-                    captureToken: TerminalSurfaceCaptureToken(
-                        surfaceID: 1,
-                        seed: UInt32(sequence)
-                    )
-                )
+                return try makePreviewSnapshot(seed: UInt32(sequence))
             }
         )
         let model = try makeModel(
@@ -288,7 +270,7 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(captures.count == 2)
         #expect(model.activeBorrowedTmuxSelection == nil)
         #expect(model.previewableTmuxSessionIDs == [selection.id])
-        #expect(previewCoordinator.viewState(for: key)?.image != nil)
+        #expect(previewCoordinator.viewState(for: key)?.frame != nil)
         await model.shutdown()
     }
 

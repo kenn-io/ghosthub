@@ -5,8 +5,7 @@ import GhosthubTransport
 import SwiftUI
 
 struct TmuxSessionPreviewTile: View {
-    @ObservedObject var coordinator: TmuxSessionPreviewCoordinator
-    let key: TmuxPreviewKey
+    @ObservedObject var viewModel: TmuxPreviewViewModel
     let sessionName: String
     let onActivate: () -> Void
 
@@ -16,7 +15,7 @@ struct TmuxSessionPreviewTile: View {
         } label: {
             ZStack(alignment: .bottomLeading) {
                 previewContent
-                if let status = statusText {
+                if let status = visualStatusText {
                     Text(status)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -26,7 +25,12 @@ struct TmuxSessionPreviewTile: View {
                         .background(.regularMaterial)
                 }
             }
-            .aspectRatio(tileAspectRatio, contentMode: .fit)
+            .aspectRatio(
+                TerminalPreviewGeometry.aspectRatio(
+                    for: viewState?.frame?.pixelSize
+                ),
+                contentMode: .fit
+            )
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay {
                 RoundedRectangle(cornerRadius: 6)
@@ -43,10 +47,8 @@ struct TmuxSessionPreviewTile: View {
 
     @ViewBuilder
     private var previewContent: some View {
-        if let image = viewState?.image {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
+        if let frame = viewState?.frame {
+            TmuxSessionPreviewSurface(frame: frame)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
         } else {
@@ -59,32 +61,25 @@ struct TmuxSessionPreviewTile: View {
     }
 
     private var viewState: TmuxPreviewViewState? {
-        coordinator.viewState(for: key)
+        viewModel.state
     }
 
-    private var tileAspectRatio: CGFloat {
-        TerminalPreviewGeometry.aspectRatio(for: viewState?.image?.size)
-    }
-
-    private var statusText: String? {
+    private var visualStatusText: String? {
         guard let state = viewState else { return nil }
         if state.isLive {
-            return "Live"
+            return nil
         }
-        switch state.placeholder {
-        case .awaitingFirstFrame: return "Open to capture"
-        case .reconnecting: return "Reconnecting"
-        case .disconnected: return "Disconnected"
-        case .unavailable: return "Preview unavailable"
-        case .liveLimitReached: return "Live preview limit reached"
-        case nil:
-            guard let capturedAt = state.capturedAt else { return nil }
-            return "Retained, updated \(Self.relativeFormatter.localizedString(for: capturedAt, relativeTo: Date()))"
-        }
+        return TmuxSessionPreviewStatus.text(
+            connectionState: state.connectionState,
+            placeholder: state.placeholder,
+            capturedAt: state.capturedAt
+        )
     }
 
     private var accessibilityLabel: String {
-        let status = statusText ?? "Preview available"
+        let status = viewState?.isLive == true
+            ? "Live"
+            : visualStatusText ?? "Preview available"
         let connection = switch viewState?.connectionState {
         case .connecting: "connecting"
         case .reconnecting: "reconnecting"
@@ -95,11 +90,62 @@ struct TmuxSessionPreviewTile: View {
         return "\(sessionName), \(status), \(connection)"
     }
 
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
+}
+
+private struct TmuxSessionPreviewSurface: NSViewRepresentable {
+    let frame: TerminalSurfacePreviewFrame
+
+    func makeNSView(context: Context) -> TerminalSurfacePreviewView {
+        let view = TerminalSurfacePreviewView(frame: .zero)
+        view.display(frame)
+        return view
+    }
+
+    func updateNSView(
+        _ nsView: TerminalSurfacePreviewView,
+        context: Context
+    ) {
+        nsView.display(frame)
+    }
+
+    static func dismantleNSView(
+        _ nsView: TerminalSurfacePreviewView,
+        coordinator: Void
+    ) {
+        nsView.display(nil)
+    }
+}
+
+enum TmuxSessionPreviewStatus {
+    static func text(
+        connectionState: ConnectionState?,
+        placeholder: TmuxPreviewPlaceholder?,
+        capturedAt: Date?,
+        now: Date = Date()
+    ) -> String? {
+        switch connectionState {
+        case .connecting:
+            return "Connecting"
+        case .reconnecting:
+            return "Reconnecting"
+        case .disconnected:
+            return "Disconnected"
+        case .connected, nil:
+            break
+        }
+        switch placeholder {
+        case .awaitingFirstFrame: return "Open to capture"
+        case .reconnecting: return "Reconnecting"
+        case .disconnected: return "Disconnected"
+        case .unavailable: return "Preview unavailable"
+        case .liveLimitReached: return "Live preview limit reached"
+        case nil:
+            guard let capturedAt else { return nil }
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .abbreviated
+            return "Retained, updated \(formatter.localizedString(for: capturedAt, relativeTo: now))"
+        }
+    }
 }
 
 struct TmuxSessionPreviewParkingView: NSViewRepresentable {

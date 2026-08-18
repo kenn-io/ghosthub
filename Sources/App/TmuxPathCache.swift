@@ -26,16 +26,13 @@ final class TmuxPathCache: @unchecked Sendable {
     func resolveTmuxBinary()
         -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
         lock.lock()
+        defer { lock.unlock() }
         if let cachedBinary {
-            lock.unlock()
             return .success(cachedBinary)
         }
-        lock.unlock()
         let resolved = resolve()
         if case let .success(binary) = resolved {
-            lock.lock()
             cachedBinary = binary
-            lock.unlock()
         }
         return resolved
     }
