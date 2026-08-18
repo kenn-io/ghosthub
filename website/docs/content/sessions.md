@@ -125,11 +125,11 @@ reuses a session's retained client for rendering and never creates a second
 preview client. Before a hidden Always Live client attaches, Ghosthub matches
 its terminal grid to the active tmux window and status rows. This keeps the
 server-side window unchanged even when the preview is its only client; the
-sidebar tile never dictates the session size. Opening one replaces its hidden
-non-sizing client with a normal interactive client. Previews require a
-token-bound client identity, which is available for
-tmux 3.4 or newer on POSIX hosts. Older tmux shows a **Preview unavailable**
-placeholder rather than displaying pixels that Ghosthub cannot verify.
+sidebar tile never dictates the session size. Opening one promotes its hidden
+non-sizing client to normal interactive sizing. Previews require a token-bound
+client identity, which is available for tmux 3.4 or newer on POSIX hosts.
+Always Live skips automatic attachment when tmux cannot provide that identity
+or setup fails; the session can still be opened normally.
 Windows/psmux sessions are not attached automatically because psmux has no
 non-sizing client mode.
 During reconnect, Ghosthub hides the cached frame behind a reconnecting

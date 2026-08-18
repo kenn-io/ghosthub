@@ -1137,6 +1137,25 @@ struct TmuxPaneSplitterTests {
             .first { $0.hasPrefix(client.clientTTY + "\t") }
         #expect(promotedFlags != nil)
         #expect(promotedFlags?.contains("ignore-size") == false)
+
+        let restoreFailure = await splitter.disableSizing(
+            target: verifiedTarget
+        )
+        #expect(restoreFailure == nil)
+        let restoredClients = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName, "list-clients", "-F",
+                "#{client_tty}\t#{client_flags}",
+            ],
+            timeout: 5
+        )
+        let restoredFlags = restoredClients.stdout.split(
+            whereSeparator: \.isNewline
+        ).map(String.init).first {
+            $0.hasPrefix(client.clientTTY + "\t")
+        }
+        #expect(restoredFlags?.contains("ignore-size") == true)
     }
 
     @Test("atomic validation rejects a replacement on the expected TTY")

@@ -606,7 +606,9 @@ existing size even when it is the only attached client and does not resize the
 tmux window. Opening one atomically clears `ignore-size` on that exact verified
 client before activating its retained surface. The client never detaches during
 this promotion, so servers using `destroy-unattached` cannot destroy the session
-between preview and interactive presentation. Parked surfaces cannot receive
+between preview and interactive presentation. A promotion that finishes after
+newer navigation restores `ignore-size` on the same verified client and never
+activates the stale surface. Parked surfaces cannot receive
 focus, pointer input, or accessibility actions. Parking applies the destination
 window's stable backing scale and ignores hidden-host layout changes; only an
 explicit Always Live preview-grid update may change its pixel size. AppKit reparenting
@@ -619,10 +621,10 @@ Preview pixels are published only after the attachment's token-bound tmux
 client identity is available; a name-based session lookup never authorizes a
 cached frame. Ghosthub revalidates that attached client after rendering each
 changed preview IOSurface and rejects the frame if the client switched
-sessions. Attachments that cannot supply this safe identity, including tmux
-older than 3.4, show an unavailable placeholder instead of retaining
-unverified pixels. Windows/psmux
-sessions are excluded from automatic attachment.
+sessions. Always Live abandons policy attachment setup before launching a client
+when binary resolution fails or the resolved tmux version cannot supply this
+safe identity. The session remains available for an ordinary manual open.
+Windows/psmux sessions are also excluded from automatic attachment.
 Reconnect identity binding uses bounded background retries only after a preview
 requests identity. Reconnecting keeps the last frame quarantined until the new
 attachment binds to the same server and session identity, while replacement

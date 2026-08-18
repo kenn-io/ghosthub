@@ -606,6 +606,75 @@ final class NativeTmuxSessionCoordinator {
         return nil
     }
 
+    func restorePreviewSizing(
+        _ gridSize: TmuxGridSize?,
+        for handle: BorrowedTmuxSessionHandle
+    ) async -> TmuxPaneSplitFailure? {
+        guard var attachment = attachments[handle.id] else {
+            return TmuxPaneSplitFailure(
+                host: targetHostsByHandle[handle.id]?.displayName
+                    ?? "the selected host",
+                sessionName: handle.name,
+                status: 75,
+                diagnostic: "The tmux attachment is unavailable."
+            )
+        }
+        if attachment.ignoresClientSize {
+            attachment.previewGridSize = gridSize
+            attachments[handle.id] = attachment
+            applyPreviewGridSize(gridSize, for: handle)
+            return nil
+        }
+        guard launchedHandles.contains(handle.id) else {
+            attachment.ignoresClientSize = true
+            attachment.previewGridSize = gridSize
+            attachments[handle.id] = attachment
+            return nil
+        }
+        let attachmentID = attachment.id
+        var target = paneSplitTarget(
+            handle: handle,
+            attachment: attachment,
+            expectedIdentity: attachment.sessionIdentity
+        )
+        if target.expectedClient == nil {
+            switch await paneSplitter.clientIdentity(target: target) {
+            case let .success(client):
+                guard attachments[handle.id]?.id == attachmentID else {
+                    return nil
+                }
+                paneSplitClients[handle.id] = client
+                target.expectedIdentity = client.sessionIdentity
+                target.expectedClient = client
+            case let .failure(failure):
+                return failure
+            }
+        }
+        let failure = await paneSplitter.disableSizing(target: target)
+        guard attachments[handle.id]?.id == attachmentID else { return nil }
+        guard failure == nil else { return failure }
+        attachment.ignoresClientSize = true
+        attachment.previewGridSize = gridSize
+        attachments[handle.id] = attachment
+        applyPreviewGridSize(gridSize, for: handle)
+        return nil
+    }
+
+    private func applyPreviewGridSize(
+        _ gridSize: TmuxGridSize?,
+        for handle: BorrowedTmuxSessionHandle
+    ) {
+        guard let gridSize,
+              let surface = terminalCoordinator.paneSurfaceIfPresent(
+                  for: surfaceKey(handle)
+              )
+        else { return }
+        _ = surface.sizeForPreviewGrid(
+            columns: gridSize.columns,
+            rows: gridSize.rows
+        )
+    }
+
     func surface(handle: BorrowedTmuxSessionHandle) -> TerminalSurfaceView? {
         guard attachmentClosures[handle.id] == nil,
               let attachment = attachments[handle.id]

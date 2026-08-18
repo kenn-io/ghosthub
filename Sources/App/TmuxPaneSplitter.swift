@@ -189,6 +189,19 @@ struct TmuxPaneSplitter: Sendable {
     func enableSizing(
         target: TmuxPaneSplitTarget
     ) async -> TmuxPaneSplitFailure? {
+        await setIgnoreSize(false, target: target)
+    }
+
+    func disableSizing(
+        target: TmuxPaneSplitTarget
+    ) async -> TmuxPaneSplitFailure? {
+        await setIgnoreSize(true, target: target)
+    }
+
+    private func setIgnoreSize(
+        _ ignoresClientSize: Bool,
+        target: TmuxPaneSplitTarget
+    ) async -> TmuxPaneSplitFailure? {
         guard Self.platform(for: target.host) == .posix,
               let expectedClient = target.expectedClient
         else {
@@ -202,10 +215,11 @@ struct TmuxPaneSplitter: Sendable {
         let mismatchMarker = Self.sizingMismatchMarker
             + "_\(UUID().uuidString)"
         let hookIndex = Int.random(in: 1_000_000_000 ... 2_000_000_000)
-        let command = Self.enableSizingCommand(
+        let command = Self.sizingCommand(
             tmuxPath: target.tmuxPath,
             socketName: target.socketName,
             expectedClient: expectedClient,
+            ignoresClientSize: ignoresClientSize,
             mismatchMarker: mismatchMarker,
             hookIndex: hookIndex
         )
@@ -318,6 +332,24 @@ struct TmuxPaneSplitter: Sendable {
         mismatchMarker: String,
         hookIndex: Int
     ) -> String {
+        sizingCommand(
+            tmuxPath: tmuxPath,
+            socketName: socketName,
+            expectedClient: expectedClient,
+            ignoresClientSize: false,
+            mismatchMarker: mismatchMarker,
+            hookIndex: hookIndex
+        )
+    }
+
+    static func sizingCommand(
+        tmuxPath: String,
+        socketName: String?,
+        expectedClient: TmuxPaneSplitClientIdentity,
+        ignoresClientSize: Bool,
+        mismatchMarker: String,
+        hookIndex: Int
+    ) -> String {
         var arguments = [tmuxPath]
         if let socketName, !socketName.isEmpty {
             arguments += ["-L", socketName]
@@ -334,11 +366,11 @@ struct TmuxPaneSplitter: Sendable {
         let condition = "#{&&:"
             + expectedClient.sessionIdentity.formatCondition
             + ",\(exactClient)}"
-        let enableSizing = [
+        let updateSizing = [
             "if-shell", "-F", condition,
             [
                 "refresh-client", "-t", expectedClient.clientTTY,
-                "-f", "!ignore-size",
+                "-f", ignoresClientSize ? "ignore-size" : "!ignore-size",
             ].map(shellQuotedCommandArgument).joined(separator: " "),
             "display-message -p "
                 + shellQuotedCommandArgument(mismatchMarker),
@@ -346,7 +378,7 @@ struct TmuxPaneSplitter: Sendable {
         let guardedMutation = guardedHookBody(
             hookName: hookName,
             marker: mismatchMarker,
-            action: enableSizing
+            action: updateSizing
         )
         let queue = tmux + " " + [
             "set-hook", "-g", hookName, guardedMutation, ";",

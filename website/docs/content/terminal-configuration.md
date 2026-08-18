@@ -70,9 +70,10 @@ follows its terminal's aspect ratio between 4:3 and 2:1, preserving the complete
 frame without stretching or excessive padding.
 Reconnecting sessions show a placeholder until Ghosthub verifies that the
 replacement client is attached to the same server-side session.
-Tmux older than 3.4 cannot provide a safe client identity, so its tile reports
-that the preview is unavailable. Windows/psmux sessions are not attached
-automatically because psmux has no non-sizing client mode.
+Tmux older than 3.4 cannot provide a safe client identity, so Always Live skips
+its automatic attachment. You can still open that session normally. Windows/
+psmux sessions are not attached automatically because psmux has no non-sizing
+client mode.
 
 Efficient and Live preview only clients you opened. Always Live deliberately
 opens one retained tmux or SSH client for each discovered POSIX session.

@@ -13,6 +13,82 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
+    @Test("stale Always Live promotion cannot activate after navigation")
+    @MainActor
+    func staleAlwaysLivePromotionRestoresPreviewSizing() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let promotionStarted = LockedValue(false)
+        let restoreCount = LockedValue(0)
+        let releasePromotion = DispatchSemaphore(value: 0)
+        defer { releasePromotion.signal() }
+        let session = DiscoveredTmuxSession(
+            name: "build",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            if command.contains("'!ignore-size'") {
+                promotionStarted.withLock { $0 = true }
+                releasePromotion.wait()
+                return (0, "")
+            }
+            if command.contains("ignore-size"),
+               !command.contains("!ignore-size") {
+                restoreCount.withLock { $0 += 1 }
+                return (0, "")
+            }
+            guard command.contains(
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+            ) else { return (0, "") }
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t101\t789\t321\t/dev/ttys001\t$1\t1001\t%9\n"
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+        model.openBorrowedTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        ))
+        await waitUntilMainActor { promotionStarted.load() }
+
+        model.selectFromUser(WorkspaceSelection(
+            selectedHostID: environment.host.id
+        ))
+        releasePromotion.signal()
+        await waitUntilMainActor { restoreCount.load() == 1 }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(surfaceStore.surface.clearPreviewGridCount == 1)
+        #expect(surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
     @Test("Always Live promotes an opened client to normal sizing in place")
     @MainActor
     func alwaysLiveConnectsEveryDiscoveredSession() async throws {
@@ -373,6 +449,126 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(model.retainedBorrowedTmuxPresentationCount == 0)
         #expect(model.previewableTmuxSessionIDs.isEmpty)
         #expect(surfaceStore.requestCount == 0)
+        await model.shutdown()
+    }
+
+    @Test("Always Live excludes tmux clients without safe identity support")
+    @MainActor
+    func alwaysLiveExcludesUnsupportedTmuxBeforeLaunch() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let resolutionCount = LockedValue(0)
+        let session = DiscoveredTmuxSession(
+            name: "legacy",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+            previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                resolutionCount.withLock { $0 += 1 }
+                return successfulTmuxResolution(
+                    "/usr/bin/tmux",
+                    version: "tmux 3.3a"
+                )
+            },
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            resolutionCount.load() == 1
+                && model.retainedBorrowedTmuxPresentationCount == 0
+        }
+        #expect(surfaceStore.requestCount == 0)
+
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return model.activeBorrowedTmuxSelection == selection
+                && surfaceStore.requestCount == 1
+        }
+
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == false)
+        await model.shutdown()
+    }
+
+    @Test("failed Always Live setup does not strand a later manual open")
+    @MainActor
+    func alwaysLiveProvisioningFailureAllowsManualRetry() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let resolutionCount = LockedValue(0)
+        let session = DiscoveredTmuxSession(
+            name: "retry",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+            previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                let attempt = resolutionCount.load()
+                resolutionCount.withLock { $0 += 1 }
+                return attempt == 0
+                    ? .failure(.notFound(shell: "/bin/zsh"))
+                    : successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            resolutionCount.load() == 1
+                && model.retainedBorrowedTmuxPresentationCount == 0
+        }
+
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return resolutionCount.load() == 2
+                && model.activeBorrowedTmuxSelection == selection
+                && surfaceStore.requestCount == 1
+        }
+
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == false)
         await model.shutdown()
     }
 
