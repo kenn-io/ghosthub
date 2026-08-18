@@ -8,7 +8,8 @@ import Foundation
 /// the first failed resolve (`brew install tmux`) should be picked up on the
 /// next resolve instead of requiring an app restart.
 /// Concurrent callers share the active result, including a failure, without
-/// retaining that failure for later calls.
+/// retaining that failure for later calls. A cancelled active result does not
+/// cancel callers that are still waiting for tmux.
 ///
 /// Lock-guarded and `Sendable` so the first (blocking) resolve can run off the
 /// main actor — a slow login shell must never beachball the UI on first open.
@@ -55,31 +56,38 @@ final class TmuxPathCache: @unchecked Sendable {
 
     func resolveTmuxBinary()
         -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
-        lock.lock()
-        if let cachedBinary {
+        while true {
+            lock.lock()
+            if let cachedBinary {
+                lock.unlock()
+                return .success(cachedBinary)
+            }
+            if isCurrentTaskCancelled {
+                lock.unlock()
+                return cancellationFailure
+            }
+            if let activeResolution {
+                lock.unlock()
+                let result = activeResolution.wait()
+                if case .failure(.probeCancelled) = result,
+                   !isCurrentTaskCancelled {
+                    continue
+                }
+                return result
+            }
+            let resolution = Resolution()
+            activeResolution = resolution
             lock.unlock()
-            return .success(cachedBinary)
-        }
-        if isCurrentTaskCancelled {
-            lock.unlock()
-            return cancellationFailure
-        }
-        if let activeResolution {
-            lock.unlock()
-            return activeResolution.wait()
-        }
-        let resolution = Resolution()
-        activeResolution = resolution
-        lock.unlock()
 
-        guard !isCurrentTaskCancelled else {
-            let result = cancellationFailure
-            finish(resolution, with: result)
-            return result
+            guard !isCurrentTaskCancelled else {
+                let result = cancellationFailure
+                finish(resolution, with: result)
+                return result
+            }
+            let resolved = resolve()
+            finish(resolution, with: resolved)
+            return resolved
         }
-        let resolved = resolve()
-        finish(resolution, with: resolved)
-        return resolved
     }
 
     private var isCurrentTaskCancelled: Bool {

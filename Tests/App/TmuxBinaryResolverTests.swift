@@ -1097,6 +1097,48 @@ struct TmuxPathCacheTests {
         #expect(counter.count == 2)
     }
 
+    @Test("a non-cancelled waiter retries a cancelled shared resolution")
+    func waiterRetriesCancelledResolution() async throws {
+        let counter = Counter()
+        let gate = BlockingGate()
+        let cache = TmuxPathCache(cancellationShell: "Build Host") {
+            if counter.increment() == 1 {
+                gate.block()
+                #expect(Task.isCancelled)
+                return .failure(.probeCancelled(shell: "Build Host"))
+            }
+            return .success(ResolvedTmuxBinary(
+                path: "/opt/homebrew/bin/tmux",
+                version: "tmux 3.4"
+            ))
+        }
+
+        let first = Task.detached { cache.resolveTmuxBinary() }
+        await gate.waitUntilBlocked()
+        let secondStarted = LockedValue(false)
+        let second = Task.detached {
+            secondStarted.store(true)
+            return cache.resolveTmuxBinary()
+        }
+        await waitUntil { secondStarted.load() }
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+
+        first.cancel()
+        gate.open()
+
+        #expect(
+            await first.value
+                == .failure(.probeCancelled(shell: "Build Host"))
+        )
+        #expect(
+            try await second.value.get().path
+                == "/opt/homebrew/bin/tmux"
+        )
+        #expect(counter.count == 2)
+    }
+
     @Test("a cancelled caller does not start a probe")
     func cancellationSkipsProbe() async {
         let counter = Counter()
