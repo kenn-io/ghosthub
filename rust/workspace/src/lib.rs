@@ -1565,6 +1565,7 @@ impl RemoteHostSpec {
 }
 
 struct RemoteHostContext {
+    generation: u64,
     host: RuntimeRemoteHost,
     snapshot: RemoteTmuxSnapshot,
 }
@@ -1590,6 +1591,7 @@ struct RemoteActive {
     worker_generation: u64,
     lease: host::SshLease,
     presentation_id: u64,
+    term: AttachTerm,
     retainable: bool,
     identity_mismatch_marker: Option<String>,
 }
@@ -3371,6 +3373,7 @@ fn publish_remote_connection(
             let route_identity = snapshot.route_identity().to_owned();
             let lease_generation = snapshot.lease_generation();
             entry.context = Some(RemoteHostContext {
+                generation,
                 host,
                 snapshot: snapshot.clone(),
             });
@@ -5334,6 +5337,7 @@ impl Workspace {
             &presentation.active.selection,
             presentation.active.lease.clone(),
             presentation.active.presentation_id,
+            presentation.active.term,
             presentation.active.identity_mismatch_marker.clone(),
             None,
         ) {
@@ -8572,9 +8576,10 @@ fn capture_remote_herdr_create_request(
         .remote_hosts
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let context = entries
+    let entry = entries
         .get(host_id)
-        .and_then(|entry| entry.context.as_ref())
+        .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+    let context = current_remote_context(entry)
         .ok_or_else(|| WorkspaceError::new("Connect this SSH host before creating a session"))?;
     if context.snapshot.endpoint() != endpoint {
         return Err(WorkspaceError::new(
@@ -8600,10 +8605,7 @@ fn capture_remote_herdr_create_request(
     }
     Ok(RemoteHerdrCreateRequest {
         host_id: host_id.to_owned(),
-        connection_generation: entries
-            .get(host_id)
-            .expect("remote context came from this entry")
-            .generation,
+        connection_generation: entry.generation,
         host: context.host.clone(),
         snapshot: context.snapshot.clone(),
         executable: executable.clone(),
@@ -8686,9 +8688,10 @@ fn capture_remote_zellij_create_request(
         .remote_hosts
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let context = entries
+    let entry = entries
         .get(host_id)
-        .and_then(|entry| entry.context.as_ref())
+        .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+    let context = current_remote_context(entry)
         .ok_or_else(|| WorkspaceError::new("Connect this SSH host before creating a session"))?;
     if context.snapshot.endpoint() != endpoint {
         return Err(WorkspaceError::new(
@@ -8714,10 +8717,7 @@ fn capture_remote_zellij_create_request(
     }
     Ok(RemoteZellijCreateRequest {
         host_id: host_id.to_owned(),
-        connection_generation: entries
-            .get(host_id)
-            .expect("remote context came from this entry")
-            .generation,
+        connection_generation: entry.generation,
         host: context.host.clone(),
         snapshot: context.snapshot.clone(),
         executable: executable.clone(),
@@ -8742,9 +8742,7 @@ fn capture_remote_tmux_attach_request(
     let entry = entries
         .get(selection.host_id())
         .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
-    let context = entry
-        .context
-        .as_ref()
+    let context = current_remote_context(entry)
         .ok_or_else(|| WorkspaceError::new("Connect this SSH host before opening a session"))?;
     if context.snapshot.endpoint() != selection.endpoint() {
         return Err(WorkspaceError::new(
@@ -8782,9 +8780,10 @@ fn capture_remote_zellij_attach_request(
         .remote_hosts
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let context = entries
+    let entry = entries
         .get(selection.host_id())
-        .and_then(|entry| entry.context.as_ref())
+        .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+    let context = current_remote_context(entry)
         .ok_or_else(|| WorkspaceError::new("Connect this SSH host before opening a session"))?;
     if context.snapshot.endpoint() != selection.endpoint() {
         return Err(WorkspaceError::new(
@@ -8806,10 +8805,7 @@ fn capture_remote_zellij_attach_request(
         .ok_or_else(|| WorkspaceError::new("Zellij session is no longer active"))?;
     Ok(RemoteZellijAttachRequest {
         host_id: selection.host_id().to_owned(),
-        connection_generation: entries
-            .get(selection.host_id())
-            .expect("remote context came from this entry")
-            .generation,
+        connection_generation: entry.generation,
         selection: selection.clone(),
         host: context.host.clone(),
         snapshot: context.snapshot.clone(),
@@ -8832,9 +8828,10 @@ fn capture_remote_herdr_attach_request(
         .remote_hosts
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let context = entries
+    let entry = entries
         .get(selection.host_id())
-        .and_then(|entry| entry.context.as_ref())
+        .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+    let context = current_remote_context(entry)
         .ok_or_else(|| WorkspaceError::new("Connect this SSH host before opening a session"))?;
     if context.snapshot.endpoint() != selection.endpoint() {
         return Err(WorkspaceError::new(
@@ -8859,10 +8856,7 @@ fn capture_remote_herdr_attach_request(
         .ok_or_else(|| WorkspaceError::new("Herdr session is no longer running"))?;
     Ok(RemoteHerdrAttachRequest {
         host_id: selection.host_id().to_owned(),
-        connection_generation: entries
-            .get(selection.host_id())
-            .expect("remote context came from this entry")
-            .generation,
+        connection_generation: entry.generation,
         selection: selection.clone(),
         host: context.host.clone(),
         snapshot: context.snapshot.clone(),
@@ -8937,9 +8931,10 @@ fn capture_remote_herdr_restart_request(
         .remote_hosts
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let context = entries
+    let entry = entries
         .get(selection.host_id())
-        .and_then(|entry| entry.context.as_ref())
+        .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+    let context = current_remote_context(entry)
         .ok_or_else(|| WorkspaceError::new("Connect this SSH host before restarting a session"))?;
     if context.snapshot.endpoint() != selection.endpoint() {
         return Err(WorkspaceError::new(
@@ -8965,10 +8960,7 @@ fn capture_remote_herdr_restart_request(
     }
     Ok(RemoteHerdrCreateRequest {
         host_id: selection.host_id().to_owned(),
-        connection_generation: entries
-            .get(selection.host_id())
-            .expect("remote context came from this entry")
-            .generation,
+        connection_generation: entry.generation,
         host: context.host.clone(),
         snapshot: context.snapshot.clone(),
         executable: executable.clone(),
@@ -8989,13 +8981,13 @@ fn require_host_session_actions(
         .iter()
         .find(|host| host.id == selection.host_id() && host.endpoint == selection.endpoint())
         .ok_or_else(|| WorkspaceError::new("the selected host is not available"))?;
-    if matches!(
-        host.connection,
-        HostConnectionState::Disconnected | HostConnectionState::Unavailable
-    ) {
-        return Err(WorkspaceError::new(
-            "connect the WSL host before changing a session",
-        ));
+    if !matches!(host.connection, HostConnectionState::Ready) {
+        let message = if host.id == "wsl" {
+            "connect the WSL host before changing a session"
+        } else {
+            "wait for the SSH host connection to be ready before changing a session"
+        };
+        return Err(WorkspaceError::new(message));
     }
     match selection.kind() {
         SessionKind::Herdr if host.herdr_diagnostic.is_some() => {
@@ -9011,6 +9003,13 @@ fn require_host_session_actions(
         SessionKind::Tmux | SessionKind::Herdr | SessionKind::Zellij => {}
     }
     Ok(())
+}
+
+fn current_remote_context(entry: &RemoteEntry) -> Option<&RemoteHostContext> {
+    entry
+        .context
+        .as_ref()
+        .filter(|context| context.generation == entry.generation)
 }
 
 fn herdr_operation_pending_for_selection(inner: &Inner, selection: &SessionSelection) -> bool {
@@ -11941,6 +11940,7 @@ fn run_remote_tmux_attach(
                     &request.selection,
                     request.snapshot.lease().clone(),
                     next_presentation_id(inner),
+                    term,
                     Some(identity_mismatch_marker),
                     Some(&RemotePublicationFence {
                         host_id: &request.host_id,
@@ -11952,7 +11952,6 @@ fn run_remote_tmux_attach(
                 .map_err(|error| error.error);
                 drop(navigation);
                 published?;
-                set_terminal_notice(inner, term);
                 Ok(())
             });
     if let Err(error) = result
@@ -12059,6 +12058,7 @@ fn run_remote_herdr_attach(
                     &request.selection,
                     snapshot.lease().clone(),
                     next_presentation_id(inner),
+                    term,
                     None,
                     Some(&RemotePublicationFence {
                         host_id: &request.host_id,
@@ -12070,7 +12070,6 @@ fn run_remote_herdr_attach(
                 .map_err(|error| error.error);
                 drop(navigation);
                 published?;
-                set_terminal_notice(inner, term);
                 Ok(())
             });
     if let Err(error) = result
@@ -12239,6 +12238,7 @@ fn run_remote_zellij_attach(
                     &request.selection,
                     snapshot.lease().clone(),
                     next_presentation_id(inner),
+                    term,
                     None,
                     Some(&RemotePublicationFence {
                         host_id: &request.host_id,
@@ -12250,7 +12250,6 @@ fn run_remote_zellij_attach(
                 .map_err(|error| error.error);
                 drop(navigation);
                 published?;
-                set_terminal_notice(inner, term);
                 Ok(())
             });
     if let Err(error) = result
@@ -12423,6 +12422,7 @@ fn run_remote_herdr_create(
                 &selection,
                 snapshot.lease().clone(),
                 next_presentation_id(inner),
+                term,
                 None,
                 Some(&RemotePublicationFence {
                     host_id: &request.host_id,
@@ -12435,7 +12435,6 @@ fn run_remote_herdr_create(
             drop(navigation);
             reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
             published?;
-            set_terminal_notice(inner, term);
             Ok(())
         });
     if let Err(error) = result
@@ -12503,6 +12502,7 @@ fn run_remote_zellij_create(
                 &selection,
                 snapshot.lease().clone(),
                 next_presentation_id(inner),
+                term,
                 None,
                 Some(&RemotePublicationFence {
                     host_id: &request.host_id,
@@ -12515,7 +12515,6 @@ fn run_remote_zellij_create(
             drop(navigation);
             reconcile_remote_snapshot(inner, &request.host_id, &snapshot);
             published?;
-            set_terminal_notice(inner, term);
             Ok(())
         });
     if let Err(error) = result
@@ -13694,6 +13693,7 @@ fn publish_remote_worker(
     selection: &SessionSelection,
     lease: host::SshLease,
     presentation_id: u64,
+    term: AttachTerm,
     identity_mismatch_marker: Option<String>,
     fence: Option<&RemotePublicationFence<'_>>,
 ) -> Result<(), Box<RemotePublishError>> {
@@ -13793,11 +13793,12 @@ fn publish_remote_worker(
         worker_generation,
         lease,
         presentation_id,
+        term,
         retainable: retain_remote_session(selection.kind()),
         identity_mismatch_marker,
     });
     clear_pending_paste(inner);
-    clear_terminal_notice(inner);
+    set_terminal_notice(inner, term);
     set_inner_state(
         inner,
         WorkspaceContent::Terminal {
@@ -21778,6 +21779,27 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!launched.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn connecting_remote_host_rejects_fresh_session_actions() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Connecting,
+                Vec::new(),
+                None,
+            )],
+        ));
+        let selection = SessionSelection::new("ssh:studio", "studio.example", "build");
+
+        let error = require_host_session_actions(&workspace.inner, &selection)
+            .expect_err("connecting hosts cannot authorize fresh actions");
+
+        assert!(error.to_string().contains("ready"));
     }
 
     #[test]
