@@ -12322,6 +12322,112 @@ fn with_current_remote_constructive<T>(
     launch()
 }
 
+fn recapture_remote_attachment_context(
+    inner: &Inner,
+    host_id: &str,
+    connection_generation: u64,
+    expected: &RemoteTmuxSnapshot,
+) -> Result<(RuntimeRemoteHost, RemoteTmuxSnapshot), WorkspaceError> {
+    let entries = inner
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = entries
+        .get(host_id)
+        .ok_or_else(|| WorkspaceError::new("the SSH host is no longer configured"))?;
+    let context = current_remote_context(entry)
+        .ok_or_else(|| WorkspaceError::new("the SSH host disconnected before attachment"))?;
+    if entry.generation != connection_generation
+        || context.snapshot.endpoint() != expected.endpoint()
+        || context.snapshot.route_identity() != expected.route_identity()
+        || context.snapshot.lease_generation() != expected.lease_generation()
+    {
+        return Err(WorkspaceError::new(
+            "the SSH connection changed before attachment; refresh before trying again",
+        ));
+    }
+    Ok((context.host.clone(), context.snapshot.clone()))
+}
+
+fn recapture_remote_tmux_attach_request(
+    inner: &Inner,
+    request: &RemoteTmuxAttachRequest,
+) -> Result<RemoteTmuxAttachRequest, WorkspaceError> {
+    let (host, snapshot) = recapture_remote_attachment_context(
+        inner,
+        &request.host_id,
+        request.connection_generation,
+        &request.snapshot,
+    )?;
+    let session = snapshot
+        .sessions()
+        .iter()
+        .find(|session| session.identity() == request.session.identity())
+        .cloned()
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "the remote tmux session changed while waiting; refresh before opening it",
+            )
+        })?;
+    Ok(RemoteTmuxAttachRequest {
+        host_id: request.host_id.clone(),
+        connection_generation: request.connection_generation,
+        selection: SessionSelection::new(&request.host_id, snapshot.endpoint(), session.name()),
+        host,
+        snapshot,
+        session,
+    })
+}
+
+fn recapture_remote_herdr_attach_request(
+    inner: &Inner,
+    request: &RemoteHerdrAttachRequest,
+) -> Result<RemoteHerdrAttachRequest, WorkspaceError> {
+    let (host, snapshot) = recapture_remote_attachment_context(
+        inner,
+        &request.host_id,
+        request.connection_generation,
+        &request.snapshot,
+    )?;
+    let (executable, session) = resolve_remote_herdr_attach_target(
+        snapshot.herdr(),
+        &request.executable,
+        &request.session,
+    )?;
+    Ok(RemoteHerdrAttachRequest {
+        host_id: request.host_id.clone(),
+        connection_generation: request.connection_generation,
+        selection: SessionSelection::herdr(&request.host_id, snapshot.endpoint(), session.name()),
+        host,
+        snapshot,
+        executable,
+        session,
+    })
+}
+
+fn recapture_remote_zellij_attach_request(
+    inner: &Inner,
+    request: &RemoteZellijAttachRequest,
+) -> Result<RemoteZellijAttachRequest, WorkspaceError> {
+    let (host, snapshot) = recapture_remote_attachment_context(
+        inner,
+        &request.host_id,
+        request.connection_generation,
+        &request.snapshot,
+    )?;
+    let (executable, session) =
+        resolve_remote_zellij_attach_target(snapshot.zellij(), &request.executable, &request.name)?;
+    Ok(RemoteZellijAttachRequest {
+        host_id: request.host_id.clone(),
+        connection_generation: request.connection_generation,
+        selection: SessionSelection::zellij(&request.host_id, snapshot.endpoint(), session.name()),
+        host,
+        snapshot,
+        executable,
+        name: session.name().to_owned(),
+    })
+}
+
 fn run_remote_tmux_attach(
     inner: &Inner,
     request: &RemoteTmuxAttachRequest,
@@ -12340,8 +12446,8 @@ fn run_remote_tmux_attach(
     if !remote_attachment_is_current(inner, &request.host_id, navigation_generation, cancellation) {
         return;
     }
-    let result =
-        prepare_remote_tmux_attachment(inner, request, navigation_generation, cancellation)
+    let result = recapture_remote_tmux_attach_request(inner, request).and_then(|request| {
+        prepare_remote_tmux_attachment(inner, &request, navigation_generation, cancellation)
             .and_then(|(worker, term, identity_mismatch_marker)| {
                 let navigation = inner
                     .navigation
@@ -12380,7 +12486,8 @@ fn run_remote_tmux_attach(
                 drop(navigation);
                 published?;
                 Ok(())
-            });
+            })
+    });
     if let Err(error) = result
         && remote_attachment_is_current(
             inner,
@@ -12450,8 +12557,8 @@ fn run_remote_herdr_attach(
     if !remote_attachment_is_current(inner, &request.host_id, navigation_generation, cancellation) {
         return;
     }
-    let result =
-        prepare_remote_herdr_attachment(inner, request, navigation_generation, cancellation)
+    let result = recapture_remote_herdr_attach_request(inner, request).and_then(|request| {
+        prepare_remote_herdr_attachment(inner, &request, navigation_generation, cancellation)
             .and_then(|(worker, snapshot, session, geometry, term)| {
                 if let Err(error) =
                     worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
@@ -12498,7 +12605,8 @@ fn run_remote_herdr_attach(
                 drop(navigation);
                 published?;
                 Ok(())
-            });
+            })
+    });
     if let Err(error) = result
         && remote_attachment_is_current(
             inner,
@@ -12634,8 +12742,8 @@ fn run_remote_zellij_attach(
     if !remote_attachment_is_current(inner, &request.host_id, navigation_generation, cancellation) {
         return;
     }
-    let result =
-        prepare_remote_zellij_attachment(inner, request, navigation_generation, cancellation)
+    let result = recapture_remote_zellij_attach_request(inner, request).and_then(|request| {
+        prepare_remote_zellij_attachment(inner, &request, navigation_generation, cancellation)
             .and_then(|(worker, snapshot, session, geometry, term)| {
                 if let Err(error) =
                     worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
@@ -12677,7 +12785,8 @@ fn run_remote_zellij_attach(
                 drop(navigation);
                 published?;
                 Ok(())
-            });
+            })
+    });
     if let Err(error) = result
         && remote_attachment_is_current(
             inner,
@@ -16625,6 +16734,104 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn queued_remote_attachment_recaptures_newer_same_connection_inventory() {
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).expect("valid target"),
+            "/usr/bin/tmux",
+            None,
+        )
+        .expect("valid remote host");
+        let host = remote_host_fixture(&config);
+        let identity = session::SessionIdentity::new(42, "$1", 100);
+        let initial = RemoteTmuxSnapshot::test_fixture(
+            "studio.example",
+            TEST_REMOTE_ROUTE,
+            7,
+            vec![session::DiscoveredSession::new(
+                "build",
+                identity.clone(),
+                0,
+            )],
+            HerdrInventory::Unavailable,
+            ZellijInventory::Unavailable,
+        );
+        let request = RemoteTmuxAttachRequest {
+            host_id: config.id().to_owned(),
+            connection_generation: 7,
+            selection: SessionSelection::new(config.id(), config.endpoint(), "build"),
+            host: host.clone(),
+            snapshot: initial.clone(),
+            session: initial.sessions()[0].clone(),
+        };
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::ssh(
+                config.id(),
+                config.name(),
+                config.endpoint(),
+                HostConnectionState::Ready,
+                vec![SessionItem::new("build", 0)],
+                None,
+            )],
+        ));
+        workspace
+            .inner
+            .remote_hosts
+            .lock()
+            .expect("remote hosts")
+            .insert(
+                config.id().to_owned(),
+                RemoteEntry {
+                    config,
+                    native_host: Some(host.clone()),
+                    context: Some(RemoteHostContext {
+                        generation: 7,
+                        host,
+                        snapshot: initial.clone(),
+                    }),
+                    cancellation: None,
+                    constructive_cancellation: None,
+                    attachment_attempt: None,
+                    generation: 7,
+                },
+            );
+        let published = publish_remote_inventory(
+            &workspace.inner,
+            "ssh:studio",
+            7,
+            &initial,
+            &CancellationToken::new(),
+            RemoteSessionInventory::test_fixture(
+                Some("/usr/bin/tmux".to_owned()),
+                vec![
+                    session::DiscoveredSession::new("build", identity.clone(), 0),
+                    session::DiscoveredSession::new(
+                        "created",
+                        session::SessionIdentity::new(42, "$2", 101),
+                        0,
+                    ),
+                ],
+                HerdrInventory::Unavailable,
+                ZellijInventory::Unavailable,
+            ),
+        )
+        .expect("creation publishes newer inventory");
+
+        let recaptured = recapture_remote_tmux_attach_request(&workspace.inner, &request)
+            .expect("queued attachment accepts the newer inventory");
+
+        assert_eq!(recaptured.snapshot.inventory_generation(), 1);
+        assert_eq!(
+            recaptured.snapshot.inventory_generation(),
+            published.inventory_generation()
+        );
+        assert_eq!(recaptured.session.identity(), &identity);
+        assert_eq!(recaptured.snapshot.sessions().len(), 2);
     }
 
     #[test]
