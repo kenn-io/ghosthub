@@ -149,6 +149,150 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @Test("Always Live replaces a retained client when identity changes")
+    @MainActor
+    func alwaysLiveReplacesMismatchedRetainedIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let sessionID = LockedValue("$1")
+        let identityReads = Counter()
+        let splitter = TmuxPaneSplitter { _, _, command in
+            guard command.contains(
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+            ) else { return (0, "") }
+            let currentSessionID = sessionID.load()
+            _ = identityReads.increment()
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t101\t789\t321\t/dev/ttys001"
+                    + "\t\(currentSessionID)"
+                    + "\t\(currentSessionID == "$1" ? "1001" : "2002")"
+                    + "\t%9\n"
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in
+                let currentSessionID = sessionID.load()
+                return .success([DiscoveredTmuxSession(
+                    name: "build",
+                    windowCount: 1,
+                    serverPID: "101",
+                    sessionID: currentSessionID,
+                    createdAt: currentSessionID == "$1" ? "1001" : "2002",
+                    activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+                    previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+                    managed: false
+                )])
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 1 && identityReads.count >= 1
+        }
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "build"
+        )
+        let initialHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+
+        sessionID.withLock { $0 = "$2" }
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 2
+                && model.retainedBorrowedTmuxHandle(for: selection)
+                != initialHandle
+        }
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(surfaceStore.removedKeys.count == 1)
+        await model.shutdown()
+    }
+
+    @Test("Always Live retries an excluded name when identity changes")
+    @MainActor
+    func alwaysLiveRetriesExcludedReplacementIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let sessionID = LockedValue("$1")
+        let resolutionCount = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                let attempt = resolutionCount.load()
+                resolutionCount.withLock { $0 += 1 }
+                return attempt == 0
+                    ? .failure(.notFound(shell: "/bin/zsh"))
+                    : successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$2",
+                    createdAt: "2002"
+                )),
+            tmuxSessionDiscovery: { _ in
+                let currentSessionID = sessionID.load()
+                return .success([DiscoveredTmuxSession(
+                    name: "retry",
+                    windowCount: 1,
+                    serverPID: "101",
+                    sessionID: currentSessionID,
+                    createdAt: currentSessionID == "$1" ? "1001" : "2002",
+                    activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+                    previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+                    managed: false
+                )])
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            resolutionCount.load() == 1
+                && model.retainedBorrowedTmuxPresentationCount == 0
+        }
+
+        sessionID.withLock { $0 = "$2" }
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            resolutionCount.load() == 2
+                && model.retainedBorrowedTmuxPresentationCount == 1
+                && surfaceStore.requestCount == 1
+        }
+
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == true)
+        await model.shutdown()
+    }
+
     @Test("stale Always Live promotion cannot activate after navigation")
     @MainActor
     func staleAlwaysLivePromotionRestoresPreviewSizing() async throws {

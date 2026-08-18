@@ -497,8 +497,8 @@ final class WorkspaceSceneModel: ObservableObject {
         [UUID: TmuxPresentationKey] = [:]
     private var alwaysLiveManagedTmuxPresentationKeys:
         Set<TmuxPresentationKey> = []
-    private var alwaysLiveIneligibleTmuxPresentationKeys:
-        Set<TmuxPresentationKey> = []
+    private var alwaysLiveIneligibleTmuxPresentationIdentities:
+        [TmuxPresentationKey: TmuxSessionIdentity] = [:]
     private var pendingAlwaysLiveTmuxSurfaceHandles:
         [BorrowedTmuxSessionHandle] = []
     private var pendingAlwaysLiveTmuxSurfaceHandleIDs: Set<UUID> = []
@@ -6960,6 +6960,10 @@ final class WorkspaceSceneModel: ObservableObject {
         for hostIDs: Set<UUID>
     ) {
         guard !hostIDs.isEmpty else { return }
+        alwaysLiveIneligibleTmuxPresentationIdentities =
+            alwaysLiveIneligibleTmuxPresentationIdentities.filter {
+                !hostIDs.contains($0.key.hostID)
+            }
         let selections = alwaysLiveManagedTmuxPresentationKeys
             .filter { hostIDs.contains($0.hostID) }
             .compactMap { retainedTmuxPresentations[$0]?.selection }
@@ -6974,7 +6978,7 @@ final class WorkspaceSceneModel: ObservableObject {
         } ?? false
         let sessions = (supportsNonSizingClients
             ? tmuxSessionsByHost[hostID]?.filter {
-                $0.previewClientSize != nil
+                $0.previewClientSize != nil && $0.hasStableIdentity
             } ?? []
             : []).sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -6983,6 +6987,17 @@ final class WorkspaceSceneModel: ObservableObject {
             alwaysLiveTmuxSelection(hostID: hostID, name: $0.name)
         }
         let desiredKeys = Set(selections.map(TmuxPresentationKey.init))
+        let desiredIdentities = Dictionary(uniqueKeysWithValues:
+            zip(sessions, selections).compactMap { session, selection in
+                Self.tmuxSessionIdentity(session).map {
+                    (TmuxPresentationKey(selection), $0)
+                }
+            })
+        alwaysLiveIneligibleTmuxPresentationIdentities =
+            alwaysLiveIneligibleTmuxPresentationIdentities.filter {
+                $0.key.hostID != hostID
+                    || desiredIdentities[$0.key] == $0.value
+            }
         let obsoleteSelections = alwaysLiveManagedTmuxPresentationKeys
             .filter { $0.hostID == hostID && !desiredKeys.contains($0) }
             .compactMap { retainedTmuxPresentations[$0]?.selection }
@@ -6992,8 +7007,15 @@ final class WorkspaceSceneModel: ObservableObject {
 
         for (session, selection) in zip(sessions, selections) {
             let key = TmuxPresentationKey(selection)
-            guard !alwaysLiveIneligibleTmuxPresentationKeys.contains(key)
+            guard let discoveredIdentity = desiredIdentities[key],
+                  alwaysLiveIneligibleTmuxPresentationIdentities[key]
+                  != discoveredIdentity
             else { continue }
+            if let retained = retainedTmuxPresentations[key],
+               let attachedIdentity = retained.verifiedPreviewIdentity,
+               attachedIdentity != discoveredIdentity {
+                invalidateBorrowedTmuxSession(retained.selection)
+            }
             let wasRetained = retainedTmuxPresentations[key] != nil
             guard let handle = presentTmuxSession(
                 selection,
@@ -7085,7 +7107,7 @@ final class WorkspaceSceneModel: ObservableObject {
             invalidateBorrowedTmuxSession(selection)
         }
         alwaysLiveManagedTmuxPresentationKeys.removeAll()
-        alwaysLiveIneligibleTmuxPresentationKeys.removeAll()
+        alwaysLiveIneligibleTmuxPresentationIdentities.removeAll()
     }
 
     func borrowedHerdrSessionView(
@@ -9037,7 +9059,14 @@ final class WorkspaceSceneModel: ObservableObject {
         _ presentation: RetainedTmuxPresentation,
         key: TmuxPresentationKey
     ) {
-        alwaysLiveIneligibleTmuxPresentationKeys.insert(key)
+        if let identity = snapshot.host(id: key.hostID).flatMap({ host in
+            Self.discoveredTmuxSessionIdentity(
+                presentation.selection,
+                hostSummary: host
+            )
+        }) {
+            alwaysLiveIneligibleTmuxPresentationIdentities[key] = identity
+        }
         invalidateBorrowedTmuxSession(presentation.selection)
     }
 
@@ -9716,8 +9745,15 @@ final class WorkspaceSceneModel: ObservableObject {
         guard selection.socketName == nil,
               let summary = hostSummary.tmuxSessions.first(where: {
                   $0.name == selection.name
-              }),
-              summary.hasStableIdentity,
+              })
+        else { return nil }
+        return tmuxSessionIdentity(summary)
+    }
+
+    private static func tmuxSessionIdentity(
+        _ summary: TmuxSessionSummary
+    ) -> TmuxSessionIdentity? {
+        guard summary.hasStableIdentity,
               let serverPID = summary.serverPID,
               let sessionID = summary.sessionID,
               let createdAt = summary.createdAt
