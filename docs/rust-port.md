@@ -1130,8 +1130,10 @@ and persist immediately; incomplete Custom color input remains editable until
 it forms a valid color. Theme selection is persisted by name, and custom colors
 are stored only for Custom. Older color-only configuration loads as Custom.
 Each persisted change atomically publishes the projection to the running GPUI
-workspace. Existing terminal clients keep the palette they negotiated until
-reopened; new clients use the current defaults. Hosts owns only
+workspace. Terminal palettes never recolor Ghosthub's application chrome;
+interface appearance remains a separate settings concern. Existing terminal
+clients keep the palette they negotiated until reopened; new clients use the
+current defaults. Hosts owns only
 `[[ssh-host]]` records. The shell's stable navigation, page header, list, and
 detail regions are the permanent container for the remaining Swift settings
 domains.

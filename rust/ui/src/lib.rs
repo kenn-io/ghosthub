@@ -28,6 +28,7 @@ pub const WINDOW_TITLE: &str = "Ghosthub";
 const APP_NAVIGATION_WIDTH: f32 = 224.0;
 const APP_TITLEBAR_HEIGHT: f32 = 32.0;
 const APP_CHROME_BACKGROUND: u32 = 0x0f_1116;
+const APP_CHROME_FOREGROUND: u32 = 0xd8_de_e9;
 const NAVIGATION_HEADER_HEIGHT: f32 = 32.0;
 const HOST_ROW_HEIGHT: f32 = 28.0;
 const SESSION_GROUP_ROW_HEIGHT: f32 = 24.0;
@@ -641,6 +642,10 @@ fn appearance_preview_colors(draft: &AppearanceSettingsDraft) -> (u32, u32) {
             appearance_preview_color(&draft.foreground, 0xd8_de_e9),
         )
     })
+}
+
+fn chrome_palette_for_terminal_theme(_theme: TerminalTheme) -> (u32, u32) {
+    (APP_CHROME_BACKGROUND, APP_CHROME_FOREGROUND)
 }
 
 fn terminal_font_families(cx: &Context<RootView>, configured: &str) -> Vec<String> {
@@ -8084,12 +8089,14 @@ impl Render for RootView {
         let session_action_menu = self.session_action_menu_overlay(window, cx);
         let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let herdr_lifecycle_overlay = self.pending_herdr_lifecycle_overlay(window, cx);
+        let (chrome_background, chrome_foreground) =
+            chrome_palette_for_terminal_theme(snapshot.appearance().theme());
         let mut root = div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(snapshot.appearance().background()))
-            .text_color(rgb(snapshot.appearance().foreground()))
+            .bg(rgb(chrome_background))
+            .text_color(rgb(chrome_foreground))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 this.toggle_sidebar(window, cx);
             }))
@@ -8785,16 +8792,16 @@ mod tests {
         adjacent_appearance_field, appearance_draft_is_persistable, appearance_preview_color,
         application_navigation_width, apply_new_worktree_failure, apply_worktree_removal_failure,
         available_herdr_row_actions, can_create_worktree, can_kill_worktree,
-        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
-        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
-        host_header_action, host_landing_text, input_queue_has_capacity,
-        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
-        owns_created_worktree_navigation, pull_request_import_selector,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_creation_available, session_group_visibility,
-        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        canonical_terminal_key_with, chrome_palette_for_terminal_theme, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
+        herdr_session_menu_actions, host_header_action, host_landing_text,
+        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
+        kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
+        new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
+        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
+        session_action_menu_position, session_backend_id, session_creation_available,
+        session_group_visibility, session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
         terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
         terminal_line_height, terminal_wheel_steps, tmux_row_actions, toggle_session_group_state,
         transitioned_presentation, tree_herdr_sessions, tree_sessions, tree_zellij_sessions,
@@ -8913,6 +8920,16 @@ mod tests {
         assert!(appearance_draft_is_persistable(&draft));
         draft.font_size = "0".to_owned();
         assert!(!appearance_draft_is_persistable(&draft));
+    }
+
+    #[test]
+    fn terminal_themes_never_recolor_application_chrome() {
+        for theme in TerminalTheme::ALL {
+            assert_eq!(
+                chrome_palette_for_terminal_theme(theme),
+                (super::APP_CHROME_BACKGROUND, super::APP_CHROME_FOREGROUND)
+            );
+        }
     }
 
     #[test]
