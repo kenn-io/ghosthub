@@ -72,6 +72,36 @@ pub struct Appearance {
     foreground: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppearanceSettingsDraft {
+    pub font_family: String,
+    pub font_size: String,
+    pub background: String,
+    pub foreground: String,
+}
+
+impl From<&TerminalAppearance> for AppearanceSettingsDraft {
+    fn from(value: &TerminalAppearance) -> Self {
+        Self {
+            font_family: value.font_family().to_owned(),
+            font_size: value.font_size().to_string(),
+            background: format!("#{:06x}", value.background()),
+            foreground: format!("#{:06x}", value.foreground()),
+        }
+    }
+}
+
+impl From<&Appearance> for AppearanceSettingsDraft {
+    fn from(value: &Appearance) -> Self {
+        Self {
+            font_family: value.font_family().to_owned(),
+            font_size: value.font_size().to_string(),
+            background: format!("#{:06x}", value.background()),
+            foreground: format!("#{:06x}", value.foreground()),
+        }
+    }
+}
+
 impl Appearance {
     #[must_use]
     pub fn font_family(&self) -> &str {
@@ -3237,7 +3267,7 @@ impl AdmissionAttacher for ConptyAdmissionAttacher {
 }
 
 struct Inner {
-    appearance: Appearance,
+    appearance: RwLock<Appearance>,
     host_scoped_inventory: bool,
     wsl_config: Option<WslConfig>,
     wsl_executable: Mutex<Option<WslExecutable>>,
@@ -3893,7 +3923,7 @@ impl Workspace {
         };
         Self {
             inner: Arc::new(Inner {
-                appearance: snapshot.appearance,
+                appearance: RwLock::new(snapshot.appearance),
                 host_scoped_inventory: false,
                 wsl_config: None,
                 wsl_executable: Mutex::new(None),
@@ -4050,7 +4080,7 @@ impl Workspace {
         let wsl_executable = wsl.and_then(|spec| spec.executable);
         Self {
             inner: Arc::new(Inner {
-                appearance: appearance.into(),
+                appearance: RwLock::new(appearance.into()),
                 host_scoped_inventory: true,
                 wsl_config,
                 wsl_executable: Mutex::new(wsl_executable),
@@ -4115,7 +4145,7 @@ impl Workspace {
         let allow_remote_clipboard_write = appearance.allow_remote_clipboard_write();
         let workspace = Self {
             inner: Arc::new(Inner {
-                appearance: appearance.into(),
+                appearance: RwLock::new(appearance.into()),
                 host_scoped_inventory: false,
                 wsl_config: Some(config.clone()),
                 wsl_executable: Mutex::new(None),
@@ -4223,6 +4253,74 @@ impl Workspace {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn configured_appearance(&self) -> AppearanceSettingsDraft {
+        self.inner
+            .settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or_else(
+                || {
+                    let appearance = self
+                        .inner
+                        .appearance
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    AppearanceSettingsDraft::from(&*appearance)
+                },
+                |settings| AppearanceSettingsDraft::from(settings.config.terminal()),
+            )
+    }
+
+    /// Persist terminal appearance settings and publish them to the running
+    /// workspace. Existing clients keep their negotiated terminal palette;
+    /// the UI and newly opened clients use the saved values immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid values, unavailable settings storage, or
+    /// an I/O failure.
+    pub fn save_appearance(&self, draft: &AppearanceSettingsDraft) -> Result<(), WorkspaceError> {
+        let font_size = draft
+            .font_size
+            .trim()
+            .parse::<u16>()
+            .map_err(|_| WorkspaceError::new("Font size must be a number from 1 to 65535"))?;
+        let appearance = {
+            let mut settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let settings = settings
+                .as_mut()
+                .ok_or_else(|| WorkspaceError::new("Appearance settings storage is unavailable"))?;
+            let appearance = TerminalAppearance::new(
+                draft.font_family.trim(),
+                font_size,
+                draft.background.trim(),
+                draft.foreground.trim(),
+                settings.config.terminal().allow_remote_clipboard_write(),
+            )
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            let roots = settings.roots.clone();
+            settings
+                .config
+                .replace_terminal_appearance(&roots, appearance.clone())
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            appearance
+        };
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        *self
+            .inner
+            .appearance
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = appearance.into();
+        self.inner.revision.fetch_add(1, Ordering::Release);
+        Ok(())
     }
 
     /// Persist a new or edited SSH host and publish its disconnected row.
@@ -5345,7 +5443,12 @@ impl Workspace {
                 };
                 WorkspaceSnapshot {
                     revision,
-                    appearance: self.inner.appearance.clone(),
+                    appearance: self
+                        .inner
+                        .appearance
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone(),
                     content,
                     hosts,
                     selected_host,
@@ -12560,7 +12663,7 @@ fn prepare_remote_tmux_attachment(
                 geometry.sequence,
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-                default_colors(&inner.appearance),
+                current_default_colors(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
@@ -12710,7 +12813,7 @@ fn prepare_remote_herdr_attachment(
                 geometry.sequence,
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-                default_colors(&inner.appearance),
+                current_default_colors(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
@@ -12887,7 +12990,7 @@ fn prepare_remote_zellij_attachment(
                 geometry.sequence,
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-                default_colors(&inner.appearance),
+                current_default_colors(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
@@ -13225,7 +13328,7 @@ fn create_remote_herdr_fresh(
                 geometry.sequence,
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-                default_colors(&inner.appearance),
+                current_default_colors(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
             Ok(worker)
@@ -13342,7 +13445,7 @@ fn create_remote_zellij_fresh(
                 geometry.sequence,
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-                default_colors(&inner.appearance),
+                current_default_colors(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
             Ok(worker)
@@ -13737,7 +13840,7 @@ fn create_herdr_fresh(
                 geometry.sequence,
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-                default_colors(&inner.appearance),
+                current_default_colors(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
             Ok((worker, geometry))
@@ -13843,7 +13946,7 @@ fn create_zellij_fresh(
         geometry.sequence,
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
+        current_default_colors(inner),
     )
     .map_err(|error| WorkspaceError::new(error.to_string()))?;
 
@@ -14106,7 +14209,7 @@ fn create_fresh(
         launch_geometry.sequence,
         launch_geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
+        current_default_colors(inner),
     )
     .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let client_identity = request
@@ -15531,7 +15634,7 @@ fn launch_fresh_tmux(
         geometry.sequence,
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
+        current_default_colors(inner),
     )
     .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
     Ok((
@@ -15740,7 +15843,7 @@ fn launch_fresh_protected_worktree_once(
         geometry.sequence,
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
+        current_default_colors(inner),
     )
     .map_err(|error| {
         WorktreeLaunchError::Attach(AttachFreshError::Host(WorkspaceError::new(
@@ -15880,7 +15983,7 @@ fn launch_fresh_worktree_once(
         geometry.sequence,
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
+        current_default_colors(inner),
     )
     .map_err(|error| {
         WorktreeLaunchError::Attach(AttachFreshError::Host(WorkspaceError::new(
@@ -16105,7 +16208,7 @@ fn launch_fresh_herdr(
                 geometry.sequence,
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-                default_colors(&inner.appearance),
+                current_default_colors(inner),
             )
             .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
             Ok((worker, geometry))
@@ -16137,7 +16240,7 @@ fn launch_fresh_zellij(
         geometry.sequence,
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
+        current_default_colors(inner),
     )
     .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
     Ok((worker, fresh.clone(), session.name().to_owned(), geometry))
@@ -16178,6 +16281,14 @@ fn clear_terminal_notice(inner: &Inner) {
 
 fn default_colors(appearance: &Appearance) -> DefaultColors {
     DefaultColors::new(rgb(appearance.foreground()), rgb(appearance.background()))
+}
+
+fn current_default_colors(inner: &Inner) -> DefaultColors {
+    let appearance = inner
+        .appearance
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    default_colors(&appearance)
 }
 
 fn rgb(color: u32) -> Rgb {

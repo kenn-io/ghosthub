@@ -18,10 +18,10 @@ use gpui::{
 use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
-    ConfiguredSshHost, HerdrSessionState, HostConnectionState, HostItem, KeyEvent as InputKeyEvent,
-    KeyInput, KwtProjectAction, Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput,
-    NamedKey, SessionName, SessionSelection, SshHostDraft, SshPromptRequest, Workspace,
-    WorkspaceContent, WorkspaceEvent,
+    AppearanceSettingsDraft, ConfiguredSshHost, HerdrSessionState, HostConnectionState, HostItem,
+    KeyEvent as InputKeyEvent, KeyInput, KwtProjectAction, Modifiers as InputModifiers,
+    MouseAction, MouseButton, MouseInput, NamedKey, SessionName, SessionSelection, SshHostDraft,
+    SshPromptRequest, Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
@@ -436,21 +436,69 @@ impl SshField {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingsPane {
+    Appearance,
     Hosts,
 }
 
 impl SettingsPane {
-    const ALL: [Self; 1] = [Self::Hosts];
+    const ALL: [Self; 2] = [Self::Appearance, Self::Hosts];
 
     const fn title(self) -> &'static str {
         match self {
+            Self::Appearance => "Appearance",
             Self::Hosts => "Hosts",
         }
     }
 
     const fn subtitle(self) -> &'static str {
         match self {
+            Self::Appearance => "Choose the font and colors used by terminal presentations.",
             Self::Hosts => "Connect the machines and tmux sessions in your SSH network.",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AppearanceField {
+    FontFamily,
+    FontSize,
+    Background,
+    Foreground,
+}
+
+impl AppearanceField {
+    const fn adjacent(self, reverse: bool) -> Self {
+        if reverse {
+            match self {
+                Self::FontFamily => Self::Foreground,
+                Self::FontSize => Self::FontFamily,
+                Self::Background => Self::FontSize,
+                Self::Foreground => Self::Background,
+            }
+        } else {
+            match self {
+                Self::FontFamily => Self::FontSize,
+                Self::FontSize => Self::Background,
+                Self::Background => Self::Foreground,
+                Self::Foreground => Self::FontFamily,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AppearanceEditor {
+    draft: AppearanceSettingsDraft,
+    field: AppearanceField,
+    error: Option<String>,
+}
+
+impl AppearanceEditor {
+    fn new(draft: AppearanceSettingsDraft) -> Self {
+        Self {
+            draft,
+            field: AppearanceField::FontFamily,
+            error: None,
         }
     }
 }
@@ -477,6 +525,7 @@ impl SshHostEditor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SettingsDialog {
     pane: SettingsPane,
+    appearance_editor: AppearanceEditor,
     selected_host_id: Option<String>,
     host_editor: Option<SshHostEditor>,
     pending_remove: Option<ConfiguredSshHost>,
@@ -484,10 +533,11 @@ struct SettingsDialog {
 }
 
 impl SettingsDialog {
-    fn new(hosts: &[ConfiguredSshHost]) -> Self {
+    fn new(hosts: &[ConfiguredSshHost], appearance: AppearanceSettingsDraft) -> Self {
         let selected = hosts.first();
         Self {
-            pane: SettingsPane::Hosts,
+            pane: SettingsPane::Appearance,
+            appearance_editor: AppearanceEditor::new(appearance),
             selected_host_id: selected.map(|host| host.id().to_owned()),
             host_editor: selected.map(|host| SshHostEditor::new(Some(host))),
             pending_remove: None,
@@ -511,6 +561,35 @@ fn ssh_draft_field_mut(draft: &mut SshHostDraft, field: SshField) -> &mut String
         SshField::TmuxBinary => &mut draft.tmux_binary,
         SshField::SocketDirectory => &mut draft.socket_directory,
     }
+}
+
+fn appearance_draft_field_mut(
+    draft: &mut AppearanceSettingsDraft,
+    field: AppearanceField,
+) -> &mut String {
+    match field {
+        AppearanceField::FontFamily => &mut draft.font_family,
+        AppearanceField::FontSize => &mut draft.font_size,
+        AppearanceField::Background => &mut draft.background,
+        AppearanceField::Foreground => &mut draft.foreground,
+    }
+}
+
+fn appearance_draft_field(draft: &AppearanceSettingsDraft, field: AppearanceField) -> &str {
+    match field {
+        AppearanceField::FontFamily => &draft.font_family,
+        AppearanceField::FontSize => &draft.font_size,
+        AppearanceField::Background => &draft.background,
+        AppearanceField::Foreground => &draft.foreground,
+    }
+}
+
+fn appearance_preview_color(value: &str, fallback: u32) -> u32 {
+    value
+        .strip_prefix('#')
+        .filter(|digits| digits.len() == 6)
+        .and_then(|digits| u32::from_str_radix(digits, 16).ok())
+        .unwrap_or(fallback)
 }
 
 fn ssh_draft_field(draft: &SshHostDraft, field: SshField) -> &str {
@@ -1458,7 +1537,8 @@ impl RootView {
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let hosts = self.workspace.configured_ssh_hosts();
-        self.settings_dialog = Some(SettingsDialog::new(&hosts));
+        let appearance = self.workspace.configured_appearance();
+        self.settings_dialog = Some(SettingsDialog::new(&hosts, appearance));
         self.session_action_menu = None;
         window.focus(&self.settings_focus);
         cx.notify();
@@ -1543,6 +1623,61 @@ impl RootView {
         cx.notify();
     }
 
+    fn save_appearance(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self
+            .settings_dialog
+            .as_ref()
+            .map(|dialog| dialog.appearance_editor.draft.clone())
+        else {
+            return;
+        };
+        match self.workspace.save_appearance(&draft) {
+            Ok(()) => {
+                if let Some(dialog) = &mut self.settings_dialog {
+                    dialog.appearance_editor =
+                        AppearanceEditor::new(self.workspace.configured_appearance());
+                }
+            }
+            Err(error) => {
+                if let Some(dialog) = &mut self.settings_dialog {
+                    dialog.appearance_editor.error = Some(error.to_string());
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn edit_appearance_field(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.to_ascii_lowercase();
+        let Some(editor) = self
+            .settings_dialog
+            .as_mut()
+            .map(|dialog| &mut dialog.appearance_editor)
+        else {
+            return;
+        };
+        let value = appearance_draft_field_mut(&mut editor.draft, editor.field);
+        editor.error = None;
+        if is_paste_shortcut(&event.keystroke) {
+            if !event.is_held
+                && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+            {
+                append_non_control_characters(value, &text, SETTINGS_FIELD_CHARACTER_LIMIT);
+            }
+        } else if key == "backspace" {
+            value.pop();
+        } else if !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.function
+            && let Some(text) = &event.keystroke.key_char
+        {
+            append_non_control_characters(value, text, SETTINGS_FIELD_CHARACTER_LIMIT);
+        }
+        cx.notify();
+        cx.stop_propagation();
+    }
+
     fn remove_ssh_host(&mut self, cx: &mut Context<Self>) {
         let Some(host) = self
             .settings_dialog
@@ -1610,6 +1745,10 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.to_ascii_lowercase();
+        let pane = self
+            .settings_dialog
+            .as_ref()
+            .map_or(SettingsPane::Appearance, |dialog| dialog.pane);
         if key == "escape" && !event.is_held {
             if self
                 .settings_dialog
@@ -1628,7 +1767,9 @@ impl RootView {
             return;
         }
         if key == "enter" && !event.is_held {
-            if self
+            if pane == SettingsPane::Appearance {
+                self.save_appearance(cx);
+            } else if self
                 .settings_dialog
                 .as_ref()
                 .is_some_and(|dialog| dialog.pending_remove.is_some())
@@ -1641,16 +1782,24 @@ impl RootView {
             return;
         }
         if key == "tab" {
-            if let Some(editor) = self
-                .settings_dialog
-                .as_mut()
-                .and_then(|dialog| dialog.host_editor.as_mut())
-            {
-                editor.field = editor.field.adjacent(event.keystroke.modifiers.shift);
-                editor.error = None;
+            if let Some(dialog) = &mut self.settings_dialog {
+                if pane == SettingsPane::Appearance {
+                    dialog.appearance_editor.field = dialog
+                        .appearance_editor
+                        .field
+                        .adjacent(event.keystroke.modifiers.shift);
+                    dialog.appearance_editor.error = None;
+                } else if let Some(editor) = &mut dialog.host_editor {
+                    editor.field = editor.field.adjacent(event.keystroke.modifiers.shift);
+                    editor.error = None;
+                }
                 cx.notify();
             }
             cx.stop_propagation();
+            return;
+        }
+        if pane == SettingsPane::Appearance {
+            self.edit_appearance_field(event, cx);
             return;
         }
         let Some(editor) = self
@@ -4384,11 +4533,192 @@ impl RootView {
             .into_any_element()
     }
 
+    fn appearance_field_row(
+        &self,
+        label: &'static str,
+        field: AppearanceField,
+        draft: &AppearanceSettingsDraft,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let selected = self
+            .settings_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.appearance_editor.field == field);
+        let value = appearance_draft_field(draft, field);
+        let placeholder = match field {
+            AppearanceField::FontFamily => "Font family",
+            AppearanceField::FontSize => "14",
+            AppearanceField::Background | AppearanceField::Foreground => "#RRGGBB",
+        };
+        let display = if value.is_empty() {
+            if selected { "▏" } else { placeholder }.to_owned()
+        } else if selected {
+            format!("{value}▏")
+        } else {
+            value.to_owned()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(label))
+            .child(
+                div()
+                    .id(("appearance-setting-field", field as usize))
+                    .h(px(36.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(if selected { 0x4a_8f_cf } else { 0x3a_404c }))
+                    .bg(rgb(0x0f_1218))
+                    .cursor_text()
+                    .text_sm()
+                    .text_color(rgb(if value.is_empty() && !selected {
+                        0x72_7986
+                    } else {
+                        0xe1_e5ec
+                    }))
+                    .child(display)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(dialog) = &mut this.settings_dialog {
+                            dialog.appearance_editor.field = field;
+                            dialog.appearance_editor.error = None;
+                        }
+                        window.focus(&this.settings_focus);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn settings_appearance_editor(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let Some(editor) = self
+            .settings_dialog
+            .as_ref()
+            .map(|dialog| &dialog.appearance_editor)
+        else {
+            return div().into_any_element();
+        };
+        let draft = &editor.draft;
+        let mut form = div()
+            .w_full()
+            .max_w(px(680.0))
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(div().flex_1().child(self.appearance_field_row(
+                        "Font family",
+                        AppearanceField::FontFamily,
+                        draft,
+                        cx,
+                    )))
+                    .child(div().w(px(150.0)).child(self.appearance_field_row(
+                        "Font size",
+                        AppearanceField::FontSize,
+                        draft,
+                        cx,
+                    ))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(div().flex_1().child(self.appearance_field_row(
+                        "Background",
+                        AppearanceField::Background,
+                        draft,
+                        cx,
+                    )))
+                    .child(div().flex_1().child(self.appearance_field_row(
+                        "Foreground",
+                        AppearanceField::Foreground,
+                        draft,
+                        cx,
+                    ))),
+            )
+            .child(Self::appearance_preview(draft));
+        if let Some(error) = &editor.error {
+            form = form.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0xd0_7070))
+                    .child(error.clone()),
+            );
+        }
+        form = form.child(
+            div().pt_1().flex().justify_end().child(
+                div()
+                    .id("save-appearance")
+                    .px_4()
+                    .py_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .bg(rgb(0x1d_5f9a))
+                    .child("Save Appearance")
+                    .on_click(cx.listener(|this, _, _, cx| this.save_appearance(cx))),
+            ),
+        );
+
+        div()
+            .id("settings-appearance-editor")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .px_6()
+            .py_5()
+            .child(form)
+            .into_any_element()
+    }
+
+    fn appearance_preview(draft: &AppearanceSettingsDraft) -> gpui::AnyElement {
+        let background = appearance_preview_color(&draft.background, 0x0c_0f_14);
+        let foreground = appearance_preview_color(&draft.foreground, 0xd8_de_e9);
+        let font_size = draft
+            .font_size
+            .parse::<f32>()
+            .ok()
+            .filter(|size| *size > 0.0)
+            .unwrap_or(14.0)
+            .clamp(8.0, 32.0);
+        let font_family = if draft.font_family.trim().is_empty() {
+            "monospace".to_owned()
+        } else {
+            draft.font_family.clone()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child("Preview"))
+            .child(
+                div()
+                    .h(px(132.0))
+                    .px_4()
+                    .py_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(0x3a_404c))
+                    .bg(rgb(background))
+                    .text_color(rgb(foreground))
+                    .font_family(font_family)
+                    .text_size(px(font_size))
+                    .child("Ghosthub terminal\n$ cargo test --workspace\nAll checks passed"),
+            )
+            .into_any_element()
+    }
+
     fn settings_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active = self
             .settings_dialog
             .as_ref()
-            .map_or(SettingsPane::Hosts, |dialog| dialog.pane);
+            .map_or(SettingsPane::Appearance, |dialog| dialog.pane);
         let mut panes = div().flex().flex_col().gap_1();
         for (index, pane) in SettingsPane::ALL.into_iter().enumerate() {
             panes = panes.child(
@@ -4778,6 +5108,7 @@ impl RootView {
         let dialog = self.settings_dialog.as_ref()?;
         let pane = dialog.pane;
         let detail = match pane {
+            SettingsPane::Appearance => self.settings_appearance_editor(cx),
             SettingsPane::Hosts => div()
                 .flex_1()
                 .min_h_0()
@@ -7966,7 +8297,7 @@ mod tests {
     use std::collections::{HashSet, VecDeque};
 
     use super::{
-        APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
+        APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, AppearanceField, HerdrRowAccess, HerdrRowAction,
         HostHeaderAction, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal,
         LayoutKey, NewSessionDraft, NewSessionKind, NewWorktreeMode, PendingUiInput, ProjectDialog,
         QueuedUiInput, SessionGroup, SessionGroupKey, SessionRowAction, SettingsDialog,
@@ -7975,18 +8306,18 @@ mod tests {
         UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext,
         WorktreeOpenMode, WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget,
         WorktreeSessionPresence, WorktreeSocket, active_session_selection,
-        application_navigation_width, apply_new_worktree_failure, apply_worktree_removal_failure,
-        available_herdr_row_actions, can_create_worktree, can_kill_worktree,
-        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
-        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
-        host_header_action, host_landing_text, input_queue_has_capacity,
-        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
-        owns_created_worktree_navigation, pull_request_import_selector,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_creation_available, session_group_visibility,
-        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        appearance_preview_color, application_navigation_width, apply_new_worktree_failure,
+        apply_worktree_removal_failure, available_herdr_row_actions, can_create_worktree,
+        can_kill_worktree, canonical_terminal_key_with, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
+        herdr_session_menu_actions, host_header_action, host_landing_text,
+        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
+        kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
+        new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
+        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
+        session_action_menu_position, session_backend_id, session_creation_available,
+        session_group_visibility, session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
         terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
         terminal_line_height, terminal_wheel_steps, tmux_row_actions, toggle_session_group_state,
         transitioned_presentation, tree_herdr_sessions, tree_sessions, tree_zellij_sessions,
@@ -7998,10 +8329,10 @@ mod tests {
     use std::time::{Duration, Instant};
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
-        HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
-        KeyEvent, KeyInput, KwtBranchItem, KwtPullRequestItem, Modifiers, MouseAction, MouseButton,
-        MouseInput, NamedKey, ProjectItem, SessionItem, SessionSelection, SshHostDraft,
-        WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
+        AppearanceSettingsDraft, HerdrSessionItem, HerdrSessionState, HostConnectionState,
+        HostDiagnostic, HostItem, KeyEvent, KeyInput, KwtBranchItem, KwtPullRequestItem, Modifiers,
+        MouseAction, MouseButton, MouseInput, NamedKey, ProjectItem, SessionItem, SessionSelection,
+        SshHostDraft, WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
     };
 
     #[test]
@@ -8049,14 +8380,38 @@ mod tests {
     }
 
     #[test]
-    fn settings_shell_opens_the_hosts_pane_without_a_transient_editor() {
-        let dialog = SettingsDialog::new(&[]);
+    fn settings_shell_opens_the_appearance_pane_without_a_transient_host_editor() {
+        let appearance = AppearanceSettingsDraft {
+            font_family: "Cascadia Mono".to_owned(),
+            font_size: "14".to_owned(),
+            background: "#0c0f14".to_owned(),
+            foreground: "#d8dee9".to_owned(),
+        };
+        let dialog = SettingsDialog::new(&[], appearance.clone());
 
-        assert_eq!(SettingsPane::ALL, [SettingsPane::Hosts]);
-        assert_eq!(dialog.pane, SettingsPane::Hosts);
+        assert_eq!(
+            SettingsPane::ALL,
+            [SettingsPane::Appearance, SettingsPane::Hosts]
+        );
+        assert_eq!(dialog.pane, SettingsPane::Appearance);
+        assert_eq!(dialog.appearance_editor.draft, appearance);
         assert!(dialog.selected_host_id.is_none());
         assert!(dialog.host_editor.is_none());
         assert!(dialog.pending_remove.is_none());
+    }
+
+    #[test]
+    fn appearance_fields_follow_tab_order_and_preview_only_accepts_rgb_hex() {
+        assert_eq!(
+            AppearanceField::FontFamily.adjacent(false),
+            AppearanceField::FontSize
+        );
+        assert_eq!(
+            AppearanceField::FontFamily.adjacent(true),
+            AppearanceField::Foreground
+        );
+        assert_eq!(appearance_preview_color("#102030", 0), 0x10_20_30);
+        assert_eq!(appearance_preview_color("102030", 0x12_34_56), 0x12_34_56);
     }
 
     #[test]

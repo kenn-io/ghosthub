@@ -1122,15 +1122,20 @@ Slice 1 reads font family, font size, and theme through:
 config → workspace projection → UI-facing state → GPUI
 ~~~
 
-The Settings shell currently exposes the Hosts pane, and that pane owns only
-`[[ssh-host]]` records. Its stable navigation, page header, list, and detail
-regions are the permanent container for the remaining Swift settings domains.
+The Settings shell exposes durable Appearance and Hosts panes. Appearance edits
+the validated terminal font and default colors, previews the draft, persists
+the complete configuration atomically, and publishes the saved projection to
+the running GPUI workspace. Existing terminal clients keep the palette they
+negotiated until reopened; new clients use the saved defaults. Hosts owns only
+`[[ssh-host]]` records. The shell's stable navigation, page header, list, and
+detail regions are the permanent container for the remaining Swift settings
+domains.
 The parity inventory is:
 
 | Swift domain | Rust state |
 | --- | --- |
 | Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
-| Appearance | Startup configuration only; pane not yet implemented |
+| Appearance | Native font and default-color editor with preview and atomic persistence |
 | Terminal | Startup configuration only; pane not yet implemented |
 | Keyboard | Runtime shortcuts exist; pane not yet implemented |
 | Worktrees | Project/worktree workflows exist; preferences pane not yet implemented |
@@ -1138,8 +1143,8 @@ The parity inventory is:
 | Privacy | Clipboard policy exists in configuration; pane not yet implemented |
 | Integrations | Not yet implemented |
 
-Adding these panes extends the existing shell rather than replacing it. WSL
-and terminal appearance remain startup configuration until their panes land.
+Adding the remaining panes extends the existing shell rather than replacing
+it. WSL configuration remains startup-only until its settings surface lands.
 
 Read-only configuration may select a distro name, an absolute POSIX tmux
 binary, and an absolute POSIX `TMUX_TMPDIR`. Defaults are the current WSL
@@ -1149,10 +1154,11 @@ sessions use another binary or socket directory must configure it explicitly;
 the empty state names the resolved distro and whether the default or configured
 socket environment was queried.
 
-The Rust app reads `<resolved config root>/config.toml` once at startup. A
-missing file uses defaults; malformed TOML, unknown fields, relative WSL
-paths, empty names, zero font size, and non-`#RRGGBB` colors produce a visible
-startup diagnostic rather than silent fallback. The read-only schema is:
+The Rust app reads `<resolved config root>/config.toml` at startup and rewrites
+it atomically when supported Settings panes save changes. A missing file uses
+defaults; malformed TOML, unknown fields, relative WSL paths, empty names, zero
+font size, and non-`#RRGGBB` colors produce a visible startup diagnostic rather
+than silent fallback. The schema is:
 
 ~~~toml
 [wsl]

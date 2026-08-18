@@ -1,10 +1,17 @@
-use config::TerminalAppearance;
+use std::{
+    fs,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+use config::{ApplicationConfig, Roots, TerminalAppearance};
 use host::{WslConfig, WslExecutable};
 use model::DiagnosticKind;
 use workspace::{
-    Appearance, HostConnectionState, HostDiagnostic, HostItem, SessionItem, Workspace,
-    WorkspaceContent, WorkspaceSnapshot, WslHostSpec,
+    Appearance, AppearanceSettingsDraft, HostConnectionState, HostDiagnostic, HostItem,
+    SessionItem, Workspace, WorkspaceContent, WorkspaceSnapshot, WslHostSpec,
 };
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn host_failure_is_scoped_beside_the_application_shell() {
@@ -132,4 +139,53 @@ fn startup_configuration_errors_are_visible_without_starting_a_host() {
         }
         _ => panic!("startup error must be visible"),
     }
+}
+
+#[test]
+fn saved_appearance_is_persisted_and_published_without_rebuilding_hosts() {
+    let root = std::env::temp_dir().join(format!(
+        "ghosthub-workspace-appearance-{}-{}",
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let value = root.to_string_lossy().into_owned();
+    let roots = Roots {
+        ghosthub_home: value.clone(),
+        config: value.clone(),
+        state: value.clone(),
+        helpers: value,
+    };
+    let workspace = Workspace::application_with_remote_hosts(
+        TerminalAppearance::default(),
+        None,
+        Vec::new(),
+        ApplicationConfig::default(),
+        roots.clone(),
+        None,
+        None,
+    );
+
+    workspace
+        .save_appearance(&AppearanceSettingsDraft {
+            font_family: "Iosevka Term".to_owned(),
+            font_size: "16".to_owned(),
+            background: "#102030".to_owned(),
+            foreground: "#f0e0d0".to_owned(),
+        })
+        .expect("save appearance");
+
+    let snapshot = workspace.snapshot();
+    assert_eq!(snapshot.appearance().font_family(), "Iosevka Term");
+    assert_eq!(snapshot.appearance().font_size(), 16);
+    assert_eq!(snapshot.appearance().background(), 0x10_20_30);
+    assert_eq!(snapshot.appearance().foreground(), 0xf0_e0_d0);
+    assert!(snapshot.hosts().is_empty());
+    assert_eq!(
+        ApplicationConfig::load(&roots)
+            .expect("reload application config")
+            .terminal()
+            .font_family(),
+        "Iosevka Term"
+    );
+    fs::remove_dir_all(root).expect("remove temporary config root");
 }

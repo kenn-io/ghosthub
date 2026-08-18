@@ -226,6 +226,24 @@ impl ApplicationConfig {
         Ok(())
     }
 
+    /// Replace the terminal appearance and persist the complete validated
+    /// application configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be written.
+    pub fn replace_terminal_appearance(
+        &mut self,
+        roots: &Roots,
+        appearance: TerminalAppearance,
+    ) -> Result<(), ConfigError> {
+        let mut candidate = self.clone();
+        candidate.terminal = appearance;
+        candidate.save(roots)?;
+        *self = candidate;
+        Ok(())
+    }
+
     /// Persist the current configuration to its resolved location.
     ///
     /// # Errors
@@ -542,6 +560,35 @@ pub struct TerminalAppearance {
 }
 
 impl TerminalAppearance {
+    /// Validate user-authored terminal appearance values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty font family, zero font size, or colors
+    /// outside the `#RRGGBB` format.
+    pub fn new(
+        font_family: impl Into<String>,
+        font_size: u16,
+        background: &str,
+        foreground: &str,
+        allow_remote_clipboard_write: bool,
+    ) -> Result<Self, ConfigError> {
+        let font_family = font_family.into();
+        require_nonempty("terminal.font-family", &font_family)?;
+        if font_size == 0 {
+            return Err(ConfigError::new(
+                "terminal.font-size must be greater than zero",
+            ));
+        }
+        Ok(Self {
+            font_family,
+            font_size,
+            background: parse_rgb("terminal.background", background)?,
+            foreground: parse_rgb("terminal.foreground", foreground)?,
+            allow_remote_clipboard_write,
+        })
+    }
+
     #[must_use]
     pub fn font_family(&self) -> &str {
         &self.font_family
