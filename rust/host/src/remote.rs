@@ -57,8 +57,8 @@ impl SshExecutable {
     /// resolved or does not contain an executable.
     pub fn system() -> Result<Self, RemoteTmuxError> {
         #[cfg(windows)]
-        let path =
-            crate::windows_system::ssh_executable().map_err(|error| RemoteTmuxError::io(&error))?;
+        let path = crate::windows_system::ssh_executable()
+            .map_err(|error| RemoteTmuxError::local_executable(&error))?;
         #[cfg(not(windows))]
         let path = OsString::from("/usr/bin/ssh");
         Self::from_absolute(path)
@@ -806,7 +806,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 cancellation,
                 COMMAND_TIMEOUT,
             )
-            .map_err(|error| RemoteTmuxError::io(&error))?;
+            .map_err(|error| RemoteTmuxError::command_launch(&error))?;
         lease
             .ensure_live()
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
@@ -1314,7 +1314,7 @@ impl RemoteTmuxError {
         }
     }
 
-    fn io(error: &std::io::Error) -> Self {
+    fn local_executable(error: &std::io::Error) -> Self {
         Self::new(
             if error.kind() == std::io::ErrorKind::NotFound {
                 DiagnosticKind::ExecutableNotFound
@@ -1323,6 +1323,10 @@ impl RemoteTmuxError {
             },
             error.to_string(),
         )
+    }
+
+    fn command_launch(error: &std::io::Error) -> Self {
+        Self::new(DiagnosticKind::Transport, error.to_string())
     }
 
     fn ssh(error: &crate::SshError) -> Self {
@@ -1705,6 +1709,17 @@ mod tests {
             command_failure(&output, "missing backend").kind(),
             DiagnosticKind::ExecutableNotFound
         );
+    }
+
+    #[test]
+    fn local_ssh_launch_failure_is_transport_not_backend_absence() {
+        let error = RemoteTmuxError::command_launch(&std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "local SSH executable could not be launched",
+        ));
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert!(scope_backend_failure(error).is_err());
     }
 
     #[test]
