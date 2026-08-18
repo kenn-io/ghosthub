@@ -5,6 +5,12 @@ Ghosthub. Historical design plans are kept outside the generated docs site.
 Security guarantees and trusted-peer assumptions are defined separately in
 the [Threat Model](threat-model.md).
 
+The shipped macOS application remains SwiftUI/AppKit with libghostty. The
+locked design for planned native Windows and Linux applications uses Rust and
+GPUI while preserving the same product and session model. Its crate
+boundaries, dependency findings, platform roots, substrate gates, and delivery
+order are maintained in [Windows and Linux Rust Port](rust-port.md).
+
 ## Mental Model
 
 - **Host:** a machine that runs tmux and optionally Herdr or Zellij sessions. The local
@@ -156,6 +162,147 @@ Swift should stay focused on native app behavior and terminal hosting. Shared
 pure domain models belong in `Sources/Workspace`; external workspace state is
 consumed through kwt's machine-readable CLI surfaces.
 
+### Windows and Linux Rust applications
+
+The first Rust product slice is a native Windows GPUI application attaching to
+tmux and discovering optional Herdr and Zellij sessions inside WSL2. It also
+has explicitly configured POSIX SSH hosts that independently discover tmux,
+Herdr, and Zellij sessions through one KWT-owned lease. A missing or broken
+backend is scoped to its own inventory and does not disable the host or another
+backend. All three backends use
+ordinary attach-only presentation; remote lifecycle controls remain withheld
+until they have fresh backend-specific identity fencing. Linux remains a
+compile-and-contract target until a native Linux product slice is authorized.
+Neither replaces the macOS SwiftUI
+application or embeds a Rust runtime into it. Cross-platform parity is enforced
+through the repository-root contracts corpus rather than a shared process, FFI
+domain model, or live database.
+
+WSL is a terminal substrate, not an application startup dependency. On
+Windows, the composition root checks for the system-owned `wsl.exe` without
+executing it. When present, the first GPUI frame contains one synthetic WSL
+host for the configured or default distro; discovery begins on the following
+frame. Missing WSL omits that host. A slow, failed, or unsupported WSL runtime
+changes only the host entry to an unavailable state with Retry and never
+replaces the application shell. The first refresh has a 45-second total budget
+for cold start; later attempts have 30 seconds, in addition to per-command
+timeouts. An application-owned background cadence refreshes ready WSL inventory
+every ten seconds while the window is active. Window activation changes only an
+in-memory polling flag; it performs no inventory, process sampling, filesystem,
+database, or reconciliation work. The cadence starts no new inventory refresh
+while the window is inactive or another host refresh or session operation is
+in flight. Starting a refresh for an already-ready host publishes no transient
+Connecting state or revision: cached rows and their constructive actions remain
+stable until replacement inventory arrives. The ten-second session cadence does
+not start KWT inventory. Disconnected and failed hosts are not retried in a
+loop. Later refreshes reuse the admitted host capability so
+they perform ordinary inventory reads instead of repeating tmux admission. The
+same refresh resolves optional Herdr through WSL's POSIX login profile,
+scrubs inherited Herdr routing variables, and publishes running and stopped
+sessions separately from tmux. Missing Herdr is silent; a broken Herdr probe is
+scoped to that capability and never makes the WSL tmux host unavailable. Tmux
+and Herdr creation controls live beside their respective inventory headings,
+while refresh remains host-scoped. Refresh keeps the last usable rows visible
+until replacement inventory publishes. A running Herdr row opens through its
+ordinary attach-only client; named creation consumes one non-retryable
+`herdr --session` launch authority with the same inherited-environment scrub as
+discovery. Stopped Herdr rows expose Restart, named stopped rows additionally
+expose confirmed Delete, and running rows expose confirmed Stop. Those
+destructive actions freshly revalidate the WSL runtime, executable, state, and
+configuration paths, including whether Herdr currently identifies the record
+as its default session, then recheck the runtime at the mutation boundary.
+User-authored creation names use the restricted creation grammar; Restart
+preserves authoritative names from inventory unchanged. A
+per-session in-flight guard disables duplicate actions and remains active
+through fresh inventory publication or a classified operation failure. A
+workspace operation fence serializes complete attachment, retained-client
+retry, creation or restart, and lifecycle operations through worker and
+inventory publication. Constructive and lifecycle snapshots each advance the
+inventory generation, preventing older full snapshots from overwriting their
+result. Stopping a session first closes its matching client presentations.
+Tmux continues to expose separate detach and confirmed Kill Session controls
+rather than sharing Herdr lifecycle semantics.
+The ready host also exposes explicit bare-session creation. Rust consumes one
+non-cloneable CreateOnce as an ordinary ConPTY client running atomic
+`new-session -A`; the same tmux command queue records live identity in a
+nonce-scoped private WSL receipt rather than the ConPTY stream. Host consumes
+and removes that opaque receipt, rechecks the WSL runtime, and retains only
+attach authority. Creation failure never authorizes a rerun or server cleanup.
+The creation interaction pins its selected endpoint and may use the existing
+admitted host while a background inventory refresh is in flight; it never
+follows a changed default distro implicitly.
+
+Rust keeps backend and authority boundaries structural: the UI package has
+direct dependencies only on workspace, model, and surface, while persistence
+cannot reach session launch or kill authority through any transitive
+dependency. The terminal backend remains private behind a capability-shaped
+seam. A small leaf surface package carries Rust-owned paint buffers and
+scroll-aware damage between the terminal worker and GPUI without granting UI
+any PTY capability.
+
+Rust UI responsiveness is a hard invariant. Window activation, input, paint,
+and snapshot reads never run host commands, filesystem probes, database work,
+resource sampling, or project/worktree reconciliation. Cancellable background
+read lanes build owned host-scoped results before a short generation-checked
+publication; publication guards never cross external I/O, process waits, or an
+await point. Runtime-only session refresh cannot replay project/worktree
+reconciliation, and each host publishes independently so a slow host cannot
+delay completed inventory from another host.
+
+On Windows, pinned KWT project/worktree inventory runs independently from the
+ten-second tmux/Herdr cadence: once after WSL admission and then every 60
+seconds while the window is active. Its three machine-readable CLI reads and
+managed-helper verification run entirely on the background host lane. A late
+or failed KWT generation keeps the last usable project tree, and a session-only
+refresh updates only worktree session availability. The sidebar treats a
+KWT-owned default-socket tmux session as a project row instead of duplicating
+it in the unbound tmux group. Active and retained protected-socket
+presentations likewise remain on their worktree row, where a live indicator
+shows that the client exists. A genuinely separate same-named default-socket
+session remains visible as unbound inventory. When WSL config selects an
+explicit `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery
+and attachment; cached rows never correlate sessions across those server roots.
+Removing a generation-backed worktree on either server type is separately
+confirmed. Ghosthub captures the exact socket and live session identity, when
+present, and terminates only that freshly confirmed tmux identity after
+approval. It then delegates an absence-guarded removal to pinned KWT. KWT
+revalidates the project, generation, and socket under its lifecycle lock and
+refuses removal if the workspace session reappears before deleting the
+checkout.
+
+Ghosthub still has one UI application process and no Ghosthub-owned daemon.
+For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
+or forcibly terminating the Rust application must reap only its `wsl.exe`
+relay and Linux tmux client while leaving the exact server/session identity
+alive. Psmux capability failures are retained as rejection evidence rather
+than weakened into a product path. See
+[Terminal Sessions](terminal-sessions.md) for the normative lifetime contract.
+WSL tmux admission uses an app-created private socket root before testing `-L`,
+and every tmux invocation scrubs inherited `TMUX` and `TMUX_PANE` values.
+
+The Rust composition root injects one presentation registry and per-host
+runtime dependencies. Workspace snapshots keep each host's connection state,
+inventory, and classified diagnostic separate from application-wide
+presentation state. Host reads are concurrent, cancellable, timed, and
+generation-ordered; mutations are serialized separately. Persistence uses a
+single asynchronous SQLite WAL writer, coalesces high-frequency UI state, and
+never holds a transaction across an await point. Cold-start reconciliation
+consumes only published inventory generations and may forget application
+records, never probe or kill server state.
+Host command capture is bounded and descendant-contained so inherited output
+pipes cannot outlive a cancelled or completed refresh.
+
+The Rust application keeps its host rail and discovered-session rail visible
+around an active terminal. Each workspace retains every tmux presentation it
+explicitly opens, including its ordinary client, worker, and surface. Switching
+sessions changes only the selected presentation; returning to an open session
+remounts that same surface synchronously without reconnecting. The first visit
+still validates the current inventory target and launches through the atomic
+live-identity check. Explicit close detaches only the selected presentation,
+while application shutdown detaches all retained clients. Navigation never
+destroys server state and does not grant the UI direct host, session, or
+terminal dependencies.
+
 ### Application Updates
 
 Packaged releases embed Sparkle 2 and select exactly one update channel at
@@ -296,6 +443,45 @@ reachable.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
 releases it; an authenticated master remains available until the app exits.
+
+The Rust port reaches this boundary through revision-pinned KWT rather than
+reimplementing OpenSSH configuration or prompt policy. On Windows, the host
+layer runs the pinned Linux helper and `/usr/bin/ssh` inside the selected WSL
+distro because Windows OpenSSH cannot provide the persistent ControlMaster
+socket required by KWT's daemon lease. It resolves an immutable KWT route
+snapshot, acquires a generation-bound multiplexed lease, validates ordered
+prompt attribution for every ProxyJump hop, and retains that lease with the
+presentation. The terminal layer receives only an absolute `wsl.exe` program
+and fully resolved argv. It never depends on WSL or KWT and never owns route,
+trust, or authentication state. Runtime lease authority is not persisted.
+
+The Rust composition root resolves `wsl.exe` by absolute Windows system path.
+At explicit connection time, Host pins the ready WSL endpoint and runtime,
+activates the bundled Linux helper in that distro, and verifies its
+`/usr/bin/ssh`. Native Windows OpenSSH, masterless leases, and direct fallback
+are inadmissible. GPUI owns a durable Settings shell with stable domain
+navigation and a page header/detail contract matching the Swift app;
+Hosts is its first implemented pane. The Hosts pane persists named SSH
+endpoints in `config.toml`, while saving or merely opening Settings never
+connects. An explicit host Connect action schedules route resolution, lease
+acquisition, prompt handling,
+and tmux inventory on a cancellable background host lane. Prompt events carry
+their host generation, so cancellation or a replacement attempt cannot apply
+late trust or authentication input. Each host publishes independently and a
+remote failure remains host-scoped.
+
+The initial remote product boundary includes discovery and exact attachment for
+tmux, Herdr, and Zellij. Herdr create/restart and Zellij create are one-shot
+constructive actions over the existing reviewed KWT lease: they require a
+fresh backend preflight and an exact post-launch inventory match before the new
+client is published. Every remote client uses a terminal type verified against
+the host's terminfo database; `xterm-256color` is preferred and the verified
+`xterm` fallback is disclosed only after successful presentation. Superseding
+navigation cancels queued and running attachment probes before they can retain
+the shared session-operation lane. Remote destruction, tmux creation, KWT
+project/worktree management, reconnect, and restoration remain unavailable
+until their own identity and lifecycle contracts are implemented.
+
 Before opening that channel, Ghosthub reads the effective destination policy
 with `ssh -G`. It tightens `accept-new` to an explicit review but does not
 override `yes`, `no`, or `off`; approval matches the parsed algorithm and
@@ -352,8 +538,22 @@ immediate feedback; kwt's daemon serializes the mutation with registration,
 worktree, and protected-attachment operations, verifies durable protected
 endpoint authority, and performs the final registry compare-and-swap. The
 operation only unregisters discovery metadata and never deletes repositories,
-worktrees, or tmux sessions. Windows hosts do not expose project registry
-mutations until that command boundary supports native Windows paths.
+worktrees, or tmux sessions. The Rust Windows app maps a native Windows folder
+or matching WSL UNC folder into the selected distro, then applies these POSIX
+operations through the pinned Linux helper. It publishes a successful
+machine-readable registration or removal before attempting broader worktree
+reconciliation, so an unrelated inventory failure cannot erase the confirmed
+result. Rust worktree creation passes the repository identity and registration
+fingerprint reviewed by the user into the same guarded `kwt add` invocation;
+KWT verifies both while holding its project lifecycle lock before mutation.
+Successful worktree removal tombstones the exact path and generation locally
+before reconciliation. If a default-socket session is live, Ghosthub captures
+its exact tmux identity before enabling confirmation and consumes only that
+authority after approval; a same-named replacement requires a new
+confirmation. Live worktree presentations are keyed by their tmux identity so
+project registration changes cannot duplicate clients.
+Native Windows hosts do not expose project registry mutations until
+that command boundary supports native Windows paths.
 On macOS and Linux, the account login shell initializes the command
 environment, while Ghosthub's own inventory and discovery commands execute
 under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not
@@ -426,10 +626,13 @@ branch, tmux session name, and isolated tmux socket name. Ghosthub requests a
 durable import without session startup; importing contributor-controlled code
 does not start tmux or execute project layout and bootstrap commands. A
 successful result is presented through kwt's protected attach command. That
-command verifies
-persisted workspace provenance and the current tmux state, creates or repairs
-an inert shell-only session on the workspace-specific server when needed, and
-then executes an ordinary client with environment updates disabled. The user
+command atomically verifies the project identity, registration fingerprint,
+worktree generation, tmux session name, and isolated socket under KWT's project
+lifecycle fence before it creates or repairs an inert shell-only session on the
+workspace-specific server. It then executes an ordinary client with
+environment updates disabled. Provider discovery is user-initiated,
+cancellable, and receives a five-minute network-operation budget rather than
+the 15-second local probe deadline. The user
 may explicitly run project commands after attachment. Other workspaces and
 unbound sessions continue to attach directly to the host's normal tmux server.
 
@@ -440,6 +643,11 @@ ordinary tmux discovery or attachment. The helper never replaces or resolves
 a host's system kwt. Versioned directories retain older pinned helpers, so an
 older Ghosthub build can select and restore its own revision; reinstalling one
 revision also retains `kwt.previous`.
+
+In the Rust port's WSL host, a managed-helper path cache is never execution
+authority. The host revalidates the pinned digest and revision before every
+helper operation and atomically repairs a missing or replaced helper before it
+runs the requested command.
 
 Native Windows installation uses a separate PowerShell boundary. The explicit
 **Install Bundled kwt** action probes the remote process architecture, uploads
@@ -462,6 +670,12 @@ target because its ConPTY path supports ordinary OpenSSH TTY allocation.
 Passive activity sampling additionally requires psmux 3.3.4 or newer; earlier
 versions remain attachable but cannot provide the scrollback-only capture
 contract.
+
+Psmux 3.3.7 fails the Rust port's `kill-session -t =name` capability proof.
+The experimental Swift path does not issue that mutation: it resolves the exact
+target and fresh identity, then kills by session ID. Its complete conditional
+kill remains subject to isolated end-to-end verification; the Rust substrate
+rejection neither proves a shipped false-success bug nor makes this path dead.
 
 When Ghosthub creates a native Windows session, it passes the SSH account
 process's `PATH` through psmux's session-environment argument so the initial
@@ -501,6 +715,9 @@ Ghosthub does not scan the host for repositories.
 | `Sources/Zellij/` | Native Zellij discovery and attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |
+| `rust/` | Rust workspace for native Windows and Linux applications |
+| `contracts/` | Rust-owned language-neutral behavioral fixtures; future Swift consumption is separately authorized |
+| `docs/rust-port.md` | Locked Rust-port architecture, gates, and delivery order |
 | `tools/` | Python bootstrap and packaging automation |
 | `Tests/` | Swift tests |
 | `tools/tests/` | Python tests for build, packaging, and importable tool code |
@@ -604,6 +821,10 @@ endpoint and tmux server PID, `session_id`, and `session_created` identity. A
 single tmux conditional checks all three live values and kills only the
 matching instance, rejecting a same-named replacement even within the same
 timestamp second or after a rapid tmux server restart.
+The Rust WSL implementation obtains that authority from a fresh host query
+before presenting confirmation and targets the captured stable session ID
+inside the conditional, keeping cached inventory and mutable display names out
+of the destructive command.
 Ghosthub detaches an active client after a successful kill, never before the
 operation can fail. After success, Ghosthub closes the matching current active
 selection and navigates away only when the killed target is active at
@@ -750,6 +971,15 @@ for the remaining live sessions on each host and for the eventual result of an
 explicit named-session creation request. A worktree open does not infer live
 session state from kwt inventory: it uses kwt's exact-path start-only command
 to converge the session before attachment.
+On the Rust Windows path, the revision-pinned helper receives the selected
+repository identity, registration fingerprint, exact path, generation, and
+computed session name. KWT revalidates them atomically under its project
+lifecycle lock before repairing or starting the PTY-hosted client; a separate
+inventory preflight cannot grant stale open authority. Worktree creation first
+uses KWT's no-launch branch flow,
+then refreshes machine-readable inventory before granting RepairOrOpen
+authority. Branch reads, creation, and reconciliation share the serialized KWT
+background lane and never block GPUI or replace the last usable sidebar tree.
 Herdr's JSON session list is independently authoritative for running and
 stopped Herdr sessions. Exit 127 means optional capability absence and emits no diagnostic;
 malformed output or another failure produces only a host-scoped warning and

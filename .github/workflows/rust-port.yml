@@ -1,0 +1,116 @@
+name: Rust Port CI
+
+on:
+  push:
+    branches: [rust-port]
+    paths:
+      - rust/**
+      - contracts/**
+      - docs/rust-port.md
+      - .github/workflows/rust-port.yml
+  pull_request:
+    branches: [rust-port]
+    paths:
+      - rust/**
+      - contracts/**
+      - docs/rust-port.md
+      - .github/workflows/rust-port.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+          - name: Windows x86_64
+            runner: windows-2025
+
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component clippy,rustfmt
+
+      - name: Restore Windows Rust cache
+        if: runner.os == 'Windows'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust
+
+      - name: Install GPUI Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            cmake \
+            libfontconfig-dev \
+            libvulkan1 \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxkbcommon-x11-dev \
+            lld \
+            llvm \
+            pkg-config
+
+      - name: Test and lint on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo test-contracts --locked
+          make -C .. rust-check
+
+      - name: Test and lint on Windows
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSINSTALL=%%i" || exit /b 1
+          if not defined VSINSTALL exit /b 1
+          call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64 || exit /b 1
+          cargo fmt --all --check || exit /b 1
+          cargo test-contracts --locked || exit /b 1
+          cargo test --workspace --locked || exit /b 1
+          cargo check --workspace --all-targets --locked || exit /b 1
+          cargo clippy --workspace --all-targets --locked -- -D warnings || exit /b 1
+
+  licenses:
+    name: Dependency policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+
+      - name: Check dependency policy
+        run: make -C .. rust-deny

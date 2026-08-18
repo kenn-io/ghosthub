@@ -1,0 +1,104 @@
+use surface::{Cell, Damage, GridSize, PixelSize, SurfaceFrame, SurfaceStore};
+
+#[test]
+fn frame_carries_the_grid_dimensions_it_was_built_for() {
+    let size = GridSize::new(80, 24).expect("valid grid");
+    let frame = SurfaceFrame::blank(7, size);
+
+    assert_eq!(frame.generation(), 7);
+    assert_eq!(frame.size(), size);
+    assert_eq!(frame.cells().count(), 80 * 24);
+}
+
+#[test]
+fn frame_carries_the_ordered_resize_and_pixel_dimensions() {
+    let size = GridSize::new(120, 40).expect("valid grid");
+    let mut frame = SurfaceFrame::blank(7, size);
+    frame.set_resize_metadata(11, PixelSize::new(1_080, 720));
+
+    assert_eq!(frame.resize_sequence(), 11);
+    assert_eq!(frame.pixel_size(), PixelSize::new(1_080, 720));
+}
+
+#[test]
+fn rejects_zero_sized_grids() {
+    assert!(GridSize::new(0, 24).is_err());
+    assert!(GridSize::new(80, 0).is_err());
+}
+
+#[test]
+fn latest_value_store_drops_an_older_generation() {
+    let size = GridSize::new(2, 1).expect("valid grid");
+    let store = SurfaceStore::new(SurfaceFrame::blank(3, size));
+
+    assert!(!store.publish(SurfaceFrame::blank(2, size)));
+    assert_eq!(store.load().generation(), 3);
+}
+
+#[test]
+fn damage_vocabulary_represents_scroll_and_dirty_rows() {
+    let damage = vec![
+        Damage::Scroll {
+            top: 0,
+            bottom: 22,
+            delta: -1,
+        },
+        Damage::Rows { start: 22, end: 24 },
+    ];
+    let mut frame = SurfaceFrame::blank(4, GridSize::new(80, 24).expect("valid grid"));
+    frame.set_damage(damage.clone());
+
+    assert_eq!(frame.damage(), damage.as_slice());
+}
+
+#[test]
+fn cells_are_owned_values() {
+    let mut frame = SurfaceFrame::blank(1, GridSize::new(1, 1).expect("valid grid"));
+    *frame.cell_mut(0) = Cell::plain("界");
+
+    assert_eq!(frame.cell(0).text(), "界");
+}
+
+#[test]
+fn store_applies_scroll_before_updating_exposed_rows() {
+    let size = GridSize::new(1, 3).expect("valid grid");
+    let mut initial = SurfaceFrame::blank(1, size);
+    for (cell, text) in initial.cells_mut().zip(["a", "b", "c"]) {
+        *cell = Cell::plain(text);
+    }
+    let store = SurfaceStore::new(initial);
+
+    assert!(store.update(
+        2,
+        size,
+        &[
+            Damage::Scroll {
+                top: 0,
+                bottom: 3,
+                delta: -1,
+            },
+            Damage::Rows { start: 2, end: 3 },
+        ],
+        |frame| *frame.cell_mut(2) = Cell::plain("d"),
+    ));
+
+    let frame = store.load();
+    assert_eq!(
+        frame.cells().map(Cell::text).collect::<Vec<_>>(),
+        ["b", "c", "d"]
+    );
+}
+
+#[test]
+fn skipped_generation_requires_a_full_repaint_without_blocking_publication() {
+    let size = GridSize::new(1, 1).expect("valid grid");
+    let store = SurfaceStore::new(SurfaceFrame::blank(1, size));
+    let held_lease = store.load();
+
+    assert!(store.update(2, size, &[Damage::Rows { start: 0, end: 1 }], |_| {}));
+    assert!(store.update(3, size, &[Damage::Rows { start: 0, end: 1 }], |_| {}));
+
+    let latest = store.load();
+    assert_eq!(latest.previous_generation(), 2);
+    assert!(latest.requires_full_repaint(held_lease.generation()));
+}

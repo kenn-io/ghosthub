@@ -4,7 +4,7 @@ import struct
 from pathlib import Path
 
 import pytest
-from validate_kwt_variants import TARGETS, validate_variant
+from validate_kwt_variants import TARGETS, validate_variant, validate_variants
 
 
 @pytest.mark.parametrize("target", TARGETS)
@@ -53,3 +53,22 @@ def test_variant_validation_rejects_wrong_target_or_revision(
         validate_variant(helper, "linux-amd64", revision)
     with pytest.raises(ValueError, match="does not contain pinned revision"):
         validate_variant(helper, "linux-arm64", revision)
+
+
+def test_variant_validation_can_check_one_cross_build_target(
+    tmp_path: Path,
+) -> None:
+    revision = "a" * 40
+    target = "linux-arm64"
+    helper = tmp_path / target / "kwt"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(
+        b"\x7fELF"
+        + bytes([2, 1])
+        + bytes(12)
+        + struct.pack("<H", TARGETS[target][1])
+        + bytes(32)
+        + revision.encode()
+    )
+
+    validate_variants(tmp_path, revision, target)

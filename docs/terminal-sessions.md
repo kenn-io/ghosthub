@@ -37,6 +37,11 @@ probe is silent and does not affect host usability. Invalid output and real comm
 produce only a host-scoped warning; they never change tmux reachability, kwt
 availability, cached project inventory, or the workspace's blocking state.
 
+The planned Rust/GPUI Windows and Linux applications preserve this boundary.
+Their detailed backend, worker, surface, capability, and delivery design is in
+[Windows and Linux Rust Port](rust-port.md). This page remains authoritative
+for ownership, reconnect, detach, and restart semantics on every platform.
+
 ## Native Tmux Attachment
 
 Ghosthub invokes `tmux attach-session -E -t =<name>` for a local session. A
@@ -81,8 +86,12 @@ attachment establishes that the session is running. Before displaying
 confirmation, Ghosthub captures tmux's server PID, `session_id`, and
 `session_created` values together with the exact local or SSH endpoint, socket,
 and session name. Termination uses one tmux conditional command that compares
-all three live identity values and invokes `kill-session -t =<name>:` only on
-a match. The server PID distinguishes tmux server generations, while the
+all three live identity values and invokes `kill-session` against that exact
+session only on a match. Swift targets the exact name. The Windows WSL client
+captures authority from a fresh length-framed all-session listing, matches the
+decoded name in Rust, and targets only the captured stable session ID; the name
+never re-enters a tmux target or nested command parser. The server PID
+distinguishes tmux server generations, while the
 monotonically assigned session ID distinguishes same-named replacements within
 one server even when their second-resolution creation timestamps match. A
 replacement session is therefore never killed under stale cached inventory or
@@ -289,6 +298,120 @@ prefix-only or same-named replacement. Provider resources remain stopped after
 reboot until the user explicitly starts them. The complete provider and
 worktree lifecycle contract is in [Worktree Sandboxes](sandboxes.md).
 
+## Rust Client Lifetime and Application Death
+
+The Rust applications use the same ordinary-client boundary. The native
+Windows GPUI client attaches to tmux, Herdr, and Zellij inside WSL2;
+Linux remains a compile-and-contract target until its native product slice is
+authorized. A terminal worker and PTY own only the disposable client. The WSL
+tmux server owns session lifetime and must survive client close, graceful
+application exit, and forced Ghosthub termination.
+
+The first Rust SSH slice preserves the same boundary for configured POSIX
+hosts: KWT owns route resolution, host-key/authentication prompting, and the
+runtime OpenSSH lease; Host builds an attach-only command for a freshly
+discovered exact tmux identity; Terminal owns only the disposable ConPTY-backed
+client. On Windows, both pinned KWT and OpenSSH run inside the selected WSL
+distro, and Terminal launches an absolute `wsl.exe` relay with fully resolved
+argv. Closing or crashing Ghosthub releases that relay, client, and lease but
+never kills the remote tmux server. Terminating the selected WSL distro ends
+the local lease and presentation, not the remote session. This slice ends the
+presentation on client exit and does not yet implement the reconnect
+supervisor described below.
+
+Launch authority is structural:
+
+- an attach plan is cloneable and cannot create
+- one-shot creation is neither cloneable nor serializable and is consumed into
+  an attach plan
+- kwt repair/open authority is cloneable only because its documented
+  probe/repair operation is intentionally safe to rerun
+
+Local client exit always detaches and never reconnects. Only remote OpenSSH
+status 255 enters transport reconnect. Bare remote creation becomes
+attach-only before that loop; ordinary and protected kwt paths retain only
+their explicitly documented repair/open behavior.
+
+Rust local WSL creation follows the same one-shot rule as shipped local
+creation. After validating the normalized name, Ghosthub performs a fresh
+admitted-host read and consumes one CreateOnce by launching the ordinary
+ConPTY client with `tmux new-session -A -E -s <name>`. The same tmux command
+queue writes server PID, session ID, and creation time to a nonce-scoped
+private WSL receipt; identity framing never enters ConPTY or the terminal
+screen. The receipt writer invokes `/bin/sh -c` explicitly, so tmux's
+configurable `default-shell` cannot change its atomic POSIX semantics. Host
+reads and removes that opaque receipt, rechecks the runtime, and
+only then publishes the presentation. Every later activation is attach-only.
+If creation and identity capture race another creator, `-A` attaches to the
+exact same-named session.
+If any step after launch fails, Ghosthub detaches the client and reports the
+failure but neither reruns creation nor destroys the possibly created session.
+
+Psmux 3.3.7 failed the required exact-kill proof and never established genuine
+ConPTY `attach-session -E` behavior. Its probe remains rejection evidence, but
+it is not the Rust Windows substrate. The Windows MVP uses real POSIX tmux in
+WSL2 and never degrades to psmux or an app-lifetime session.
+
+Tmux admission itself uses ordinary ConPTY clients supplied by the workspace
+through the same terminal worker as product attachments. In an isolated
+namespace, a second atomic `new-session -A`, an environment positive control
+without `-E`, and the preservation probe with `-E` all run on real PTYs;
+captured pipes and tmux control mode are not capability evidence. The verified
+binary is cached only after those clients attach, their effects are observed,
+and they detach. Any failure cleans the isolated server and leaves admission
+retryable.
+
+The WSL admission server is isolated before any session creation: Ghosthub
+chooses a random private `TMUX_TMPDIR`, installs its cleanup guard before the
+cancellable mode-0700 directory creation, applies the path to every probe
+command and ordinary client, and removes it when admission ends. `-L`
+capability proof is therefore not trusted to protect the user's default
+server. If the creation command times out or loses its relay, cleanup repeatedly
+removes the path through a two-second monotonic settle deadline because the
+Linux command may finish late, then performs a final removal and verifies
+absence. Discovery, admission, and attachment also unset inherited `TMUX` and
+`TMUX_PANE` before setting the selected socket environment.
+
+That failed proof exercises `kill-session -t =name`. The experimental Swift
+remote-Windows path instead resolves the exact target and fresh identity before
+killing by session ID. Its complete conditional-kill flow remains subject to
+isolated end-to-end psmux verification; the Rust rejection does not by itself
+establish false success in the shipped path or make that path dead code.
+
+The tmux server lives inside WSL2 and cannot inherit a Windows Job Object.
+Ghosthub resolves `wsl.exe` through `GetSystemDirectoryW` and carries its
+absolute system-directory path through discovery and attachment; it never
+uses current-directory or launcher-`PATH` executable search. Ghosthub
+intentionally puts only the disposable `wsl.exe` ConPTY relay in an
+application-owned `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job and verifies its
+membership with `IsProcessInJob`. This is client containment, not server
+breakaway. If job creation, assignment, or verification fails after spawn,
+Ghosthub closes the PTY master, waits a bounded interval, applies the
+client-only termination fallback if required, releases the presentation
+reservation, and only then reports failure.
+
+Live integration tests supervise a child presentation/application, terminate
+it gracefully and forcibly, then launch a fresh child and reattach to the same
+WSL runtime, server, and session identity. Windows uses an isolated WSL tmux
+socket namespace, TerminateProcess, and a client-only kill-on-close Job Object.
+The test also proves that the Linux-side tmux client is reaped and that the
+user's default server was never queried or mutated.
+
+The guarantee covers Ghosthub termination, not `wsl --shutdown`, distro
+termination, or a Windows lifecycle event that restarts WSL. Runtime identity
+combines the kernel boot ID with PID 1 start time so a distro-only restart is
+classified even while another distro keeps the shared kernel alive.
+
+After fresh WSL discovery, the ordinary client enters through one tmux
+`if-shell -F` command targeted at the exact session. Its condition compares
+the captured server PID, session ID, and creation time; only the matching
+branch executes `attach-session -E`. The mismatch branch prints a classified
+framed marker and exits without attaching. Ghosthub recognizes it only on a
+clean exit whose normalized pre-attachment output exactly equals that marker,
+so ordinary session output cannot impersonate the result. A server restart and
+reused session ID therefore cannot redirect the client between discovery and
+process launch.
+
 ## Relaunch Restoration
 
 Quitting Ghosthub or installing an update only drops disposable clients. When
@@ -341,6 +464,13 @@ the pending target. If a scene was captured without an active native
 presentation, Ghosthub restores its host and selected project, worktree, or
 directory navigation but does not open or create the workspace session until
 the user explicitly selects it.
+
+The Rust cold-start Reconciler consumes only inventory generations already
+published by host read lanes. It cannot probe a host, invoke kwt, run
+tmux/psmux, or derive liveness independently. It may forget or mark Ghosthub
+records stale and remove presentation metadata; it can never destroy a server
+session. Pending automatic restoration also expires after three completed
+failed refreshes, ten minutes, or user navigation, whichever comes first.
 
 A protected worktree is distinct from a same-named session on the default tmux
 server. Restoration first probes the descriptor's exact host, protected socket,
@@ -413,7 +543,14 @@ while tmux remains authoritative for pane creation and layout. If tmux rejects
 a split, Ghosthub displays its diagnostic over the attachment. Native Windows
 psmux attachments do not offer pane-split actions or intercept these shortcuts.
 Kill Session is exposed separately from presentation only for a session known
-to be running and always requires confirmation.
+to be running and always requires confirmation. For a protected worktree,
+Ghosthub preserves the named socket, path, and generation in navigation state,
+then queries that exact socket for fresh server and session identity before
+showing confirmation. A same-named session on the default server is unrelated
+and can never satisfy or receive the protected action. Opening also requires
+the rendered socket to match fresh KWT inventory. If no current worktree owns
+an active or retained protected presentation's complete identity, Ghosthub
+keeps a fallback session row so that live client remains reachable.
 
 Native Windows creation also supplies the SSH account's process `PATH` through
 psmux's `new-session -e` contract. Psmux otherwise starts detached panes
@@ -560,7 +697,23 @@ unregistering, Ghosthub probes every protected-socket worktree and requires its
 tmux session to be absent; a live or unverifiable protected session blocks
 removal because it cannot be recovered through default-server discovery after
 the project disappears. Ordinary live tmux sessions remain discoverable under
-the host.
+the host. The Rust Windows app exposes the same registration flow for its WSL
+host.
+Removing a registered project is separately confirmed and delegated to KWT
+with the exact registered path, expected credential-free repository identity,
+and opaque registration fingerprint. This unregisters metadata only:
+repositories, worktrees, and tmux sessions remain untouched. Reads and
+mutations stay off the UI thread, and the last usable project tree remains
+visible while either is in flight.
+
+Removing a generation-backed worktree is a distinct destructive action. The
+confirmation is bound to its exact project, generation, tmux socket, and a
+fresh live session identity or freshly confirmed absence. Pinned KWT
+revalidates those facts under the project lifecycle lock, terminates only the
+confirmed session when necessary, and removes the checkout in the same guarded
+operation. A replaced session or changed socket fails closed and requires new
+confirmation. Closing or detaching a presentation never grants this removal
+authority.
 
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,
@@ -571,6 +724,8 @@ workspace operations use only that exact per-user helper and never resolve
 Project registry mutations are not yet supported on Windows, so its Add Project
 and Remove Project actions are hidden. Inventory never installs or updates the
 unsigned Windows helper automatically.
+This restriction does not apply to the Rust app's WSL host, which executes the
+pinned Linux helper.
 
 Direct tmux discovery marks a default-server worktree session as running when
 its exact kwt session name is present and the host remains reachable. Cached

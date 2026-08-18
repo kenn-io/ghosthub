@@ -1,0 +1,23 @@
+[package]
+name = "ghosthub-config"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "config"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+ghosthub-contracts.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

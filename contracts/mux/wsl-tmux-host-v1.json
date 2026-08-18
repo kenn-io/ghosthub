@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "executable_platform": "posix",
+  "distro": "Ubuntu",
+  "tmux_path": "/usr/bin/tmux",
+  "tmux_tmpdir": null,
+  "instance_output": "Linux version 6.6.114.1-microsoft-standard-WSL2\n65c18272-9676-4d59-9f67-ff4556cd1601\n1 (systemd) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 9 10 11 12 987654 15\n",
+  "inventory_output": "4242\t$3\t1700000000\t1\t9\twork name\n",
+  "expected": {
+    "server_pid": 4242,
+    "session_id": "$3",
+    "created_at": 1700000000,
+    "name": "work name",
+    "attached_clients": 1
+  }
+}

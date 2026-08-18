@@ -1,0 +1,104 @@
+name: Rust WSL Live Acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wsl-live:
+    name: WSL2 terminal lifecycle
+    if: github.repository == 'kenn-io/ghosthub' && github.ref == 'refs/heads/rust-port'
+    runs-on:
+      group: ghosthub-wsl-acceptance
+      labels: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify the WSL2 acceptance environment
+        shell: pwsh
+        run: |
+          $wsl = Join-Path ([Environment]::GetFolderPath('System')) 'wsl.exe'
+          if (-not (Test-Path -LiteralPath $wsl -PathType Leaf)) {
+            throw "The acceptance runner does not provide System32\\wsl.exe."
+          }
+
+          $kernel = (& $wsl --exec /usr/bin/uname -r | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $kernel -notmatch 'WSL2') {
+            throw "The default WSL distro is not running under WSL2: $kernel"
+          }
+
+          $machine = (& $wsl --exec /usr/bin/uname -m | Out-String).Trim()
+          $kwtArchitecture = switch ($machine) {
+            'x86_64' { 'amd64' }
+            'aarch64' { 'arm64' }
+            default { throw "The default WSL2 distro uses unsupported architecture: $machine" }
+          }
+          "GHOSTHUB_KWT_ARCH=$kwtArchitecture" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          & $wsl --exec /usr/bin/tmux -V
+          if ($LASTEXITCODE -ne 0) {
+            throw "The default WSL2 distro does not provide /usr/bin/tmux."
+          }
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.26.3
+          cache: false
+
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust
+
+      - name: Build the pinned WSL KWT helper
+        shell: pwsh
+        run: |
+          & ..\tools\build_rust_kwt.ps1 -Architecture $env:GHOSTHUB_KWT_ARCH
+          if ($LASTEXITCODE -ne 0) {
+            throw "Building the pinned WSL KWT helper failed with exit code $LASTEXITCODE."
+          }
+          $bundle = (Resolve-Path "..\.build\kwt\variants\linux-$env:GHOSTHUB_KWT_ARCH\kwt").Path
+          $digest = (Get-FileHash -LiteralPath $bundle -Algorithm SHA256).Hash.ToLowerInvariant()
+          "GHOSTHUB_KWT_BUNDLE_TEST=$bundle" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GHOSTHUB_KWT_SHA256_TEST=$digest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run live WSL KWT helper tests
+        shell: cmd
+        env:
+          KWT_GITHUB_TOKEN: ${{ github.token }}
+          WSLENV: KWT_GITHUB_TOKEN
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSINSTALL=%%i" || exit /b 1
+          if not defined VSINSTALL exit /b 1
+          call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64 || exit /b 1
+          cargo test-wsl-kwt-live || exit /b 1
+
+      - name: Run live WSL terminal and workspace tests
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSINSTALL=%%i" || exit /b 1
+          if not defined VSINSTALL exit /b 1
+          call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64 || exit /b 1
+          cargo test-wsl-terminal-live || exit /b 1
+          cargo test-wsl-workspace-live || exit /b 1

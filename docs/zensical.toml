@@ -11,6 +11,7 @@ nav = [
   {"Quick Start" = "quickstart.md"},
   {"Launch Profiles" = "launch-profiles.md"},
   {"Architecture" = "architecture.md"},
+  {"Windows and Linux Rust Port" = "rust-port.md"},
   {"Worktree Sandboxes" = "sandboxes.md"},
   {"Sandbox Image Operations" = "sandbox-image.md"},
   {"Threat Model" = "threat-model.md"},
