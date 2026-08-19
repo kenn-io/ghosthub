@@ -22,10 +22,13 @@ env:
 jobs:
   macos-release:
     name: Build, sign, and notarize
+    # Signing and notarization credentials only exist in the canonical
+    # repository. A fork that pushes a `v*` tag would otherwise fail here.
     if: >-
-      github.event_name == 'push' ||
+      github.repository == 'kenn-io/ghosthub' &&
+      (github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main')
+      github.ref == 'refs/heads/main'))
     runs-on: macos-15
     timeout-minutes: 120
     environment:
@@ -319,7 +322,9 @@ jobs:
 
   publish-release:
     name: Publish GitHub release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: >-
+      github.repository == 'kenn-io/ghosthub' &&
+      github.event_name == 'push' && github.ref_type == 'tag'
     needs: macos-release
     runs-on: ubuntu-latest
     permissions:
