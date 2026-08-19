@@ -762,19 +762,22 @@ fn convert_color(
     }
     match color {
         Color::Spec(color) => Rgb::new(color.r, color.g, color.b),
-        Color::Indexed(index) => indexed_color(index),
+        Color::Indexed(index) => indexed_color(index, default_colors),
         Color::Named(NamedColor::Foreground | NamedColor::BrightForeground) => {
             default_colors.foreground()
         }
         Color::Named(NamedColor::Background | NamedColor::Cursor) => default_colors.background(),
         Color::Named(NamedColor::DimForeground) => default_colors.foreground(),
-        Color::Named(named) if standard_named_index(named).is_some() => {
-            indexed_color(standard_named_index(named).expect("standard color has an index"))
-        }
-        Color::Named(named) => dim_named_color(named).unwrap_or(if foreground {
-            default_colors.foreground()
-        } else {
-            default_colors.background()
+        Color::Named(named) if standard_named_index(named).is_some() => indexed_color(
+            standard_named_index(named).expect("standard color has an index"),
+            default_colors,
+        ),
+        Color::Named(named) => dim_named_color(named, default_colors).unwrap_or({
+            if foreground {
+                default_colors.foreground()
+            } else {
+                default_colors.background()
+            }
         }),
     }
 }
@@ -801,7 +804,7 @@ fn standard_named_index(color: NamedColor) -> Option<u8> {
     }
 }
 
-fn dim_named_color(color: NamedColor) -> Option<Rgb> {
+fn dim_named_color(color: NamedColor, default_colors: DefaultColors) -> Option<Rgb> {
     let index = match color {
         NamedColor::DimBlack => 0,
         NamedColor::DimRed => 1,
@@ -813,11 +816,11 @@ fn dim_named_color(color: NamedColor) -> Option<Rgb> {
         NamedColor::DimWhite => 7,
         _ => return None,
     };
-    Some(indexed_color(index))
+    Some(indexed_color(index, default_colors))
 }
 
-fn indexed_color(index: u8) -> Rgb {
-    const ANSI: [Rgb; 16] = [
+fn indexed_color(index: u8, default_colors: DefaultColors) -> Rgb {
+    const DARK_ANSI: [Rgb; 16] = [
         Rgb::new(0x11, 0x13, 0x18),
         Rgb::new(0xcc, 0x66, 0x66),
         Rgb::new(0x7e, 0xc6, 0x99),
@@ -835,8 +838,35 @@ fn indexed_color(index: u8) -> Rgb {
         Rgb::new(0x88, 0xd1, 0xd8),
         Rgb::new(0xee, 0xf0, 0xf4),
     ];
+    const LIGHT_ANSI: [Rgb; 16] = [
+        Rgb::new(0x1e, 0x1e, 0x1e),
+        Rgb::new(0xb5, 0x20, 0x20),
+        Rgb::new(0x12, 0x6a, 0x00),
+        Rgb::new(0x70, 0x58, 0x00),
+        Rgb::new(0x04, 0x51, 0xa5),
+        Rgb::new(0x8f, 0x2a, 0x8f),
+        Rgb::new(0x00, 0x66, 0x6d),
+        Rgb::new(0x55, 0x59, 0x5e),
+        Rgb::new(0x45, 0x49, 0x4f),
+        Rgb::new(0x9c, 0x1c, 0x1c),
+        Rgb::new(0x00, 0x64, 0x00),
+        Rgb::new(0x5f, 0x51, 0x00),
+        Rgb::new(0x00, 0x3e, 0xaa),
+        Rgb::new(0x76, 0x20, 0x76),
+        Rgb::new(0x00, 0x5f, 0x66),
+        Rgb::new(0x3a, 0x48, 0x51),
+    ];
     if index < 16 {
-        return ANSI[usize::from(index)];
+        let background = default_colors.background();
+        let brightness = 299 * u32::from(background.red)
+            + 587 * u32::from(background.green)
+            + 114 * u32::from(background.blue);
+        let palette = if brightness >= 128_000 {
+            LIGHT_ANSI
+        } else {
+            DARK_ANSI
+        };
+        return palette[usize::from(index)];
     }
     if index < 232 {
         let value = index - 16;

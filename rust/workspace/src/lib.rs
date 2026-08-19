@@ -16691,6 +16691,7 @@ fn default_terminal_geometry() -> TerminalGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use terminal::TerminalEngine;
 
     const TEST_REMOTE_ROUTE: &str =
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -18446,6 +18447,63 @@ mod tests {
 
         assert_eq!(colors.background(), Rgb::new(0x12, 0x34, 0x56));
         assert_eq!(colors.foreground(), Rgb::new(0x65, 0x43, 0x21));
+    }
+
+    fn relative_luminance(color: Rgb) -> f64 {
+        let linear = |component: u8| {
+            let value = f64::from(component) / 255.0;
+            if value <= 0.040_45 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color.red) + 0.7152 * linear(color.green) + 0.0722 * linear(color.blue)
+    }
+
+    fn contrast_ratio(first: Rgb, second: Rgb) -> f64 {
+        let first = relative_luminance(first);
+        let second = relative_luminance(second);
+        let (lighter, darker) = if first >= second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn light_themes_render_every_ansi_color_with_readable_contrast() {
+        for theme in [TerminalTheme::ClearLight, TerminalTheme::Novel] {
+            let (background, foreground) = theme.colors().expect("built-in theme colors");
+            let appearance = Appearance {
+                theme,
+                font_family: "monospace".to_owned(),
+                font_size: 14,
+                background,
+                foreground,
+            };
+            let colors = default_colors(&appearance);
+            let mut engine = TerminalEngine::with_default_colors(
+                GridSize::new(16, 1).expect("valid grid"),
+                colors,
+            );
+            let mut output = Vec::new();
+            for index in 0_u8..16 {
+                let code = if index < 8 { 30 + index } else { 82 + index };
+                output.extend_from_slice(format!("\x1b[{code}mX").as_bytes());
+            }
+
+            let _events = engine.process(&output);
+            let frame = engine.surface().load();
+            for column in 0..16 {
+                let ratio = contrast_ratio(frame.row(0)[column].foreground, colors.background());
+                assert!(
+                    ratio >= 4.5,
+                    "{theme:?} ANSI color {column} has only {ratio:.2}:1 contrast"
+                );
+            }
+        }
     }
 
     #[test]

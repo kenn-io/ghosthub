@@ -557,6 +557,7 @@ impl SshHostEditor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SettingsDialog {
     pane: SettingsPane,
+    sidebar_focus: Option<SettingsPane>,
     appearance_editor: AppearanceEditor,
     selected_host_id: Option<String>,
     host_editor: Option<SshHostEditor>,
@@ -573,6 +574,7 @@ impl SettingsDialog {
         let selected = hosts.first();
         Self {
             pane: SettingsPane::Appearance,
+            sidebar_focus: Some(SettingsPane::Appearance),
             appearance_editor: AppearanceEditor::new(appearance, font_families),
             selected_host_id: selected.map(|host| host.id().to_owned()),
             host_editor: selected.map(|host| SshHostEditor::new(Some(host))),
@@ -580,6 +582,117 @@ impl SettingsDialog {
             error: None,
         }
     }
+}
+
+fn focus_settings_detail(dialog: &mut SettingsDialog, reverse: bool) -> bool {
+    match dialog.pane {
+        SettingsPane::Appearance => {
+            let custom = dialog.appearance_editor.draft.theme == TerminalTheme::Custom;
+            dialog.appearance_editor.field = if reverse && custom {
+                AppearanceField::Foreground
+            } else if reverse {
+                AppearanceField::FontSize
+            } else {
+                AppearanceField::Theme
+            };
+            true
+        }
+        SettingsPane::Hosts => {
+            let Some(editor) = &mut dialog.host_editor else {
+                return false;
+            };
+            editor.field = if reverse {
+                SshField::SocketDirectory
+            } else {
+                SshField::Name
+            };
+            true
+        }
+    }
+}
+
+fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
+    if let Some(pane) = dialog.sidebar_focus {
+        match (pane, reverse) {
+            (SettingsPane::Appearance, false) => {
+                dialog.sidebar_focus = Some(SettingsPane::Hosts);
+            }
+            (SettingsPane::Hosts, true) => {
+                dialog.sidebar_focus = Some(SettingsPane::Appearance);
+            }
+            (SettingsPane::Hosts, false) | (SettingsPane::Appearance, true) => {
+                if focus_settings_detail(dialog, reverse) {
+                    dialog.sidebar_focus = None;
+                } else {
+                    dialog.sidebar_focus = Some(if reverse {
+                        SettingsPane::Hosts
+                    } else {
+                        SettingsPane::Appearance
+                    });
+                }
+            }
+        }
+        return;
+    }
+
+    match dialog.pane {
+        SettingsPane::Appearance => {
+            let custom = dialog.appearance_editor.draft.theme == TerminalTheme::Custom;
+            let first = AppearanceField::Theme;
+            let last = if custom {
+                AppearanceField::Foreground
+            } else {
+                AppearanceField::FontSize
+            };
+            let at_edge = if reverse {
+                dialog.appearance_editor.field == first
+            } else {
+                dialog.appearance_editor.field == last
+            };
+            if at_edge {
+                dialog.sidebar_focus = Some(if reverse {
+                    SettingsPane::Hosts
+                } else {
+                    SettingsPane::Appearance
+                });
+            } else {
+                dialog.appearance_editor.field =
+                    adjacent_appearance_field(dialog.appearance_editor.field, reverse, custom);
+            }
+            dialog.appearance_editor.open_picker = None;
+            dialog.appearance_editor.error = None;
+        }
+        SettingsPane::Hosts => {
+            let Some(editor) = &mut dialog.host_editor else {
+                dialog.sidebar_focus = Some(SettingsPane::Appearance);
+                return;
+            };
+            let at_edge = if reverse {
+                editor.field == SshField::Name
+            } else {
+                editor.field == SshField::SocketDirectory
+            };
+            if at_edge {
+                dialog.sidebar_focus = Some(if reverse {
+                    SettingsPane::Hosts
+                } else {
+                    SettingsPane::Appearance
+                });
+            } else {
+                editor.field = editor.field.adjacent(reverse);
+            }
+            editor.error = None;
+        }
+    }
+}
+
+fn activate_settings_sidebar_pane(dialog: &mut SettingsDialog) -> bool {
+    let Some(pane) = dialog.sidebar_focus else {
+        return false;
+    };
+    dialog.pane = pane;
+    dialog.error = None;
+    true
 }
 
 #[derive(Clone)]
@@ -1641,6 +1754,7 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         if let Some(dialog) = &mut self.settings_dialog {
+            dialog.sidebar_focus = None;
             dialog.selected_host_id = Some(host.id().to_owned());
             dialog.host_editor = Some(SshHostEditor::new(Some(host)));
             dialog.pending_remove = None;
@@ -1652,6 +1766,7 @@ impl RootView {
 
     fn add_ssh_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(dialog) = &mut self.settings_dialog {
+            dialog.sidebar_focus = None;
             dialog.selected_host_id = None;
             dialog.host_editor = Some(SshHostEditor::new(None));
             dialog.pending_remove = None;
@@ -1929,6 +2044,17 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
+        if matches!(key.as_str(), "enter" | "space")
+            && !event.is_held
+            && self
+                .settings_dialog
+                .as_mut()
+                .is_some_and(activate_settings_sidebar_pane)
+        {
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         if key == "enter" && !event.is_held {
             if pane == SettingsPane::Appearance {
                 cx.stop_propagation();
@@ -1947,21 +2073,17 @@ impl RootView {
         }
         if key == "tab" {
             if let Some(dialog) = &mut self.settings_dialog {
-                if pane == SettingsPane::Appearance {
-                    let custom = dialog.appearance_editor.draft.theme == TerminalTheme::Custom;
-                    dialog.appearance_editor.field = adjacent_appearance_field(
-                        dialog.appearance_editor.field,
-                        event.keystroke.modifiers.shift,
-                        custom,
-                    );
-                    dialog.appearance_editor.open_picker = None;
-                    dialog.appearance_editor.error = None;
-                } else if let Some(editor) = &mut dialog.host_editor {
-                    editor.field = editor.field.adjacent(event.keystroke.modifiers.shift);
-                    editor.error = None;
-                }
+                advance_settings_focus(dialog, event.keystroke.modifiers.shift);
                 cx.notify();
             }
+            cx.stop_propagation();
+            return;
+        }
+        if self
+            .settings_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.sidebar_focus.is_some())
+        {
             cx.stop_propagation();
             return;
         }
@@ -4645,6 +4767,7 @@ impl RootView {
         let selected = self
             .settings_dialog
             .as_ref()
+            .filter(|dialog| dialog.sidebar_focus.is_none())
             .and_then(|dialog| dialog.host_editor.as_ref())
             .is_some_and(|editor| editor.field == field);
         let value = ssh_draft_field(draft, field);
@@ -4686,12 +4809,11 @@ impl RootView {
                     }))
                     .child(display)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(editor) = this
-                            .settings_dialog
-                            .as_mut()
-                            .and_then(|dialog| dialog.host_editor.as_mut())
-                        {
-                            editor.field = field;
+                        if let Some(dialog) = &mut this.settings_dialog {
+                            dialog.sidebar_focus = None;
+                            if let Some(editor) = &mut dialog.host_editor {
+                                editor.field = field;
+                            }
                         }
                         window.focus(&this.settings_focus);
                         cx.notify();
@@ -4753,6 +4875,7 @@ impl RootView {
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 if let Some(dialog) = &mut this.settings_dialog {
+                    dialog.sidebar_focus = None;
                     dialog.appearance_editor.draft.theme = theme;
                     dialog.appearance_editor.field = AppearanceField::Theme;
                     dialog.appearance_editor.open_picker = None;
@@ -4779,10 +4902,9 @@ impl RootView {
         open: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let selected = self
-            .settings_dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.appearance_editor.field == field);
+        let selected = self.settings_dialog.as_ref().is_some_and(|dialog| {
+            dialog.sidebar_focus.is_none() && dialog.appearance_editor.field == field
+        });
         div()
             .flex()
             .flex_col()
@@ -4807,6 +4929,7 @@ impl RootView {
                     .child(if open { "▴" } else { "▾" })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(dialog) = &mut this.settings_dialog {
+                            dialog.sidebar_focus = None;
                             let editor = &mut dialog.appearance_editor;
                             editor.field = field;
                             editor.open_picker =
@@ -4927,10 +5050,9 @@ impl RootView {
         field: AppearanceField,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let selected = self
-            .settings_dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.appearance_editor.field == field);
+        let selected = self.settings_dialog.as_ref().is_some_and(|dialog| {
+            dialog.sidebar_focus.is_none() && dialog.appearance_editor.field == field
+        });
         let display = if selected {
             format!("{value}▏")
         } else {
@@ -4957,6 +5079,7 @@ impl RootView {
                     .child(display)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(dialog) = &mut this.settings_dialog {
+                            dialog.sidebar_focus = None;
                             dialog.appearance_editor.field = field;
                             dialog.appearance_editor.open_picker = None;
                             dialog.appearance_editor.error = None;
@@ -5216,8 +5339,13 @@ impl RootView {
             .settings_dialog
             .as_ref()
             .map_or(SettingsPane::Appearance, |dialog| dialog.pane);
+        let focused = self
+            .settings_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.sidebar_focus);
         let mut panes = div().flex().flex_col().gap_1();
         for (index, pane) in SettingsPane::ALL.into_iter().enumerate() {
+            let keyboard_focused = focused == Some(pane);
             panes = panes.child(
                 div()
                     .id(("settings-pane", index))
@@ -5230,13 +5358,18 @@ impl RootView {
                     .cursor_pointer()
                     .bg(rgb(if pane == active { 0x25_2d3a } else { 0x13_161c }))
                     .text_color(rgb(if pane == active { 0xe1_e5ec } else { 0xa0_a7b3 }))
+                    .when(keyboard_focused, |element| {
+                        element.border_1().border_color(rgb(0x4a_8f_cf))
+                    })
                     .child("▣")
                     .child(pane.title())
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(dialog) = &mut this.settings_dialog {
                             dialog.pane = pane;
+                            dialog.sidebar_focus = Some(pane);
                             dialog.error = None;
                         }
+                        window.focus(&this.settings_focus);
                         cx.notify();
                     })),
             );
@@ -8818,20 +8951,21 @@ mod tests {
         TerminalKeyboard, TerminalPointer, TerminalResize, TransientNotice, UI_INPUT_BYTE_CAPACITY,
         UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext,
         WorktreeOpenMode, WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget,
-        WorktreeSessionPresence, WorktreeSocket, active_session_selection,
-        adjacent_appearance_field, appearance_draft_is_persistable, appearance_preview_color,
-        application_navigation_width, apply_new_worktree_failure, apply_worktree_removal_failure,
-        available_herdr_row_actions, can_create_worktree, can_kill_worktree,
-        canonical_terminal_key_with, chrome_palette_for_terminal_theme, clear_terminal_input_state,
-        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
-        herdr_session_menu_actions, host_header_action, host_landing_text,
-        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
-        kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
-        new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
-        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
-        session_action_menu_position, session_backend_id, session_creation_available,
-        session_group_visibility, session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        WorktreeSessionPresence, WorktreeSocket, activate_settings_sidebar_pane,
+        active_session_selection, adjacent_appearance_field, advance_settings_focus,
+        appearance_draft_is_persistable, appearance_preview_color, application_navigation_width,
+        apply_new_worktree_failure, apply_worktree_removal_failure, available_herdr_row_actions,
+        can_create_worktree, can_kill_worktree, canonical_terminal_key_with,
+        chrome_palette_for_terminal_theme, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
+        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
+        host_header_action, host_landing_text, input_queue_has_capacity,
+        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
+        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
+        owns_created_worktree_navigation, pull_request_import_selector,
+        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
+        session_backend_id, session_creation_available, session_group_visibility,
+        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
         terminal_cell_at_with_offset, terminal_font_changed, terminal_key_input,
         terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
         tmux_row_actions, toggle_session_group_state, transitioned_presentation,
@@ -8909,10 +9043,47 @@ mod tests {
             [SettingsPane::Appearance, SettingsPane::Hosts]
         );
         assert_eq!(dialog.pane, SettingsPane::Appearance);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
         assert_eq!(dialog.appearance_editor.draft, appearance);
         assert!(dialog.selected_host_id.is_none());
         assert!(dialog.host_editor.is_none());
         assert!(dialog.pending_remove.is_none());
+    }
+
+    #[test]
+    fn settings_sidebar_and_detail_fields_share_keyboard_focus_order() {
+        let appearance = AppearanceSettingsDraft {
+            theme: TerminalTheme::ClearDark,
+            font_family: "Cascadia Mono".to_owned(),
+            font_size: "14".to_owned(),
+            background: "#212734".to_owned(),
+            foreground: "#e6e6e6".to_owned(),
+        };
+        let mut dialog = SettingsDialog::new(&[], appearance, vec!["Cascadia Mono".to_owned()]);
+
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Hosts));
+        assert!(activate_settings_sidebar_pane(&mut dialog));
+        assert_eq!(dialog.pane, SettingsPane::Hosts);
+
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
+        assert!(activate_settings_sidebar_pane(&mut dialog));
+        assert_eq!(dialog.pane, SettingsPane::Appearance);
+
+        advance_settings_focus(&mut dialog, false);
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.sidebar_focus, None);
+        assert_eq!(dialog.appearance_editor.field, AppearanceField::Theme);
+
+        advance_settings_focus(&mut dialog, false);
+        advance_settings_focus(&mut dialog, false);
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
+
+        advance_settings_focus(&mut dialog, true);
+        assert_eq!(dialog.sidebar_focus, None);
+        assert_eq!(dialog.appearance_editor.field, AppearanceField::FontSize);
     }
 
     #[test]
