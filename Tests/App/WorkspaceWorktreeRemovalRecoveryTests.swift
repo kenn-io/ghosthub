@@ -1135,6 +1135,76 @@ extension WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("a dirty rejection after session termination requires force confirmation")
+    func dirtyRejectionAfterSessionTerminationRequiresForce() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let surfaces = RecordingNativeSessionSurfaceStore()
+        let reads = LockedValue(0)
+        let kills = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            localKwtPathProvider: { "/test/kwt" },
+            kwtInventoryLoader: { _ in fixture.beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            kwtWorktreeChangeReader: { _, _, _ in
+                reads.withLock { $0 += 1 }
+                return reads.load() < 3
+                    ? .clean
+                    : WorktreeChangeSummary(untracked: 1)
+            },
+            tmuxSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$8",
+                    createdAt: "1721552400"
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            !surfaces.requestedConfigurations.isEmpty
+        }
+        let initialRequestCount = surfaces.requestedConfigurations.count
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Dirty removal should require force confirmation")
+            await model.shutdown()
+            return
+        }
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count > initialRequestCount
+        }
+
+        #expect(updatedRequest.forceRemoval)
+        #expect(kills.load() == 1)
+        let restoredCommand = try #require(
+            surfaces.requestedConfigurations.last?.command
+        )
+        #expect(restoredCommand.contains("kwt"))
+        #expect(restoredCommand.contains("open"))
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("failed removal preserves pending workspace establishment")
     func failedRemovalPreservesPendingEstablishment() async throws {
         let environment = try setupRemoteEnvironment()

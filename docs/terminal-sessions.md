@@ -717,8 +717,10 @@ session. If a clean worktree became dirty, Ghosthub presents the force warning
 instead of attempting ordinary removal. KWT revalidates the identity facts
 under the project lifecycle lock, terminates only the confirmed session when
 necessary, and removes the checkout in the same guarded operation. A replaced
-session or changed socket fails closed and requires new confirmation. Closing
-or detaching a presentation never grants this removal authority.
+session or changed socket fails closed and requires new confirmation. If KWT
+finds still newer changes after Ghosthub terminates the session, Ghosthub
+restores the session before presenting the force confirmation. Closing or
+detaching a presentation never grants this removal authority.
 
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,

@@ -2708,6 +2708,18 @@ final class WorkspaceSceneModel: ObservableObject {
                     if outcome.targetChanged {
                         throw KwtWorktreeError.removalTargetChanged
                     }
+                    if !request.forceRemoval,
+                       let worktreeError = removalError as? KwtWorktreeError,
+                       case .removalFailed = worktreeError,
+                       let changes = try? await kwtWorktreeChangeReader(
+                           worktree.path,
+                           project.rootPath,
+                           confirmedHost
+                       ),
+                       removalHostEndpointMatches(request),
+                       changes.hasUncommittedChanges {
+                        throw KwtWorktreeError.removalChangesChanged
+                    }
                     throw removalError
                 }
             }

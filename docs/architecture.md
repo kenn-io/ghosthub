@@ -271,7 +271,9 @@ that appeared after an ordinary confirmation require a new force
 confirmation. It then terminates only that freshly confirmed tmux identity and
 delegates an absence-guarded removal to pinned KWT. KWT revalidates the
 project, generation, and socket under its lifecycle lock and refuses removal
-if the workspace session reappears before deleting the checkout.
+if the workspace session reappears before deleting the checkout. If ordinary
+removal discovers still newer uncommitted changes after Ghosthub terminates the
+session, Ghosthub restores the session and requires force confirmation.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
