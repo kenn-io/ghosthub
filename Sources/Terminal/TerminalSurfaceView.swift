@@ -160,6 +160,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     private var consumedPaneSplitKeyCodes: Set<UInt16> = []
     private var surfaceResizeState = SurfaceResizeState()
     private var previewGridSize: (columns: Int, rows: Int)?
+    private var clearsPreviewGridOnInteractiveMount = false
     private var isDeferringLiveResize = false
     private var isDeferringPresentationResize = false
     private var isDeferringSurfaceResize: Bool {
@@ -239,9 +240,16 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             return
         }
         if !isParkedForPreview,
-           !applyPreviewGridSize(),
+           bounds.size.width.isFinite,
+           bounds.size.height.isFinite,
            bounds.size.width > 0, bounds.size.height > 0 {
-            handleSizeChange(bounds.size)
+            if clearsPreviewGridOnInteractiveMount {
+                clearsPreviewGridOnInteractiveMount = false
+                previewGridSize = nil
+                handleSizeChange(bounds.size)
+            } else if !applyPreviewGridSize() {
+                handleSizeChange(bounds.size)
+            }
         }
         syncInitialOcclusionState(for: window)
         guard !isParkedForPreview,
@@ -611,13 +619,27 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     @discardableResult
     public func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool {
         guard columns > 0, rows > 0 else { return false }
+        clearsPreviewGridOnInteractiveMount = false
         previewGridSize = (columns, rows)
         return applyPreviewGridSize()
     }
 
-    /// Restores ordinary interactive geometry before the caller clears tmux's
-    /// `ignore-size` client flag.
+    /// Releases preview sizing before the caller clears tmux's `ignore-size`
+    /// client flag. Hidden and parked surfaces retain their safe preview grid
+    /// until an interactive mount provides valid geometry.
     public func clearPreviewGridSize() {
+        guard previewGridSize != nil else { return }
+        guard !isParkedForPreview,
+              window != nil,
+              bounds.size.width.isFinite,
+              bounds.size.height.isFinite,
+              bounds.size.width > 0,
+              bounds.size.height > 0
+        else {
+            clearsPreviewGridOnInteractiveMount = true
+            return
+        }
+        clearsPreviewGridOnInteractiveMount = false
         previewGridSize = nil
         refreshGridSize()
     }

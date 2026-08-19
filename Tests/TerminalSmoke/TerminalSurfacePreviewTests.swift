@@ -966,6 +966,46 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(view.frame, originalFrame)
     }
 
+    func testPromotionPreservesPreviewGridUntilInteractiveMount() throws {
+        let view = try makeSurface()
+        XCTAssertTrue(view.sizeForPreviewGrid(columns: 100, rows: 30))
+        let previewSize = try XCTUnwrap(view.surfaceSize)
+
+        view.clearPreviewGridSize()
+
+        XCTAssertEqual(view.surfaceSize?.width_px, previewSize.width_px)
+        XCTAssertEqual(view.surfaceSize?.height_px, previewSize.height_px)
+        XCTAssertEqual(view.surfaceSize?.columns, previewSize.columns)
+        XCTAssertEqual(view.surfaceSize?.rows, previewSize.rows)
+
+        let interactiveBounds = NSRect(
+            x: 0,
+            y: 0,
+            width: 960,
+            height: 640
+        )
+        let root = NSView(frame: interactiveBounds)
+        let window = NSWindow(
+            contentRect: interactiveBounds,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = root
+        view.frame = .zero
+        view.bounds = .zero
+        root.addSubview(view)
+        view.frame = interactiveBounds
+        view.sizeDidChange(interactiveBounds.size)
+        view.refreshGridSize()
+        defer { window.orderOut(nil) }
+        let interactiveSize = try XCTUnwrap(
+            SurfacePixelSize(view.convertToBacking(view.bounds.size))
+        )
+        XCTAssertEqual(view.surfaceSize?.width_px, interactiveSize.width)
+        XCTAssertEqual(view.surfaceSize?.height_px, interactiveSize.height)
+    }
+
     func testUnparkingAnUnopenedZeroSizeSurfaceDoesNotPublishInvalidScale()
         throws {
         let view = try makeSurface()
