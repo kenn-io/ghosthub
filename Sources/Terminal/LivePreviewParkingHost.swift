@@ -12,6 +12,7 @@ public final class LivePreviewParkingHost: NSView {
     }
 
     private var geometryBySurface: [ObjectIdentifier: Geometry] = [:]
+    private var renderingSuspended = false
 
     override public init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -53,6 +54,7 @@ public final class LivePreviewParkingHost: NSView {
         surface.setParkedForPreview(true)
         addSubview(surface)
         surface.completePreviewParkingMount()
+        surface.setPreviewRenderingSuspended(renderingSuspended)
         geometryBySurface[identifier] = geometry
     }
 
@@ -85,6 +87,16 @@ public final class LivePreviewParkingHost: NSView {
 
     public func contains(_ surface: TerminalSurfaceView) -> Bool {
         surface.superview === self
+    }
+
+    public func setRenderingSuspended(_ suspended: Bool) {
+        guard renderingSuspended != suspended else { return }
+        renderingSuspended = suspended
+        for surface in subviews.compactMap({
+            $0 as? TerminalSurfaceView
+        }) {
+            surface.setPreviewRenderingSuspended(suspended)
+        }
     }
 
     private func configure() {

@@ -425,6 +425,7 @@ final class TmuxSessionPreviewCoordinator {
         guard isApplicationActive else { return }
         isApplicationActive = false
         invalidateAllEligibility()
+        parkingHost?.setRenderingSuspended(true)
         liveTask?.cancel()
         liveTask = nil
         presentations.keys.forEach(publish)
@@ -433,6 +434,7 @@ final class TmuxSessionPreviewCoordinator {
     func applicationDidBecomeActive() {
         guard !isApplicationActive else { return }
         isApplicationActive = true
+        parkingHost?.setRenderingSuspended(false)
         retryDeferredEfficientCaptures()
         retryDeferredNavigationCaptures()
         presentations.keys.forEach(publish)
@@ -656,6 +658,7 @@ final class TmuxSessionPreviewCoordinator {
             isParkingHostChanging = false
         }
         parkingHost = host
+        host.setRenderingSuspended(!isApplicationActive)
         reconcileEligibility()
     }
 

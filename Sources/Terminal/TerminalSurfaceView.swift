@@ -134,6 +134,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// leaf is no longer focused.
     public var suppressAutoFocus: Bool = false
     public private(set) var isParkedForPreview = false
+    private var previewRenderingSuspended = false
 
     /// Unique per-surface identity handed to libghostty as `userdata`. Held
     /// strongly here for the view's lifetime and re-captured by the
@@ -557,6 +558,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             suppressAutoFocus = true
             mouseEventHandler.resetPointerStateForParking()
             isParkedForPreview = true
+            previewRenderingSuspended = false
             updateTrackingAreas()
             if window?.firstResponder === self {
                 window?.makeFirstResponder(nil)
@@ -564,7 +566,20 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             focusDidChange(false)
         } else {
             isParkedForPreview = false
+            previewRenderingSuspended = false
             updateTrackingAreas()
+        }
+    }
+
+    public func setPreviewRenderingSuspended(_ suspended: Bool) {
+        guard isParkedForPreview,
+              previewRenderingSuspended != suspended
+        else { return }
+        previewRenderingSuspended = suspended
+        if suspended {
+            setSurfaceOcclusion(false)
+        } else {
+            syncOcclusionState()
         }
     }
 
@@ -897,13 +912,18 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     private func syncOcclusionState() {
         guard let window else { return }
-        let visible = Self.resolvedOcclusionVisibility(for: window)
+        let visible = !previewRenderingSuspended
+            && Self.resolvedOcclusionVisibility(for: window)
         setSurfaceOcclusion(visible)
     }
 
     private func syncInitialOcclusionState(
         for window: NSWindow
     ) {
+        guard !previewRenderingSuspended else {
+            setSurfaceOcclusion(false)
+            return
+        }
         let initialVisible = window.isVisible
             || window.isKeyWindow
             || window.occlusionState.contains(.visible)
@@ -915,6 +935,10 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             guard let self,
                   let currentWindow = self.window,
                   currentWindow === window else { return }
+            guard !previewRenderingSuspended else {
+                setSurfaceOcclusion(false)
+                return
+            }
             let settledVisible = currentWindow.isVisible
                 || currentWindow.isKeyWindow
                 || currentWindow.occlusionState.contains(.visible)

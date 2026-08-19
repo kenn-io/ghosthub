@@ -864,6 +864,81 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(occlusionStates.last, false)
     }
 
+    func testApplicationActivitySuspendsAndRestoresParkedSurfaceRendering()
+        throws {
+        let originalOcclusionSetter = TerminalSurfaceView.occlusionSetter
+        var occlusionStates: [Bool] = []
+        TerminalSurfaceView.occlusionSetter = { surface, visible in
+            occlusionStates.append(visible)
+            originalOcclusionSetter(surface, visible)
+        }
+        defer {
+            TerminalSurfaceView.occlusionSetter = originalOcclusionSetter
+        }
+
+        let surface = try makeSurface()
+        surface.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+        let root = NSView(frame: surface.frame)
+        let window = NSWindow(
+            contentRect: root.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = root
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        let parkingHost = LivePreviewParkingHost(frame: root.bounds)
+        root.addSubview(parkingHost)
+        let key = TmuxPreviewKey(
+            hostID: UUID(),
+            name: "parked-activity",
+            socketName: nil
+        )
+        let coordinator = TmuxSessionPreviewCoordinator(
+            mode: .live,
+            budget: LivePreviewBudget(limit: 1),
+            capture: { _, _ in nil },
+            isKeyWindow: { true }
+        )
+        defer { coordinator.shutdown() }
+        coordinator.installParkingHost(parkingHost)
+        coordinator.register(.init(
+            key: key,
+            surface: { surface },
+            handleID: { UUID() },
+            generation: { nil },
+            identity: {
+                TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$1",
+                    createdAt: "1000"
+                )
+            },
+            connectionState: { .connected },
+            isActive: { false },
+            activate: {}
+        ))
+        coordinator.setExpanded(true, for: key)
+        XCTAssertTrue(parkingHost.contains(surface))
+        occlusionStates.removeAll()
+
+        coordinator.applicationDidResignActive()
+
+        XCTAssertTrue(parkingHost.contains(surface))
+        XCTAssertEqual(occlusionStates.last, false)
+        let resignationEventCount = occlusionStates.count
+
+        coordinator.applicationDidBecomeActive()
+
+        XCTAssertTrue(parkingHost.contains(surface))
+        XCTAssertGreaterThan(occlusionStates.count, resignationEventCount)
+        XCTAssertEqual(
+            occlusionStates.last,
+            TerminalSurfaceView.resolvedOcclusionVisibility(for: window)
+        )
+    }
+
     func testParkingAppliesTheRequestedTmuxGridAndRestoresGeometry() throws {
         let view = try makeSurface()
         let originalFrame = view.frame
