@@ -160,11 +160,15 @@ struct WorkspaceSidebarViewTests {
         )
         var opened: [WorkspaceTmuxSessionSelection] = []
         var activationRoutes: [WorkspaceSelection] = []
+        let selectionBinding = Binding(
+            get: { selection },
+            set: { selection = $0 }
+        )
 
         WorkspaceSidebarView.activateTmuxSession(
             session,
             rowTarget: .tmuxSession(hostID: hostID, name: session.name),
-            selection: &selection,
+            selection: selectionBinding,
             snapshot: snapshot,
             visibility: .default,
             onOpen: { openedSession, route in
@@ -178,6 +182,44 @@ struct WorkspaceSidebarViewTests {
         #expect(selection.selectedHostID == hostID)
         #expect(selection.selectedProjectID == nil)
         #expect(selection.selectedWorktreeID == nil)
+    }
+
+    @MainActor
+    @Test("tmux activation commits its route before opening")
+    func tmuxActivationCommitsRouteBeforeOpening() {
+        let hostID = UUID()
+        let session = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "opened"
+        )
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(
+                id: hostID,
+                tmuxSessions: [
+                    .init(name: session.name, managed: false, windows: []),
+                ]
+            ),
+        ])
+        var storedSelection = WorkspaceSelection(selectedHostID: hostID)
+        var events: [String] = []
+        let selection = Binding(
+            get: { storedSelection },
+            set: {
+                storedSelection = $0
+                events.append("selected")
+            }
+        )
+
+        WorkspaceSidebarView.activateTmuxSession(
+            session,
+            rowTarget: .tmuxSession(hostID: hostID, name: session.name),
+            selection: selection,
+            snapshot: snapshot,
+            visibility: .default,
+            onOpen: { _, _ in events.append("opened") }
+        )
+
+        #expect(events == ["selected", "opened"])
     }
 
     @MainActor

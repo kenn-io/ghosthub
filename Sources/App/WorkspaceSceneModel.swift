@@ -8835,7 +8835,14 @@ final class WorkspaceSceneModel: ObservableObject {
 
                 presentation.previewPromotionNavigationRevision = nil
                 if activeBorrowedTmuxHandle == presentation.handle {
-                    hideBorrowedTmuxSession(presentation.selection)
+                    alwaysLiveManagedTmuxPresentationKeys.remove(key)
+                    pendingAlwaysLiveTmuxSurfaceHandleIDs.remove(
+                        presentation.handle.id
+                    )
+                    pendingAlwaysLiveTmuxSurfaceHandles.removeAll {
+                        $0.id == presentation.handle.id
+                    }
+                    return
                 }
                 var restoreResult: TmuxClientSizingTransitionResult
                 repeat {

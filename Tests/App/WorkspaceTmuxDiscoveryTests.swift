@@ -13,12 +13,14 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
-    @Test("Always Live activation does not wait for sizing promotion")
+    @Test("late route publication does not dismiss Always Live activation")
     @MainActor
-    func alwaysLiveActivationDoesNotWaitForSizingPromotion() async throws {
+    func lateRoutePublicationKeepsAlwaysLiveActivation() async throws {
         let environment = try setupStandardEnvironment()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let promotionStarted = LockedValue(false)
+        let promotionFinished = LockedValue(false)
+        let restoreCount = LockedValue(0)
         let releasePromotion = DispatchSemaphore(value: 0)
         defer { releasePromotion.signal() }
         let session = DiscoveredTmuxSession(
@@ -35,6 +37,12 @@ struct WorkspaceTmuxDiscoveryTests {
             if command.contains("'!ignore-size'") {
                 promotionStarted.withLock { $0 = true }
                 releasePromotion.wait()
+                promotionFinished.withLock { $0 = true }
+                return (0, "")
+            }
+            if command.contains("ignore-size"),
+               !command.contains("!ignore-size") {
+                restoreCount.withLock { $0 += 1 }
                 return (0, "")
             }
             guard command.contains(
@@ -75,7 +83,17 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(model.activeBorrowedTmuxSelection == selection)
         #expect(model.retainedBorrowedTmuxHandle(for: selection) != nil)
 
+        model.selectFromUser(WorkspaceSelection(
+            selectedHostID: environment.host.id
+        ))
         releasePromotion.signal()
+        await waitUntilMainActor { promotionFinished.load() }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(restoreCount.load() == 0)
         await model.shutdown()
     }
 
@@ -584,6 +602,10 @@ struct WorkspaceTmuxDiscoveryTests {
         ))
         await waitUntilMainActor { promotionStarted.load() }
 
+        model.hideBorrowedTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        ))
         model.selectFromUser(WorkspaceSelection(
             selectedHostID: environment.host.id
         ))
@@ -670,6 +692,7 @@ struct WorkspaceTmuxDiscoveryTests {
         model.openBorrowedTmuxSession(selection)
         await waitUntilMainActor { promotionCount.load() == 1 }
 
+        model.hideBorrowedTmuxSession(selection)
         model.selectFromUser(WorkspaceSelection(
             selectedHostID: environment.host.id
         ))
@@ -752,12 +775,14 @@ struct WorkspaceTmuxDiscoveryTests {
 
         model.startTmuxSessionDiscovery()
         await waitUntilMainActor { surfaceStore.requestCount == 1 }
-        model.openBorrowedTmuxSession(WorkspaceTmuxSessionSelection(
+        let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
             name: session.name
-        ))
+        )
+        model.openBorrowedTmuxSession(selection)
         await waitUntilMainActor { promotionStarted.load() }
 
+        model.hideBorrowedTmuxSession(selection)
         model.selectFromUser(WorkspaceSelection(
             selectedHostID: environment.host.id
         ))
