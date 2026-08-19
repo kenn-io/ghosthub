@@ -243,11 +243,8 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
            bounds.size.width.isFinite,
            bounds.size.height.isFinite,
            bounds.size.width > 0, bounds.size.height > 0 {
-            if clearsPreviewGridOnInteractiveMount {
-                clearsPreviewGridOnInteractiveMount = false
-                previewGridSize = nil
-                handleSizeChange(bounds.size)
-            } else if !applyPreviewGridSize() {
+            let releasedPreviewGrid = prepareForInteractiveSizeChange()
+            if releasedPreviewGrid || !applyPreviewGridSize() {
                 handleSizeChange(bounds.size)
             }
         }
@@ -462,6 +459,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
               window != nil,
               newSize.width > 0, newSize.height > 0
         else { return }
+        _ = prepareForInteractiveSizeChange()
         handleSizeChange(newSize)
     }
 
@@ -499,6 +497,14 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
                 height: height
             )
         }
+    }
+
+    @discardableResult
+    private func prepareForInteractiveSizeChange() -> Bool {
+        guard clearsPreviewGridOnInteractiveMount else { return false }
+        clearsPreviewGridOnInteractiveMount = false
+        previewGridSize = nil
+        return true
     }
 
     // MARK: - Private Helpers
@@ -676,19 +682,10 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             width: UInt32(targetWidth),
             height: UInt32(targetHeight)
         )
-        if let window {
-            let targetSize = window.convertFromBacking(
-                NSRect(origin: .zero, size: backingSize)
-            ).size
-            guard targetSize.width.isFinite,
-                  targetSize.height.isFinite,
-                  targetSize.width > 0,
-                  targetSize.height > 0
-            else {
-                return false
-            }
-            setFrameSize(targetSize)
-        }
+        // The AppKit view belongs to whichever presentation currently hosts
+        // it. Preview sizing changes libghostty's render grid only; changing
+        // the reusable view's frame here poisons SwiftUI's later interactive
+        // layout with the parked grid's pixel dimensions.
         return true
     }
 

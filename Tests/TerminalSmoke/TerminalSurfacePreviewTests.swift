@@ -988,6 +988,8 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         let previewSize = try XCTUnwrap(view.surfaceSize)
         XCTAssertEqual(Int(previewSize.columns), 100)
         XCTAssertEqual(Int(previewSize.rows), 30)
+        XCTAssertEqual(view.frame, originalFrame)
+        XCTAssertEqual(view.bounds.size, originalFrame.size)
         host.unpark(view)
         XCTAssertEqual(view.frame, originalFrame)
     }
@@ -1137,6 +1139,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
     func testPreviewActivationUnparksBeforeTheNormalTmuxMount() async throws {
         let surface = try makeSurface()
         surface.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+        XCTAssertTrue(surface.sizeForPreviewGrid(columns: 116, rows: 94))
         let root = NSView(frame: surface.frame)
         let window = NSWindow(
             contentRect: root.frame,
@@ -1206,6 +1209,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         coordinator.setExpanded(true, for: key)
         XCTAssertTrue(surface.superview === parkingHost)
         XCTAssertTrue(surface.isParkedForPreview)
+        surface.clearPreviewGridSize()
 
         coordinator.prepareToActivate(key) {
             XCTAssertNil(surface.superview)
@@ -1235,6 +1239,23 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertFalse(surface.isParkedForPreview)
         XCTAssertFalse(surface.suppressAutoFocus)
         XCTAssertTrue(isActive)
+        let interactiveSize = try XCTUnwrap(
+            SurfacePixelSize(surface.convertToBacking(surface.bounds.size))
+        )
+        XCTAssertEqual(surface.surfaceSize?.width_px, interactiveSize.width)
+        XCTAssertEqual(surface.surfaceSize?.height_px, interactiveSize.height)
+        try waitForIOSurface(in: surface, matching: interactiveSize)
+        let interactiveIOSurface = try XCTUnwrap(
+            surface.layer?.contents as? IOSurface
+        )
+        XCTAssertEqual(
+            IOSurfaceGetWidth(interactiveIOSurface),
+            Int(interactiveSize.width)
+        )
+        XCTAssertEqual(
+            IOSurfaceGetHeight(interactiveIOSurface),
+            Int(interactiveSize.height)
+        )
     }
 
     func testParkingAdapterWaitsForAVisibleWorkspaceWindow() throws {
@@ -1361,14 +1382,21 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         return window
     }
 
-    private func waitForIOSurface(in view: TerminalSurfaceView) throws {
+    private func waitForIOSurface(
+        in view: TerminalSurfaceView,
+        matching pixelSize: SurfacePixelSize? = nil
+    ) throws {
         let deadline = Date().addingTimeInterval(10)
-        while !(view.layer?.contents is IOSurface), Date() < deadline {
+        while Date() < deadline {
+            if let ioSurface = view.layer?.contents as? IOSurface {
+                guard let pixelSize else { return }
+                if IOSurfaceGetWidth(ioSurface) == Int(pixelSize.width),
+                   IOSurfaceGetHeight(ioSurface) == Int(pixelSize.height) {
+                    return
+                }
+            }
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
-        _ = try XCTUnwrap(
-            view.layer?.contents as? IOSurface,
-            "libghostty did not render an IOSurface before the deadline"
-        )
+        XCTFail("libghostty did not render the expected IOSurface before the deadline")
     }
 }
