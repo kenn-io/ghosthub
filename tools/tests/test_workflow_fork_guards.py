@@ -13,6 +13,7 @@ import re
 
 import pytest
 import yaml
+from workflow_guards import requires
 
 CANONICAL_GUARD = "github.repository == 'kenn-io/ghosthub'"
 # `secrets.NAME`, `secrets['NAME']`, and reusable-workflow secret forwarding.
@@ -39,7 +40,7 @@ def guarded(job_name: str, jobs: dict, seen: frozenset[str] = frozenset()) -> bo
         return False
     job = jobs[job_name]
     condition = str(job.get("if", ""))
-    if CANONICAL_GUARD in condition:
+    if requires(condition, CANONICAL_GUARD):
         return True
     if STATUS_OVERRIDE.search(condition):
         return False
@@ -83,3 +84,26 @@ def test_scheduled_jobs_are_repository_guarded(path: pathlib.Path) -> None:
 @pytest.mark.parametrize("path", workflow_files(), ids=lambda p: p.name)
 def test_secret_consuming_jobs_are_repository_guarded(path: pathlib.Path) -> None:
     assert unguarded_jobs(path, secrets_only=True) == []
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        (CANONICAL_GUARD, True),
+        (f"{CANONICAL_GUARD} && github.ref == 'refs/heads/main'", True),
+        (f"always() && {CANONICAL_GUARD}", True),
+        (f"(github.event_name == 'push' || inputs.force) && {CANONICAL_GUARD}", True),
+        ("'kenn-io/ghosthub' == github.repository", True),
+        (f"{CANONICAL_GUARD} || github.event_name == 'push'", False),
+        (f"!({CANONICAL_GUARD})", False),
+        (
+            f"github.ref == 'refs/heads/main' && !({CANONICAL_GUARD} && inputs.force)",
+            False,
+        ),
+        ("github.repository == 'someone/ghosthub'", False),
+        ("", False),
+        (f"{CANONICAL_GUARD} &&", False),
+    ],
+)
+def test_guard_must_be_mandatory_on_every_path(condition: str, expected: bool) -> None:
+    assert requires(condition, CANONICAL_GUARD) is expected
