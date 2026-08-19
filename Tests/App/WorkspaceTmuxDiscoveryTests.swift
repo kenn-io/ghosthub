@@ -530,6 +530,106 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @Test("reopening during stale promotion restoration serializes sizing")
+    @MainActor
+    func reopeningDuringPromotionRestorationSerializesSizing() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let promotionCount = LockedValue(0)
+        let restoreStarted = LockedValue(false)
+        let restoreFinished = LockedValue(false)
+        let releasePromotion = DispatchSemaphore(value: 0)
+        let releaseRestore = DispatchSemaphore(value: 0)
+        defer {
+            releasePromotion.signal()
+            releaseRestore.signal()
+        }
+        let session = DiscoveredTmuxSession(
+            name: "build",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            if command.contains("'!ignore-size'") {
+                promotionCount.withLock { $0 += 1 }
+                if promotionCount.load() == 1 {
+                    releasePromotion.wait()
+                }
+                return (0, "")
+            }
+            if command.contains("ignore-size"),
+               !command.contains("!ignore-size") {
+                restoreStarted.withLock { $0 = true }
+                releaseRestore.wait()
+                restoreFinished.withLock { $0 = true }
+                return (0, "")
+            }
+            guard command.contains(
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+            ) else { return (0, "") }
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t101\t789\t321\t/dev/ttys001\t$1\t1001\t%9\n"
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { promotionCount.load() == 1 }
+
+        model.selectFromUser(WorkspaceSelection(
+            selectedHostID: environment.host.id
+        ))
+        releasePromotion.signal()
+        await waitUntilMainActor { restoreStarted.load() }
+
+        model.openBorrowedTmuxSession(selection)
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(promotionCount.load() == 1)
+
+        releaseRestore.signal()
+        await waitUntilMainActor { restoreFinished.load() }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(promotionCount.load() == 2)
+        #expect(surfaceStore.surface.clearPreviewGridCount == 2)
+        #expect(surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
     @Test("failed stale promotion restoration detaches the hidden client")
     @MainActor
     func failedStalePromotionRestorationDetachesClient() async throws {

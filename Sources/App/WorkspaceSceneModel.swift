@@ -8775,45 +8775,64 @@ final class WorkspaceSceneModel: ObservableObject {
         presentation.previewPromotionID = promotionID
         presentation.previewPromotionTask = Task { @MainActor [weak self, weak presentation] in
             guard let self, let presentation else { return }
-            var promotionResult: TmuxClientSizingTransitionResult
-            repeat {
-                promotionResult = await nativeTmuxSessionCoordinator
-                    .enableInteractiveSizing(for: presentation.handle)
-                guard !Task.isCancelled,
-                      presentation.previewPromotionID == promotionID,
-                      retainedTmuxPresentations[key] === presentation,
-                      alwaysLiveManagedTmuxPresentationKeys.contains(key)
-                else { return }
-            } while promotionResult == .stale
-            presentation.previewPromotionID = nil
-            presentation.previewPromotionTask = nil
-            switch promotionResult {
-            case .applied:
-                break
-            case .stale:
-                return
-            case let .failure(failure):
-                let retriesInteractiveAttachment =
-                    presentation.previewPromotionNavigationRevision
-                        == userNavigationRevision
-                let selection = presentation.selection
-                presentation.previewPromotionNavigationRevision = nil
-                excludeAlwaysLiveTmuxPresentation(
-                    presentation,
-                    key: key
-                )
-                AppLogger.shared.error(
-                    "tmux preview promotion: \(failure.localizedDescription)",
-                    context: "tmux"
-                )
-                if retriesInteractiveAttachment {
-                    openBorrowedTmuxSession(selection)
+            defer {
+                if presentation.previewPromotionID == promotionID {
+                    presentation.previewPromotionID = nil
+                    presentation.previewPromotionTask = nil
                 }
-                return
             }
-            guard presentation.previewPromotionNavigationRevision
-                == userNavigationRevision
-            else {
+
+            while !Task.isCancelled {
+                var promotionResult: TmuxClientSizingTransitionResult
+                repeat {
+                    promotionResult = await nativeTmuxSessionCoordinator
+                        .enableInteractiveSizing(for: presentation.handle)
+                    guard !Task.isCancelled,
+                          presentation.previewPromotionID == promotionID,
+                          retainedTmuxPresentations[key] === presentation,
+                          alwaysLiveManagedTmuxPresentationKeys.contains(key)
+                    else { return }
+                } while promotionResult == .stale
+                switch promotionResult {
+                case .applied:
+                    break
+                case .stale:
+                    return
+                case let .failure(failure):
+                    let retriesInteractiveAttachment =
+                        presentation.previewPromotionNavigationRevision
+                            == userNavigationRevision
+                    let selection = presentation.selection
+                    presentation.previewPromotionNavigationRevision = nil
+                    excludeAlwaysLiveTmuxPresentation(
+                        presentation,
+                        key: key
+                    )
+                    AppLogger.shared.error(
+                        "tmux preview promotion: "
+                            + failure.localizedDescription,
+                        context: "tmux"
+                    )
+                    if retriesInteractiveAttachment {
+                        openBorrowedTmuxSession(selection)
+                    }
+                    return
+                }
+
+                if presentation.previewPromotionNavigationRevision
+                    == userNavigationRevision {
+                    presentation.previewPromotionNavigationRevision = nil
+                    alwaysLiveManagedTmuxPresentationKeys.remove(key)
+                    pendingAlwaysLiveTmuxSurfaceHandleIDs.remove(
+                        presentation.handle.id
+                    )
+                    pendingAlwaysLiveTmuxSurfaceHandles.removeAll {
+                        $0.id == presentation.handle.id
+                    }
+                    activateTmuxPresentation(presentation)
+                    return
+                }
+
                 presentation.previewPromotionNavigationRevision = nil
                 var restoreResult: TmuxClientSizingTransitionResult
                 repeat {
@@ -8823,6 +8842,7 @@ final class WorkspaceSceneModel: ObservableObject {
                             for: presentation.handle
                         )
                     guard !Task.isCancelled,
+                          presentation.previewPromotionID == promotionID,
                           retainedTmuxPresentations[key] === presentation,
                           alwaysLiveManagedTmuxPresentationKeys.contains(key)
                     else { return }
@@ -8837,18 +8857,12 @@ final class WorkspaceSceneModel: ObservableObject {
                             + failure.localizedDescription,
                         context: "tmux"
                     )
+                    return
                 }
-                return
+                guard presentation.previewPromotionNavigationRevision
+                    == userNavigationRevision
+                else { return }
             }
-            presentation.previewPromotionNavigationRevision = nil
-            alwaysLiveManagedTmuxPresentationKeys.remove(key)
-            pendingAlwaysLiveTmuxSurfaceHandleIDs.remove(
-                presentation.handle.id
-            )
-            pendingAlwaysLiveTmuxSurfaceHandles.removeAll {
-                $0.id == presentation.handle.id
-            }
-            activateTmuxPresentation(presentation)
         }
     }
 
