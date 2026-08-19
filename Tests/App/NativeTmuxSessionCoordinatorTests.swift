@@ -1452,6 +1452,46 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(promotionMutations.load() == 1)
     }
 
+    @Test("interactive sizing refreshes geometry before clearing ignore-size")
+    func interactiveSizingRefreshesGeometryBeforePromotion() async {
+        let store = RecordingNativeSessionSurfaceStore()
+        let promotionEvents = LockedValue<[String]>([])
+        store.surface.onClearPreviewGrid = {
+            promotionEvents.withLock { $0.append("geometry") }
+        }
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'!ignore-size'") {
+                    promotionEvents.withLock { $0.append("sizing") }
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "promotion-order",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: TmuxGridSize(columns: 120, rows: 37)
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let result = await coordinator.enableInteractiveSizing(for: handle)
+
+        #expect(result == TmuxClientSizingTransitionResult.applied)
+        #expect(promotionEvents.load() == ["geometry", "sizing"])
+        #expect(store.surface.clearPreviewGridCount == 1)
+    }
+
     @Test("unchanged preview grids do not resize live surfaces")
     func unchangedPreviewGridDoesNotResizeSurface() async {
         let store = RecordingNativeSessionSurfaceStore()

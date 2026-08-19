@@ -598,6 +598,9 @@ final class NativeTmuxSessionCoordinator {
         case let .failure(failure):
             return .failure(failure)
         }
+        terminalCoordinator.paneSurfaceIfPresent(
+            for: surfaceKey(handle)
+        )?.clearPreviewGridSize()
         let failure = await paneSplitter.enableSizing(target: target)
         guard !Task.isCancelled,
               attachments[handle.id]?.id == attachmentID
@@ -607,9 +610,6 @@ final class NativeTmuxSessionCoordinator {
             promoted.ignoresClientSize = false
             promoted.previewGridSize = nil
             attachments[handle.id] = promoted
-            terminalCoordinator.paneSurfaceIfPresent(
-                for: surfaceKey(handle)
-            )?.clearPreviewGridSize()
             return .applied
         }
         return .failure(failure)

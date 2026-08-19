@@ -23,7 +23,6 @@ extension WorkspaceSceneModel {
         let center = NotificationCenter.default
         appDidBecomeActiveCancellable = center
             .publisher(for: NSApplication.didBecomeActiveNotification)
-            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.handleApplicationDidBecomeActiveForResourceMonitoring()
             }

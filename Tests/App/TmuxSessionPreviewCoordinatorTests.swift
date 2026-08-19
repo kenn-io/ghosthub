@@ -1487,6 +1487,29 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.budget.granted.count == 1)
         await model.shutdown()
     }
+
+    @Test("rapid activation and resignation preserve inactive state")
+    func rapidApplicationActivityPreservesLatestState() async throws {
+        let workspace = try seededWorkspace()
+        let model = try makeModel(
+            database: workspace.database,
+            localHostID: workspace.hostID
+        )
+        model.subscribeAppActivity()
+
+        NotificationCenter.default.post(
+            name: NSApplication.didBecomeActiveNotification,
+            object: NSApp
+        )
+        NotificationCenter.default.post(
+            name: NSApplication.willResignActiveNotification,
+            object: NSApp
+        )
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(model.isAppActive == false)
+        await model.shutdown()
+    }
 }
 
 @MainActor
