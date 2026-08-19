@@ -1707,7 +1707,12 @@ impl RootView {
         cx.notify();
     }
 
-    fn persist_appearance(&mut self, draft: &AppearanceSettingsDraft, cx: &mut Context<Self>) {
+    fn persist_appearance(
+        &mut self,
+        draft: &AppearanceSettingsDraft,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         if !appearance_draft_is_persistable(draft) {
             if let Some(dialog) = &mut self.settings_dialog {
                 dialog.appearance_editor.error = None;
@@ -1715,10 +1720,21 @@ impl RootView {
             cx.notify();
             return;
         }
+        let previous = self.workspace.snapshot().appearance().clone();
         match self.workspace.save_appearance(draft) {
             Ok(()) => {
                 if let Some(dialog) = &mut self.settings_dialog {
                     dialog.appearance_editor.error = None;
+                }
+                let appearance = self.workspace.snapshot().appearance().clone();
+                if terminal_font_changed(
+                    previous.font_family(),
+                    previous.font_size(),
+                    appearance.font_family(),
+                    appearance.font_size(),
+                ) {
+                    self.terminal_metrics = measure_terminal_metrics(window, &appearance);
+                    self.resize_for_window(window);
                 }
             }
             Err(error) => {
@@ -1730,7 +1746,12 @@ impl RootView {
         cx.notify();
     }
 
-    fn edit_appearance_field(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn edit_appearance_field(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = event.keystroke.key.to_ascii_lowercase();
         let Some(editor) = self
             .settings_dialog
@@ -1789,7 +1810,7 @@ impl RootView {
             }
             editor.open_picker = None;
             let draft = editor.draft.clone();
-            self.persist_appearance(&draft, cx);
+            self.persist_appearance(&draft, window, cx);
             cx.stop_propagation();
             return;
         }
@@ -1816,7 +1837,7 @@ impl RootView {
             append_non_control_characters(value, text, SETTINGS_FIELD_CHARACTER_LIMIT);
         }
         let draft = editor.draft.clone();
-        self.persist_appearance(&draft, cx);
+        self.persist_appearance(&draft, window, cx);
         cx.stop_propagation();
     }
 
@@ -1945,7 +1966,7 @@ impl RootView {
             return;
         }
         if pane == SettingsPane::Appearance {
-            self.edit_appearance_field(event, cx);
+            self.edit_appearance_field(event, window, cx);
             return;
         }
         let Some(editor) = self
@@ -4743,7 +4764,7 @@ impl RootView {
                     .as_ref()
                     .map(|dialog| dialog.appearance_editor.draft.clone());
                 if let Some(draft) = draft {
-                    this.persist_appearance(&draft, cx);
+                    this.persist_appearance(&draft, window, cx);
                 }
             }))
             .into_any_element()
@@ -4829,7 +4850,7 @@ impl RootView {
                     .text_color(rgb(0xd8_dd_e6))
                     .child(family.clone())
                     .when(selected, |element| element.child("✓"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(dialog) = &mut this.settings_dialog {
                             dialog
                                 .appearance_editor
@@ -4844,7 +4865,7 @@ impl RootView {
                             .as_ref()
                             .map(|dialog| dialog.appearance_editor.draft.clone());
                         if let Some(draft) = draft {
-                            this.persist_appearance(&draft, cx);
+                            this.persist_appearance(&draft, window, cx);
                         }
                     })),
             );
@@ -4880,7 +4901,7 @@ impl RootView {
                     .bg(rgb(if selected { 0x2b_6495 } else { 0x19_1d25 }))
                     .text_sm()
                     .child(format!("{size} pt"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(dialog) = &mut this.settings_dialog {
                             dialog.appearance_editor.draft.font_size = size.to_string();
                             dialog.appearance_editor.open_picker = None;
@@ -4891,7 +4912,7 @@ impl RootView {
                             .as_ref()
                             .map(|dialog| dialog.appearance_editor.draft.clone());
                         if let Some(draft) = draft {
-                            this.persist_appearance(&draft, cx);
+                            this.persist_appearance(&draft, window, cx);
                         }
                     })),
             );
@@ -8711,6 +8732,15 @@ fn normalize_cell_width(measured: f32) -> f32 {
     measured.max(1.0)
 }
 
+fn terminal_font_changed(
+    previous_family: &str,
+    previous_size: u16,
+    current_family: &str,
+    current_size: u16,
+) -> bool {
+    previous_family != current_family || previous_size != current_size
+}
+
 fn terminal_line_height(font_size: f32, ascent: f32, descent: f32) -> f32 {
     (ascent + descent + CELL_LINE_GAP)
         .max(font_size * 1.3)
@@ -8802,11 +8832,11 @@ mod tests {
         pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
         session_action_menu_position, session_backend_id, session_creation_available,
         session_group_visibility, session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, tmux_row_actions, toggle_session_group_state,
-        transitioned_presentation, tree_herdr_sessions, tree_sessions, tree_zellij_sessions,
-        visible_kwt_branch_candidates, visible_kwt_pull_requests, workspace_window_title,
-        worktree_open_mode,
+        terminal_cell_at_with_offset, terminal_font_changed, terminal_key_input,
+        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
+        tmux_row_actions, toggle_session_group_state, transitioned_presentation,
+        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates,
+        visible_kwt_pull_requests, workspace_window_title, worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -10979,6 +11009,28 @@ mod tests {
     fn terminal_line_height_keeps_readable_leading() {
         assert!((terminal_line_height(14.0, 10.0, 3.0) - 19.0).abs() < f32::EPSILON);
         assert!((terminal_line_height(14.0, 12.0, 4.0) - 20.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn terminal_font_changes_require_fresh_metrics() {
+        assert!(!terminal_font_changed(
+            "Cascadia Mono",
+            14,
+            "Cascadia Mono",
+            14
+        ));
+        assert!(terminal_font_changed(
+            "Cascadia Mono",
+            14,
+            "Iosevka Term",
+            14
+        ));
+        assert!(terminal_font_changed(
+            "Cascadia Mono",
+            14,
+            "Cascadia Mono",
+            16
+        ));
     }
 
     #[test]
