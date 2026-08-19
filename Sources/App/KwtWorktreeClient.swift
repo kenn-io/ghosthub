@@ -13,10 +13,13 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
     case removalIdentityUnavailable
     case removalTargetChanged
     case removalHostChanged
+    case removalChangesChanged
     case removalPreflightUnavailable(host: String, message: String)
     case sessionStartedAfterConfirmation(session: String)
     case commandFailed(host: String, status: Int32)
     case removalFailed(host: String, status: Int32)
+    case changeStatusFailed(host: String, status: Int32)
+    case malformedChangeStatus(host: String)
     case createdWorktreeMissing(branch: String)
     case malformedBranches(host: String)
 
@@ -43,6 +46,9 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
         case .removalHostChanged:
             "The host destination changed after confirmation. Review the host"
                 + " settings and try again."
+        case .removalChangesChanged:
+            "The worktree gained uncommitted changes after confirmation."
+                + " Review the updated removal warning and try again."
         case let .removalPreflightUnavailable(host, message):
             "kwt could not verify the worktree on \(host): \(message)"
         case let .sessionStartedAfterConfirmation(session):
@@ -52,6 +58,11 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
             "kwt could not create the worktree on \(host) (status \(status))."
         case let .removalFailed(host, status):
             "kwt could not remove the worktree on \(host) (status \(status))."
+        case let .changeStatusFailed(host, status):
+            "kwt could not check the worktree for uncommitted changes on"
+                + " \(host) (status \(status))."
+        case let .malformedChangeStatus(host):
+            "kwt returned an invalid worktree change status on \(host)."
         case let .createdWorktreeMissing(branch):
             "kwt completed, but \(branch) was not present in the refreshed inventory."
         case let .malformedBranches(host):
@@ -60,8 +71,9 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
     }
 }
 
-/// Executes only kwt's supported worktree-creation surface. Ghosthub does not
-/// choose a worktree path or launch its own workspace/session implementation.
+/// Executes only kwt's supported worktree lifecycle surfaces. Ghosthub does
+/// not choose a worktree path or launch its own workspace/session
+/// implementation.
 struct KwtWorktreeClient: Sendable {
     private static let jsonMarker = "GHOSTHUB_KWT_JSON\n"
     typealias LocalRunner = @Sendable (
@@ -234,6 +246,7 @@ struct KwtWorktreeClient: Sendable {
         worktreePath: String,
         generation: String,
         projectPath: String,
+        force: Bool = false,
         on host: CommandHost
     ) async throws {
         let binaryPrelude: String
@@ -260,6 +273,7 @@ struct KwtWorktreeClient: Sendable {
             worktreePath: worktreePath,
             generation: generation,
             projectPath: projectPath,
+            force: force,
             platform: platform,
             binaryPrelude: binaryPrelude,
             windowsKwtRelativePath: windowsKwtRelativePath
@@ -279,6 +293,87 @@ struct KwtWorktreeClient: Sendable {
             throw KwtWorktreeError.removalFailed(
                 host: host.displayName,
                 status: result.status
+            )
+        }
+    }
+
+    func changes(
+        worktreePath: String,
+        projectPath: String,
+        on host: CommandHost
+    ) async throws -> WorktreeChangeSummary {
+        let binaryPrelude: String
+        let windowsKwtRelativePath: String?
+        let platform: SSHHostInfo.Platform
+        switch host {
+        case .local:
+            binaryPrelude = KwtBinaryLocator.commandPrelude(
+                exactPath: localBinaryPath
+            )
+            windowsKwtRelativePath = nil
+            platform = .posix
+        case let .ssh(info):
+            binaryPrelude = KwtBinaryLocator.remoteCommandPrelude(
+                revision: remoteBinaryRevision
+            )
+            windowsKwtRelativePath =
+                KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                    revision: remoteBinaryRevision
+                )
+            platform = info.platform
+        }
+        let command = Self.changesCommand(
+            projectPath: projectPath,
+            platform: platform,
+            binaryPrelude: binaryPrelude,
+            windowsKwtRelativePath: windowsKwtRelativePath
+        )
+        let localRunner = localRunner
+        let remoteRunner = remoteRunner
+        let shell = loginShellProvider()
+        let result = await Task.detached(priority: .userInitiated) {
+            switch host {
+            case .local:
+                localRunner(shell, command)
+            case let .ssh(info):
+                remoteRunner(info, command)
+            }
+        }.value
+        guard result.status == 0 else {
+            throw KwtWorktreeError.changeStatusFailed(
+                host: host.displayName,
+                status: result.status
+            )
+        }
+        let normalizedOutput = result.stdout.replacingOccurrences(
+            of: "\r\n",
+            with: "\n"
+        )
+        guard let markerRange = normalizedOutput.range(
+            of: Self.jsonMarker,
+            options: .backwards
+        ) else {
+            throw KwtWorktreeError.malformedChangeStatus(
+                host: host.displayName
+            )
+        }
+        let json = normalizedOutput[markerRange.upperBound...]
+        do {
+            let records = try JSONDecoder().decode(
+                [KwtWorktreeChangeRecord].self,
+                from: Data(json.utf8)
+            )
+            guard let record = records.first(where: {
+                $0.path == worktreePath
+            }) else {
+                return .clean
+            }
+            return record.gitStatus.summary
+        } catch let error as KwtWorktreeError {
+            throw error
+        } catch {
+            throw KwtWorktreeError.malformedChangeStatus(
+                host: host.displayName
             )
         }
     }
@@ -344,27 +439,84 @@ struct KwtWorktreeClient: Sendable {
         worktreePath: String,
         generation: String,
         projectPath: String,
+        force: Bool,
         platform: SSHHostInfo.Platform,
         binaryPrelude: String,
         windowsKwtRelativePath: String?
     ) -> String {
         if platform == .windows {
+            var arguments = ["remove"]
+            if force {
+                arguments.append("--force")
+            }
+            arguments += [
+                "--if-generation",
+                generation,
+                worktreePath,
+            ]
             return KwtPowerShellCommand.run(
-                arguments: [
-                    "remove",
-                    "--if-generation",
-                    generation,
-                    worktreePath,
-                ],
+                arguments: arguments,
                 workingDirectory: projectPath,
                 managedRelativePath: windowsKwtRelativePath
             )
         }
         return binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
-            + "exec \"$ghosthub_kwt_path\" remove --if-generation "
+            + "exec \"$ghosthub_kwt_path\" remove"
+            + (force ? " --force" : "")
+            + " --if-generation "
             + shellQuotedCommandArgument(generation)
             + " "
             + shellQuotedCommandArgument(worktreePath)
+    }
+
+    private static func changesCommand(
+        projectPath: String,
+        platform: SSHHostInfo.Platform,
+        binaryPrelude: String,
+        windowsKwtRelativePath: String?
+    ) -> String {
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: ["status", "--json", "--no-fetch"],
+                workingDirectory: projectPath,
+                marker: "GHOSTHUB_KWT_JSON",
+                managedRelativePath: windowsKwtRelativePath
+            )
+        }
+        return binaryPrelude
+            + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
+            + "printf 'GHOSTHUB_KWT_JSON\\n'; "
+            + "exec \"$ghosthub_kwt_path\" status --json --no-fetch"
+    }
+}
+
+private struct KwtWorktreeChangeRecord: Decodable {
+    let path: String
+    let gitStatus: KwtGitStatusRecord
+
+    private enum CodingKeys: String, CodingKey {
+        case path
+        case gitStatus = "git_status"
+    }
+}
+
+private struct KwtGitStatusRecord: Decodable {
+    let modified: Int
+    let added: Int
+    let deleted: Int
+    let untracked: Int
+    let staged: Int
+    let conflicts: Int
+
+    var summary: WorktreeChangeSummary {
+        WorktreeChangeSummary(
+            modified: modified,
+            added: added,
+            deleted: deleted,
+            untracked: untracked,
+            staged: staged,
+            conflicts: conflicts
+        )
     }
 }

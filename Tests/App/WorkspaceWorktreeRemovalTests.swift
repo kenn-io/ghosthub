@@ -11,6 +11,63 @@ import Testing
 @Suite("Workspace worktree removal", .serialized)
 struct WorkspaceWorktreeRemovalTests {
     @MainActor
+    @Test("changes found after confirmation require explicit force removal")
+    func changesFoundAfterConfirmationRequireForce() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let reads = LockedValue(0)
+        let loads = LockedValue(0)
+        let normalRemovals = LockedValue(0)
+        let forcedRemovals = LockedValue(0)
+        let afterRemoval = inventory(environment)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() < 3
+                    ? fixture.beforeRemoval
+                    : afterRemoval
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                normalRemovals.withLock { $0 += 1 }
+            },
+            kwtForceWorktreeRemover: { _, _, _, _ in
+                forcedRemovals.withLock { $0 += 1 }
+            },
+            kwtWorktreeChangeReader: { _, _, _ in
+                reads.withLock { $0 += 1 }
+                return reads.load() == 1
+                    ? .clean
+                    : WorktreeChangeSummary(untracked: 1)
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(
+            fixture.removable.id
+        )
+        #expect(request.forceRemoval == false)
+
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Removal should require force confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.forceRemoval)
+        #expect(updatedRequest.changes.untracked == 1)
+        #expect(normalRemovals.load() == 0)
+        #expect(forcedRemovals.load() == 0)
+
+        #expect(try await model.resolveWorktreeRemoval(updatedRequest) == .removed)
+        #expect(normalRemovals.load() == 0)
+        #expect(forcedRemovals.load() == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test(
         "removal reconciles worktree and session state in other scenes",
         arguments: [false, true]

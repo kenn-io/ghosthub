@@ -424,6 +424,42 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
 
 }
 
+public struct WorktreeChangeSummary: Equatable, Sendable {
+    public static let clean = WorktreeChangeSummary()
+
+    public let modified: Int
+    public let added: Int
+    public let deleted: Int
+    public let untracked: Int
+    public let staged: Int
+    public let conflicts: Int
+
+    public init(
+        modified: Int = 0,
+        added: Int = 0,
+        deleted: Int = 0,
+        untracked: Int = 0,
+        staged: Int = 0,
+        conflicts: Int = 0
+    ) {
+        self.modified = modified
+        self.added = added
+        self.deleted = deleted
+        self.untracked = untracked
+        self.staged = staged
+        self.conflicts = conflicts
+    }
+
+    public var hasUncommittedChanges: Bool {
+        modified > 0
+            || added > 0
+            || deleted > 0
+            || untracked > 0
+            || staged > 0
+            || conflicts > 0
+    }
+}
+
 public struct WorktreeVisibility: Equatable, Sendable {
     public static let `default` = WorktreeVisibility()
 

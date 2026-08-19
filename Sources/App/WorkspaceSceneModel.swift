@@ -55,6 +55,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias KwtWorktreeRemover = @Sendable (
         String, String, String, CommandHost
     ) async throws -> Void
+    typealias KwtWorktreeChangeReader = @Sendable (
+        String, String, CommandHost
+    ) async throws -> WorktreeChangeSummary
     typealias KwtBranchLister = @Sendable (
         String, CommandHost
     ) async throws -> [WorktreeBranchCandidate]
@@ -748,6 +751,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private let kwtRemoteProvisioner: KwtRemoteProvisioner
     private let kwtWorktreeCreator: KwtWorktreeCreator
     private let kwtWorktreeRemover: KwtWorktreeRemover
+    private let kwtForceWorktreeRemover: KwtWorktreeRemover
+    private let kwtWorktreeChangeReader: KwtWorktreeChangeReader
     private let kwtBranchLister: KwtBranchLister
     private let kwtPullRequestLister: KwtPullRequestLister
     private let kwtPullRequestImporter: KwtPullRequestImporter
@@ -967,6 +972,24 @@ final class WorkspaceSceneModel: ObservableObject {
             try await KwtWorktreeClient().remove(
                 worktreePath: worktreePath,
                 generation: generation,
+                projectPath: projectPath,
+                on: host
+            )
+        },
+        kwtForceWorktreeRemover: @escaping KwtWorktreeRemover = {
+            worktreePath, generation, projectPath, host in
+            try await KwtWorktreeClient().remove(
+                worktreePath: worktreePath,
+                generation: generation,
+                projectPath: projectPath,
+                force: true,
+                on: host
+            )
+        },
+        kwtWorktreeChangeReader: @escaping KwtWorktreeChangeReader = {
+            worktreePath, projectPath, host in
+            try await KwtWorktreeClient().changes(
+                worktreePath: worktreePath,
                 projectPath: projectPath,
                 on: host
             )
@@ -1215,6 +1238,8 @@ final class WorkspaceSceneModel: ObservableObject {
         self.kwtRemoteProvisioner = kwtRemoteProvisioner
         self.kwtWorktreeCreator = kwtWorktreeCreator
         self.kwtWorktreeRemover = kwtWorktreeRemover
+        self.kwtForceWorktreeRemover = kwtForceWorktreeRemover
+        self.kwtWorktreeChangeReader = kwtWorktreeChangeReader
         self.kwtBranchLister = kwtBranchLister
         self.kwtPullRequestLister = kwtPullRequestLister
         self.kwtPullRequestImporter = kwtPullRequestImporter
@@ -2460,6 +2485,11 @@ final class WorkspaceSceneModel: ObservableObject {
         ) else {
             throw KwtWorktreeError.removalIdentityUnavailable
         }
+        let changes = try await kwtWorktreeChangeReader(
+            worktree.path,
+            project.rootPath,
+            host
+        )
 
         let sessionKillRequest: TmuxSessionKillRequest?
         if let session = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -2498,7 +2528,8 @@ final class WorkspaceSceneModel: ObservableObject {
             worktree: worktree,
             project: project,
             confirmedHost: hostSummary,
-            sessionKillRequest: sessionKillRequest
+            sessionKillRequest: sessionKillRequest,
+            changes: changes
         )
     }
 
@@ -2592,6 +2623,20 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let generation = worktree.generation else {
             throw KwtWorktreeError.removalTargetChanged
         }
+        if !checkoutAlreadyAbsent {
+            let currentChanges = try await kwtWorktreeChangeReader(
+                worktree.path,
+                project.rootPath,
+                confirmedHost
+            )
+            guard removalHostEndpointMatches(request) else {
+                throw KwtWorktreeError.removalHostChanged
+            }
+            if currentChanges.hasUncommittedChanges,
+               !request.forceRemoval {
+                throw KwtWorktreeError.removalChangesChanged
+            }
+        }
         let removalTombstone =
             WorktreeMutationCoordinator.RemovalTombstone(
                 path: worktree.path,
@@ -2636,7 +2681,10 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             if !checkoutAlreadyAbsent {
                 do {
-                    try await kwtWorktreeRemover(
+                    let remover = request.forceRemoval
+                        ? kwtForceWorktreeRemover
+                        : kwtWorktreeRemover
+                    try await remover(
                         worktree.path,
                         generation,
                         project.rootPath,
@@ -2757,6 +2805,8 @@ final class WorkspaceSceneModel: ObservableObject {
              TmuxSessionKillError.sessionNotRunning:
             return .refreshSessionIdentity
         case KwtWorktreeError.removalTargetChanged:
+            return .reconfirmChangedTarget
+        case KwtWorktreeError.removalChangesChanged:
             return .reconfirmChangedTarget
         case KwtWorktreeError.sessionStartedAfterConfirmation:
             return .reconfirmStartedSession
@@ -3073,6 +3123,7 @@ final class WorkspaceSceneModel: ObservableObject {
             matches: updatedRequest.worktree,
             project: updatedRequest.project
         ) || updatedRequest.sessionKillRequest != request.sessionKillRequest
+            || updatedRequest.changes != request.changes
     }
 
     private func removalHostEndpointMatches(

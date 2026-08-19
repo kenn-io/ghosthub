@@ -353,6 +353,12 @@ func makeModel(
             on: host
         )
     },
+    kwtForceWorktreeRemover:
+    @escaping WorkspaceSceneModel.KwtWorktreeRemover = { _, _, _, _ in },
+    kwtWorktreeChangeReader:
+    @escaping WorkspaceSceneModel.KwtWorktreeChangeReader = { _, _, _ in
+        .clean
+    },
     worktreeMutationCoordinator: WorktreeMutationCoordinator =
         WorktreeMutationCoordinator(),
     herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator =
@@ -509,6 +515,8 @@ func makeModel(
         kwtRemoteProvisioner: kwtRemoteProvisioner,
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtWorktreeRemover: kwtWorktreeRemover,
+        kwtForceWorktreeRemover: kwtForceWorktreeRemover,
+        kwtWorktreeChangeReader: kwtWorktreeChangeReader,
         worktreeMutationCoordinator: worktreeMutationCoordinator,
         herdrLifecycleCoordinator: herdrLifecycleCoordinator,
         zellijSessionKillCoordinator: zellijSessionKillCoordinator,
