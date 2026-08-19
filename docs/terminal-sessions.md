@@ -706,9 +706,10 @@ repositories, worktrees, and tmux sessions remain untouched. Reads and
 mutations stay off the UI thread, and the last usable project tree remains
 visible while either is in flight.
 
-Removing a generation-backed worktree is a distinct destructive action. The
-confirmation is bound to its exact project, generation, tmux socket, and a
-fresh live session identity or freshly confirmed absence. Pinned KWT
+In the macOS app, removing a generation-backed worktree is a distinct
+destructive action. The confirmation is bound to its exact project,
+generation, tmux socket, and a fresh live session identity or freshly
+confirmed absence. Pinned KWT
 also reports the worktree's staged, unstaged, and untracked change counts
 before Ghosthub presents the confirmation. A worktree with uncommitted changes
 names that data-loss risk and requires an explicit **Force Remove Worktree**

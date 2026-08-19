@@ -262,7 +262,7 @@ shows that the client exists. A genuinely separate same-named default-socket
 session remains visible as unbound inventory. When WSL config selects an
 explicit `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery
 and attachment; cached rows never correlate sessions across those server roots.
-Removing a generation-backed worktree on either server type is separately
+In the macOS app, removing a generation-backed worktree is separately
 confirmed. Ghosthub captures the exact socket and live session identity, when
 present, and reads KWT's machine-readable no-fetch Git status for the exact
 path. Uncommitted changes turn the action into an explicit force confirmation.
