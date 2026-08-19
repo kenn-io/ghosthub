@@ -1487,6 +1487,46 @@ struct NativeTmuxSessionCoordinatorTests {
             TmuxGridSize(columns: 160, rows: 48),
         ])
     }
+
+    @Test("a reconnected preview sizes its replacement surface")
+    func reconnectedPreviewSizesReplacementSurface() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                successfulTmuxResolution("/opt/homebrew/bin/tmux")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let grid = TmuxGridSize(columns: 180, rows: 50)
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "reconnected-preview",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: grid
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(true, nil)
+        let replacement = coordinator.attach(
+            hostID: handle.hostID,
+            name: handle.name,
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: grid
+        )
+        await waitUntilMainActor { readyCount == 2 }
+        _ = coordinator.surface(handle: replacement)
+
+        #expect(replacement == handle)
+        #expect(store.surface.previewGridSizes == [grid, grid])
+    }
 }
 
 private enum SurfaceLaunchTestError: LocalizedError {

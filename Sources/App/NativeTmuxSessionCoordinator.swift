@@ -706,6 +706,10 @@ final class NativeTmuxSessionCoordinator {
             ? presentationStyleProvider()
             : nil
         let isFirstLaunch = !launchedHandles.contains(handle.id)
+        let surfaceKey = surfaceKey(handle)
+        let previousSurfaceIdentity = terminalCoordinator
+            .paneSurfaceIfPresent(for: surfaceKey)
+            .map { ObjectIdentifier($0) }
         let info = TmuxAttachmentInfo(
             sessionName: handle.name,
             host: attachment.host,
@@ -723,7 +727,7 @@ final class NativeTmuxSessionCoordinator {
             }
         )
         let surface = terminalCoordinator.paneSurface(
-            for: surfaceKey(handle),
+            for: surfaceKey,
             configuration: TerminalSurfaceConfiguration(
                 workingDirectory: NSHomeDirectory(),
                 command: info.attachCommand(
@@ -759,12 +763,14 @@ final class NativeTmuxSessionCoordinator {
             )
             return nil
         }
+        let didCreateSurface = previousSurfaceIdentity
+            != ObjectIdentifier(surface)
         if isFirstLaunch, appliesPresentationStyle,
            presentationStyle == nil {
             deferredPresentationStyleHandles.insert(handle.id)
         }
         surface.blocksClipboardReads = attachment.host.isRemote
-        if isFirstLaunch,
+        if didCreateSurface,
            attachment.ignoresClientSize,
            let previewGridSize = attachment.previewGridSize {
             _ = surface.sizeForPreviewGrid(

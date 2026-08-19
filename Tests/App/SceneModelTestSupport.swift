@@ -575,6 +575,7 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
     private(set) var requestedKeys: [SurfaceKey] = []
     private(set) var requestedConfigurations: [TerminalSurfaceConfiguration] = []
     private(set) var removedKeys: [SurfaceKey] = []
+    private var hasSurface = false
 
     var lastCommand: String? { requestedConfigurations.last?.command }
 
@@ -596,17 +597,19 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
     ) -> (any NativeSessionPaneSurfacing)? {
         requestedKeys.append(key)
         requestedConfigurations.append(configuration)
+        hasSurface = true
         return surface
     }
 
     func paneSurfaceIfPresent(
         for _: SurfaceKey
     ) -> (any NativeSessionPaneSurfacing)? {
-        requestedConfigurations.isEmpty ? nil : surface
+        hasSurface ? surface : nil
     }
 
     func removeSurface(for key: SurfaceKey) {
         removedKeys.append(key)
+        hasSurface = false
     }
 }
 
