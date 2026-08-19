@@ -8642,7 +8642,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
                 if activatesPresentation {
                     if alwaysLiveManagedTmuxPresentationKeys.contains(key) {
-                        promoteAlwaysLiveManagedPresentationBeforeActivation(
+                        activateTmuxPresentation(retained)
+                        promoteAlwaysLiveManagedPresentation(
                             retained,
                             key: key,
                             navigationRevision: userNavigationRevision
@@ -8764,7 +8765,7 @@ final class WorkspaceSceneModel: ObservableObject {
         return handle
     }
 
-    private func promoteAlwaysLiveManagedPresentationBeforeActivation(
+    private func promoteAlwaysLiveManagedPresentation(
         _ presentation: RetainedTmuxPresentation,
         key: TmuxPresentationKey,
         navigationRevision: UInt64
@@ -8829,11 +8830,13 @@ final class WorkspaceSceneModel: ObservableObject {
                     pendingAlwaysLiveTmuxSurfaceHandles.removeAll {
                         $0.id == presentation.handle.id
                     }
-                    activateTmuxPresentation(presentation)
                     return
                 }
 
                 presentation.previewPromotionNavigationRevision = nil
+                if activeBorrowedTmuxHandle == presentation.handle {
+                    hideBorrowedTmuxSession(presentation.selection)
+                }
                 var restoreResult: TmuxClientSizingTransitionResult
                 repeat {
                     restoreResult = await nativeTmuxSessionCoordinator

@@ -13,6 +13,72 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
+    @Test("Always Live activation does not wait for sizing promotion")
+    @MainActor
+    func alwaysLiveActivationDoesNotWaitForSizingPromotion() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let promotionStarted = LockedValue(false)
+        let releasePromotion = DispatchSemaphore(value: 0)
+        defer { releasePromotion.signal() }
+        let session = DiscoveredTmuxSession(
+            name: "build",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            if command.contains("'!ignore-size'") {
+                promotionStarted.withLock { $0 = true }
+                releasePromotion.wait()
+                return (0, "")
+            }
+            guard command.contains(
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+            ) else { return (0, "") }
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t101\t789\t321\t/dev/ttys001\t$1\t1001\t%9\n"
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { promotionStarted.load() }
+
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) != nil)
+
+        releasePromotion.signal()
+        await model.shutdown()
+    }
+
     @Test("failed Always Live promotion retries an interactive attachment")
     @MainActor
     func failedAlwaysLivePromotionRetriesInteractiveAttachment() async throws {
@@ -614,7 +680,7 @@ struct WorkspaceTmuxDiscoveryTests {
         for _ in 0 ..< 20 {
             await Task.yield()
         }
-        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.activeBorrowedTmuxSelection == selection)
         #expect(promotionCount.load() == 1)
 
         releaseRestore.signal()

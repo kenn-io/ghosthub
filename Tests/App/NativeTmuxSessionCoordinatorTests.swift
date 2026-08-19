@@ -1431,6 +1431,7 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { promotionStarted.load() }
         let close = try #require(store.surface.closeObservers[handle.id])
         close(true, nil as UInt32?)
+        let readyCountBeforeReplacement = readyCount
         let replacement = coordinator.attach(
             hostID: handle.hostID,
             name: handle.name,
@@ -1439,7 +1440,9 @@ struct NativeTmuxSessionCoordinatorTests {
             ignoresClientSize: true,
             previewGridSize: TmuxGridSize(columns: 120, rows: 37)
         )
-        await waitUntilMainActor { readyCount == 2 }
+        await waitUntilMainActor {
+            readyCount > readyCountBeforeReplacement
+        }
         _ = coordinator.surface(handle: replacement)
         releasePromotion.signal()
 

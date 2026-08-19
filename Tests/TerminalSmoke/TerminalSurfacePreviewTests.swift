@@ -864,6 +864,32 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(occlusionStates.last, false)
     }
 
+    func testUnparkingOccludesSurfaceBeforeReparenting() throws {
+        let originalOcclusionSetter = TerminalSurfaceView.occlusionSetter
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        let root = NSView(frame: try XCTUnwrap(window.contentView).bounds)
+        window.contentView = root
+        let host = LivePreviewParkingHost(frame: root.bounds)
+        root.addSubview(host)
+        try host.park(view)
+        var occlusionEvents: [(visible: Bool, wasParked: Bool)] = []
+        TerminalSurfaceView.occlusionSetter = { surface, visible in
+            occlusionEvents.append((visible, view.superview === host))
+            originalOcclusionSetter(surface, visible)
+        }
+        defer {
+            TerminalSurfaceView.occlusionSetter = originalOcclusionSetter
+        }
+
+        host.unpark(view)
+
+        XCTAssertEqual(occlusionEvents.first?.visible, false)
+        XCTAssertEqual(occlusionEvents.first?.wasParked, true)
+        XCTAssertNil(view.superview)
+    }
+
     func testApplicationActivitySuspendsAndRestoresParkedSurfaceRendering()
         throws {
         let originalOcclusionSetter = TerminalSurfaceView.occlusionSetter

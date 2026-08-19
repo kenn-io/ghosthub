@@ -69,6 +69,10 @@ public final class LivePreviewParkingHost: NSView {
         let geometry = geometryBySurface.removeValue(
             forKey: ObjectIdentifier(surface)
         )
+        // Stop libghostty before AppKit mutates the layer hierarchy. The
+        // renderer reads CALayer geometry independently; letting it draw
+        // during removal can expose transient invalid bounds.
+        surface.setPreviewRenderingSuspended(true)
         surface.removeFromSuperview()
         if let geometry {
             surface.bounds = geometry.bounds
