@@ -109,10 +109,11 @@ final class TmuxPathCache: @unchecked Sendable {
         if case let .success(binary) = result {
             cachedBinary = binary
         }
+        // Publish to current waiters before a new caller can start a retry.
+        resolution.complete(with: result)
         if activeResolution === resolution {
             activeResolution = nil
         }
         lock.unlock()
-        resolution.complete(with: result)
     }
 }

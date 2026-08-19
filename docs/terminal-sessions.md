@@ -140,9 +140,10 @@ ordinary retained client for each freshly discovered tmux session without
 activating it. Preview
 rendering never creates a second client for the same session. These hidden
 clients ignore tmux window sizing and render at the dimensions discovery
-reported for the session's active window; selecting one detaches it and starts
-a normally sized replacement before interaction. Windows/psmux sessions are
-not attached automatically because psmux has no non-sizing client mode.
+reported for the session's active window; selecting one promotes that retained
+client in place by clearing `ignore-size` before interaction. Windows/psmux
+sessions are not attached automatically because psmux has no non-sizing client
+mode.
 Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
 client. Ghosthub never reconstructs or otherwise controls Herdr themes,
 workspaces, tabs, panes, agents, plugins, installation, updates, configuration,
