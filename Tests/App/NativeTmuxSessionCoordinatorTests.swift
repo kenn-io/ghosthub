@@ -1488,8 +1488,60 @@ struct NativeTmuxSessionCoordinatorTests {
         let result = await coordinator.enableInteractiveSizing(for: handle)
 
         #expect(result == TmuxClientSizingTransitionResult.applied)
-        #expect(promotionEvents.load() == ["geometry", "sizing"])
-        #expect(store.surface.clearPreviewGridCount == 1)
+        #expect(promotionEvents.load() == ["geometry", "sizing", "geometry"])
+        #expect(store.surface.clearPreviewGridCount == 2)
+    }
+
+    @Test("interactive sizing clears a grid refreshed during promotion")
+    func interactiveSizingClearsGridRefreshedDuringPromotion() async {
+        let promotionStarted = LockedValue(false)
+        let releasePromotion = DispatchSemaphore(value: 0)
+        defer { releasePromotion.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'!ignore-size'") {
+                    promotionStarted.withLock { $0 = true }
+                    releasePromotion.wait()
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let initialGrid = TmuxGridSize(columns: 120, rows: 37)
+        let refreshedGrid = TmuxGridSize(columns: 140, rows: 41)
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "promotion-refresh",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: initialGrid
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let promotion = Task { @MainActor in
+            await coordinator.enableInteractiveSizing(for: handle)
+        }
+        await waitUntilMainActor { promotionStarted.load() }
+        coordinator.updatePreviewGridSize(refreshedGrid, for: handle)
+        releasePromotion.signal()
+
+        let result = await promotion.value
+
+        #expect(result == TmuxClientSizingTransitionResult.applied)
+        #expect(store.surface.previewGridSizes == [
+            initialGrid,
+            refreshedGrid,
+        ])
+        #expect(store.surface.clearPreviewGridCount == 2)
     }
 
     @Test("unchanged preview grids do not resize live surfaces")

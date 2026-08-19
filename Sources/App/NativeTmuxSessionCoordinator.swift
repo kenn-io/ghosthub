@@ -606,6 +606,9 @@ final class NativeTmuxSessionCoordinator {
               attachments[handle.id]?.id == attachmentID
         else { return .stale }
         guard let failure else {
+            terminalCoordinator.paneSurfaceIfPresent(
+                for: surfaceKey(handle)
+            )?.clearPreviewGridSize()
             var promoted = attachment
             promoted.ignoresClientSize = false
             promoted.previewGridSize = nil
