@@ -525,7 +525,7 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor { restoreCount.load() == 1 }
 
         #expect(model.activeBorrowedTmuxSelection == nil)
-        #expect(surfaceStore.surface.clearPreviewGridCount == 1)
+        #expect(surfaceStore.surface.clearPreviewGridCount == 2)
         #expect(surfaceStore.removedKeys.isEmpty)
         await model.shutdown()
     }
@@ -625,7 +625,7 @@ struct WorkspaceTmuxDiscoveryTests {
 
         #expect(model.activeBorrowedTmuxSelection == selection)
         #expect(promotionCount.load() == 2)
-        #expect(surfaceStore.surface.clearPreviewGridCount == 2)
+        #expect(surfaceStore.surface.clearPreviewGridCount == 4)
         #expect(surfaceStore.removedKeys.isEmpty)
         await model.shutdown()
     }
@@ -784,7 +784,7 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             model.prepareActiveBorrowedTmuxSurface()
             return model.activeBorrowedTmuxSelection == opened
-                && surfaceStore.surface.clearPreviewGridCount == 1
+                && surfaceStore.surface.clearPreviewGridCount == 2
         }
 
         #expect(surfaceStore.requestCount == 2)
@@ -854,7 +854,7 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             model.prepareActiveBorrowedTmuxSurface()
             return model.activeBorrowedTmuxSelection?.name == session.name
-                && surfaceStore.surface.clearPreviewGridCount == 1
+                && surfaceStore.surface.clearPreviewGridCount == 2
         }
 
         #expect(surfaceStore.requestCount == 1)
