@@ -2587,6 +2587,8 @@ final class WorkspaceSceneModel: ObservableObject {
             Set<WorkspaceTmuxSessionSelection>?
         var requiresWorkspaceReestablishment = false
         var terminatedSession = false
+        var killedSessionReestablishmentTarget:
+            WorkspaceTmuxSessionSelection?
         invalidateKwtInventoryRefresh()
         defer {
             ownsWorktreeMutation = false
@@ -2598,6 +2600,14 @@ final class WorkspaceSceneModel: ObservableObject {
                 requiresWorkspaceReestablishment:
                 requiresWorkspaceReestablishment
             )
+            if let killedSessionReestablishmentTarget {
+                _ = presentTmuxSession(
+                    killedSessionReestablishmentTarget,
+                    launchMode: .attach,
+                    intent: .userInitiated,
+                    activatesPresentation: false
+                )
+            }
         }
 
         let preflight: KwtHostInventory
@@ -2708,6 +2718,9 @@ final class WorkspaceSceneModel: ObservableObject {
                     if outcome.targetChanged {
                         throw KwtWorktreeError.removalTargetChanged
                     }
+                    let killedRestorationTarget = terminatedSession
+                        ? outcome.restorationTargets?.first
+                        : nil
                     if !request.forceRemoval,
                        let worktreeError = removalError as? KwtWorktreeError,
                        case .removalFailed = worktreeError,
@@ -2717,7 +2730,10 @@ final class WorkspaceSceneModel: ObservableObject {
                            confirmedHost
                        ),
                        removalHostEndpointMatches(request),
+                       !terminatedSession || killedRestorationTarget != nil,
                        changes.hasUncommittedChanges {
+                        killedSessionReestablishmentTarget =
+                            killedRestorationTarget
                         throw KwtWorktreeError.removalChangesChanged
                     }
                     throw removalError

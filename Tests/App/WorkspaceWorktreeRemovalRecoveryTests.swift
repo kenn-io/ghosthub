@@ -1135,9 +1135,14 @@ extension WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("a dirty rejection after session termination requires force confirmation")
-    func dirtyRejectionAfterSessionTerminationRequiresForce() async throws {
-        let fixture = try removalFixture()
+    @Test(
+        "a dirty rejection after session termination restores the killed session",
+        arguments: [true, false]
+    )
+    func dirtyRejectionAfterSessionTerminationRestoresSession(
+        wasOpened: Bool
+    ) async throws {
+        let fixture = try removalFixture(runningSession: true)
         let environment = fixture.environment
         let removable = fixture.removable
         let surfaces = RecordingNativeSessionSurfaceStore()
@@ -1177,9 +1182,11 @@ extension WorkspaceWorktreeRemovalTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
         )
-        model.openBorrowedTmuxSession(selection)
-        await waitUntilMainActor {
-            !surfaces.requestedConfigurations.isEmpty
+        if wasOpened {
+            model.openBorrowedTmuxSession(selection)
+            await waitUntilMainActor {
+                !surfaces.requestedConfigurations.isEmpty
+            }
         }
         let initialRequestCount = surfaces.requestedConfigurations.count
 
@@ -1196,6 +1203,10 @@ extension WorkspaceWorktreeRemovalTests {
 
         #expect(updatedRequest.forceRemoval)
         #expect(kills.load() == 1)
+        #expect(
+            model.activeBorrowedTmuxSelection
+                == (wasOpened ? selection : nil)
+        )
         let restoredCommand = try #require(
             surfaces.requestedConfigurations.last?.command
         )
