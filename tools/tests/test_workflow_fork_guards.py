@@ -9,11 +9,17 @@ forks can still build and test their own work.
 from __future__ import annotations
 
 import pathlib
+import re
 
 import pytest
 import yaml
 
 CANONICAL_GUARD = "github.repository == 'kenn-io/ghosthub'"
+# `secrets.NAME`, `secrets['NAME']`, and reusable-workflow secret forwarding.
+SECRET_REFERENCE = re.compile(r"secrets\s*[.\[]")
+# A job whose condition overrides the default success requirement still runs
+# when a guarded dependency is skipped, so it cannot inherit that guard.
+STATUS_OVERRIDE = re.compile(r"\b(always|failure|cancelled)\s*\(")
 WORKFLOWS = pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 
@@ -32,14 +38,23 @@ def guarded(job_name: str, jobs: dict, seen: frozenset[str] = frozenset()) -> bo
     if job_name in seen:
         return False
     job = jobs[job_name]
-    if CANONICAL_GUARD in str(job.get("if", "")):
+    condition = str(job.get("if", ""))
+    if CANONICAL_GUARD in condition:
         return True
+    if STATUS_OVERRIDE.search(condition):
+        return False
     needs = job.get("needs") or []
     if isinstance(needs, str):
         needs = [needs]
     return bool(needs) and all(
         guarded(need, jobs, seen | {job_name}) for need in needs if need in jobs
     )
+
+
+def consumes_secrets(job: dict) -> bool:
+    if "secrets" in job:  # reusable workflow call: `inherit` or an explicit map
+        return True
+    return bool(SECRET_REFERENCE.search(yaml.safe_dump(job)))
 
 
 def workflow_files() -> list[pathlib.Path]:
@@ -53,7 +68,7 @@ def unguarded_jobs(path: pathlib.Path, *, secrets_only: bool) -> list[str]:
         return []
     offenders = []
     for name, job in jobs.items():
-        if secrets_only and "secrets." not in yaml.safe_dump(job):
+        if secrets_only and not consumes_secrets(job):
             continue
         if not guarded(name, jobs):
             offenders.append(name)
