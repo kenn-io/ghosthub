@@ -18,9 +18,10 @@ from workflow_guards import requires
 CANONICAL_GUARD = "github.repository == 'kenn-io/ghosthub'"
 # `secrets.NAME`, `secrets['NAME']`, and reusable-workflow secret forwarding.
 SECRET_REFERENCE = re.compile(r"secrets\s*[.\[]")
-# A job whose condition overrides the default success requirement still runs
-# when a guarded dependency is skipped, so it cannot inherit that guard.
-STATUS_OVERRIDE = re.compile(r"\b(always|failure|cancelled)\s*\(")
+# Any status check function in an `if` replaces the implicit success
+# requirement, so the job can still run once a guarded dependency is skipped
+# and cannot inherit that dependency's guard.
+STATUS_OVERRIDE = re.compile(r"\b(always|success|failure|cancelled)\s*\(")
 WORKFLOWS = pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 
@@ -107,3 +108,27 @@ def test_secret_consuming_jobs_are_repository_guarded(path: pathlib.Path) -> Non
 )
 def test_guard_must_be_mandatory_on_every_path(condition: str, expected: bool) -> None:
     assert requires(condition, CANONICAL_GUARD) is expected
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        ("", True),
+        ("inputs.force", True),
+        ("success()", False),
+        ("success() || inputs.force", False),
+        ("always()", False),
+        ("failure()", False),
+        ("cancelled()", False),
+        (CANONICAL_GUARD, True),
+        (f"always() && {CANONICAL_GUARD}", True),
+    ],
+)
+def test_guard_inheritance_requires_the_implicit_success_check(
+    condition: str, expected: bool
+) -> None:
+    jobs = {
+        "upstream": {"if": CANONICAL_GUARD},
+        "downstream": {"needs": "upstream", "if": condition},
+    }
+    assert guarded("downstream", jobs) is expected
