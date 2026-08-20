@@ -103,6 +103,8 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         for (sourceSize, expectedOutputSize) in [
             (CGSize(width: 400, height: 300), CGSize(width: 320, height: 240)),
             (CGSize(width: 800, height: 400), CGSize(width: 320, height: 160)),
+            (CGSize(width: 320, height: 400), CGSize(width: 320, height: 400)),
+            (CGSize(width: 800, height: 200), CGSize(width: 320, height: 80)),
         ] {
             let sourceSurface = try makeIOSurface(
                 width: Int(sourceSize.width),

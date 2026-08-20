@@ -582,11 +582,11 @@ client into its Metal-backed IOSurface; Ghosthub uses a Metal-backed Core Image
 context to scale a changed frame into a width-bounded preview IOSurface, then
 presents that surface directly through Core Animation. The path performs no CPU
 pixel readback and creates no `Data`, `CGImage`, or `NSImage` copy. Each tile
-uses the terminal's stable aspect ratio, bounded between 4:3 and 2:1, so the
-complete frame stays legible without stretching or excessive padding. The
-placeholder is 16:10 until the first frame arrives. Frame replacement disables
-Core Animation transitions, and parked surfaces do not publish transient size
-changes during app activation. Efficient mode captures on disclosure and
+uses the terminal's exact aspect ratio so the tile shows the complete viewport
+without cropping or stretching. The placeholder is 16:10 until the first frame
+arrives. Frame replacement disables Core Animation transitions, and parked
+surfaces do not publish transient size changes during app activation. Efficient
+mode captures on disclosure and
 whenever the active tmux
 presentation navigates away, even when its tile is collapsed. Live mode may keep
 an inactive surface mounted behind the visible workspace content and refreshes

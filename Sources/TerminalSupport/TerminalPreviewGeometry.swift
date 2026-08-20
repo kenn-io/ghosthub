@@ -1,8 +1,6 @@
 import Foundation
 
 public enum TerminalPreviewGeometry {
-    public static let minimumAspectRatio: CGFloat = 4 / 3
-    public static let maximumAspectRatio: CGFloat = 2
     public static let placeholderAspectRatio: CGFloat = 16 / 10
 
     public static func aspectRatio(for size: CGSize?) -> CGFloat {
@@ -12,10 +10,7 @@ public enum TerminalPreviewGeometry {
               size.width > 0,
               size.height > 0
         else { return placeholderAspectRatio }
-        return min(
-            max(size.width / size.height, minimumAspectRatio),
-            maximumAspectRatio
-        )
+        return size.width / size.height
     }
 
     public static func thumbnailSize(

@@ -17,6 +17,8 @@ struct TmuxSessionPreviewTileRenderTests {
         for (sourceSize, expectedHeight) in [
             (CGSize(width: 320, height: 160), 160),
             (CGSize(width: 320, height: 240), 240),
+            (CGSize(width: 320, height: 320), 320),
+            (CGSize(width: 320, height: 100), 100),
         ] {
             let ioSurface = try #require(IOSurfaceCreate([
                 kIOSurfaceWidth: Int(sourceSize.width),
