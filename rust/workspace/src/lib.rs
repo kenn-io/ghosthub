@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::thread;
@@ -27,7 +27,7 @@ pub use session::{
 use surface::{CursorShape, GridSize, PixelSize, Rgb, SurfaceStore};
 use terminal::{
     ClipboardPolicy, ClipboardReadRequest as TerminalClipboardRead, ClipboardTarget, DefaultColors,
-    TerminalEvent, TerminalStartup, TerminalWorker,
+    TerminalEvent, TerminalStartup, TerminalWorker, WorkerError,
 };
 
 const REDUCED_COLOR_NOTICE: &str =
@@ -3285,12 +3285,42 @@ struct TerminalGeometry {
     sequence: u64,
 }
 
+struct CursorDefault(AtomicU8);
+
+impl CursorDefault {
+    const fn new(style: CursorStyle) -> Self {
+        Self(AtomicU8::new(cursor_style_code(style)))
+    }
+
+    fn load(&self) -> CursorShape {
+        match self.0.load(Ordering::Acquire) {
+            0 => CursorShape::Block,
+            1 => CursorShape::Bar,
+            2 => CursorShape::Underline,
+            _ => unreachable!("cursor default contains an invalid shape"),
+        }
+    }
+
+    fn store(&self, style: CursorStyle) {
+        self.0.store(cursor_style_code(style), Ordering::Release);
+    }
+}
+
+const fn cursor_style_code(style: CursorStyle) -> u8 {
+    match style {
+        CursorStyle::Block => 0,
+        CursorStyle::Bar => 1,
+        CursorStyle::Underline => 2,
+    }
+}
+
 fn publish_worker_at_latest_geometry<T, E>(
     geometry: &Mutex<TerminalGeometry>,
     workers: &Mutex<WorkerState<T>>,
     worker: T,
     initial_geometry: TerminalGeometry,
     resize: impl FnOnce(&T, TerminalGeometry) -> Result<(), E>,
+    reconcile: impl FnOnce(&T),
 ) -> Result<u64, E> {
     let geometry = geometry
         .lock()
@@ -3302,7 +3332,20 @@ fn publish_worker_at_latest_geometry<T, E>(
     if latest_geometry != initial_geometry {
         resize(&worker, latest_geometry)?;
     }
-    Ok(workers.publish(worker))
+    let generation = workers.publish(worker);
+    reconcile(
+        workers
+            .active()
+            .expect("worker was published before reconciliation"),
+    );
+    Ok(generation)
+}
+
+fn resize_terminal_worker(
+    worker: &TerminalWorker,
+    geometry: TerminalGeometry,
+) -> Result<(), WorkerError> {
+    worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
 }
 
 struct ConptyAdmissionAttacher {
@@ -3327,6 +3370,7 @@ impl AdmissionAttacher for ConptyAdmissionAttacher {
 
 struct Inner {
     appearance: RwLock<Appearance>,
+    cursor_default: CursorDefault,
     host_scoped_inventory: bool,
     wsl_config: Option<WslConfig>,
     wsl_executable: Mutex<Option<WslExecutable>>,
@@ -3980,9 +4024,11 @@ impl Workspace {
             } => *presentation_id,
             _ => 0,
         };
+        let cursor_default = CursorDefault::new(snapshot.appearance.cursor_style());
         Self {
             inner: Arc::new(Inner {
                 appearance: RwLock::new(snapshot.appearance),
+                cursor_default,
                 host_scoped_inventory: false,
                 wsl_config: None,
                 wsl_executable: Mutex::new(None),
@@ -4129,6 +4175,7 @@ impl Workspace {
         refresh_runtime: Arc<dyn RefreshRuntime>,
     ) -> Self {
         let allow_remote_clipboard_write = appearance.allow_remote_clipboard_write();
+        let cursor_default = CursorDefault::new(appearance.cursor_style());
         let hosts = wsl
             .as_ref()
             .map(WslHostSpec::host_item)
@@ -4140,6 +4187,7 @@ impl Workspace {
         Self {
             inner: Arc::new(Inner {
                 appearance: RwLock::new(appearance.into()),
+                cursor_default,
                 host_scoped_inventory: true,
                 wsl_config,
                 wsl_executable: Mutex::new(wsl_executable),
@@ -4202,9 +4250,11 @@ impl Workspace {
     #[must_use]
     pub fn start_wsl(config: WslConfig, appearance: TerminalAppearance) -> Self {
         let allow_remote_clipboard_write = appearance.allow_remote_clipboard_write();
+        let cursor_default = CursorDefault::new(appearance.cursor_style());
         let workspace = Self {
             inner: Arc::new(Inner {
                 appearance: RwLock::new(appearance.into()),
+                cursor_default,
                 host_scoped_inventory: false,
                 wsl_config: Some(config.clone()),
                 wsl_executable: Mutex::new(None),
@@ -4442,13 +4492,14 @@ impl Workspace {
                 .map_err(|error| WorkspaceError::new(error.to_string()))?;
             appearance
         };
-        update_default_cursor_shapes(&self.inner, cursor_shape(draft.cursor_style));
+        self.inner.cursor_default.store(draft.cursor_style);
         let _snapshot_write = begin_snapshot_write(&self.inner);
         *self
             .inner
             .appearance
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = appearance.into();
+        update_default_cursor_shapes(&self.inner, self.inner.cursor_default.load());
         self.inner.revision.fetch_add(1, Ordering::Release);
         Ok(())
     }
@@ -6000,6 +6051,7 @@ impl Workspace {
         let presentation_id = presentation.presentation_id;
         presentation.worker.set_clipboard_writes_enabled(true);
         let (_, previous_worker) = workers.replace(presentation.worker);
+        reconcile_active_worker_cursor(&self.inner, &workers);
         let previous_remote = remote_active.take();
         clear_pending_paste(&self.inner);
         set_terminal_notice(&self.inner, term);
@@ -6023,11 +6075,10 @@ impl Workspace {
         {
             worker.set_clipboard_writes_enabled(false);
             let _cancelled = worker.cancel_paste();
-            self.inner
-                .remote_retained
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(RemoteRetainedPresentation { active, worker });
+            insert_remote_retained_presentation(
+                &self.inner,
+                RemoteRetainedPresentation { active, worker },
+            );
         }
         drop(snapshot_write);
         Ok(true)
@@ -6849,17 +6900,16 @@ impl Workspace {
         drop(worker);
         clear_pending_paste(&self.inner);
         clear_terminal_notice(&self.inner);
-        self.inner
-            .retained_presentations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(RetainedPresentation {
+        insert_retained_presentation(
+            &self.inner,
+            RetainedPresentation {
                 key: key.clone(),
                 selection: selection.clone(),
                 attachment: active_attachment,
                 worker: active_worker,
                 presentation_id,
-            });
+            },
+        );
         self.restore_inventory_state();
         drop(attachment);
         Ok(Some(key))
@@ -8623,6 +8673,7 @@ fn activate_retained_presentation(
     worker.set_clipboard_writes_enabled(false);
     let surface = worker.surface_handle();
     let worker_generation = workers.publish(worker);
+    reconcile_active_worker_cursor(inner, &workers);
     drop(workers);
 
     clear_pending_paste(inner);
@@ -8667,11 +8718,36 @@ fn reinsert_retained_presentation(
     inner: &Inner,
     presentation: RetainedPresentation<TerminalWorker>,
 ) {
-    inner
+    insert_retained_presentation(inner, presentation);
+}
+
+fn insert_retained_presentation(inner: &Inner, presentation: RetainedPresentation<TerminalWorker>) {
+    let mut retained = inner
         .retained_presentations
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(presentation);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    presentation
+        .worker
+        .set_default_cursor_shape(current_default_cursor_shape(inner));
+    retained.insert(presentation);
+}
+
+fn insert_remote_retained_presentation(inner: &Inner, presentation: RemoteRetainedPresentation) {
+    let mut retained = inner
+        .remote_retained
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    presentation
+        .worker
+        .set_default_cursor_shape(current_default_cursor_shape(inner));
+    retained.insert(presentation);
+}
+
+fn reconcile_active_worker_cursor(inner: &Inner, workers: &WorkerState<TerminalWorker>) {
+    workers
+        .active()
+        .expect("worker was published before cursor reconciliation")
+        .set_default_cursor_shape(current_default_cursor_shape(inner));
 }
 
 const fn event_source_may_have_more(processed: usize, budget: usize, exited: bool) -> bool {
@@ -14266,9 +14342,8 @@ fn publish_created_presentation(
         &inner.worker,
         worker,
         initial_geometry,
-        |worker, geometry| {
-            worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
-        },
+        resize_terminal_worker,
+        |worker| worker.set_default_cursor_shape(current_default_cursor_shape(inner)),
     ) {
         attachment.clear_if_current(generation);
         finish_pending_creation(inner, &pending);
@@ -14497,9 +14572,8 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                 &inner.worker,
                 worker,
                 initial_geometry,
-                |worker, geometry| {
-                    worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
-                },
+                resize_terminal_worker,
+                |worker| worker.set_default_cursor_shape(current_default_cursor_shape(inner)),
             ) {
                 let current_request = attachment
                     .active()
@@ -14661,6 +14735,7 @@ fn publish_remote_worker(
         None
     };
     let (worker_generation, previous_worker) = workers.replace(worker);
+    reconcile_active_worker_cursor(inner, &workers);
     let previous_remote = remote_active.replace(RemoteActive {
         key,
         selection: selection.clone(),
@@ -14694,29 +14769,27 @@ fn publish_remote_worker(
         (Some(worker), Some(active), _) if active.retainable => {
             worker.set_clipboard_writes_enabled(false);
             let _cancelled = worker.cancel_paste();
-            inner
-                .remote_retained
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(RemoteRetainedPresentation { active, worker });
+            insert_remote_retained_presentation(
+                inner,
+                RemoteRetainedPresentation { active, worker },
+            );
         }
         (Some(worker), None, Some(attachment)) => {
             worker.set_clipboard_writes_enabled(false);
             let _cancelled = worker.cancel_paste();
             let selection = attachment.request.selection();
             let key = attachment.request.presentation_key();
-            inner
-                .retained_presentations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(RetainedPresentation {
+            insert_retained_presentation(
+                inner,
+                RetainedPresentation {
                     key,
                     selection,
                     attachment,
                     worker,
                     presentation_id: previous_presentation_id
                         .expect("active local presentation identity was checked"),
-                });
+                },
+            );
         }
         _ => {}
     }
@@ -14820,6 +14893,7 @@ fn run_attach_over_remote(
         return;
     }
     let (_, previous_worker) = workers.replace(worker);
+    reconcile_active_worker_cursor(inner, &workers);
     let previous_remote = remote_active.take();
     set_terminal_notice(inner, attached_term);
     let presentation_id = next_presentation_id(inner);
@@ -14843,11 +14917,7 @@ fn run_attach_over_remote(
     {
         worker.set_clipboard_writes_enabled(false);
         let _cancelled = worker.cancel_paste();
-        inner
-            .remote_retained
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(RemoteRetainedPresentation { active, worker });
+        insert_remote_retained_presentation(inner, RemoteRetainedPresentation { active, worker });
     }
     drop(snapshot_write);
 }
@@ -14890,11 +14960,14 @@ fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
                 return;
             }
             worker.set_clipboard_writes_enabled(false);
-            let published = inner
+            let mut retained = inner
                 .retained_presentations
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .finish_restart(&retry.key, worker, &retry.request.name, &resolved_request);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            worker.set_default_cursor_shape(current_default_cursor_shape(inner));
+            let published =
+                retained.finish_restart(&retry.key, worker, &retry.request.name, &resolved_request);
+            drop(retained);
             if published {
                 publish_attach_inventory(inner, &resolved_request, snapshot);
                 inner.revision.fetch_add(1, Ordering::Release);
@@ -15449,11 +15522,7 @@ fn publish_restored_retained_presentation(
     presentation: RetainedPresentation<TerminalWorker>,
 ) {
     let _snapshot_write = begin_snapshot_write(inner);
-    inner
-        .retained_presentations
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(presentation);
+    insert_retained_presentation(inner, presentation);
     inner.revision.fetch_add(1, Ordering::Release);
 }
 
@@ -16435,11 +16504,7 @@ fn current_default_colors(inner: &Inner) -> DefaultColors {
 }
 
 fn current_default_cursor_shape(inner: &Inner) -> CursorShape {
-    let appearance = inner
-        .appearance
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    cursor_shape(appearance.cursor_style())
+    inner.cursor_default.load()
 }
 
 fn update_default_cursor_shapes(inner: &Inner, shape: CursorShape) {
@@ -16449,7 +16514,7 @@ fn update_default_cursor_shapes(inner: &Inner, shape: CursorShape) {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .active()
     {
-        let _ignored = worker.set_default_cursor_shape(shape);
+        worker.set_default_cursor_shape(shape);
     }
     {
         let retained = inner
@@ -16457,7 +16522,7 @@ fn update_default_cursor_shapes(inner: &Inner, shape: CursorShape) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for presentation in &retained.entries {
-            let _ignored = presentation.worker.set_default_cursor_shape(shape);
+            presentation.worker.set_default_cursor_shape(shape);
         }
     }
     let remote = inner
@@ -16465,15 +16530,7 @@ fn update_default_cursor_shapes(inner: &Inner, shape: CursorShape) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     for presentation in &remote.entries {
-        let _ignored = presentation.worker.set_default_cursor_shape(shape);
-    }
-}
-
-const fn cursor_shape(style: CursorStyle) -> CursorShape {
-    match style {
-        CursorStyle::Block => CursorShape::Block,
-        CursorStyle::Bar => CursorShape::Bar,
-        CursorStyle::Underline => CursorShape::Underline,
+        presentation.worker.set_default_cursor_shape(shape);
     }
 }
 
@@ -20291,6 +20348,7 @@ mod tests {
                 *applied.lock().expect("applied geometry lock") = Some(geometry);
                 Ok::<(), ()>(())
             },
+            |_| {},
         )
         .expect("publish worker");
 
@@ -20331,6 +20389,7 @@ mod tests {
                     release_receiver.recv().expect("resume publication");
                     Ok::<(), ()>(())
                 },
+                |_| {},
             )
             .expect("publish worker")
         });
@@ -20343,6 +20402,54 @@ mod tests {
 
         assert!(geometry_was_locked, "geometry lock was released too early");
         assert!(worker_was_locked, "worker lock was released too early");
+    }
+
+    #[test]
+    fn worker_publication_reconciles_settings_changed_during_launch() {
+        let initial = default_terminal_geometry();
+        let latest = TerminalGeometry {
+            sequence: initial.sequence + 1,
+            ..initial
+        };
+        let geometry = Arc::new(Mutex::new(latest));
+        let workers = Arc::new(Mutex::new(WorkerState::new()));
+        let cursor_default = Arc::new(AtomicU8::new(0));
+        let published_cursor = Arc::new(AtomicU8::new(0));
+        let (launching_sender, launching_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let publishing_geometry = Arc::clone(&geometry);
+        let publishing_workers = Arc::clone(&workers);
+        let publishing_default = Arc::clone(&cursor_default);
+        let publishing_cursor = Arc::clone(&published_cursor);
+        let publisher = thread::spawn(move || {
+            publish_worker_at_latest_geometry(
+                &publishing_geometry,
+                &publishing_workers,
+                publishing_cursor,
+                initial,
+                |_, _| {
+                    launching_sender.send(()).expect("signal launch in flight");
+                    release_receiver.recv().expect("finish launch");
+                    Ok::<(), ()>(())
+                },
+                |worker| {
+                    worker.store(
+                        publishing_default.load(Ordering::Acquire),
+                        Ordering::Release,
+                    );
+                },
+            )
+            .expect("publish worker")
+        });
+
+        launching_receiver
+            .recv()
+            .expect("launch reached publication");
+        cursor_default.store(2, Ordering::Release);
+        release_sender.send(()).expect("release publication");
+        let _generation = publisher.join().expect("publisher thread");
+
+        assert_eq!(published_cursor.load(Ordering::Acquire), 2);
     }
 
     #[test]

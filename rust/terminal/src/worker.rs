@@ -99,7 +99,6 @@ enum Command {
     Input(Vec<u8>),
     Key(KeyInput),
     Mouse(MouseInput),
-    DefaultCursorShape(CursorShape),
 }
 
 struct QueuedCommand {
@@ -131,6 +130,7 @@ struct ResizeCommand {
 struct IngressState {
     resize: Option<ResizeCommand>,
     mouse_motion: Option<MouseInput>,
+    default_cursor_shape: Option<CursorShape>,
     queued_bytes: usize,
 }
 
@@ -724,17 +724,12 @@ impl TerminalWorker {
 
     /// Update the cursor shape used before and after application overrides.
     ///
-    /// # Errors
-    ///
-    /// Returns an error after the terminal worker has stopped or while its
-    /// bounded command queue is applying backpressure.
-    pub fn set_default_cursor_shape(&self, shape: CursorShape) -> Result<(), WorkerError> {
-        try_send_ordered(
-            &self.commands,
-            &self.ingress,
-            Command::DefaultCursorShape(shape),
-            "update terminal cursor shape",
-        )
+    pub fn set_default_cursor_shape(&self, shape: CursorShape) {
+        self.ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .default_cursor_shape = Some(shape);
+        let _stopped = wake_coalesced(&self.coalesced_wake, "update terminal cursor shape");
     }
 
     /// Resize the VT grid and PTY in one ordered worker operation.
@@ -1259,10 +1254,6 @@ fn process_ready_command(
             encoded.is_empty()
                 || queue_write(pending_writes, WriteSource::Ui, shutdown, events, encoded)
         }
-        Command::DefaultCursorShape(shape) => {
-            engine.set_default_cursor_shape(shape);
-            true
-        }
     }
 }
 
@@ -1306,10 +1297,14 @@ fn process_coalesced(
 ) -> bool {
     let CoalescedWork {
         resize,
+        default_cursor_shape,
         input,
         wake_again,
     } = take_coalesced_work(commands, ingress, accept_mouse_motion);
 
+    if let Some(shape) = default_cursor_shape {
+        engine.set_default_cursor_shape(shape);
+    }
     if let Some(resize) = resize
         && !process_resize(resize, engine, master, shutdown, events)
     {
@@ -1357,6 +1352,7 @@ enum CoalescedInput {
 
 struct CoalescedWork {
     resize: Option<ResizeCommand>,
+    default_cursor_shape: Option<CursorShape>,
     input: CoalescedInput,
     wake_again: bool,
 }
@@ -1372,6 +1368,7 @@ fn take_coalesced_work(
     let mut state = ingress
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let default_cursor_shape = state.default_cursor_shape.take();
     let (resize, input, wake_again) = if accept_mouse_motion {
         match commands.try_recv() {
             Ok(mut command) => {
@@ -1402,6 +1399,7 @@ fn take_coalesced_work(
     };
     CoalescedWork {
         resize,
+        default_cursor_shape,
         input,
         wake_again,
     }
@@ -1512,9 +1510,7 @@ const fn command_bytes(command: &Command) -> usize {
     match command {
         Command::Input(bytes) => bytes.len(),
         Command::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text)) => text.len(),
-        Command::Key(KeyInput::Named { .. })
-        | Command::Mouse(_)
-        | Command::DefaultCursorShape(_) => 0,
+        Command::Key(KeyInput::Named { .. }) | Command::Mouse(_) => 0,
     }
 }
 
@@ -2076,6 +2072,7 @@ mod tests {
                 row: 2,
                 modifiers: Modifiers::default(),
             }),
+            default_cursor_shape: None,
             queued_bytes: 0,
         });
 
@@ -2096,6 +2093,37 @@ mod tests {
             expected
         );
         assert!(matches!(ready.input, CoalescedInput::Motion(_)));
+    }
+
+    #[test]
+    fn cursor_defaults_coalesce_while_ordered_input_is_blocked() {
+        let (sender, receiver) = bounded(1);
+        sender
+            .send(QueuedCommand {
+                command: Command::Input(b"older input".to_vec()),
+                bytes: 11,
+                preceding_resize: None,
+            })
+            .expect("fill ordered queue");
+        let ingress = Mutex::new(IngressState {
+            default_cursor_shape: Some(CursorShape::Underline),
+            queued_bytes: 11,
+            ..IngressState::default()
+        });
+
+        let work = take_coalesced_work(&receiver, &ingress, false);
+
+        assert_eq!(work.default_cursor_shape, Some(CursorShape::Underline));
+        assert!(matches!(work.input, CoalescedInput::None));
+        assert_eq!(receiver.len(), 1, "ordered input remains queued");
+        assert!(
+            ingress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .default_cursor_shape
+                .is_none(),
+            "the latest cursor default is consumed independently"
+        );
     }
 
     #[test]
@@ -2209,6 +2237,7 @@ mod tests {
                 row: 23,
                 modifiers: Modifiers::default(),
             }),
+            default_cursor_shape: None,
             queued_bytes: 0,
         });
 

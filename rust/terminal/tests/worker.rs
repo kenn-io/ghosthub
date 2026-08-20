@@ -54,9 +54,7 @@ mod windows {
         let worker = TerminalWorker::attach(&plan, GridSize::new(40, 4).expect("valid grid"))
             .expect("attach ConPTY client");
 
-        worker
-            .set_default_cursor_shape(CursorShape::Underline)
-            .expect("queue cursor default");
+        worker.set_default_cursor_shape(CursorShape::Underline);
 
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
