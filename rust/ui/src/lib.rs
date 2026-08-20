@@ -3869,11 +3869,7 @@ impl RootView {
 
     fn hide_pointer_after_typing(&mut self, accepted: bool, cx: &mut Context<Self>) {
         if accepted
-            && self
-                .workspace
-                .snapshot()
-                .appearance()
-                .hide_mouse_while_typing()
+            && self.workspace.hide_mouse_while_typing()
             && self.terminal_pointer_visibility == TerminalPointerVisibility::Visible
         {
             self.terminal_pointer_visibility = TerminalPointerVisibility::Hidden;

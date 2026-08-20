@@ -4404,6 +4404,15 @@ impl Workspace {
             )
     }
 
+    #[must_use]
+    pub fn hide_mouse_while_typing(&self) -> bool {
+        self.inner
+            .appearance
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .hide_mouse_while_typing()
+    }
+
     /// Persist terminal appearance settings and publish them to the running
     /// workspace. Existing clients keep their negotiated terminal palette;
     /// the UI and newly opened clients use the saved values immediately.

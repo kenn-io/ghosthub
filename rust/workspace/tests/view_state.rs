@@ -219,11 +219,13 @@ fn saved_terminal_settings_are_persisted_and_published_without_rebuilding_hosts(
         allow_shell_integration_cursor: true,
         hide_mouse_while_typing: false,
     };
+    assert!(workspace.hide_mouse_while_typing());
 
     workspace
         .save_terminal_settings(&draft)
         .expect("save terminal settings");
 
+    assert!(!workspace.hide_mouse_while_typing());
     let snapshot = workspace.snapshot();
     assert_eq!(snapshot.appearance().cursor_style(), draft.cursor_style);
     assert!(snapshot.appearance().allow_shell_integration_cursor());
