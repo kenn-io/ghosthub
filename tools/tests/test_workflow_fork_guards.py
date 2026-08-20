@@ -169,6 +169,13 @@ def test_sensitive_jobs_cannot_run_in_forks() -> None:
             id="scheduled-job-negates-guard",
         ),
         pytest.param(
+            "nightly.yml",
+            "eligibility",
+            "unary-not-precedence",
+            "nightly.yml:eligibility",
+            id="unary-not-binds-before-equality",
+        ),
+        pytest.param(
             "sandbox-image-publish.yml",
             "prepare",
             "override",
@@ -220,6 +227,8 @@ def test_audit_catches_jobs_that_a_fork_could_run(
         job["if"] = f"{job['if']} || github.event_name == 'push'"
     elif mutation == "negate":
         job["if"] = f"!({job['if']})"
+    elif mutation == "unary-not-precedence":
+        job["if"] = "!(!github.repository == 'kenn-io/ghosthub')"
     elif mutation == "override":
         job["if"] = "always()"
     elif mutation == "not-cancelled":

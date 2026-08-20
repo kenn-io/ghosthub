@@ -17,7 +17,7 @@ def normalize(text: str) -> str:
 
 
 def _python_syntax(condition: str) -> str:
-    """Translate GitHub's Boolean operators without changing string literals."""
+    """Translate Boolean operators while preserving GitHub's precedence."""
     text = normalize(condition)
     if text.startswith("${{") and text.endswith("}}"):
         text = text[3:-2].strip()
@@ -47,7 +47,10 @@ def _python_syntax(condition: str) -> str:
                 index += 2
                 continue
             if char == "!" and pair != "!=":
-                translated.append(" not ")
+                # Python's `not` binds less tightly than comparisons, unlike
+                # GitHub's `!`. Unary `~` has the required precedence and acts
+                # only as an AST marker; these expressions are never evaluated.
+                translated.append(" ~ ")
                 index += 1
                 continue
         translated.append(char)
@@ -75,7 +78,7 @@ def _outcomes(node: ast.expr, guard: ast.expr) -> tuple[bool, bool]:
     """Return (can be true, can be false) while the guard is false."""
     if _same(node, guard):
         return False, True
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Invert):
         can_true, can_false = _outcomes(node.operand, guard)
         return can_false, can_true
     if isinstance(node, ast.BoolOp):
