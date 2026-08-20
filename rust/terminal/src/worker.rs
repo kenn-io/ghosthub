@@ -13,7 +13,7 @@ use session::{
     AdmissionPlan, AttachPlan, CreateOnce, HerdrAttachPlan, HerdrLaunchOnce, RepairOrOpenPlan,
     ZellijAttachPlan, ZellijLaunchOnce,
 };
-use surface::{GridSize, PixelSize, SurfaceStore};
+use surface::{CursorShape, GridSize, PixelSize, SurfaceStore};
 
 use crate::windows_job::RelayJob;
 use crate::{ClipboardPolicy, ClipboardReadRequest, ClipboardWrite, DefaultColors, TerminalEngine};
@@ -99,6 +99,7 @@ enum Command {
     Input(Vec<u8>),
     Key(KeyInput),
     Mouse(MouseInput),
+    DefaultCursorShape(CursorShape),
 }
 
 struct QueuedCommand {
@@ -257,6 +258,7 @@ impl TerminalWorker {
             PixelSize::default(),
             ClipboardPolicy::default(),
             DefaultColors::default(),
+            CursorShape::Block,
         )
     }
 
@@ -273,6 +275,7 @@ impl TerminalWorker {
         pixel_size: PixelSize,
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
     ) -> Result<Self, WorkerError> {
         Self::launch(
             plan.program(),
@@ -282,6 +285,7 @@ impl TerminalWorker {
             pixel_size,
             clipboard_policy,
             default_colors,
+            default_cursor_shape,
         )
     }
 
@@ -298,6 +302,7 @@ impl TerminalWorker {
         pixel_size: PixelSize,
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
     ) -> Result<Self, WorkerError> {
         Self::launch(
             plan.program(),
@@ -307,6 +312,7 @@ impl TerminalWorker {
             pixel_size,
             clipboard_policy,
             default_colors,
+            default_cursor_shape,
         )
     }
 
@@ -324,6 +330,7 @@ impl TerminalWorker {
         pixel_size: PixelSize,
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
     ) -> Result<Self, WorkerError> {
         let (program, args, _target_name) = plan.into_parts();
         Self::launch(
@@ -334,6 +341,7 @@ impl TerminalWorker {
             pixel_size,
             clipboard_policy,
             default_colors,
+            default_cursor_shape,
         )
     }
 
@@ -350,6 +358,7 @@ impl TerminalWorker {
         pixel_size: PixelSize,
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
     ) -> Result<Self, WorkerError> {
         Self::launch(
             plan.program(),
@@ -359,6 +368,7 @@ impl TerminalWorker {
             pixel_size,
             clipboard_policy,
             default_colors,
+            default_cursor_shape,
         )
     }
 
@@ -375,6 +385,7 @@ impl TerminalWorker {
         pixel_size: PixelSize,
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
     ) -> Result<Self, WorkerError> {
         Self::launch(
             plan.program(),
@@ -384,6 +395,7 @@ impl TerminalWorker {
             pixel_size,
             clipboard_policy,
             default_colors,
+            default_cursor_shape,
         )
     }
 
@@ -401,6 +413,7 @@ impl TerminalWorker {
         pixel_size: PixelSize,
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
     ) -> Result<Self, WorkerError> {
         let (program, args, _target_name) = plan.into_parts();
         Self::launch(
@@ -411,6 +424,7 @@ impl TerminalWorker {
             pixel_size,
             clipboard_policy,
             default_colors,
+            default_cursor_shape,
         )
     }
 
@@ -429,6 +443,7 @@ impl TerminalWorker {
         pixel_size: PixelSize,
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
     ) -> Result<Self, WorkerError> {
         let (program, args, _target_name) = plan.into_parts();
         Self::launch(
@@ -439,6 +454,7 @@ impl TerminalWorker {
             pixel_size,
             clipboard_policy,
             default_colors,
+            default_cursor_shape,
         )
     }
 
@@ -457,6 +473,7 @@ impl TerminalWorker {
             PixelSize::default(),
             ClipboardPolicy::default(),
             DefaultColors::default(),
+            CursorShape::Block,
         )
     }
 
@@ -473,6 +490,7 @@ impl TerminalWorker {
         pixel_size: PixelSize,
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
     ) -> Result<Self, WorkerError> {
         let pty_size = pty_size(size, pixel_size)?;
         let job = RelayJob::new().map_err(|error| WorkerError::new("create relay job", error))?;
@@ -505,12 +523,13 @@ impl TerminalWorker {
             return Err(WorkerError::new("contain terminal client", error));
         }
 
-        let engine = TerminalEngine::with_geometry_and_colors(
+        let engine = TerminalEngine::with_geometry_and_defaults(
             size,
             resize_sequence,
             pixel_size,
             clipboard_policy,
             default_colors,
+            default_cursor_shape,
         );
         let surface = engine.surface_handle();
         let (commands, command_receiver) = bounded(COMMAND_CAPACITY);
@@ -700,6 +719,21 @@ impl TerminalWorker {
             &self.ingress,
             Command::Input(bytes),
             "send terminal input",
+        )
+    }
+
+    /// Update the cursor shape used before and after application overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the terminal worker has stopped or while its
+    /// bounded command queue is applying backpressure.
+    pub fn set_default_cursor_shape(&self, shape: CursorShape) -> Result<(), WorkerError> {
+        try_send_ordered(
+            &self.commands,
+            &self.ingress,
+            Command::DefaultCursorShape(shape),
+            "update terminal cursor shape",
         )
     }
 
@@ -1225,6 +1259,10 @@ fn process_ready_command(
             encoded.is_empty()
                 || queue_write(pending_writes, WriteSource::Ui, shutdown, events, encoded)
         }
+        Command::DefaultCursorShape(shape) => {
+            engine.set_default_cursor_shape(shape);
+            true
+        }
     }
 }
 
@@ -1474,7 +1512,9 @@ const fn command_bytes(command: &Command) -> usize {
     match command {
         Command::Input(bytes) => bytes.len(),
         Command::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text)) => text.len(),
-        Command::Key(KeyInput::Named { .. }) | Command::Mouse(_) => 0,
+        Command::Key(KeyInput::Named { .. })
+        | Command::Mouse(_)
+        | Command::DefaultCursorShape(_) => 0,
     }
 }
 

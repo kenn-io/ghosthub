@@ -1,6 +1,6 @@
 use input::{ModifyOtherKeys, MouseTracking};
 use surface::{CellStyle, CursorShape, Damage, GridSize, PixelSize, Rgb};
-use terminal::{ClipboardPolicy, ClipboardTarget, TerminalEngine};
+use terminal::{ClipboardPolicy, ClipboardTarget, DefaultColors, TerminalEngine};
 
 #[test]
 fn processes_bytes_into_an_owned_surface() {
@@ -46,6 +46,45 @@ fn publishes_application_requested_cursor_shapes() {
     assert_eq!(
         engine.surface().load().cursor().map(|cursor| cursor.shape),
         Some(CursorShape::Underline)
+    );
+}
+
+#[test]
+fn configured_cursor_shape_is_the_initial_and_resettable_engine_default() {
+    let size = GridSize::new(4, 2).expect("valid grid");
+    let mut engine = TerminalEngine::with_geometry_and_defaults(
+        size,
+        0,
+        PixelSize::default(),
+        ClipboardPolicy::default(),
+        DefaultColors::default(),
+        CursorShape::Bar,
+    );
+
+    assert_eq!(
+        engine.surface().load().cursor().map(|cursor| cursor.shape),
+        Some(CursorShape::Bar)
+    );
+
+    let _output = engine.process(b"\x1b[4 q");
+    engine.set_default_cursor_shape(CursorShape::Block);
+    assert_eq!(
+        engine.surface().load().cursor().map(|cursor| cursor.shape),
+        Some(CursorShape::Underline),
+        "changing the default must not discard an active application override"
+    );
+
+    let _output = engine.process(b"\x1b[0 q");
+    assert_eq!(
+        engine.surface().load().cursor().map(|cursor| cursor.shape),
+        Some(CursorShape::Block)
+    );
+
+    engine.set_default_cursor_shape(CursorShape::Bar);
+    assert_eq!(
+        engine.surface().load().cursor().map(|cursor| cursor.shape),
+        Some(CursorShape::Bar),
+        "an open terminal without an override must receive the new default"
     );
 }
 

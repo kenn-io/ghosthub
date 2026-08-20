@@ -830,6 +830,14 @@ fn activate_settings_sidebar_pane(dialog: &mut SettingsDialog) -> bool {
     true
 }
 
+const fn focused_settings_detail(dialog: &SettingsDialog) -> Option<SettingsPane> {
+    if dialog.sidebar_focus.is_none() {
+        Some(dialog.pane)
+    } else {
+        None
+    }
+}
+
 #[derive(Clone)]
 struct SshPromptDialog {
     request: SshPromptRequest,
@@ -2233,6 +2241,10 @@ impl RootView {
             .settings_dialog
             .as_ref()
             .map_or(SettingsPane::Appearance, |dialog| dialog.pane);
+        let detail_pane = self
+            .settings_dialog
+            .as_ref()
+            .and_then(focused_settings_detail);
         if key == "escape" && !event.is_held {
             if self
                 .settings_dialog
@@ -2261,7 +2273,7 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
-        if pane == SettingsPane::Terminal
+        if detail_pane == Some(SettingsPane::Terminal)
             && matches!(
                 key.as_str(),
                 "enter" | "space" | "up" | "down" | "left" | "right"
@@ -9466,8 +9478,8 @@ mod tests {
         available_herdr_row_actions, can_create_worktree, can_kill_worktree,
         canonical_terminal_key_with, chrome_palette_for_terminal_theme, clear_terminal_input_state,
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
-        herdr_session_menu_actions, host_header_action, host_landing_text,
+        coalesce_last_wheel, focused_settings_detail, has_ambiguous_worktree_source,
+        herdr_row_actions, herdr_session_menu_actions, host_header_action, host_landing_text,
         input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
         kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
         new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
@@ -9594,12 +9606,17 @@ mod tests {
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Terminal));
         assert!(activate_settings_sidebar_pane(&mut dialog));
         assert_eq!(dialog.pane, SettingsPane::Terminal);
+        assert_eq!(focused_settings_detail(&dialog), None);
 
         advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Hosts));
         advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, None);
         assert_eq!(dialog.terminal_editor.field, TerminalField::CursorStyle);
+        assert_eq!(
+            focused_settings_detail(&dialog),
+            Some(SettingsPane::Terminal)
+        );
 
         advance_settings_focus(&mut dialog, false);
         advance_settings_focus(&mut dialog, false);

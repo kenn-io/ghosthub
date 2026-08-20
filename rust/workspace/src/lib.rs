@@ -24,7 +24,7 @@ pub use session::{
     HerdrLifecycleAction, HerdrSessionName, HerdrSessionNameError, HerdrSessionState, SessionName,
     SessionNameError, ZellijSessionName, ZellijSessionNameError,
 };
-use surface::{GridSize, PixelSize, Rgb, SurfaceStore};
+use surface::{CursorShape, GridSize, PixelSize, Rgb, SurfaceStore};
 use terminal::{
     ClipboardPolicy, ClipboardReadRequest as TerminalClipboardRead, ClipboardTarget, DefaultColors,
     TerminalEvent, TerminalStartup, TerminalWorker,
@@ -4442,6 +4442,7 @@ impl Workspace {
                 .map_err(|error| WorkspaceError::new(error.to_string()))?;
             appearance
         };
+        update_default_cursor_shapes(&self.inner, cursor_shape(draft.cursor_style));
         let _snapshot_write = begin_snapshot_write(&self.inner);
         *self
             .inner
@@ -12793,6 +12794,7 @@ fn prepare_remote_tmux_attachment(
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
                 current_default_colors(inner),
+                current_default_cursor_shape(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
@@ -12943,6 +12945,7 @@ fn prepare_remote_herdr_attachment(
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
                 current_default_colors(inner),
+                current_default_cursor_shape(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
@@ -13120,6 +13123,7 @@ fn prepare_remote_zellij_attachment(
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
                 current_default_colors(inner),
+                current_default_cursor_shape(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
@@ -13458,6 +13462,7 @@ fn create_remote_herdr_fresh(
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
                 current_default_colors(inner),
+                current_default_cursor_shape(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
             Ok(worker)
@@ -13575,6 +13580,7 @@ fn create_remote_zellij_fresh(
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
                 current_default_colors(inner),
+                current_default_cursor_shape(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
             Ok(worker)
@@ -13970,6 +13976,7 @@ fn create_herdr_fresh(
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
                 current_default_colors(inner),
+                current_default_cursor_shape(inner),
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
             Ok((worker, geometry))
@@ -14076,6 +14083,7 @@ fn create_zellij_fresh(
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
         current_default_colors(inner),
+        current_default_cursor_shape(inner),
     )
     .map_err(|error| WorkspaceError::new(error.to_string()))?;
 
@@ -14339,6 +14347,7 @@ fn create_fresh(
         launch_geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
         current_default_colors(inner),
+        current_default_cursor_shape(inner),
     )
     .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let client_identity = request
@@ -15764,6 +15773,7 @@ fn launch_fresh_tmux(
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
         current_default_colors(inner),
+        current_default_cursor_shape(inner),
     )
     .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
     Ok((
@@ -15973,6 +15983,7 @@ fn launch_fresh_protected_worktree_once(
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
         current_default_colors(inner),
+        current_default_cursor_shape(inner),
     )
     .map_err(|error| {
         WorktreeLaunchError::Attach(AttachFreshError::Host(WorkspaceError::new(
@@ -16113,6 +16124,7 @@ fn launch_fresh_worktree_once(
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
         current_default_colors(inner),
+        current_default_cursor_shape(inner),
     )
     .map_err(|error| {
         WorktreeLaunchError::Attach(AttachFreshError::Host(WorkspaceError::new(
@@ -16338,6 +16350,7 @@ fn launch_fresh_herdr(
                 geometry.pixels,
                 ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
                 current_default_colors(inner),
+                current_default_cursor_shape(inner),
             )
             .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
             Ok((worker, geometry))
@@ -16370,6 +16383,7 @@ fn launch_fresh_zellij(
         geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
         current_default_colors(inner),
+        current_default_cursor_shape(inner),
     )
     .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
     Ok((worker, fresh.clone(), session.name().to_owned(), geometry))
@@ -16418,6 +16432,49 @@ fn current_default_colors(inner: &Inner) -> DefaultColors {
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     default_colors(&appearance)
+}
+
+fn current_default_cursor_shape(inner: &Inner) -> CursorShape {
+    let appearance = inner
+        .appearance
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cursor_shape(appearance.cursor_style())
+}
+
+fn update_default_cursor_shapes(inner: &Inner, shape: CursorShape) {
+    if let Some(worker) = inner
+        .worker
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .active()
+    {
+        let _ignored = worker.set_default_cursor_shape(shape);
+    }
+    {
+        let retained = inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for presentation in &retained.entries {
+            let _ignored = presentation.worker.set_default_cursor_shape(shape);
+        }
+    }
+    let remote = inner
+        .remote_retained
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for presentation in &remote.entries {
+        let _ignored = presentation.worker.set_default_cursor_shape(shape);
+    }
+}
+
+const fn cursor_shape(style: CursorStyle) -> CursorShape {
+    match style {
+        CursorStyle::Block => CursorShape::Block,
+        CursorStyle::Bar => CursorShape::Bar,
+        CursorStyle::Underline => CursorShape::Underline,
+    }
 }
 
 fn rgb(color: u32) -> Rgb {
