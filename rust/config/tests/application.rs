@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use config::{ApplicationConfig, Roots, SshHostSettings};
+use config::{ApplicationConfig, Roots, SshHostSettings, TerminalAppearance, TerminalTheme};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -20,8 +20,9 @@ fn missing_application_config_uses_documented_defaults() {
     assert_eq!(loaded.wsl().socket_directory(), None);
     assert_eq!(loaded.terminal().font_family(), "Cascadia Mono");
     assert_eq!(loaded.terminal().font_size(), 14);
-    assert_eq!(loaded.terminal().background(), 0x0c_0f_14);
-    assert_eq!(loaded.terminal().foreground(), 0xd8_de_e9);
+    assert_eq!(loaded.terminal().theme(), TerminalTheme::ClearDark);
+    assert_eq!(loaded.terminal().background(), 0x21_27_34);
+    assert_eq!(loaded.terminal().foreground(), 0xe6_e6_e6);
     assert!(loaded.terminal().allow_remote_clipboard_write());
 }
 
@@ -248,6 +249,89 @@ fn failed_ssh_host_persistence_preserves_the_loaded_configuration() {
         config.ssh_hosts().is_empty(),
         "failed persistence must not change the in-memory settings"
     );
+    fs::remove_file(root).expect("remove blocking config file");
+}
+
+#[test]
+fn terminal_appearance_round_trips_without_changing_other_settings() {
+    let root = temporary_root("appearance-round-trip");
+    let roots = roots_at(&root);
+    let mut config = ApplicationConfig::from_toml("[wsl]\ndistro = \"Ubuntu\"\n")
+        .expect("valid starting configuration");
+    let appearance = TerminalAppearance::new("Berkeley Mono", 15, "#111820", "#e4e8ef", false)
+        .expect("valid appearance");
+
+    config
+        .replace_terminal_appearance(&roots, appearance)
+        .expect("persist appearance");
+    let loaded = ApplicationConfig::load(&roots).expect("reload appearance");
+
+    assert_eq!(loaded.wsl().distro(), Some("Ubuntu"));
+    assert_eq!(loaded.terminal().font_family(), "Berkeley Mono");
+    assert_eq!(loaded.terminal().font_size(), 15);
+    assert_eq!(loaded.terminal().background(), 0x11_18_20);
+    assert_eq!(loaded.terminal().foreground(), 0xe4_e8_ef);
+    assert!(!loaded.terminal().allow_remote_clipboard_write());
+    fs::remove_dir_all(root).expect("remove temporary config root");
+}
+
+#[test]
+fn built_in_terminal_theme_round_trips_without_redundant_color_overrides() {
+    let root = temporary_root("built-in-appearance-round-trip");
+    let roots = roots_at(&root);
+    let mut config = ApplicationConfig::default();
+    let appearance = TerminalAppearance::themed(
+        TerminalTheme::Novel,
+        "Cascadia Mono",
+        15,
+        "#000000",
+        "#ffffff",
+        true,
+    )
+    .expect("valid built-in appearance");
+
+    config
+        .replace_terminal_appearance(&roots, appearance)
+        .expect("persist built-in appearance");
+    let contents = fs::read_to_string(root.join("config.toml")).expect("read saved config");
+    let loaded = ApplicationConfig::load(&roots).expect("reload built-in appearance");
+
+    assert_eq!(loaded.terminal().theme(), TerminalTheme::Novel);
+    assert_eq!(loaded.terminal().background(), 0xdf_db_c3);
+    assert_eq!(loaded.terminal().foreground(), 0x4d_2f_2d);
+    assert!(contents.contains("theme = \"novel\""));
+    assert!(!contents.contains("background ="));
+    assert!(!contents.contains("foreground ="));
+    fs::remove_dir_all(root).expect("remove temporary config root");
+}
+
+#[test]
+fn color_only_configuration_is_preserved_as_custom() {
+    let config = ApplicationConfig::from_toml(
+        "[terminal]\nfont-family = \"Iosevka Term\"\nbackground = \"#102030\"\nforeground = \"#f0e0d0\"\n",
+    )
+    .expect("load legacy color-only appearance");
+
+    assert_eq!(config.terminal().theme(), TerminalTheme::Custom);
+    assert_eq!(config.terminal().background(), 0x10_20_30);
+    assert_eq!(config.terminal().foreground(), 0xf0_e0_d0);
+}
+
+#[test]
+fn failed_appearance_persistence_preserves_the_loaded_configuration() {
+    let root = temporary_root("appearance-write-failure");
+    fs::write(&root, "not a directory").expect("create blocking config file");
+    let roots = roots_at(&root);
+    let mut config = ApplicationConfig::default();
+    let appearance = TerminalAppearance::new("Berkeley Mono", 15, "#111820", "#e4e8ef", true)
+        .expect("valid appearance");
+
+    let error = config
+        .replace_terminal_appearance(&roots, appearance)
+        .expect_err("persistence must fail when the config root is a file");
+
+    assert!(error.to_string().contains("create"));
+    assert_eq!(config.terminal(), &TerminalAppearance::default());
     fs::remove_file(root).expect("remove blocking config file");
 }
 
