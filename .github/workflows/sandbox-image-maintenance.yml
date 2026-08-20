@@ -14,6 +14,8 @@ concurrency:
 jobs:
   inspect:
     name: Inspect pinned production digest
+    # Forks inherit the schedule trigger but do not own the production image.
+    if: github.repository == 'kenn-io/ghosthub'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

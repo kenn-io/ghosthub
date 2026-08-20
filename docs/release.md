@@ -214,6 +214,15 @@ visibly when operator action is required. The complete developer procedure is
 
 ## Protected signing environment
 
+Signing, notarization, and publishing jobs run only in `kenn-io/ghosthub`.
+Every such job in `.github/workflows/release.yml`, `nightly.yml`, and the
+sandbox image workflows carries a
+`github.repository == 'kenn-io/ghosthub'` condition, so a fork that inherits
+the tag or schedule trigger skips the job instead of failing on absent
+credentials. `tools/tests/test_workflow_fork_guards.py` enforces that contract.
+Validation lanes (`pull_request` and branch pushes) stay unguarded so forks
+can still build and test.
+
 Create a `release-signing` GitHub Actions environment before running the
 workflow. Configure it with:
 

@@ -28,7 +28,12 @@ env:
 jobs:
   eligibility:
     name: Check for a changed main revision
-    if: github.ref == 'refs/heads/main'
+    # Only the canonical repository publishes a nightly channel. Forks inherit
+    # the schedule trigger but have neither the signing material nor the
+    # release repository, so every job in this workflow is repository-guarded.
+    if: >-
+      github.repository == 'kenn-io/ghosthub' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -75,7 +80,9 @@ jobs:
 
   macos-nightly:
     name: Build, sign, and notarize
-    if: needs.eligibility.outputs.eligible == 'true'
+    if: >-
+      github.repository == 'kenn-io/ghosthub' &&
+      needs.eligibility.outputs.eligible == 'true'
     needs: eligibility
     runs-on: macos-15
     timeout-minutes: 120
@@ -370,6 +377,7 @@ jobs:
 
   publish-nightly:
     name: Publish verified objects
+    if: github.repository == 'kenn-io/ghosthub'
     needs:
       - eligibility
       - macos-nightly
