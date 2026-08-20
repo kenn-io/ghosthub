@@ -1,5 +1,5 @@
 use input::{ModifyOtherKeys, MouseTracking};
-use surface::{CellStyle, Damage, GridSize, PixelSize, Rgb};
+use surface::{CellStyle, CursorShape, Damage, GridSize, PixelSize, Rgb};
 use terminal::{ClipboardPolicy, ClipboardTarget, TerminalEngine};
 
 #[test]
@@ -29,6 +29,24 @@ fn exposes_modes_that_control_input_encoding() {
     assert!(modes.bracketed_paste);
     assert_eq!(modes.mouse_tracking, MouseTracking::Drag);
     assert!(modes.sgr_mouse);
+}
+
+#[test]
+fn publishes_application_requested_cursor_shapes() {
+    let size = GridSize::new(4, 2).expect("valid grid");
+    let mut engine = TerminalEngine::new(size);
+
+    let _output = engine.process(b"\x1b[6 q");
+    assert_eq!(
+        engine.surface().load().cursor().map(|cursor| cursor.shape),
+        Some(CursorShape::Bar)
+    );
+
+    let _output = engine.process(b"\x1b[4 q");
+    assert_eq!(
+        engine.surface().load().cursor().map(|cursor| cursor.shape),
+        Some(CursorShape::Underline)
+    );
 }
 
 #[test]

@@ -16,12 +16,13 @@ use gpui::{
     WindowDecorations, WindowOptions, actions, div, font, prelude::*, px, rgb, rgba, size,
 };
 use model::PortStatus;
-use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
+use surface::{CellStyle, CursorShape, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
-    AppearanceSettingsDraft, ConfiguredSshHost, HerdrSessionState, HostConnectionState, HostItem,
-    KeyEvent as InputKeyEvent, KeyInput, KwtProjectAction, Modifiers as InputModifiers,
-    MouseAction, MouseButton, MouseInput, NamedKey, SessionName, SessionSelection, SshHostDraft,
-    SshPromptRequest, TerminalTheme, Workspace, WorkspaceContent, WorkspaceEvent,
+    AppearanceSettingsDraft, ConfiguredSshHost, CursorStyle, HerdrSessionState,
+    HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput, KwtProjectAction,
+    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionName,
+    SessionSelection, SshHostDraft, SshPromptRequest, TerminalSettingsDraft, TerminalTheme,
+    Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
@@ -99,6 +100,7 @@ pub struct PaintRun {
     foreground: u32,
     background: u32,
     style: CellStyle,
+    cursor: Option<CursorShape>,
 }
 
 impl PaintRun {
@@ -126,16 +128,32 @@ impl PaintRun {
     pub const fn bold(&self) -> bool {
         self.style.contains(CellStyle::BOLD)
     }
+
+    #[must_use]
+    pub const fn cursor_shape(&self) -> Option<CursorShape> {
+        self.cursor
+    }
 }
 
 #[must_use]
 pub fn surface_paint_rows(frame: &SurfaceFrame) -> Vec<Vec<PaintRun>> {
+    surface_paint_rows_with_cursor(frame, None)
+}
+
+fn surface_paint_rows_with_cursor(
+    frame: &SurfaceFrame,
+    cursor_override: Option<CursorShape>,
+) -> Vec<Vec<PaintRun>> {
     (0..frame.size().rows())
-        .map(|row| surface_paint_row(frame, row))
+        .map(|row| surface_paint_row(frame, row, cursor_override))
         .collect()
 }
 
-fn surface_paint_row(frame: &SurfaceFrame, row_index: usize) -> Vec<PaintRun> {
+fn surface_paint_row(
+    frame: &SurfaceFrame,
+    row_index: usize,
+    cursor_override: Option<CursorShape>,
+) -> Vec<PaintRun> {
     let cursor = frame.cursor().filter(|cursor| cursor.visible);
     let row = frame.row(row_index);
     let mut runs: Vec<PaintRun> = Vec::new();
@@ -143,8 +161,11 @@ fn surface_paint_row(frame: &SurfaceFrame, row_index: usize) -> Vec<PaintRun> {
         if cell.text().is_empty() && column > 0 && row[column - 1].style.contains(CellStyle::WIDE) {
             continue;
         }
+        let cell_cursor = cursor
+            .filter(|cursor| cursor.row == row_index && cursor.column == column)
+            .map(|cursor| cursor_override.unwrap_or(cursor.shape));
         let inverted = cell.style.contains(CellStyle::INVERSE)
-            ^ cursor.is_some_and(|cursor| cursor.row == row_index && cursor.column == column);
+            ^ matches!(cell_cursor, Some(CursorShape::Block));
         let (mut foreground, background) = if inverted {
             (cell.background, cell.foreground)
         } else {
@@ -170,11 +191,14 @@ fn surface_paint_row(frame: &SurfaceFrame, row_index: usize) -> Vec<PaintRun> {
             foreground: rgb_value(foreground),
             background: rgb_value(background),
             style: cell.style,
+            cursor: cell_cursor
+                .filter(|shape| !matches!(shape, CursorShape::Block | CursorShape::Hidden)),
         };
         if let Some(previous) = runs.last_mut()
             && previous.foreground == run.foreground
             && previous.background == run.background
             && previous.style == run.style
+            && previous.cursor == run.cursor
         {
             previous.text.push_str(&run.text);
             previous.columns += run.columns;
@@ -190,6 +214,7 @@ pub struct SurfacePaintCache {
     generation: u64,
     size: Option<GridSize>,
     cursor: Option<surface::Cursor>,
+    cursor_override: Option<CursorShape>,
     rows: Vec<Arc<Vec<PaintRun>>>,
 }
 
@@ -198,7 +223,11 @@ impl SurfacePaintCache {
         *self = Self::default();
     }
 
-    pub fn update(&mut self, frame: &SurfaceFrame) -> &[Arc<Vec<PaintRun>>] {
+    pub fn update(
+        &mut self,
+        frame: &SurfaceFrame,
+        cursor_override: Option<CursorShape>,
+    ) -> &[Arc<Vec<PaintRun>>] {
         let scrolled = frame
             .damage()
             .iter()
@@ -206,9 +235,10 @@ impl SurfacePaintCache {
         let full = self.size != Some(frame.size())
             || self.rows.len() != frame.size().rows()
             || frame.requires_full_repaint(self.generation)
-            || frame.damage().contains(&Damage::Full);
+            || frame.damage().contains(&Damage::Full)
+            || self.cursor_override != cursor_override;
         if full {
-            self.rows = surface_paint_rows(frame)
+            self.rows = surface_paint_rows_with_cursor(frame, cursor_override)
                 .into_iter()
                 .map(Arc::new)
                 .collect();
@@ -221,7 +251,13 @@ impl SurfacePaintCache {
                         if let Some(exposed) =
                             apply_cached_scroll(&mut self.rows, top, bottom, delta)
                         {
-                            repaint_rows(&mut self.rows, frame, exposed.start, exposed.end);
+                            repaint_rows(
+                                &mut self.rows,
+                                frame,
+                                exposed.start,
+                                exposed.end,
+                                cursor_override,
+                            );
                         }
                         if let Some(cursor) = self.cursor
                             && cursor.row >= top
@@ -235,32 +271,51 @@ impl SurfacePaintCache {
                         }
                     }
                     Damage::Rows { start, end } => {
-                        repaint_rows(&mut self.rows, frame, start, end);
+                        repaint_rows(&mut self.rows, frame, start, end, cursor_override);
                     }
                 }
             }
             for row in scrolled_cursor_rows {
-                repaint_rows(&mut self.rows, frame, row, row + 1);
+                repaint_rows(&mut self.rows, frame, row, row + 1, cursor_override);
             }
             if scrolled || self.cursor != frame.cursor() {
                 if let Some(cursor) = self.cursor {
-                    repaint_rows(&mut self.rows, frame, cursor.row, cursor.row + 1);
+                    repaint_rows(
+                        &mut self.rows,
+                        frame,
+                        cursor.row,
+                        cursor.row + 1,
+                        cursor_override,
+                    );
                 }
                 if let Some(cursor) = frame.cursor() {
-                    repaint_rows(&mut self.rows, frame, cursor.row, cursor.row + 1);
+                    repaint_rows(
+                        &mut self.rows,
+                        frame,
+                        cursor.row,
+                        cursor.row + 1,
+                        cursor_override,
+                    );
                 }
             }
         }
         self.generation = frame.generation();
         self.size = Some(frame.size());
         self.cursor = frame.cursor();
+        self.cursor_override = cursor_override;
         &self.rows
     }
 }
 
-fn repaint_rows(rows: &mut [Arc<Vec<PaintRun>>], frame: &SurfaceFrame, start: usize, end: usize) {
+fn repaint_rows(
+    rows: &mut [Arc<Vec<PaintRun>>],
+    frame: &SurfaceFrame,
+    start: usize,
+    end: usize,
+    cursor_override: Option<CursorShape>,
+) {
     for row in start..end.min(rows.len()) {
-        rows[row] = Arc::new(surface_paint_row(frame, row));
+        rows[row] = Arc::new(surface_paint_row(frame, row, cursor_override));
     }
 }
 
@@ -314,6 +369,7 @@ pub struct RootView {
     wheel_remainder: f32,
     keyboard: TerminalKeyboard,
     pointer: TerminalPointer,
+    terminal_pointer_visibility: TerminalPointerVisibility,
     sidebar_visible: bool,
     collapsed_session_groups: HashSet<SessionGroupKey>,
     new_session: Option<NewSessionDraft>,
@@ -323,6 +379,13 @@ pub struct RootView {
     pending_worktree_navigation: Option<u64>,
     session_action_menu: Option<SessionActionMenu>,
     restore_focus: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum TerminalPointerVisibility {
+    #[default]
+    Visible,
+    Hidden,
 }
 
 #[derive(Default)]
@@ -439,15 +502,17 @@ impl SshField {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingsPane {
     Appearance,
+    Terminal,
     Hosts,
 }
 
 impl SettingsPane {
-    const ALL: [Self; 2] = [Self::Appearance, Self::Hosts];
+    const ALL: [Self; 3] = [Self::Appearance, Self::Terminal, Self::Hosts];
 
     const fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
+            Self::Terminal => "Terminal",
             Self::Hosts => "Hosts",
         }
     }
@@ -455,7 +520,57 @@ impl SettingsPane {
     const fn subtitle(self) -> &'static str {
         match self {
             Self::Appearance => "Choose a terminal theme and installed monospace font.",
+            Self::Terminal => "Control cursor behavior and pointer visibility while typing.",
             Self::Hosts => "Connect the machines and tmux sessions in your SSH network.",
+        }
+    }
+
+    const fn adjacent(self, reverse: bool) -> Option<Self> {
+        match (self, reverse) {
+            (Self::Appearance, false) | (Self::Hosts, true) => Some(Self::Terminal),
+            (Self::Terminal, false) => Some(Self::Hosts),
+            (Self::Hosts, false) | (Self::Appearance, true) => None,
+            (Self::Terminal, true) => Some(Self::Appearance),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalField {
+    CursorStyle,
+    ShellIntegrationCursor,
+    HideMouseWhileTyping,
+}
+
+impl TerminalField {
+    const fn adjacent(self, reverse: bool) -> Self {
+        match (self, reverse) {
+            (Self::CursorStyle, false) | (Self::HideMouseWhileTyping, true) => {
+                Self::ShellIntegrationCursor
+            }
+            (Self::ShellIntegrationCursor, false) | (Self::CursorStyle, true) => {
+                Self::HideMouseWhileTyping
+            }
+            (Self::ShellIntegrationCursor, true) | (Self::HideMouseWhileTyping, false) => {
+                Self::CursorStyle
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TerminalEditor {
+    draft: TerminalSettingsDraft,
+    field: TerminalField,
+    error: Option<String>,
+}
+
+impl TerminalEditor {
+    const fn new(draft: TerminalSettingsDraft) -> Self {
+        Self {
+            draft,
+            field: TerminalField::CursorStyle,
+            error: None,
         }
     }
 }
@@ -559,6 +674,7 @@ struct SettingsDialog {
     pane: SettingsPane,
     sidebar_focus: Option<SettingsPane>,
     appearance_editor: AppearanceEditor,
+    terminal_editor: TerminalEditor,
     selected_host_id: Option<String>,
     host_editor: Option<SshHostEditor>,
     pending_remove: Option<ConfiguredSshHost>,
@@ -569,6 +685,7 @@ impl SettingsDialog {
     fn new(
         hosts: &[ConfiguredSshHost],
         appearance: AppearanceSettingsDraft,
+        terminal: TerminalSettingsDraft,
         font_families: Vec<String>,
     ) -> Self {
         let selected = hosts.first();
@@ -576,6 +693,7 @@ impl SettingsDialog {
             pane: SettingsPane::Appearance,
             sidebar_focus: Some(SettingsPane::Appearance),
             appearance_editor: AppearanceEditor::new(appearance, font_families),
+            terminal_editor: TerminalEditor::new(terminal),
             selected_host_id: selected.map(|host| host.id().to_owned()),
             host_editor: selected.map(|host| SshHostEditor::new(Some(host))),
             pending_remove: None,
@@ -597,6 +715,14 @@ fn focus_settings_detail(dialog: &mut SettingsDialog, reverse: bool) -> bool {
             };
             true
         }
+        SettingsPane::Terminal => {
+            dialog.terminal_editor.field = if reverse {
+                TerminalField::HideMouseWhileTyping
+            } else {
+                TerminalField::CursorStyle
+            };
+            true
+        }
         SettingsPane::Hosts => {
             let Some(editor) = &mut dialog.host_editor else {
                 return false;
@@ -613,24 +739,16 @@ fn focus_settings_detail(dialog: &mut SettingsDialog, reverse: bool) -> bool {
 
 fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
     if let Some(pane) = dialog.sidebar_focus {
-        match (pane, reverse) {
-            (SettingsPane::Appearance, false) => {
-                dialog.sidebar_focus = Some(SettingsPane::Hosts);
-            }
-            (SettingsPane::Hosts, true) => {
-                dialog.sidebar_focus = Some(SettingsPane::Appearance);
-            }
-            (SettingsPane::Hosts, false) | (SettingsPane::Appearance, true) => {
-                if focus_settings_detail(dialog, reverse) {
-                    dialog.sidebar_focus = None;
-                } else {
-                    dialog.sidebar_focus = Some(if reverse {
-                        SettingsPane::Hosts
-                    } else {
-                        SettingsPane::Appearance
-                    });
-                }
-            }
+        if let Some(next) = pane.adjacent(reverse) {
+            dialog.sidebar_focus = Some(next);
+        } else if focus_settings_detail(dialog, reverse) {
+            dialog.sidebar_focus = None;
+        } else {
+            dialog.sidebar_focus = Some(if reverse {
+                SettingsPane::Hosts
+            } else {
+                SettingsPane::Appearance
+            });
         }
         return;
     }
@@ -661,6 +779,23 @@ fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
             }
             dialog.appearance_editor.open_picker = None;
             dialog.appearance_editor.error = None;
+        }
+        SettingsPane::Terminal => {
+            let at_edge = if reverse {
+                dialog.terminal_editor.field == TerminalField::CursorStyle
+            } else {
+                dialog.terminal_editor.field == TerminalField::HideMouseWhileTyping
+            };
+            if at_edge {
+                dialog.sidebar_focus = Some(if reverse {
+                    SettingsPane::Hosts
+                } else {
+                    SettingsPane::Appearance
+                });
+            } else {
+                dialog.terminal_editor.field = dialog.terminal_editor.field.adjacent(reverse);
+            }
+            dialog.terminal_editor.error = None;
         }
         SettingsPane::Hosts => {
             let Some(editor) = &mut dialog.host_editor else {
@@ -1591,6 +1726,7 @@ impl RootView {
             wheel_remainder: 0.0,
             keyboard: TerminalKeyboard::default(),
             pointer: TerminalPointer::default(),
+            terminal_pointer_visibility: TerminalPointerVisibility::Visible,
             sidebar_visible: true,
             collapsed_session_groups: HashSet::new(),
             new_session: None,
@@ -1734,8 +1870,14 @@ impl RootView {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let hosts = self.workspace.configured_ssh_hosts();
         let appearance = self.workspace.configured_appearance();
+        let terminal = self.workspace.configured_terminal_settings();
         let font_families = terminal_font_families(cx, &appearance.font_family);
-        self.settings_dialog = Some(SettingsDialog::new(&hosts, appearance, font_families));
+        self.settings_dialog = Some(SettingsDialog::new(
+            &hosts,
+            appearance,
+            terminal,
+            font_families,
+        ));
         self.session_action_menu = None;
         window.focus(&self.settings_focus);
         cx.notify();
@@ -1956,6 +2098,70 @@ impl RootView {
         cx.stop_propagation();
     }
 
+    fn persist_terminal_settings(&mut self, draft: TerminalSettingsDraft, cx: &mut Context<Self>) {
+        match self.workspace.save_terminal_settings(&draft) {
+            Ok(()) => {
+                if let Some(dialog) = &mut self.settings_dialog {
+                    dialog.terminal_editor.error = None;
+                }
+            }
+            Err(error) => {
+                if let Some(dialog) = &mut self.settings_dialog {
+                    dialog.terminal_editor.error = Some(error.to_string());
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn edit_terminal_field(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        if event.is_held {
+            return;
+        }
+        let key = event.keystroke.key.to_ascii_lowercase();
+        let Some(editor) = self
+            .settings_dialog
+            .as_mut()
+            .map(|dialog| &mut dialog.terminal_editor)
+        else {
+            return;
+        };
+        let activate = matches!(key.as_str(), "enter" | "space");
+        let arrows = matches!(key.as_str(), "up" | "down" | "left" | "right");
+        let changed = match editor.field {
+            TerminalField::CursorStyle if activate || arrows => {
+                let current = CursorStyle::ALL
+                    .iter()
+                    .position(|style| *style == editor.draft.cursor_style)
+                    .unwrap_or_default();
+                let reverse = matches!(key.as_str(), "up" | "left");
+                let offset = if reverse {
+                    CursorStyle::ALL.len() - 1
+                } else {
+                    1
+                };
+                editor.draft.cursor_style =
+                    CursorStyle::ALL[(current + offset) % CursorStyle::ALL.len()];
+                true
+            }
+            TerminalField::ShellIntegrationCursor if activate => {
+                editor.draft.allow_shell_integration_cursor =
+                    !editor.draft.allow_shell_integration_cursor;
+                true
+            }
+            TerminalField::HideMouseWhileTyping if activate => {
+                editor.draft.hide_mouse_while_typing = !editor.draft.hide_mouse_while_typing;
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            let draft = editor.draft;
+            self.persist_terminal_settings(draft, cx);
+            cx.stop_propagation();
+        }
+    }
+
     fn remove_ssh_host(&mut self, cx: &mut Context<Self>) {
         let Some(host) = self
             .settings_dialog
@@ -2055,6 +2261,15 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
+        if pane == SettingsPane::Terminal
+            && matches!(
+                key.as_str(),
+                "enter" | "space" | "up" | "down" | "left" | "right"
+            )
+        {
+            self.edit_terminal_field(event, cx);
+            return;
+        }
         if key == "enter" && !event.is_held {
             if pane == SettingsPane::Appearance {
                 cx.stop_propagation();
@@ -2091,6 +2306,15 @@ impl RootView {
             self.edit_appearance_field(event, window, cx);
             return;
         }
+        if pane == SettingsPane::Terminal {
+            cx.stop_propagation();
+            return;
+        }
+        self.edit_ssh_field(event, cx);
+    }
+
+    fn edit_ssh_field(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.to_ascii_lowercase();
         let Some(editor) = self
             .settings_dialog
             .as_mut()
@@ -3368,12 +3592,13 @@ impl RootView {
             && let Some((canonical, input)) =
                 retained_key_event(&self.keyboard, keystroke, InputKeyEvent::Repeat)
         {
-            self.send_key_event(
+            let accepted = self.send_key_event(
                 presentation_id,
                 input,
                 &canonical.identity,
                 InputKeyEvent::Repeat,
             );
+            self.hide_pointer_after_typing(accepted, cx);
             cx.stop_propagation();
             return;
         }
@@ -3390,7 +3615,8 @@ impl RootView {
             if !event.is_held
                 && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
             {
-                self.send_key(presentation_id, KeyInput::paste(text));
+                let accepted = self.send_key(presentation_id, KeyInput::paste(text));
+                self.hide_pointer_after_typing(accepted, cx);
             }
             cx.stop_propagation();
             return;
@@ -3407,7 +3633,8 @@ impl RootView {
                 .input_for(&canonical.identity, event, canonical.modifiers)
         });
         if let Some(input) = input {
-            self.send_key_event(presentation_id, input, &canonical.identity, event);
+            let accepted = self.send_key_event(presentation_id, input, &canonical.identity, event);
+            self.hide_pointer_after_typing(accepted, cx);
             cx.stop_propagation();
         }
     }
@@ -3502,6 +3729,10 @@ impl RootView {
         if !self.presentation_accepts_input(presentation_id) {
             return;
         }
+        if self.terminal_pointer_visibility == TerminalPointerVisibility::Hidden {
+            self.terminal_pointer_visibility = TerminalPointerVisibility::Visible;
+            cx.notify();
+        }
         let button = event.pressed_button.and_then(terminal_mouse_button);
         let cell = self.terminal_cell_at(event.position.x.into(), event.position.y.into());
         if let Some(cell) = self.pointer.observe(cell) {
@@ -3591,8 +3822,8 @@ impl RootView {
         self.enqueue_input(presentation_id, PendingUiInput::Mouse(input))
     }
 
-    fn send_key(&mut self, presentation_id: u64, input: KeyInput) {
-        self.enqueue_input(presentation_id, PendingUiInput::Key(input));
+    fn send_key(&mut self, presentation_id: u64, input: KeyInput) -> bool {
+        self.enqueue_input(presentation_id, PendingUiInput::Key(input))
     }
 
     fn send_key_event(
@@ -3601,12 +3832,12 @@ impl RootView {
         input: KeyInput,
         key: &TerminalKeyIdentity,
         event: InputKeyEvent,
-    ) {
+    ) -> bool {
         if !self.presentation_accepts_input(presentation_id) {
-            return;
+            return false;
         }
         if !self.keyboard.accepts(key, event) {
-            return;
+            return false;
         }
         let reserved_key_releases = match event {
             InputKeyEvent::Press => self.keyboard.reservations_after_press(key),
@@ -3619,6 +3850,22 @@ impl RootView {
             reserved_key_releases,
         ) {
             self.keyboard.finish_accepted(key, pressed_input, event);
+            return true;
+        }
+        false
+    }
+
+    fn hide_pointer_after_typing(&mut self, accepted: bool, cx: &mut Context<Self>) {
+        if accepted
+            && self
+                .workspace
+                .snapshot()
+                .appearance()
+                .hide_mouse_while_typing()
+            && self.terminal_pointer_visibility == TerminalPointerVisibility::Visible
+        {
+            self.terminal_pointer_visibility = TerminalPointerVisibility::Hidden;
+            cx.notify();
         }
     }
 
@@ -3865,10 +4112,17 @@ impl RootView {
         if self.observed_surface_identity != Some(identity) {
             self.paint_cache.clear();
         }
-        let rows = self.paint_cache.update(&frame).to_vec();
+        let appearance = snapshot.appearance();
+        let cursor_override = (!appearance.allow_shell_integration_cursor()).then(|| {
+            match appearance.cursor_style() {
+                CursorStyle::Block => CursorShape::Block,
+                CursorStyle::Bar => CursorShape::Bar,
+                CursorStyle::Underline => CursorShape::Underline,
+            }
+        });
+        let rows = self.paint_cache.update(&frame, cursor_override).to_vec();
         self.observed_surface_identity = Some(identity);
         self.observed_surface_generation = frame.generation();
-        let appearance = snapshot.appearance();
         let terminal = self.terminal_surface_element(presentation_id, appearance, rows, cx);
 
         div()
@@ -3900,6 +4154,10 @@ impl RootView {
             .text_size(px(f32::from(appearance.font_size())))
             .line_height(px(self.terminal_metrics.line_height))
             .font_weight(FontWeight::NORMAL)
+            .when(
+                self.terminal_pointer_visibility == TerminalPointerVisibility::Hidden,
+                |element| element.cursor(gpui::CursorStyle::None),
+            )
             .on_key_down(cx.listener(move |this, event, window, cx| {
                 this.on_key_down(presentation_id, event, window, cx);
             }))
@@ -5334,6 +5592,250 @@ impl RootView {
             .into_any_element()
     }
 
+    fn terminal_cursor_option(
+        style: CursorStyle,
+        draft: TerminalSettingsDraft,
+        keyboard_focused: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let selected = draft.cursor_style == style;
+        let cursor = match style {
+            CursorStyle::Block => div().w(px(12.0)).h(px(20.0)).bg(rgb(0x8d_c8ff)),
+            CursorStyle::Bar => div().w(px(2.0)).h(px(20.0)).bg(rgb(0x8d_c8ff)),
+            CursorStyle::Underline => div().w(px(12.0)).h(px(2.0)).bg(rgb(0x8d_c8ff)),
+        };
+        div()
+            .id(("terminal-cursor-style", style as usize))
+            .w(px(170.0))
+            .h(px(82.0))
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_3()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(if keyboard_focused || selected {
+                0x4a_8f_cf
+            } else {
+                0x34_3a46
+            }))
+            .bg(rgb(if selected { 0x20_2b3a } else { 0x11_141a }))
+            .cursor_pointer()
+            .child(
+                div()
+                    .w(px(34.0))
+                    .h(px(36.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .bg(rgb(0x08_0a0f))
+                    .child(cursor),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(style.title())
+                    .when(selected, |element| {
+                        element.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x79_b8_f3))
+                                .child("Selected"),
+                        )
+                    }),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if let Some(dialog) = &mut this.settings_dialog {
+                    dialog.sidebar_focus = None;
+                    dialog.terminal_editor.field = TerminalField::CursorStyle;
+                    dialog.terminal_editor.draft.cursor_style = style;
+                }
+                window.focus(&this.settings_focus);
+                if let Some(draft) = this
+                    .settings_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.terminal_editor.draft)
+                {
+                    this.persist_terminal_settings(draft, cx);
+                }
+            }))
+            .into_any_element()
+    }
+
+    fn terminal_toggle_row(
+        &self,
+        id: &'static str,
+        title: &'static str,
+        description: &'static str,
+        field: TerminalField,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let keyboard_focused = self.settings_dialog.as_ref().is_some_and(|dialog| {
+            dialog.sidebar_focus.is_none() && dialog.terminal_editor.field == field
+        });
+        div()
+            .id(id)
+            .min_h(px(66.0))
+            .px_3()
+            .py_2()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(if keyboard_focused {
+                0x4a_8f_cf
+            } else {
+                0x34_3a46
+            }))
+            .bg(rgb(0x11_141a))
+            .cursor_pointer()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_sm().child(title))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x8f_96_a3))
+                            .child(description),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(38.0))
+                    .h(px(22.0))
+                    .p(px(3.0))
+                    .flex()
+                    .justify_end()
+                    .when(!enabled, gpui::Styled::justify_start)
+                    .rounded_full()
+                    .bg(rgb(if enabled { 0x2b_72aa } else { 0x3a_404c }))
+                    .child(div().size(px(16.0)).rounded_full().bg(rgb(0xf1_f4f8))),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if let Some(dialog) = &mut this.settings_dialog {
+                    dialog.sidebar_focus = None;
+                    dialog.terminal_editor.field = field;
+                    match field {
+                        TerminalField::ShellIntegrationCursor => {
+                            dialog.terminal_editor.draft.allow_shell_integration_cursor =
+                                !dialog.terminal_editor.draft.allow_shell_integration_cursor;
+                        }
+                        TerminalField::HideMouseWhileTyping => {
+                            dialog.terminal_editor.draft.hide_mouse_while_typing =
+                                !dialog.terminal_editor.draft.hide_mouse_while_typing;
+                        }
+                        TerminalField::CursorStyle => {}
+                    }
+                }
+                window.focus(&this.settings_focus);
+                if let Some(draft) = this
+                    .settings_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.terminal_editor.draft)
+                {
+                    this.persist_terminal_settings(draft, cx);
+                }
+            }))
+            .into_any_element()
+    }
+
+    fn settings_terminal_editor(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let Some(editor) = self
+            .settings_dialog
+            .as_ref()
+            .map(|dialog| &dialog.terminal_editor)
+        else {
+            return div().into_any_element();
+        };
+        let cursor_keyboard_focused = self.settings_dialog.as_ref().is_some_and(|dialog| {
+            dialog.sidebar_focus.is_none()
+                && dialog.terminal_editor.field == TerminalField::CursorStyle
+        });
+        let mut cursor_options = div().flex().flex_wrap().gap_2();
+        for style in CursorStyle::ALL {
+            cursor_options = cursor_options.child(Self::terminal_cursor_option(
+                style,
+                editor.draft,
+                cursor_keyboard_focused,
+                cx,
+            ));
+        }
+        let mut form = div()
+            .w_full()
+            .max_w(px(900.0))
+            .flex()
+            .flex_col()
+            .gap_6()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Cursor"),
+                    )
+                    .child(cursor_options)
+                    .child(self.terminal_toggle_row(
+                        "terminal-shell-cursor",
+                        "Allow shell integration to control cursor shape",
+                        "Honor cursor-shape requests from shells and terminal applications.",
+                        TerminalField::ShellIntegrationCursor,
+                        editor.draft.allow_shell_integration_cursor,
+                        cx,
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Interaction"),
+                    )
+                    .child(self.terminal_toggle_row(
+                        "terminal-hide-mouse",
+                        "Hide mouse while typing",
+                        "Reveal the pointer again as soon as it moves over the terminal.",
+                        TerminalField::HideMouseWhileTyping,
+                        editor.draft.hide_mouse_while_typing,
+                        cx,
+                    )),
+            );
+        if let Some(error) = &editor.error {
+            form = form.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0xd0_7070))
+                    .child(error.clone()),
+            );
+        }
+        div()
+            .id("settings-terminal-editor")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .px_6()
+            .py_5()
+            .child(form)
+            .into_any_element()
+    }
+
     fn settings_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active = self
             .settings_dialog
@@ -5739,6 +6241,7 @@ impl RootView {
         let pane = dialog.pane;
         let detail = match pane {
             SettingsPane::Appearance => self.settings_appearance_editor(cx),
+            SettingsPane::Terminal => self.settings_terminal_editor(cx),
             SettingsPane::Hosts => div()
                 .flex_1()
                 .min_h_0()
@@ -8505,6 +9008,11 @@ fn paint_run_element(run: PaintRun, cell_width: f32) -> gpui::AnyElement {
     if run.style.contains(CellStyle::STRIKE) {
         element = element.line_through();
     }
+    element = match run.cursor {
+        Some(CursorShape::Bar) => element.border_l_2().border_color(rgb(run.foreground)),
+        Some(CursorShape::Underline) => element.border_b_2().border_color(rgb(run.foreground)),
+        Some(CursorShape::Block | CursorShape::Hidden) | None => element,
+    };
     element.into_any_element()
 }
 
@@ -8947,25 +9455,25 @@ mod tests {
         HostHeaderAction, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal,
         LayoutKey, NewSessionDraft, NewSessionKind, NewWorktreeMode, PendingUiInput, ProjectDialog,
         QueuedUiInput, SessionGroup, SessionGroupKey, SessionRowAction, SettingsDialog,
-        SettingsPane, SshField, SshHostEditor, TERMINAL_NOTICE_DURATION, TerminalKeyIdentity,
-        TerminalKeyboard, TerminalPointer, TerminalResize, TransientNotice, UI_INPUT_BYTE_CAPACITY,
-        UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext,
-        WorktreeOpenMode, WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget,
-        WorktreeSessionPresence, WorktreeSocket, activate_settings_sidebar_pane,
-        active_session_selection, adjacent_appearance_field, advance_settings_focus,
-        appearance_draft_is_persistable, appearance_preview_color, application_navigation_width,
-        apply_new_worktree_failure, apply_worktree_removal_failure, available_herdr_row_actions,
-        can_create_worktree, can_kill_worktree, canonical_terminal_key_with,
-        chrome_palette_for_terminal_theme, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
-        has_ambiguous_worktree_source, herdr_row_actions, herdr_session_menu_actions,
-        host_header_action, host_landing_text, input_queue_has_capacity,
-        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        kwt_operation_failure_owns_dialog, named_key, new_session_validation, normalize_cell_width,
-        owns_created_worktree_navigation, pull_request_import_selector,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_creation_available, session_group_visibility,
-        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        SettingsPane, SshField, SshHostEditor, TERMINAL_NOTICE_DURATION, TerminalField,
+        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize, TransientNotice,
+        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
+        WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
+        WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
+        activate_settings_sidebar_pane, active_session_selection, adjacent_appearance_field,
+        advance_settings_focus, appearance_draft_is_persistable, appearance_preview_color,
+        application_navigation_width, apply_new_worktree_failure, apply_worktree_removal_failure,
+        available_herdr_row_actions, can_create_worktree, can_kill_worktree,
+        canonical_terminal_key_with, chrome_palette_for_terminal_theme, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
+        herdr_session_menu_actions, host_header_action, host_landing_text,
+        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
+        kill_confirmation_title, kwt_operation_failure_owns_dialog, named_key,
+        new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
+        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
+        session_action_menu_position, session_backend_id, session_creation_available,
+        session_group_visibility, session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
         terminal_cell_at_with_offset, terminal_font_changed, terminal_key_input,
         terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
         tmux_row_actions, toggle_session_group_state, transitioned_presentation,
@@ -8977,10 +9485,11 @@ mod tests {
     use std::time::{Duration, Instant};
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
-        AppearanceSettingsDraft, HerdrSessionItem, HerdrSessionState, HostConnectionState,
-        HostDiagnostic, HostItem, KeyEvent, KeyInput, KwtBranchItem, KwtPullRequestItem, Modifiers,
-        MouseAction, MouseButton, MouseInput, NamedKey, ProjectItem, SessionItem, SessionSelection,
-        SshHostDraft, TerminalTheme, WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
+        AppearanceSettingsDraft, CursorStyle, HerdrSessionItem, HerdrSessionState,
+        HostConnectionState, HostDiagnostic, HostItem, KeyEvent, KeyInput, KwtBranchItem,
+        KwtPullRequestItem, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, ProjectItem,
+        SessionItem, SessionSelection, SshHostDraft, TerminalSettingsDraft, TerminalTheme,
+        WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
     };
 
     #[test]
@@ -9036,11 +9545,25 @@ mod tests {
             background: "#0c0f14".to_owned(),
             foreground: "#d8dee9".to_owned(),
         };
-        let dialog = SettingsDialog::new(&[], appearance.clone(), vec!["Cascadia Mono".to_owned()]);
+        let terminal = TerminalSettingsDraft {
+            cursor_style: CursorStyle::Block,
+            allow_shell_integration_cursor: false,
+            hide_mouse_while_typing: true,
+        };
+        let dialog = SettingsDialog::new(
+            &[],
+            appearance.clone(),
+            terminal,
+            vec!["Cascadia Mono".to_owned()],
+        );
 
         assert_eq!(
             SettingsPane::ALL,
-            [SettingsPane::Appearance, SettingsPane::Hosts]
+            [
+                SettingsPane::Appearance,
+                SettingsPane::Terminal,
+                SettingsPane::Hosts,
+            ]
         );
         assert_eq!(dialog.pane, SettingsPane::Appearance);
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
@@ -9059,22 +9582,24 @@ mod tests {
             background: "#212734".to_owned(),
             foreground: "#e6e6e6".to_owned(),
         };
-        let mut dialog = SettingsDialog::new(&[], appearance, vec!["Cascadia Mono".to_owned()]);
+        let terminal = TerminalSettingsDraft {
+            cursor_style: CursorStyle::Bar,
+            allow_shell_integration_cursor: false,
+            hide_mouse_while_typing: true,
+        };
+        let mut dialog =
+            SettingsDialog::new(&[], appearance, terminal, vec!["Cascadia Mono".to_owned()]);
+
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Terminal));
+        assert!(activate_settings_sidebar_pane(&mut dialog));
+        assert_eq!(dialog.pane, SettingsPane::Terminal);
 
         advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Hosts));
-        assert!(activate_settings_sidebar_pane(&mut dialog));
-        assert_eq!(dialog.pane, SettingsPane::Hosts);
-
-        advance_settings_focus(&mut dialog, false);
-        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
-        assert!(activate_settings_sidebar_pane(&mut dialog));
-        assert_eq!(dialog.pane, SettingsPane::Appearance);
-
-        advance_settings_focus(&mut dialog, false);
         advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, None);
-        assert_eq!(dialog.appearance_editor.field, AppearanceField::Theme);
+        assert_eq!(dialog.terminal_editor.field, TerminalField::CursorStyle);
 
         advance_settings_focus(&mut dialog, false);
         advance_settings_focus(&mut dialog, false);
@@ -9083,7 +9608,10 @@ mod tests {
 
         advance_settings_focus(&mut dialog, true);
         assert_eq!(dialog.sidebar_focus, None);
-        assert_eq!(dialog.appearance_editor.field, AppearanceField::FontSize);
+        assert_eq!(
+            dialog.terminal_editor.field,
+            TerminalField::HideMouseWhileTyping
+        );
     }
 
     #[test]

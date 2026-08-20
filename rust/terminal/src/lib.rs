@@ -10,13 +10,13 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{
-    Color, Handler, ModifyOtherKeys as VteModifyOtherKeys, NamedColor, NamedPrivateMode,
-    PrivateMode, Processor,
+    Color, CursorShape as VteCursorShape, Handler, ModifyOtherKeys as VteModifyOtherKeys,
+    NamedColor, NamedPrivateMode, PrivateMode, Processor,
 };
 use input::{KittyKeyboard, ModifyOtherKeys, MouseTracking, TerminalModes};
 use surface::{
-    Cell as SurfaceCell, CellStyle, Cursor, Damage, GridSize, PixelSize, Rgb, SurfaceFrame,
-    SurfaceStore,
+    Cell as SurfaceCell, CellStyle, Cursor, CursorShape, Damage, GridSize, PixelSize, Rgb,
+    SurfaceFrame, SurfaceStore,
 };
 
 mod windows_job;
@@ -443,7 +443,14 @@ impl TerminalEngine {
         let cursor = Cursor {
             row: usize::try_from(renderable.cursor.point.line.0).unwrap_or(0),
             column: renderable.cursor.point.column.0,
-            visible: renderable.mode.contains(TermMode::SHOW_CURSOR),
+            visible: renderable.mode.contains(TermMode::SHOW_CURSOR)
+                && renderable.cursor.shape != VteCursorShape::Hidden,
+            shape: match renderable.cursor.shape {
+                VteCursorShape::Block | VteCursorShape::HollowBlock => CursorShape::Block,
+                VteCursorShape::Beam => CursorShape::Bar,
+                VteCursorShape::Underline => CursorShape::Underline,
+                VteCursorShape::Hidden => CursorShape::Hidden,
+            },
         };
         let resize_sequence = self.resize_sequence;
         let pixel_size = self.pixel_size;

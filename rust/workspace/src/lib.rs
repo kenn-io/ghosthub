@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub use config::TerminalTheme;
 use config::{ApplicationConfig, Roots, SshHostSettings, TerminalAppearance};
+pub use config::{CursorStyle, TerminalTheme};
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
     HostSnapshot, KwtInventory, KwtPullRequestImportRequest, KwtSshExecutable, LiveSessionTarget,
@@ -72,6 +72,9 @@ pub struct Appearance {
     font_size: u16,
     background: u32,
     foreground: u32,
+    cursor_style: CursorStyle,
+    allow_shell_integration_cursor: bool,
+    hide_mouse_while_typing: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,6 +84,33 @@ pub struct AppearanceSettingsDraft {
     pub font_size: String,
     pub background: String,
     pub foreground: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TerminalSettingsDraft {
+    pub cursor_style: CursorStyle,
+    pub allow_shell_integration_cursor: bool,
+    pub hide_mouse_while_typing: bool,
+}
+
+impl From<&TerminalAppearance> for TerminalSettingsDraft {
+    fn from(value: &TerminalAppearance) -> Self {
+        Self {
+            cursor_style: value.cursor_style(),
+            allow_shell_integration_cursor: value.allow_shell_integration_cursor(),
+            hide_mouse_while_typing: value.hide_mouse_while_typing(),
+        }
+    }
+}
+
+impl From<&Appearance> for TerminalSettingsDraft {
+    fn from(value: &Appearance) -> Self {
+        Self {
+            cursor_style: value.cursor_style(),
+            allow_shell_integration_cursor: value.allow_shell_integration_cursor(),
+            hide_mouse_while_typing: value.hide_mouse_while_typing(),
+        }
+    }
 }
 
 impl From<&TerminalAppearance> for AppearanceSettingsDraft {
@@ -132,6 +162,21 @@ impl Appearance {
     pub const fn foreground(&self) -> u32 {
         self.foreground
     }
+
+    #[must_use]
+    pub const fn cursor_style(&self) -> CursorStyle {
+        self.cursor_style
+    }
+
+    #[must_use]
+    pub const fn allow_shell_integration_cursor(&self) -> bool {
+        self.allow_shell_integration_cursor
+    }
+
+    #[must_use]
+    pub const fn hide_mouse_while_typing(&self) -> bool {
+        self.hide_mouse_while_typing
+    }
 }
 
 impl From<TerminalAppearance> for Appearance {
@@ -142,6 +187,9 @@ impl From<TerminalAppearance> for Appearance {
             font_size: value.font_size(),
             background: value.background(),
             foreground: value.foreground(),
+            cursor_style: value.cursor_style(),
+            allow_shell_integration_cursor: value.allow_shell_integration_cursor(),
+            hide_mouse_while_typing: value.hide_mouse_while_typing(),
         }
     }
 }
@@ -4286,6 +4334,26 @@ impl Workspace {
             )
     }
 
+    #[must_use]
+    pub fn configured_terminal_settings(&self) -> TerminalSettingsDraft {
+        self.inner
+            .settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or_else(
+                || {
+                    let appearance = self
+                        .inner
+                        .appearance
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    TerminalSettingsDraft::from(&*appearance)
+                },
+                |settings| TerminalSettingsDraft::from(settings.config.terminal()),
+            )
+    }
+
     /// Persist terminal appearance settings and publish them to the running
     /// workspace. Existing clients keep their negotiated terminal palette;
     /// the UI and newly opened clients use the saved values immediately.
@@ -4317,7 +4385,56 @@ impl Workspace {
                 draft.foreground.trim(),
                 settings.config.terminal().allow_remote_clipboard_write(),
             )
-            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            .map_err(|error| WorkspaceError::new(error.to_string()))?
+            .with_terminal_preferences(
+                settings.config.terminal().cursor_style(),
+                settings.config.terminal().allow_shell_integration_cursor(),
+                settings.config.terminal().hide_mouse_while_typing(),
+            );
+            let roots = settings.roots.clone();
+            settings
+                .config
+                .replace_terminal_appearance(&roots, appearance.clone())
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            appearance
+        };
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        *self
+            .inner
+            .appearance
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = appearance.into();
+        self.inner.revision.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    /// Persist terminal interaction settings and publish them to the running workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when settings storage is unavailable or cannot be written.
+    pub fn save_terminal_settings(
+        &self,
+        draft: &TerminalSettingsDraft,
+    ) -> Result<(), WorkspaceError> {
+        let appearance = {
+            let mut settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let settings = settings
+                .as_mut()
+                .ok_or_else(|| WorkspaceError::new("Terminal settings storage is unavailable"))?;
+            let appearance = settings
+                .config
+                .terminal()
+                .clone()
+                .with_terminal_preferences(
+                    draft.cursor_style,
+                    draft.allow_shell_integration_cursor,
+                    draft.hide_mouse_while_typing,
+                );
             let roots = settings.roots.clone();
             settings
                 .config
@@ -18441,6 +18558,9 @@ mod tests {
             font_size: 14,
             background: 0x12_34_56,
             foreground: 0x65_43_21,
+            cursor_style: CursorStyle::Block,
+            allow_shell_integration_cursor: false,
+            hide_mouse_while_typing: true,
         };
 
         let colors = default_colors(&appearance);
@@ -18482,6 +18602,9 @@ mod tests {
                 font_size: 14,
                 background,
                 foreground,
+                cursor_style: CursorStyle::Block,
+                allow_shell_integration_cursor: false,
+                hide_mouse_while_typing: true,
             };
             let colors = default_colors(&appearance);
             let mut engine = TerminalEngine::with_default_colors(

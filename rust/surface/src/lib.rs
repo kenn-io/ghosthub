@@ -141,10 +141,19 @@ pub enum Damage {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CursorShape {
+    Block,
+    Bar,
+    Underline,
+    Hidden,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cursor {
     pub row: usize,
     pub column: usize,
     pub visible: bool,
+    pub shape: CursorShape,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

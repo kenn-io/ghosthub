@@ -57,7 +57,7 @@ fn paint_cache_applies_scroll_damage_and_repaints_exposed_rows() {
     }
     let store = SurfaceStore::new(initial);
     let mut cache = SurfacePaintCache::default();
-    let _initial = cache.update(&store.load());
+    let _initial = cache.update(&store.load(), None);
 
     assert!(store.update(
         2,
@@ -73,7 +73,7 @@ fn paint_cache_applies_scroll_damage_and_repaints_exposed_rows() {
         |frame| *frame.cell_mut(2) = Cell::plain("d"),
     ));
 
-    let rows = cache.update(&store.load());
+    let rows = cache.update(&store.load(), None);
     let text: Vec<_> = rows.iter().map(|row| row[0].text()).collect();
     assert_eq!(text, ["b", "c", "d"]);
 }
@@ -87,7 +87,7 @@ fn paint_cache_repaints_blank_rows_exposed_by_scroll_only_damage() {
     }
     let store = SurfaceStore::new(initial);
     let mut cache = SurfacePaintCache::default();
-    let _initial = cache.update(&store.load());
+    let _initial = cache.update(&store.load(), None);
 
     assert!(store.update(
         2,
@@ -100,7 +100,7 @@ fn paint_cache_repaints_blank_rows_exposed_by_scroll_only_damage() {
         |_| {},
     ));
 
-    let rows = cache.update(&store.load());
+    let rows = cache.update(&store.load(), None);
     let text = rows.iter().map(|row| row[0].text()).collect::<Vec<_>>();
     assert_eq!(text, ["b", "c", " "]);
 }
@@ -114,7 +114,7 @@ fn paint_cache_does_not_replay_scroll_after_consuming_an_intermediate_frame() {
     }
     let store = SurfaceStore::new(initial);
     let mut cache = SurfacePaintCache::default();
-    let _initial = cache.update(&store.load());
+    let _initial = cache.update(&store.load(), None);
 
     assert!(store.update(
         2,
@@ -126,7 +126,7 @@ fn paint_cache_does_not_replay_scroll_after_consuming_an_intermediate_frame() {
         }],
         |_| {},
     ));
-    let _intermediate = cache.update(&store.load());
+    let _intermediate = cache.update(&store.load(), None);
     assert!(store.update(
         3,
         size,
@@ -140,7 +140,7 @@ fn paint_cache_does_not_replay_scroll_after_consuming_an_intermediate_frame() {
         },
     ));
 
-    let rows = cache.update(&store.load());
+    let rows = cache.update(&store.load(), None);
     let text = rows.iter().map(|row| row[0].text()).collect::<Vec<_>>();
     assert_eq!(text, ["Z", "c", "d"]);
 }
@@ -156,10 +156,11 @@ fn paint_cache_does_not_scroll_cursor_highlighting_with_cells() {
         row: 1,
         column: 0,
         visible: true,
+        shape: surface::CursorShape::Block,
     }));
     let store = SurfaceStore::new(initial);
     let mut cache = SurfacePaintCache::default();
-    let _initial = cache.update(&store.load());
+    let _initial = cache.update(&store.load(), None);
 
     assert!(store.update(
         2,
@@ -178,11 +179,12 @@ fn paint_cache_does_not_scroll_cursor_highlighting_with_cells() {
                 row: 1,
                 column: 0,
                 visible: true,
+                shape: surface::CursorShape::Block,
             }));
         },
     ));
 
-    let rows = cache.update(&store.load());
+    let rows = cache.update(&store.load(), None);
     assert_eq!(rows[0][0].foreground(), 0xd8_de_e9);
     assert_eq!(rows[1][0].foreground(), 0x0c_0f_14);
 }
@@ -231,6 +233,7 @@ fn terminal_paint_rows_preserve_cell_style_and_cursor() {
         row: 0,
         column: 1,
         visible: true,
+        shape: surface::CursorShape::Block,
     }));
 
     let rows = surface_paint_rows(&frame);
@@ -243,6 +246,30 @@ fn terminal_paint_rows_preserve_cell_style_and_cursor() {
     assert_eq!(rows[0][1].text(), "b");
     assert_eq!(rows[0][1].foreground(), 0x04_05_06);
     assert_eq!(rows[0][1].background(), 0x01_02_03);
+}
+
+#[test]
+fn terminal_paint_rows_preserve_dynamic_cursor_shape_and_allow_an_override() {
+    let size = GridSize::new(1, 1).expect("valid grid");
+    let mut frame = SurfaceFrame::blank(1, size);
+    *frame.cell_mut(0) = Cell::plain("a");
+    frame.cell_mut(0).foreground = Rgb::new(1, 2, 3);
+    frame.cell_mut(0).background = Rgb::new(4, 5, 6);
+    frame.set_cursor(Some(Cursor {
+        row: 0,
+        column: 0,
+        visible: true,
+        shape: surface::CursorShape::Bar,
+    }));
+
+    let rows = surface_paint_rows(&frame);
+    assert_eq!(rows[0][0].cursor_shape(), Some(surface::CursorShape::Bar));
+    assert_eq!(rows[0][0].foreground(), 0x01_02_03);
+
+    let mut cache = SurfacePaintCache::default();
+    let rows = cache.update(&frame, Some(surface::CursorShape::Block));
+    assert_eq!(rows[0][0].cursor_shape(), None);
+    assert_eq!(rows[0][0].foreground(), 0x04_05_06);
 }
 
 #[test]
