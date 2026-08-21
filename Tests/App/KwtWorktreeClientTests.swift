@@ -278,6 +278,104 @@ struct KwtWorktreeClientTests {
         #expect(recorder.command?.contains("--force") == false)
     }
 
+    @Test("worktree changes are read from kwt status JSON")
+    func worktreeChanges() async throws {
+        let recorder = CommandRecorder()
+        let client = KwtWorktreeClient(
+            localRunner: { shell, command in
+                recorder.record(shell: shell, command: command)
+                return (
+                    0,
+                    """
+                    shell startup noise
+                    GHOSTHUB_KWT_JSON
+                    [
+                      {
+                        "path": "/worktrees/ghost hub/feature",
+                        "branch": "feature/remove",
+                        "status": "modified",
+                        "git_status": {
+                          "modified": 2,
+                          "added": 1,
+                          "deleted": 3,
+                          "untracked": 4,
+                          "staged": 5,
+                          "ahead": 6,
+                          "behind": 7,
+                          "conflicts": 8
+                        }
+                      }
+                    ]
+                    """
+                )
+            },
+            localBinaryPath: "/Applications/Ghost Hub.app/Contents/Helpers/kwt",
+            loginShellProvider: { "/bin/zsh" }
+        )
+
+        let changes = try await client.changes(
+            worktreePath: "/worktrees/ghost hub/feature",
+            projectPath: "/code/ghost hub",
+            on: .local
+        )
+
+        #expect(changes == WorktreeChangeSummary(
+            modified: 2,
+            added: 1,
+            deleted: 3,
+            untracked: 4,
+            staged: 5,
+            conflicts: 8
+        ))
+        #expect(
+            recorder.command?.contains(
+                "exec \"$ghosthub_kwt_path\" status --json --no-fetch"
+            ) == true
+        )
+    }
+
+    @Test("force removal passes explicit force authority to kwt")
+    func forceRemoval() async throws {
+        let recorder = CommandRecorder()
+        let client = KwtWorktreeClient(
+            localRunner: { shell, command in
+                recorder.record(shell: shell, command: command)
+                return (0, "")
+            },
+            localBinaryPath: "/Applications/Ghost Hub.app/Contents/Helpers/kwt",
+            loginShellProvider: { "/bin/zsh" }
+        )
+
+        try await client.remove(
+            worktreePath: "/worktrees/ghost hub/feature",
+            generation: "0123456789abcdef0123456789abcdef",
+            projectPath: "/code/ghost hub",
+            force: true,
+            on: .local
+        )
+
+        #expect(recorder.command?.contains(
+            "remove --force --if-generation "
+                + "'0123456789abcdef0123456789abcdef' "
+                + "'/worktrees/ghost hub/feature'"
+        ) == true)
+    }
+
+    @Test("an absent worktree has no changes left to discard")
+    func absentWorktreeChanges() async throws {
+        let client = KwtWorktreeClient(
+            localRunner: { _, _ in (0, "GHOSTHUB_KWT_JSON\n[]") }
+        )
+
+        let changes = try await client.changes(
+            worktreePath: "/worktrees/removed",
+            projectPath: "/code/project",
+            on: .local
+        )
+
+        #expect(changes == .clean)
+    }
+
     @Test("Windows removal uses the managed kwt helper")
     func windowsRemoteRemoval() async throws {
         let recorder = CommandRecorder()

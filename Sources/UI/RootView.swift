@@ -1421,19 +1421,12 @@ public struct RootView: View {
                 dismissButton: .default(Text("OK"))
             )
         case let .worktreeRemovalConfirmation(request):
-            let sessionMessage = request.sessionKillRequest == nil
-                ? ""
-                : " Its live tmux session will be terminated first,"
-                + " including every window, pane, and process."
             return Alert(
                 title: Text("Remove “\(request.worktree.name)”?"),
-                message: Text(
-                    "This removes the worktree at "
-                        + "\(request.worktree.path)."
-                        + sessionMessage
-                        + " The Git branch will be kept."
-                ),
-                primaryButton: .destructive(Text("Remove Worktree")) {
+                message: Text(request.worktreeRemovalMessage),
+                primaryButton: .destructive(
+                    Text(request.worktreeRemovalActionTitle)
+                ) {
                     WorkspacePresentationLifecycle
                         .beginWorktreeRemovalResolution(
                             pendingWorktreeRemoval: &pendingWorktreeRemoval

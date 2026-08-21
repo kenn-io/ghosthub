@@ -706,14 +706,22 @@ repositories, worktrees, and tmux sessions remain untouched. Reads and
 mutations stay off the UI thread, and the last usable project tree remains
 visible while either is in flight.
 
-Removing a generation-backed worktree is a distinct destructive action. The
-confirmation is bound to its exact project, generation, tmux socket, and a
-fresh live session identity or freshly confirmed absence. Pinned KWT
-revalidates those facts under the project lifecycle lock, terminates only the
-confirmed session when necessary, and removes the checkout in the same guarded
-operation. A replaced session or changed socket fails closed and requires new
-confirmation. Closing or detaching a presentation never grants this removal
-authority.
+In the macOS app, removing a generation-backed worktree is a distinct
+destructive action. The confirmation is bound to its exact project,
+generation, tmux socket, and a fresh live session identity or freshly
+confirmed absence. Pinned KWT
+also reports the worktree's staged, unstaged, and untracked change counts
+before Ghosthub presents the confirmation. A worktree with uncommitted changes
+names that data-loss risk and requires an explicit **Force Remove Worktree**
+action. Ghosthub checks for new changes again before it terminates a confirmed
+session. If a clean worktree became dirty, Ghosthub presents the force warning
+instead of attempting ordinary removal. KWT revalidates the identity facts
+under the project lifecycle lock, terminates only the confirmed session when
+necessary, and removes the checkout in the same guarded operation. A replaced
+session or changed socket fails closed and requires new confirmation. If KWT
+finds still newer changes after Ghosthub terminates the session, Ghosthub
+restores the session before presenting the force confirmation. Closing or
+detaching a presentation never grants this removal authority.
 
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,

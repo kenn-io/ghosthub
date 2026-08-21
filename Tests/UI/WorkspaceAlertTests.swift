@@ -1,7 +1,25 @@
+import GhosthubTestSupport
+import GhosthubWorkspace
 import Testing
 @testable import GhosthubUI
 
 struct WorkspaceAlertTests {
+    @Test("dirty worktree removal names discarded changes and force action")
+    func dirtyWorktreeRemovalPresentation() {
+        let host = HostSummary.fixture()
+        let project = ProjectSummary.fixture(hostID: host.id)
+        let request = WorktreeRemovalRequest(
+            worktree: .fixture(hostID: host.id, projectID: project.id),
+            project: project,
+            confirmedHost: host,
+            changes: WorktreeChangeSummary(modified: 1, untracked: 2)
+        )
+
+        #expect(request.worktreeRemovalActionTitle == "Force Remove Worktree")
+        #expect(request.worktreeRemovalMessage.contains("uncommitted changes"))
+        #expect(request.worktreeRemovalMessage.contains("permanently discards"))
+    }
+
     @Test("workspace actions share one alert identity domain")
     func workspaceActionsShareAlertIdentityDomain() {
         let session = WorkspaceAlert.sessionKillFailure(

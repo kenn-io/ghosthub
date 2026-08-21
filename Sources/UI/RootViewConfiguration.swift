@@ -202,17 +202,44 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
     public let project: ProjectSummary
     public let confirmedHost: HostSummary
     public let sessionKillRequest: TmuxSessionKillRequest?
+    public let changes: WorktreeChangeSummary
+
+    public var forceRemoval: Bool {
+        changes.hasUncommittedChanges
+    }
 
     public init(
         worktree: WorktreeSummary,
         project: ProjectSummary,
         confirmedHost: HostSummary,
-        sessionKillRequest: TmuxSessionKillRequest? = nil
+        sessionKillRequest: TmuxSessionKillRequest? = nil,
+        changes: WorktreeChangeSummary = .clean
     ) {
         self.worktree = worktree
         self.project = project
         self.confirmedHost = confirmedHost
         self.sessionKillRequest = sessionKillRequest
+        self.changes = changes
+    }
+
+    var worktreeRemovalActionTitle: String {
+        forceRemoval ? "Force Remove Worktree" : "Remove Worktree"
+    }
+
+    var worktreeRemovalMessage: String {
+        let sessionMessage = sessionKillRequest == nil
+            ? ""
+            : " Its live tmux session will be terminated first,"
+            + " including every window, pane, and process."
+        let changesMessage = forceRemoval
+            ? " This worktree has uncommitted changes. Force removal"
+            + " permanently discards every staged, unstaged, and untracked"
+            + " change in it."
+            : ""
+        return "This removes the worktree at \(worktree.path)."
+            + sessionMessage
+            + changesMessage
+            + " The Git branch will be kept."
     }
 }
 
