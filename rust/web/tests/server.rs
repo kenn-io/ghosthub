@@ -994,15 +994,38 @@ fn resize_controls_round_trip_and_violations_close_the_connection() {
 fn input_overflow_closes_the_connection_with_policy() {
     let server = Server::start().expect("start server");
     let mut socket = attach_shell(&server);
-    // Deliberately no readiness handshake: the unanswered startup stalls
-    // the child, so the burst backs up against the bounded input budget
-    // instead of draining. Sizing is exact so the close arrives over a
-    // graceful FIN: four maximum-size chunks fill the 1 MiB relay budget
-    // to the byte, and the fifth — the last frame sent — overflows after
-    // the server has read it, leaving no unread data whose teardown-time
-    // discard would reset the connection and destroy the buffered close
-    // frame this test must observe. A stalled child cannot free a whole
-    // chunk of budget mid-burst; its console input pipe buffers far less.
+    await_echo(&mut socket, "overflow-ready");
+    // The shell is told to stop reading input before the flood: an
+    // interactive line editor would otherwise consume the burst and keep
+    // releasing budget (bash reads arbitrarily long lines; only Windows
+    // conhost stalls on its own). The marker is concatenated in the
+    // command so its echo-back as typed text cannot satisfy the wait —
+    // seeing it assembled in output proves the command executed and the
+    // shell is gone or blocked.
+    #[cfg(windows)]
+    let stall = "echo ('pre-st'+'all'); Start-Sleep -Seconds 600\r";
+    #[cfg(not(windows))]
+    let stall = "echo pre-st''all; exec sleep 600\r";
+    socket
+        .send(Message::Binary(stall.as_bytes().to_vec().into()))
+        .expect("send stall command");
+    let deadline = Instant::now() + Duration::from_mins(1);
+    let mut output = Vec::new();
+    while !contains(&output, b"pre-stall") {
+        assert!(Instant::now() < deadline, "stall command never executed");
+        match socket.read().expect("stall confirmation") {
+            Message::Binary(bytes) => output.extend_from_slice(&bytes),
+            Message::Ping(_) | Message::Pong(_) => {}
+            other => panic!("expected binary output, got {other:?}"),
+        }
+    }
+    // Sizing is exact so the close arrives over a graceful FIN: four
+    // maximum-size chunks fill the relay budget to the byte, and the
+    // fifth — the last frame sent — overflows after the server has read
+    // it, leaving no unread data whose teardown-time discard would reset
+    // the connection and destroy the buffered close frame this test must
+    // observe. The stalled child's terminal input buffer absorbs far less
+    // than one chunk, so it cannot free a chunk of budget mid-burst.
     socket
         .get_mut()
         .set_write_timeout(Some(Duration::from_secs(10)))
