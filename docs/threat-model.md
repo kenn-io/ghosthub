@@ -135,7 +135,70 @@ contract excludes repository, worktree, host, session, path, command, and
 terminal data, disables person-profile processing and GeoIP enrichment, and
 can be disabled in Settings or through the documented environment switches.
 
-### Local external state tools
+### Loopback web UI (Rust applications)
+
+The Rust-application web UI is loopback-only in v1: an ephemeral loopback
+bind with no non-loopback code path, an in-memory startup bearer credential,
+exact Host validation and a required credential on every request, and exact
+Origin validation on every websocket upgrade and state-changing request. The
+full wire contract, including capability lifetimes and accepted multiplexer
+multi-client behavior, is maintained in [Web UI](web-ui.md).
+
+This section is the arbiter for triaging web-surface findings. A valid
+finding names one of the in-scope attacker classes below and a concrete
+capability that attacker gains beyond what it already has. Findings outside
+these classes are closed with a pointer to this section rather than patched.
+
+**In scope — hostile web content in the user's browser.** Malicious pages
+probing loopback: DNS rebinding, CSRF, cross-origin websocket connection,
+drive-by port scans, and credential leaks through history, cache, or
+referrers. Defenses: exact Host before routing, exact Origin on upgrades and
+state-changing requests, a credential on every request, the bootstrap
+redirect that strips the token from the location bar with `no-store` and
+`no-referrer`, an HttpOnly SameSite=Strict cookie, a strict same-origin CSP,
+and hello/idle timeouts on upgraded sockets.
+
+**In scope — other users on a shared machine.** Any local user can bind a
+free loopback port, and browsers scope cookies to the hostname, never the
+port, so a lured visit to an attacker's loopback port leaks the session
+cookie value across user boundaries. The cookie therefore carries a
+per-instance session value distinct from the bearer credential and authorizes
+only the page shell and scene establishment — never terminal, presentation,
+lifecycle, or other state-changing operations. Browser viewers are
+independent scenes, each holding a scene secret minted only with non-ambient
+proof (the bearer credential, or a single-use seconds-scale bootstrap mint
+code), carried outside cookies and URLs, expiring on bounded idle and
+absolute lifetimes. Interactive approvals (SSH prompts, clipboard reads,
+lifecycle confirmations) are addressed to exactly one scene and fail closed
+if that scene disappears.
+
+**In scope — untrusted byte streams.** Session output and clipboard traffic
+carry the same trust limits as native attachments regardless of viewer. The
+server relays terminal bytes without interpretation by design; the viewer
+(xterm.js in a browser, the native engine otherwise) is the single VT
+interpreter and the place rendering-level attacks are mitigated. Clipboard
+and paste behavior is governed by the shared contract vectors under
+`contracts/clipboard/`; a divergence is a recorded known gap tied to tracked
+work, and the browser-terminal milestone does not pass with open gaps.
+
+**Out of scope.** Processes running as the same user as Ghosthub: they can
+already spawn shells, read and write the user's files, and debug the
+application, so a finding whose attacker is same-user local code demonstrates
+nothing. Demands for server-side VT sanitization: the parserless relay is a
+design invariant, and a sanitizing server would be a second interpreter — the
+exact failure mode the architecture forbids. Network attackers: no
+non-loopback bind exists in v1, so transport-security findings are not
+applicable until a remote-bind feature changes this section first. Attacks
+that require the user to hand the one-time bootstrap URL to the attacker.
+
+**Interim acceptances (each tied to a gate).** The current demo attach
+endpoint accepts the ambient session cookie, diverging from the scene-secret
+rule above; this is accepted only while the web UI serves fixture data and
+local demo shells, is tracked as a blocker of the browser-terminal milestone,
+and closes when scene credentials land. Browser-side paste enforcement does
+not yet implement the shared sanitization vectors; that alignment is likewise
+a tracked blocker of the same milestone. Neither acceptance extends to any
+release that exposes real multiplexer sessions to a browser.
 
 Local state providers such as the bundled kwt, git, and tmux are trusted
 programs running as the user. The embedded kwt revision is part of Ghosthub's

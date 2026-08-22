@@ -1,24 +1,24 @@
 use std::collections::VecDeque;
-use std::fmt;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, never, select};
 use input::{EncodedInput, KeyInput, MouseAction, MouseInput, encode_input, encode_mouse};
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use session::{
     AdmissionPlan, AttachPlan, CreateOnce, HerdrAttachPlan, HerdrLaunchOnce, RepairOrOpenPlan,
     ZellijAttachPlan, ZellijLaunchOnce,
 };
 use surface::{CursorShape, GridSize, PixelSize, SurfaceStore};
 
-use crate::windows_job::RelayJob;
+use crate::pty::{
+    CHILD_EXIT_POLL_INTERVAL, PtyProcess, READ_BUFFER_SIZE, ReaderMessage, SpawnedPty, StartupPty,
+    WorkerError, child_exit_drain_expired, wake_coalesced,
+};
 use crate::{ClipboardPolicy, ClipboardReadRequest, ClipboardWrite, DefaultColors, TerminalEngine};
 
-const READ_BUFFER_SIZE: usize = 64 * 1024;
 const EVENT_CAPACITY: usize = 64;
 const COMMAND_CAPACITY: usize = 256;
 const COMMAND_BYTE_CAPACITY: usize = 1024 * 1024;
@@ -27,10 +27,6 @@ const WRITE_BATCH_MAX: usize = COMMAND_BYTE_CAPACITY + READ_BUFFER_SIZE;
 const WRITE_UI_MAX_BYTES: usize = WRITE_HIGH_WATER + WRITE_BATCH_MAX;
 const WRITE_PARSER_RESERVE: usize = WRITE_BATCH_MAX;
 const WRITE_MAX_BYTES: usize = WRITE_UI_MAX_BYTES + WRITE_PARSER_RESERVE;
-const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const CHILD_OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(250);
-const REAP_ATTEMPTS: usize = 20;
-const REAP_POLL_DELAY: Duration = Duration::from_millis(25);
 
 pub enum TerminalEvent {
     ClipboardWrite {
@@ -53,47 +49,6 @@ pub enum TerminalStartup {
     Exited { code: u32, output_tail: String },
     Failed(String),
 }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WorkerErrorKind {
-    Other,
-    Backpressure,
-}
-
-#[derive(Debug)]
-pub struct WorkerError {
-    message: String,
-    kind: WorkerErrorKind,
-}
-
-impl WorkerError {
-    fn new(subject: &str, error: impl fmt::Display) -> Self {
-        Self {
-            message: format!("{subject}: {error}"),
-            kind: WorkerErrorKind::Other,
-        }
-    }
-
-    fn backpressure(subject: &str, error: impl fmt::Display) -> Self {
-        Self {
-            message: format!("{subject}: {error}"),
-            kind: WorkerErrorKind::Backpressure,
-        }
-    }
-
-    #[must_use]
-    pub fn is_backpressure(&self) -> bool {
-        self.kind == WorkerErrorKind::Backpressure
-    }
-}
-
-impl fmt::Display for WorkerError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for WorkerError {}
 
 enum Command {
     Input(Vec<u8>),
@@ -132,12 +87,6 @@ struct IngressState {
     mouse_motion: Option<MouseInput>,
     default_cursor_shape: Option<CursorShape>,
     queued_bytes: usize,
-}
-
-enum ReaderMessage {
-    Bytes(Vec<u8>),
-    Eof,
-    Error(String),
 }
 
 enum WriterMessage {
@@ -239,6 +188,11 @@ pub struct TerminalWorker {
     surface: Arc<SurfaceStore>,
     confirmed_live: Arc<AtomicBool>,
     clipboard_visibility: Arc<AtomicU64>,
+    /// Count of paste-cancel actions successfully delivered into this
+    /// worker's control channel; shared so a test can keep observing it
+    /// after the worker is torn down.
+    #[cfg(feature = "test-support")]
+    delivered_paste_cancels: Arc<std::sync::atomic::AtomicUsize>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -492,36 +446,11 @@ impl TerminalWorker {
         default_colors: DefaultColors,
         default_cursor_shape: CursorShape,
     ) -> Result<Self, WorkerError> {
-        let pty_size = pty_size(size, pixel_size)?;
-        let job = RelayJob::new().map_err(|error| WorkerError::new("create relay job", error))?;
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(pty_size)
-            .map_err(|error| WorkerError::new("open pseudoterminal", error))?;
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|error| WorkerError::new("clone PTY reader", error))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|error| WorkerError::new("take PTY writer", error))?;
-
-        let mut command = CommandBuilder::new(program);
-        command.args(args);
-        let mut child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|error| WorkerError::new("spawn terminal client", error))?;
-        drop(pair.slave);
-
-        if let Err(error) = job.assign_and_verify(child.as_ref()) {
-            drop(writer);
-            drop(pair.master);
-            let _ignored = child.kill();
-            let _ignored = child.wait();
-            return Err(WorkerError::new("contain terminal client", error));
-        }
+        let SpawnedPty {
+            process,
+            reader: reader_receiver,
+            writer,
+        } = PtyProcess::spawn(program, args, size, pixel_size)?;
 
         let engine = TerminalEngine::with_geometry_and_defaults(
             size,
@@ -540,33 +469,33 @@ impl TerminalWorker {
         let worker_coalesced_wake = coalesced_wake.clone();
         let (shutdown, shutdown_receiver) = bounded(1);
         let (events_sender, events) = bounded(EVENT_CAPACITY);
-        let (reader_sender, reader_receiver) = bounded(1);
         let (write_sender, write_receiver) = bounded(1);
         let (write_complete_sender, write_complete_receiver) = bounded(1);
         let confirmed_live = Arc::new(AtomicBool::new(false));
         let worker_confirmed_live = Arc::clone(&confirmed_live);
-        let clipboard_visibility = Arc::new(AtomicU64::new(1));
+        let clipboard_visibility = Arc::new(AtomicU64::new(INITIAL_CLIPBOARD_VISIBILITY));
         let worker_clipboard_visibility = Arc::clone(&clipboard_visibility);
 
-        thread::Builder::new()
+        let startup = StartupPty::new(process);
+        let writer_thread = match thread::Builder::new()
             .name("ghosthub-pty-writer".to_owned())
             .spawn(move || {
                 write_pty(writer, &write_receiver, &write_complete_sender);
-            })
-            .map_err(|error| WorkerError::new("spawn PTY writer", error))?;
-        thread::Builder::new()
-            .name("ghosthub-pty-reader".to_owned())
-            .spawn(move || read_pty(&mut reader, &reader_sender))
-            .map_err(|error| WorkerError::new("spawn PTY reader", error))?;
+            }) {
+            Ok(handle) => handle,
+            Err(error) => {
+                drop(startup);
+                return Err(WorkerError::new("spawn PTY writer", error));
+            }
+        };
 
-        let worker_thread = thread::Builder::new()
+        let worker_result = thread::Builder::new()
             .name("ghosthub-terminal-worker".to_owned())
             .spawn(move || {
+                let process = startup.into_inner();
                 run_worker(
                     engine,
-                    pair.master,
-                    child,
-                    job,
+                    process,
                     &command_receiver,
                     &paste_action_receiver,
                     &worker_ingress,
@@ -580,8 +509,17 @@ impl TerminalWorker {
                     &worker_confirmed_live,
                     &worker_clipboard_visibility,
                 );
-            })
-            .map_err(|error| WorkerError::new("spawn terminal worker", error))?;
+            });
+        let worker_thread = match worker_result {
+            Ok(handle) => handle,
+            Err(error) => {
+                // The failed spawn dropped its closure, so the startup
+                // guard already killed and reaped the child; the dropped
+                // write sender lets the writer thread exit before the join.
+                let _ignored = writer_thread.join();
+                return Err(WorkerError::new("spawn terminal worker", error));
+            }
+        };
 
         Ok(Self {
             commands,
@@ -594,6 +532,8 @@ impl TerminalWorker {
             surface,
             confirmed_live,
             clipboard_visibility,
+            #[cfg(feature = "test-support")]
+            delivered_paste_cancels: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             thread: Some(worker_thread),
         })
     }
@@ -705,7 +645,20 @@ impl TerminalWorker {
             &self.paste_actions,
             PasteAction::Cancel,
             "cancel terminal paste",
-        )
+        )?;
+        #[cfg(feature = "test-support")]
+        self.delivered_paste_cancels.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Test-only observability: the count of paste-cancel actions
+    /// successfully delivered into this worker's control channel. The
+    /// returned handle outlives the worker, so a test can prove a deny was
+    /// delivered to the live worker before a teardown invalidated it.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn paste_cancel_probe(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        Arc::clone(&self.delivered_paste_cancels)
     }
 
     /// Send already-authorized bytes to the attached client.
@@ -827,6 +780,11 @@ fn observe_startup(
     }
 }
 
+/// Workers start with the presentation clipboard gate enabled: an attach is
+/// itself a user action. The shared gesture contract wants a one-shot,
+/// aging grant instead; the divergence is recorded in the contract fixture.
+const INITIAL_CLIPBOARD_VISIBILITY: u64 = 1;
+
 const fn clipboard_visibility_is_enabled(visibility: u64) -> bool {
     visibility & 1 == 1
 }
@@ -873,28 +831,6 @@ impl Drop for TerminalWorker {
     }
 }
 
-fn read_pty(reader: &mut dyn Read, sender: &Sender<ReaderMessage>) {
-    loop {
-        let mut bytes = vec![0; READ_BUFFER_SIZE];
-        match reader.read(&mut bytes) {
-            Ok(0) => {
-                let _ignored = sender.send(ReaderMessage::Eof);
-                return;
-            }
-            Ok(count) => {
-                bytes.truncate(count);
-                if sender.send(ReaderMessage::Bytes(bytes)).is_err() {
-                    return;
-                }
-            }
-            Err(error) => {
-                let _ignored = sender.send(ReaderMessage::Error(error.to_string()));
-                return;
-            }
-        }
-    }
-}
-
 fn write_pty(
     mut writer: Box<dyn Write + Send>,
     receiver: &Receiver<Vec<u8>>,
@@ -918,9 +854,7 @@ fn write_pty(
 )]
 fn run_worker(
     mut engine: TerminalEngine,
-    master: Box<dyn MasterPty + Send>,
-    mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    job: RelayJob,
+    mut pty: PtyProcess,
     commands: &Receiver<QueuedCommand>,
     paste_actions: &Receiver<PasteAction>,
     ingress: &Mutex<IngressState>,
@@ -947,13 +881,7 @@ fn run_worker(
             &mut observed_exit,
             &mut next_child_poll,
             Instant::now(),
-            || {
-                child
-                    .try_wait()
-                    .ok()
-                    .flatten()
-                    .map(|status| status.exit_code())
-            },
+            || pty.poll_exit(),
         ) {
             report_exit = true;
             break;
@@ -1061,7 +989,7 @@ fn run_worker(
                     let keep_running = process_queued_command(
                         queued,
                         &mut engine,
-                        &*master,
+                        &pty,
                         &mut pending_writes,
                         shutdown,
                         events,
@@ -1084,7 +1012,7 @@ fn run_worker(
                         && ordered_work_ready,
                     coalesced_wake_sender,
                     &mut engine,
-                    &*master,
+                    &pty,
                     &mut pending_writes,
                     shutdown,
                     events,
@@ -1137,16 +1065,7 @@ fn run_worker(
         }
     }
 
-    drop(master);
-    let reaped_exit_code = reap_with_lifetime_guard(
-        job,
-        report_exit,
-        observed_exit.map(|(code, _)| code),
-        |mode| match mode {
-            ReapMode::Natural => wait_for_child_exit(&mut *child),
-            ReapMode::Contained => Some(reap_child(&mut *child)),
-        },
-    );
+    let reaped_exit_code = pty.reap(report_exit, observed_exit.map(|(code, _)| code));
     if report_exit {
         let _ignored = emit_event(
             events,
@@ -1157,26 +1076,6 @@ fn run_worker(
             },
         );
     }
-}
-
-fn child_exit_drain_expired(
-    observed_exit: &mut Option<(u32, Instant)>,
-    next_poll: &mut Instant,
-    now: Instant,
-    try_wait: impl FnOnce() -> Option<u32>,
-) -> bool {
-    if let Some((_, deadline)) = observed_exit {
-        return now >= *deadline;
-    }
-    if now < *next_poll {
-        return false;
-    }
-
-    *next_poll = now + CHILD_EXIT_POLL_INTERVAL;
-    if let Some(exit_code) = try_wait() {
-        *observed_exit = Some((exit_code, now + CHILD_OUTPUT_DRAIN_GRACE));
-    }
-    false
 }
 
 fn process_paste_action(
@@ -1261,14 +1160,14 @@ fn process_ready_command(
 fn process_queued_command(
     queued: QueuedCommand,
     engine: &mut TerminalEngine,
-    master: &dyn MasterPty,
+    pty: &PtyProcess,
     pending_writes: &mut PendingWrites,
     shutdown: &Receiver<()>,
     events: &Sender<TerminalEvent>,
     pending_paste: &mut Option<EncodedInput>,
 ) -> bool {
     if let Some(resize) = queued.preceding_resize
-        && !process_resize(resize, engine, master, shutdown, events)
+        && !process_resize(resize, engine, pty, shutdown, events)
     {
         return false;
     }
@@ -1289,7 +1188,7 @@ fn process_coalesced(
     accept_mouse_motion: bool,
     coalesced_wake: &Sender<()>,
     engine: &mut TerminalEngine,
-    master: &dyn MasterPty,
+    pty: &PtyProcess,
     pending_writes: &mut PendingWrites,
     shutdown: &Receiver<()>,
     events: &Sender<TerminalEvent>,
@@ -1306,7 +1205,7 @@ fn process_coalesced(
         engine.set_default_cursor_shape(shape);
     }
     if let Some(resize) = resize
-        && !process_resize(resize, engine, master, shutdown, events)
+        && !process_resize(resize, engine, pty, shutdown, events)
     {
         return false;
     }
@@ -1326,7 +1225,7 @@ fn process_coalesced(
             let keep_running = process_queued_command(
                 queued,
                 engine,
-                master,
+                pty,
                 pending_writes,
                 shutdown,
                 events,
@@ -1408,15 +1307,11 @@ fn take_coalesced_work(
 fn process_resize(
     command: ResizeCommand,
     engine: &mut TerminalEngine,
-    master: &dyn MasterPty,
+    pty: &PtyProcess,
     shutdown: &Receiver<()>,
     events: &Sender<TerminalEvent>,
 ) -> bool {
-    match pty_size(command.size, command.pixel_size).and_then(|pty_size| {
-        master
-            .resize(pty_size)
-            .map_err(|error| WorkerError::new("resize PTY", error))
-    }) {
+    match pty.resize(command.size, command.pixel_size) {
         Ok(()) => {
             engine.resize_with_metadata(command.size, command.sequence, command.pixel_size);
             true
@@ -1540,15 +1435,6 @@ fn bounded_send_error<T>(subject: &str, error: &TrySendError<T>) -> WorkerError 
     }
 }
 
-fn wake_coalesced(sender: &Sender<()>, subject: &str) -> Result<(), WorkerError> {
-    match sender.try_send(()) {
-        Ok(()) | Err(TrySendError::Full(())) => Ok(()),
-        Err(TrySendError::Disconnected(())) => {
-            Err(WorkerError::new(subject, "terminal worker has stopped"))
-        }
-    }
-}
-
 fn retain_output_tail(tail: &mut Vec<u8>, bytes: &[u8]) {
     const LIMIT: usize = 8 * 1024;
     if bytes.len() >= LIMIT {
@@ -1590,60 +1476,6 @@ fn emit_event(
     }
 }
 
-fn reap_child(child: &mut dyn portable_pty::Child) -> u32 {
-    if let Some(exit_code) = wait_for_child_exit(child) {
-        return exit_code;
-    }
-    let _ignored = child.kill();
-    child.wait().map_or(u32::MAX, |status| status.exit_code())
-}
-
-fn wait_for_child_exit(child: &mut dyn portable_pty::Child) -> Option<u32> {
-    for _ in 0..REAP_ATTEMPTS {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Some(status.exit_code());
-        }
-        thread::sleep(REAP_POLL_DELAY);
-    }
-    None
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReapMode {
-    Natural,
-    Contained,
-}
-
-fn reap_with_lifetime_guard<G, F>(
-    guard: G,
-    preserve_natural_exit: bool,
-    observed_exit: Option<u32>,
-    mut reap: F,
-) -> u32
-where
-    F: FnMut(ReapMode) -> Option<u32>,
-{
-    if preserve_natural_exit
-        && let Some(exit_code) = observed_exit.or_else(|| reap(ReapMode::Natural))
-    {
-        drop(guard);
-        return exit_code;
-    }
-    drop(guard);
-    reap(ReapMode::Contained).unwrap_or(u32::MAX)
-}
-
-fn pty_size(size: GridSize, pixel_size: PixelSize) -> Result<PtySize, WorkerError> {
-    Ok(PtySize {
-        rows: u16::try_from(size.rows())
-            .map_err(|error| WorkerError::new("PTY row count", error))?,
-        cols: u16::try_from(size.columns())
-            .map_err(|error| WorkerError::new("PTY column count", error))?,
-        pixel_width: pixel_size.width,
-        pixel_height: pixel_size.height,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1652,15 +1484,6 @@ mod tests {
 
     use super::*;
     use crate::ClipboardTarget;
-
-    #[derive(Debug)]
-    struct DropProbe(Arc<Mutex<Vec<&'static str>>>);
-
-    impl Drop for DropProbe {
-        fn drop(&mut self) {
-            self.0.lock().expect("event log").push("drop");
-        }
-    }
 
     struct RecordingWriter(Arc<Mutex<Vec<&'static str>>>);
 
@@ -1780,97 +1603,6 @@ mod tests {
             self.0.lock().expect("event log").push("flush");
             Ok(())
         }
-    }
-
-    #[test]
-    fn reported_exit_is_reaped_before_the_lifetime_guard_closes() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let reap_events = Arc::clone(&events);
-
-        let exit_code =
-            reap_with_lifetime_guard(DropProbe(Arc::clone(&events)), true, None, |mode| {
-                assert_eq!(mode, ReapMode::Natural);
-                reap_events.lock().expect("event log").push("reap");
-                Some(7)
-            });
-
-        assert_eq!(exit_code, 7);
-        assert_eq!(*events.lock().expect("event log"), ["reap", "drop"]);
-    }
-
-    #[test]
-    fn explicit_shutdown_closes_the_lifetime_guard_before_reaping() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let reap_events = Arc::clone(&events);
-
-        let exit_code =
-            reap_with_lifetime_guard(DropProbe(Arc::clone(&events)), false, None, |mode| {
-                assert_eq!(mode, ReapMode::Contained);
-                reap_events.lock().expect("event log").push("reap");
-                Some(1)
-            });
-
-        assert_eq!(exit_code, 1);
-        assert_eq!(*events.lock().expect("event log"), ["drop", "reap"]);
-    }
-
-    #[test]
-    fn pty_failure_closes_the_guard_after_a_bounded_natural_wait() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let reap_events = Arc::clone(&events);
-
-        let exit_code =
-            reap_with_lifetime_guard(DropProbe(Arc::clone(&events)), true, None, |mode| {
-                let mut events = reap_events.lock().expect("event log");
-                match mode {
-                    ReapMode::Natural => {
-                        events.push("wait");
-                        None
-                    }
-                    ReapMode::Contained => {
-                        events.push("reap");
-                        Some(9)
-                    }
-                }
-            });
-
-        assert_eq!(exit_code, 9);
-        assert_eq!(*events.lock().expect("event log"), ["wait", "drop", "reap"]);
-    }
-
-    #[test]
-    fn continuous_reader_activity_cannot_starve_exit_drain_deadline() {
-        let (reader_sender, reader) = bounded(1);
-        reader_sender.send(()).expect("prime reader");
-        let started_at = Instant::now();
-        let mut observed_exit = None;
-        let mut next_poll = started_at;
-
-        assert!(!child_exit_drain_expired(
-            &mut observed_exit,
-            &mut next_poll,
-            started_at,
-            || Some(7),
-        ));
-
-        for elapsed_ms in (10..250).step_by(10) {
-            reader.try_recv().expect("reader stays active");
-            reader_sender.try_send(()).expect("refill reader");
-            assert!(!child_exit_drain_expired(
-                &mut observed_exit,
-                &mut next_poll,
-                started_at + Duration::from_millis(elapsed_ms),
-                || panic!("an observed child must not be polled again"),
-            ));
-        }
-
-        assert!(child_exit_drain_expired(
-            &mut observed_exit,
-            &mut next_poll,
-            started_at + CHILD_OUTPUT_DRAIN_GRACE,
-            || panic!("an observed child must not be polled again"),
-        ));
-        assert_eq!(observed_exit.map(|(code, _)| code), Some(7));
     }
 
     #[test]
@@ -2314,5 +2046,146 @@ mod tests {
         let second = take_coalesced_work(&receiver, &ingress, true);
         assert_eq!(second.resize.expect("newer resize").size, second_size);
         assert!(matches!(second.input, CoalescedInput::None));
+    }
+
+    mod gesture_contract {
+        use std::collections::BTreeMap;
+        use std::fs;
+        use std::path::Path;
+
+        use contracts::{Manifest, PlatformTag};
+        use serde::Deserialize;
+
+        use super::*;
+
+        const FIXTURE_ID: &str = "clipboard.gesture.provenance.v1";
+        const CONSUMER: &str = "ghosthub-terminal";
+
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fixture {
+            schema_version: u32,
+            notes: String,
+            max_gesture_age_ms: u64,
+            cases: Vec<Case>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Case {
+            id: String,
+            steps: Vec<Step>,
+            expected_writes: Vec<Decision>,
+            #[serde(default)]
+            known_gaps: BTreeMap<String, String>,
+            #[serde(default)]
+            notes: Option<String>,
+        }
+
+        #[derive(Clone, Copy, Debug, Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        enum Step {
+            Gesture,
+            Revoke,
+            TerminalOutput,
+            AdvanceWithinGestureAge,
+            AdvancePastGestureAge,
+            Osc52Write,
+        }
+
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+        #[serde(rename_all = "kebab-case")]
+        enum Decision {
+            Allow,
+            Deny,
+        }
+
+        /// Replay one case against the presentation clipboard gate: writes are
+        /// stamped with the visibility current when the engine emits them, and
+        /// each is judged against the visibility current when it is delivered.
+        ///
+        /// The gate starts exactly as production workers start —
+        /// [`INITIAL_CLIPBOARD_VISIBILITY`], writes enabled — and it has no
+        /// clock, so the contract's time steps change nothing here. Cases the
+        /// production gate cannot satisfy are recorded as known gaps in the
+        /// fixture and assert the divergence until the gate is fixed.
+        fn replay(case: &Case) -> Vec<Decision> {
+            let visibility = AtomicU64::new(INITIAL_CLIPBOARD_VISIBILITY);
+            let mut stamps = Vec::new();
+            for step in &case.steps {
+                match step {
+                    Step::Gesture => {
+                        let _advanced = advance_clipboard_visibility(&visibility, true);
+                    }
+                    Step::Revoke => {
+                        let _advanced = advance_clipboard_visibility(&visibility, false);
+                    }
+                    Step::TerminalOutput
+                    | Step::AdvanceWithinGestureAge
+                    | Step::AdvancePastGestureAge => {}
+                    Step::Osc52Write => stamps.push(visibility.load(Ordering::Acquire)),
+                }
+            }
+            let delivery_visibility = visibility.load(Ordering::Acquire);
+            stamps
+                .iter()
+                .map(|stamp| {
+                    let event = TerminalEvent::ClipboardWrite {
+                        write: ClipboardWrite {
+                            target: ClipboardTarget::Clipboard,
+                            text: String::new(),
+                        },
+                        visibility: *stamp,
+                    };
+                    if clipboard_event_is_visible(&event, delivery_visibility) {
+                        Decision::Allow
+                    } else {
+                        Decision::Deny
+                    }
+                })
+                .collect()
+        }
+
+        #[test]
+        fn clipboard_gate_satisfies_the_shared_gesture_contract() {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("contracts");
+            let manifest = Manifest::load(&root).expect("load contract manifest");
+            let mut run = manifest.suite(
+                "clipboard-gesture",
+                &[PlatformTag::Posix, PlatformTag::Windows],
+            );
+            let path = run.consume(FIXTURE_ID).expect("consume gesture fixture");
+            let fixture: Fixture =
+                serde_json::from_str(&fs::read_to_string(path).expect("read fixture"))
+                    .expect("parse strict gesture fixture");
+            assert_eq!(fixture.schema_version, 1);
+            assert!(!fixture.notes.is_empty());
+            assert!(fixture.max_gesture_age_ms > 0);
+
+            for case in fixture.cases {
+                let decisions = replay(&case);
+
+                if case.known_gaps.contains_key(CONSUMER) {
+                    assert_ne!(
+                        decisions, case.expected_writes,
+                        "case {} is marked as a known gap for {CONSUMER} but now satisfies \
+                         the contract; remove its known_gaps entry from the fixture",
+                        case.id,
+                    );
+                } else {
+                    assert_eq!(
+                        decisions,
+                        case.expected_writes,
+                        "case {} violates the shared gesture provenance contract ({})",
+                        case.id,
+                        case.notes.as_deref().unwrap_or("no case notes"),
+                    );
+                }
+            }
+
+            run.finish().expect("all gesture fixtures consumed");
+        }
     }
 }

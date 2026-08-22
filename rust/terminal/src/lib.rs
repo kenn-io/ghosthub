@@ -19,10 +19,14 @@ use surface::{
     SurfaceFrame, SurfaceStore,
 };
 
+mod pty;
+mod relay;
 mod windows_job;
 mod worker;
 
-pub use worker::{TerminalEvent, TerminalStartup, TerminalWorker, WorkerError};
+pub use pty::WorkerError;
+pub use relay::{ByteRelayWorker, RelayDisconnect, RelayOutput};
+pub use worker::{TerminalEvent, TerminalStartup, TerminalWorker};
 
 #[derive(Clone, Debug, Default)]
 struct EventCollector {
@@ -136,6 +140,16 @@ pub struct ClipboardReadRequest {
 }
 
 impl ClipboardReadRequest {
+    /// Fixture for consumers testing response routing.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_fixture() -> Self {
+        Self {
+            target: ClipboardTarget::Clipboard,
+            formatter: Arc::new(|text: &str| text.to_owned()),
+        }
+    }
+
     #[must_use]
     pub const fn target(&self) -> ClipboardTarget {
         self.target

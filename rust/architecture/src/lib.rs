@@ -48,7 +48,9 @@ pub fn locked_dependency_policy() -> Graph {
                 "ghosthub-session",
             ][..],
         ),
-        ("ghosthub-input", &[][..]),
+        // Dev-only edge: the paste sanitization contract tests load the shared
+        // fixture corpus.
+        ("ghosthub-input", &["ghosthub-contracts"][..]),
         ("ghosthub-model", &[][..]),
         (
             "ghosthub-session",
@@ -60,6 +62,9 @@ pub fn locked_dependency_policy() -> Graph {
             "ghosthub-terminal",
             &[
                 "ghosthub-config",
+                // Dev-only edge: the clipboard contract tests load the shared
+                // fixture corpus.
+                "ghosthub-contracts",
                 "ghosthub-input",
                 "ghosthub-model",
                 "ghosthub-session",
@@ -69,6 +74,10 @@ pub fn locked_dependency_policy() -> Graph {
         (
             "ghosthub-ui",
             &["ghosthub-model", "ghosthub-surface", "ghosthub-workspace"][..],
+        ),
+        (
+            "ghosthub-web",
+            &["ghosthub-surface", "ghosthub-terminal"][..],
         ),
         (
             "ghosthub-workspace",

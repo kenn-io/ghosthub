@@ -1,0 +1,430 @@
+/* Chrome palette mirrors the Rust app (rust/ui): terminal themes stay out
+   of app chrome, so the chrome is a fixed dark palette. */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: #0c0c14;
+  color: #d8dee9;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+/* Titlebar */
+
+#titlebar {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  background: #0f1116;
+  border-bottom: 1px solid #20242c;
+  user-select: none;
+}
+
+#nav-toggle {
+  width: 36px;
+  height: 100%;
+  color: #8f96a3;
+  font-size: 13px;
+}
+
+#nav-toggle:hover {
+  background: #242933;
+  color: #e5e9f0;
+}
+
+#window-title {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#window-title .title-glyph {
+  color: #7f8794;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-weight: 400;
+}
+
+#window-title .title-host,
+#window-title .title-dot,
+#window-title .title-fallback {
+  color: #868e9b;
+  font-weight: 400;
+}
+
+#titlebar-actions {
+  display: flex;
+  gap: 10px;
+  padding-right: 12px;
+}
+
+.titlebar-icon {
+  width: 22px;
+  height: 22px;
+  color: #8f96a3;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.titlebar-icon:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Layout */
+
+#body {
+  display: flex;
+  height: calc(100% - 32px);
+}
+
+#sidebar {
+  width: 224px;
+  flex: none;
+  background: #0f1116;
+  border-right: 1px solid #20242c;
+  overflow-y: auto;
+  user-select: none;
+}
+
+#sidebar.hidden {
+  display: none;
+}
+
+#nav-header {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  font-weight: 600;
+  color: #d8dee9;
+  border-bottom: 1px solid #20242c;
+}
+
+/* Host sections */
+
+.host-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  background: #14171d;
+  color: #d2d7df;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.host-header:hover {
+  background: #181b22;
+}
+
+.host-chevron {
+  color: #6f7682;
+  font-size: 10px;
+  width: 10px;
+}
+
+.host-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.host-dot.ready {
+  background: #62c07a;
+}
+
+.host-dot.connecting {
+  background: #d3a44a;
+}
+
+.host-dot.disconnected {
+  background: #8f96a3;
+}
+
+.host-endpoint {
+  color: #737a87;
+  font-weight: 400;
+  font-size: 11px;
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Group headers */
+
+.group-header {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding-left: 12px;
+  background: #12151b;
+  color: #868e9b;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.group-add {
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  margin-right: 4px;
+  color: #8f96a3;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.group-add:hover {
+  background: #252a34;
+  color: #d2d7df;
+}
+
+.group-empty {
+  height: 24px;
+  line-height: 24px;
+  padding-left: 18px;
+  color: #737a87;
+  font-size: 12px;
+}
+
+/* Session rows */
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 27px;
+  padding-left: 18px;
+  padding-right: 8px;
+  color: #c4c9d2;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.session-row.nested {
+  padding-left: 28px;
+}
+
+.session-row:hover {
+  background: #1b1f27;
+}
+
+.session-row.active {
+  background: #133d6a;
+  color: #e5edf7;
+}
+
+.session-row.active:hover {
+  background: #17477a;
+}
+
+.session-row.stopped {
+  opacity: 0.55;
+}
+
+.session-glyph {
+  color: #7f8794;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  flex: none;
+}
+
+.session-row.active .session-glyph {
+  color: #9dc7ed;
+}
+
+.session-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-detail {
+  color: #737a87;
+  font-size: 11px;
+  margin-left: auto;
+  flex: none;
+}
+
+.session-recent {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4a8fcf;
+  flex: none;
+}
+
+.status-add {
+  color: #62c07a;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-ahead {
+  color: #8f96a3;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Terminal pane */
+
+#pane {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  background: #0c0c14;
+}
+
+#terminal {
+  position: absolute;
+  inset: 8px;
+}
+
+#empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.empty-glyph {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 24px;
+  color: #737a87;
+}
+
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #d8dee9;
+}
+
+.empty-subtitle {
+  font-size: 13px;
+  color: #868e9b;
+  max-width: 380px;
+}
+
+/* Disconnect overlay */
+
+#disconnect-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgb(0 0 0 / 65%);
+}
+
+#disconnect-overlay[hidden] {
+  display: none;
+}
+
+.overlay-glyph {
+  font-size: 28px;
+  color: rgb(255 255 255 / 70%);
+}
+
+.overlay-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.overlay-detail {
+  font-size: 12px;
+  color: rgb(255 255 255 / 40%);
+}
+
+.overlay-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+#reconnect {
+  padding: 5px 14px;
+  border-radius: 6px;
+  background: #1d5f9a;
+  color: #fff;
+}
+
+#reconnect:hover {
+  background: #17477a;
+}
+
+#close-pane {
+  padding: 5px 14px;
+  color: rgb(255 255 255 / 60%);
+}
+
+#close-pane:hover {
+  color: #fff;
+}
+
+/* Toast */
+
+#toast {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, calc(100vw - 24px));
+  padding: 7px 14px;
+  border-radius: 8px;
+  background: #181b22;
+  border: 1px solid #363c48;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 40%);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+#toast[hidden] {
+  display: none;
+}
+
+#toast .toast-icon.info {
+  color: #d3a44a;
+}
+
+#toast .toast-icon.ok {
+  color: #62c07a;
+}

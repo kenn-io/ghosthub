@@ -28,6 +28,27 @@
       "schema_version": 1,
       "platforms": ["windows"],
       "path": "mux/wsl-tmux-host-v1.json"
+    },
+    {
+      "id": "clipboard.osc52.policy.v1",
+      "suite": "clipboard-osc52",
+      "schema_version": 1,
+      "platforms": ["posix", "windows"],
+      "path": "clipboard/osc52-policy-v1.json"
+    },
+    {
+      "id": "clipboard.gesture.provenance.v1",
+      "suite": "clipboard-gesture",
+      "schema_version": 1,
+      "platforms": ["posix", "windows"],
+      "path": "clipboard/gesture-provenance-v1.json"
+    },
+    {
+      "id": "clipboard.paste.sanitize.v1",
+      "suite": "clipboard-paste",
+      "schema_version": 1,
+      "platforms": ["posix", "windows"],
+      "path": "clipboard/paste-sanitize-v1.json"
     }
   ]
 }
