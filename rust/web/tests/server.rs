@@ -1059,13 +1059,10 @@ fn expect_policy_close(socket: &mut WebSocket<TcpStream>, reason: &str) {
     let deadline = Instant::now() + Duration::from_mins(1);
     loop {
         assert!(Instant::now() < deadline, "policy close never arrived");
-        match socket.read().expect("read until close") {
-            Message::Close(Some(frame)) => {
-                assert_eq!(u16::from(frame.code), 1008, "policy close");
-                assert_eq!(frame.reason.as_str(), reason);
-                return;
-            }
-            _ => {}
+        if let Message::Close(Some(frame)) = socket.read().expect("read until close") {
+            assert_eq!(u16::from(frame.code), 1008, "policy close");
+            assert_eq!(frame.reason.as_str(), reason);
+            return;
         }
     }
 }
