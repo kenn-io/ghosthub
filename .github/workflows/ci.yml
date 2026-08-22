@@ -230,23 +230,77 @@ jobs:
           # events. The app and every output remain inside the job runtime.
           umask 077
           launcher_root="$(mktemp -d "$RUNNER_TEMP/ghosthub-gui-launcher.XXXXXX")"
+          launcher_app="$launcher_root/GhosthubGUITestLauncher.app"
+          launcher_executable="$launcher_app/Contents/MacOS/launcher"
+          launcher_info="$launcher_app/Contents/Info.plist"
+          launcher_script="$launcher_root/run-tests.sh"
+          launcher_pid_file="$launcher_root/launcher.pid"
+          launcher_output="$launcher_root/test-output.log"
+          launcher_stdout="$launcher_root/stdout.log"
+          launcher_stderr="$launcher_root/stderr.log"
+          result_file="$launcher_root/result"
+          open_pid=
+
+          # shellcheck disable=SC2329  # invoked by cleanup_launcher below
+          stop_launcher() {
+            if [[ ! -s "$launcher_pid_file" ]]; then
+              return 0
+            fi
+
+            local launcher_pid
+            launcher_pid="$(< "$launcher_pid_file")"
+            if [[ ! "$launcher_pid" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Serialized GUI test launcher reported an invalid PID." >&2
+              return 1
+            fi
+            if ! kill -0 "$launcher_pid" 2>/dev/null; then
+              return 0
+            fi
+
+            kill -TERM "$launcher_pid" 2>/dev/null || true
+            for _ in {1..300}; do
+              if ! kill -0 "$launcher_pid" 2>/dev/null; then
+                return 0
+              fi
+              sleep 0.1
+            done
+            kill -KILL "$launcher_pid" 2>/dev/null || true
+            for _ in {1..50}; do
+              if ! kill -0 "$launcher_pid" 2>/dev/null; then
+                return 0
+              fi
+              sleep 0.1
+            done
+            echo "Serialized GUI test launcher did not stop." >&2
+            return 1
+          }
+
           # shellcheck disable=SC2329  # invoked by the EXIT trap below
           cleanup_launcher() {
+            local status=$?
+            local stop_status=0
+            trap - EXIT INT TERM HUP
+            set +e
+            stop_launcher || stop_status=$?
+            if [[ -n "$open_pid" ]]; then
+              kill -TERM "$open_pid" 2>/dev/null || true
+              wait "$open_pid" 2>/dev/null || true
+            fi
             case "$launcher_root" in
               "$RUNNER_TEMP"/ghosthub-gui-launcher.*)
                 rm -rf -- "$launcher_root"
                 ;;
             esac
+            if (( status == 0 && stop_status != 0 )); then
+              status=$stop_status
+            fi
+            exit "$status"
           }
           trap cleanup_launcher EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          trap 'exit 129' HUP
 
-          launcher_app="$launcher_root/GhosthubGUITestLauncher.app"
-          launcher_executable="$launcher_app/Contents/MacOS/launcher"
-          launcher_info="$launcher_app/Contents/Info.plist"
-          launcher_script="$launcher_root/run-tests.sh"
-          launcher_stdout="$launcher_root/stdout.log"
-          launcher_stderr="$launcher_root/stderr.log"
-          result_file="$launcher_root/result"
           mkdir -p "$launcher_app/Contents/MacOS"
           cp /bin/bash "$launcher_executable"
           plutil -create xml1 "$launcher_info"
@@ -263,23 +317,51 @@ jobs:
           #!/bin/bash
           set -uo pipefail
 
-          result_file=$1
-          gui_test_log=$2
-          workspace=$3
-          runner_path=$4
-          runner_home=$5
-          runner_tmpdir=$6
-          fixed_user_home=$7
-          developer_dir=$8
-          state_root=$9
-          xcframework_target=${10}
-          zig=${11}
-          runner_environment=${12}
-          runner_temp=${13}
-          runner_shell=${14}
-          ci=${15}
-          github_actions=${16}
-          shift 16
+          launcher_pid_file=$1
+          result_file=$2
+          launcher_output=$3
+          workspace=$4
+          runner_path=$5
+          runner_home=$6
+          runner_tmpdir=$7
+          fixed_user_home=$8
+          developer_dir=$9
+          state_root=${10}
+          xcframework_target=${11}
+          zig=${12}
+          runner_environment=${13}
+          runner_temp=${14}
+          runner_shell=${15}
+          ci=${16}
+          github_actions=${17}
+          shift 17
+
+          printf '%s\n' "$$" > "$launcher_pid_file.tmp"
+          mv -- "$launcher_pid_file.tmp" "$launcher_pid_file"
+          cleanup_pid_file() {
+            rm -f -- "$launcher_pid_file" "$launcher_pid_file.tmp"
+          }
+          trap cleanup_pid_file EXIT
+
+          test_pid=
+          pending_signal=
+          signal_status=
+          forward_signal() {
+            local signal=$1
+            pending_signal=$signal
+            case "$signal" in
+              INT) signal_status=130 ;;
+              TERM) signal_status=143 ;;
+              HUP) signal_status=129 ;;
+            esac
+            if [[ -n "$test_pid" ]]; then
+              kill -"$signal" -- -"$test_pid" 2>/dev/null ||
+                kill -"$signal" "$test_pid" 2>/dev/null || true
+            fi
+          }
+          trap 'forward_signal INT' INT
+          trap 'forward_signal TERM' TERM
+          trap 'forward_signal HUP' HUP
 
           export PATH=$runner_path
           export HOME=$runner_home
@@ -296,24 +378,47 @@ jobs:
           export GITHUB_ACTIONS=$github_actions
 
           cd -- "$workspace"
+          set -m
+          sh tools/run_swift_tests.sh "$@" > "$launcher_output" 2>&1 &
+          test_pid=$!
+          set +m
+
+          while kill -0 "$test_pid" 2>/dev/null &&
+            ! kill -0 -- -"$test_pid" 2>/dev/null
+          do
+            :
+          done
+          if [[ -n "$signal_status" ]]; then
+            forward_signal "$pending_signal"
+          fi
+
           set +e
-          sh tools/run_swift_tests.sh "$@" 2>&1 | tee -a "$gui_test_log"
-          test_status=${PIPESTATUS[0]}
+          while :; do
+            wait "$test_pid"
+            test_status=$?
+            if ! kill -0 "$test_pid" 2>/dev/null; then
+              break
+            fi
+          done
           set -e
+          if [[ -n "$signal_status" ]]; then
+            test_status=$signal_status
+          fi
           printf '%s\n' "$test_status" > "$result_file.tmp"
           mv -- "$result_file.tmp" "$result_file"
           exit "$test_status"
           LAUNCHER
           chmod 700 "$launcher_script"
+          : > "$launcher_output"
           : > "$launcher_stdout"
           : > "$launcher_stderr"
 
-          open_status=0
           open -n -W -o "$launcher_stdout" --stderr "$launcher_stderr" \
             "$launcher_app" --args \
             "$launcher_script" \
+            "$launcher_pid_file" \
             "$result_file" \
-            "$RUNNER_TEMP/gui-tests.log" \
+            "$launcher_output" \
             "$GITHUB_WORKSPACE" \
             "$PATH" \
             "$HOME" \
@@ -328,7 +433,14 @@ jobs:
             "$SHELL" \
             "${CI:-}" \
             "${GITHUB_ACTIONS:-}" \
-            "${test_arguments[@]}" || open_status=$?
+            "${test_arguments[@]}" &
+          open_pid=$!
+          set +e
+          wait "$open_pid"
+          open_status=$?
+          set -e
+          open_pid=
+          tee -a "$RUNNER_TEMP/gui-tests.log" < "$launcher_output"
           cat "$launcher_stdout"
           cat "$launcher_stderr" >&2
           if (( open_status != 0 )); then
