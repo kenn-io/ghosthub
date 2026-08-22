@@ -4285,6 +4285,8 @@ fn zellij_kill_suppression_keeps_active_recovery_authority() {
 
     let suppressed = workspace
         .close_zellij_presentations(snapshot.endpoint(), snapshot.runtime(), "work")
+        .into_iter()
+        .next()
         .expect("matching presentation is recoverable");
 
     assert_eq!(
@@ -4930,7 +4932,7 @@ fn uncertain_lifecycle_stays_fenced_until_fresh_inventory_arrives() {
     publish_herdr_lifecycle_uncertain(
         &workspace.scene.runtime,
         &pending,
-        Some(SuppressedHerdrPresentation {
+        vec![SuppressedHerdrPresentation {
             scene_id: workspace.scene.id,
             active_selection: Some(running.clone()),
             retained: None,
@@ -4938,7 +4940,7 @@ fn uncertain_lifecycle_stays_fenced_until_fresh_inventory_arrives() {
                 .scene
                 .navigation_generation
                 .load(Ordering::Acquire),
-        }),
+        }],
         "could not reconcile the stopped session",
     );
 
@@ -13354,6 +13356,164 @@ fn restored_retained_publish_refuses_a_closed_scene() {
 
 #[cfg(windows)]
 #[test]
+fn zellij_kill_suppression_reaches_every_scene_and_restores_to_owners() {
+    // Scene B — not the scene running the kill — retains a client of the
+    // doomed session. The pre-kill suppression must close it there too,
+    // and the failure restore must route it back to B, not to the
+    // initiating scene.
+    let a = Workspace::preview(WorkspaceSnapshot::ready(
+        Appearance::default(),
+        "Ubuntu",
+        Vec::new(),
+    ));
+    let b = a.open_scene();
+    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+    let identity = session::SessionIdentity::new(100, "$1", 200);
+    let request = zellij_attach_request_fixture(&snapshot, "work");
+    b.scene
+        .retained_presentations
+        .lock()
+        .expect("retained presentations")
+        .insert(RetainedPresentation {
+            key: request.presentation_key(),
+            selection: SessionSelection::zellij("wsl", "Ubuntu", "work"),
+            attachment: ActiveAttachment {
+                request,
+                term: AttachTerm::Xterm256Color,
+                generation: 1,
+                fallback: None,
+            },
+            worker: conpty_keepalive_worker("work", identity),
+            presentation_id: 9,
+        });
+
+    let suppressed = a.close_zellij_presentations(snapshot.endpoint(), snapshot.runtime(), "work");
+    assert_eq!(
+        suppressed.len(),
+        1,
+        "the other scene's client is suppressed"
+    );
+    assert_eq!(suppressed[0].scene_id, b.scene.id);
+    assert!(
+        !b.scene
+            .retained_presentations
+            .lock()
+            .expect("retained presentations")
+            .has_workers(),
+        "no client of the doomed session survives in any scene"
+    );
+
+    // The retained reopen spawns a real client, which this fixture cannot
+    // do; the restore outcome — here its failure event — is what must land
+    // on the owning scene and nowhere else.
+    a.restore_suppressed_zellij_presentations(suppressed);
+    let (b_events, _) = b.drain_events();
+    assert!(
+        b_events.iter().any(|event| matches!(
+            event,
+            WorkspaceEvent::Error(message) if message.contains("could not restore")
+        )),
+        "the restore outcome lands on the owning scene"
+    );
+    let (a_events, _) = a.drain_events();
+    assert!(
+        !a_events
+            .iter()
+            .any(|event| matches!(event, WorkspaceEvent::Error(_))),
+        "the initiating scene never receives another scene's restore outcome"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn herdr_stop_suppression_reaches_every_scene_and_restores_to_owners() {
+    let a = Workspace::preview(WorkspaceSnapshot::ready(
+        Appearance::default(),
+        "Ubuntu",
+        Vec::new(),
+    ));
+    let b = a.open_scene();
+    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+    let identity = session::SessionIdentity::new(100, "$1", 200);
+    let request = herdr_attach_request_fixture(&snapshot, "work");
+    let record = session::HerdrSessionRecord::new(
+        "work",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+    let pending = PendingHerdrLifecycle {
+        generation: a.scene.herdr_lifecycle_generation.load(Ordering::Acquire),
+        operation_id: 1,
+        selection: SessionSelection::herdr("wsl", "Ubuntu", "work"),
+        action: HerdrLifecycleAction::Stop,
+        host: WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        ),
+        endpoint: snapshot.endpoint().clone(),
+        runtime: snapshot.runtime().clone(),
+        executable: "/opt/herdr/bin/herdr".to_owned(),
+        record,
+    };
+    b.scene
+        .retained_presentations
+        .lock()
+        .expect("retained presentations")
+        .insert(RetainedPresentation {
+            key: request.presentation_key(),
+            selection: SessionSelection::herdr("wsl", "Ubuntu", "work"),
+            attachment: ActiveAttachment {
+                request,
+                term: AttachTerm::Xterm256Color,
+                generation: 1,
+                fallback: None,
+            },
+            worker: conpty_keepalive_worker("work", identity),
+            presentation_id: 9,
+        });
+
+    let suppressed = a.close_herdr_presentations(&pending);
+    assert_eq!(
+        suppressed.len(),
+        1,
+        "the other scene's client is suppressed"
+    );
+    assert_eq!(suppressed[0].scene_id, b.scene.id);
+    assert!(
+        !b.scene
+            .retained_presentations
+            .lock()
+            .expect("retained presentations")
+            .has_workers(),
+        "no client of the doomed session survives in any scene"
+    );
+
+    // As in the Zellij test: the reopen cannot spawn here, so the restore
+    // outcome must land on the owning scene and nowhere else.
+    a.restore_suppressed_herdr_presentations(suppressed);
+    let (b_events, _) = b.drain_events();
+    assert!(
+        b_events.iter().any(|event| matches!(
+            event,
+            WorkspaceEvent::Error(message) if message.contains("could not restore")
+        )),
+        "the restore outcome lands on the owning scene"
+    );
+    let (a_events, _) = a.drain_events();
+    assert!(
+        !a_events
+            .iter()
+            .any(|event| matches!(event, WorkspaceEvent::Error(_))),
+        "the initiating scene never receives another scene's restore outcome"
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn kill_failure_restore_cannot_resurrect_a_presentation_in_a_closed_scene() {
     let workspace = Workspace::preview(WorkspaceSnapshot::ready(
         Appearance::default(),
@@ -13385,6 +13545,8 @@ fn kill_failure_restore_cannot_resurrect_a_presentation_in_a_closed_scene() {
     // kill: the entry leaves the scene and rides in the suppression value.
     let suppressed = workspace
         .close_zellij_presentations(snapshot.endpoint(), snapshot.runtime(), "work")
+        .into_iter()
+        .next()
         .expect("the retained presentation is suppressed");
     assert!(
         suppressed.retained.is_some(),
@@ -13494,6 +13656,8 @@ fn herdr_failure_restore_cannot_resurrect_a_presentation_in_a_closed_scene() {
     // slow Stop: the entry leaves the scene and rides in the suppression.
     let suppressed = workspace
         .close_herdr_presentations(&pending)
+        .into_iter()
+        .next()
         .expect("the retained presentation is suppressed");
     assert!(
         suppressed.retained.is_some(),

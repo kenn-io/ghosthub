@@ -2322,7 +2322,7 @@ fn run_confirmed_zellij_kill(
         );
         return;
     }
-    let mut suppressed = None;
+    let mut suppressed = Vec::new();
     let result = pending.host.kill_zellij_session(
         endpoint,
         runtime,
@@ -2339,7 +2339,7 @@ fn run_confirmed_zellij_kill(
             release_zellij_kill(&workspace.scene.runtime, key, true);
         }
         Err(error) => {
-            workspace.restore_suppressed_zellij_presentation(suppressed);
+            workspace.restore_suppressed_zellij_presentations(suppressed);
             release_zellij_kill(&workspace.scene.runtime, key, false);
             workspace.push_operation_error(error.to_string());
         }
@@ -2418,7 +2418,7 @@ struct InFlightHerdrLifecycle {
 struct DelayedHerdrRecovery {
     executable: String,
     record: session::HerdrSessionRecord,
-    presentation: SuppressedHerdrPresentation,
+    presentations: Vec<SuppressedHerdrPresentation>,
 }
 
 #[derive(Default)]
@@ -2485,7 +2485,7 @@ impl HerdrLifecycleState {
         &mut self,
         pending: &PendingHerdrLifecycle,
         reconcile_after_generation: u64,
-        presentation: Option<SuppressedHerdrPresentation>,
+        presentations: Vec<SuppressedHerdrPresentation>,
     ) -> bool {
         let Some(operation) = self
             .in_flight
@@ -2495,10 +2495,10 @@ impl HerdrLifecycleState {
             return false;
         };
         operation.reconcile_after_generation = Some(reconcile_after_generation);
-        operation.recovery = presentation.map(|presentation| DelayedHerdrRecovery {
+        operation.recovery = (!presentations.is_empty()).then(|| DelayedHerdrRecovery {
             executable: pending.executable.clone(),
             record: pending.record.clone(),
-            presentation,
+            presentations,
         });
         true
     }
@@ -2546,7 +2546,7 @@ impl HerdrLifecycleState {
                 continue;
             }
             if recoverable && let Some(recovery) = operation.recovery.take() {
-                result.recoveries.push(recovery.presentation);
+                result.recoveries.extend(recovery.presentations);
             }
             result.changed = true;
         }
@@ -2904,6 +2904,10 @@ struct SuppressedHerdrPresentation {
 }
 
 struct SuppressedZellijPresentation {
+    /// The scene whose presentation was suppressed; restoration goes only
+    /// through this still-live scene, and a closed owner's suppression is
+    /// dropped.
+    scene_id: SceneId,
     active_selection: Option<SessionSelection>,
     retained: Option<ClosedRetainedPresentation>,
     navigation_generation: u64,
@@ -7537,7 +7541,24 @@ impl Workspace {
         }
     }
 
+    /// Suppress every live scene's presentation of the doomed session
+    /// before the destructive mutation: a client left attached in another
+    /// scene would race the kill or undo it by keeping the session alive.
     fn close_zellij_presentations(
+        &self,
+        endpoint: &host::WslEndpoint,
+        runtime: &host::WslRuntimeIdentity,
+        name: &str,
+    ) -> Vec<SuppressedZellijPresentation> {
+        live_scenes(&self.scene.runtime)
+            .into_iter()
+            .filter_map(|scene| {
+                Self { scene }.close_zellij_presentations_in_scene(endpoint, runtime, name)
+            })
+            .collect()
+    }
+
+    fn close_zellij_presentations_in_scene(
         &self,
         endpoint: &host::WslEndpoint,
         runtime: &host::WslRuntimeIdentity,
@@ -7586,24 +7607,38 @@ impl Workspace {
                     && target_matches(&key.target)
             });
         let changed = active_selection.is_some() || !removed.is_empty();
-        let retained = active_selection.is_none().then(|| {
-            removed
-                .into_iter()
-                .next()
-                .map(|presentation| ClosedRetainedPresentation {
-                    key: presentation.key,
-                    attachment: presentation.attachment,
-                    presentation_id: presentation.presentation_id,
-                })
-        });
+        let retained = active_selection
+            .is_none()
+            .then(|| removed.into_iter().next())
+            .flatten()
+            .map(|presentation| ClosedRetainedPresentation {
+                key: presentation.key,
+                attachment: presentation.attachment,
+                presentation_id: presentation.presentation_id,
+            });
         if changed {
             bump_scene_revision(&self.scene);
         }
         (active_selection.is_some() || retained.is_some()).then_some(SuppressedZellijPresentation {
+            scene_id: self.scene.id,
             active_selection,
-            retained: retained.flatten(),
+            retained,
             navigation_generation,
         })
+    }
+
+    /// Restore each suppression through its still-live owning scene after
+    /// a failed kill; a closed owner's presentation dies with its scene.
+    fn restore_suppressed_zellij_presentations(
+        &self,
+        recoveries: Vec<SuppressedZellijPresentation>,
+    ) {
+        for suppressed in recoveries {
+            let Some(owner) = scene_by_id(&self.scene.runtime, suppressed.scene_id) else {
+                continue;
+            };
+            Self { scene: owner }.restore_suppressed_zellij_presentation(Some(suppressed));
+        }
     }
 
     fn restore_suppressed_zellij_presentation(
@@ -7744,7 +7779,20 @@ impl Workspace {
         }
     }
 
+    /// Suppress every live scene's presentation of the doomed session
+    /// before the destructive mutation, mirroring the Zellij pre-kill
+    /// suppression.
     fn close_herdr_presentations(
+        &self,
+        pending: &PendingHerdrLifecycle,
+    ) -> Vec<SuppressedHerdrPresentation> {
+        live_scenes(&self.scene.runtime)
+            .into_iter()
+            .filter_map(|scene| Self { scene }.close_herdr_presentations_in_scene(pending))
+            .collect()
+    }
+
+    fn close_herdr_presentations_in_scene(
         &self,
         pending: &PendingHerdrLifecycle,
     ) -> Option<SuppressedHerdrPresentation> {
@@ -7790,25 +7838,36 @@ impl Workspace {
                     && key.target.herdr_matches(&pending.record)
             });
         let changed = active_selection.is_some() || !removed.is_empty();
-        let retained = active_selection.is_none().then(|| {
-            removed
-                .into_iter()
-                .next()
-                .map(|presentation| ClosedRetainedPresentation {
-                    key: presentation.key,
-                    attachment: presentation.attachment,
-                    presentation_id: presentation.presentation_id,
-                })
-        });
+        let retained = active_selection
+            .is_none()
+            .then(|| removed.into_iter().next())
+            .flatten()
+            .map(|presentation| ClosedRetainedPresentation {
+                key: presentation.key,
+                attachment: presentation.attachment,
+                presentation_id: presentation.presentation_id,
+            });
         if changed {
             bump_scene_revision(&self.scene);
         }
         (active_selection.is_some() || retained.is_some()).then_some(SuppressedHerdrPresentation {
             scene_id: self.scene.id,
             active_selection,
-            retained: retained.flatten(),
+            retained,
             navigation_generation,
         })
+    }
+
+    /// Restore each suppression through its still-live owning scene after
+    /// a failed lifecycle action; the caller already holds the operation
+    /// lane.
+    fn restore_suppressed_herdr_presentations(&self, recoveries: Vec<SuppressedHerdrPresentation>) {
+        for suppressed in recoveries {
+            let Some(owner) = scene_by_id(&self.scene.runtime, suppressed.scene_id) else {
+                continue;
+            };
+            Self { scene: owner }.restore_suppressed_herdr_presentation(Some(suppressed));
+        }
     }
 
     fn restore_suppressed_herdr_presentation(
@@ -8701,7 +8760,7 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
         .session_operations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut suppressed = None;
+    let mut suppressed = Vec::new();
     match pending.host.mutate_herdr_session(
         (&pending.endpoint, &pending.runtime),
         &pending.executable,
@@ -8730,7 +8789,7 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
                         "Herdr {} succeeded, but Ghosthub could not publish the result: {error}",
                         pending.action.command()
                     ),
-                    None,
+                    Vec::new(),
                 );
             } else {
                 finish_herdr_lifecycle_state(&workspace.scene.runtime, pending.operation_id);
@@ -8747,13 +8806,13 @@ fn reconcile_herdr_lifecycle_failure(
     workspace: &Workspace,
     pending: &PendingHerdrLifecycle,
     operation_error: String,
-    suppressed: Option<SuppressedHerdrPresentation>,
+    suppressed: Vec<SuppressedHerdrPresentation>,
 ) {
     match reconcile_herdr_lifecycle_inventory(&workspace.scene, pending) {
         Ok(snapshot) => {
             finish_herdr_lifecycle_state(&workspace.scene.runtime, pending.operation_id);
             if herdr_session_is_still_running(&snapshot, pending) {
-                workspace.restore_suppressed_herdr_presentation(suppressed);
+                workspace.restore_suppressed_herdr_presentations(suppressed);
             } else {
                 workspace.finish_herdr_presentation(
                     &pending.endpoint,

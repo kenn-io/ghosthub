@@ -1621,7 +1621,7 @@ pub(crate) fn current_inventory_session_name(
 pub(crate) fn publish_herdr_lifecycle_uncertain(
     runtime: &Runtime,
     pending: &PendingHerdrLifecycle,
-    suppressed: Option<SuppressedHerdrPresentation>,
+    suppressed: Vec<SuppressedHerdrPresentation>,
     message: &str,
 ) {
     let _snapshot_write = begin_snapshot_write(runtime);
