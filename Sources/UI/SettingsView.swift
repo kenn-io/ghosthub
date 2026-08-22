@@ -439,7 +439,12 @@ public struct SettingsView: View {
                     "Efficient stores the latest frame when you leave a"
                         + " session. Live refreshes up to twice per second"
                         + " and parks at most four inactive sessions across"
-                        + " the app. Off avoids preview GPU work."
+                        + " the app. Always Live connects every discovered"
+                        + " tmux session on POSIX hosts, expands every"
+                        + " preview by default, and removes that limit."
+                        + " Windows/psmux sessions stay on-demand. It can use substantial"
+                        + " CPU, GPU, memory, and SSH capacity. Off avoids"
+                        + " preview GPU work."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

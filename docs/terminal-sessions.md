@@ -144,7 +144,15 @@ state, and the processes inside each session. Ghosthub owns discovery,
 whole-session lifecycle requests, and the disposable client presentation. Each
 scene has at most one active interactive tmux, Herdr, or Zellij presentation.
 Already-opened tmux clients may remain retained and noninteractive for
-explicitly enabled previews; previews never create another client.
+explicitly enabled previews. On POSIX hosts, Always Live may connect one
+ordinary retained client for each freshly discovered tmux session without
+activating it. Preview
+rendering never creates a second client for the same session. These hidden
+clients ignore tmux window sizing and render at the dimensions discovery
+reported for the session's active window; selecting one promotes that retained
+client in place by clearing `ignore-size` before interaction. Windows/psmux
+sessions are not attached automatically because psmux has no non-sizing client
+mode.
 Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
 client. Ghosthub never reconstructs or otherwise controls Herdr themes,
 workspaces, tabs, panes, agents, plugins, installation, updates, configuration,

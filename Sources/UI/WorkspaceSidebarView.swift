@@ -946,7 +946,7 @@ struct WorkspaceSidebarView: View {
                     Self.activateTmuxSession(
                         tmuxSelection,
                         rowTarget: row.target,
-                        selection: &selection,
+                        selection: $selection,
                         snapshot: snapshot,
                         visibility: visibility,
                         onOpen: onOpenTmuxSession
@@ -960,7 +960,7 @@ struct WorkspaceSidebarView: View {
                     Self.activateTmuxSession(
                         tmuxSelection,
                         rowTarget: row.target,
-                        selection: &selection,
+                        selection: $selection,
                         snapshot: snapshot,
                         visibility: visibility,
                         onOpen: onOpenTmuxSession
@@ -977,7 +977,7 @@ struct WorkspaceSidebarView: View {
                             for: workspace
                         ),
                         rowTarget: row.target,
-                        selection: &selection,
+                        selection: $selection,
                         snapshot: snapshot,
                         visibility: visibility,
                         onOpen: onOpenTmuxSession
@@ -1529,14 +1529,20 @@ struct WorkspaceSidebarView: View {
                   previewableSessionIDs: previewableTmuxSessionIDs
               )
         else { return content }
-        let isExpanded = tmuxPreviewExpansion.isExpanded(tmuxSession.id)
+        let isExpanded = TmuxSessionPreviewRowPresentation.isExpanded(
+            mode: sessionPreviewMode,
+            sessionID: tmuxSession.id,
+            expansion: tmuxPreviewExpansion
+        )
         return AnyView(
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 0) {
                     Button {
                         tmuxPreviewExpansion.setExpanded(
                             !isExpanded,
-                            sessionID: tmuxSession.id
+                            sessionID: tmuxSession.id,
+                            defaultExpanded:
+                            sessionPreviewMode.expandsEverySession
                         )
                         onTmuxSessionPreviewExpanded(
                             tmuxSession,
@@ -1573,7 +1579,7 @@ struct WorkspaceSidebarView: View {
                             Self.activateTmuxSession(
                                 tmuxSession,
                                 rowTarget: row.target,
-                                selection: &selection,
+                                selection: $selection,
                                 snapshot: snapshot,
                                 visibility: visibility,
                                 onOpen: onOpenTmuxSession
@@ -1611,17 +1617,19 @@ struct WorkspaceSidebarView: View {
     static func activateTmuxSession(
         _ tmuxSession: WorkspaceTmuxSessionSelection,
         rowTarget: WorkspaceNavigationTarget,
-        selection: inout WorkspaceSelection,
+        selection: Binding<WorkspaceSelection>,
         snapshot: WorkspaceSnapshot,
         visibility: WorktreeVisibility,
         onOpen: (WorkspaceTmuxSessionSelection, WorkspaceSelection) -> Void
     ) {
-        selection.select(
+        var routeSelection = selection.wrappedValue
+        routeSelection.select(
             rowTarget,
             in: snapshot,
             visibility: visibility
         )
-        onOpen(tmuxSession, selection)
+        selection.wrappedValue = routeSelection
+        onOpen(tmuxSession, routeSelection)
     }
 
     private func reorderableRow<Content: View>(

@@ -1,9 +1,35 @@
+import CoreVideo
 import Foundation
 import GhosthubTestSupport
+import GhosthubTerminal
+import IOSurface
 import Testing
 @testable import GhosthubApp
 import GhosthubPersistence
 import GhosthubWorkspace
+
+func makePreviewSnapshot(
+    surfaceID: UInt32 = 1,
+    seed: UInt32 = 1
+) throws -> TerminalSurfaceSnapshot {
+    let ioSurface = try #require(IOSurfaceCreate([
+        kIOSurfaceWidth: 32,
+        kIOSurfaceHeight: 20,
+        kIOSurfaceBytesPerElement: 4,
+        kIOSurfaceBytesPerRow: 32 * 4,
+        kIOSurfacePixelFormat: kCVPixelFormatType_32BGRA,
+    ] as CFDictionary))
+    return TerminalSurfaceSnapshot(
+        frame: TerminalSurfacePreviewFrame(
+            ioSurface: ioSurface,
+            pixelSize: CGSize(width: 32, height: 20)
+        ),
+        captureToken: TerminalSurfaceCaptureToken(
+            surfaceID: surfaceID,
+            seed: seed
+        )
+    )
+}
 
 // MARK: - Seeded Database
 

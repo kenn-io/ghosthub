@@ -88,6 +88,16 @@ public struct TmuxWindowSummary: Codable, Equatable, Sendable {
     }
 }
 
+public struct TmuxGridSize: Codable, Equatable, Sendable {
+    public var columns: Int
+    public var rows: Int
+
+    public init(columns: Int, rows: Int) {
+        self.columns = columns
+        self.rows = rows
+    }
+}
+
 public struct TmuxSessionSummary: Codable, Equatable, Sendable {
     public var name: String
     public var managed: Bool
@@ -96,6 +106,8 @@ public struct TmuxSessionSummary: Codable, Equatable, Sendable {
     public var serverPID: String?
     public var sessionID: String?
     public var createdAt: String?
+    public var activeWindowSize: TmuxGridSize?
+    public var previewClientSize: TmuxGridSize?
 
     public init(
         name: String, managed: Bool,
@@ -103,7 +115,9 @@ public struct TmuxSessionSummary: Codable, Equatable, Sendable {
         windows: [TmuxWindowSummary],
         serverPID: String? = nil,
         sessionID: String? = nil,
-        createdAt: String? = nil
+        createdAt: String? = nil,
+        activeWindowSize: TmuxGridSize? = nil,
+        previewClientSize: TmuxGridSize? = nil
     ) {
         self.name = name
         self.managed = managed
@@ -112,6 +126,8 @@ public struct TmuxSessionSummary: Codable, Equatable, Sendable {
         self.serverPID = serverPID
         self.sessionID = sessionID
         self.createdAt = createdAt
+        self.activeWindowSize = activeWindowSize
+        self.previewClientSize = previewClientSize
     }
 
     public var hasStableIdentity: Bool {

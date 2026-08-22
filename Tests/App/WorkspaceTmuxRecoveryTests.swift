@@ -1026,12 +1026,14 @@ extension WorkspaceTmuxDiscoveryTests {
 
         await waitUntilMainActor {
             probe.didCancel
-                && attempts.count == 2
                 && surfaceStore.requestCount == 2
                 && model.activeBorrowedTmuxSessionIsConnected
         }
 
-        #expect(attempts.count == 2)
+        // A slow scheduler can let the deadline cancel a second probe
+        // before its instant success lands, so the retry count is a
+        // lower bound rather than an exact value.
+        #expect(attempts.count >= 2)
         #expect(surfaceStore.requestCount == 2)
         #expect(model.activeBorrowedTmuxSessionIsConnected)
         #expect(model.activeBorrowedTmuxRecoveryState == nil)

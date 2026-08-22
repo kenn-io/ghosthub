@@ -47,6 +47,30 @@ private struct NativeTmuxPathCacheKey: Hashable {
     var sshConnection: SSHConnectionArgumentsCacheKey
 }
 
+private final class NativeTmuxResolutionCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var caches: [NativeTmuxPathCacheKey: TmuxPathCache] = [:]
+
+    func resolve(
+        key: NativeTmuxPathCacheKey,
+        using resolver: @escaping @Sendable ()
+            -> Result<ResolvedTmuxBinary, TmuxBinaryError>
+    ) -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
+        let cache = lock.withLock {
+            if let existing = caches[key] {
+                return existing
+            }
+            let created = TmuxPathCache(
+                cancellationShell: key.host.displayName,
+                resolve: resolver
+            )
+            caches[key] = created
+            return created
+        }
+        return cache.resolveTmuxBinary()
+    }
+}
+
 private struct NativeTmuxAttachment {
     var id: UUID
     var host: CommandHost
@@ -64,6 +88,8 @@ private struct NativeTmuxAttachment {
     var sessionIdentity: TmuxSessionIdentity?
     var paneSplitClientToken: String
     var clientTTYDirectory: String?
+    var ignoresClientSize: Bool
+    var previewGridSize: TmuxGridSize?
     var supportsPaneSplitting: Bool
     var remoteExitStatusURL: URL?
 }
@@ -72,6 +98,13 @@ enum TmuxAttachedSessionIdentityResolution: Equatable {
     case pending
     case resolved(TmuxSessionIdentity)
     case unavailable
+}
+
+enum TmuxClientSizingTransitionResult: Equatable {
+    case applied
+    case pending
+    case stale
+    case failure(TmuxPaneSplitFailure)
 }
 
 /// Hosts ordinary tmux clients for kwt workspaces and unbound sessions.
@@ -126,8 +159,7 @@ final class NativeTmuxSessionCoordinator {
     private var attachmentClosures: [UUID: BorrowedTmuxAttachmentClosure] = [:]
     private var launchedHandles: Set<UUID> = []
     private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
-    private var tmuxBinariesByConnection:
-        [NativeTmuxPathCacheKey: ResolvedTmuxBinary] = [:]
+    private let tmuxResolutionCache = NativeTmuxResolutionCache()
     private var provisioningHandles: Set<UUID> = []
     private var provisioningTasks: [UUID: Task<Void, Never>] = [:]
     private var paneSplitRequests: [UUID: [PaneSplitRequest]] = [:]
@@ -138,6 +170,8 @@ final class NativeTmuxSessionCoordinator {
     private var previewIdentityRetryHandles: Set<UUID> = []
     private var unavailablePreviewIdentityHandles: Set<UUID> = []
     private var deferredPresentationStyleHandles: Set<UUID> = []
+    private var interactiveSizingHandles: Set<UUID> = []
+    private var interactiveSizingTransitionHandles: Set<UUID> = []
     private var isShuttingDown = false
 
     var onStateChanged: ((BorrowedTmuxSessionHandle, ConnectionState) -> Void)?
@@ -249,7 +283,9 @@ final class NativeTmuxSessionCoordinator {
         initialCommand: String? = nil,
         workingDirectory: String? = nil,
         openWorkspace: Bool = false,
-        sessionIdentity: TmuxSessionIdentity? = nil
+        sessionIdentity: TmuxSessionIdentity? = nil,
+        ignoresClientSize: Bool = false,
+        previewGridSize: TmuxGridSize? = nil
     ) -> BorrowedTmuxSessionHandle {
         let key = NativeTmuxSessionKey(
             hostID: hostID,
@@ -279,7 +315,7 @@ final class NativeTmuxSessionCoordinator {
 
         provisioningHandles.insert(handle.id)
         onStateChanged?(handle, .connecting)
-        let cachedBinaries = tmuxBinariesByConnection
+        let tmuxResolutionCache = tmuxResolutionCache
         let tmuxPathProvider = tmuxPathProvider
         let remoteTmuxPathProvider = remoteTmuxPathProvider
         let sshConnectionArgumentsProvider =
@@ -299,15 +335,12 @@ final class NativeTmuxSessionCoordinator {
                     host: host,
                     sshConnection: sshConnectionSnapshot.cacheKey
                 )
-                let resolution: Result<ResolvedTmuxBinary, TmuxBinaryError>
-                if let cachedBinary = cachedBinaries[cacheKey] {
-                    resolution = .success(cachedBinary)
-                } else {
+                let resolution = tmuxResolutionCache.resolve(key: cacheKey) {
                     switch host {
                     case .local:
-                        resolution = tmuxPathProvider()
+                        return tmuxPathProvider()
                     case let .ssh(info):
-                        resolution = remoteTmuxPathProvider(
+                        return remoteTmuxPathProvider(
                             info,
                             sshConnectionSnapshot.arguments
                         )
@@ -330,6 +363,8 @@ final class NativeTmuxSessionCoordinator {
                 workingDirectory: workingDirectory,
                 openWorkspace: openWorkspace,
                 sessionIdentity: sessionIdentity,
+                ignoresClientSize: ignoresClientSize,
+                previewGridSize: previewGridSize,
                 sshConnectionSnapshot: sshConnectionSnapshot,
                 tmuxPathCacheKey: cacheKey,
                 resolution: resolution
@@ -347,6 +382,8 @@ final class NativeTmuxSessionCoordinator {
         workingDirectory: String?,
         openWorkspace: Bool,
         sessionIdentity: TmuxSessionIdentity?,
+        ignoresClientSize: Bool,
+        previewGridSize: TmuxGridSize?,
         sshConnectionSnapshot: SSHConnectionArgumentsSnapshot,
         tmuxPathCacheKey: NativeTmuxPathCacheKey,
         resolution: Result<ResolvedTmuxBinary, TmuxBinaryError>
@@ -359,8 +396,10 @@ final class NativeTmuxSessionCoordinator {
               attachments[handle.id] == nil else { return }
         switch resolution {
         case let .success(resolved):
-            tmuxBinariesByConnection[tmuxPathCacheKey] = resolved
             let attachmentID = UUID()
+            let enablesInteractiveSizing = interactiveSizingHandles.remove(
+                handle.id
+            ) != nil
             let protectedWorkspacePath = socketName == nil
                 ? nil
                 : workingDirectory
@@ -388,6 +427,10 @@ final class NativeTmuxSessionCoordinator {
                     .appendingPathComponent(
                         "tmux-clients", isDirectory: true
                     ).path,
+                ignoresClientSize: enablesInteractiveSizing
+                    ? false : ignoresClientSize,
+                previewGridSize: enablesInteractiveSizing
+                    ? nil : previewGridSize,
                 supportsPaneSplitting: TmuxPaneSplitter
                     .supportsPaneSplitting(
                         version: resolved.version,
@@ -399,6 +442,7 @@ final class NativeTmuxSessionCoordinator {
             )
             onSurfaceReady?(handle)
         case let .failure(error):
+            interactiveSizingHandles.remove(handle.id)
             onStateChanged?(
                 handle,
                 .disconnected(reason: error.localizedDescription)
@@ -446,11 +490,16 @@ final class NativeTmuxSessionCoordinator {
         launchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
+        interactiveSizingHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
     }
 
     func hasLaunched(_ handle: BorrowedTmuxSessionHandle) -> Bool {
         launchedHandles.contains(handle.id)
+    }
+
+    func isProvisioning(_ handle: BorrowedTmuxSessionHandle) -> Bool {
+        provisioningHandles.contains(handle.id)
     }
 
     func hasClosedAttachment(_ handle: BorrowedTmuxSessionHandle) -> Bool {
@@ -483,6 +532,182 @@ final class NativeTmuxSessionCoordinator {
         deferredPresentationStyleHandles.remove(handle.id)
     }
 
+    func updatePreviewGridSize(
+        _ gridSize: TmuxGridSize?,
+        for handle: BorrowedTmuxSessionHandle
+    ) {
+        // Inventory refreshes repeat the current grid. Reapplying it resizes
+        // and rerenders every hidden surface even when tmux did not change.
+        guard !interactiveSizingTransitionHandles.contains(handle.id),
+              var attachment = attachments[handle.id],
+              attachment.ignoresClientSize,
+              attachment.previewGridSize != gridSize
+        else { return }
+        attachment.previewGridSize = gridSize
+        attachments[handle.id] = attachment
+        guard let gridSize,
+              let surface = terminalCoordinator.paneSurfaceIfPresent(
+                  for: surfaceKey(handle)
+              )
+        else { return }
+        _ = surface.sizeForPreviewGrid(
+            columns: gridSize.columns,
+            rows: gridSize.rows
+        )
+    }
+
+    func enableInteractiveSizing(
+        for handle: BorrowedTmuxSessionHandle
+    ) async -> TmuxClientSizingTransitionResult {
+        guard var attachment = attachments[handle.id] else {
+            if provisioningHandles.contains(handle.id) {
+                interactiveSizingHandles.insert(handle.id)
+                return .pending
+            }
+            return .failure(TmuxPaneSplitFailure(
+                host: targetHostsByHandle[handle.id]?.displayName
+                    ?? "the selected host",
+                sessionName: handle.name,
+                status: 75,
+                diagnostic: "The tmux attachment is unavailable."
+            ))
+        }
+        guard attachment.ignoresClientSize else { return .applied }
+        guard launchedHandles.contains(handle.id) else {
+            attachment.ignoresClientSize = false
+            attachment.previewGridSize = nil
+            attachments[handle.id] = attachment
+            return .applied
+        }
+        let attachmentID = attachment.id
+        var target = paneSplitTarget(
+            handle: handle,
+            attachment: attachment,
+            expectedIdentity: attachment.sessionIdentity
+        )
+        let identityResult = await paneSplitter.clientIdentity(target: target)
+        guard !Task.isCancelled,
+              attachments[handle.id]?.id == attachmentID
+        else { return .stale }
+        switch identityResult {
+        case let .success(client):
+            if let expectedClient = target.expectedClient,
+               !client.matchesClient(expectedClient) {
+                return .failure(TmuxPaneSplitFailure(
+                    host: target.host.displayName,
+                    sessionName: target.sessionName,
+                    status: 75,
+                    diagnostic: "The attached tmux session changed."
+                ))
+            }
+            paneSplitClients[handle.id] = client
+            target.expectedIdentity = client.sessionIdentity
+            target.expectedClient = client
+        case let .failure(failure):
+            return .failure(failure)
+        }
+        interactiveSizingTransitionHandles.insert(handle.id)
+        defer { interactiveSizingTransitionHandles.remove(handle.id) }
+        terminalCoordinator.paneSurfaceIfPresent(
+            for: surfaceKey(handle)
+        )?.clearPreviewGridSize()
+        let failure = await paneSplitter.enableSizing(target: target)
+        guard !Task.isCancelled,
+              attachments[handle.id]?.id == attachmentID
+        else { return .stale }
+        guard let failure else {
+            terminalCoordinator.paneSurfaceIfPresent(
+                for: surfaceKey(handle)
+            )?.clearPreviewGridSize()
+            var promoted = attachment
+            promoted.ignoresClientSize = false
+            promoted.previewGridSize = nil
+            attachments[handle.id] = promoted
+            return .applied
+        }
+        return .failure(failure)
+    }
+
+    func restorePreviewSizing(
+        _ gridSize: TmuxGridSize?,
+        for handle: BorrowedTmuxSessionHandle
+    ) async -> TmuxClientSizingTransitionResult {
+        guard var attachment = attachments[handle.id] else {
+            if provisioningHandles.contains(handle.id) {
+                interactiveSizingHandles.remove(handle.id)
+                return .applied
+            }
+            return .failure(TmuxPaneSplitFailure(
+                host: targetHostsByHandle[handle.id]?.displayName
+                    ?? "the selected host",
+                sessionName: handle.name,
+                status: 75,
+                diagnostic: "The tmux attachment is unavailable."
+            ))
+        }
+        if attachment.ignoresClientSize {
+            attachment.previewGridSize = gridSize
+            attachments[handle.id] = attachment
+            applyPreviewGridSize(gridSize, for: handle)
+            return .applied
+        }
+        guard launchedHandles.contains(handle.id) else {
+            attachment.ignoresClientSize = true
+            attachment.previewGridSize = gridSize
+            attachments[handle.id] = attachment
+            return .applied
+        }
+        let attachmentID = attachment.id
+        var target = paneSplitTarget(
+            handle: handle,
+            attachment: attachment,
+            expectedIdentity: attachment.sessionIdentity
+        )
+        if target.expectedClient == nil {
+            let identityResult = await paneSplitter.clientIdentity(
+                target: target
+            )
+            guard !Task.isCancelled,
+                  attachments[handle.id]?.id == attachmentID
+            else { return .stale }
+            switch identityResult {
+            case let .success(client):
+                paneSplitClients[handle.id] = client
+                target.expectedIdentity = client.sessionIdentity
+                target.expectedClient = client
+            case let .failure(failure):
+                return .failure(failure)
+            }
+        }
+        let failure = await paneSplitter.disableSizing(target: target)
+        guard !Task.isCancelled,
+              attachments[handle.id]?.id == attachmentID
+        else { return .stale }
+        guard let failure else {
+            attachment.ignoresClientSize = true
+            attachment.previewGridSize = gridSize
+            attachments[handle.id] = attachment
+            applyPreviewGridSize(gridSize, for: handle)
+            return .applied
+        }
+        return .failure(failure)
+    }
+
+    private func applyPreviewGridSize(
+        _ gridSize: TmuxGridSize?,
+        for handle: BorrowedTmuxSessionHandle
+    ) {
+        guard let gridSize,
+              let surface = terminalCoordinator.paneSurfaceIfPresent(
+                  for: surfaceKey(handle)
+              )
+        else { return }
+        _ = surface.sizeForPreviewGrid(
+            columns: gridSize.columns,
+            rows: gridSize.rows
+        )
+    }
+
     func surface(handle: BorrowedTmuxSessionHandle) -> TerminalSurfaceView? {
         guard attachmentClosures[handle.id] == nil,
               let attachment = attachments[handle.id]
@@ -494,6 +719,10 @@ final class NativeTmuxSessionCoordinator {
             ? presentationStyleProvider()
             : nil
         let isFirstLaunch = !launchedHandles.contains(handle.id)
+        let surfaceKey = surfaceKey(handle)
+        let previousSurfaceIdentity = terminalCoordinator
+            .paneSurfaceIfPresent(for: surfaceKey)
+            .map { ObjectIdentifier($0) }
         let info = TmuxAttachmentInfo(
             sessionName: handle.name,
             host: attachment.host,
@@ -504,10 +733,14 @@ final class NativeTmuxSessionCoordinator {
             protectedWorkspacePath: attachment.protectedWorkspacePath,
             presentationStyle: presentationStyle,
             launchMode: attachment.launchMode,
-            initialCommand: attachment.initialCommand
+            initialCommand: attachment.initialCommand,
+            ignoresClientSize: attachment.ignoresClientSize,
+            initialClientSize: attachment.previewGridSize.map {
+                TmuxClientSize(columns: $0.columns, rows: $0.rows)
+            }
         )
         let surface = terminalCoordinator.paneSurface(
-            for: surfaceKey(handle),
+            for: surfaceKey,
             configuration: TerminalSurfaceConfiguration(
                 workingDirectory: NSHomeDirectory(),
                 command: info.attachCommand(
@@ -543,11 +776,21 @@ final class NativeTmuxSessionCoordinator {
             )
             return nil
         }
+        let didCreateSurface = previousSurfaceIdentity
+            != ObjectIdentifier(surface)
         if isFirstLaunch, appliesPresentationStyle,
            presentationStyle == nil {
             deferredPresentationStyleHandles.insert(handle.id)
         }
         surface.blocksClipboardReads = attachment.host.isRemote
+        if didCreateSurface,
+           attachment.ignoresClientSize,
+           let previewGridSize = attachment.previewGridSize {
+            _ = surface.sizeForPreviewGrid(
+                columns: previewGridSize.columns,
+                rows: previewGridSize.rows
+            )
+        }
         let splitTarget = TmuxPaneSplitTarget(
             host: attachment.host,
             tmuxPath: attachment.tmuxPath,
@@ -1093,6 +1336,7 @@ final class NativeTmuxSessionCoordinator {
         launchedHandles.removeAll()
         reportedConnectedAttachmentIDs.removeAll()
         deferredPresentationStyleHandles.removeAll()
+        interactiveSizingHandles.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
         }

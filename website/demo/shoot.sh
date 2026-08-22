@@ -173,6 +173,14 @@ capture_state() {
   sips -g pixelWidth -g pixelHeight "$out_dir/$name" | tail -2
 }
 
+if [[ "${GHOSTHUB_DEMO_ALWAYS_LIVE_PREVIEW_ONLY:-}" == "1" ]]; then
+  echo "==> guide: Always Live tmux session previews"
+  sleep 1
+  capture_state guide-session-previews.png
+  echo "captured Always Live website asset -> $out_dir"
+  exit 0
+fi
+
 process_matrix_capture() {
   local raw="$1" destination="$2"
   local temporary
@@ -365,23 +373,25 @@ demo_input escape
 demo_input click "32,489"
 sleep 0.5
 
-echo "==> guide: opened tmux session previews"
-palette "add-session-filters"
-sleep 3
-palette "scratch"
-sleep 3
-palette "add-session-filters"
-sleep 3
-# The demo window is fixed at 1600x1000. SwiftUI does not expose this
-# disclosure button to the injected accessibility tree, so click the stable
-# scratch-row chevron in window coordinates.
-demo_input click "31,746"
-sleep 5
-demo_input expect-text "Live"
-capture_state guide-session-previews.png
-# Keep later settings and palette captures focused on their own workflows.
-demo_input click "31,746"
-sleep 0.5
+if [[ "${GHOSTHUB_DEMO_SKIP_SESSION_PREVIEWS:-}" != "1" ]]; then
+  echo "==> guide: opened tmux session previews"
+  palette "add-session-filters"
+  sleep 3
+  palette "scratch"
+  sleep 3
+  palette "add-session-filters"
+  sleep 3
+  # The demo window is fixed at 1600x1000. SwiftUI does not expose this
+  # disclosure button to the injected accessibility tree, so click the stable
+  # scratch-row chevron in window coordinates.
+  demo_input click "31,746"
+  sleep 5
+  demo_input expect-text "Live"
+  capture_state guide-session-previews.png
+  # Keep later settings and palette captures focused on their own workflows.
+  demo_input click "31,746"
+  sleep 0.5
+fi
 
 echo "==> guide: remote host settings"
 capture_host_settings

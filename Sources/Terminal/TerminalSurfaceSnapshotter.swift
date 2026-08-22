@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import CoreVideo
 import GhosthubTerminalSupport
 import IOSurface
@@ -7,7 +8,9 @@ import Metal
 public enum TerminalSurfaceSnapshotError: Error, Equatable {
     case invalidOutputSize
     case missingIOSurface
-    case imageCopyFailed
+    case gpuUnavailable
+    case invalidIOSurface
+    case outputSurfaceCreationFailed
     case unstableIOSurface
 }
 
@@ -21,12 +24,27 @@ public struct TerminalSurfaceCaptureToken: Hashable, Sendable {
     }
 }
 
+/// A GPU-produced thumbnail that Core Animation can present without a CPU
+/// pixel copy or a second texture upload.
+public final class TerminalSurfacePreviewFrame: @unchecked Sendable {
+    public let ioSurface: IOSurface
+    public let pixelSize: CGSize
+
+    public init(ioSurface: IOSurface, pixelSize: CGSize) {
+        self.ioSurface = ioSurface
+        self.pixelSize = pixelSize
+    }
+}
+
 public struct TerminalSurfaceSnapshot: @unchecked Sendable {
-    public let image: NSImage
+    public let frame: TerminalSurfacePreviewFrame
     public let captureToken: TerminalSurfaceCaptureToken
 
-    public init(image: NSImage, captureToken: TerminalSurfaceCaptureToken) {
-        self.image = image
+    public init(
+        frame: TerminalSurfacePreviewFrame,
+        captureToken: TerminalSurfaceCaptureToken
+    ) {
+        self.frame = frame
         self.captureToken = captureToken
     }
 }
@@ -45,24 +63,23 @@ public final class TerminalSurfaceSnapshotter {
         let backgroundColor: CGColor
         let pixelSize: (width: Int, height: Int)
         let previousCaptureToken: TerminalSurfaceCaptureToken?
-        let metal: MetalCaptureContext
+        let gpu: GPUCaptureContext
         let captureToken: @Sendable (IOSurface) -> TerminalSurfaceCaptureToken
     }
 
-    private struct MetalCaptureContext: @unchecked Sendable {
-        let device: MTLDevice
-        let commandQueue: MTLCommandQueue
+    private struct GPUCaptureContext: @unchecked Sendable {
+        let context: CIContext
+        let colorSpace: CGColorSpace
     }
 
     private struct RenderedSnapshot: @unchecked Sendable {
-        let image: CGImage
+        let frame: TerminalSurfacePreviewFrame
         let captureToken: TerminalSurfaceCaptureToken
     }
 
-    private let metal: MetalCaptureContext?
+    private let gpu: GPUCaptureContext?
     private let captureToken: @Sendable (IOSurface) -> TerminalSurfaceCaptureToken
-    private var inFlight:
-        [RequestKey: Task<RenderedSnapshot?, Error>] = [:]
+    private var inFlight: [RequestKey: Task<RenderedSnapshot?, Error>] = [:]
 
     public convenience init() {
         self.init(captureToken: Self.captureToken)
@@ -74,13 +91,16 @@ public final class TerminalSurfaceSnapshotter {
     ) {
         self.captureToken = captureToken
         if let device = MTLCreateSystemDefaultDevice(),
-           let commandQueue = device.makeCommandQueue() {
-            metal = MetalCaptureContext(
-                device: device,
-                commandQueue: commandQueue
+           let colorSpace = CGColorSpace(name: CGColorSpace.displayP3) {
+            gpu = GPUCaptureContext(
+                context: CIContext(
+                    mtlDevice: device,
+                    options: [.cacheIntermediates: false]
+                ),
+                colorSpace: colorSpace
             )
         } else {
-            metal = nil
+            gpu = nil
         }
     }
 
@@ -96,7 +116,7 @@ public final class TerminalSurfaceSnapshotter {
         guard let ioSurface = surface.layer?.contents as? IOSurface else {
             throw TerminalSurfaceSnapshotError.missingIOSurface
         }
-        let adaptiveSize = TerminalPreviewGeometry.thumbnailSize(
+        let thumbnailSize = TerminalPreviewGeometry.thumbnailSize(
             sourceSize: CGSize(
                 width: IOSurfaceGetWidth(ioSurface),
                 height: IOSurfaceGetHeight(ioSurface)
@@ -104,8 +124,8 @@ public final class TerminalSurfaceSnapshotter {
             outputWidth: outputWidth
         )
         let pixelSize = (
-            width: Int(adaptiveSize.width),
-            height: Int(adaptiveSize.height)
+            width: Int(thumbnailSize.width),
+            height: Int(thumbnailSize.height)
         )
         let requestKey = RequestKey(
             surface: ObjectIdentifier(surface),
@@ -115,11 +135,11 @@ public final class TerminalSurfaceSnapshotter {
         )
         if coalescesInFlight, let pending = inFlight[requestKey] {
             guard let rendered = try await pending.value else { return nil }
-            return Self.snapshot(from: rendered, pixelSize: pixelSize)
+            return Self.snapshot(from: rendered)
         }
 
-        guard let metal else {
-            throw TerminalSurfaceSnapshotError.imageCopyFailed
+        guard let gpu else {
+            throw TerminalSurfaceSnapshotError.gpuUnavailable
         }
         let source = RenderSource(
             ioSurface: ioSurface,
@@ -127,7 +147,7 @@ public final class TerminalSurfaceSnapshotter {
                 ?? NSColor.black.cgColor,
             pixelSize: pixelSize,
             previousCaptureToken: previousCaptureToken,
-            metal: metal,
+            gpu: gpu,
             captureToken: captureToken
         )
         let task = Task.detached(priority: .utility) {
@@ -142,18 +162,14 @@ public final class TerminalSurfaceSnapshotter {
             }
         }
         guard let rendered = try await task.value else { return nil }
-        return Self.snapshot(from: rendered, pixelSize: pixelSize)
+        return Self.snapshot(from: rendered)
     }
 
     private static func snapshot(
-        from rendered: RenderedSnapshot,
-        pixelSize: (width: Int, height: Int)
+        from rendered: RenderedSnapshot
     ) -> TerminalSurfaceSnapshot {
         TerminalSurfaceSnapshot(
-            image: NSImage(
-                cgImage: rendered.image,
-                size: CGSize(width: pixelSize.width, height: pixelSize.height)
-            ),
+            frame: rendered.frame,
             captureToken: rendered.captureToken
         )
     }
@@ -164,102 +180,94 @@ public final class TerminalSurfaceSnapshotter {
         guard IOSurfaceGetPixelFormat(source.ioSurface)
             == kCVPixelFormatType_32BGRA
         else {
-            throw TerminalSurfaceSnapshotError.imageCopyFailed
+            throw TerminalSurfaceSnapshotError.invalidIOSurface
         }
         let sourceWidth = IOSurfaceGetWidth(source.ioSurface)
         let sourceHeight = IOSurfaceGetHeight(source.ioSurface)
         guard sourceWidth > 0, sourceHeight > 0 else {
-            throw TerminalSurfaceSnapshotError.imageCopyFailed
-        }
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm,
-            width: sourceWidth,
-            height: sourceHeight,
-            mipmapped: false
-        )
-        descriptor.storageMode = .shared
-        descriptor.usage = [.shaderRead]
-        guard let texture = source.metal.device.makeTexture(
-            descriptor: descriptor,
-            iosurface: source.ioSurface,
-            plane: 0
-        ) else {
-            throw TerminalSurfaceSnapshotError.imageCopyFailed
+            throw TerminalSurfaceSnapshotError.invalidIOSurface
         }
 
         for _ in 0 ..< 3 {
-            let captureTokenBeforeCopy = source.captureToken(source.ioSurface)
-            guard captureTokenBeforeCopy != source.previousCaptureToken else {
+            let captureTokenBeforeRender = source.captureToken(source.ioSurface)
+            guard captureTokenBeforeRender != source.previousCaptureToken else {
                 return nil
             }
-            let bytesPerRow = alignedBytesPerRow(sourceWidth * 4)
-            guard let buffer = source.metal.device.makeBuffer(
-                length: bytesPerRow * sourceHeight,
-                options: .storageModeShared
-            ),
-                let commandBuffer = source.metal.commandQueue.makeCommandBuffer(),
-                let blit = commandBuffer.makeBlitCommandEncoder()
-            else {
-                throw TerminalSurfaceSnapshotError.imageCopyFailed
-            }
-            blit.copy(
-                from: texture,
-                sourceSlice: 0,
-                sourceLevel: 0,
-                sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                sourceSize: MTLSize(
-                    width: sourceWidth,
-                    height: sourceHeight,
-                    depth: 1
-                ),
-                to: buffer,
-                destinationOffset: 0,
-                destinationBytesPerRow: bytesPerRow,
-                destinationBytesPerImage: bytesPerRow * sourceHeight
+            let outputSurface = try makeOutputSurface(
+                width: source.pixelSize.width,
+                height: source.pixelSize.height,
+                colorSpace: source.gpu.colorSpace
             )
-            blit.endEncoding()
-            commandBuffer.commit()
-            commandBuffer.waitUntilCompleted()
-            guard commandBuffer.status == .completed else {
-                throw TerminalSurfaceSnapshotError.imageCopyFailed
-            }
-            let captureToken = source.captureToken(source.ioSurface)
-            guard captureToken == captureTokenBeforeCopy else { continue }
+            let outputBounds = CGRect(
+                x: 0,
+                y: 0,
+                width: source.pixelSize.width,
+                height: source.pixelSize.height
+            )
+            let sourceImage = CIImage(
+                ioSurface: source.ioSurface,
+                options: [.colorSpace: source.gpu.colorSpace]
+            )
+            let scale = min(
+                outputBounds.width / CGFloat(sourceWidth),
+                outputBounds.height / CGFloat(sourceHeight)
+            )
+            let scaledSize = CGSize(
+                width: CGFloat(sourceWidth) * scale,
+                height: CGFloat(sourceHeight) * scale
+            )
+            let transformed = sourceImage
+                .transformed(by: CGAffineTransform(
+                    scaleX: scale,
+                    y: scale
+                ))
+                .transformed(by: CGAffineTransform(
+                    translationX: (outputBounds.width - scaledSize.width) / 2,
+                    y: (outputBounds.height - scaledSize.height) / 2
+                ))
+            let background = CIImage(
+                color: CIColor(cgColor: source.backgroundColor)
+            ).cropped(to: outputBounds)
+            source.gpu.context.render(
+                transformed.composited(over: background),
+                to: outputSurface,
+                bounds: outputBounds,
+                colorSpace: source.gpu.colorSpace
+            )
 
-            let ownedPixels = Data(
-                bytes: buffer.contents(),
-                count: bytesPerRow * sourceHeight
-            )
-            guard let provider = CGDataProvider(data: ownedPixels as CFData),
-                  let sourceImage = CGImage(
-                      width: sourceWidth,
-                      height: sourceHeight,
-                      bitsPerComponent: 8,
-                      bitsPerPixel: 32,
-                      bytesPerRow: bytesPerRow,
-                      space: CGColorSpaceCreateDeviceRGB(),
-                      bitmapInfo: CGBitmapInfo(
-                          rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
-                      ).union(.byteOrder32Little),
-                      provider: provider,
-                      decode: nil,
-                      shouldInterpolate: false,
-                      intent: .defaultIntent
-                  ),
-                  let thumbnail = makeThumbnail(
-                      sourceImage,
-                      outputSize: source.pixelSize,
-                      backgroundColor: source.backgroundColor
-                  )
-            else {
-                throw TerminalSurfaceSnapshotError.imageCopyFailed
-            }
+            let captureToken = source.captureToken(source.ioSurface)
+            guard captureToken == captureTokenBeforeRender else { continue }
             return RenderedSnapshot(
-                image: thumbnail,
+                frame: TerminalSurfacePreviewFrame(
+                    ioSurface: outputSurface,
+                    pixelSize: outputBounds.size
+                ),
                 captureToken: captureToken
             )
         }
         throw TerminalSurfaceSnapshotError.unstableIOSurface
+    }
+
+    private nonisolated static func makeOutputSurface(
+        width: Int,
+        height: Int,
+        colorSpace: CGColorSpace
+    ) throws -> IOSurface {
+        guard let colorSpaceProperties = colorSpace.copyPropertyList(),
+              let surface = IOSurfaceCreate([
+                  kIOSurfaceWidth: width,
+                  kIOSurfaceHeight: height,
+                  kIOSurfaceBytesPerElement: 4,
+                  kIOSurfacePixelFormat: kCVPixelFormatType_32BGRA,
+              ] as CFDictionary) else {
+            throw TerminalSurfaceSnapshotError.outputSurfaceCreationFailed
+        }
+        IOSurfaceSetValue(
+            surface,
+            kIOSurfaceColorSpace,
+            colorSpaceProperties
+        )
+        return surface
     }
 
     private nonisolated static func captureToken(
@@ -269,57 +277,5 @@ public final class TerminalSurfaceSnapshotter {
             surfaceID: IOSurfaceGetID(ioSurface),
             seed: IOSurfaceGetSeed(ioSurface)
         )
-    }
-
-    private nonisolated static func alignedBytesPerRow(_ bytes: Int) -> Int {
-        let alignment = 256
-        return (bytes + alignment - 1) / alignment * alignment
-    }
-
-    private nonisolated static func makeThumbnail(
-        _ sourceImage: CGImage,
-        outputSize: (width: Int, height: Int),
-        backgroundColor: CGColor
-    ) -> CGImage? {
-        let outputWidth = outputSize.width
-        let outputHeight = outputSize.height
-        let bytesPerRow = outputWidth * 4
-        guard let context = CGContext(
-            data: nil,
-            width: outputWidth,
-            height: outputHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo(
-                rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
-            ).union(.byteOrder32Little).rawValue
-        ) else { return nil }
-        let outputSize = CGSize(width: outputWidth, height: outputHeight)
-        context.setFillColor(backgroundColor)
-        context.fill(CGRect(origin: .zero, size: outputSize))
-        context.interpolationQuality = .high
-        let sourceSize = CGSize(
-            width: sourceImage.width,
-            height: sourceImage.height
-        )
-        let scale = min(
-            outputSize.width / sourceSize.width,
-            outputSize.height / sourceSize.height
-        )
-        let scaledSize = CGSize(
-            width: sourceSize.width * scale,
-            height: sourceSize.height * scale
-        )
-        context.draw(
-            sourceImage,
-            in: CGRect(
-                x: (outputSize.width - scaledSize.width) / 2,
-                y: (outputSize.height - scaledSize.height) / 2,
-                width: scaledSize.width,
-                height: scaledSize.height
-            )
-        )
-        return context.makeImage()
     }
 }
