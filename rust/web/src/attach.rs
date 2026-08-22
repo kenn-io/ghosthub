@@ -33,6 +33,11 @@ use crate::{CLIENT_HELLO_TIMEOUT, MAX_FRAME_BYTES, MAX_QUEUED_OUTPUT_BYTES};
 /// the server hello limits so a client can clamp rather than be surprised.
 pub(crate) const MAX_GRID_DIMENSION: usize = 1000;
 
+/// Cap on input buffered while an attachment waits for the serialization
+/// lock, replayed into the shell once it launches. Comfortably under the
+/// relay's own input budget so the replay never hits backpressure.
+const MAX_QUEUED_INPUT_BYTES: usize = 64 * 1024;
+
 /// How long the output pump waits per poll before rechecking whether the
 /// viewer is gone.
 const OUTPUT_POLL: Duration = Duration::from_millis(250);
@@ -86,8 +91,12 @@ async fn attach_session(
     // a stopping server nor an abandoned viewer spawns a doomed child.
     // Input frames sent while queued are discarded — there is no shell to
     // receive them yet — but resize frames are coalesced so the PTY spawns
-    // at the viewer's current geometry rather than the hello's.
+    // at the viewer's current geometry rather than the hello's, and input
+    // is buffered (bounded) and replayed into the shell once it launches,
+    // so a reconnecting viewer that types before the lock frees loses no
+    // keystrokes.
     let mut lock = std::pin::pin!(serial.lock());
+    let mut queued_input: Vec<u8> = Vec::new();
     let _serial = loop {
         tokio::select! {
             // Biased: an uncontended lock wins immediately, so a prompt
@@ -104,7 +113,17 @@ async fn attach_session(
                         geometry = resize;
                     }
                 }
-                Some(Ok(Message::Binary(_) | Message::Ping(_) | Message::Pong(_))) => {}
+                Some(Ok(Message::Binary(bytes))) => {
+                    // Bounded: a viewer cannot make a queued attachment
+                    // buffer unbounded pre-launch input. Past the bound the
+                    // connection is cut rather than silently truncated.
+                    if queued_input.len() + bytes.len() > MAX_QUEUED_INPUT_BYTES {
+                        close(&mut socket, close_code::POLICY, "input overflow").await;
+                        return;
+                    }
+                    queued_input.extend_from_slice(&bytes);
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
                 _ => return,
             }
         }
@@ -125,6 +144,14 @@ async fn attach_session(
         return;
     };
     let worker = Arc::new(worker);
+
+    // Replay input buffered while the attachment waited for its turn, so a
+    // reconnecting viewer's early keystrokes reach the shell in order. A
+    // backpressure refusal here is impossible: the bound above is well
+    // under the relay's input budget and the shell has drained nothing yet.
+    if !queued_input.is_empty() {
+        let _ignored = worker.send_bytes(queued_input);
+    }
 
     // Capacity one: the relay's bounded queue is the advertised
     // 2 MiB output limit, and a wider channel here would buffer

@@ -224,6 +224,14 @@ fn read_pty(reader: &mut dyn Read, sender: &Sender<ReaderMessage>) {
                 }
             }
             Err(error) => {
+                // A unix PTY master reports EIO once the last slave closes;
+                // that is the terminal ending, not a read failure. Other
+                // errors stay failures.
+                #[cfg(unix)]
+                if error.raw_os_error() == Some(libc::EIO) {
+                    let _ignored = sender.send(ReaderMessage::Eof);
+                    return;
+                }
                 let _ignored = sender.send(ReaderMessage::Error(error.to_string()));
                 return;
             }
@@ -320,6 +328,7 @@ fn reap_child(child: &mut dyn portable_pty::Child) -> u32 {
 /// pid is captured before the child is waited on, so the group id is
 /// always live here. On Windows the Job object already contains the tree.
 #[cfg(unix)]
+#[allow(unsafe_code)]
 fn kill_process_group(pid: Option<u32>) {
     if let Some(pid) = pid
         && let Ok(pid) = i32::try_from(pid)
@@ -362,24 +371,50 @@ fn reap_zombie(child: &mut dyn portable_pty::Child) -> Option<u32> {
         .map(|status| status.exit_code())
 }
 
-/// Non-reaping unix exit check: `WNOWAIT` leaves the child reapable, so its
-/// PID and process-group id stay reserved until it is reaped explicitly.
+/// Non-reaping unix exit check via `waitid` with `WNOWAIT`, which (unlike
+/// `waitpid`, where `WNOWAIT` is rejected with `EINVAL`) leaves the child
+/// reapable — so its PID and process-group id stay reserved until it is
+/// reaped explicitly.
 #[cfg(unix)]
+#[allow(unsafe_code)]
 fn peek_child_exit(pid: Option<u32>) -> Option<u32> {
-    let pid = i32::try_from(pid?).ok()?;
-    let mut status: libc::c_int = 0;
+    let pid = pid?;
+    // SAFETY: a zeroed siginfo_t is a valid out-param for waitid.
+    let mut info: libc::siginfo_t = unsafe { core::mem::zeroed() };
     // SAFETY: querying our own child by pid; WNOWAIT leaves it reapable.
-    let observed = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG | libc::WNOWAIT) };
-    if observed != pid {
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &raw mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    // With WNOHANG and no waitable child, si_signo stays zero; a reported
+    // child sets it to SIGCHLD.
+    if result != 0 || info.si_signo != libc::SIGCHLD {
         return None;
     }
-    if libc::WIFEXITED(status) {
-        Some(libc::WEXITSTATUS(status) as u32)
-    } else if libc::WIFSIGNALED(status) {
-        Some(128 + libc::WTERMSIG(status) as u32)
+    let status = siginfo_status(&info).unsigned_abs();
+    if info.si_code == libc::CLD_EXITED {
+        Some(status)
     } else {
-        None
+        Some(128 + status)
     }
+}
+
+/// `si_status` is a union accessor method on Linux and a plain field on the
+/// BSD/Apple layout.
+#[cfg(all(unix, target_os = "linux"))]
+#[allow(unsafe_code)]
+fn siginfo_status(info: &libc::siginfo_t) -> libc::c_int {
+    // SAFETY: si_code == CLD_* guarantees the child-status union is active.
+    unsafe { info.si_status() }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn siginfo_status(info: &libc::siginfo_t) -> libc::c_int {
+    info.si_status
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

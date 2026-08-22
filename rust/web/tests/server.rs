@@ -1061,6 +1061,56 @@ fn input_overflow_closes_the_connection_with_policy() {
     }
 }
 
+/// Input typed by a viewer queued behind the serialization lock is
+/// buffered and replayed into its shell once the lock frees, so a
+/// reconnecting viewer loses no keystrokes while it waits.
+#[test]
+fn queued_input_replays_into_the_shell_after_the_lock_frees() {
+    let server = Server::start().expect("start server");
+    let mut first = attach_shell(&server);
+    await_echo(&mut first, "first-live");
+
+    // The second attachment completes its hello, then waits on the lock the
+    // first still holds. Input sent now must be buffered, not discarded.
+    let mut second = attach_shell(&server);
+    second
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("read timeout");
+    second
+        .send(Message::Binary(b"echo queued-marker\r".to_vec().into()))
+        .expect("send queued input");
+
+    // Tearing down the first releases the lock; the second's shell then
+    // launches and replays the buffered input.
+    drop(first);
+
+    let deadline = Instant::now() + Duration::from_mins(1);
+    let mut output = Vec::new();
+    let mut answered = false;
+    while !contains(&output, b"queued-marker") {
+        assert!(
+            Instant::now() < deadline,
+            "replayed input never reached the shell"
+        );
+        match second.read().expect("second shell output") {
+            Message::Binary(bytes) => {
+                output.extend_from_slice(&bytes);
+                if !answered && contains(&output, b"[6n") {
+                    second
+                        .send(Message::Binary(
+                            vec![0x1b, b'[', b'1', b';', b'1', b'R'].into(),
+                        ))
+                        .expect("answer cursor query");
+                    answered = true;
+                }
+            }
+            Message::Ping(_) | Message::Pong(_) => {}
+            other => panic!("expected binary output, got {other:?}"),
+        }
+    }
+}
+
 /// Open an authenticated attach socket and complete the hello exchange.
 fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
     let (status, socket) = upgrade_at(

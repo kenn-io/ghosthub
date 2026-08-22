@@ -21,7 +21,7 @@ mod unix {
     }
 
     fn collect_until_disconnect(relay: &ByteRelayWorker) -> (Vec<u8>, RelayDisconnect) {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         let mut bytes = Vec::new();
         loop {
             assert!(Instant::now() < deadline, "relay never disconnected");
@@ -71,7 +71,7 @@ mod unix {
         // then blocks the relay writer in write_all; teardown must kill
         // the whole process group so the join stays bounded.
         let relay = attach_sh("stty raw -echo && echo desc-re''ady && sleep 600");
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         let mut output = Vec::new();
         while !contains(&output, b"desc-ready") {
             assert!(Instant::now() < deadline, "stall setup never confirmed");
@@ -105,7 +105,7 @@ mod unix {
         // path — which must still sweep the process group, or the lingering
         // descendant keeps the writer blocked and the join hangs.
         let relay = attach_sh("stty raw -echo; printf desc-re''ady; sleep 600 & exit 0");
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         let mut output = Vec::new();
         let mut child_exited = false;
         while !child_exited {
