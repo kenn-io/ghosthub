@@ -74,7 +74,7 @@ async fn attach_session(
     {
         return;
     }
-    let Some(geometry) = client_hello_geometry(&mut socket, &mut shutdown).await else {
+    let Some(mut geometry) = client_hello_geometry(&mut socket, &mut shutdown).await else {
         return;
     };
 
@@ -84,8 +84,9 @@ async fn attach_session(
     // browser-side close fired abnormally without the acknowledgment. The
     // wait also watches shutdown and the waiting socket itself, so neither
     // a stopping server nor an abandoned viewer spawns a doomed child.
-    // Data frames sent while queued are discarded: no shell exists yet,
-    // and geometry was already captured in the hello.
+    // Input frames sent while queued are discarded — there is no shell to
+    // receive them yet — but resize frames are coalesced so the PTY spawns
+    // at the viewer's current geometry rather than the hello's.
     let mut lock = std::pin::pin!(serial.lock());
     let _serial = loop {
         tokio::select! {
@@ -98,7 +99,12 @@ async fn attach_session(
                 return;
             }
             message = socket.recv() => match message {
-                Some(Ok(Message::Binary(_) | Message::Text(_) | Message::Ping(_) | Message::Pong(_))) => {}
+                Some(Ok(Message::Text(frame))) => {
+                    if let Some(resize) = parse_resize(&frame) {
+                        geometry = resize;
+                    }
+                }
+                Some(Ok(Message::Binary(_) | Message::Ping(_) | Message::Pong(_))) => {}
                 _ => return,
             }
         }

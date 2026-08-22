@@ -160,12 +160,23 @@ impl PtyProcess {
     }
 
     /// Observe the child's exit code without blocking.
+    ///
+    /// On unix this observation is non-reaping: the exited child stays a
+    /// zombie so its PID — and therefore its process-group id — cannot
+    /// recycle before teardown sweeps the group and then reaps it.
     pub(crate) fn poll_exit(&mut self) -> Option<u32> {
-        self.child
-            .try_wait()
-            .ok()
-            .flatten()
-            .map(|status| status.exit_code())
+        #[cfg(unix)]
+        {
+            peek_child_exit(self.child.process_id())
+        }
+        #[cfg(not(unix))]
+        {
+            self.child
+                .try_wait()
+                .ok()
+                .flatten()
+                .map(|status| status.exit_code())
+        }
     }
 
     /// Tear down the PTY and reap the child under the containment guard.
@@ -180,16 +191,18 @@ impl PtyProcess {
             job,
         } = self;
         drop(master);
-        // Captured before any wait so it stays valid; used to sweep the
-        // child's process group even when the direct child exited first.
+        // Captured before the child is reaped, so the group id stays valid
+        // through the sweep. Because poll_exit is non-reaping on unix, the
+        // child is still an unreaped zombie here when it exited on its own.
         let group_pid = child.process_id();
         reap_with_lifetime_guard(
             job,
             preserve_natural_exit,
             observed_exit,
-            |mode| match mode {
-                ReapMode::Natural => wait_for_child_exit(&mut *child),
-                ReapMode::Contained => Some(reap_child(&mut *child)),
+            |step| match step {
+                ReapStep::Peek => peek_natural_exit(&mut *child, group_pid),
+                ReapStep::Reap => reap_zombie(&mut *child),
+                ReapStep::Contained => Some(reap_child(&mut *child)),
             },
             || kill_process_group(group_pid),
         )
@@ -321,19 +334,61 @@ fn kill_process_group(pid: Option<u32>) {
 #[cfg(not(unix))]
 fn kill_process_group(_pid: Option<u32>) {}
 
-fn wait_for_child_exit(child: &mut dyn portable_pty::Child) -> Option<u32> {
+/// Poll for a natural exit without reaping, so the exited child remains a
+/// zombie that pins its process-group id until the caller sweeps and reaps.
+fn peek_natural_exit(child: &mut dyn portable_pty::Child, pid: Option<u32>) -> Option<u32> {
     for _ in 0..REAP_ATTEMPTS {
+        #[cfg(unix)]
+        if let Some(code) = peek_child_exit(pid) {
+            return Some(code);
+        }
+        #[cfg(not(unix))]
         if let Ok(Some(status)) = child.try_wait() {
             return Some(status.exit_code());
         }
         thread::sleep(REAP_POLL_DELAY);
     }
+    let _ = (child, pid);
     None
 }
 
+/// Consume a child already confirmed exited by [`peek_natural_exit`]; the
+/// authoritative exit code comes from this reaping wait.
+fn reap_zombie(child: &mut dyn portable_pty::Child) -> Option<u32> {
+    child
+        .try_wait()
+        .ok()
+        .flatten()
+        .map(|status| status.exit_code())
+}
+
+/// Non-reaping unix exit check: `WNOWAIT` leaves the child reapable, so its
+/// PID and process-group id stay reserved until it is reaped explicitly.
+#[cfg(unix)]
+fn peek_child_exit(pid: Option<u32>) -> Option<u32> {
+    let pid = i32::try_from(pid?).ok()?;
+    let mut status: libc::c_int = 0;
+    // SAFETY: querying our own child by pid; WNOWAIT leaves it reapable.
+    let observed = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG | libc::WNOWAIT) };
+    if observed != pid {
+        return None;
+    }
+    if libc::WIFEXITED(status) {
+        Some(libc::WEXITSTATUS(status) as u32)
+    } else if libc::WIFSIGNALED(status) {
+        Some(128 + libc::WTERMSIG(status) as u32)
+    } else {
+        None
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReapMode {
-    Natural,
+enum ReapStep {
+    /// Non-reaping check that the child exited on its own.
+    Peek,
+    /// Consume the confirmed zombie, after the group sweep.
+    Reap,
+    /// Forced termination of the group and the child.
     Contained,
 }
 
@@ -341,27 +396,27 @@ fn reap_with_lifetime_guard<G, F, S>(
     guard: G,
     preserve_natural_exit: bool,
     observed_exit: Option<u32>,
-    mut reap: F,
+    mut step: F,
     sweep_descendants: S,
 ) -> u32
 where
-    F: FnMut(ReapMode) -> Option<u32>,
+    F: FnMut(ReapStep) -> Option<u32>,
     S: FnOnce(),
 {
-    if preserve_natural_exit
-        && let Some(exit_code) = observed_exit.or_else(|| reap(ReapMode::Natural))
+    if preserve_natural_exit && let Some(exit_code) = observed_exit.or_else(|| step(ReapStep::Peek))
     {
-        // The direct child exited on its own; still sweep any descendant
-        // that inherited and is holding the PTY slave open, so a writer
-        // blocked in write_all unblocks and teardown's joins stay bounded.
-        // The child is a reaped/zombie process, so the group signal leaves
-        // its captured exit code untouched.
+        // The child exited on its own and is still an unreaped zombie, so
+        // its PID/PGID cannot recycle. Sweep any descendant holding the PTY
+        // slave open — a writer blocked in write_all unblocks and the joins
+        // stay bounded — then reap the zombie. The group signal cannot
+        // reach the zombie leader, so its exit code is preserved.
         sweep_descendants();
+        let reaped = step(ReapStep::Reap).unwrap_or(exit_code);
         drop(guard);
-        return exit_code;
+        return reaped;
     }
     drop(guard);
-    reap(ReapMode::Contained).unwrap_or(u32::MAX)
+    step(ReapStep::Contained).unwrap_or(u32::MAX)
 }
 
 fn pty_size(size: GridSize, pixel_size: PixelSize) -> Result<PtySize, WorkerError> {
@@ -399,10 +454,13 @@ mod tests {
             DropProbe(Arc::clone(&events)),
             true,
             None,
-            |mode| {
-                assert_eq!(mode, ReapMode::Natural);
-                reap_events.lock().expect("event log").push("reap");
-                Some(7)
+            |step| match step {
+                ReapStep::Peek => Some(7),
+                ReapStep::Reap => {
+                    reap_events.lock().expect("event log").push("reap");
+                    Some(7)
+                }
+                ReapStep::Contained => unreachable!("a peeked exit never forces containment"),
             },
             || {},
         );
@@ -420,8 +478,8 @@ mod tests {
             DropProbe(Arc::clone(&events)),
             false,
             None,
-            |mode| {
-                assert_eq!(mode, ReapMode::Contained);
+            |step| {
+                assert_eq!(step, ReapStep::Contained);
                 reap_events.lock().expect("event log").push("reap");
                 Some(1)
             },
@@ -441,14 +499,15 @@ mod tests {
             DropProbe(Arc::clone(&events)),
             true,
             None,
-            |mode| {
+            |step| {
                 let mut events = reap_events.lock().expect("event log");
-                match mode {
-                    ReapMode::Natural => {
+                match step {
+                    ReapStep::Peek => {
                         events.push("wait");
                         None
                     }
-                    ReapMode::Contained => {
+                    ReapStep::Reap => unreachable!("no peeked exit to reap"),
+                    ReapStep::Contained => {
                         events.push("reap");
                         Some(9)
                     }
