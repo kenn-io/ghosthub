@@ -10928,6 +10928,147 @@ fn broadcast_created_fact_never_matches_another_scenes_navigation_intent() {
     );
 }
 
+/// Seed one queued clipboard write at the current epoch and return the
+/// epoch a concurrent in-flight pump pass would have captured.
+fn seed_clipboard_write(workspace: &Workspace, text: &str) -> u64 {
+    let observed = workspace.scene.clipboard_epoch.load(Ordering::Acquire);
+    crate::scene::push_clipboard_write_event(
+        &workspace.scene,
+        WorkspaceEvent::ClipboardWrite {
+            text: text.to_owned(),
+            primary: false,
+        },
+        observed,
+    );
+    observed
+}
+
+fn assert_clipboard_authority_retired(workspace: &Workspace, observed: u64, transition: &str) {
+    let (events, _) = workspace.drain_events();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, WorkspaceEvent::ClipboardWrite { .. })),
+        "queued clipboard writes are discarded after {transition}"
+    );
+    crate::scene::push_clipboard_write_event(
+        &workspace.scene,
+        WorkspaceEvent::ClipboardWrite {
+            text: "in flight across the transition".to_owned(),
+            primary: false,
+        },
+        observed,
+    );
+    let (events, _) = workspace.drain_events();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, WorkspaceEvent::ClipboardWrite { .. })),
+        "in-flight clipboard writes are discarded after {transition}"
+    );
+}
+
+#[test]
+fn detach_retires_the_hidden_workers_clipboard_authority() {
+    let workspace = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+    let observed = seed_clipboard_write(&workspace, "queued before detach");
+
+    workspace.detach();
+
+    assert_clipboard_authority_retired(&workspace, observed, "detach");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_remote_terminal_exit_retires_its_clipboard_authority() {
+    let workspace = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+    let identity = session::SessionIdentity::new(100, "$1", 200);
+    let worker = conpty_keepalive_worker("work", identity.clone());
+    let generation = workspace
+        .scene
+        .worker
+        .lock()
+        .expect("worker")
+        .publish(worker);
+    let snapshot = RemoteTmuxSnapshot::test_fixture(
+        "studio.example",
+        TEST_REMOTE_ROUTE,
+        8,
+        vec![session::DiscoveredSession::new("work", identity.clone(), 0)],
+        HerdrInventory::Unavailable,
+        ZellijInventory::Unavailable,
+    );
+    *workspace.scene.remote_active.lock().expect("remote active") = Some(RemoteActive {
+        key: RemotePresentationKey {
+            host_id: "ssh:studio".to_owned(),
+            endpoint: "studio.example".to_owned(),
+            route_identity: TEST_REMOTE_ROUTE.to_owned(),
+            lease_generation: 8,
+            session_identity: RemoteSessionIdentity::Tmux(identity),
+        },
+        selection: SessionSelection::new("ssh:studio", "studio.example", "work"),
+        worker_generation: generation,
+        lease: snapshot.lease().clone(),
+        presentation_id: 44,
+        term: AttachTerm::Xterm256Color,
+        retainable: false,
+        identity_mismatch_marker: None,
+    });
+    let observed = seed_clipboard_write(&workspace, "queued before exit");
+
+    let mut emitted = Vec::new();
+    let handled = workspace.handle_remote_terminal_exit(generation, None, &mut emitted);
+    assert!(handled, "the registered remote worker's exit is claimed");
+
+    assert_clipboard_authority_retired(&workspace, observed, "terminal exit");
+}
+
+#[cfg(windows)]
+#[test]
+fn zellij_suppression_retires_the_hidden_workers_clipboard_authority() {
+    let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+        Appearance::default(),
+        "Ubuntu",
+        Vec::new(),
+    ));
+    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+    let identity = session::SessionIdentity::new(100, "$1", 200);
+    let request = zellij_attach_request_fixture(&snapshot, "work");
+    workspace
+        .scene
+        .attachment
+        .lock()
+        .expect("attachment")
+        .reserve(request, AttachTerm::Xterm256Color)
+        .expect("reserve attachment");
+    let worker = conpty_keepalive_worker("work", identity);
+    let surface = worker.surface_handle();
+    workspace
+        .scene
+        .worker
+        .lock()
+        .expect("worker")
+        .publish(worker);
+    set_scene_state(
+        &workspace.scene,
+        WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "work".to_owned(),
+            kind: SessionKind::Zellij,
+            presentation_id: 1,
+            surface,
+        },
+    );
+    let observed = seed_clipboard_write(&workspace, "queued before suppression");
+
+    let suppressed =
+        workspace.close_zellij_presentations(snapshot.endpoint(), snapshot.runtime(), "work");
+    assert_eq!(suppressed.len(), 1, "the active presentation is suppressed");
+
+    assert_clipboard_authority_retired(&workspace, observed, "Zellij suppression");
+}
+
 #[test]
 fn clipboard_writes_from_a_pass_that_predates_a_purge_are_dropped() {
     let workspace = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));

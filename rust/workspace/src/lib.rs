@@ -7634,11 +7634,18 @@ impl Workspace {
         });
         if active_selection.is_some() {
             attachment.invalidate();
-            self.scene
+            // The suppressed worker's clipboard authority ends here, not
+            // when the mutation finishes: a hidden client must not write
+            // the clipboard while its session is being torn down.
+            if let Some(worker) = self
+                .scene
                 .worker
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .invalidate();
+                .invalidate()
+            {
+                retire_clipboard_writes(&self.scene, &worker);
+            }
             clear_pending_paste(&self.scene);
             clear_terminal_notice(&self.scene);
             self.restore_inventory_state();
@@ -7915,11 +7922,18 @@ impl Workspace {
         });
         if active_selection.is_some() {
             attachment.invalidate();
-            self.scene
+            // The suppressed worker's clipboard authority ends here, not
+            // when the mutation finishes: a hidden client must not write
+            // the clipboard while its session is being torn down.
+            if let Some(worker) = self
+                .scene
                 .worker
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .invalidate();
+                .invalidate()
+            {
+                retire_clipboard_writes(&self.scene, &worker);
+            }
             clear_pending_paste(&self.scene);
             clear_terminal_notice(&self.scene);
             self.restore_inventory_state();

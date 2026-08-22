@@ -295,11 +295,21 @@ pub(crate) fn detach_scene_locked(scene: &Scene) {
     // path that swallows a paste confirmation goes through the worker deny.
     cancel_pending_paste(scene);
     clear_terminal_notice(scene);
-    scene
+    // The hidden presentation's clipboard authority dies with it: queued
+    // and in-flight writes are purged unconditionally — an earlier
+    // transition may have cleared the worker slot while writes lingered —
+    // and a still-live worker additionally has its writes disabled before
+    // it is dropped.
+    if let Some(worker) = scene
         .worker
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .invalidate();
+        .invalidate()
+    {
+        retire_clipboard_writes(scene, &worker);
+    } else {
+        purge_queued_clipboard_writes(scene);
+    }
     restore_scene_inventory_state(scene);
 }
 

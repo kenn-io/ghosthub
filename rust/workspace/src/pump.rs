@@ -9,7 +9,10 @@
 //! worker events.
 
 use crate::PendingPaste;
-use crate::scene::{push_clipboard_write_event, push_lossless_event};
+use crate::scene::{
+    purge_queued_clipboard_writes, push_clipboard_write_event, push_lossless_event,
+    retire_clipboard_writes,
+};
 use crate::{
     ACTIVE_EVENT_BUDGET, Arc, AttachRequest, AttachTerm, ClipboardRead, ClipboardTarget,
     EVENT_PUMP_INTERVAL, FallbackAuthority, HostConnectionState, HostDiagnostic,
@@ -317,7 +320,7 @@ impl Workspace {
                 .has_workers()
     }
 
-    fn handle_remote_terminal_exit(
+    pub(crate) fn handle_remote_terminal_exit(
         &self,
         worker_generation: u64,
         error: Option<String>,
@@ -342,10 +345,17 @@ impl Workspace {
         if worker.generation() != worker_generation {
             return false;
         }
-        let _closed = worker.invalidate_if_generation(worker_generation);
+        let closed = worker.invalidate_if_generation(worker_generation);
         let _active = remote_active.take();
         drop(worker);
         drop(remote_active);
+        // An exited terminal's queued and in-flight clipboard writes are
+        // discarded: its authority ended with its process.
+        if let Some(worker) = closed {
+            retire_clipboard_writes(&self.scene, &worker);
+        } else {
+            purge_queued_clipboard_writes(&self.scene);
+        }
         clear_pending_paste(&self.scene);
         clear_terminal_notice(&self.scene);
         self.restore_inventory_state();
@@ -526,6 +536,11 @@ impl Workspace {
             ) {
                 return;
             }
+            // The exited worker was dropped by the claim; its queued and
+            // in-flight clipboard writes are discarded regardless of
+            // whether a TERM retry relaunches the presentation — the dead
+            // incarnation's authority ended with its process.
+            purge_queued_clipboard_writes(&self.scene);
             if let Some(error) = exit_error {
                 emitted.push(WorkspaceEvent::Error(error));
             }
