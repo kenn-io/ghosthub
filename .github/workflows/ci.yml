@@ -286,8 +286,9 @@ jobs:
               return 0
             fi
             if kill -0 "$controller_pid" 2>/dev/null; then
-              kill -TERM -- -"$controller_pid" 2>/dev/null ||
-                kill -TERM "$controller_pid" 2>/dev/null || true
+              # Keep open -W attached while the controller forwards graceful
+              # cancellation to the detached Aqua application.
+              kill -TERM "$controller_pid" 2>/dev/null || true
               for _ in {1..40}; do
                 if ! kill -0 "$controller_pid" 2>/dev/null; then
                   break
@@ -474,7 +475,6 @@ jobs:
               }
           }
           openProcess.waitUntilExit()
-          _ = try? FileManager.default.removeItem(at: pidFileURL)
           let finalState = state.queue.sync {
               (
                   cancellationStatus: state.cancellationStatus,
