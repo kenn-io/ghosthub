@@ -1001,11 +1001,14 @@ fn input_overflow_closes_the_connection_with_policy() {
     // conhost stalls on its own). The marker is concatenated in the
     // command so its echo-back as typed text cannot satisfy the wait —
     // seeing it assembled in output proves the command executed and the
-    // shell is gone or blocked.
+    // shell is gone or blocked. On POSIX the stty runs first: a canonical
+    // tty discards over-long line input instead of blocking the master
+    // writer, so raw mode is what makes the flood genuinely back up, and
+    // the marker's arrival proves it was already in effect.
     #[cfg(windows)]
     let stall = "echo ('pre-st'+'all'); Start-Sleep -Seconds 600\r";
     #[cfg(not(windows))]
-    let stall = "echo pre-st''all; exec sleep 600\r";
+    let stall = "stty raw -echo; echo pre-st''all; exec sleep 600\r";
     socket
         .send(Message::Binary(stall.as_bytes().to_vec().into()))
         .expect("send stall command");
