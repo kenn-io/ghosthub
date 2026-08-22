@@ -915,6 +915,161 @@ fn attachments_serialize_across_an_abrupt_closure() {
     }
 }
 
+/// The cookie a real browser upgrade presents is sufficient on its own:
+/// the SPA never holds the bearer token.
+#[test]
+fn cookie_only_attach_upgrade_succeeds() {
+    let server = Server::start().expect("start server");
+    let cookie = bootstrap_cookie(&server);
+    let (status, socket) = upgrade_at(
+        server.addr(),
+        "/ws/v1/attach",
+        &[("Origin", &origin(server.addr())), ("Cookie", &cookie)],
+    );
+    assert_eq!(status, 101);
+    let mut socket = socket.expect("upgraded socket");
+    socket
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("read timeout");
+    let Message::Text(hello) = socket.read().expect("server hello") else {
+        panic!("expected server hello");
+    };
+    assert!(hello.contains("\"protocol\""));
+}
+
+#[test]
+fn unauthenticated_inventory_and_attach_are_denied() {
+    let server = Server::start().expect("start server");
+    let reply = request(
+        server.addr(),
+        "GET",
+        "/api/v1/inventory",
+        &[("Host", &host(server.addr()))],
+    );
+    assert_eq!(reply.status, 401);
+    let (status, _socket) = upgrade_at(
+        server.addr(),
+        "/ws/v1/attach",
+        &[("Origin", &origin(server.addr()))],
+    );
+    assert_eq!(status, 401);
+}
+
+/// A valid resize is applied silently; the shell stays live. A malformed
+/// or out-of-range control frame is a protocol violation closed with
+/// POLICY, exactly like the hello path.
+#[test]
+fn resize_controls_round_trip_and_violations_close_the_connection() {
+    let server = Server::start().expect("start server");
+    let mut socket = attach_shell(&server);
+    await_echo(&mut socket, "resize-ready");
+    socket
+        .send(Message::Text(
+            "{\"resize\":{\"columns\":120,\"rows\":40,\"pixel_width\":960,\"pixel_height\":640}}"
+                .into(),
+        ))
+        .expect("send resize");
+    await_echo(&mut socket, "resize-applied");
+
+    socket
+        .send(Message::Text(
+            "{\"resize\":{\"columns\":2000,\"rows\":40,\"pixel_width\":960,\"pixel_height\":640}}"
+                .into(),
+        ))
+        .expect("send oversized resize");
+    expect_policy_close(&mut socket, "invalid resize");
+
+    let mut second = attach_shell(&server);
+    await_echo(&mut second, "second-ready");
+    second
+        .send(Message::Text("{not json".into()))
+        .expect("send malformed control");
+    expect_policy_close(&mut second, "invalid resize");
+}
+
+/// Input beyond the relay's bounded budget cuts the connection with the
+/// advertised POLICY close instead of dropping bytes mid-stream.
+#[test]
+fn input_overflow_closes_the_connection_with_policy() {
+    let server = Server::start().expect("start server");
+    let mut socket = attach_shell(&server);
+    // Deliberately no readiness handshake: the unanswered startup stalls
+    // the child, so flooded input backs up against the bounded budget
+    // instead of draining. Short reads keep the flood flowing between
+    // polls for the close frame.
+    socket
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("short read timeout");
+    let chunk = vec![b'z'; 250 * 1024];
+    let deadline = Instant::now() + Duration::from_mins(1);
+    loop {
+        assert!(Instant::now() < deadline, "overflow close never arrived");
+        if socket.send(Message::Binary(chunk.clone().into())).is_err() {
+            break;
+        }
+        match socket.read() {
+            Ok(Message::Close(Some(frame))) => {
+                assert_eq!(u16::from(frame.code), 1008, "policy close");
+                assert_eq!(frame.reason.as_str(), "input overflow");
+                return;
+            }
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(error))
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+    }
+    // The socket died before the close frame was read back; the server cut
+    // the connection, which still proves the overflow was not absorbed.
+}
+
+/// Open an authenticated attach socket and complete the hello exchange.
+fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
+    let (status, socket) = upgrade_at(
+        server.addr(),
+        "/ws/v1/attach",
+        &[
+            ("Origin", &origin(server.addr())),
+            ("Authorization", &bearer(server)),
+        ],
+    );
+    assert_eq!(status, 101);
+    let mut socket = socket.expect("upgraded socket");
+    socket
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("read timeout");
+    let Message::Text(_) = socket.read().expect("server hello") else {
+        panic!("expected server hello");
+    };
+    let hello = format!(
+        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
+    );
+    socket
+        .send(Message::Text(hello.into()))
+        .expect("client hello");
+    socket
+}
+
+/// Read until the close frame and assert it is the named POLICY close.
+fn expect_policy_close(socket: &mut WebSocket<TcpStream>, reason: &str) {
+    let deadline = Instant::now() + Duration::from_mins(1);
+    loop {
+        assert!(Instant::now() < deadline, "policy close never arrived");
+        match socket.read().expect("read until close") {
+            Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 1008, "policy close");
+                assert_eq!(frame.reason.as_str(), reason);
+                return;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// An attach hello that satisfies the capability contract but omits the
 /// viewer's initial geometry must be rejected: the PTY never opens at a
 /// default size.

@@ -165,8 +165,15 @@ async fn attach_session(
                     }
                 }
                 Some(Ok(Message::Text(frame))) => {
-                    if let Some(resize) = parse_resize(&frame)
-                        && let Err(error) = worker.resize(resize.size, resize.pixels)
+                    // Post-hello text frames are resize controls and
+                    // nothing else; a malformed or out-of-range one is a
+                    // protocol violation that would otherwise leave stale
+                    // geometry silently, the same reason the hello path
+                    // refuses it.
+                    let Some(resize) = parse_resize(&frame) else {
+                        break Some((close_code::POLICY, "invalid resize"));
+                    };
+                    if let Err(error) = worker.resize(resize.size, resize.pixels)
                         && error.is_backpressure()
                     {
                         // Nothing retries a dropped resize, so stale

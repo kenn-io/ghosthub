@@ -269,10 +269,19 @@ async function attach(label, row) {
       try {
         hello = JSON.parse(event.data);
       } catch {
+        // Detach before closing so the generic close handler does not
+        // overwrite this rejection with "Connection closed".
+        if (state.socket === socket) {
+          state.socket = null;
+        }
         socket.close();
+        showDisconnect("Malformed server hello");
         return;
       }
       if (hello.protocol !== PROTOCOL_VERSION) {
+        if (state.socket === socket) {
+          state.socket = null;
+        }
         socket.close();
         showDisconnect("Protocol version mismatch");
         return;
