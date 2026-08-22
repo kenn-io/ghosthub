@@ -95,6 +95,41 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.identityRefreshes == 2)
     }
 
+    @Test("a failed identity probe suppresses throttled publishes")
+    func failedIdentityProbeSuppressesThrottledPublishes() async {
+        let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.setRefreshedIdentity(nil, for: presentation.key)
+
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 1)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
+        )
+
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 1)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
+        )
+
+        harness.setRefreshedIdentity(
+            presentation.identity(),
+            for: presentation.key
+        )
+        harness.currentDate = harness.currentDate.addingTimeInterval(11)
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 2)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
+        )
+    }
+
     @Test("Always Live waits for staged surface launch before parking")
     func alwaysLiveWaitsForSurfaceLaunchBeforeParking() {
         let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
@@ -1602,7 +1637,7 @@ private final class PreviewCoordinatorHarness {
     private var connectionByKey: [TmuxPreviewKey: ConnectionState] = [:]
     private var identityByKey: [TmuxPreviewKey: TmuxSessionIdentity] = [:]
     private var refreshedIdentityByKey:
-        [TmuxPreviewKey: TmuxSessionIdentity] = [:]
+        [TmuxPreviewKey: TmuxSessionIdentity?] = [:]
 
     init(
         mode: SessionPreviewMode,
@@ -1680,7 +1715,7 @@ private final class PreviewCoordinatorHarness {
         _ identity: TmuxSessionIdentity?,
         for key: TmuxPreviewKey
     ) {
-        refreshedIdentityByKey[key] = identity
+        refreshedIdentityByKey.updateValue(identity, forKey: key)
     }
 
     private static func index(

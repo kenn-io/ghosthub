@@ -144,7 +144,9 @@ final class TmuxSessionPreviewCoordinator {
     private var isShutDown = false
     private var generations: [TmuxPreviewKey: UInt64] = [:]
     private var activeCaptureIDs: [TmuxPreviewKey: UUID] = [:]
-    private var identityRevalidationAttempts: [TmuxPreviewKey: Date] = [:]
+    private var identityRevalidationAttempts:
+        [TmuxPreviewKey: (attemptedAt: Date, identity: TmuxSessionIdentity?)] =
+        [:]
     private var activeCaptureReasons: [TmuxPreviewKey: CaptureReason] = [:]
     private var navigationCaptureCompletions:
         [TmuxPreviewKey: () -> Void] = [:]
@@ -803,12 +805,17 @@ final class TmuxSessionPreviewCoordinator {
     ) async -> TmuxSessionIdentity? {
         if reason == .scheduled, mode == .alwaysLive,
            let lastAttempt = identityRevalidationAttempts[key],
-           now().timeIntervalSince(lastAttempt)
+           now().timeIntervalSince(lastAttempt.attemptedAt)
            < Self.identityRevalidationInterval {
-            return presentation.identity()
+            // Serve the last probe's result, not the caller's cached
+            // identity: a failed or mismatched probe keeps suppressing
+            // publishes until the next revalidation.
+            return lastAttempt.identity
         }
-        identityRevalidationAttempts[key] = now()
-        return await presentation.refreshIdentity()
+        let attemptedAt = now()
+        let refreshed = await presentation.refreshIdentity()
+        identityRevalidationAttempts[key] = (attemptedAt, refreshed)
+        return refreshed
     }
 
     private func finishTask(_ operationID: UUID, for key: TmuxPreviewKey) {
