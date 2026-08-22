@@ -1211,7 +1211,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
-            tmuxExactSessionProbe: { target in
+            tmuxSessionValidationExactProbe: { target, _ in
                 switch attempts.increment() {
                 case 1:
                     return await probe.probe(target)
@@ -1229,6 +1229,9 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
         surfaceStore.surface.closeObservers.values.first?(false, 255)
 
         await waitUntilMainActor {
