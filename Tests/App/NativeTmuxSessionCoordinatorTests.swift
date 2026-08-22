@@ -33,6 +33,103 @@ private func splitMismatchMarker(in command: String) -> String? {
 @Suite("Native tmux connection identity", .serialized)
 @MainActor
 struct NativeTmuxSessionCoordinatorTests {
+    @Test("dead remote tmux resolution invalidates before lease release")
+    func deadResolutionInvalidatesConnection() async {
+        let events = LockedValue<[String]>([])
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: RecordingNativeSessionSurfaceStore(),
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                .failure(.sshConnectionFailed(
+                    host: host.hostname,
+                    classification: SSHConnectionFailure.classify(
+                        status: 255,
+                        output: "Control socket connect(/tmp/dead): missing"
+                    )
+                ))
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
+                    release: { events.withLock { $0.append("release") } },
+                    invalidate: { events.withLock { $0.append("invalidate") } }
+                )
+            }
+        )
+        var disconnected = false
+        coordinator.onStateChanged = { _, state in
+            if case .disconnected = state {
+                disconnected = true
+            }
+        }
+
+        _ = coordinator.attach(
+            hostID: UUID(),
+            name: "review",
+            host: .ssh(host),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor {
+            disconnected && events.load().count == 2
+        }
+        #expect(events.load() == ["invalidate", "release"])
+    }
+
+    @Test("a fail-closed pane split invalidates the pooled connection")
+    func failClosedPaneSplitInvalidatesConnection() async throws {
+        let invalidations = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let host = CommandHost.ssh(SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        ))
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/local/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
+                    invalidate: { invalidations.withLock { $0 += 1 } }
+                )
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                return (
+                    255,
+                    "Control socket connect(/tmp/dead): Connection refused\n"
+                )
+            },
+            paneSplitErrorDuration: .seconds(5)
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "dead-socket",
+            host: host,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { readyCount == 2 }
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
+
+        handler(.down)
+
+        await waitUntilMainActor { invalidations.load() > 0 }
+        #expect(store.surface.paneSplitErrorMessage != nil)
+    }
+
     @Test("attachment reuses the version from binary resolution")
     func attachmentReusesResolvedVersion() async {
         let runnerCalls = LockedValue(0)
@@ -187,8 +284,8 @@ struct NativeTmuxSessionCoordinatorTests {
                     version: "tmux 3.3a"
                 )
             },
-            sshConnectionArgumentsProvider: { _ in
-                SSHConnectionArgumentsSnapshot(arguments: sshArguments)
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: sshArguments)
             }
         )
         var isReady = false
@@ -496,14 +593,17 @@ struct NativeTmuxSessionCoordinatorTests {
     @Test("remote attachment uses non-enrolling host-key policy")
     func remoteAttachmentUsesNonEnrollingHostKeyPolicy() async throws {
         let store = RecordingNativeSessionSurfaceStore()
+        let releases = LockedValue(0)
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
-            sshConnectionArgumentsProvider: { _ in
-                SSHConnectionArgumentsSnapshot(arguments: [
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: [
                     "-o", "StrictHostKeyChecking=yes",
-                ])
+                ]) {
+                    releases.withLock { $0 += 1 }
+                }
             }
         )
         var isReady = false
@@ -526,6 +626,16 @@ struct NativeTmuxSessionCoordinatorTests {
             store.requestedConfigurations.last?.command
         )
         #expect(command.contains("StrictHostKeyChecking=yes"))
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(false, 0)
+        await waitUntilMainActor { releases.load() == 1 }
+        coordinator.detach(
+            hostID: handle.hostID,
+            name: handle.name,
+            socketName: handle.socketName
+        )
+        #expect(releases.load() == 1)
     }
 
     @Test("split shortcuts use the attachment's fixed remote route")
@@ -551,9 +661,9 @@ struct NativeTmuxSessionCoordinatorTests {
                 resolutionArguments.store(arguments)
                 return successfulTmuxResolution("/usr/local/bin/tmux")
             },
-            sshConnectionArgumentsProvider: { _ in
+            remoteConnectionProvider: { _, _ in
                 routeProviderCalls.withLock { $0 += 1 }
-                return SSHConnectionArgumentsSnapshot(
+                return testKwtSSHAttachment(
                     arguments: routeArguments.load()
                 )
             },
@@ -637,8 +747,8 @@ struct NativeTmuxSessionCoordinatorTests {
                 resolvedArguments.withLock { $0.append(arguments) }
                 return successfulTmuxResolution("/usr/local/bin/tmux")
             },
-            sshConnectionArgumentsProvider: { _ in
-                SSHConnectionArgumentsSnapshot(
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
                     arguments: routeArguments.load()
                 )
             }
@@ -671,7 +781,6 @@ struct NativeTmuxSessionCoordinatorTests {
 
         #expect(resolvedArguments.load() == [
             ["-F", "/dev/null", "-o", "HostName=first.example.test"],
-            ["-F", "/dev/null", "-o", "HostName=second.example.test"],
         ])
     }
 
@@ -732,7 +841,10 @@ struct NativeTmuxSessionCoordinatorTests {
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("tmux.exe") }
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("tmux.exe") },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment()
+            }
         )
         var isReady = false
         coordinator.onSurfaceReady = { _ in isReady = true }
@@ -1147,7 +1259,10 @@ struct NativeTmuxSessionCoordinatorTests {
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment()
+            }
         )
         var states: [UUID: ConnectionState] = [:]
         coordinator.onStateChanged = { handle, state in
@@ -1341,10 +1456,16 @@ struct NativeTmuxSessionCoordinatorTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: statusDirectory) }
         let store = RecordingNativeSessionSurfaceStore()
+        let invalidations = LockedValue(0)
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(invalidate: {
+                    invalidations.withLock { $0 += 1 }
+                })
+            },
             remoteExitStatusDirectory: statusDirectory
         )
         var isSurfaceReady = false
@@ -1380,6 +1501,7 @@ struct NativeTmuxSessionCoordinatorTests {
             coordinator.attachmentClosure(handle)
                 == .processExited(code: 255)
         )
+        await waitUntilMainActor { invalidations.load() == 1 }
     }
 }
 

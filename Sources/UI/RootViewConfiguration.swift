@@ -4,6 +4,8 @@ import GhosthubTerminalSupport
 import GhosthubWorkspace
 import SwiftUI
 
+public typealias SSHAuthenticationHandoff = @MainActor () -> Void
+
 /// Snapshot data and display flags consumed by RootView.
 public struct WorkspaceDisplayState {
     public let snapshot: WorkspaceSnapshot
@@ -181,19 +183,22 @@ public struct TmuxSessionKillRequest: Equatable, Sendable {
     public let serverPID: String
     public let sessionID: String
     public let sessionCreatedAt: String
+    public let routeIdentity: String?
 
     public init(
         session: WorkspaceTmuxSessionSelection,
         confirmedHost: HostSummary,
         serverPID: String,
         sessionID: String,
-        sessionCreatedAt: String
+        sessionCreatedAt: String,
+        routeIdentity: String? = nil
     ) {
         self.session = session
         self.confirmedHost = confirmedHost
         self.serverPID = serverPID
         self.sessionID = sessionID
         self.sessionCreatedAt = sessionCreatedAt
+        self.routeIdentity = routeIdentity
     }
 }
 
@@ -201,6 +206,7 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
     public let worktree: WorktreeSummary
     public let project: ProjectSummary
     public let confirmedHost: HostSummary
+    public let routeIdentity: String?
     public let sessionKillRequest: TmuxSessionKillRequest?
     public let changes: WorktreeChangeSummary
 
@@ -212,12 +218,14 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
         worktree: WorktreeSummary,
         project: ProjectSummary,
         confirmedHost: HostSummary,
+        routeIdentity: String? = nil,
         sessionKillRequest: TmuxSessionKillRequest? = nil,
         changes: WorktreeChangeSummary = .clean
     ) {
         self.worktree = worktree
         self.project = project
         self.confirmedHost = confirmedHost
+        self.routeIdentity = routeIdentity
         self.sessionKillRequest = sessionKillRequest
         self.changes = changes
     }
@@ -240,6 +248,22 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
             + sessionMessage
             + changesMessage
             + " The Git branch will be kept."
+    }
+}
+
+public struct ProjectRemovalRequest: Equatable, Sendable {
+    public let project: ProjectSummary
+    public let confirmedHost: HostSummary
+    public let routeIdentity: String?
+
+    public init(
+        project: ProjectSummary,
+        confirmedHost: HostSummary,
+        routeIdentity: String? = nil
+    ) {
+        self.project = project
+        self.confirmedHost = confirmedHost
+        self.routeIdentity = routeIdentity
     }
 }
 
@@ -450,10 +474,15 @@ public struct InteractionHandlers {
     public let isSSHAuthenticationReady:
         ((UUID) async -> SSHAuthenticationReadiness)?
     public let cancelSSHAuthentication: ((UUID) -> Void)?
+    public let completeSSHAuthentication:
+        ((UUID, SSHAuthenticationHandoff) async -> Void)?
     public let registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
+    public let prepareProjectRemoval:
+        ((ProjectSummary, HostSummary) async throws
+            -> ProjectRemovalRequest)?
     public let unregisterProject:
-        ((ProjectSummary, HostSummary) async -> Result<String, HostProbeError>)?
+        ((ProjectRemovalRequest) async -> Result<String, HostProbeError>)?
     public let openProjectWorktreesAsTabs:
         ((ProjectSummary, [WorktreeSummary]) -> Void)?
     public let canOpenProjectWorktreesAsTabs:
@@ -537,12 +566,15 @@ public struct InteractionHandlers {
         isSSHAuthenticationReady:
         ((UUID) async -> SSHAuthenticationReadiness)? = nil,
         cancelSSHAuthentication: ((UUID) -> Void)? = nil,
+        completeSSHAuthentication:
+        ((UUID, SSHAuthenticationHandoff) async -> Void)? = nil,
         registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
+        prepareProjectRemoval:
+        ((ProjectSummary, HostSummary) async throws
+            -> ProjectRemovalRequest)? = nil,
         unregisterProject:
-        ((ProjectSummary, HostSummary) async -> Result<
-            String, HostProbeError
-        >)? = nil,
+        ((ProjectRemovalRequest) async -> Result<String, HostProbeError>)? = nil,
         openProjectWorktreesAsTabs:
         ((ProjectSummary, [WorktreeSummary]) -> Void)? = nil,
         canOpenProjectWorktreesAsTabs:
@@ -600,7 +632,9 @@ public struct InteractionHandlers {
         self.trustSSHHostKey = trustSSHHostKey
         self.isSSHAuthenticationReady = isSSHAuthenticationReady
         self.cancelSSHAuthentication = cancelSSHAuthentication
+        self.completeSSHAuthentication = completeSSHAuthentication
         self.registerProject = registerProject
+        self.prepareProjectRemoval = prepareProjectRemoval
         self.unregisterProject = unregisterProject
         self.openProjectWorktreesAsTabs = openProjectWorktreesAsTabs
         self.canOpenProjectWorktreesAsTabs = canOpenProjectWorktreesAsTabs

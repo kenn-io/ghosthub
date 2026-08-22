@@ -33,19 +33,24 @@ enum ExeVMInventoryError: Error, Equatable, LocalizedError {
 }
 
 struct ExeVMClient: Sendable {
-    typealias Runner = @Sendable (SSHHostInfo, String, String) -> (
+    typealias Runner = @Sendable (SSHHostInfo, [String]?, String, String) -> (
         status: Int32,
         stdout: String,
         stderr: String
     )
 
     private let runner: Runner
+    private let commandLease: KwtSSHCommandLease
 
-    init(runner: @escaping Runner = Self.runListCommand) {
-        self.runner = runner
+    init(runner: Runner? = nil, commandLease: KwtSSHCommandLease? = nil) {
+        self.runner = runner ?? Self.runListCommand
+        self.commandLease = commandLease ?? .unlessInjected(runner != nil)
     }
 
-    func listVMs(for account: ExeAccount) throws -> [ExeVMRecord] {
+    func listVMs(
+        for account: ExeAccount,
+        sshConnectionArguments: [String]? = nil
+    ) throws -> [ExeVMRecord] {
         guard let host = CommandHostResolver.parseSSHDestination(
             account.sshDestination
         ) else {
@@ -54,7 +59,12 @@ struct ExeVMClient: Sendable {
         let nonce = UUID().uuidString
         let startMarker = "GHOSTHUB_EXE_JSON_START_\(nonce)"
         let endMarker = "GHOSTHUB_EXE_JSON_END_\(nonce)"
-        let result = runner(host, startMarker, endMarker)
+        let result = runner(
+            host,
+            sshConnectionArguments,
+            startMarker,
+            endMarker
+        )
         guard result.status == 0 else {
             throw ExeVMInventoryError.commandFailed(
                 destination: account.sshDestination,
@@ -78,22 +88,104 @@ struct ExeVMClient: Sendable {
         return response.vms
     }
 
-    func connectionProbe(
+    func listVMsBorrowingConnection(
         for account: ExeAccount
-    ) -> ExeAccountConnectionProbeResult {
+    ) async throws -> [ExeVMRecord] {
+        guard let host = CommandHostResolver.parseSSHDestination(
+            account.sshDestination
+        ) else {
+            throw ExeVMInventoryError.invalidDestination
+        }
+        return try await commandLease.withConnection(on: .ssh(host)) {
+            connection in
+            do {
+                return try await BlockingTask.runThrowing(
+                    priority: .userInitiated
+                ) {
+                    try listVMs(
+                        for: account,
+                        sshConnectionArguments: connection?.arguments
+                    )
+                }
+            } catch let error as ExeVMInventoryError {
+                if case let .commandFailed(_, status, message) = error,
+                   SSHConnectionFailure.indicatesUnusableConnection(
+                       status: status,
+                       output: message
+                   ) {
+                    await connection?.invalidate()
+                }
+                throw error
+            }
+        }
+    }
+
+    /// Probes the account, borrowing a noninteractive kwt lease when the
+    /// caller has no reviewed connection of its own.
+    func connectionProbe(
+        for account: ExeAccount,
+        connection: KwtSSHConnection? = nil
+    ) async -> ExeAccountConnectionProbeResult {
+        if let connection {
+            let probed = await BlockingTask.run(priority: .userInitiated) {
+                probe(account, sshConnectionArguments: connection.arguments)
+            }
+            if probed.connectionUnusable {
+                await connection.invalidate()
+            }
+            return probed.result
+        }
+        guard let host = CommandHostResolver.parseSSHDestination(
+            account.sshDestination
+        ) else {
+            return .failed(ExeVMInventoryError.invalidDestination.localizedDescription)
+        }
         do {
-            return .connected(try listVMs(for: account))
-        } catch let error as ExeVMInventoryError {
-            if case let .commandFailed(_, status, message) = error,
-               SSHConnectionFailure.diagnostic(
-                   status: status,
-                   output: message
-               ).code == .sshAuthenticationFailed {
+            return try await commandLease.withConnection(on: .ssh(host)) {
+                connection in
+                let probed = await BlockingTask.run(priority: .userInitiated) {
+                    probe(account, sshConnectionArguments: connection?.arguments)
+                }
+                if probed.connectionUnusable {
+                    await connection?.invalidate()
+                }
+                return probed.result
+            }
+        } catch {
+            let classification = SSHConnectionFailure.classify(leaseError: error)
+            if classification.kind == .authenticationRequired {
                 return .authenticationRequired
             }
-            return .failed(error.localizedDescription)
+            return .failed(classification.diagnostic.summary)
+        }
+    }
+
+    private func probe(
+        _ account: ExeAccount,
+        sshConnectionArguments: [String]?
+    ) -> (result: ExeAccountConnectionProbeResult, connectionUnusable: Bool) {
+        do {
+            return (.connected(try listVMs(
+                for: account,
+                sshConnectionArguments: sshConnectionArguments
+            )), false)
+        } catch let error as ExeVMInventoryError {
+            guard case let .commandFailed(_, status, message) = error else {
+                return (.failed(error.localizedDescription), false)
+            }
+            let classification = SSHConnectionFailure.classify(
+                status: status,
+                output: message
+            )
+            if classification.kind == .authenticationRequired {
+                return (.authenticationRequired, false)
+            }
+            return (
+                .failed(error.localizedDescription),
+                classification.connectionUnusable
+            )
         } catch {
-            return .failed(error.localizedDescription)
+            return (.failed(error.localizedDescription), false)
         }
     }
 
@@ -117,6 +209,25 @@ struct ExeVMClient: Sendable {
 
     private static func runListCommand(
         host: SSHHostInfo,
+        sshConnectionArguments: [String]?,
+        startMarker: String,
+        endMarker: String
+    ) -> (status: Int32, stdout: String, stderr: String) {
+        guard let sshConnectionArguments else {
+            let output = AccountCommandOutput.leaseRequired
+            return (output.status, output.stdout, output.stderr)
+        }
+        return runListCommand(
+            host: host,
+            connectionArguments: sshConnectionArguments,
+            startMarker: startMarker,
+            endMarker: endMarker
+        )
+    }
+
+    private static func runListCommand(
+        host: SSHHostInfo,
+        connectionArguments: [String],
         startMarker: String,
         endMarker: String
     ) -> (status: Int32, stdout: String, stderr: String) {
@@ -126,9 +237,7 @@ struct ExeVMClient: Sendable {
             "-o", "ConnectTimeout=10",
             "-o", "ConnectionAttempts=1",
         ]
-        arguments.append(contentsOf:
-            SSHCommandArguments.noninteractive(for: host)
-        )
+        arguments.append(contentsOf: connectionArguments)
         if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
@@ -318,9 +427,10 @@ final class ExeVMInventoryStore: ObservableObject {
                 for account in accountsToQuery {
                     group.addTask {
                         do {
+                            let vms = try await client
+                                .listVMsBorrowingConnection(for: account)
                             return (
-                                account,
-                                .success(try client.listVMs(for: account))
+                                account, .success(vms)
                             )
                         } catch {
                             return (account, .failure(error))

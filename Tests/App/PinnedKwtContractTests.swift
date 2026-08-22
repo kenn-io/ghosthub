@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import GhosthubTestSupport
+import GhosthubTransport
 import Testing
 @testable import GhosthubApp
 
@@ -37,6 +38,201 @@ struct PinnedKwtContractTests {
                 result.status == 0,
                 Comment(rawValue: result.stderr)
             )
+        }
+    }
+
+    @Test("exact helper resolves the SSH route snapshot consumed by Ghosthub")
+    func sshRouteSnapshot() throws {
+        guard ProcessInfo.processInfo.environment[
+            "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
+        ] == "1" else { return }
+        let binary = try #require(
+            ProcessInfo.processInfo.environment[
+                "GHOSTHUB_KWT_CONTRACT_BINARY"
+            ]
+        )
+        let fixture = try TempDirectoryFixture(shortPath: true)
+        let kwtHome = try fixture.createSubdirectory("kwt-home")
+        let home = try fixture.createSubdirectory("account-home")
+        let sshDirectory = try fixture.createSubdirectory("account-home/.ssh")
+        let identity = fixture.childURL("identity key")
+        FileManager.default.createFile(
+            atPath: identity.path,
+            contents: Data()
+        )
+        let config = sshDirectory.appendingPathComponent("config")
+        try """
+        Host relay-v6
+            HostName 2001:db8::42
+            User jump
+            Port 2201
+            StrictHostKeyChecking yes
+
+        Host tailscale-build
+            HostName 100.64.0.8
+            User operator
+            Port 2222
+            ProxyJump relay-v6
+            HostKeyAlias build-key.example.test
+            StrictHostKeyChecking accept-new
+            IdentityFile "\(identity.path)"
+        """.write(to: config, atomically: true, encoding: .utf8)
+        let binaryDirectory = try fixture.createSubdirectory("bin")
+        let sshWrapper = binaryDirectory.appendingPathComponent("ssh")
+        try """
+        #!/bin/sh
+        exec /usr/bin/ssh -F \(shellQuotedCommandArgument(config.path)) "$@"
+        """.write(to: sshWrapper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: sshWrapper.path
+        )
+        let environment = [
+            "HOME": home.path,
+            "KWT_HOME": kwtHome.path,
+            "PATH": binaryDirectory.path + ":"
+                + (ProcessInfo.processInfo.environment["PATH"] ?? ""),
+        ]
+        defer {
+            _ = AccountCommandRunner.runProcess(
+                executable: binary,
+                arguments: ["daemon", "stop"],
+                timeout: 10,
+                environmentOverrides: environment
+            )
+        }
+        let client = KwtSSHRouteClient(
+            runner: { executable, arguments, timeout in
+                let output = AccountCommandRunner.runProcess(
+                    executable: executable,
+                    arguments: arguments,
+                    timeout: timeout,
+                    environmentOverrides: environment
+                )
+                #expect(
+                    output.status == 0,
+                    Comment(rawValue: output.stderr)
+                )
+                return output
+            },
+            binaryPath: binary
+        )
+
+        let snapshot = try client.resolve(SSHHostInfo(
+            user: nil,
+            hostname: "tailscale-build",
+            port: nil
+        ))
+
+        #expect(snapshot.logicalTarget.hostname == "tailscale-build")
+        #expect(snapshot.targets.map(\.logicalTarget.hostname) == [
+            "relay-v6", "tailscale-build",
+        ])
+        let targets = try #require(
+            snapshot.targets.count == 2 ? snapshot.targets : nil
+        )
+        #expect(targets[0].effectiveTarget == KwtSSHTarget(
+            hostname: "2001:db8::42",
+            user: "jump",
+            port: 2201
+        ))
+        #expect(targets[1].effectiveTarget == KwtSSHTarget(
+            hostname: "100.64.0.8",
+            user: "operator",
+            port: 2222
+        ))
+        #expect(targets[1].hostKeyAlias == "build-key.example.test")
+        #expect(targets[1].strictHostKeyChecking == "accept-new")
+        #expect(targets[1].projection.privateConfig.contains(
+            "IdentityFile \"\(identity.path)\""
+        ))
+        #expect(!snapshot.routeIdentity.isEmpty)
+        #expect(snapshot.projectionPolicy ==
+            KwtSSHRouteClient.supportedProjectionPolicy)
+    }
+
+    @Test("exact helper rejects a stale SSH lease through its operation stream")
+    func staleSSHLease() async throws {
+        guard ProcessInfo.processInfo.environment[
+            "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
+        ] == "1" else { return }
+        let binary = try #require(
+            ProcessInfo.processInfo.environment[
+                "GHOSTHUB_KWT_CONTRACT_BINARY"
+            ]
+        )
+        let fixture = try TempDirectoryFixture(shortPath: true)
+        let kwtHome = try fixture.createSubdirectory("kwt-home")
+        let home = try fixture.createSubdirectory("account-home")
+        let sshDirectory = try fixture.createSubdirectory("account-home/.ssh")
+        let config = sshDirectory.appendingPathComponent("config")
+        try """
+        Host changing-build
+            HostName 100.64.0.8
+            User operator
+            StrictHostKeyChecking yes
+        """.write(to: config, atomically: true, encoding: .utf8)
+        let binaryDirectory = try fixture.createSubdirectory("bin")
+        let sshWrapper = binaryDirectory.appendingPathComponent("ssh")
+        try """
+        #!/bin/sh
+        exec /usr/bin/ssh -F \(shellQuotedCommandArgument(config.path)) "$@"
+        """.write(to: sshWrapper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: sshWrapper.path
+        )
+        let environment = ProcessInfo.processInfo.environment.merging([
+            "HOME": home.path,
+            "KWT_HOME": kwtHome.path,
+            "PATH": binaryDirectory.path + ":"
+                + (ProcessInfo.processInfo.environment["PATH"] ?? ""),
+        ]) { _, fixture in fixture }
+        defer {
+            _ = AccountCommandRunner.runProcess(
+                executable: binary,
+                arguments: ["daemon", "stop"],
+                timeout: 10,
+                environmentOverrides: environment
+            )
+        }
+        let routeClient = KwtSSHRouteClient(
+            runner: { executable, arguments, timeout in
+                AccountCommandRunner.runProcess(
+                    executable: executable,
+                    arguments: arguments,
+                    timeout: timeout,
+                    environmentOverrides: environment
+                )
+            },
+            binaryPath: binary
+        )
+        let host = SSHHostInfo(
+            user: nil,
+            hostname: "changing-build",
+            port: nil
+        )
+        let snapshot = try routeClient.resolve(host)
+        try """
+        Host changing-build
+            HostName 100.64.0.9
+            User operator
+            StrictHostKeyChecking yes
+        """.write(to: config, atomically: true, encoding: .utf8)
+
+        await #expect {
+            _ = try await KwtSSHLeaseClient(
+                binaryPath: binary,
+                environment: environment
+            ).acquire(
+                route: snapshot,
+                prompt: { _ in
+                    Issue.record("A stale route must fail before prompting")
+                    return ""
+                }
+            )
+        } throws: { error in
+            error as? KwtSSHLeaseError == .routeChanged
         }
     }
 
@@ -119,6 +315,7 @@ struct PinnedKwtContractTests {
             expectedRepository: project.project.repository,
             expectedRegistration:
             project.project.registrationFingerprint,
+            expectedRouteIdentity: nil,
             on: .local
         )
         #expect(removed.path == project.project.path)
@@ -254,6 +451,7 @@ struct PinnedKwtContractTests {
             expectedRepository: registeredProject.project.repository,
             expectedRegistration:
             registeredProject.project.registrationFingerprint,
+            expectedRouteIdentity: nil,
             on: .local
         )
 
@@ -447,6 +645,7 @@ struct PinnedKwtContractTests {
                 expectedRepository: expectedRepository,
                 expectedRegistration:
                 initialProject.project.registrationFingerprint,
+                expectedRouteIdentity: nil,
                 on: .local
             )
         } throws: { error in
@@ -572,6 +771,7 @@ struct PinnedKwtContractTests {
                 projectPath: observed.path,
                 expectedRepository: observed.repository,
                 expectedRegistration: observed.registrationFingerprint,
+                expectedRouteIdentity: nil,
                 on: .local
             )
         } throws: { error in

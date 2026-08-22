@@ -35,6 +35,11 @@ enum TmuxSessionKillError: Error, Equatable, LocalizedError {
     }
 }
 
+struct ReviewedTmuxSessionIdentity: Equatable, Sendable {
+    let identity: TmuxSessionIdentity
+    let routeIdentity: String?
+}
+
 struct TmuxSessionKiller: Sendable {
     private static let identityMismatchMarker =
         "GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH"
@@ -46,34 +51,71 @@ struct TmuxSessionKiller: Sendable {
         -> Result<String, TmuxBinaryError>
     typealias Runner = @Sendable (CommandHost, String)
         -> (status: Int32, stdout: String)
+    typealias OutputRunner = @Sendable (CommandHost, String)
+        -> AccountCommandOutput
+    private typealias RoutedPathResolver = @Sendable (
+        CommandHost, [String]?
+    ) -> Result<String, TmuxBinaryError>
+    private typealias RoutedRunner = @Sendable (
+        CommandHost, [String]?, String
+    ) -> AccountCommandOutput
 
-    private let pathResolver: PathResolver
-    private let runner: Runner
+    private let pathResolver: RoutedPathResolver
+    private let runner: RoutedRunner
+    private let commandLease: KwtSSHCommandLease
 
     init(
         pathResolver: PathResolver? = nil,
-        runner: Runner? = nil
+        runner: Runner? = nil,
+        outputRunner: OutputRunner? = nil,
+        commandLease: KwtSSHCommandLease? = nil
     ) {
-        self.pathResolver = pathResolver ?? { host in
+        self.commandLease = commandLease ?? .unlessInjected(
+            pathResolver != nil || runner != nil || outputRunner != nil
+        )
+        self.pathResolver = { host, connectionArguments in
+            if let pathResolver {
+                return pathResolver(host)
+            }
             let resolver = TmuxBinaryResolver()
             switch host {
             case .local:
                 return resolver.resolveTmuxPath()
             case let .ssh(info):
-                return resolver.resolveTmuxPath(on: info)
+                return resolver.resolveTmuxPath(
+                    on: info,
+                    sshConnectionArguments: connectionArguments ?? []
+                )
             }
         }
-        self.runner = runner ?? { host, command in
+        self.runner = { host, connectionArguments, command in
+            if let outputRunner {
+                return outputRunner(host, command)
+            }
+            if let runner {
+                let result = runner(host, command)
+                return AccountCommandOutput(
+                    status: result.status,
+                    stdout: result.stdout,
+                    stderr: ""
+                )
+            }
             switch host {
             case .local:
-                AccountCommandRunner.runLoginShell(
+                let result = AccountCommandRunner.runLoginShell(
                     shell: AccountCommandRunner.loginShell(),
                     command: command,
                     timeout: 15
                 )
+                return AccountCommandOutput(
+                    status: result.status,
+                    stdout: result.stdout,
+                    stderr: ""
+                )
             case let .ssh(info):
-                AccountCommandRunner.runRemoteLoginShell(
+                return AccountCommandRunner().runRemoteLoginShell(
                     host: info,
+                    connectionArguments: connectionArguments ?? [],
                     command: command,
                     timeout: 15
                 )
@@ -81,10 +123,41 @@ struct TmuxSessionKiller: Sendable {
         }
     }
 
+    /// Borrows one lease for a remote host when the caller has none.
+    private func withConnection<Value: Sendable>(
+        _ sshConnectionArguments: [String]?,
+        on host: CommandHost,
+        operation: @escaping @Sendable (
+            [String]?, KwtSSHConnection?
+        ) async throws -> Value
+    ) async throws -> Value {
+        if sshConnectionArguments == nil, host.isRemote {
+            return try await commandLease.withConnection(on: host) {
+                connection in
+                try await operation(connection?.arguments, connection)
+            }
+        }
+        return try await operation(sshConnectionArguments, nil)
+    }
+
+    private func resolveTmuxPath(
+        on host: CommandHost,
+        sshConnectionArguments: [String]?,
+        connection: KwtSSHConnection?
+    ) async throws -> String {
+        let result = pathResolver(host, sshConnectionArguments)
+        if case let .failure(.sshConnectionFailed(_, classification)) = result,
+           classification.connectionUnusable {
+            await connection?.invalidate()
+        }
+        return try result.get()
+    }
+
     func kill(
         _ selection: WorkspaceTmuxSessionSelection,
         expectedIdentity: TmuxSessionIdentity,
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]? = nil
     ) async throws {
         guard Self.isNumericIdentity(expectedIdentity.serverPID),
               Self.isSessionID(expectedIdentity.sessionID),
@@ -95,7 +168,39 @@ struct TmuxSessionKiller: Sendable {
                 session: selection.name
             )
         }
-        let tmuxPath = try pathResolver(host).get()
+        if sshConnectionArguments == nil, host.isRemote {
+            try await commandLease.withConnection(on: host) { connection in
+                try await killWithArguments(
+                    selection,
+                    expectedIdentity: expectedIdentity,
+                    on: host,
+                    sshConnectionArguments: connection?.arguments,
+                    connection: connection
+                )
+            }
+        } else {
+            try await killWithArguments(
+                selection,
+                expectedIdentity: expectedIdentity,
+                on: host,
+                sshConnectionArguments: sshConnectionArguments,
+                connection: nil
+            )
+        }
+    }
+
+    private func killWithArguments(
+        _ selection: WorkspaceTmuxSessionSelection,
+        expectedIdentity: TmuxSessionIdentity,
+        on host: CommandHost,
+        sshConnectionArguments: [String]?,
+        connection: KwtSSHConnection?
+    ) async throws {
+        let tmuxPath = try await resolveTmuxPath(
+            on: host,
+            sshConnectionArguments: sshConnectionArguments,
+            connection: connection
+        )
         let command = Self.command(
             tmuxPath: tmuxPath,
             sessionName: selection.name,
@@ -103,10 +208,10 @@ struct TmuxSessionKiller: Sendable {
             expectedIdentity: expectedIdentity,
             platform: Self.platform(for: host)
         )
-        let runner = runner
-        let result = await Task.detached(priority: .userInitiated) {
-            runner(host, command)
-        }.value
+        let routedRunner = runner
+        let result = await commandLease.runCommand(using: connection) { _ in
+            routedRunner(host, sshConnectionArguments, command)
+        }
         guard result.status == 0 else {
             if result.status == 1,
                Self.isConfirmedAbsence(result.stdout) {
@@ -129,11 +234,55 @@ struct TmuxSessionKiller: Sendable {
         }
     }
 
+    func killReviewed(
+        _ selection: WorkspaceTmuxSessionSelection,
+        expectedIdentity: TmuxSessionIdentity,
+        expectedRouteIdentity: String?,
+        on host: CommandHost
+    ) async throws {
+        try await commandLease.withConnection(on: host) { connection in
+            guard expectedRouteIdentity == connection?.routeIdentity else {
+                throw TmuxSessionKillError.hostChanged(
+                    session: selection.name
+                )
+            }
+            try await killWithArguments(
+                selection,
+                expectedIdentity: expectedIdentity,
+                on: host,
+                sshConnectionArguments: connection?.arguments,
+                connection: connection
+            )
+        }
+    }
+
     func sessionIdentity(
         _ selection: WorkspaceTmuxSessionSelection,
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]? = nil
     ) async throws -> TmuxSessionIdentity {
-        let tmuxPath = try pathResolver(host).get()
+        try await withConnection(sshConnectionArguments, on: host) {
+            sshConnectionArguments, connection in
+            try await sessionIdentityWithArguments(
+                selection,
+                on: host,
+                sshConnectionArguments: sshConnectionArguments,
+                connection: connection
+            )
+        }
+    }
+
+    private func sessionIdentityWithArguments(
+        _ selection: WorkspaceTmuxSessionSelection,
+        on host: CommandHost,
+        sshConnectionArguments: [String]?,
+        connection: KwtSSHConnection?
+    ) async throws -> TmuxSessionIdentity {
+        let tmuxPath = try await resolveTmuxPath(
+            on: host,
+            sshConnectionArguments: sshConnectionArguments,
+            connection: connection
+        )
         let platform = Self.platform(for: host)
         let probeCommand = Self.sessionProbeCommand(
             tmuxPath: tmuxPath,
@@ -141,10 +290,10 @@ struct TmuxSessionKiller: Sendable {
             socketName: selection.socketName,
             platform: platform
         )
-        let runner = runner
-        let probe = await Task.detached(priority: .userInitiated) {
-            runner(host, probeCommand)
-        }.value
+        let routedRunner = runner
+        let probe = await commandLease.runCommand(using: connection) { _ in
+            routedRunner(host, sshConnectionArguments, probeCommand)
+        }
         guard probe.status == 0 else {
             if probe.status == 1,
                Self.isConfirmedAbsence(probe.stdout) {
@@ -165,9 +314,9 @@ struct TmuxSessionKiller: Sendable {
             socketName: selection.socketName,
             platform: platform
         )
-        let result = await Task.detached(priority: .userInitiated) {
-            runner(host, identityCommand)
-        }.value
+        let result = await commandLease.runCommand(using: connection) { _ in
+            routedRunner(host, sshConnectionArguments, identityCommand)
+        }
         guard result.status == 0 else {
             throw TmuxSessionKillError.identityCommandFailed(
                 host: host.displayName,
@@ -182,6 +331,29 @@ struct TmuxSessionKiller: Sendable {
             )
         }
         return identity
+    }
+
+    func reviewedIdentity(
+        _ selection: WorkspaceTmuxSessionSelection,
+        knownIdentity: TmuxSessionIdentity? = nil,
+        on host: CommandHost
+    ) async throws -> ReviewedTmuxSessionIdentity {
+        try await commandLease.withConnection(on: host) { connection in
+            let identity = if let knownIdentity {
+                knownIdentity
+            } else {
+                try await sessionIdentityWithArguments(
+                    selection,
+                    on: host,
+                    sshConnectionArguments: connection?.arguments,
+                    connection: connection
+                )
+            }
+            return ReviewedTmuxSessionIdentity(
+                identity: identity,
+                routeIdentity: connection?.routeIdentity
+            )
+        }
     }
 
     static func command(

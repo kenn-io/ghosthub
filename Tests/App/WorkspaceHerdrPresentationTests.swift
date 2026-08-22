@@ -247,14 +247,14 @@ struct WorkspaceHerdrPresentationTests {
         ))
         let store = RecordingNativeSessionSurfaceStore()
         let localProbeStarted = Mutex(false)
-        let releaseLocalProbe = DispatchSemaphore(value: 0)
+        let releaseLocalProbe = AsyncGate()
         let model = try makeHerdrModel(
             environment,
             store: store,
             discovery: { host in
                 if host == .local {
                     localProbeStarted.withLock { $0 = true }
-                    releaseLocalProbe.wait()
+                    await releaseLocalProbe.wait()
                     return .available([
                         HerdrSessionSummary(
                             name: "api",
@@ -293,7 +293,7 @@ struct WorkspaceHerdrPresentationTests {
             #expect(model.activeBorrowedHerdrSelection == replacement)
         }
 
-        releaseLocalProbe.signal()
+        releaseLocalProbe.open()
         await delayedActivation.value
 
         #expect(model.activeBorrowedHerdrSelection == (
@@ -309,13 +309,13 @@ struct WorkspaceHerdrPresentationTests {
         environment.snapshot.projects.append(project)
         let store = RecordingNativeSessionSurfaceStore()
         let probeStarted = Mutex(false)
-        let releaseProbe = DispatchSemaphore(value: 0)
+        let releaseProbe = AsyncGate()
         let model = try makeHerdrModel(
             environment,
             store: store,
             discovery: { _ in
                 probeStarted.withLock { $0 = true }
-                releaseProbe.wait()
+                await releaseProbe.wait()
                 return .available([
                     HerdrSessionSummary(
                         name: "api",
@@ -341,7 +341,7 @@ struct WorkspaceHerdrPresentationTests {
         model.synchronizeSelection(WorkspaceSelection(
             selectedHostID: environment.hostID
         ))
-        releaseProbe.signal()
+        releaseProbe.open()
         try await activation.value
 
         #expect(model.activeBorrowedHerdrSelection == selection)
@@ -386,13 +386,13 @@ struct WorkspaceHerdrPresentationTests {
             environment.snapshot.hosts[0].herdrSessions.append(stopped)
             result = .available([stopped])
         }
-        let gate = BlockingGate()
+        let gate = AsyncGate()
         let coordinator = HerdrSessionLifecycleCoordinator()
         let model = try makeHerdrModel(
             environment,
             store: RecordingNativeSessionSurfaceStore(),
             discovery: { _ in
-                gate.block()
+                await gate.wait()
                 return result
             },
             coordinator: coordinator
@@ -411,7 +411,7 @@ struct WorkspaceHerdrPresentationTests {
                 try await model.restartHerdrSession(selection)
             }
         }
-        await gate.waitUntilBlocked()
+        await gate.waitUntilWaiting()
 
         await model.shutdown()
         gate.open()
@@ -495,13 +495,13 @@ struct WorkspaceHerdrPresentationTests {
         environment.snapshot.hosts[0].herdrSessions.append(stopped)
         let store = RecordingNativeSessionSurfaceStore()
         let probeStarted = Mutex(false)
-        let releaseProbe = DispatchSemaphore(value: 0)
+        let releaseProbe = AsyncGate()
         let model = try makeHerdrModel(
             environment,
             store: store,
             discovery: { _ in
                 probeStarted.withLock { $0 = true }
-                releaseProbe.wait()
+                await releaseProbe.wait()
                 return .available([stopped])
             }
         )
@@ -519,7 +519,7 @@ struct WorkspaceHerdrPresentationTests {
         }
         await waitUntilMainActor { probeStarted.withLock { $0 } }
         model.openBorrowedTmuxSession(newerTmux)
-        releaseProbe.signal()
+        releaseProbe.open()
 
         await #expect(throws: CancellationError.self) {
             try await restart.value
@@ -535,13 +535,13 @@ struct WorkspaceHerdrPresentationTests {
         environment.snapshot.hosts[0].herdrAvailable = true
         let store = RecordingNativeSessionSurfaceStore()
         let probeStarted = Mutex(false)
-        let releaseProbe = DispatchSemaphore(value: 0)
+        let releaseProbe = AsyncGate()
         let model = try makeHerdrModel(
             environment,
             store: store,
             discovery: { _ in
                 probeStarted.withLock { $0 = true }
-                releaseProbe.wait()
+                await releaseProbe.wait()
                 return .available([])
             }
         )
@@ -559,7 +559,7 @@ struct WorkspaceHerdrPresentationTests {
         }
         await waitUntilMainActor { probeStarted.withLock { $0 } }
         model.openBorrowedTmuxSession(newerTmux)
-        releaseProbe.signal()
+        releaseProbe.open()
 
         await #expect(throws: CancellationError.self) {
             try await create.value
@@ -674,8 +674,8 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
-    @Test("constructive confirmation uses the attachment's frozen route")
-    func constructiveConfirmationUsesFrozenRoute() async throws {
+    @Test("constructive confirmation uses the attachment lease route")
+    func constructiveConfirmationUsesAttachmentLease() async throws {
         var environment = try remoteEnvironment()
         environment.snapshot.hosts[0].herdrAvailable = true
         environment.snapshot.hosts[0].herdrSessions = [
@@ -688,6 +688,9 @@ struct WorkspaceHerdrPresentationTests {
         let snapshot = SSHConnectionArgumentsSnapshot(arguments: [
             "-F", "/tmp/frozen-config", "dev@build.example.test",
         ])
+        let leaseArguments = [
+            "-F", "/tmp/lease-config", "dev@build.example.test",
+        ]
         let received = Mutex<(CommandHost, [String])?>(nil)
         let displayedSessions = environment.snapshot.hosts[0].herdrSessions
         let store = RecordingNativeSessionSurfaceStore()
@@ -703,6 +706,9 @@ struct WorkspaceHerdrPresentationTests {
                 return .present
             },
             sshConnectionSnapshotProvider: { _ in snapshot },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: leaseArguments)
+            },
             coordinator: coordinator,
             createdSessionDiscoveryDelays: []
         )
@@ -723,11 +729,108 @@ struct WorkspaceHerdrPresentationTests {
         #expect(route.0 == CommandHostResolver.resolve(
             environment.snapshot.hosts[0]
         ))
-        #expect(route.1 == snapshot.arguments)
+        #expect(route.1 == leaseArguments)
         #expect(store.requestedConfigurations.last?.command?.contains(
             "--session"
         ) == false)
         await model.shutdown()
+    }
+
+    @Test("demo presentation accepts its validated route")
+    func demoPresentationUsesCanonicalRoute() async throws {
+        var environment = try remoteEnvironment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let running = try #require(
+            environment.snapshot.hosts[0].herdrSessions.first
+        )
+        let scratch = "/tmp/ghosthub-demo"
+        let demoEnvironment = [
+            "GHOSTHUB_DEMO_SCRATCH": scratch,
+            "GHOSTHUB_DEMO_SSH_DIR": "\(scratch)/ssh",
+        ]
+        let acquisitions = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in .available([running]) },
+            sshConnectionSnapshotProvider: { info in
+                SSHConnectionArgumentsSnapshot(KwtSSHConnection(
+                    arguments: demoSSHIsolationArguments(
+                        environment: demoEnvironment
+                    ),
+                    routeIdentity: SSHDestination.demoRouteIdentity(info),
+                    generation: 0
+                ))
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                acquisitions.withLock { $0 += 1 }
+                return testKwtSSHAttachment()
+            },
+            presentationSSHEnvironment: demoEnvironment
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: running.name
+        )
+
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+
+        #expect(acquisitions.load() == 0)
+        #expect(store.requestedConfigurations.last?.command?.contains(
+            "\(scratch)/ssh/config"
+        ) == true)
+        await model.shutdown()
+    }
+
+    @Test("reopening an active remote session preserves its lease")
+    func reopeningActiveRemoteSessionPreservesLease() async throws {
+        var environment = try remoteEnvironment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let running = try #require(
+            environment.snapshot.hosts[0].herdrSessions.first
+        )
+        let validation = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/validation-config", "dev@build.example.test",
+        ])
+        let leaseArguments = [
+            "-F", "/tmp/lease-config", "dev@build.example.test",
+        ]
+        let acquisitionCount = LockedValue(0)
+        let releaseCount = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in .available([running]) },
+            sshConnectionSnapshotProvider: { _ in validation },
+            presentationSSHConnectionProvider: { _, _ in
+                acquisitionCount.withLock { $0 += 1 }
+                return testKwtSSHAttachment(
+                    arguments: leaseArguments,
+                    release: {
+                        releaseCount.withLock { $0 += 1 }
+                    }
+                )
+            }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: running.name
+        )
+
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+
+        try await model.openBorrowedHerdrSession(selection)
+        model.prepareActiveBorrowedHerdrSurface()
+
+        #expect(model.activeBorrowedHerdrSelection == selection)
+        #expect(acquisitionCount.load() == 1)
+        #expect(releaseCount.load() == 0)
+        await model.shutdown()
+        #expect(releaseCount.load() == 1)
     }
 
     @Test("opening rejects SSH route drift during validation")
@@ -767,8 +870,8 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
-    @Test("constructive confirmation rejects SSH route drift")
-    func constructiveConfirmationRejectsRouteDrift() async throws {
+    @Test("constructive launch rejects kwt lease route drift")
+    func constructiveLaunchRejectsLeaseRouteDrift() async throws {
         var environment = try remoteEnvironment()
         environment.snapshot.hosts[0].herdrAvailable = true
         let stopped = HerdrSessionSummary(
@@ -780,24 +883,16 @@ struct WorkspaceHerdrPresentationTests {
         let frozen = SSHConnectionArgumentsSnapshot(arguments: [
             "-F", "/tmp/frozen-config", "dev@build.example.test",
         ])
-        let changed = SSHConnectionArgumentsSnapshot(arguments: [
-            "-F", "/tmp/changed-config", "dev@other.example.test",
-        ])
-        let currentRoute = LockedValue(frozen)
-        let probeGate = BlockingGate()
         let coordinator = HerdrSessionLifecycleCoordinator()
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeHerdrModel(
             environment,
             store: store,
             discovery: { _ in .available([stopped]) },
-            exactProbe: { _, _, _ in
-                await Task.detached {
-                    probeGate.block()
-                    return HerdrSessionProbeOutcome.present
-                }.value
+            sshConnectionSnapshotProvider: { _ in frozen },
+            presentationSSHConnectionProvider: { _, _ in
+                throw KwtSSHLeaseError.routeChanged
             },
-            sshConnectionSnapshotProvider: { _ in currentRoute.load() },
             coordinator: coordinator,
             createdSessionDiscoveryDelays: []
         )
@@ -811,13 +906,10 @@ struct WorkspaceHerdrPresentationTests {
         )
 
         try await model.restartHerdrSession(selection)
-        await launchHerdrSurface(model, store: store)
-        await probeGate.waitUntilBlocked()
-        currentRoute.store(changed)
-        probeGate.open()
         await waitUntilMainActor { !coordinator.isPending(key) }
 
         #expect(!coordinator.isPending(key))
+        #expect(store.requestedConfigurations.isEmpty)
         await model.shutdown()
     }
 
@@ -1298,6 +1390,9 @@ struct WorkspaceHerdrPresentationTests {
         let connection = SSHConnectionArgumentsSnapshot(arguments: [
             "-F", "/tmp/frozen-config", "dev@build.example.test",
         ])
+        let leaseArguments = [
+            "-F", "/tmp/reacquired-config", "dev@build.example.test",
+        ]
         let probedArguments = Mutex<[String]?>(nil)
         let running = HerdrSessionSummary(
             name: "api",
@@ -1312,7 +1407,10 @@ struct WorkspaceHerdrPresentationTests {
                 probedArguments.withLock { $0 = arguments }
                 return .present
             },
-            sshConnectionSnapshotProvider: { _ in connection }
+            sshConnectionSnapshotProvider: { _ in connection },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: leaseArguments)
+            }
         )
         let selection = WorkspaceHerdrSessionSelection(
             hostID: environment.hostID,
@@ -1331,7 +1429,7 @@ struct WorkspaceHerdrPresentationTests {
 
         #expect(probedArguments.withLock { $0 } == connection.arguments)
         #expect(store.requestedConfigurations.last?.command?.contains(
-            "/tmp/frozen-config"
+            "/tmp/reacquired-config"
         ) == true)
         await model.shutdown()
     }
@@ -1428,6 +1526,9 @@ struct WorkspaceHerdrPresentationTests {
         let connection = SSHConnectionArgumentsSnapshot(arguments: [
             "-F", "/tmp/frozen-config", "dev@build.example.test",
         ])
+        let leaseArguments = [
+            "-F", "/tmp/reacquired-config", "dev@build.example.test",
+        ]
         let probedConnectionArguments = Mutex<[String]?>(nil)
         let discoveries = HerdrDiscoveryQueue([
             .available([
@@ -1442,7 +1543,10 @@ struct WorkspaceHerdrPresentationTests {
                 probedConnectionArguments.withLock { $0 = arguments }
                 return .present
             },
-            sshConnectionSnapshotProvider: { _ in connection }
+            sshConnectionSnapshotProvider: { _ in connection },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: leaseArguments)
+            }
         )
         let herdr = WorkspaceHerdrSessionSelection(
             hostID: environment.hostID,
@@ -1460,9 +1564,138 @@ struct WorkspaceHerdrPresentationTests {
         #expect(discoveries.callCount == 1)
         #expect(probedConnectionArguments.withLock { $0 } == connection.arguments)
         #expect(store.requestedConfigurations.last?.command?.contains(
-            "/tmp/frozen-config"
+            "/tmp/reacquired-config"
         ) == true)
         #expect(model.activeBorrowedHerdrSelection == herdr)
+        await model.shutdown()
+    }
+
+    @Test("dead Herdr reconnect lease is invalidated before retry")
+    func deadHerdrReconnectLeaseIsInvalidatedBeforeRetry() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let original = SSHConnectionArgumentsSnapshot(testKwtSSHAttachment(
+            arguments: ["-F", "/tmp/original-herdr-config"],
+            routeIdentity: "sha256:stable-route",
+            generation: 1
+        ))
+        let replacement = SSHConnectionArgumentsSnapshot(testKwtSSHAttachment(
+            arguments: ["-F", "/tmp/replacement-herdr-config"],
+            routeIdentity: "sha256:stable-route",
+            generation: 3
+        ))
+        let current = Mutex(original)
+        let invalidations = Mutex(0)
+        let deadAttempts = Mutex(0)
+        let deadConnection = testKwtSSHAttachment(
+            arguments: ["-F", "/tmp/dead-herdr-config"],
+            routeIdentity: "sha256:stable-route",
+            generation: 2,
+            invalidate: {
+                invalidations.withLock { $0 += 1 }
+                current.withLock { $0 = replacement }
+            }
+        )
+        let dead = SSHConnectionArgumentsSnapshot(deadConnection)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, arguments in
+                guard arguments == dead.arguments else { return .present }
+                deadAttempts.withLock { $0 += 1 }
+                return .failure(.commandFailed(
+                    status: 255,
+                    stderr: "Control socket connect(/tmp/dead): No such file or directory"
+                ))
+            },
+            sshConnectionSnapshotProvider: { _ in
+                current.withLock { $0 }
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                let connection = current.withLock { $0 }
+                return testKwtSSHAttachment(
+                    arguments: connection.arguments,
+                    routeIdentity: connection.routeIdentity ?? "",
+                    generation: connection.generation ?? 0
+                )
+            }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        current.withLock { $0 = dead }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            invalidations.withLock { $0 } == 1
+                || deadAttempts.withLock { $0 } >= 3
+        }
+
+        guard invalidations.withLock({ $0 }) == 1 else {
+            Issue.record("Expected the dead pooled connection to be invalidated")
+            await model.shutdown()
+            withExtendedLifetime(deadConnection) {}
+            return
+        }
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            store.requestedConfigurations.count == 2
+                && model.activeBorrowedHerdrConnectionState == .connected
+        }
+
+        #expect(deadAttempts.withLock { $0 } == 1)
+        #expect(store.requestedConfigurations.last?.command?.contains(
+            "/tmp/replacement-herdr-config"
+        ) == true)
+        await model.shutdown()
+        withExtendedLifetime(deadConnection) {}
+    }
+
+    @Test("SSH acquisition failure ends a Herdr reconnect handoff")
+    func sshAcquisitionFailureEndsHerdrReconnect() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let acquisitions = Mutex(0)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in .present },
+            presentationSSHConnectionProvider: { _, _ in
+                let attempt = acquisitions.withLock {
+                    $0 += 1
+                    return $0
+                }
+                guard attempt == 1 else {
+                    throw KwtSSHLeaseError.helperUnavailable
+                }
+                return testKwtSSHAttachment()
+            }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor {
+            acquisitions.withLock { $0 } == 2
+                && model.activeBorrowedHerdrRecoveryState == nil
+        }
+
+        #expect(store.requestedKeys.count == 1)
+        #expect(!model.herdrReconnectSupervisorIsRunning)
+        guard case .disconnected = model.activeBorrowedHerdrConnectionState
+        else {
+            Issue.record("Expected the failed relaunch to disconnect")
+            await model.shutdown()
+            return
+        }
         await model.shutdown()
     }
 
@@ -1630,6 +1863,77 @@ struct WorkspaceHerdrPresentationTests {
         }
 
         #expect(store.requestedKeys.count == 1)
+        await model.shutdown()
+    }
+
+    @Test("reconnect rejects a different SSH route before probing")
+    func remoteTransportRecoveryRejectsDifferentRouteBeforeProbe()
+        async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let original = SSHConnectionArgumentsSnapshot(testKwtSSHAttachment(
+            arguments: ["-F", "/tmp/original-herdr-config"],
+            routeIdentity: "sha256:original-route",
+            generation: 1
+        ))
+        let replacement = SSHConnectionArgumentsSnapshot(testKwtSSHAttachment(
+            arguments: ["-F", "/tmp/replacement-herdr-config"],
+            routeIdentity: "sha256:replacement-route",
+            generation: 2
+        ))
+        let currentConnection = LockedValue(original)
+        let probes = LockedValue(0)
+        let running = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .running
+        )
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in .available([running]) },
+            exactProbe: { _, _, _ in
+                probes.withLock { $0 += 1 }
+                return .present
+            },
+            sshConnectionSnapshotProvider: { _ in
+                currentConnection.load()
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                let connection = currentConnection.load()
+                return testKwtSSHAttachment(
+                    arguments: connection.arguments,
+                    routeIdentity: connection.routeIdentity ?? "",
+                    generation: connection.generation ?? 0
+                )
+            }
+        )
+        let herdr = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+
+        try await model.openBorrowedHerdrSession(herdr)
+        await launchHerdrSurface(model, store: store)
+        probes.store(0)
+        currentConnection.store(replacement)
+
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        let changedConnectionReason =
+            "The SSH connection changed while Ghosthub was checking the Herdr session. Reopen it to use the current connection."
+        await waitUntilMainActor {
+            probes.load() > 0
+                || model.activeBorrowedHerdrConnectionState
+                == .disconnected(reason: changedConnectionReason)
+        }
+
+        #expect(probes.load() == 0)
+        #expect(store.requestedKeys.count == 1)
+        #expect(
+            model.activeBorrowedHerdrConnectionState
+                == .disconnected(reason: changedConnectionReason)
+        )
         await model.shutdown()
     }
 
@@ -1831,9 +2135,15 @@ struct WorkspaceHerdrPresentationTests {
         discovery: WorkspaceSceneModel.HerdrSessionDiscovery? = nil,
         exactProbe: WorkspaceSceneModel.HerdrSessionExactProbe? = nil,
         sshConnectionSnapshotProvider:
-        @escaping @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot = {
+        @escaping WorkspaceSceneModel.SSHConnectionSnapshotProvider = {
             _ in SSHConnectionArgumentsSnapshot(arguments: [])
         },
+        presentationSSHConnectionProvider:
+        @MainActor @escaping @Sendable (UUID, SSHHostInfo) async throws
+            -> KwtSSHConnection = { _, _ in
+                testKwtSSHAttachment()
+            },
+        presentationSSHEnvironment: [String: String] = [:],
         coordinator: HerdrSessionLifecycleCoordinator =
             HerdrSessionLifecycleCoordinator(),
         nativeHerdrPathProvider: @escaping @Sendable (CommandHost)
@@ -1875,6 +2185,9 @@ struct WorkspaceHerdrPresentationTests {
             herdrSessionDiscovery: discovery ?? { _ in
                 .available(displayedSessions)
             },
+            presentationSSHConnectionProvider:
+            presentationSSHConnectionProvider,
+            presentationSSHEnvironment: presentationSSHEnvironment,
             herdrSessionExactProbe: exactProbe,
             createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
             tmuxReconnectIntervals: [.milliseconds(1)]

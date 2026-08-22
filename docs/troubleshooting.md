@@ -89,8 +89,8 @@ reviewed safely and fail closed. If no unseen key is reported, the same
 recovery sheet checks the connection. A reachable host keeps its inventory
 diagnostic and offers **Retry**. Ghosthub shows interactive challenges in a
 native secure-entry sheet, confirms the connection before you continue, and
-keeps that OpenSSH control connection for the app session. The response is not
-saved.
+shares that OpenSSH connection while windows use it; once the last owner
+releases it, kwt applies its own idle policy. The response is not saved.
 Use **Test Connection** to verify authentication and that `tmux` is on the
 remote login-shell `PATH`.
 Kwt does not need a system installation: Ghosthub automatically installs or

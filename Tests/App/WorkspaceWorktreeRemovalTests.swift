@@ -30,10 +30,10 @@ struct WorkspaceWorktreeRemovalTests {
                     ? fixture.beforeRemoval
                     : afterRemoval
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 normalRemovals.withLock { $0 += 1 }
             },
-            kwtForceWorktreeRemover: { _, _, _, _ in
+            kwtForceWorktreeRemover: { _, _, _, _, _ in
                 forcedRemovals.withLock { $0 += 1 }
             },
             kwtWorktreeChangeReader: { _, _, _ in
@@ -104,7 +104,7 @@ struct WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterRemoval
             },
-            kwtWorktreeRemover: { _, _, _, _ in },
+            kwtWorktreeRemover: { _, _, _, _, _ in },
             worktreeMutationCoordinator: coordinator,
             tmuxSessionKiller: { _, _, _ in }
         )
@@ -204,7 +204,7 @@ struct WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterRemoval
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 _ = await removerHold.load(afterRemoval)
             },
             worktreeMutationCoordinator: coordinator,
@@ -309,7 +309,7 @@ struct WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterRemoval
             },
-            kwtWorktreeRemover: { _, _, _, _ in },
+            kwtWorktreeRemover: { _, _, _, _, _ in },
             worktreeMutationCoordinator: coordinator,
             tmuxSessionIdentityReader: { selection, host in
                 throw TmuxSessionKillError.sessionNotRunning(

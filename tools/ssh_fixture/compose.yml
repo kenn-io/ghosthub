@@ -1,0 +1,16 @@
+services:
+  relay:
+    image: ${GHOSTHUB_SSH_FIXTURE_IMAGE}
+    hostname: ghosthub-relay-fixture
+    ports:
+      - "127.0.0.1::22"
+    volumes:
+      - "${GHOSTHUB_SSH_FIXTURE_DIR}:/fixture:ro"
+
+  target:
+    image: ${GHOSTHUB_SSH_FIXTURE_IMAGE}
+    hostname: ghosthub-target-fixture
+    ports:
+      - "127.0.0.1::22"
+    volumes:
+      - "${GHOSTHUB_SSH_FIXTURE_DIR}:/fixture:ro"

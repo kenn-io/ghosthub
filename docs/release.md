@@ -8,7 +8,8 @@ Packaged releases check the stable feed at
 
 The application bundles an ordinary `kwt` CLI helper at
 `Ghosthub.app/Contents/Helpers/kwt`. Ghosthub invokes that exact helper for
-local project inventory and worktree operations. It does not resolve a local
+local project inventory, worktree operations, and effective SSH route
+resolution. It does not resolve a local
 `kwt` from `PATH`, including when the bundle is damaged or incomplete: the
 local operation fails instead of drifting to another installation. Remote
 hosts use one of six pinned, CGO-disabled variants sealed under
@@ -84,7 +85,11 @@ helper it built from the pin; a local build against a substituted
 `KWT_BINARY_PATH` is recorded as `unpinned` rather than inheriting the pin. Kwt
 is part of Ghosthub's signed code, but Ghosthub invokes only its CLI and never
 manages its service or state directly. The pinned CLI may auto-start or reuse
-kwt's same-account daemon for inventory. The pinned revision supports the
+kwt's same-account daemon for inventory and SSH route resolution. Route
+resolution remains local to the app host even when the destination is remote;
+it does not require kwt on the destination. The app fails closed rather than
+falling back to another kwt or a separate Swift `ssh -G` implementation. The
+pinned revision supports the
 complete automation contract consumed by the app, including the isolated tmux
 socket identity
 returned by session-free `pr import`, the inert shell-only protected session

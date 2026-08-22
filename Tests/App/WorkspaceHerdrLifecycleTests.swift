@@ -139,6 +139,61 @@ struct WorkspaceHerdrLifecycleTests {
         await model.shutdown()
     }
 
+    @Test("failed lifecycle invalidates an unusable retained SSH connection")
+    func failedLifecycleInvalidatesUnusableSSHConnection() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].kind = .remote
+        environment.snapshot.hosts[0].platform = .linux
+        environment.snapshot.hosts[0].sshDestination = "dev@builder"
+        let client = LifecycleClientStub(
+            records: [
+                "agent": Self.record(name: "agent", state: .running),
+            ],
+            mutationResult: .failure(.commandFailed(
+                status: 255,
+                code: nil,
+                message: "Control socket connect(/tmp/route.sock): No such file or directory"
+            ))
+        )
+        let invalidations = Mutex(0)
+        let connection = SSHConnectionArgumentsSnapshot(
+            KwtSSHConnection(
+                arguments: ["-S", "/tmp/route.sock"],
+                routeIdentity: "sha256:stable-route",
+                generation: 1,
+                invalidate: { invalidations.withLock { $0 += 1 } }
+            )
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.hostID,
+            snapshot: environment.snapshot,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            herdrSessionRecordReader: { name, _, _ in
+                client.record(named: name)
+            },
+            herdrSessionMutator: { action, confirmed, _, _ in
+                client.mutate(action, confirmed: confirmed)
+            },
+            herdrSSHConnectionSnapshotProvider: { _ in connection }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "agent"
+        )
+        let request = try await model.prepareHerdrSessionLifecycle(
+            selection,
+            action: .stop
+        )
+
+        await #expect(throws: HerdrSessionLifecycleError.self) {
+            try await model.performHerdrSessionLifecycle(request)
+        }
+
+        #expect(invalidations.withLock { $0 } == 1)
+        await model.shutdown()
+    }
+
     @Test("a newer stop fences failed-stop reconciliation")
     func newerStopFencesFailedStopReconciliation() async throws {
         var environment = try environment()
@@ -166,7 +221,7 @@ struct WorkspaceHerdrLifecycleTests {
         )
         let store = RecordingNativeSessionSurfaceStore()
         let calls = Mutex(0)
-        let reconciliationGate = BlockingGate()
+        let reconciliationGate = AsyncGate()
         let connection = SSHConnectionArgumentsSnapshot(arguments: [
             "-F", "/tmp/frozen-config", "dev@build.example.test",
         ])
@@ -198,10 +253,8 @@ struct WorkspaceHerdrLifecycleTests {
             },
             herdrSessionExactProbe: { _, _, arguments in
                 probedArguments.withLock { $0 = arguments }
-                return await Task.detached {
-                    reconciliationGate.block()
-                    return HerdrSessionProbeOutcome.absent
-                }.value
+                await reconciliationGate.wait()
+                return HerdrSessionProbeOutcome.absent
             }
         )
         model.startHerdrSessionDiscovery()
@@ -227,7 +280,7 @@ struct WorkspaceHerdrLifecycleTests {
         await #expect(throws: HerdrSessionLifecycleError.self) {
             try await model.performHerdrSessionLifecycle(request)
         }
-        await reconciliationGate.waitUntilBlocked()
+        await reconciliationGate.waitUntilWaiting()
         #expect(probedArguments.withLock { $0 } == connection.arguments)
         let newerStop = try #require(coordinator.begin(.stop, key: key))
         coordinator.willStop(newerStop)
@@ -286,6 +339,7 @@ struct WorkspaceHerdrLifecycleTests {
             "agent": Self.record(name: "agent", state: .running),
         ])
         let route = Mutex(0)
+        let releases = Mutex(0)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.hostID,
@@ -302,9 +356,16 @@ struct WorkspaceHerdrLifecycleTests {
                     value += 1
                     return value
                 }
-                return SSHConnectionArgumentsSnapshot(arguments: [
-                    "-o", "HostName=route-\(number).example.test",
-                ])
+                let arguments = ["-F", "/dev/null"]
+                let lease = KwtSSHConnection(
+                    arguments: arguments,
+                    routeIdentity: "route-\(number)",
+                    generation: UInt64(number),
+                    release: { releases.withLock { $0 += 1 } }
+                )
+                return SSHConnectionArgumentsSnapshot(
+                    lease
+                )
             }
         )
         let selection = WorkspaceHerdrSessionSelection(
@@ -315,10 +376,13 @@ struct WorkspaceHerdrLifecycleTests {
             selection,
             action: .stop
         )
+        await waitUntilMainActor { releases.withLock { $0 } == 1 }
 
         await #expect(throws: HerdrSessionLifecycleRequestError.self) {
             try await model.performHerdrSessionLifecycle(request)
         }
+        await waitUntilMainActor { releases.withLock { $0 } == 2 }
+        #expect(releases.withLock { $0 } == 2)
         #expect(client.mutationCount == 0)
         await model.shutdown()
     }

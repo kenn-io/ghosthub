@@ -300,7 +300,7 @@ struct WorkspaceWorktreeCreationTests {
             kwtWorktreeCreator: { _, _, _ in
                 attemptedMutations.withLock { $0.append("create") }
             },
-            kwtWorktreeRemover: { _, _, _, _ in },
+            kwtWorktreeRemover: { _, _, _, _, _ in },
             kwtPullRequestImporter: { _, _, _ in
                 attemptedMutations.withLock { $0.append("import") }
                 throw KwtPullRequestError.malformedOutput(host: "test")

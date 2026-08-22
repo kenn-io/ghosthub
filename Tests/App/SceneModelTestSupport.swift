@@ -334,6 +334,8 @@ func makeModel(
         host in
         try await KwtInventoryClient().load(from: host)
     },
+    kwtConditionalInventoryLoader:
+    WorkspaceSceneModel.KwtConditionalInventoryLoader? = nil,
     kwtRemoteProvisioner:
     @escaping WorkspaceSceneModel.KwtRemoteProvisioner = { _ in },
     kwtWorktreeCreator: @escaping WorkspaceSceneModel.KwtWorktreeCreator = {
@@ -345,19 +347,24 @@ func makeModel(
         )
     },
     kwtWorktreeRemover: @escaping WorkspaceSceneModel.KwtWorktreeRemover = {
-        worktreePath, generation, projectPath, host in
+        worktreePath, generation, projectPath, routeIdentity, host in
         try await KwtWorktreeClient().remove(
             worktreePath: worktreePath,
             generation: generation,
             projectPath: projectPath,
+            expectedRouteIdentity: routeIdentity,
             on: host
         )
     },
     kwtForceWorktreeRemover:
-    @escaping WorkspaceSceneModel.KwtWorktreeRemover = { _, _, _, _ in },
+    @escaping WorkspaceSceneModel.KwtWorktreeRemover = { _, _, _, _, _ in },
     kwtWorktreeChangeReader:
     @escaping WorkspaceSceneModel.KwtWorktreeChangeReader = { _, _, _ in
         .clean
+    },
+    sshRouteIdentityResolver:
+    @escaping WorkspaceSceneModel.SSHRouteIdentityResolver = { _ in
+        "sha256:test-route"
     },
     worktreeMutationCoordinator: WorktreeMutationCoordinator =
         WorktreeMutationCoordinator(),
@@ -374,7 +381,7 @@ func makeModel(
         .success(record)
     },
     herdrSSHConnectionSnapshotProvider:
-    @escaping @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot = {
+    @escaping WorkspaceSceneModel.SSHConnectionSnapshotProvider = {
         _ in SSHConnectionArgumentsSnapshot(arguments: [])
     },
     kwtPullRequestLister:
@@ -404,16 +411,20 @@ func makeModel(
     },
     kwtProjectRemoval:
     @escaping WorkspaceSceneModel.KwtProjectRemoval = {
-        projectPath, expectedRepository, expectedRegistration, host in
+        projectPath, expectedRepository, expectedRegistration,
+        routeIdentity, host in
         try await KwtProjectRegistryClient().unregister(
             projectPath: projectPath,
             expectedRepository: expectedRepository,
             expectedRegistration: expectedRegistration,
+            expectedRouteIdentity: routeIdentity,
             on: host
         )
     },
     tmuxSessionDiscovery: @escaping
     WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
+    tmuxSessionValidationDiscovery:
+    WorkspaceSceneModel.TmuxSessionValidationDiscovery? = nil,
     herdrSessionDiscovery: @escaping
     WorkspaceSceneModel.HerdrSessionDiscovery = { _ in .unavailable },
     zellijSessionDiscovery: @escaping
@@ -423,15 +434,25 @@ func makeModel(
     zellijSessionKiller: @escaping
     WorkspaceSceneModel.ZellijSessionKilling = { _, _, _ in .success(()) },
     zellijSSHConnectionSnapshotProvider:
-    @escaping @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot = {
+    @escaping WorkspaceSceneModel.SSHConnectionSnapshotProvider = {
         _ in SSHConnectionArgumentsSnapshot(arguments: [])
     },
+    presentationSSHConnectionProvider:
+    (@MainActor @Sendable (UUID, SSHHostInfo) async throws
+        -> KwtSSHConnection)? = { _, _ in
+        testKwtSSHAttachment()
+    },
+    presentationSSHAcquisitionCoordinator:
+    KwtSSHAcquisitionCoordinator = .shared,
+    presentationSSHEnvironment: [String: String] = [:],
     herdrSessionValidationDiscovery:
     WorkspaceSceneModel.HerdrSessionValidationDiscovery? = nil,
     herdrSessionExactProbe:
     WorkspaceSceneModel.HerdrSessionExactProbe? = nil,
     tmuxExactSessionProbe: @escaping
     WorkspaceSceneModel.TmuxSessionExactProbe = { _ in .success(false) },
+    tmuxSessionValidationExactProbe:
+    WorkspaceSceneModel.TmuxSessionValidationExactProbe? = nil,
     tmuxSessionKiller: @escaping
     WorkspaceSceneModel.TmuxSessionKilling = {
         selection, identity, host in
@@ -445,6 +466,8 @@ func makeModel(
     WorkspaceSceneModel.TmuxSessionIdentityReading = { selection, host in
         try await TmuxSessionKiller().sessionIdentity(selection, on: host)
     },
+    tmuxSessionIdentityReviewer:
+    WorkspaceSceneModel.TmuxSessionIdentityReviewReading? = nil,
     tmuxSessionStyler: @escaping
     WorkspaceSceneModel.TmuxSessionStyling = { style, selection, identity, host in
         try await TmuxSessionStyler().apply(
@@ -455,8 +478,28 @@ func makeModel(
         )
     },
     sshHostProbeRunner: @escaping
-    WorkspaceSceneModel.SSHHostProbeRunner = { _, _ in
+    WorkspaceSceneModel.SSHHostProbeRunner = { _, _, _ in
         (status: 255, stdout: "", stderr: "")
+    },
+    hostSSHConnectionProvider:
+    WorkspaceSceneModel.HostSSHConnectionProvider? = { _, _ in
+        testKwtSSHAttachment(arguments: ["-test-connection"])
+    },
+    hostSSHSessionProvider:
+    @escaping WorkspaceSceneModel.HostSSHSessionProvider = {
+        host, destination in
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(host),
+            routeIdentity: "sha256:test-host-route-\(destination)"
+        )
+        return KwtSSHConnectionSession(
+            route: route,
+            host: host,
+            destination: destination,
+            pool: KwtSSHConnectionPool { route, _ in
+                KwtSSHTestLease(routeIdentity: route.routeIdentity)
+            }
+        )
     },
     configuredSSHHostsProvider: @escaping () -> [SSHHost] = { [] },
     configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never> =
@@ -465,6 +508,7 @@ func makeModel(
     configuredExeHostsPublisher: AnyPublisher<[ExeConfiguredHost], Never> =
         Empty(completeImmediately: false).eraseToAnyPublisher(),
     refreshExeHosts: @escaping () -> Void = {},
+    startExeHostInventory: @escaping () -> Void = {},
     terminalColorsPublisher:
     AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
     sessionPreviewCoordinator: TmuxSessionPreviewCoordinator? = nil,
@@ -512,11 +556,16 @@ func makeModel(
         appliesTmuxPresentationStyleToExistingSessionsProvider,
         activeDisplayCount: activeDisplayCount,
         kwtInventoryLoader: kwtInventoryLoader,
+        kwtConditionalInventoryLoader:
+        kwtConditionalInventoryLoader ?? { host, _ in
+            try await kwtInventoryLoader(host)
+        },
         kwtRemoteProvisioner: kwtRemoteProvisioner,
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtWorktreeRemover: kwtWorktreeRemover,
         kwtForceWorktreeRemover: kwtForceWorktreeRemover,
         kwtWorktreeChangeReader: kwtWorktreeChangeReader,
+        sshRouteIdentityResolver: sshRouteIdentityResolver,
         worktreeMutationCoordinator: worktreeMutationCoordinator,
         herdrLifecycleCoordinator: herdrLifecycleCoordinator,
         zellijSessionKillCoordinator: zellijSessionKillCoordinator,
@@ -529,36 +578,64 @@ func makeModel(
         kwtProjectRegistration: kwtProjectRegistration,
         kwtProjectRemoval: kwtProjectRemoval,
         tmuxSessionDiscovery: tmuxSessionDiscovery,
+        tmuxSessionValidationDiscovery: tmuxSessionValidationDiscovery,
         herdrSessionDiscovery: herdrSessionDiscovery,
         zellijSessionDiscovery: zellijSessionDiscovery,
         zellijSessionValidationDiscovery:
         zellijSessionValidationDiscovery ?? { host, _ in
-            zellijSessionDiscovery(host)
+            await zellijSessionDiscovery(host)
         },
         zellijSessionKiller: zellijSessionKiller,
         zellijSSHConnectionSnapshotProvider:
         zellijSSHConnectionSnapshotProvider,
+        presentationSSHConnectionProvider:
+        presentationSSHConnectionProvider,
+        presentationSSHAcquisitionCoordinator:
+        presentationSSHAcquisitionCoordinator,
+        presentationSSHEnvironment: presentationSSHEnvironment,
         herdrSessionValidationDiscovery:
         herdrSessionValidationDiscovery ?? { host, _ in
-            herdrSessionDiscovery(host)
+            await herdrSessionDiscovery(host)
         },
         herdrSessionExactProbe: herdrSessionExactProbe ?? {
             name, host, _ in
-            HerdrSessionProbeOutcome.exact(
+            await HerdrSessionProbeOutcome.exact(
                 name: name,
                 discovery: herdrSessionDiscovery(host)
             )
         },
         tmuxExactSessionProbe: tmuxExactSessionProbe,
-        tmuxSessionKiller: tmuxSessionKiller,
+        tmuxSessionValidationExactProbe: tmuxSessionValidationExactProbe,
+        tmuxSessionKiller: { selection, identity, _, host in
+            try await tmuxSessionKiller(selection, identity, host)
+        },
         tmuxSessionIdentityReader: tmuxSessionIdentityReader,
+        tmuxSessionIdentityReviewer: tmuxSessionIdentityReviewer ?? {
+            selection, knownIdentity, host in
+            let identity: TmuxSessionIdentity
+            if let knownIdentity {
+                identity = knownIdentity
+            } else {
+                identity = try await tmuxSessionIdentityReader(
+                    selection,
+                    host
+                )
+            }
+            return ReviewedTmuxSessionIdentity(
+                identity: identity,
+                routeIdentity: nil
+            )
+        },
         tmuxSessionStyler: tmuxSessionStyler,
         sshHostProbeRunner: sshHostProbeRunner,
+        hostSSHConnectionProvider: hostSSHConnectionProvider,
+        hostSSHSessionProvider: hostSSHSessionProvider,
         configuredSSHHostsProvider: configuredSSHHostsProvider,
         configuredSSHHostsPublisher: configuredSSHHostsPublisher,
         configuredExeHostsProvider: configuredExeHostsProvider,
         configuredExeHostsPublisher: configuredExeHostsPublisher,
         refreshExeHosts: refreshExeHosts,
+        startExeHostInventory: startExeHostInventory,
         terminalColorsPublisher: terminalColorsPublisher,
         sessionPreviewCoordinator: sessionPreviewCoordinator,
         sessionPreviewModePublisher: sessionPreviewModePublisher,

@@ -167,8 +167,10 @@ struct ExeAccountsSettingsTests {
             sshDestination: "vm+build@exe.dev",
             status: "running"
         )]
+        var reviewIDs: [UUID] = []
         let runner = ExeAccountConnectionRunner(
-            pendingTrust: { account in
+            pendingTrust: { reviewID, account in
+                reviewIDs.append(reviewID)
                 if account == trustFailure {
                     return .failure(.message("Trust failed"))
                 }
@@ -197,5 +199,6 @@ struct ExeAccountsSettingsTests {
         #expect(messages[probeFailure.id] == "Probe failed")
         #expect(prefetchedVMs[connectedAccount.configKey] == inventory)
         #expect(probedAccounts == [probeFailure.id, connectedAccount.id])
+        #expect(reviewIDs.allSatisfy { $0 == operation.id })
     }
 }

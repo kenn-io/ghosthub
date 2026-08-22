@@ -33,6 +33,7 @@ private struct NativeHerdrAttachment {
     var herdrPath: String
     var launchMode: HerdrAttachmentLaunchMode
     var sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
+    var sshConnection: KwtSSHConnection?
     var paneSplitTarget: HerdrPaneSplitTarget?
     var remoteExitStatusURL: URL?
 }
@@ -74,8 +75,9 @@ final class NativeHerdrSessionCoordinator {
     private let terminalCoordinator: any NativeSessionSurfaceStoring
     private let herdrPathProvider:
         @Sendable (CommandHost, [String]) -> Result<String, HerdrCommandError>
-    private let sshConnectionArgumentsProvider:
-        @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot
+    private let remoteConnectionProvider:
+        @Sendable (UUID, SSHHostInfo) async throws
+        -> KwtSSHConnection
     private let paneSplitCapabilityProvider: PaneSplitCapabilityProvider
     private let paneSplitter: HerdrPaneSplitter
     private let remoteExitStatusStore: RemoteExitStatusStore
@@ -111,10 +113,10 @@ final class NativeHerdrSessionCoordinator {
                     sshConnectionArguments: $1
                 )
             },
-        sshConnectionArgumentsProvider:
-        @escaping @Sendable (SSHHostInfo)
-            -> SSHConnectionArgumentsSnapshot = {
-                SSHCommandArguments.connectionSnapshot(for: $0)
+        remoteConnectionProvider:
+        @escaping @Sendable (UUID, SSHHostInfo) async throws
+            -> KwtSSHConnection = { _, _ in
+                throw KwtSSHLeaseError.helperUnavailable
             },
         paneSplitCapabilityProvider:
         @escaping PaneSplitCapabilityProvider = {
@@ -135,8 +137,7 @@ final class NativeHerdrSessionCoordinator {
     ) {
         self.terminalCoordinator = terminalCoordinator
         self.herdrPathProvider = herdrPathProvider
-        self.sshConnectionArgumentsProvider =
-            sshConnectionArgumentsProvider
+        self.remoteConnectionProvider = remoteConnectionProvider
         self.paneSplitCapabilityProvider = paneSplitCapabilityProvider
         self.paneSplitter = paneSplitter
         remoteExitStatusStore = RemoteExitStatusStore(
@@ -188,42 +189,51 @@ final class NativeHerdrSessionCoordinator {
         provisioningHandles.insert(handle.id)
         launchModesByHandle[handle.id] = launchMode
         let herdrPathProvider = herdrPathProvider
-        let sshConnectionArgumentsProvider =
-            sshConnectionArgumentsProvider
+        let remoteConnectionProvider = remoteConnectionProvider
         let suppliedConnectionSnapshot = sshConnectionSnapshot
         provisioningTasks[handle.id] = Task { [weak self] in
-            let probe = Task.detached(priority: .userInitiated) {
+            do {
+                let sshConnection: KwtSSHConnection?
                 let sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
-                if let suppliedConnectionSnapshot {
+                if case let .ssh(info) = host {
+                    sshConnection = try await remoteConnectionProvider(
+                        hostID,
+                        info
+                    )
+                    sshConnectionSnapshot = try await sshConnection?.snapshot(
+                        validating: suppliedConnectionSnapshot
+                    ) ?? SSHConnectionArgumentsSnapshot(
+                        arguments: []
+                    )
+                } else if let suppliedConnectionSnapshot {
+                    sshConnection = nil
                     sshConnectionSnapshot = suppliedConnectionSnapshot
-                } else if case let .ssh(info) = host {
-                    sshConnectionSnapshot =
-                        sshConnectionArgumentsProvider(info)
                 } else {
+                    sshConnection = nil
                     sshConnectionSnapshot = SSHConnectionArgumentsSnapshot(
                         arguments: []
                     )
                 }
-                let resolution = herdrPathProvider(
-                    host,
-                    sshConnectionSnapshot.arguments
-                )
-                return (resolution, sshConnectionSnapshot)
-            }
-            let (resolution, sshConnectionSnapshot) =
-                await withTaskCancellationHandler {
+                let probe = Task.detached(priority: .userInitiated) {
+                    herdrPathProvider(host, sshConnectionSnapshot.arguments)
+                }
+                let resolution = await withTaskCancellationHandler {
                     await probe.value
                 } onCancel: {
                     probe.cancel()
                 }
-            self?.finishAttach(
-                handle: handle,
-                host: host,
-                isDefault: isDefault,
-                launchMode: launchMode,
-                sshConnectionSnapshot: sshConnectionSnapshot,
-                resolution: resolution
-            )
+                self?.finishAttach(
+                    handle: handle,
+                    host: host,
+                    isDefault: isDefault,
+                    launchMode: launchMode,
+                    sshConnectionSnapshot: sshConnectionSnapshot,
+                    sshConnection: sshConnection,
+                    resolution: resolution
+                )
+            } catch {
+                self?.finishAttachFailure(handle: handle, error: error)
+            }
         }
         return handle
     }
@@ -234,6 +244,7 @@ final class NativeHerdrSessionCoordinator {
         isDefault: Bool,
         launchMode: HerdrAttachmentLaunchMode,
         sshConnectionSnapshot: SSHConnectionArgumentsSnapshot,
+        sshConnection: KwtSSHConnection?,
         resolution: Result<String, HerdrCommandError>
     ) {
         provisioningTasks.removeValue(forKey: handle.id)
@@ -242,7 +253,10 @@ final class NativeHerdrSessionCoordinator {
         guard handlesByKey[key] == handle,
               targetHostsByHandle[handle.id] == host,
               attachments[handle.id] == nil
-        else { return }
+        else {
+            Task { try? await sshConnection?.release() }
+            return
+        }
 
         switch resolution {
         case let .success(path):
@@ -253,6 +267,7 @@ final class NativeHerdrSessionCoordinator {
                 herdrPath: path,
                 launchMode: launchMode,
                 sshConnectionSnapshot: sshConnectionSnapshot,
+                sshConnection: sshConnection,
                 paneSplitTarget: nil,
                 remoteExitStatusURL: host.isRemote
                     ? remoteExitStatusStore.prepare()
@@ -261,12 +276,36 @@ final class NativeHerdrSessionCoordinator {
             startPaneSplitCapabilityBinding(handle)
             onSurfaceReady?(handle)
         case let .failure(error):
+            Task {
+                if case let .commandFailed(status, stderr) = error,
+                   SSHConnectionFailure.indicatesUnusableConnection(
+                       status: status,
+                       output: stderr
+                   ) {
+                    await sshConnection?.invalidate()
+                }
+                try? await sshConnection?.release()
+            }
             attachmentClosures[handle.id] = .launchFailed
             onStateChanged?(
                 handle,
                 .disconnected(reason: error.localizedDescription)
             )
         }
+    }
+
+    private func finishAttachFailure(
+        handle: BorrowedHerdrSessionHandle,
+        error: Error
+    ) {
+        provisioningTasks.removeValue(forKey: handle.id)
+        provisioningHandles.remove(handle.id)
+        guard handlesByKey[sessionKey(handle)] == handle else { return }
+        attachmentClosures[handle.id] = .launchFailed
+        onStateChanged?(
+            handle,
+            .disconnected(reason: error.localizedDescription)
+        )
     }
 
     func detach(hostID: UUID, name: String) {
@@ -299,9 +338,9 @@ final class NativeHerdrSessionCoordinator {
         launchModesByHandle.removeValue(forKey: handle.id)
         cancelPaneSplits(handleID: handle.id)
         targetHostsByHandle.removeValue(forKey: handle.id)
-        remoteExitStatusStore.remove(
-            attachments.removeValue(forKey: handle.id)?.remoteExitStatusURL
-        )
+        let attachment = attachments.removeValue(forKey: handle.id)
+        remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
+        Task { try? await attachment?.sshConnection?.release() }
         attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
@@ -424,9 +463,9 @@ final class NativeHerdrSessionCoordinator {
         )
         cancelPaneSplits(handleID: handle.id)
         attachmentClosures[handle.id] = closure
-        remoteExitStatusStore.remove(
-            attachments.removeValue(forKey: handle.id)?.remoteExitStatusURL
-        )
+        let attachment = attachments.removeValue(forKey: handle.id)
+        remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
+        Task { try? await attachment?.sshConnection?.release() }
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
         reportSurfaceStateLater(
@@ -490,10 +529,18 @@ final class NativeHerdrSessionCoordinator {
             else { return }
             paneSplitCapabilityTasks.removeValue(forKey: handle.id)
             let capability: HerdrPaneSplitCapability?
-            if case let .success(value) = result {
+            switch result {
+            case let .success(value):
                 capability = value
-            } else {
+            case let .failure(error):
                 capability = nil
+                if case let .commandFailed(status, stderr) = error {
+                    invalidateUnusableConnection(
+                        status: status,
+                        diagnostic: stderr,
+                        handleID: handle.id
+                    )
+                }
             }
             let target = capability.map {
                 HerdrPaneSplitTarget(
@@ -602,11 +649,29 @@ final class NativeHerdrSessionCoordinator {
             else { return }
             request.surface.paneSplitErrorMessage = failure?.localizedDescription
             if let failure {
+                invalidateUnusableConnection(
+                    status: failure.status,
+                    diagnostic: failure.diagnostic,
+                    handleID: handle.id
+                )
                 AppLogger.shared.error(
                     "Herdr pane split: \(failure.localizedDescription)"
                 )
             }
         }
+    }
+
+    private func invalidateUnusableConnection(
+        status: Int32,
+        diagnostic: String,
+        handleID: UUID
+    ) {
+        guard SSHConnectionFailure.indicatesUnusableConnection(
+            status: status,
+            output: diagnostic
+        ), let connection = attachments[handleID]?.sshConnection
+        else { return }
+        Task { await connection.invalidate() }
     }
 
     private func cancelPaneSplits(handleID: UUID) {
@@ -660,6 +725,17 @@ final class NativeHerdrSessionCoordinator {
                 ? .detached
                 : .processExited(code: childExitCode)
         }
+        let connectionUnusable = SSHConnectionFailure
+            .presentationConnectionUnusable(
+                recordedExitCode: recordedExitCode,
+                childExitCode: childExitCode
+            )
+        Task {
+            if connectionUnusable {
+                await attachment?.sshConnection?.invalidate()
+            }
+            try? await attachment?.sshConnection?.release()
+        }
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
         onStateChanged?(
@@ -670,9 +746,10 @@ final class NativeHerdrSessionCoordinator {
         )
     }
 
-    func shutdown() {
+    func shutdown() async {
         isShuttingDown = true
         let handles = Array(handlesByKey.values)
+        let connections = attachments.values.compactMap(\.sshConnection)
         provisioningTasks.values.forEach { $0.cancel() }
         provisioningTasks.removeAll()
         provisioningHandles.removeAll()
@@ -693,6 +770,11 @@ final class NativeHerdrSessionCoordinator {
         reportedConnectedAttachmentIDs.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for connection in connections {
+                group.addTask { try? await connection.release() }
+            }
         }
     }
 

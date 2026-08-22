@@ -98,14 +98,19 @@ struct TmuxBinaryResolver: Sendable {
     private let processRunner: ProcessRunner
     private let remoteProcessRunner: RemoteProcessRunner
     private let loginShellProvider: @Sendable () -> String
+    private let commandLease: KwtSSHCommandLease
 
     init(
         processRunner: ProcessRunner? = nil,
         remoteProcessRunner: RemoteProcessRunner? = nil,
         processTimeout: TimeInterval = 15,
         loginShellProvider: @escaping @Sendable () -> String =
-            AccountCommandRunner.loginShell
+            AccountCommandRunner.loginShell,
+        commandLease: KwtSSHCommandLease? = nil
     ) {
+        self.commandLease = commandLease ?? .unlessInjected(
+            remoteProcessRunner != nil
+        )
         self.processRunner = processRunner ?? { shell, command in
             AccountCommandRunner.runLoginShell(
                 shell: shell, command: command, timeout: processTimeout
@@ -136,11 +141,37 @@ struct TmuxBinaryResolver: Sendable {
         return Self.parseProbe(result, shell: shell, platform: .posix)
     }
 
-    func resolveTmuxPath(on host: SSHHostInfo) -> Result<String, TmuxBinaryError> {
-        resolveTmuxPath(
-            on: host,
-            sshConnectionArguments: Self.remoteConnectionArguments(for: host)
-        )
+    /// Resolves the remote tmux path through one borrowed kwt lease.
+    func resolveTmuxPath(
+        on host: SSHHostInfo
+    ) async -> Result<String, TmuxBinaryError> {
+        await borrowing(host) { arguments in
+            resolveTmuxPath(on: host, sshConnectionArguments: arguments)
+        }
+    }
+
+    private func borrowing<Value: Sendable>(
+        _ host: SSHHostInfo,
+        operation: @escaping @Sendable ([String]) -> Result<Value, TmuxBinaryError>
+    ) async -> Result<Value, TmuxBinaryError> {
+        do {
+            return try await commandLease.withConnection(on: .ssh(host)) {
+                connection in
+                let result = await BlockingTask.run {
+                    operation(connection?.arguments ?? [])
+                }
+                if case let .failure(.sshConnectionFailed(_, classification)) =
+                    result, classification.connectionUnusable {
+                    await connection?.invalidate()
+                }
+                return result
+            }
+        } catch {
+            return .failure(.sshConnectionFailed(
+                host: host.displayName,
+                classification: SSHConnectionFailure.classify(leaseError: error)
+            ))
+        }
     }
 
     func resolveTmuxPath(
@@ -189,10 +220,19 @@ struct TmuxBinaryResolver: Sendable {
 
     func discoverSessions(
         on host: SSHHostInfo
+    ) async -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
+        await borrowing(host) { arguments in
+            discoverSessions(on: host, sshConnectionArguments: arguments)
+        }
+    }
+
+    func discoverSessions(
+        on host: SSHHostInfo,
+        sshConnectionArguments: [String]
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
         let result = remoteProcessRunner(
             host,
-            Self.remoteConnectionArguments(for: host),
+            sshConnectionArguments,
             Self.discoveryCommand(for: host.platform)
         )
         if result.status == 255 {
@@ -215,10 +255,26 @@ struct TmuxBinaryResolver: Sendable {
         name: String,
         socketName: String?,
         on host: SSHHostInfo
+    ) async -> Result<Bool, TmuxBinaryError> {
+        await borrowing(host) { arguments in
+            sessionExists(
+                name: name,
+                socketName: socketName,
+                on: host,
+                sshConnectionArguments: arguments
+            )
+        }
+    }
+
+    func sessionExists(
+        name: String,
+        socketName: String?,
+        on host: SSHHostInfo,
+        sshConnectionArguments: [String]
     ) -> Result<Bool, TmuxBinaryError> {
         let result = remoteProcessRunner(
             host,
-            Self.remoteConnectionArguments(for: host),
+            sshConnectionArguments,
             Self.sessionProbeCommand(
                 name: name,
                 socketName: socketName,
@@ -546,12 +602,6 @@ struct TmuxBinaryResolver: Sendable {
         for platform: SSHHostInfo.Platform
     ) -> String {
         "3.2"
-    }
-
-    private static func remoteConnectionArguments(
-        for host: SSHHostInfo
-    ) -> [String] {
-        SSHCommandArguments.noninteractive(for: host)
     }
 
 }

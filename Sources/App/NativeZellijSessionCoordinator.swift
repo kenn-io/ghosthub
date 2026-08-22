@@ -32,6 +32,7 @@ private struct NativeZellijAttachment {
     var zellijPath: String
     var launchMode: ZellijAttachmentLaunchMode
     var sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
+    var sshConnection: KwtSSHConnection?
     var remoteExitStatusURL: URL?
 }
 
@@ -42,8 +43,9 @@ final class NativeZellijSessionCoordinator {
     private let terminalCoordinator: any NativeSessionSurfaceStoring
     private let zellijPathProvider:
         @Sendable (CommandHost, [String]) -> Result<String, ZellijCommandError>
-    private let sshConnectionArgumentsProvider:
-        @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot
+    private let remoteConnectionProvider:
+        @Sendable (UUID, SSHHostInfo) async throws
+        -> KwtSSHConnection
     private let remoteExitStatusStore: RemoteExitStatusStore
     private var handlesByKey: [
         NativeZellijSessionKey: BorrowedZellijSessionHandle
@@ -70,10 +72,10 @@ final class NativeZellijSessionCoordinator {
                     sshConnectionArguments: $1
                 )
             },
-        sshConnectionArgumentsProvider:
-        @escaping @Sendable (SSHHostInfo)
-            -> SSHConnectionArgumentsSnapshot = {
-                SSHCommandArguments.connectionSnapshot(for: $0)
+        remoteConnectionProvider:
+        @escaping @Sendable (UUID, SSHHostInfo) async throws
+            -> KwtSSHConnection = { _, _ in
+                throw KwtSSHLeaseError.helperUnavailable
             },
         remoteExitStatusDirectory: URL = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -83,7 +85,7 @@ final class NativeZellijSessionCoordinator {
     ) {
         self.terminalCoordinator = terminalCoordinator
         self.zellijPathProvider = zellijPathProvider
-        self.sshConnectionArgumentsProvider = sshConnectionArgumentsProvider
+        self.remoteConnectionProvider = remoteConnectionProvider
         remoteExitStatusStore = RemoteExitStatusStore(
             directory: remoteExitStatusDirectory
         )
@@ -127,33 +129,49 @@ final class NativeZellijSessionCoordinator {
         }
 
         let pathProvider = zellijPathProvider
-        let connectionProvider = sshConnectionArgumentsProvider
+        let remoteConnectionProvider = remoteConnectionProvider
+        let suppliedConnectionSnapshot = sshConnectionSnapshot
         provisioningTasks[handle.id] = Task { [weak self] in
-            let probe = Task.detached(priority: .userInitiated) {
+            do {
+                let sshConnection: KwtSSHConnection?
                 let connection: SSHConnectionArgumentsSnapshot
-                if let sshConnectionSnapshot {
+                if case let .ssh(info) = host {
+                    sshConnection = try await remoteConnectionProvider(
+                        hostID,
+                        info
+                    )
+                    connection = try await sshConnection?.snapshot(
+                        validating: suppliedConnectionSnapshot
+                    ) ?? SSHConnectionArgumentsSnapshot(
+                        arguments: []
+                    )
+                } else if let sshConnectionSnapshot {
+                    sshConnection = nil
                     connection = sshConnectionSnapshot
-                } else if case let .ssh(info) = host {
-                    connection = connectionProvider(info)
                 } else {
+                    sshConnection = nil
                     connection = SSHConnectionArgumentsSnapshot(arguments: [])
                 }
-                let resolution = resolvedZellijPath.map(Result.success)
-                    ?? pathProvider(host, connection.arguments)
-                return (resolution, connection)
+                let probe = Task.detached(priority: .userInitiated) {
+                    resolvedZellijPath.map(Result.success)
+                        ?? pathProvider(host, connection.arguments)
+                }
+                let resolution = await withTaskCancellationHandler {
+                    await probe.value
+                } onCancel: {
+                    probe.cancel()
+                }
+                self?.finishAttach(
+                    handle: handle,
+                    host: host,
+                    launchMode: launchMode,
+                    connection: connection,
+                    sshConnection: sshConnection,
+                    resolution: resolution
+                )
+            } catch {
+                self?.finishAttachFailure(handle: handle, error: error)
             }
-            let (resolution, connection) = await withTaskCancellationHandler {
-                await probe.value
-            } onCancel: {
-                probe.cancel()
-            }
-            self?.finishAttach(
-                handle: handle,
-                host: host,
-                launchMode: launchMode,
-                connection: connection,
-                resolution: resolution
-            )
         }
         return handle
     }
@@ -188,6 +206,7 @@ final class NativeZellijSessionCoordinator {
         host: CommandHost,
         launchMode: ZellijAttachmentLaunchMode,
         connection: SSHConnectionArgumentsSnapshot,
+        sshConnection: KwtSSHConnection?,
         resolution: Result<String, ZellijCommandError>
     ) {
         provisioningTasks.removeValue(forKey: handle.id)
@@ -195,7 +214,10 @@ final class NativeZellijSessionCoordinator {
         guard handlesByKey[key] == handle,
               targetHostsByHandle[handle.id] == host,
               attachments[handle.id] == nil
-        else { return }
+        else {
+            Task { try? await sshConnection?.release() }
+            return
+        }
         switch resolution {
         case let .success(path):
             attachments[handle.id] = NativeZellijAttachment(
@@ -204,16 +226,39 @@ final class NativeZellijSessionCoordinator {
                 zellijPath: path,
                 launchMode: launchMode,
                 sshConnectionSnapshot: connection,
+                sshConnection: sshConnection,
                 remoteExitStatusURL: host.isRemote
                     ? remoteExitStatusStore.prepare() : nil
             )
             onSurfaceReady?(handle)
         case let .failure(error):
+            Task {
+                if case let .commandFailed(status, stderr) = error,
+                   SSHConnectionFailure.indicatesUnusableConnection(
+                       status: status,
+                       output: stderr
+                   ) {
+                    await sshConnection?.invalidate()
+                }
+                try? await sshConnection?.release()
+            }
             attachmentClosures[handle.id] = .launchFailed
             onStateChanged?(handle, .disconnected(
                 reason: error.localizedDescription
             ))
         }
+    }
+
+    private func finishAttachFailure(
+        handle: BorrowedZellijSessionHandle,
+        error: Error
+    ) {
+        provisioningTasks.removeValue(forKey: handle.id)
+        guard handlesByKey[sessionKey(handle)] == handle else { return }
+        attachmentClosures[handle.id] = .launchFailed
+        onStateChanged?(handle, .disconnected(
+            reason: error.localizedDescription
+        ))
     }
 
     func detach(hostID: UUID, name: String) {
@@ -241,9 +286,9 @@ final class NativeZellijSessionCoordinator {
         }
         provisioningTasks.removeValue(forKey: handle.id)?.cancel()
         targetHostsByHandle.removeValue(forKey: handle.id)
-        remoteExitStatusStore.remove(
-            attachments.removeValue(forKey: handle.id)?.remoteExitStatusURL
-        )
+        let attachment = attachments.removeValue(forKey: handle.id)
+        remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
+        Task { try? await attachment?.sshConnection?.release() }
         attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
@@ -344,9 +389,9 @@ final class NativeZellijSessionCoordinator {
             context: "zellij"
         )
         attachmentClosures[handle.id] = closure
-        remoteExitStatusStore.remove(
-            attachments.removeValue(forKey: handle.id)?.remoteExitStatusURL
-        )
+        let attachment = attachments.removeValue(forKey: handle.id)
+        remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
+        Task { try? await attachment?.sshConnection?.release() }
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
         reportSurfaceStateLater(handle, state: .disconnected(reason: reason))
@@ -388,6 +433,17 @@ final class NativeZellijSessionCoordinator {
             attachmentClosures[handle.id] = processAlive || childExitCode == 0
                 ? .detached : .processExited(code: childExitCode)
         }
+        let connectionUnusable = SSHConnectionFailure
+            .presentationConnectionUnusable(
+                recordedExitCode: recordedExitCode,
+                childExitCode: childExitCode
+            )
+        Task {
+            if connectionUnusable {
+                await attachment?.sshConnection?.invalidate()
+            }
+            try? await attachment?.sshConnection?.release()
+        }
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
         onStateChanged?(handle, .disconnected(
@@ -395,9 +451,10 @@ final class NativeZellijSessionCoordinator {
         ))
     }
 
-    func shutdown() {
+    func shutdown() async {
         isShuttingDown = true
         let handles = Array(handlesByKey.values)
+        let connections = attachments.values.compactMap(\.sshConnection)
         provisioningTasks.values.forEach { $0.cancel() }
         provisioningTasks.removeAll()
         handlesByKey.removeAll()
@@ -411,6 +468,11 @@ final class NativeZellijSessionCoordinator {
         reportedConnectedAttachmentIDs.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for connection in connections {
+                group.addTask { try? await connection.release() }
+            }
         }
     }
 

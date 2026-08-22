@@ -876,15 +876,24 @@ public struct RootView: View {
                         reviewRequestID:
                         sshHostKeyReview.sessionRecoveryRequestID
                     )
-                handlers.cancelSSHAuthentication?(hostID)
-                sshHostKeyReview.authenticationSucceeded {
+                let startNextOwner: SSHAuthenticationHandoff = {
                     if let recoveryRequest {
                         handlers.resumeSessionReconnectAfterSSHRecovery?(
                             recoveryRequest
                         )
+                    } else {
+                        handlers.refreshWorkspaceInventory?()
                     }
                 }
-                handlers.refreshWorkspaceInventory?()
+                if let complete = handlers.completeSSHAuthentication {
+                    await complete(hostID, startNextOwner)
+                } else {
+                    startNextOwner()
+                }
+                sshHostKeyReview.authenticationSucceeded()
+                if recoveryRequest != nil {
+                    handlers.refreshWorkspaceInventory?()
+                }
                 return
             }
             try? await Task.sleep(for: .seconds(1))
@@ -892,7 +901,7 @@ public struct RootView: View {
     }
 
     private func cancelSSHAuthenticationIfNeeded() {
-        guard let hostID = activeSSHAuthenticationHostID else { return }
+        guard let hostID = sshHostKeyReview.hostID else { return }
         handlers.cancelSSHAuthentication?(hostID)
     }
 
@@ -1480,12 +1489,12 @@ public struct RootView: View {
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
-        case let .projectRemovalConfirmation(project, host):
+        case let .projectRemovalConfirmation(request):
             return Alert(
-                title: Text("Remove “\(project.name)”?"),
+                title: Text("Remove “\(request.project.name)”?"),
                 message: Text(
                     "This unregisters the project from kwt on "
-                        + "\(host.sidebarTitle). The repository, its"
+                        + "\(request.confirmedHost.sidebarTitle). The repository, its"
                         + " worktrees, and tmux sessions will not be deleted."
                 ),
                 primaryButton: .destructive(Text("Remove Project")) {
@@ -1494,19 +1503,19 @@ public struct RootView: View {
                         else {
                             presentNonWorktreeWorkspaceAlert(
                                 .projectRemovalFailure(
-                                    project: project.name,
+                                    project: request.project.name,
                                     message: "Project removal is unavailable."
                                 )
                             )
                             return
                         }
-                        switch await unregister(project, host) {
+                        switch await unregister(request) {
                         case .success:
                             break
                         case let .failure(error):
                             presentNonWorktreeWorkspaceAlert(
                                 .projectRemovalFailure(
-                                    project: project.name,
+                                    project: request.project.name,
                                     message: error.localizedDescription
                                 )
                             )
@@ -1532,9 +1541,26 @@ public struct RootView: View {
             ))
             return
         }
-        presentNonWorktreeWorkspaceAlert(
-            .projectRemovalConfirmation(project: project, host: host)
-        )
+        guard let prepare = handlers.prepareProjectRemoval else {
+            presentNonWorktreeWorkspaceAlert(.projectRemovalFailure(
+                project: project.name,
+                message: "Project removal is unavailable."
+            ))
+            return
+        }
+        Task {
+            do {
+                let request = try await prepare(project, host)
+                presentNonWorktreeWorkspaceAlert(
+                    .projectRemovalConfirmation(request)
+                )
+            } catch {
+                presentNonWorktreeWorkspaceAlert(.projectRemovalFailure(
+                    project: project.name,
+                    message: error.localizedDescription
+                ))
+            }
+        }
     }
 
     private func requestWorktreeRemoval(_ worktree: WorktreeSummary) {
