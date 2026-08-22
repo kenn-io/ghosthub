@@ -2206,6 +2206,7 @@ dependencies = [
  "ghosthub-input",
  "ghosthub-session",
  "ghosthub-surface",
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",

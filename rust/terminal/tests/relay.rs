@@ -64,6 +64,40 @@ mod unix {
     }
 
     #[test]
+    fn drop_releases_a_writer_blocked_by_a_non_reading_descendant() {
+        // Raw mode makes the tty input queue block instead of discarding
+        // over-long lines; sh stays the direct child while sleep — a
+        // descendant — holds the slave and never reads. Saturated input
+        // then blocks the relay writer in write_all; teardown must kill
+        // the whole process group so the join stays bounded.
+        let relay = attach_sh("stty raw -echo && echo desc-re''ady && sleep 600");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut output = Vec::new();
+        while !contains(&output, b"desc-ready") {
+            assert!(Instant::now() < deadline, "stall setup never confirmed");
+            if let Some(RelayOutput::Bytes(chunk)) = relay.recv_output(POLL) {
+                output.extend_from_slice(&chunk);
+            }
+        }
+        for _ in 0..64 {
+            // Overfill the few-KiB raw-mode queue; refusals once the input
+            // budget backs up are expected and irrelevant here.
+            let _ = relay.send_bytes(vec![b'z'; 1024]);
+        }
+
+        // Bounded observation: a wedged teardown must fail the test, not
+        // hang the suite.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(relay);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("teardown joins despite the descendant holding the slave");
+    }
+
+    #[test]
     fn drop_tears_down_a_live_child_promptly() {
         let relay = attach_sh("sleep 600");
         // Drop joins the relay threads and reaps the child; a teardown

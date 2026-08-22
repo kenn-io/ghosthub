@@ -2991,6 +2991,9 @@ enum AttachFreshError {
         error: WorkspaceError,
         snapshot: Box<HostSnapshot>,
     },
+    /// The scene closed between discovery and the fenced launch; the
+    /// retry ends silently without spawning anything.
+    SceneClosed,
 }
 
 struct ActiveAttachment<T> {
@@ -5916,6 +5919,10 @@ impl Workspace {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one activation's replacement, retirement, and retention read as a single swap"
+    )]
     fn activate_retained_over_remote(&self, key: &PresentationKey) -> Result<bool, WorkspaceError> {
         let Some(presentation) = self
             .scene

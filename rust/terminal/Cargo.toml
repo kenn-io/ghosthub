@@ -15,6 +15,9 @@ path = "src/lib.rs"
 # Never enabled by a production dependency edge.
 test-support = []
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dependencies]
 alacritty_terminal.workspace = true
 crossbeam-channel.workspace = true

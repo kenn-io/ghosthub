@@ -5904,6 +5904,8 @@ pub(crate) fn run_attach(
                 AttachFreshError::SessionChanged { error, snapshot } => {
                     publish_stale_attachment_failure(scene, &current_request, *snapshot, &error);
                 }
+                // Only the retained launch path fences inside the helper.
+                AttachFreshError::SceneClosed => {}
             }
             restore_attach_fallback(scene, fallback);
         }
@@ -6132,6 +6134,8 @@ pub(crate) fn run_attach_over_remote(
                 AttachFreshError::Host(error) | AttachFreshError::SessionChanged { error, .. } => {
                     error.to_string()
                 }
+                // Only the retained launch path fences inside the helper.
+                AttachFreshError::SceneClosed => return,
             };
             push_operation_event(scene, WorkspaceEvent::Error(message));
             return;
@@ -6224,9 +6228,11 @@ pub(crate) fn run_retained_retry(scene: &Scene, retry: &RetainedRetry) {
     // cycle against those paths' seconds-long SSH work under the
     // operations lock. The pump may have extracted this retry just before
     // the scene closed; the closed-check here keeps a fresh PTY client
-    // from ever starting for a dead scene. The fence drops before the
-    // launch so a slow host's discovery never stalls scene closure or
-    // navigation; publication below re-fences and re-checks.
+    // from ever starting for a dead scene. Discovery runs unfenced so a
+    // slow host never stalls scene closure or navigation; the launch and
+    // its publication then sit under one live-navigation fence acquired
+    // inside attach_fresh_retained, so a scene closing after discovery
+    // never spawns a client at all.
     let _operation = scene
         .runtime
         .session_operations
@@ -6249,17 +6255,10 @@ pub(crate) fn run_retained_retry(scene: &Scene, retry: &RetainedRetry) {
     {
         return;
     }
-    let result = attach_fresh_retained(scene, retry);
-    // Re-fenced for every outcome's publication: closure that won the race
-    // during the unfenced launch is observed here — a launched client dies
-    // with the dropped result, and a failure is neither pushed into the
-    // dead scene as a notice nor allowed to mutate runtime-wide inventory
-    // on its behalf.
-    let Ok(_navigation) = lock_live_navigation(scene) else {
-        return;
-    };
-    match result {
-        Ok((worker, snapshot, resolved_request, initial_geometry)) => {
+    match attach_fresh_retained(scene, retry) {
+        // The launch's fence rides into publication: the same guard that
+        // authorized the spawn covers finish_restart and inventory.
+        Ok((_navigation, worker, snapshot, resolved_request, initial_geometry)) => {
             let _snapshot_write = begin_snapshot_write(&scene.runtime);
             let latest_geometry = *scene
                 .terminal_geometry
@@ -6287,11 +6286,22 @@ pub(crate) fn run_retained_retry(scene: &Scene, retry: &RetainedRetry) {
                 bump_scene_revision(scene);
             }
         }
+        Err(AttachFreshError::SceneClosed) => {}
+        // Failure publication re-fences: a closure that won the race during
+        // the unfenced discovery is observed here, and the failure is
+        // neither pushed into the dead scene as a notice nor allowed to
+        // mutate runtime-wide inventory on its behalf.
         Err(AttachFreshError::Host(error)) => {
+            let Ok(_navigation) = lock_live_navigation(scene) else {
+                return;
+            };
             let _snapshot_write = begin_snapshot_write(&scene.runtime);
             fail_retained_retry(scene, &retry.key, Some(error.to_string()));
         }
         Err(AttachFreshError::SessionChanged { error, snapshot }) => {
+            let Ok(_navigation) = lock_live_navigation(scene) else {
+                return;
+            };
             let _snapshot_write = begin_snapshot_write(&scene.runtime);
             remove_failed_retained_retry(scene, &retry.key);
             publish_retained_stale_failure(scene, &retry.request, *snapshot, &error);
@@ -6809,6 +6819,8 @@ pub(crate) fn reopen_closed_retained_presentation(
     let (worker, _snapshot, attached_name, initial_geometry, attached_term) =
         attach_fresh(scene, &closed.attachment.request, term).map_err(|error| match error {
             AttachFreshError::Host(error) | AttachFreshError::SessionChanged { error, .. } => error,
+            // Only the retained launch path fences inside the helper.
+            AttachFreshError::SceneClosed => WorkspaceError::new("the scene closed"),
         })?;
     let latest_geometry = *scene
         .terminal_geometry
@@ -7005,11 +7017,12 @@ pub(crate) fn attach_fresh(
     clippy::too_many_lines,
     reason = "retained restart dispatch covers every multiplexer capability without erasing backend identity"
 )]
-pub(crate) fn attach_fresh_retained(
-    scene: &Scene,
+pub(crate) fn attach_fresh_retained<'scene>(
+    scene: &'scene Scene,
     retry: &RetainedRetry,
 ) -> Result<
     (
+        NavigationFence<'scene>,
         TerminalWorker,
         HostSnapshot,
         AttachRequest,
@@ -7025,6 +7038,13 @@ pub(crate) fn attach_fresh_retained(
             ),
             snapshot: Box::new(fresh),
         });
+    };
+    // The launch is fenced: a scene closing after the slow, unfenced
+    // discovery must not spawn a client that could touch multiplexer
+    // focus or sizing before the post-launch check discards it. The guard
+    // is returned so publication happens under the same fence.
+    let Ok(navigation) = lock_live_navigation(scene) else {
+        return Err(AttachFreshError::SceneClosed);
     };
     let (worker, snapshot, _, geometry) = match &retry.key.target {
         AttachTarget::Tmux(identity) => {
@@ -7127,7 +7147,7 @@ pub(crate) fn attach_fresh_retained(
             launch_fresh_zellij(scene, &resolved_request, AttachTerm::Xterm, &fresh, session)?
         }
     };
-    Ok((worker, snapshot, resolved_request, geometry))
+    Ok((navigation, worker, snapshot, resolved_request, geometry))
 }
 
 pub(crate) fn launch_fresh_tmux(

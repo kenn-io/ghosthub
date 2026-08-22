@@ -289,9 +289,33 @@ fn reap_child(child: &mut dyn portable_pty::Child) -> u32 {
     if let Ok(Some(status)) = child.try_wait() {
         return status.exit_code();
     }
+    kill_process_group(child);
     let _ignored = child.kill();
     child.wait().map_or(u32::MAX, |status| status.exit_code())
 }
+
+/// Kill the PTY child's whole process group on POSIX. The child is a
+/// session leader, so its descendants share the group; killing only the
+/// direct child could leave a descendant holding the PTY slave open, which
+/// keeps the relay's writer blocked in `write_all` and turns teardown's
+/// thread joins — and everything serialized behind them — unbounded. On
+/// Windows the Job object already contains the tree.
+#[cfg(unix)]
+fn kill_process_group(child: &dyn portable_pty::Child) {
+    if let Some(pid) = child.process_id()
+        && let Ok(pid) = i32::try_from(pid)
+    {
+        // SAFETY: signalling a process group id derived from our own
+        // still-unreaped child; a stale group id is impossible because the
+        // child has not been waited on yet.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_child: &dyn portable_pty::Child) {}
 
 fn wait_for_child_exit(child: &mut dyn portable_pty::Child) -> Option<u32> {
     for _ in 0..REAP_ATTEMPTS {
