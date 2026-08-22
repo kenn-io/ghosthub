@@ -8952,6 +8952,10 @@ fn a_completed_zellij_kill_advances_the_reservation_revision() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the collision, removal, and restarted-runtime cases read as one scenario"
+)]
 fn a_killed_zellij_session_leaves_shared_inventory_immediately() {
     // The kill's success path removes the session from the published
     // snapshot and the host item before the kill revision advances, and
@@ -8973,21 +8977,28 @@ fn a_killed_zellij_session_leaves_shared_inventory_immediately() {
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
+    // An SSH host literally named after the distro sorts first and holds a
+    // same-name Zellij session: the removal must not touch it.
     let workspace = Workspace::preview(WorkspaceSnapshot::shell(
         Appearance::default(),
-        vec![HostItem::wsl(
-            "Ubuntu",
-            None,
-            HostConnectionState::Ready,
-            Vec::new(),
-            None,
-        )],
+        vec![
+            HostItem::ssh(
+                "ssh:ubuntu",
+                "Ubuntu Box",
+                "Ubuntu",
+                HostConnectionState::Ready,
+                Vec::new(),
+                None,
+            ),
+            HostItem::wsl("Ubuntu", None, HostConnectionState::Ready, Vec::new(), None),
+        ],
     ));
     {
         let mut hosts = workspace.scene.runtime.hosts.write().expect("host list");
-        let item = hosts.first_mut().expect("wsl host");
-        item.zellij_available = true;
-        item.zellij_sessions = vec![SessionItem::new("review", 0)];
+        for item in hosts.iter_mut() {
+            item.zellij_available = true;
+            item.zellij_sessions = vec![SessionItem::new("review", 0)];
+        }
     }
     *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
         HostContext {
@@ -9018,18 +9029,86 @@ fn a_killed_zellij_session_leaves_shared_inventory_immediately() {
         "the killed session leaves the published authority snapshot"
     );
     drop(published);
-    assert!(
+    {
+        let hosts = workspace.scene.runtime.hosts.read().expect("host list");
+        assert!(
+            hosts
+                .iter()
+                .find(|host| host.id == "wsl")
+                .expect("wsl host")
+                .zellij_sessions
+                .is_empty(),
+            "the killed session leaves the WSL host item"
+        );
+        assert_eq!(
+            hosts
+                .iter()
+                .find(|host| host.id == "ssh:ubuntu")
+                .expect("ssh host")
+                .zellij_sessions
+                .len(),
+            1,
+            "the same-name session on the same-endpoint SSH host survives"
+        );
+    }
+
+    // A restarted runtime published before the removal owns any same-name
+    // session it lists; the removal must leave both surfaces untouched.
+    let restarted = HostSnapshot::test_fixture_with_zellij(
+        "Ubuntu",
+        "restarted-boot",
+        84,
+        Vec::new(),
+        ZellijInventory::Available {
+            executable: "/usr/bin/zellij".to_owned(),
+            sessions: vec![session::ZellijSessionRecord::discovered("review")],
+        },
+    );
+    {
+        let mut host = workspace.scene.runtime.host.lock().expect("published host");
+        let context = host.as_mut().expect("host stays published");
+        context.value.snapshot = restarted.clone();
+    }
+    {
+        let mut hosts = workspace.scene.runtime.hosts.write().expect("host list");
+        hosts
+            .iter_mut()
+            .find(|host| host.id == "wsl")
+            .expect("wsl host")
+            .zellij_sessions = vec![SessionItem::new("review", 0)];
+    }
+    remove_killed_zellij_session(
+        &workspace.scene.runtime,
+        snapshot.endpoint(),
+        snapshot.runtime(),
+        "review",
+    );
+    {
+        let host = workspace.scene.runtime.host.lock().expect("published host");
+        let context = host.as_ref().expect("host stays published");
+        assert!(
+            matches!(
+                context.value.snapshot.zellij(),
+                ZellijInventory::Available { sessions, .. }
+                    if sessions.iter().any(|session| session.name() == "review")
+            ),
+            "the restarted runtime's same-name session survives in the snapshot"
+        );
+    }
+    assert_eq!(
         workspace
             .scene
             .runtime
             .hosts
             .read()
             .expect("host list")
-            .first()
+            .iter()
+            .find(|host| host.id == "wsl")
             .expect("wsl host")
             .zellij_sessions
-            .is_empty(),
-        "the killed session leaves the host item"
+            .len(),
+        1,
+        "the restarted runtime's same-name session survives in the host item"
     );
     assert!(
         !publish_refresh(&workspace.scene.runtime, stale_generation, || {

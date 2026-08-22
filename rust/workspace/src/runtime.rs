@@ -1714,16 +1714,22 @@ pub(crate) fn remove_killed_zellij_session(
             .host
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(published) = host.as_mut()
-            && published.value.snapshot.endpoint() == endpoint
-            && published.value.snapshot.runtime() == runtime_identity
+        let Some(published) = host.as_mut() else {
+            return;
+        };
+        // A restarted runtime published between the kill's final check and
+        // this removal owns any same-name session it lists; neither the
+        // snapshot nor the visible host item may lose it.
+        if published.value.snapshot.endpoint() != endpoint
+            || published.value.snapshot.runtime() != runtime_identity
         {
-            published.value.snapshot = published
-                .value
-                .snapshot
-                .clone()
-                .without_zellij_session(name);
+            return;
         }
+        published.value.snapshot = published
+            .value
+            .snapshot
+            .clone()
+            .without_zellij_session(name);
     }
     let mut hosts = runtime
         .hosts
