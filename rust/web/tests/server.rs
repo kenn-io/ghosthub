@@ -1008,7 +1008,7 @@ fn input_overflow_closes_the_connection_with_policy() {
     #[cfg(windows)]
     let stall = "echo ('pre-st'+'all'); Start-Sleep -Seconds 600\r";
     #[cfg(not(windows))]
-    let stall = "stty raw -echo; echo pre-st''all; exec sleep 600\r";
+    let stall = "stty raw -echo && echo pre-st''all && exec sleep 600\r";
     socket
         .send(Message::Binary(stall.as_bytes().to_vec().into()))
         .expect("send stall command");
