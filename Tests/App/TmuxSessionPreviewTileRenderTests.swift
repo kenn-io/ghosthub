@@ -1,6 +1,7 @@
 import AppKit
 import CoreVideo
 import GhosthubTerminal
+import GhosthubTerminalSupport
 import GhosthubTransport
 import IOSurface
 import SwiftUI
@@ -9,6 +10,20 @@ import Testing
 
 @Suite("Tmux session preview tile rendering")
 struct TmuxSessionPreviewTileRenderTests {
+    @Test("extreme terminal shapes use bounded preview canvases", arguments: [
+        (CGSize(width: 1_000_000, height: 1), CGSize(width: 320, height: 1)),
+        (CGSize(width: 1, height: 1_000_000), CGSize(width: 320, height: 1_024)),
+    ])
+    func extremeTerminalShapesUseBoundedCanvases(
+        sourceSize: CGSize,
+        expectedSize: CGSize
+    ) {
+        #expect(TerminalPreviewGeometry.thumbnailSize(
+            sourceSize: sourceSize,
+            outputWidth: 320
+        ) == expectedSize)
+    }
+
     @MainActor
     @Test("GPU frames size each tile to the terminal aspect")
     func GPUFramesUseTerminalAspect() throws {

@@ -628,6 +628,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let restoreFinished = LockedValue(false)
         let releasePromotion = DispatchSemaphore(value: 0)
         let releaseRestore = DispatchSemaphore(value: 0)
+        let mode = CurrentValueSubject<SessionPreviewMode, Never>(.alwaysLive)
         defer {
             releasePromotion.signal()
             releaseRestore.signal()
@@ -680,7 +681,8 @@ struct WorkspaceTmuxDiscoveryTests {
                 mode: .alwaysLive,
                 budget: LivePreviewBudget(limit: 0),
                 capture: { _, _ in nil }
-            )
+            ),
+            sessionPreviewModePublisher: mode.eraseToAnyPublisher()
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -706,6 +708,10 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(model.activeBorrowedTmuxSelection == selection)
         #expect(promotionCount.load() == 1)
 
+        mode.send(.live)
+        model.selectFromUser(WorkspaceSelection(
+            selectedHostID: environment.host.id
+        ))
         releaseRestore.signal()
         await waitUntilMainActor { restoreFinished.load() }
         for _ in 0 ..< 20 {
@@ -886,6 +892,171 @@ struct WorkspaceTmuxDiscoveryTests {
             model.retainedBorrowedTmuxPresentationCount == 1
         }
 
+        #expect(surfaceStore.removedKeys.count == 1)
+        await model.shutdown()
+    }
+
+    @Test("leaving Always Live preserves an active sizing promotion")
+    @MainActor
+    func leavingAlwaysLivePreservesActivePromotion() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let mode = CurrentValueSubject<SessionPreviewMode, Never>(.alwaysLive)
+        let promotionStarted = LockedValue(false)
+        let promotionFinished = LockedValue(false)
+        let releasePromotion = DispatchSemaphore(value: 0)
+        defer { releasePromotion.signal() }
+        let session = DiscoveredTmuxSession(
+            name: "build",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            if command.contains("'!ignore-size'") {
+                promotionStarted.withLock { $0 = true }
+                releasePromotion.wait()
+                promotionFinished.withLock { $0 = true }
+                return (0, "")
+            }
+            guard command.contains(
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+            ) else { return (0, "") }
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t101\t789\t321\t/dev/ttys001\t$1\t1001\t%9\n"
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            ),
+            sessionPreviewModePublisher: mode.eraseToAnyPublisher()
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { promotionStarted.load() }
+
+        mode.send(.live)
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(surfaceStore.removedKeys.isEmpty)
+
+        releasePromotion.signal()
+        await waitUntilMainActor { promotionFinished.load() }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(surfaceStore.surface.clearPreviewGridCount == 2)
+        #expect(surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("leaving Always Live releases an inactive sizing promotion")
+    @MainActor
+    func leavingAlwaysLiveReleasesInactivePromotion() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let mode = CurrentValueSubject<SessionPreviewMode, Never>(.alwaysLive)
+        let promotionStarted = LockedValue(false)
+        let releasePromotion = DispatchSemaphore(value: 0)
+        defer { releasePromotion.signal() }
+        let session = DiscoveredTmuxSession(
+            name: "build",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 120, rows: 36),
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37),
+            managed: false
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            if command.contains("'!ignore-size'") {
+                promotionStarted.withLock { $0 = true }
+                releasePromotion.wait()
+                return (0, "")
+            }
+            guard command.contains(
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+            ) else { return (0, "") }
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t101\t789\t321\t/dev/ttys001\t$1\t1001\t%9\n"
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            ),
+            sessionPreviewModePublisher: mode.eraseToAnyPublisher()
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { promotionStarted.load() }
+
+        model.hideBorrowedTmuxSession(selection)
+        model.selectFromUser(WorkspaceSelection(
+            selectedHostID: environment.host.id
+        ))
+        mode.send(.live)
+        releasePromotion.signal()
+        await waitUntilMainActor {
+            surfaceStore.surface.clearPreviewGridCount == 2
+        }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
         #expect(surfaceStore.removedKeys.count == 1)
         await model.shutdown()
     }

@@ -7100,9 +7100,21 @@ final class WorkspaceSceneModel: ObservableObject {
         alwaysLiveTmuxSurfaceLaunchID = nil
         pendingAlwaysLiveTmuxSurfaceHandles.removeAll()
         pendingAlwaysLiveTmuxSurfaceHandleIDs.removeAll()
-        let selections = alwaysLiveManagedTmuxPresentationKeys.compactMap {
-            retainedTmuxPresentations[$0]?.selection
-        }
+        var pendingPromotionKeys: Set<TmuxPresentationKey> = []
+        let selections: [WorkspaceTmuxSessionSelection] =
+            alwaysLiveManagedTmuxPresentationKeys.compactMap {
+                guard let presentation = retainedTmuxPresentations[$0] else {
+                    return nil
+                }
+                if presentation.handle == activeBorrowedTmuxHandle
+                    || presentation.previewPromotionTask != nil {
+                    if presentation.previewPromotionTask != nil {
+                        pendingPromotionKeys.insert($0)
+                    }
+                    return nil
+                }
+                return presentation.selection
+            }
         for selection in selections {
             tmuxSessionPreviewCoordinator.setExpanded(
                 false,
@@ -7110,7 +7122,7 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             invalidateBorrowedTmuxSession(selection)
         }
-        alwaysLiveManagedTmuxPresentationKeys.removeAll()
+        alwaysLiveManagedTmuxPresentationKeys = pendingPromotionKeys
         alwaysLiveIneligibleTmuxPresentationIdentities.removeAll()
     }
 
@@ -8869,8 +8881,14 @@ final class WorkspaceSceneModel: ObservableObject {
                     )
                     return
                 }
+                if tmuxSessionPreviewCoordinator.mode != .alwaysLive,
+                   activeBorrowedTmuxHandle != presentation.handle {
+                    invalidateBorrowedTmuxSession(presentation.selection)
+                    return
+                }
                 guard presentation.previewPromotionNavigationRevision
                     == userNavigationRevision
+                    || activeBorrowedTmuxHandle == presentation.handle
                 else { return }
             }
         }
