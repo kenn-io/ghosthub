@@ -1018,6 +1018,48 @@ struct TmuxPaneSplitterTests {
         #expect(commands.load().count == 2)
     }
 
+    @Test("cancellation removes an installed sizing hook")
+    func cancellationRemovesInstalledSizingHook() async {
+        let hookInstalled = LockedValue(false)
+        let sizingStarted = LockedValue(false)
+        let commands = LockedValue<[String]>([])
+        let splitter = TmuxPaneSplitter { _, _, command in
+            commands.withLock { $0.append(command) }
+            if command.contains("'refresh-client'") {
+                hookInstalled.store(true)
+                sizingStarted.store(true)
+                while !withUnsafeCurrentTask(body: {
+                    $0?.isCancelled == true
+                }) {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+            } else if command.contains("'set-hook' '-gu'") {
+                hookInstalled.store(false)
+            }
+            return (0, "")
+        }
+        let task = Task {
+            await splitter.enableSizing(
+                target: TmuxPaneSplitTarget(
+                    host: .local,
+                    tmuxPath: "/usr/bin/tmux",
+                    sessionName: "cancelled-sizing",
+                    socketName: nil,
+                    sshConnectionArguments: [],
+                    expectedIdentity: testSplitClient.sessionIdentity,
+                    expectedClient: testSplitClient
+                )
+            )
+        }
+
+        await waitUntil { sizingStarted.load() }
+        task.cancel()
+        _ = await task.value
+
+        #expect(!hookInstalled.load())
+        #expect(commands.load().count == 2)
+    }
+
     @Test("validation and split share one exact-client tmux queue")
     func posixCommands() {
         let right = TmuxPaneSplitter.command(

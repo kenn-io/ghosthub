@@ -230,7 +230,15 @@ struct TmuxPaneSplitter: Sendable {
                 socketName: target.socketName,
                 hookIndex: hookIndex
             )
-            _ = await run(command: cleanup, target: target)
+            let runner = runner
+            let cleanupTask = Task.detached(priority: .userInitiated) {
+                runner(
+                    target.host,
+                    target.sshConnectionArguments,
+                    cleanup
+                )
+            }
+            _ = await cleanupTask.value
             return nil
         }
         if result.diagnostic.split(whereSeparator: \.isNewline)
