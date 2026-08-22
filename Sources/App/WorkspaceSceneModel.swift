@@ -467,6 +467,7 @@ final class WorkspaceSceneModel: ObservableObject {
         var previewPromotionID: UUID?
         var previewPromotionTask: Task<Void, Never>?
         var previewPromotionNavigationRevision: UInt64?
+        var pendingPreviewPromotionNavigationRevision: UInt64?
 
         var expectedPreviewIdentity: TmuxSessionIdentity? {
             verifiedPreviewIdentity ?? reconnectExpectedIdentity
@@ -7106,9 +7107,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard let presentation = retainedTmuxPresentations[$0] else {
                     return nil
                 }
+                let promotionIsPending =
+                    presentation.previewPromotionTask != nil
+                        || presentation
+                        .pendingPreviewPromotionNavigationRevision != nil
                 if presentation.handle == activeBorrowedTmuxHandle
-                    || presentation.previewPromotionTask != nil {
-                    if presentation.previewPromotionTask != nil {
+                    || promotionIsPending {
+                    if promotionIsPending {
                         pendingPromotionKeys.insert($0)
                     }
                     return nil
@@ -8780,9 +8785,14 @@ final class WorkspaceSceneModel: ObservableObject {
     private func promoteAlwaysLiveManagedPresentation(
         _ presentation: RetainedTmuxPresentation,
         key: TmuxPresentationKey,
-        navigationRevision: UInt64
+        navigationRevision: UInt64,
+        resumesProvisioning: Bool = false
     ) {
         presentation.previewPromotionNavigationRevision = navigationRevision
+        if !resumesProvisioning {
+            presentation.pendingPreviewPromotionNavigationRevision =
+                navigationRevision
+        }
         guard presentation.previewPromotionTask == nil else { return }
         let promotionID = UUID()
         presentation.previewPromotionID = promotionID
@@ -8792,6 +8802,15 @@ final class WorkspaceSceneModel: ObservableObject {
                 if presentation.previewPromotionID == promotionID {
                     presentation.previewPromotionID = nil
                     presentation.previewPromotionTask = nil
+                    let provisioningFinished = presentation
+                        .pendingPreviewPromotionNavigationRevision != nil
+                        && !nativeTmuxSessionCoordinator.isProvisioning(
+                            presentation.handle
+                        )
+                    if resumesProvisioning || provisioningFinished,
+                       retainedTmuxPresentations[key] === presentation {
+                        tmuxSurfaceBecameReady(presentation.handle)
+                    }
                 }
             }
 
@@ -8808,10 +8827,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 } while promotionResult == .stale
                 switch promotionResult {
                 case .applied:
-                    break
+                    presentation.pendingPreviewPromotionNavigationRevision = nil
+                case .pending:
+                    return
                 case .stale:
                     return
                 case let .failure(failure):
+                    presentation.pendingPreviewPromotionNavigationRevision = nil
                     let retriesInteractiveAttachment =
                         presentation.previewPromotionNavigationRevision
                             == userNavigationRevision
@@ -9104,6 +9126,18 @@ final class WorkspaceSceneModel: ObservableObject {
         if alwaysLiveManagedTmuxPresentationKeys.contains(key),
            !nativeTmuxSessionCoordinator.supportsPaneSplitting(handle) {
             excludeAlwaysLiveTmuxPresentation(presentation, key: key)
+            return
+        }
+        if let navigationRevision = presentation
+            .pendingPreviewPromotionNavigationRevision {
+            guard presentation.previewPromotionTask == nil else { return }
+            presentation.pendingPreviewPromotionNavigationRevision = nil
+            promoteAlwaysLiveManagedPresentation(
+                presentation,
+                key: key,
+                navigationRevision: navigationRevision,
+                resumesProvisioning: true
+            )
             return
         }
         if alwaysLiveManagedTmuxPresentationKeys.contains(key),
@@ -9559,6 +9593,12 @@ final class WorkspaceSceneModel: ObservableObject {
             explicitlyDismissedDirectoryPresentationIDs.insert(directoryID)
         }
         let key = TmuxPresentationKey(selection)
+        if recordsExplicitDismissal,
+           tmuxSessionPreviewCoordinator.mode == .alwaysLive,
+           let identity = retainedTmuxPresentations[key]?
+           .expectedPreviewIdentity {
+            alwaysLiveIneligibleTmuxPresentationIdentities[key] = identity
+        }
         alwaysLiveManagedTmuxPresentationKeys.remove(key)
         retainedTmuxPresentations[key]?.previewPromotionID = nil
         retainedTmuxPresentations[key]?

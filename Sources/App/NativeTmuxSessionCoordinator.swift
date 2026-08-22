@@ -102,6 +102,7 @@ enum TmuxAttachedSessionIdentityResolution: Equatable {
 
 enum TmuxClientSizingTransitionResult: Equatable {
     case applied
+    case pending
     case stale
     case failure(TmuxPaneSplitFailure)
 }
@@ -495,6 +496,10 @@ final class NativeTmuxSessionCoordinator {
         launchedHandles.contains(handle.id)
     }
 
+    func isProvisioning(_ handle: BorrowedTmuxSessionHandle) -> Bool {
+        provisioningHandles.contains(handle.id)
+    }
+
     func hasClosedAttachment(_ handle: BorrowedTmuxSessionHandle) -> Bool {
         attachmentClosures[handle.id] != nil
     }
@@ -554,7 +559,7 @@ final class NativeTmuxSessionCoordinator {
         guard var attachment = attachments[handle.id] else {
             if provisioningHandles.contains(handle.id) {
                 interactiveSizingHandles.insert(handle.id)
-                return .applied
+                return .pending
             }
             return .failure(TmuxPaneSplitFailure(
                 host: targetHostsByHandle[handle.id]?.displayName

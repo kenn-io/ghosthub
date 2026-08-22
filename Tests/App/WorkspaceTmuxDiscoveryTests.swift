@@ -1124,9 +1124,14 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
-    @Test("Always Live leaves a closed client detached until identity changes")
+    @Test(
+        "Always Live leaves a closed client detached until identity changes",
+        arguments: [false, true]
+    )
     @MainActor
-    func alwaysLiveClosedClientRelaunchesOnlyForNewIdentity() async throws {
+    func alwaysLiveClosedClientRelaunchesOnlyForNewIdentity(
+        explicitClose: Bool
+    ) async throws {
         let environment = try setupStandardEnvironment()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let discoveries = Counter()
@@ -1174,7 +1179,16 @@ struct WorkspaceTmuxDiscoveryTests {
                 && !surfaceStore.surface.closeObservers.isEmpty
         }
 
-        surfaceStore.surface.closeObservers.values.first?(false, 0)
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "review"
+        )
+        if explicitClose {
+            model.closeBorrowedTmuxSession(selection)
+        } else {
+            surfaceStore.surface.closeObservers.values.first?(false, 0)
+        }
+        model.refreshTmuxSessionDiscovery()
         await waitUntilMainActor { discoveries.count >= 2 }
         for _ in 0 ..< 20 {
             await Task.yield()
@@ -1402,6 +1416,10 @@ struct WorkspaceTmuxDiscoveryTests {
         let environment = try setupStandardEnvironment()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let resolutionCount = LockedValue(0)
+        let firstResolutionGate = BlockingGate()
+        let failureDelivered = LockedValue(false)
+        let mode = CurrentValueSubject<SessionPreviewMode, Never>(.alwaysLive)
+        defer { firstResolutionGate.release() }
         let session = DiscoveredTmuxSession(
             name: "retry",
             windowCount: 1,
@@ -1420,28 +1438,47 @@ struct WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 let attempt = resolutionCount.load()
                 resolutionCount.withLock { $0 += 1 }
-                return attempt == 0
-                    ? .failure(.notFound(shell: "/bin/zsh"))
-                    : successfulTmuxResolution("/usr/bin/tmux")
+                guard attempt == 0 else {
+                    return successfulTmuxResolution("/usr/bin/tmux")
+                }
+                firstResolutionGate.wait()
+                failureDelivered.store(true)
+                return .failure(.notFound(shell: "/bin/zsh"))
             },
             tmuxSessionDiscovery: { _ in .success([session]) },
             sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
                 mode: .alwaysLive,
                 budget: LivePreviewBudget(limit: 0),
                 capture: { _, _ in nil }
-            )
+            ),
+            sessionPreviewModePublisher: mode.eraseToAnyPublisher()
         )
 
         model.startTmuxSessionDiscovery()
         await waitUntilMainActor {
             resolutionCount.load() == 1
-                && model.retainedBorrowedTmuxPresentationCount == 0
+                && firstResolutionGate.didStart
+                && model.retainedBorrowedTmuxPresentationCount == 1
         }
 
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
             name: session.name
         )
+        model.openBorrowedTmuxSession(selection)
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        mode.send(.live)
+        firstResolutionGate.release()
+        await waitUntilMainActor { failureDelivered.load() }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        try #require(model.retainedBorrowedTmuxPresentationCount == 0)
+
         model.openBorrowedTmuxSession(selection)
         await waitUntilMainActor {
             model.prepareActiveBorrowedTmuxSurface()
@@ -1453,6 +1490,63 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(surfaceStore.lastConfiguration?.command?.contains(
             "ignore-size"
         ) == false)
+        await model.shutdown()
+    }
+
+    @Test("stale pending promotion restores preview sizing before launch")
+    @MainActor
+    func stalePendingPromotionRestoresPreviewSizing() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let resolution = DelayedTmuxPathState()
+        defer { resolution.release() }
+        let session = DiscoveredTmuxSession(
+            name: "pending",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+            previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: resolution.resolve,
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: session.name
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            resolution.didStart
+                && model.retainedBorrowedTmuxPresentationCount == 1
+        }
+        model.openBorrowedTmuxSession(selection)
+        model.hideBorrowedTmuxSession(selection)
+        model.selectFromUser(WorkspaceSelection(
+            selectedHostID: environment.host.id
+        ))
+
+        resolution.release()
+        await waitUntilMainActor { surfaceStore.requestCount == 1 }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == true)
         await model.shutdown()
     }
 
