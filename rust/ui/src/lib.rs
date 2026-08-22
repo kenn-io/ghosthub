@@ -1539,7 +1539,7 @@ enum PendingUiInput {
     Key(KeyInput),
     Mouse(MouseInput),
     Wheel(WheelBatch),
-    ClipboardResponse(Vec<u8>),
+    ClipboardResponse(u64, Vec<u8>),
     Resize(TerminalResize),
 }
 
@@ -1596,7 +1596,7 @@ impl PendingUiInput {
     fn byte_len(&self) -> usize {
         match self {
             Self::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text)) => text.len(),
-            Self::ClipboardResponse(bytes) => bytes.len(),
+            Self::ClipboardResponse(_, bytes) => bytes.len(),
             Self::Key(KeyInput::Named { .. })
             | Self::Mouse(_)
             | Self::Wheel(_)
@@ -3286,7 +3286,10 @@ impl RootView {
                     {
                         self.enqueue_input(
                             presentation_id,
-                            PendingUiInput::ClipboardResponse(request.respond(&contents)),
+                            PendingUiInput::ClipboardResponse(
+                                request.worker_generation(),
+                                request.respond(&contents),
+                            ),
                         );
                     }
                 }
@@ -3986,9 +3989,9 @@ impl RootView {
                 PendingUiInput::Key(input) => self.workspace.send_key(input.clone()),
                 PendingUiInput::Mouse(input) => self.workspace.send_mouse(*input),
                 PendingUiInput::Wheel(batch) => self.workspace.send_mouse(batch.input),
-                PendingUiInput::ClipboardResponse(bytes) => {
-                    self.workspace.send_clipboard_response(bytes.clone())
-                }
+                PendingUiInput::ClipboardResponse(generation, bytes) => self
+                    .workspace
+                    .send_clipboard_response(*generation, bytes.clone()),
                 PendingUiInput::Resize(resize) => self.workspace.resize_with_pixels(
                     resize.columns,
                     resize.rows,
@@ -4027,6 +4030,15 @@ impl RootView {
                     ) {
                         self.diagnostic = None;
                     }
+                    changed = true;
+                }
+                Err(error) if error.is_stale_input() => {
+                    // An expected race outcome: the response outlived its
+                    // terminal. Drop just this entry — the keystrokes
+                    // queued behind it belong to the live presentation.
+                    let dropped = self.pending_input.pop_front().expect("front input exists");
+                    self.pending_input_bytes =
+                        self.pending_input_bytes.saturating_sub(dropped.bytes);
                     changed = true;
                 }
                 Err(error) if error.is_backpressure() => {

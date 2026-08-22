@@ -16,6 +16,9 @@ const CONSUMER_REGISTRY: &[(&str, &[PlatformTag])] = &[
     ("paths", POSIX_AND_WINDOWS),
     ("mux-resolver", WINDOWS_ONLY),
     ("wsl-host", WINDOWS_ONLY),
+    ("clipboard-osc52", POSIX_AND_WINDOWS),
+    ("clipboard-gesture", POSIX_AND_WINDOWS),
+    ("clipboard-paste", POSIX_AND_WINDOWS),
 ];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]

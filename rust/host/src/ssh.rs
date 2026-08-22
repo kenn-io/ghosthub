@@ -597,6 +597,32 @@ pub struct SshLeasePrompt {
 }
 
 impl SshLeasePrompt {
+    /// Build a valid authentication prompt for tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the fixture's hard-coded target stops validating.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_fixture() -> Self {
+        let target = SshTarget::new("studio.example", None, None).expect("valid fixture target");
+        Self {
+            id: "prompt-fixture".to_owned(),
+            kind: SshPromptKind::Authentication,
+            message: "password for studio.example".to_owned(),
+            sensitive: true,
+            deadline: "2999-01-01T00:00:00Z".to_owned(),
+            details: SshPromptDetails {
+                logical_target: target.clone(),
+                effective_target: target,
+                display_target: "studio.example".to_owned(),
+                hop_index: 0,
+                hop_count: 1,
+                host_key: None,
+            },
+        }
+    }
+
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id

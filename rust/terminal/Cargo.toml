@@ -10,6 +10,14 @@ rust-version.workspace = true
 name = "terminal"
 path = "src/lib.rs"
 
+[features]
+# Test-only observability hooks (e.g. the delivered paste-cancel probe).
+# Never enabled by a production dependency edge.
+test-support = []
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dependencies]
 alacritty_terminal.workspace = true
 crossbeam-channel.workspace = true
@@ -25,6 +33,11 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+ghosthub-contracts.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

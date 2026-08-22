@@ -135,6 +135,99 @@ contract excludes repository, worktree, host, session, path, command, and
 terminal data, disables person-profile processing and GeoIP enrichment, and
 can be disabled in Settings or through the documented environment switches.
 
+### Loopback web UI (Rust applications)
+
+Ghosthub fundamentally provides access to a shell. The web UI must therefore
+only ever be reachable over highly secure transports that bad actors cannot
+access: the loopback interface, a Tailscale-secured network, or an SSH
+tunnel. This is the same deployment posture as Kenn Software's other web
+applications (Forge): a loopback default bind, with any wider reachability
+provided by an explicitly trusted secure transport, never by the application
+listening on an untrusted network. Findings that presuppose an attacker with
+network reach the deployment posture excludes are closed against this
+paragraph.
+
+Within that posture, the v1 web UI is loopback-only: an ephemeral loopback
+bind with no non-loopback code path, an in-memory startup bearer credential,
+exact Host validation and a required credential on every request, and exact
+Origin validation on every websocket upgrade and state-changing request. The
+full wire contract, including capability lifetimes and accepted multiplexer
+multi-client behavior, is maintained in [Web UI](web-ui.md).
+
+This section is the arbiter for triaging web-surface findings. A valid
+finding names one of the in-scope attacker classes below and a concrete
+capability that attacker gains beyond what it already has. Findings outside
+these classes are closed with a pointer to this section rather than patched.
+
+**In scope — hostile web content in the user's browser.** Malicious pages
+probing loopback: DNS rebinding, CSRF, cross-origin websocket connection,
+drive-by port scans, and credential leaks through history, cache, or
+referrers. Defenses: exact Host before routing, exact Origin on upgrades and
+state-changing requests, a credential on every request, the bootstrap
+redirect that strips the token from the location bar with `no-store` and
+`no-referrer`, an HttpOnly SameSite=Strict cookie, a strict same-origin CSP,
+and hello/idle timeouts on upgraded sockets.
+
+**In scope — other users on a shared machine.** Any local user can bind a
+free loopback port, and browsers scope cookies to the hostname, never the
+port, so a lured visit to an attacker's loopback port leaks the session
+cookie value across user boundaries. The cookie therefore carries a
+per-instance session value distinct from the bearer credential and authorizes
+only the page shell and scene establishment — never terminal, presentation,
+lifecycle, or other state-changing operations. Browser viewers are
+independent scenes, each holding a scene secret minted only with non-ambient
+proof (the bearer credential, or a single-use seconds-scale bootstrap mint
+code), carried outside cookies and URLs, expiring on bounded idle and
+absolute lifetimes. Interactive approvals (SSH prompts, clipboard reads,
+lifecycle confirmations) are addressed to exactly one scene and fail closed
+if that scene disappears.
+
+**In scope — untrusted byte streams.** Session output and clipboard traffic
+carry the same trust limits as native attachments regardless of viewer. The
+server relays terminal bytes without interpretation by design; the viewer
+(xterm.js in a browser, the native engine otherwise) is the single VT
+interpreter and the place rendering-level attacks are mitigated. Clipboard
+and paste behavior is governed by the shared contract vectors under
+`contracts/clipboard/`; a divergence is a recorded known gap tied to tracked
+work, and the browser-terminal milestone does not pass with open gaps.
+
+**Out of scope.** Processes running as the same user as Ghosthub: they can
+already spawn shells, read and write the user's files, and debug the
+application, so a finding whose attacker is same-user local code demonstrates
+nothing. Demands for server-side VT sanitization: the parserless relay is a
+design invariant, and a sanitizing server would be a second interpreter — the
+exact failure mode the architecture forbids. Network attackers: no
+non-loopback bind exists in v1, so transport-security findings are not
+applicable until a remote-bind feature changes this section first. Attacks
+that require the user to hand the one-time bootstrap URL to the attacker.
+
+**Interim acceptances (each tied to a gate).** The current demo attach
+endpoint accepts the ambient session cookie, diverging from the scene-secret
+rule above; this is accepted only while the web UI serves fixture data and
+local demo shells, is tracked as a blocker of the browser-terminal milestone,
+and closes when scene credentials land. The same milestone owns the
+credential's transport: the demo bootstrap carries a bearer token in the
+query string of an `http://127.0.0.1:<ephemeral-port>` origin, which a
+service worker a local actor registered on a previously-bound instance of
+that port could intercept before any server-side check runs. Both weaknesses
+are the same ambient-credential-over-a-reusable-loopback-origin shape and
+close together when scene credentials move the credential out of the URL and
+bind it to a per-instance origin (a high-entropy hostname or equivalent,
+chosen to resolve on every supported browser including Safari). Until then
+the deployment posture above bounds the exposure: the only actors who can run
+a loopback service and register a service worker are local, and Ghosthub is
+run only where local actors are trusted. The acceptance does not extend to
+any release that exposes real multiplexer sessions to a browser.
+
+Browser-side clipboard behavior is likewise gated by that milestone. Paste
+sanitization implements the shared contract vectors today. OSC 52 clipboard
+*writes* from the browser terminal are not yet honored: the vendored xterm
+build registers no OSC 52 handler, so a write is silently ignored rather than
+accepted. This fails safe — the browser never writes the clipboard without
+the shared gesture-provenance, base64, size, UTF-8, and selection checks —
+and the write path lands with those checks and the shared fixtures when the
+browser terminal is accepted, not during the demo.
+
 ### Local external state tools
 
 Local state providers such as the bundled kwt, git, and tmux are trusted

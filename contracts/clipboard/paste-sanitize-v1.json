@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "notes": "Single paste sanitization policy for the parsed native path and the web terminal frontend. Line endings normalize to CR first: CRLF and lone LF both become CR, and lone CR is preserved. Then unsafe controls are stripped by code point: C0 controls U+0000..U+0008, U+000B, U+000C, and U+000E..U+001F (keeping tab U+0009; CR and LF are already normalized), DEL U+007F, and C1 controls U+0080..U+009F. Escape (U+001B) is C0 and is stripped, which also defuses an embedded bracketed-paste end marker. When the terminal's bracketed-paste mode is set, the sanitized text is wrapped in ESC[200~ and ESC[201~; otherwise it is sent bare. expected is the exact byte sequence delivered to the PTY, as a UTF-8 JSON string. known_gaps lists consumers whose current implementation is known to diverge; those consumers must fail the contract expectation until the gap is fixed and the entry removed.",
+  "cases": [
+    {
+      "id": "plain-text-unbracketed",
+      "input": "hello world",
+      "bracketed_paste": false,
+      "expected": "hello world"
+    },
+    {
+      "id": "plain-text-bracketed",
+      "input": "hello",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~hello\u001b[201~"
+    },
+    {
+      "id": "empty-paste-unbracketed",
+      "input": "",
+      "bracketed_paste": false,
+      "expected": ""
+    },
+    {
+      "id": "empty-paste-bracketed",
+      "input": "",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~\u001b[201~"
+    },
+    {
+      "id": "crlf-normalizes-to-cr",
+      "input": "one\r\ntwo",
+      "bracketed_paste": false,
+      "expected": "one\rtwo"
+    },
+    {
+      "id": "lone-lf-normalizes-to-cr",
+      "input": "one\ntwo",
+      "bracketed_paste": false,
+      "expected": "one\rtwo"
+    },
+    {
+      "id": "lone-cr-is-preserved",
+      "input": "one\rtwo",
+      "bracketed_paste": false,
+      "expected": "one\rtwo"
+    },
+    {
+      "id": "mixed-line-endings-normalize-to-cr",
+      "input": "a\r\nb\nc\rd",
+      "bracketed_paste": false,
+      "expected": "a\rb\rc\rd"
+    },
+    {
+      "id": "bracketed-crlf-normalizes-to-cr",
+      "input": "one\r\ntwo",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~one\rtwo\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "Bracketed pastes currently normalize line endings to LF instead of CR."
+      }
+    },
+    {
+      "id": "bracketed-lone-lf-normalizes-to-cr",
+      "input": "one\ntwo",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~one\rtwo\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "Bracketed pastes currently normalize line endings to LF instead of CR."
+      }
+    },
+    {
+      "id": "tab-is-preserved",
+      "input": "col1\tcol2",
+      "bracketed_paste": false,
+      "expected": "col1\tcol2"
+    },
+    {
+      "id": "escape-is-stripped",
+      "input": "red\u001b[31mtext",
+      "bracketed_paste": false,
+      "expected": "red[31mtext",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "csi-c1-is-stripped",
+      "input": "a\u009b31mb",
+      "bracketed_paste": false,
+      "expected": "a31mb",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "c0-controls-are-stripped",
+      "input": "a\u0000b\u0007c\bd\u000be\ff",
+      "bracketed_paste": false,
+      "expected": "abcdef",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "del-is-stripped",
+      "input": "a\u007fb",
+      "bracketed_paste": false,
+      "expected": "ab",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "c1-controls-are-stripped",
+      "input": "a\u0080b\u0085c\u009fd",
+      "bracketed_paste": false,
+      "expected": "abcd",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "bracketed-escape-is-stripped",
+      "input": "red\u001b[31mtext",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~red[31mtext\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "bracketed-csi-c1-is-stripped",
+      "input": "a\u009b31mb",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~a31mb\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      },
+      "notes": "U+009B is a single-byte end-marker equivalent on terminals that interpret C1."
+    },
+    {
+      "id": "bracketed-c0-controls-are-stripped",
+      "input": "a\u0000b\u0007c\bd",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~abcd\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "bracketed-del-and-c1-are-stripped",
+      "input": "a\u007fb\u0085c",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~abc\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "bracketed-end-marker-is-defused",
+      "input": "safe\u001b[201~rm -rf /",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~safe[201~rm -rf /\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "An embedded end marker is gated behind a paste confirmation and sent intact instead of having its escape stripped."
+      }
+    },
+    {
+      "id": "multibyte-text-is-preserved",
+      "input": "h\u00e9llo \ud83d\ude00",
+      "bracketed_paste": false,
+      "expected": "h\u00e9llo \ud83d\ude00"
+    }
+  ]
+}
