@@ -1336,6 +1336,7 @@ fn delayed_herdr_recoveries_land_on_their_owner_or_nowhere() {
     let b = a.open_scene();
     let selection = SessionSelection::for_kind("wsl", "Ubuntu", "review", SessionKind::Herdr);
     let suppressed = SuppressedHerdrPresentation {
+        restarts: Vec::new(),
         scene_id: b.scene.id,
         active_selection: Some(selection.clone()),
         retained: None,
@@ -1359,6 +1360,7 @@ fn delayed_herdr_recoveries_land_on_their_owner_or_nowhere() {
     );
 
     let owned_by_b = SuppressedHerdrPresentation {
+        restarts: Vec::new(),
         scene_id: b.scene.id,
         active_selection: Some(selection),
         retained: None,
@@ -1411,6 +1413,7 @@ fn retained_herdr_recovery_does_not_block_snapshots_during_discovery() {
         inventory_generation: 1,
     };
     let suppressed = SuppressedHerdrPresentation {
+        restarts: Vec::new(),
         scene_id: workspace.scene.id,
         active_selection: None,
         retained: Some(ClosedRetainedPresentation {
@@ -4935,6 +4938,7 @@ fn uncertain_lifecycle_stays_fenced_until_fresh_inventory_arrives() {
         &workspace.scene.runtime,
         &pending,
         vec![SuppressedHerdrPresentation {
+            restarts: Vec::new(),
             scene_id: workspace.scene.id,
             active_selection: Some(running.clone()),
             retained: None,
@@ -8815,6 +8819,168 @@ fn a_completed_zellij_kill_advances_the_reservation_revision() {
 }
 
 #[test]
+fn a_killed_zellij_session_leaves_shared_inventory_immediately() {
+    // The kill's success path removes the session from the published
+    // snapshot and the host item before the kill revision advances, and
+    // fences in-flight refreshes whose snapshots predate the kill — stale
+    // inventory must neither authorize a new kill against a same-name
+    // replacement nor restore the dead name.
+    let snapshot = HostSnapshot::test_fixture_with_zellij(
+        "Ubuntu",
+        "boot",
+        42,
+        Vec::new(),
+        ZellijInventory::Available {
+            executable: "/usr/bin/zellij".to_owned(),
+            sessions: vec![session::ZellijSessionRecord::discovered("review")],
+        },
+    );
+    let host = WslHost::new(
+        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        Arc::new(RefusingRunner) as SharedCommandRunner,
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
+    );
+    let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+        Appearance::default(),
+        vec![HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Ready,
+            Vec::new(),
+            None,
+        )],
+    ));
+    {
+        let mut hosts = workspace.scene.runtime.hosts.write().expect("host list");
+        let item = hosts.first_mut().expect("wsl host");
+        item.zellij_available = true;
+        item.zellij_sessions = vec![SessionItem::new("review", 0)];
+    }
+    *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
+        HostContext {
+            host,
+            snapshot: snapshot.clone(),
+        },
+        1,
+    ));
+
+    // An in-flight refresh captured before the kill.
+    let stale_generation = reserve_refresh(&workspace.scene.runtime, &CancellationToken::new());
+
+    remove_killed_zellij_session(
+        &workspace.scene.runtime,
+        snapshot.endpoint(),
+        snapshot.runtime(),
+        "review",
+    );
+
+    let published = workspace.scene.runtime.host.lock().expect("published host");
+    let context = published.as_ref().expect("host stays published");
+    assert!(
+        !matches!(
+            context.value.snapshot.zellij(),
+            ZellijInventory::Available { sessions, .. }
+                if sessions.iter().any(|session| session.name() == "review")
+        ),
+        "the killed session leaves the published authority snapshot"
+    );
+    drop(published);
+    assert!(
+        workspace
+            .scene
+            .runtime
+            .hosts
+            .read()
+            .expect("host list")
+            .first()
+            .expect("wsl host")
+            .zellij_sessions
+            .is_empty(),
+        "the killed session leaves the host item"
+    );
+    assert!(
+        !publish_refresh(&workspace.scene.runtime, stale_generation, || {
+            panic!("a refresh captured before the kill must not publish");
+        }),
+        "the pre-kill refresh's publication is fenced"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_revoked_restart_never_launches_and_a_failed_kill_re_drives_it() {
+    // A retained client of the doomed session sits in `restarting` with a
+    // queued retry. Suppression must revoke the registration so the retry
+    // launches nothing, and a failed kill must hand it back and drive a
+    // fresh retry in the owning scene.
+    let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+        Appearance::default(),
+        "Ubuntu",
+        Vec::new(),
+    ));
+    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+    let identity = session::SessionIdentity::new(100, "$1", 200);
+    let runner = Arc::new(CountingRefusingRunner(AtomicUsize::new(0)));
+    let mut request = attach_request_fixture_with_runner(
+        &snapshot,
+        identity,
+        "work",
+        Arc::clone(&runner) as SharedCommandRunner,
+    );
+    request.target = AttachTarget::Zellij {
+        executable: "/usr/bin/zellij".to_owned(),
+        name: "work".to_owned(),
+    };
+    let retry = RetainedRetry {
+        key: request.presentation_key(),
+        request: request.clone(),
+    };
+    workspace
+        .scene
+        .retained_presentations
+        .lock()
+        .expect("retained presentations")
+        .restarting
+        .push(RetainedRestart {
+            key: retry.key.clone(),
+            selection: request.selection(),
+            attachment: ActiveAttachment {
+                request,
+                term: AttachTerm::Xterm,
+                generation: 1,
+                fallback: None,
+            },
+            presentation_id: 7,
+        });
+
+    let suppressed =
+        workspace.close_zellij_presentations(snapshot.endpoint(), snapshot.runtime(), "work");
+    assert_eq!(suppressed.len(), 1);
+    assert_eq!(
+        suppressed[0].restarts.len(),
+        1,
+        "suppression revokes the restarting registration"
+    );
+
+    // The queued retry runs after the revocation: it must launch nothing.
+    crate::scene::run_retained_retry(&workspace.scene, &retry);
+    assert_eq!(
+        runner.0.load(Ordering::Acquire),
+        0,
+        "a revoked registration executes no host command"
+    );
+
+    // The failed kill restores the registration to its owner and drives a
+    // fresh retry there; against the refusing runner that retry fails and
+    // surfaces in the owner's operation events.
+    workspace.restore_suppressed_zellij_presentations(suppressed);
+    settle(
+        "the restored registration's retry runs in the owner",
+        || runner.0.load(Ordering::Acquire) > 0,
+    );
+}
+
+#[test]
 fn a_confirmation_taken_before_a_completed_kill_cannot_reserve() {
     // The exact interleaving: scene B's dialog leaves its slot, then a
     // kill of the same target completes (advancing the revision) before B
@@ -11647,6 +11813,23 @@ fn closure_during_a_retry_launch_suppresses_the_failure_publication() {
         key: request.presentation_key(),
         request,
     };
+    workspace
+        .scene
+        .retained_presentations
+        .lock()
+        .expect("retained presentations")
+        .restarting
+        .push(RetainedRestart {
+            key: retry.key.clone(),
+            selection: retry.request.selection(),
+            attachment: ActiveAttachment {
+                request: retry.request.clone(),
+                term: AttachTerm::Xterm,
+                generation: 1,
+                fallback: None,
+            },
+            presentation_id: 7,
+        });
 
     let scene = Arc::clone(&workspace.scene);
     let (done, finished) = std::sync::mpsc::channel();
@@ -11706,6 +11889,23 @@ fn retained_retries_never_hold_navigation_while_waiting_on_operations() {
         key: request.presentation_key(),
         request,
     };
+    workspace
+        .scene
+        .retained_presentations
+        .lock()
+        .expect("retained presentations")
+        .restarting
+        .push(RetainedRestart {
+            key: retry.key.clone(),
+            selection: retry.request.selection(),
+            attachment: ActiveAttachment {
+                request: retry.request.clone(),
+                term: AttachTerm::Xterm,
+                generation: 1,
+                fallback: None,
+            },
+            presentation_id: 7,
+        });
 
     let operations = workspace
         .scene
@@ -11820,6 +12020,23 @@ fn a_retained_retry_extracted_before_closure_never_launches() {
         key: request.presentation_key(),
         request,
     };
+    workspace
+        .scene
+        .retained_presentations
+        .lock()
+        .expect("retained presentations")
+        .restarting
+        .push(RetainedRestart {
+            key: retry.key.clone(),
+            selection: retry.request.selection(),
+            attachment: ActiveAttachment {
+                request: retry.request.clone(),
+                term: AttachTerm::Xterm,
+                generation: 1,
+                fallback: None,
+            },
+            presentation_id: 7,
+        });
     workspace.close();
 
     // The launch itself is the observable: the injected runner counts

@@ -54,11 +54,12 @@ use runtime::{
     reconcile_herdr_lifecycle_fences, refresh_is_in_flight, register_remote_attachment,
     register_remote_constructive, register_scene, release_zellij_kill,
     remember_pending_kwt_creation, remote_constructive_is_current, remote_host_for_connection,
-    require_current_protected_selection, require_host_session_actions,
-    reserve_constructive_inventory, reserve_refresh, reserve_zellij_kill, scene_by_id,
-    set_herdr_inventory, set_remote_herdr_launch_pending, set_remote_host_snapshot,
-    set_remote_host_state, set_zellij_inventory, settle_remote_constructive_task, unregister_scene,
-    with_current_remote_constructive, zellij_kill_is_current,
+    remove_killed_zellij_session, require_current_protected_selection,
+    require_host_session_actions, reserve_constructive_inventory, reserve_refresh,
+    reserve_zellij_kill, scene_by_id, set_herdr_inventory, set_remote_herdr_launch_pending,
+    set_remote_host_snapshot, set_remote_host_state, set_zellij_inventory,
+    settle_remote_constructive_task, unregister_scene, with_current_remote_constructive,
+    zellij_kill_is_current,
 };
 use scene::{
     NavigationFence, Scene, activate_retained_presentation, attach_scene, begin_refresh,
@@ -2337,6 +2338,10 @@ fn run_confirmed_zellij_kill(
     match result {
         Ok(()) => {
             workspace.finish_zellij_presentation(endpoint, runtime, name);
+            // Inventory removal precedes the revision advance: a request
+            // captured in between finds no session to authorize, and one
+            // captured before binds the old revision and reserves stale.
+            remove_killed_zellij_session(&workspace.scene.runtime, endpoint, runtime, name);
             release_zellij_kill(&workspace.scene.runtime, key, true);
         }
         Err(error) => {
@@ -2904,6 +2909,9 @@ struct SuppressedHerdrPresentation {
     scene_id: SceneId,
     active_selection: Option<SessionSelection>,
     retained: Option<ClosedRetainedPresentation>,
+    /// Revoked restarting registrations of the doomed session; see
+    /// [`SuppressedZellijPresentation::restarts`].
+    restarts: Vec<RetainedRestart>,
     navigation_generation: u64,
 }
 
@@ -2914,6 +2922,11 @@ struct SuppressedZellijPresentation {
     scene_id: SceneId,
     active_selection: Option<SessionSelection>,
     retained: Option<ClosedRetainedPresentation>,
+    /// Revoked restarting registrations of the doomed session: without
+    /// revocation a queued retry would relaunch after the kill and attach
+    /// to a same-name replacement. Restored, with fresh retries, when the
+    /// kill fails.
+    restarts: Vec<RetainedRestart>,
     navigation_generation: u64,
 }
 
@@ -3244,6 +3257,29 @@ impl<T> RetainedPresentations<T> {
     fn contains(&self, key: &PresentationKey) -> bool {
         self.entries.iter().any(|entry| &entry.key == key)
             || self.restarting.iter().any(|entry| &entry.key == key)
+    }
+
+    fn has_restart(&self, key: &PresentationKey) -> bool {
+        self.restarting.iter().any(|entry| &entry.key == key)
+    }
+
+    /// Revoke restarting registrations of a doomed session so a queued
+    /// retry cannot relaunch after the destructive mutation; the revoked
+    /// entries ride in the suppression for restoration on failure.
+    fn take_restarting_matching(
+        &mut self,
+        mut matches: impl FnMut(&PresentationKey) -> bool,
+    ) -> Vec<RetainedRestart> {
+        let mut removed = Vec::new();
+        let mut index = 0;
+        while index < self.restarting.len() {
+            if matches(&self.restarting[index].key) {
+                removed.push(self.restarting.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        removed
     }
 
     fn key_for_selection(&self, selection: &SessionSelection) -> Option<PresentationKey> {
@@ -7609,17 +7645,23 @@ impl Workspace {
         }
         drop(attachment);
 
-        let removed = self
-            .scene
-            .retained_presentations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take_matching(|key| {
+        let (removed, restarts) = {
+            let mut retained = self
+                .scene
+                .retained_presentations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let matches = |key: &PresentationKey| {
                 key.endpoint == endpoint.distro()
                     && key.runtime == *runtime
                     && target_matches(&key.target)
-            });
-        let changed = active_selection.is_some() || !removed.is_empty();
+            };
+            (
+                retained.take_matching(matches),
+                retained.take_restarting_matching(matches),
+            )
+        };
+        let changed = active_selection.is_some() || !removed.is_empty() || !restarts.is_empty();
         let retained = active_selection
             .is_none()
             .then(|| removed.into_iter().next())
@@ -7632,12 +7674,15 @@ impl Workspace {
         if changed {
             bump_scene_revision(&self.scene);
         }
-        (active_selection.is_some() || retained.is_some()).then_some(SuppressedZellijPresentation {
-            scene_id: self.scene.id,
-            active_selection,
-            retained,
-            navigation_generation,
-        })
+        (active_selection.is_some() || retained.is_some() || !restarts.is_empty()).then_some(
+            SuppressedZellijPresentation {
+                scene_id: self.scene.id,
+                active_selection,
+                retained,
+                restarts,
+                navigation_generation,
+            },
+        )
     }
 
     /// Restore each suppression through its still-live owning scene after
@@ -7661,6 +7706,7 @@ impl Workspace {
         let Some(suppressed) = suppressed else {
             return;
         };
+        self.restore_revoked_restarts(suppressed.restarts);
         self.restore_suppressed_presentation(
             suppressed.retained,
             suppressed.active_selection,
@@ -7668,6 +7714,46 @@ impl Workspace {
             "could not restore a retained Zellij presentation after a failed kill",
             "could not restore the Zellij presentation after a failed kill",
         );
+    }
+
+    /// Hand revoked restarting registrations back to a live owner after a
+    /// failed destructive operation, and re-drive each one's retry — its
+    /// original retry aborted against the revocation, so without a fresh
+    /// retry the registration would sit restarting forever.
+    fn restore_revoked_restarts(&self, restarts: Vec<RetainedRestart>) {
+        if restarts.is_empty() || self.scene.closed.load(Ordering::Acquire) {
+            return;
+        }
+        let mut retries = Vec::with_capacity(restarts.len());
+        {
+            let mut retained = self
+                .scene
+                .retained_presentations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for restart in restarts {
+                if retained.contains(&restart.key) {
+                    continue;
+                }
+                retries.push(RetainedRetry {
+                    key: restart.key.clone(),
+                    request: restart.attachment.request.clone(),
+                });
+                retained.restarting.push(restart);
+            }
+        }
+        for retry in retries {
+            let scene = Arc::clone(&self.scene);
+            let key = retry.key.clone();
+            if let Err(error) = thread::Builder::new()
+                .name("ghosthub-retained-restore-retry".to_owned())
+                .spawn(move || scene::run_retained_retry(&scene, &retry))
+            {
+                scene::fail_retained_retry(&self.scene, &key, None);
+                self.push_operation_error(format!("restart a restored retained client: {error}"));
+            }
+        }
+        bump_scene_revision(&self.scene);
     }
 
     /// Restore one suppressed presentation after a failed destructive
@@ -7840,17 +7926,23 @@ impl Workspace {
         }
         drop(attachment);
 
-        let removed = self
-            .scene
-            .retained_presentations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take_matching(|key| {
+        let (removed, restarts) = {
+            let mut retained = self
+                .scene
+                .retained_presentations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let matches = |key: &PresentationKey| {
                 key.endpoint == pending.endpoint.distro()
                     && key.runtime == pending.runtime
                     && key.target.herdr_matches(&pending.record)
-            });
-        let changed = active_selection.is_some() || !removed.is_empty();
+            };
+            (
+                retained.take_matching(matches),
+                retained.take_restarting_matching(matches),
+            )
+        };
+        let changed = active_selection.is_some() || !removed.is_empty() || !restarts.is_empty();
         let retained = active_selection
             .is_none()
             .then(|| removed.into_iter().next())
@@ -7863,12 +7955,15 @@ impl Workspace {
         if changed {
             bump_scene_revision(&self.scene);
         }
-        (active_selection.is_some() || retained.is_some()).then_some(SuppressedHerdrPresentation {
-            scene_id: self.scene.id,
-            active_selection,
-            retained,
-            navigation_generation,
-        })
+        (active_selection.is_some() || retained.is_some() || !restarts.is_empty()).then_some(
+            SuppressedHerdrPresentation {
+                scene_id: self.scene.id,
+                active_selection,
+                retained,
+                restarts,
+                navigation_generation,
+            },
+        )
     }
 
     /// Restore each suppression through its still-live owning scene after
@@ -7890,6 +7985,7 @@ impl Workspace {
         let Some(suppressed) = suppressed else {
             return;
         };
+        self.restore_revoked_restarts(suppressed.restarts);
         self.restore_suppressed_presentation(
             suppressed.retained,
             suppressed.active_selection,

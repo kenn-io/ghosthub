@@ -1689,6 +1689,59 @@ pub(crate) fn set_herdr_inventory(runtime: &Runtime, inventory: &HerdrInventory)
     apply_herdr_inventory(host, inventory);
 }
 
+/// Remove one successfully killed Zellij session from shared inventory
+/// before its kill revision advances, and fence in-flight refreshes whose
+/// snapshots predate the kill: stale inventory must neither authorize a
+/// new kill request against a same-name replacement nor restore the dead
+/// name after this removal.
+pub(crate) fn remove_killed_zellij_session(
+    runtime: &Runtime,
+    endpoint: &host::WslEndpoint,
+    runtime_identity: &host::WslRuntimeIdentity,
+    name: &str,
+) {
+    let _publication = runtime
+        .refresh_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // A refresh captured before the kill would republish the dead session;
+    // advancing the fence under the publication lock refuses it, exactly
+    // like a cancellation.
+    runtime.refresh_generation.fetch_add(1, Ordering::AcqRel);
+    let _snapshot_write = begin_snapshot_write(runtime);
+    {
+        let mut host = runtime
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(published) = host.as_mut()
+            && published.value.snapshot.endpoint() == endpoint
+            && published.value.snapshot.runtime() == runtime_identity
+        {
+            published.value.snapshot = published
+                .value
+                .snapshot
+                .clone()
+                .without_zellij_session(name);
+        }
+    }
+    let mut hosts = runtime
+        .hosts
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(host) = hosts
+        .iter_mut()
+        .find(|host| host.endpoint == endpoint.distro())
+    {
+        let before = host.zellij_sessions.len();
+        host.zellij_sessions
+            .retain(|session| session.name() != name);
+        if host.zellij_sessions.len() != before {
+            runtime.revision.fetch_add(1, Ordering::Release);
+        }
+    }
+}
+
 pub(crate) fn set_zellij_inventory(runtime: &Runtime, inventory: &ZellijInventory) {
     let mut hosts = runtime
         .hosts

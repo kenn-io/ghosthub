@@ -6218,6 +6218,18 @@ pub(crate) fn run_retained_retry(scene: &Scene, retry: &RetainedRetry) {
             return;
         };
     }
+    // The registration is verified under the operation lane immediately
+    // before launching: a destructive mutation of the same session revoked
+    // it during suppression, and launching anyway would attach a client to
+    // whatever same-name replacement appears next.
+    if !scene
+        .retained_presentations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .has_restart(&retry.key)
+    {
+        return;
+    }
     let result = attach_fresh_retained(scene, retry);
     // Re-fenced for every outcome's publication: closure that won the race
     // during the unfenced launch is observed here — a launched client dies
