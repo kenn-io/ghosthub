@@ -352,6 +352,30 @@ mod windows {
         assert_eq!(disconnect, RelayDisconnect::Backpressure);
     }
 
+    #[test]
+    fn input_to_a_stopped_relay_is_not_backpressure() {
+        // The web attach path closes with POLICY only on genuine
+        // backpressure; a stopped relay's send error must classify
+        // differently so a normal exit is never masked as input overflow.
+        let relay = attach_cmd(
+            &["/d", "/c", "echo relay-stopped-input"],
+            "relay-stopped-input-test",
+            GridSize::new(40, 4).expect("valid grid"),
+            OUTPUT_BOUND,
+        );
+        let mut client = Client::new(&relay);
+        let disconnect = client.drain_until_disconnect();
+        assert!(matches!(disconnect, RelayDisconnect::Exited { .. }));
+
+        let error = relay
+            .send_bytes(b"z".to_vec())
+            .expect_err("a stopped relay refuses input");
+        assert!(
+            !error.is_backpressure(),
+            "a stopped relay's refusal is not backpressure"
+        );
+    }
+
     fn attach_cmd(
         args: &[&str],
         name: &str,

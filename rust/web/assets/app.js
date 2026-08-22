@@ -59,6 +59,34 @@ elements.reconnect.addEventListener("click", () => {
   }
 });
 
+// The shared paste-sanitization contract (contracts/clipboard/
+// paste-sanitize-v1.json): C0 controls except tab and line endings, DEL,
+// and C1 controls are stripped before the paste reaches the terminal.
+// Stripping ESC also defuses an embedded bracketed-paste end marker, so
+// clipboard content cannot break out of the bracket and execute.
+// Sanitization runs before wrapping: term.paste() then normalizes line
+// endings and applies bracketed-paste markers per the terminal's mode.
+// Registered once for the app's lifetime and routed through state.term so
+// reattachment never stacks listeners over disposed terminals.
+const sanitizePaste = (text) =>
+  // eslint-disable-next-line no-control-regex
+  text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
+elements.terminal.addEventListener(
+  "paste",
+  (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (!state.term) {
+      return;
+    }
+    const text = event.clipboardData ? event.clipboardData.getData("text") : "";
+    if (text) {
+      state.term.paste(sanitizePaste(text));
+    }
+  },
+  { capture: true },
+);
+
 elements.closePane.addEventListener("click", () => {
   // Cancels an attach parked on a pending teardown acknowledgment: when
   // its await resolves, the moved sequence aborts it instead of
@@ -332,29 +360,6 @@ async function attach(label, row) {
       showDisconnect(event.reason ? `Closed: ${event.reason}` : "Connection closed");
     }
   });
-
-  // The shared paste-sanitization contract (contracts/clipboard/
-  // paste-sanitize-v1.json): C0 controls except tab and line endings, DEL,
-  // and C1 controls are stripped before the paste reaches the terminal.
-  // Stripping ESC also defuses an embedded bracketed-paste end marker, so
-  // clipboard content cannot break out of the bracket and execute.
-  // Sanitization runs before wrapping: term.paste() then normalizes line
-  // endings and applies bracketed-paste markers per the terminal's mode.
-  const sanitizePaste = (text) =>
-    // eslint-disable-next-line no-control-regex
-    text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
-  elements.terminal.addEventListener(
-    "paste",
-    (event) => {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      const text = event.clipboardData ? event.clipboardData.getData("text") : "";
-      if (text) {
-        term.paste(sanitizePaste(text));
-      }
-    },
-    { capture: true },
-  );
 
   term.onData((data) => {
     if (socket.readyState === WebSocket.OPEN && helloDone) {

@@ -168,10 +168,15 @@ async fn attach_session(
             }
             message = socket.recv() => match message {
                 Some(Ok(Message::Binary(bytes))) => {
-                    if worker.send_bytes(bytes.to_vec()).is_err() {
+                    if let Err(error) = worker.send_bytes(bytes.to_vec())
+                        && error.is_backpressure()
+                    {
                         // Input overflow cuts the connection cleanly rather
                         // than dropping bytes mid-stream; a reconnect is a
-                        // fresh attachment.
+                        // fresh attachment. A stopped relay is not an
+                        // overflow: its terminal outcome (often a normal
+                        // exit) is already queued on the output path and
+                        // must not be masked by a policy close.
                         break Some((close_code::POLICY, "input overflow"));
                     }
                 }
