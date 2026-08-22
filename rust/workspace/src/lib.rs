@@ -36,28 +36,29 @@ mod scene;
 
 use pump::start_event_pump;
 use runtime::{
-    Runtime, SceneId, begin_snapshot_write, cadence_fallback_scene, cancel_refresh,
-    cancel_scene_remote_attachments, cancel_superseded_remote_constructive_navigation,
-    capture_kwt_worktree_removal_context, capture_remote_herdr_attach_request,
-    capture_remote_herdr_create_request, capture_remote_herdr_restart_request,
-    capture_remote_tmux_attach_request, capture_remote_zellij_attach_request,
-    capture_remote_zellij_create_request, clear_pending_remote_constructive,
-    clear_remote_attachment_registration, clear_remote_constructive_registration,
-    current_inventory_session_name, equivalent_tmux_presentation_key, finish_herdr_launch,
-    finish_herdr_lifecycle_state, finish_pending_creation, for_each_scene,
-    herdr_operation_pending_for_selection, invalidate_kwt_inventory, live_scenes,
-    next_operation_id, next_presentation_id, next_scene_id, pending_remote_constructive_snapshot,
-    publish_herdr_lifecycle_uncertain, publish_refresh, read_scene_revision_consistent,
-    recapture_remote_herdr_attach_request, recapture_remote_herdr_create_request,
-    recapture_remote_tmux_attach_request, recapture_remote_zellij_attach_request,
-    recapture_remote_zellij_create_request, reconcile_herdr_lifecycle_fences, refresh_is_in_flight,
-    register_remote_attachment, register_remote_constructive, register_scene,
+    Runtime, SceneId, ZellijKillKey, ZellijKillState, begin_snapshot_write, cadence_fallback_scene,
+    cancel_refresh, cancel_scene_remote_attachments,
+    cancel_superseded_remote_constructive_navigation, capture_kwt_worktree_removal_context,
+    capture_remote_herdr_attach_request, capture_remote_herdr_create_request,
+    capture_remote_herdr_restart_request, capture_remote_tmux_attach_request,
+    capture_remote_zellij_attach_request, capture_remote_zellij_create_request,
+    clear_pending_remote_constructive, clear_remote_attachment_registration,
+    clear_remote_constructive_registration, current_inventory_session_name,
+    equivalent_tmux_presentation_key, finish_herdr_launch, finish_herdr_lifecycle_state,
+    finish_pending_creation, for_each_scene, herdr_operation_pending_for_selection,
+    invalidate_kwt_inventory, live_scenes, next_operation_id, next_presentation_id, next_scene_id,
+    pending_remote_constructive_snapshot, publish_herdr_lifecycle_uncertain, publish_refresh,
+    read_scene_revision_consistent, recapture_remote_herdr_attach_request,
+    recapture_remote_herdr_create_request, recapture_remote_tmux_attach_request,
+    recapture_remote_zellij_attach_request, recapture_remote_zellij_create_request,
+    reconcile_herdr_lifecycle_fences, refresh_is_in_flight, register_remote_attachment,
+    register_remote_constructive, register_scene, release_zellij_kill,
     remember_pending_kwt_creation, remote_constructive_is_current, remote_host_for_connection,
     require_current_protected_selection, require_host_session_actions,
-    reserve_constructive_inventory, reserve_refresh, scene_by_id, set_herdr_inventory,
-    set_remote_herdr_launch_pending, set_remote_host_snapshot, set_remote_host_state,
-    set_zellij_inventory, settle_remote_constructive_task, unregister_scene,
-    with_current_remote_constructive,
+    reserve_constructive_inventory, reserve_refresh, reserve_zellij_kill, scene_by_id,
+    set_herdr_inventory, set_remote_herdr_launch_pending, set_remote_host_snapshot,
+    set_remote_host_state, set_zellij_inventory, settle_remote_constructive_task, unregister_scene,
+    with_current_remote_constructive, zellij_kill_is_current,
 };
 use scene::{
     NavigationFence, Scene, activate_retained_presentation, attach_scene, begin_refresh,
@@ -2295,6 +2296,22 @@ struct KwtRemovalCaptureIntent {
     generation: String,
 }
 
+fn zellij_kill_key(
+    endpoint: &host::WslEndpoint,
+    runtime: &host::WslRuntimeIdentity,
+    name: &str,
+) -> ZellijKillKey {
+    (
+        endpoint.distro().to_owned(),
+        format!(
+            "{}:{}",
+            runtime.kernel_boot_id(),
+            runtime.init_start_ticks()
+        ),
+        name.to_owned(),
+    )
+}
+
 #[derive(Clone)]
 enum KillTarget {
     Tmux(Arc<LiveSessionTarget>),
@@ -3630,6 +3647,7 @@ impl Workspace {
                     settings: Mutex::new(None),
                     discovery_cancel: Mutex::new(None),
                     event_drain: Mutex::new(()),
+                    zellij_kills: Mutex::new(ZellijKillState::default()),
                     pump_started: AtomicBool::new(false),
                     pump_scheduling: Mutex::new(()),
                     herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
@@ -3810,6 +3828,7 @@ impl Workspace {
                 settings: Mutex::new(None),
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
+                zellij_kills: Mutex::new(ZellijKillState::default()),
                 pump_started: AtomicBool::new(false),
                 pump_scheduling: Mutex::new(()),
                 herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
@@ -3869,6 +3888,7 @@ impl Workspace {
                     settings: Mutex::new(None),
                     discovery_cancel: Mutex::new(None),
                     event_drain: Mutex::new(()),
+                    zellij_kills: Mutex::new(ZellijKillState::default()),
                     pump_started: AtomicBool::new(false),
                     pump_scheduling: Mutex::new(()),
                     herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
@@ -7024,14 +7044,36 @@ impl Workspace {
             ));
         }
         bump_scene_revision(&self.scene);
+        // Zellij kills are fenced runtime-wide by target name: a second
+        // confirmation for the same session is refused instead of queuing
+        // behind the first, where it would kill a newly discovered
+        // same-name replacement.
+        let reservation = if let KillTarget::Zellij {
+            endpoint,
+            runtime,
+            name,
+            ..
+        } = &pending.target
+        {
+            let key = zellij_kill_key(endpoint, runtime, name);
+            let Some(revision) = reserve_zellij_kill(&self.scene.runtime, key.clone()) else {
+                return Err(WorkspaceError::new(
+                    "a kill for this Zellij session is already in progress",
+                ));
+            };
+            Some((key, revision))
+        } else {
+            None
+        };
         let workspace = self.clone();
+        let task_reservation = reservation.clone();
         let retry = PendingKill {
             generation: pending.generation,
             selection: pending.selection.clone(),
             host: pending.host.clone(),
             target: pending.target.clone(),
         };
-        if let Err(error) = thread::Builder::new()
+        let spawn_result = thread::Builder::new()
             .name("ghosthub-session-kill".to_owned())
             .spawn(move || {
                 let _operation = workspace
@@ -7056,6 +7098,20 @@ impl Workspace {
                         executable,
                         name,
                     } => {
+                        let (key, revision) =
+                            task_reservation.expect("Zellij kills always hold a reservation");
+                        // Rechecked under the lane: a kill of the same
+                        // target completing while this one was queued
+                        // advanced the revision, and killing again would
+                        // hit a same-name replacement.
+                        if !zellij_kill_is_current(&workspace.scene.runtime, &key, revision) {
+                            release_zellij_kill(&workspace.scene.runtime, &key, false);
+                            workspace.push_operation_error(
+                                "the Zellij session was killed while this confirmation waited"
+                                    .to_owned(),
+                            );
+                            return;
+                        }
                         let mut suppressed = None;
                         let result = pending.host.kill_zellij_session(
                             endpoint,
@@ -7071,9 +7127,11 @@ impl Workspace {
                         match result {
                             Ok(()) => {
                                 workspace.finish_zellij_presentation(endpoint, runtime, name);
+                                release_zellij_kill(&workspace.scene.runtime, &key, true);
                             }
                             Err(error) => {
                                 workspace.restore_suppressed_zellij_presentation(suppressed);
+                                release_zellij_kill(&workspace.scene.runtime, &key, false);
                                 workspace.push_operation_error(error.to_string());
                             }
                         }
@@ -7085,8 +7143,11 @@ impl Workspace {
                     .runtime
                     .revision
                     .fetch_add(1, Ordering::Release);
-            })
-        {
+            });
+        if let Err(error) = spawn_result {
+            if let Some((key, _revision)) = reservation {
+                release_zellij_kill(&self.scene.runtime, &key, false);
+            }
             *self
                 .scene
                 .pending_kill

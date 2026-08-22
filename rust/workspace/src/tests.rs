@@ -8686,6 +8686,109 @@ fn kill_intent_minting_is_atomic_with_the_fence() {
     }
 }
 
+#[test]
+fn concurrent_zellij_kill_confirmations_for_one_target_are_refused() {
+    // Two scenes hold confirmed dialogs for the same Zellij session. The
+    // second confirmation must be refused at reservation instead of
+    // queuing behind the first on the operation lane, where it would kill
+    // whatever same-name replacement discovery finds next.
+    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
+    let host = WslHost::new(
+        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        Arc::new(RefusingRunner) as SharedCommandRunner,
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
+    );
+    let a = Workspace::preview(WorkspaceSnapshot::ready(
+        Appearance::default(),
+        "Ubuntu",
+        Vec::new(),
+    ));
+    let b = a.open_scene();
+    let target = || KillTarget::Zellij {
+        endpoint: snapshot.endpoint().clone(),
+        runtime: snapshot.runtime().clone(),
+        executable: "/usr/bin/zellij".to_owned(),
+        name: "review".to_owned(),
+    };
+    for scene in [&a, &b] {
+        let generation = invalidate_pending_kill(&scene.scene);
+        assert!(publish_pending_kill(
+            &scene.scene,
+            PendingKill {
+                generation,
+                selection: SessionSelection::zellij("wsl", "Ubuntu", "review"),
+                host: host.clone(),
+                target: target(),
+            },
+        ));
+    }
+
+    // Park the first confirmation's task on the operation lane so the
+    // second confirmation arrives while the first is provably in flight.
+    let operations = a
+        .scene
+        .runtime
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    a.confirm_session_kill()
+        .expect("the first confirmation reserves the target");
+    let refusal = b
+        .confirm_session_kill()
+        .expect_err("the duplicate confirmation is refused");
+    assert!(
+        refusal.to_string().contains("already in progress"),
+        "{refusal}"
+    );
+    drop(operations);
+
+    // The parked task fails against the refusing runner and releases the
+    // reservation; the target becomes reservable again.
+    settle("the first kill task settles", || {
+        let (events, _) = a.drain_events();
+        events
+            .iter()
+            .any(|event| matches!(event, WorkspaceEvent::Error(_)))
+    });
+    let key = (
+        snapshot.endpoint().distro().to_owned(),
+        format!(
+            "{}:{}",
+            snapshot.runtime().kernel_boot_id(),
+            snapshot.runtime().init_start_ticks()
+        ),
+        "review".to_owned(),
+    );
+    assert!(
+        reserve_zellij_kill(&a.scene.runtime, key.clone()).is_some(),
+        "a failed kill releases its reservation"
+    );
+    release_zellij_kill(&a.scene.runtime, &key, false);
+}
+
+#[test]
+fn a_completed_zellij_kill_advances_the_reservation_revision() {
+    let workspace = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+    let runtime = &workspace.scene.runtime;
+    let key = (
+        "Ubuntu".to_owned(),
+        "boot:1".to_owned(),
+        "review".to_owned(),
+    );
+
+    let first = reserve_zellij_kill(runtime, key.clone()).expect("first reservation");
+    assert!(zellij_kill_is_current(runtime, &key, first));
+    release_zellij_kill(runtime, &key, true);
+
+    // A task still holding the pre-completion revision is fenced; a fresh
+    // reservation observes the advanced one.
+    assert!(!zellij_kill_is_current(runtime, &key, first));
+    let second = reserve_zellij_kill(runtime, key.clone()).expect("target is reservable again");
+    assert!(second > first);
+    assert!(zellij_kill_is_current(runtime, &key, second));
+    release_zellij_kill(runtime, &key, false);
+}
+
 #[cfg(windows)]
 #[test]
 fn a_completed_zellij_kill_fences_a_straddling_kill_request() {

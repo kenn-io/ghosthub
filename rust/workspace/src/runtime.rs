@@ -71,6 +71,7 @@ pub(crate) struct Runtime {
     /// worker events.
     pub(crate) event_drain: Mutex<()>,
     /// Latched once the background event pump is scheduled.
+    pub(crate) zellij_kills: Mutex<ZellijKillState>,
     pub(crate) pump_started: AtomicBool,
     /// Serializes pump scheduling so `pump_started` is truthful (see
     /// `start_event_pump`).
@@ -174,6 +175,60 @@ pub(crate) fn cadence_fallback_scene(
     }
     started.store(false, Ordering::Release);
     None
+}
+
+/// One reservable Zellij kill target. Zellij sessions have no stable
+/// generations, so identity is by name on one host runtime; the fence
+/// keeps two confirmed kills for the same name from queuing, where the
+/// later one would kill a newly discovered same-name replacement.
+pub(crate) type ZellijKillKey = (String, String, String);
+
+#[derive(Default)]
+pub(crate) struct ZellijKillState {
+    in_flight: std::collections::HashSet<ZellijKillKey>,
+    revisions: std::collections::HashMap<ZellijKillKey, u64>,
+}
+
+/// Reserve one Zellij kill; `None` means a kill for the same target is
+/// already confirmed or running and this one must be refused. The returned
+/// revision is rechecked after the operation lane is acquired.
+pub(crate) fn reserve_zellij_kill(runtime: &Runtime, key: ZellijKillKey) -> Option<u64> {
+    let mut kills = runtime
+        .zellij_kills
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !kills.in_flight.insert(key.clone()) {
+        return None;
+    }
+    Some(kills.revisions.get(&key).copied().unwrap_or(0))
+}
+
+/// Whether a reserved kill is still current once its task holds the
+/// operation lane; a completed kill of the same target advanced the
+/// revision, and the stale task must refuse rather than kill again.
+pub(crate) fn zellij_kill_is_current(
+    runtime: &Runtime,
+    key: &ZellijKillKey,
+    revision: u64,
+) -> bool {
+    let kills = runtime
+        .zellij_kills
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    kills.revisions.get(key).copied().unwrap_or(0) == revision
+}
+
+/// Release one reserved kill; a completed kill advances the target's
+/// revision so anything still holding the old one is fenced.
+pub(crate) fn release_zellij_kill(runtime: &Runtime, key: &ZellijKillKey, completed: bool) {
+    let mut kills = runtime
+        .zellij_kills
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    kills.in_flight.remove(key);
+    if completed {
+        *kills.revisions.entry(key.clone()).or_insert(0) += 1;
+    }
 }
 
 /// Find one live, not-closed scene by id, for work that must land on
