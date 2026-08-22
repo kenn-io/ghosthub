@@ -85,7 +85,7 @@
     },
     {
       "id": "csi-c1-is-stripped",
-      "input": "a31mb",
+      "input": "a\u009b31mb",
       "bracketed_paste": false,
       "expected": "a31mb",
       "known_gaps": {
@@ -103,7 +103,7 @@
     },
     {
       "id": "del-is-stripped",
-      "input": "ab",
+      "input": "a\u007fb",
       "bracketed_paste": false,
       "expected": "ab",
       "known_gaps": {
@@ -112,7 +112,7 @@
     },
     {
       "id": "c1-controls-are-stripped",
-      "input": "abcd",
+      "input": "a\u0080b\u0085c\u009fd",
       "bracketed_paste": false,
       "expected": "abcd",
       "known_gaps": {
@@ -130,7 +130,7 @@
     },
     {
       "id": "bracketed-csi-c1-is-stripped",
-      "input": "a31mb",
+      "input": "a\u009b31mb",
       "bracketed_paste": true,
       "expected": "\u001b[200~a31mb\u001b[201~",
       "known_gaps": {
@@ -149,7 +149,7 @@
     },
     {
       "id": "bracketed-del-and-c1-are-stripped",
-      "input": "abc",
+      "input": "a\u007fb\u0085c",
       "bracketed_paste": true,
       "expected": "\u001b[200~abc\u001b[201~",
       "known_gaps": {
@@ -167,9 +167,9 @@
     },
     {
       "id": "multibyte-text-is-preserved",
-      "input": "héllo 😀",
+      "input": "h\u00e9llo \ud83d\ude00",
       "bracketed_paste": false,
-      "expected": "héllo 😀"
+      "expected": "h\u00e9llo \ud83d\ude00"
     }
   ]
 }
