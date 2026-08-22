@@ -218,6 +218,10 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         model.openBorrowedTmuxSession(remoteSelection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
 
         // A transient surface failure, then a successful reconnect.
         surfaceStore.surface.launchError = SceneSurfaceLaunchError.rejected
