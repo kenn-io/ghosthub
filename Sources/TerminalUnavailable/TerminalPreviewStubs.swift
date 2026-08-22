@@ -19,7 +19,13 @@ public struct TerminalSurfaceCaptureToken: Hashable, Sendable {
     }
 }
 
-public final class TerminalSurfacePreviewFrame: @unchecked Sendable {}
+public final class TerminalSurfacePreviewFrame: @unchecked Sendable {
+    public let pixelSize: CGSize
+
+    public init(pixelSize: CGSize) {
+        self.pixelSize = pixelSize
+    }
+}
 
 public struct TerminalSurfaceSnapshot: @unchecked Sendable {
     public let frame: TerminalSurfacePreviewFrame
@@ -97,4 +103,6 @@ public final class LivePreviewParkingHost: NSView {
     public func contains(_ surface: TerminalSurfaceView) -> Bool {
         parkedSurfaces.contains(ObjectIdentifier(surface))
     }
+
+    public func setRenderingSuspended(_: Bool) {}
 }
