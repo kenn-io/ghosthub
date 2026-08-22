@@ -218,6 +218,94 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a switched managed client releases its Always Live preview")
+    func switchedManagedClientReleasesAlwaysLivePreview() async throws {
+        let environment = try setupHostEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let clientLookups = Counter()
+        let captures = Counter()
+        let originalIdentity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let switchedIdentity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$2",
+            createdAt: "2000"
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY")
+            else { return (0, "") }
+            let identity = clientLookups.increment() == 1
+                ? originalIdentity
+                : switchedIdentity
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t\(identity.serverPID)\t789\t321"
+                    + "\t/dev/ttys001\t\(identity.sessionID)"
+                    + "\t\(identity.createdAt)\t%9\n"
+            )
+        }
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .alwaysLive,
+            budget: LivePreviewBudget(limit: 0),
+            capture: { _, _ in
+                _ = captures.increment()
+                return try makePreviewSnapshot()
+            },
+            park: { _ in },
+            unpark: { _ in },
+            isKeyWindow: { true }
+        )
+        let session = DiscoveredTmuxSession(
+            name: "fleet",
+            windowCount: 1,
+            serverPID: originalIdentity.serverPID,
+            sessionID: originalIdentity.sessionID,
+            createdAt: originalIdentity.createdAt,
+            activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+            previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        let key = TmuxPreviewKey(
+            hostID: environment.host.id,
+            name: session.name,
+            socketName: nil
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 1
+                && surfaceStore.requestCount == 1
+        }
+        previewCoordinator.setExpanded(true, for: key)
+        await waitUntilMainActor {
+            await previewCoordinator.refreshLivePreviews()
+            return captures.count >= 1
+        }
+
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 0
+        }
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("leaving an opened tmux session captures its final frame")
     func leavingTmuxCapturesFinalFrame() async throws {
         let environment = try setupHostEnvironment()

@@ -9089,6 +9089,16 @@ final class WorkspaceSceneModel: ObservableObject {
               presentation.verifiedPreviewIdentity == expectedIdentity
         else { return nil }
         guard currentIdentity == expectedIdentity else {
+            // A managed hidden client that switched sessions must be
+            // released, not just marked unavailable: clearing the verified
+            // identity below would blind reconciliation to the mismatch and
+            // leave the client attached under a permanently dead tile.
+            // Exclusion records the expected identity, so a recreated
+            // session gets one fresh attachment attempt.
+            if alwaysLiveManagedTmuxPresentationKeys.contains(key) {
+                excludeAlwaysLiveTmuxPresentation(presentation, key: key)
+                return nil
+            }
             presentation.previewIdentityUnavailable = true
             presentation.verifiedPreviewIdentity = nil
             registerTmuxPreview(
