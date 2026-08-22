@@ -281,8 +281,13 @@ impl Drop for StartupPty {
 }
 
 fn reap_child(child: &mut dyn portable_pty::Child) -> u32 {
-    if let Some(exit_code) = wait_for_child_exit(child) {
-        return exit_code;
+    // Explicit teardown wants the child gone now. Killing an already
+    // exited child is harmless, while polling for a natural exit first
+    // would add up to half a second to every teardown on hosts whose
+    // process-lifetime guard is a no-op — and the relay joins this path on
+    // every viewer disconnect.
+    if let Ok(Some(status)) = child.try_wait() {
+        return status.exit_code();
     }
     let _ignored = child.kill();
     child.wait().map_or(u32::MAX, |status| status.exit_code())

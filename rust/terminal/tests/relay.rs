@@ -1,3 +1,82 @@
+#[cfg(unix)]
+mod unix {
+    use std::ffi::{OsStr, OsString};
+    use std::time::{Duration, Instant};
+
+    use surface::{GridSize, PixelSize};
+    use terminal::{ByteRelayWorker, RelayDisconnect, RelayOutput};
+
+    const OUTPUT_BOUND: usize = 1024 * 1024;
+    const POLL: Duration = Duration::from_millis(100);
+
+    fn attach_sh(script: &str) -> ByteRelayWorker {
+        ByteRelayWorker::attach_command(
+            OsStr::new("/bin/sh"),
+            &[OsString::from("-c"), OsString::from(script)],
+            GridSize::new(80, 24).expect("valid grid"),
+            PixelSize::default(),
+            OUTPUT_BOUND,
+        )
+        .expect("attach sh relay client")
+    }
+
+    fn collect_until_disconnect(relay: &ByteRelayWorker) -> (Vec<u8>, RelayDisconnect) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut bytes = Vec::new();
+        loop {
+            assert!(Instant::now() < deadline, "relay never disconnected");
+            match relay.recv_output(POLL) {
+                Some(RelayOutput::Bytes(chunk)) => bytes.extend_from_slice(&chunk),
+                Some(RelayOutput::Disconnected(disconnect)) => return (bytes, disconnect),
+                None => {}
+            }
+        }
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    #[test]
+    fn relays_output_verbatim_and_reports_the_exit_code() {
+        let relay = attach_sh("printf 'ghosthub-verbatim'; exit 7");
+        let (bytes, disconnect) = collect_until_disconnect(&relay);
+        assert!(
+            contains(&bytes, b"ghosthub-verbatim"),
+            "child output reaches the viewer untouched"
+        );
+        assert_eq!(disconnect, RelayDisconnect::Exited { code: 7 });
+    }
+
+    #[test]
+    fn output_written_before_exit_drains_to_the_viewer() {
+        let relay = attach_sh(
+            "i=0; while [ $i -lt 2000 ]; do echo ghosthub-line; i=$((i+1)); done;              printf 'ghosthub-drain-end'",
+        );
+        let (bytes, disconnect) = collect_until_disconnect(&relay);
+        assert!(
+            contains(&bytes, b"ghosthub-drain-end"),
+            "the final bytes written before exit still reach the viewer"
+        );
+        assert_eq!(disconnect, RelayDisconnect::Exited { code: 0 });
+    }
+
+    #[test]
+    fn drop_tears_down_a_live_child_promptly() {
+        let relay = attach_sh("sleep 600");
+        // Drop joins the relay threads and reaps the child; a teardown
+        // that waited on the sleeping child would blow this bound.
+        let started = Instant::now();
+        drop(relay);
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "teardown reaps the live child instead of waiting for it"
+        );
+    }
+}
+
 #[cfg(windows)]
 mod windows {
     use std::ffi::OsString;
@@ -251,15 +330,17 @@ mod windows {
 
     #[test]
     fn undrained_output_beyond_the_bound_disconnects_the_relay() {
+        // The bound is the enforced minimum (one reader chunk); the child
+        // must genuinely overrun it while the queue sits undrained.
         let relay = attach_cmd(
             &[
                 "/d",
                 "/c",
-                "for /l %i in (1,1,400) do @echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "for /l %i in (1,1,5000) do @echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ],
             "relay-backpressure-test",
             GridSize::new(80, 8).expect("valid grid"),
-            512,
+            64 * 1024,
         );
         // Answer the startup handshake, then leave the queue undrained long
         // enough for the child to overrun the small bound.

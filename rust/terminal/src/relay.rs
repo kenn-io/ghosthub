@@ -194,7 +194,8 @@ impl ByteRelayWorker {
     ///
     /// Returns an error when the PTY, child process, or relay containment
     /// cannot be established. A containment failure tears down the child
-    /// before returning.
+    /// before returning. `max_queued_output_bytes` must be at least one
+    /// PTY read chunk (64 KiB); a smaller bound panics.
     pub fn attach(
         plan: &AttachPlan,
         size: GridSize,
@@ -215,7 +216,8 @@ impl ByteRelayWorker {
     /// # Errors
     ///
     /// Returns an error when the PTY, child process, or relay containment
-    /// cannot be established.
+    /// cannot be established. `max_queued_output_bytes` must be at least
+    /// one PTY read chunk (64 KiB); a smaller bound panics.
     pub fn attach_herdr(
         plan: &HerdrAttachPlan,
         size: GridSize,
@@ -236,7 +238,8 @@ impl ByteRelayWorker {
     /// # Errors
     ///
     /// Returns an error when the PTY, child process, or relay containment
-    /// cannot be established.
+    /// cannot be established. `max_queued_output_bytes` must be at least
+    /// one PTY read chunk (64 KiB); a smaller bound panics.
     pub fn attach_zellij(
         plan: &ZellijAttachPlan,
         size: GridSize,
@@ -259,7 +262,8 @@ impl ByteRelayWorker {
     /// # Errors
     ///
     /// Returns an error when the PTY, child process, or relay containment
-    /// cannot be established.
+    /// cannot be established. `max_queued_output_bytes` must be at least
+    /// one PTY read chunk (64 KiB); a smaller bound panics.
     pub fn attach_command(
         program: &std::ffi::OsStr,
         args: &[std::ffi::OsString],
@@ -277,6 +281,15 @@ impl ByteRelayWorker {
         pixel_size: PixelSize,
         max_queued_output_bytes: usize,
     ) -> Result<Self, WorkerError> {
+        // A bound below one reader chunk would report backpressure for a
+        // single read against a fully drained viewer; the queue has no
+        // oversized-chunk split.
+        assert!(
+            max_queued_output_bytes >= crate::pty::READ_BUFFER_SIZE,
+            "max_queued_output_bytes must be at least one PTY read chunk \
+             ({} bytes)",
+            crate::pty::READ_BUFFER_SIZE,
+        );
         let SpawnedPty {
             process,
             reader,
@@ -608,6 +621,14 @@ fn run_relay(
         }
     }
 
+    // A resize or write can fail against the PTY of a child that already
+    // exited cleanly during the drain grace; the observed exit is the
+    // outcome the viewer should see, not the incidental failure. Viewer
+    // backpressure keeps its own outcome — the viewer lost output and
+    // must know.
+    if observed_exit.is_some() && matches!(disconnect, RelayDisconnect::Failed(_)) {
+        report_exit = true;
+    }
     let exit_code = pty.reap(report_exit, observed_exit.map(|(code, _)| code));
     if report_exit {
         disconnect = RelayDisconnect::Exited { code: exit_code };
