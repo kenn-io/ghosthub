@@ -244,6 +244,7 @@ jobs:
           launcher_stderr="$launcher_root/stderr.log"
           result_file="$launcher_root/result"
           controller_pid=
+          controller_starting=0
           cleanup_started=0
           signal_status=
 
@@ -377,7 +378,7 @@ jobs:
             if [[ -z "$signal_status" ]]; then
               signal_status=$status
             fi
-            if (( cleanup_started == 0 )); then
+            if (( cleanup_started == 0 && controller_starting == 0 )); then
               exit "$signal_status"
             fi
           }
@@ -925,6 +926,7 @@ jobs:
           : > "$launcher_stdout"
           : > "$launcher_stderr"
 
+          controller_starting=1
           set -m
           "$launch_controller" \
             "$launcher_bundle_identifier" \
@@ -952,6 +954,10 @@ jobs:
             "${test_arguments[@]}" &
           controller_pid=$!
           set +m
+          controller_starting=0
+          if [[ -n "$signal_status" ]]; then
+            exit "$signal_status"
+          fi
           set +e
           wait "$controller_pid"
           controller_status=$?
