@@ -4909,6 +4909,135 @@ fn assert_inconclusive_inventory_keeps_lifecycle_fenced(
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn a_herdr_stop_revokes_restarts_and_the_delayed_recovery_re_drives_them() {
+    // The Herdr twin of the Zellij revocation test, routed through the
+    // uncertain-lifecycle delayed recovery: suppression revokes the
+    // restarting registration (so the queued retry launches nothing), the
+    // revoked entry survives the DelayedHerdrRecovery hand-off, and the
+    // released recovery re-drives a fresh retry in the owning scene.
+    let (workspace, _runtime) = herdr_workspace_fixture();
+    let running = SessionSelection::herdr("wsl", "Ubuntu", "default");
+    let snapshot = workspace
+        .scene
+        .runtime
+        .host
+        .lock()
+        .expect("host context")
+        .as_ref()
+        .expect("published host")
+        .value
+        .snapshot
+        .clone();
+    let runner = Arc::new(CountingRefusingRunner(AtomicUsize::new(0)));
+    let request = AttachRequest {
+        host_id: "wsl".to_owned(),
+        host: WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+            Arc::clone(&runner) as SharedCommandRunner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        ),
+        endpoint: snapshot.endpoint().clone(),
+        runtime: snapshot.runtime().clone(),
+        target: AttachTarget::Herdr {
+            executable: "/opt/herdr/bin/herdr".to_owned(),
+            is_default: true,
+            session_directory: "/tmp/herdr/default".to_owned(),
+            socket_path: "/tmp/herdr/default/herdr.sock".to_owned(),
+        },
+        name: "default".to_owned(),
+        inventory_generation: 1,
+    };
+    let retry = RetainedRetry {
+        key: request.presentation_key(),
+        request: request.clone(),
+    };
+    workspace
+        .scene
+        .retained_presentations
+        .lock()
+        .expect("retained presentations")
+        .restarting
+        .push(RetainedRestart {
+            key: retry.key.clone(),
+            selection: request.selection(),
+            attachment: ActiveAttachment {
+                request,
+                term: AttachTerm::Xterm,
+                generation: 1,
+                fallback: None,
+            },
+            presentation_id: 7,
+        });
+
+    workspace
+        .request_herdr_lifecycle(&running, HerdrLifecycleAction::Stop)
+        .expect("running session may be stopped");
+    let pending = {
+        let mut lifecycle = workspace
+            .scene
+            .runtime
+            .herdr_lifecycle
+            .lock()
+            .expect("lifecycle state");
+        let pending = workspace
+            .scene
+            .pending_herdr_lifecycle
+            .lock()
+            .expect("pending lifecycle")
+            .take()
+            .expect("pending stop");
+        assert!(lifecycle.start(&pending));
+        pending
+    };
+
+    let suppressed = workspace.close_herdr_presentations(&pending);
+    assert_eq!(suppressed.len(), 1);
+    assert_eq!(
+        suppressed[0].restarts.len(),
+        1,
+        "suppression revokes the restarting registration"
+    );
+    crate::scene::run_retained_retry(&workspace.scene, &retry);
+    assert_eq!(
+        runner.0.load(Ordering::Acquire),
+        0,
+        "a revoked registration executes no host command"
+    );
+
+    publish_herdr_lifecycle_uncertain(
+        &workspace.scene.runtime,
+        &pending,
+        suppressed,
+        "could not reconcile the stopped session",
+    );
+    let reconciliation_floor = workspace
+        .scene
+        .runtime
+        .refresh_generation
+        .load(Ordering::Acquire);
+    let recovered = reconcile_herdr_lifecycle_fences(
+        &workspace.scene.runtime,
+        &snapshot,
+        reconciliation_floor + 1,
+        true,
+    );
+    assert_eq!(recovered.recoveries.len(), 1);
+    assert_eq!(
+        recovered.recoveries[0].restarts.len(),
+        1,
+        "the revoked registration survives the delayed-recovery hand-off"
+    );
+
+    Workspace::restore_delayed_herdr_presentations(&workspace.scene, recovered.recoveries);
+    settle(
+        "the restored registration's retry runs in the owner",
+        || runner.0.load(Ordering::Acquire) > 0,
+    );
+}
+
 #[test]
 fn uncertain_lifecycle_stays_fenced_until_fresh_inventory_arrives() {
     let (workspace, _runtime) = herdr_workspace_fixture();

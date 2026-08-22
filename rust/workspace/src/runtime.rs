@@ -1731,7 +1731,7 @@ pub(crate) fn remove_killed_zellij_session(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(host) = hosts
         .iter_mut()
-        .find(|host| host.endpoint == endpoint.distro())
+        .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
     {
         let before = host.zellij_sessions.len();
         host.zellij_sessions
