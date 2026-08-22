@@ -66,8 +66,8 @@ for tmux presentations in each workspace window:
 
 The preference takes effect when you close Settings. Each workspace window
 remembers its own expanded rows in memory, even while previews are Off. A tile
-follows its terminal's exact aspect ratio, preserving the complete
-frame without cropping or stretching.
+follows its terminal's aspect ratio, preserving the complete
+frame without cropping.
 Reconnecting sessions show a placeholder until Ghosthub verifies that the
 replacement client is attached to the same server-side session.
 Tmux older than 3.4 cannot provide a safe client identity, so Always Live skips

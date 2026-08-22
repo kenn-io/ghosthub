@@ -582,8 +582,9 @@ client into its Metal-backed IOSurface; Ghosthub uses a Metal-backed Core Image
 context to scale a changed frame into a width-bounded preview IOSurface, then
 presents that surface directly through Core Animation. The path performs no CPU
 pixel readback and creates no `Data`, `CGImage`, or `NSImage` copy. Each tile
-uses the terminal's exact aspect ratio so the tile shows the complete viewport
-without cropping or stretching. The placeholder is 16:10 until the first frame
+uses the terminal's aspect ratio so the tile shows the complete viewport
+without cropping; only degenerate terminal shapes hit the bounded preview
+canvas (height clamped to 1024 pixels) and scale to fit it. The placeholder is 16:10 until the first frame
 arrives. Frame replacement disables Core Animation transitions, and parked
 surfaces do not publish transient size changes during app activation. Efficient
 mode captures on disclosure and

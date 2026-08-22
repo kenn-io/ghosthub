@@ -90,8 +90,8 @@ Choose **Settings → Terminal → Session previews**, then select **Efficient**
 tmux sessions that you have already opened in that workspace. Expand it to show
 a GPU-rendered preview. Always Live connects every freshly discovered tmux
 session on every reachable POSIX host and expands its tile automatically. Each
-tile follows its terminal's exact aspect ratio, preserving the complete frame
-without cropping or stretching.
+tile follows its terminal's aspect ratio, preserving the complete frame
+without cropping.
 Selecting the preview follows the same route as selecting its session row.
 
 ![Ghosthub sidebar showing Always Live previews expanded for discovered tmux sessions](assets/guide-session-previews.png)

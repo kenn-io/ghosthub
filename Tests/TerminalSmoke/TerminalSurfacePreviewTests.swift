@@ -866,6 +866,34 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(occlusionStates.last, false)
     }
 
+    func testInteractiveRemountRepublishesWindowContentScale() throws {
+        let originalContentScaleSetter = TerminalSurfaceView.contentScaleSetter
+        var contentScales: [(Double, Double)] = []
+        TerminalSurfaceView.contentScaleSetter = { surface, xScale, yScale in
+            contentScales.append((xScale, yScale))
+            originalContentScaleSetter(surface, xScale, yScale)
+        }
+        defer {
+            TerminalSurfaceView.contentScaleSetter = originalContentScaleSetter
+        }
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        try waitForIOSurface(in: view)
+        let root = NSView(frame: try XCTUnwrap(window.contentView).bounds)
+        window.contentView = root
+        let host = LivePreviewParkingHost(frame: root.bounds)
+        root.addSubview(host)
+        try host.park(view)
+
+        contentScales.removeAll()
+        host.unpark(view)
+        root.addSubview(view)
+
+        XCTAssertEqual(contentScales.last?.0, window.backingScaleFactor)
+        XCTAssertEqual(contentScales.last?.1, window.backingScaleFactor)
+    }
+
     func testUnparkingOccludesSurfaceBeforeReparenting() throws {
         let originalOcclusionSetter = TerminalSurfaceView.occlusionSetter
         let view = try makeSurface()
