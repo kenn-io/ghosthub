@@ -25,7 +25,7 @@ mod windows_job;
 mod worker;
 
 pub use pty::WorkerError;
-pub use relay::{ByteRelayWorker, RelayDisconnect, RelayOutput};
+pub use relay::{ByteRelayWorker, INPUT_BYTE_CAPACITY, RelayDisconnect, RelayOutput};
 pub use worker::{TerminalEvent, TerminalStartup, TerminalWorker};
 
 #[derive(Clone, Debug, Default)]

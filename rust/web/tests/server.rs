@@ -1007,7 +1007,13 @@ fn input_overflow_closes_the_connection_with_policy() {
         .get_mut()
         .set_write_timeout(Some(Duration::from_secs(10)))
         .expect("bounded write timeout");
-    let chunk = vec![b'z'; 256 * 1024];
+    assert_eq!(
+        4 * MAX_FRAME_BYTES,
+        terminal::INPUT_BYTE_CAPACITY,
+        "burst sizing assumes four maximum-size chunks fill the relay input \
+         budget exactly; resize the burst if either constant moves"
+    );
+    let chunk = vec![b'z'; MAX_FRAME_BYTES];
     for _burst in 0..5 {
         socket
             .send(Message::Binary(chunk.clone().into()))

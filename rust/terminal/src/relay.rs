@@ -23,7 +23,10 @@ use crate::pty::{
 };
 
 const INPUT_CAPACITY: usize = 256;
-const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
+/// Bound on undelivered client input bytes; a producer exceeding it gets
+/// a backpressure refusal. Public so transport tests can size overflow
+/// scenarios against the real budget.
+pub const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 
 /// One delivery from the relay's bounded output queue.
 #[derive(Debug, Eq, PartialEq)]
