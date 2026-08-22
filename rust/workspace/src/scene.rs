@@ -5819,7 +5819,7 @@ pub(crate) fn run_attach(
         return;
     }
     match attach_fresh(scene, request, term) {
-        Ok((worker, snapshot, attached_session, initial_geometry, attached_term)) => {
+        Ok((_navigation, worker, snapshot, attached_session, initial_geometry, attached_term)) => {
             let _snapshot_write = begin_snapshot_write(&scene.runtime);
             let mut attachment = scene
                 .attachment
@@ -5904,7 +5904,7 @@ pub(crate) fn run_attach(
                 AttachFreshError::SessionChanged { error, snapshot } => {
                     publish_stale_attachment_failure(scene, &current_request, *snapshot, &error);
                 }
-                // Only the retained launch path fences inside the helper.
+                // The fenced launch refused a closed scene before spawning.
                 AttachFreshError::SceneClosed => {}
             }
             restore_attach_fallback(scene, fallback);
@@ -6115,6 +6115,33 @@ pub(crate) fn run_attach_over_remote(
         return;
     }
     let result = attach_fresh(scene, request, term);
+    let (_navigation, worker, snapshot, attached_session, initial_geometry, attached_term) =
+        match result {
+            Ok(prepared) => prepared,
+            Err(AttachFreshError::SceneClosed) => return,
+            Err(error) => {
+                let snapshot_write = begin_snapshot_write(&scene.runtime);
+                let mut attachment = scene
+                    .attachment
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if scene.navigation_generation.load(Ordering::Acquire) != navigation_generation
+                    || !attachment.is_current(generation)
+                {
+                    return;
+                }
+                attachment.clear_if_current(generation);
+                drop(attachment);
+                let message = match error {
+                    AttachFreshError::Host(error)
+                    | AttachFreshError::SessionChanged { error, .. } => error.to_string(),
+                    AttachFreshError::SceneClosed => unreachable!("handled above"),
+                };
+                push_operation_event(scene, WorkspaceEvent::Error(message));
+                drop(snapshot_write);
+                return;
+            }
+        };
     let snapshot_write = begin_snapshot_write(&scene.runtime);
     let mut attachment = scene
         .attachment
@@ -6125,22 +6152,6 @@ pub(crate) fn run_attach_over_remote(
     {
         return;
     }
-    let (worker, snapshot, attached_session, initial_geometry, attached_term) = match result {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            attachment.clear_if_current(generation);
-            drop(attachment);
-            let message = match error {
-                AttachFreshError::Host(error) | AttachFreshError::SessionChanged { error, .. } => {
-                    error.to_string()
-                }
-                // Only the retained launch path fences inside the helper.
-                AttachFreshError::SceneClosed => return,
-            };
-            push_operation_event(scene, WorkspaceEvent::Error(message));
-            return;
-        }
-    };
     if let Some(active) = attachment.active_mut() {
         normalize_attached_worktree_target(active, &snapshot, &attached_session);
         active.term = attached_term;
@@ -6816,10 +6827,10 @@ pub(crate) fn reopen_closed_retained_presentation(
     mut closed: ClosedRetainedPresentation,
 ) -> Result<RetainedPresentation<TerminalWorker>, WorkspaceError> {
     let term = closed.attachment.term;
-    let (worker, _snapshot, attached_name, initial_geometry, attached_term) =
+    let (_navigation, worker, _snapshot, attached_name, initial_geometry, attached_term) =
         attach_fresh(scene, &closed.attachment.request, term).map_err(|error| match error {
             AttachFreshError::Host(error) | AttachFreshError::SessionChanged { error, .. } => error,
-            // Only the retained launch path fences inside the helper.
+            // The fenced launch refused a closed scene before spawning.
             AttachFreshError::SceneClosed => WorkspaceError::new("the scene closed"),
         })?;
     let latest_geometry = *scene
@@ -6884,12 +6895,13 @@ pub(crate) fn publish_restored_retained_presentation(
     clippy::too_many_lines,
     reason = "all backend attachment capabilities share one audited dispatch boundary"
 )]
-pub(crate) fn attach_fresh(
-    scene: &Scene,
+pub(crate) fn attach_fresh<'scene>(
+    scene: &'scene Scene,
     request: &AttachRequest,
     term: AttachTerm,
 ) -> Result<
     (
+        NavigationFence<'scene>,
         TerminalWorker,
         HostSnapshot,
         String,
@@ -6899,6 +6911,13 @@ pub(crate) fn attach_fresh(
     AttachFreshError,
 > {
     let fresh = discover_fresh_runtime(request)?;
+    // Discovery ran unfenced so a slow host never stalls scene closure or
+    // navigation; the launch and its publication then hold one
+    // live-navigation fence, so a scene closing during discovery never
+    // spawns a client that could touch multiplexer focus or sizing.
+    let Ok(navigation) = lock_live_navigation(scene) else {
+        return Err(AttachFreshError::SceneClosed);
+    };
     let (worker, snapshot, name, geometry, actual_term) = match &request.target {
         AttachTarget::Tmux(identity) => {
             let session = fresh
@@ -7010,7 +7029,7 @@ pub(crate) fn attach_fresh(
             (worker, snapshot, name, geometry, term)
         }
     };
-    Ok((worker, snapshot, name, geometry, actual_term))
+    Ok((navigation, worker, snapshot, name, geometry, actual_term))
 }
 
 #[allow(
