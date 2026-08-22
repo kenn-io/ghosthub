@@ -56,13 +56,28 @@ final class SessionReconnectSupervisor {
     }
 
     func start(attempt: @escaping Attempt) {
+        begin(waitBeforeFirstAttempt: false, attempt: attempt)
+    }
+
+    func startAfterDelay(attempt: @escaping Attempt) {
+        begin(waitBeforeFirstAttempt: true, attempt: attempt)
+    }
+
+    private func begin(
+        waitBeforeFirstAttempt: Bool,
+        attempt: @escaping Attempt
+    ) {
         cancel()
         let generation = UUID()
         self.generation = generation
         isRunning = true
-        phase = .probing
+        phase = waitBeforeFirstAttempt ? .waiting : .probing
         task = Task { [weak self] in
-            await self?.run(generation: generation, attempt: attempt)
+            await self?.run(
+                generation: generation,
+                waitBeforeFirstAttempt: waitBeforeFirstAttempt,
+                attempt: attempt
+            )
         }
     }
 
@@ -90,9 +105,18 @@ final class SessionReconnectSupervisor {
 
     private func run(
         generation: UUID,
+        waitBeforeFirstAttempt: Bool,
         attempt: @escaping Attempt
     ) async {
         var intervalIndex = 0
+        if waitBeforeFirstAttempt {
+            let waitTask = Task { try await sleep(intervals[0]) }
+            self.waitTask = waitTask
+            _ = await waitTask.result
+            guard isCurrent(generation) else { return }
+            self.waitTask = nil
+            intervalIndex = 1
+        }
         while isCurrent(generation) {
             phase = .probing
             let clock = ContinuousClock()

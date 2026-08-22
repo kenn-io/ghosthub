@@ -39,13 +39,15 @@ enum KwtWindowsInstallError: Error, Equatable, LocalizedError {
 struct KwtWindowsInstaller: Sendable {
     typealias RemoteRunner = @Sendable (
         _ host: SSHHostInfo,
+        _ connectionArguments: [String],
         _ command: String
-    ) -> (status: Int32, stdout: String)
+    ) -> AccountCommandOutput
     typealias TransferRunner = @Sendable (
         _ host: SSHHostInfo,
         _ localPath: String,
-        _ remoteName: String
-    ) -> Int32
+        _ remoteName: String,
+        _ connectionArguments: [String]
+    ) -> AccountCommandOutput
 
     private static let architectureMarker = "GHOSTHUB_WINDOWS_ARCH="
     private static let installedMarker = "GHOSTHUB_KWT_INSTALLED"
@@ -56,6 +58,7 @@ struct KwtWindowsInstaller: Sendable {
     private let remoteRunner: RemoteRunner
     private let transferRunner: TransferRunner
     private let uploadNameProvider: @Sendable () -> String
+    private let commandLease: KwtSSHCommandLease
 
     init(
         bundleURL: URL = Bundle.main.bundleURL,
@@ -65,6 +68,7 @@ struct KwtWindowsInstaller: Sendable {
         },
         remoteRunner: RemoteRunner? = nil,
         transferRunner: TransferRunner? = nil,
+        commandLease: KwtSSHCommandLease? = nil,
         uploadNameProvider: @escaping @Sendable () -> String = {
             "ghosthub-kwt-\(UUID().uuidString).exe"
         }
@@ -72,14 +76,18 @@ struct KwtWindowsInstaller: Sendable {
         self.bundleURL = bundleURL
         self.revision = revision
         self.isReadableFile = isReadableFile
-        self.remoteRunner = remoteRunner ?? { host, command in
-            AccountCommandRunner.runRemoteLoginShell(
+        self.remoteRunner = remoteRunner ?? { host, arguments, command in
+            return AccountCommandRunner().runRemoteLoginShell(
                 host: host,
+                connectionArguments: arguments,
                 command: command,
                 timeout: 30
             )
         }
         self.transferRunner = transferRunner ?? Self.transfer
+        self.commandLease = commandLease ?? .unlessInjected(
+            remoteRunner != nil || transferRunner != nil
+        )
         self.uploadNameProvider = uploadNameProvider
     }
 
@@ -104,10 +112,36 @@ struct KwtWindowsInstaller: Sendable {
             port: parsed.port,
             platform: .windows
         )
+        do {
+            return try await commandLease.withConnection(on: .ssh(host)) {
+                connection in
+                guard let connection else {
+                    return .failure(.invalidDestination)
+                }
+                return await install(
+                    on: host,
+                    connection: connection,
+                    managedRelativePath: managedRelativePath,
+                    revision: revision
+                )
+            }
+        } catch {
+            return .failure(.architectureProbeFailed(status: 255))
+        }
+    }
+
+    private func install(
+        on host: SSHHostInfo,
+        connection: KwtSSHConnection,
+        managedRelativePath: String,
+        revision: String
+    ) async -> Result<Void, KwtWindowsInstallError> {
         let remoteRunner = remoteRunner
-        let architectureResult = await Task.detached {
-            remoteRunner(host, Self.architectureCommand)
-        }.value
+        let architectureResult = await commandLease.runCommand(
+            using: connection
+        ) { arguments in
+            remoteRunner(host, arguments, Self.architectureCommand)
+        }
         guard architectureResult.status == 0 else {
             return .failure(.architectureProbeFailed(
                 status: architectureResult.status
@@ -142,16 +176,21 @@ struct KwtWindowsInstaller: Sendable {
 
         let uploadName = uploadNameProvider()
         let transferRunner = transferRunner
-        let transferStatus = await Task.detached {
-            transferRunner(host, localPath, uploadName)
-        }.value
-        guard transferStatus == 0 else {
-            return .failure(.transferFailed(status: transferStatus))
+        let transferResult = await commandLease.runCommand(
+            using: connection
+        ) { arguments in
+            transferRunner(host, localPath, uploadName, arguments)
+        }
+        guard transferResult.status == 0 else {
+            return .failure(.transferFailed(status: transferResult.status))
         }
 
-        let activationResult = await Task.detached {
+        let activationResult = await commandLease.runCommand(
+            using: connection
+        ) { arguments in
             remoteRunner(
                 host,
+                arguments,
                 Self.activationCommand(
                     uploadName: uploadName,
                     managedRelativePath: managedRelativePath,
@@ -159,7 +198,7 @@ struct KwtWindowsInstaller: Sendable {
                     digest: digest
                 )
             )
-        }.value
+        }
         guard activationResult.status == 0 else {
             return .failure(.activationFailed(
                 status: activationResult.status
@@ -281,33 +320,42 @@ struct KwtWindowsInstaller: Sendable {
     private static func transfer(
         host: SSHHostInfo,
         localPath: String,
-        remoteName: String
-    ) -> Int32 {
+        remoteName: String,
+        connectionArguments: [String]
+    ) -> AccountCommandOutput {
         let arguments = transferArguments(
             host: host,
             localPath: localPath,
-            remoteName: remoteName
+            remoteName: remoteName,
+            connectionArguments: connectionArguments
         )
-        return AccountCommandRunner.runProcessInLoginShell(
+        let output = AccountCommandRunner.runProcessInLoginShell(
             executable: "/usr/bin/scp",
             arguments: arguments,
-            timeout: 120
-        ).status
+            timeout: 120,
+            captureStandardError: true
+        )
+        return AccountCommandOutput(
+            status: output.status,
+            stdout: "",
+            stderr: output.stdout
+        )
     }
 
     static func transferArguments(
         host: SSHHostInfo,
         localPath: String,
-        remoteName: String
+        remoteName: String,
+        connectionArguments: [String]
     ) -> [String] {
         var arguments = [
             "-q",
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=15",
         ]
-        arguments.append(contentsOf:
-            SSHCommandArguments.noninteractive(for: host)
-        )
+        arguments.append(contentsOf: KwtSSHCommandLease.scpArguments(
+            from: connectionArguments
+        ))
         if let port = host.port {
             arguments += ["-P", String(port)]
         }

@@ -27,14 +27,14 @@ private final class ZellijCommandRecorder: @unchecked Sendable {
 @Suite("Zellij inventory client")
 struct ZellijInventoryClientTests {
     @Test("local discovery resolves Zellij and excludes exited sessions")
-    func localDiscovery() {
+    func localDiscovery() async {
         let commands = ZellijCommandRecorder()
         let client = ZellijInventoryClient(
             commandRunner: commandRunner(capturing: commands),
             connectionArgumentsProvider: { _ in [] }
         )
 
-        #expect(client.discover(on: .local) == .available(["api"]))
+        #expect(await client.discover(on: .local) == .available(["api"]))
         let captured = commands.snapshot
         #expect(captured.count == 2)
         #expect(captured[0].executable == "/bin/account-shell")
@@ -45,7 +45,7 @@ struct ZellijInventoryClientTests {
     }
 
     @Test("remote discovery samples SSH routing once")
-    func remoteDiscovery() {
+    func remoteDiscovery() async {
         let commands = ZellijCommandRecorder()
         let routeSamples = Mutex(0)
         let host = SSHHostInfo(
@@ -66,7 +66,7 @@ struct ZellijInventoryClientTests {
             }
         )
 
-        #expect(client.discover(on: .ssh(host)) == .available(["api"]))
+        #expect(await client.discover(on: .ssh(host)) == .available(["api"]))
         let captured = commands.snapshot
         #expect(routeSamples.withLock { $0 } == 1)
         #expect(captured.count == 2)
@@ -80,7 +80,7 @@ struct ZellijInventoryClientTests {
     }
 
     @Test("missing Zellij is a silent optional capability")
-    func missingExecutable() {
+    func missingExecutable() async {
         let runner = AccountCommandRunner(
             processRunner: { _, _, _, _ in
                 AccountCommandOutput(
@@ -95,11 +95,11 @@ struct ZellijInventoryClientTests {
             connectionArgumentsProvider: { _ in [] }
         )
 
-        #expect(client.discover(on: .local) == .unavailable)
+        #expect(await client.discover(on: .local) == .unavailable)
     }
 
     @Test("Windows hosts are unavailable without starting a process")
-    func windowsUnavailable() {
+    func windowsUnavailable() async {
         let calls = Mutex(0)
         let runner = AccountCommandRunner(
             processRunner: { _, _, _, _ in
@@ -118,7 +118,7 @@ struct ZellijInventoryClientTests {
             platform: .windows
         )
 
-        #expect(client.discover(on: .ssh(host)) == .unavailable)
+        #expect(await client.discover(on: .ssh(host)) == .unavailable)
         #expect(calls.withLock { $0 } == 0)
     }
 

@@ -60,4 +60,13 @@ final class WindowRegistry: ObservableObject {
     var workspaceWindowCount: Int {
         sceneEntries.count
     }
+
+    func shutdownAll() async {
+        let models = sceneEntries.values.map(\.model)
+        await withTaskGroup(of: Void.self) { group in
+            for model in models {
+                group.addTask { await model.shutdown() }
+            }
+        }
+    }
 }

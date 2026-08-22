@@ -18,35 +18,35 @@ struct KwtRemoteInstallerTests {
         let recorder = KwtInstallRecorder()
         let installer = KwtRemoteInstaller(
             revision: revision,
-            remoteRunner: { _, command in
+            remoteRunner: { _, _, command in
                 recorder.record(command: command)
                 if command == KwtRemoteInstaller.readyProbeCommand(
                     revision: revision
                 ) {
-                    return (1, "")
+                    return installOutput(1)
                 }
                 if command == KwtRemoteInstaller.targetProbeCommand {
-                    return (
+                    return installOutput(
                         0,
                         "banner\nGHOSTHUB_KWT_TARGET\tLinux\taarch64\n"
                     )
                 }
                 if command.contains("GHOSTHUB_KWT_UPLOAD") {
-                    return (
+                    return installOutput(
                         0,
-                        "GHOSTHUB_KWT_UPLOAD\t/home/wesm/.ghosthub/"
+                        "GHOSTHUB_KWT_UPLOAD\t/home/user-a/.ghosthub/"
                             + "helpers/kwt/\(revision)/.incoming-test\n"
                     )
                 }
-                return (0, "GHOSTHUB_KWT_INSTALLED\n")
+                return installOutput(0, "GHOSTHUB_KWT_INSTALLED\n")
             },
-            uploadRunner: { host, source, destination in
+            uploadRunner: { host, source, destination, _ in
                 recorder.record(
                     host: host,
                     source: source,
                     destination: destination
                 )
-                return (0, "")
+                return installOutput(0)
             },
             resourceProvider: { target in
                 #expect(target == .linuxARM64)
@@ -84,17 +84,17 @@ struct KwtRemoteInstallerTests {
         let recorder = KwtInstallRecorder()
         let installer = KwtRemoteInstaller(
             revision: revision,
-            remoteRunner: { _, command in
+            remoteRunner: { _, _, command in
                 recorder.record(command: command)
-                return (0, "banner\nGHOSTHUB_KWT_READY\n")
+                return installOutput(0, "banner\nGHOSTHUB_KWT_READY\n")
             },
-            uploadRunner: { host, source, destination in
+            uploadRunner: { host, source, destination, _ in
                 recorder.record(
                     host: host,
                     source: source,
                     destination: destination
                 )
-                return (0, "")
+                return installOutput(0)
             },
             resourceProvider: { _ in nil }
         )
@@ -119,12 +119,12 @@ struct KwtRemoteInstallerTests {
         let recorder = KwtInstallRecorder()
         let installer = KwtRemoteInstaller(
             revision: revision,
-            remoteRunner: { _, command in
+            remoteRunner: { _, _, command in
                 recorder.record(command: command)
                 if command == KwtRemoteInstaller.readyProbeCommand(
                     revision: revision
                 ) {
-                    return (1, "")
+                    return installOutput(1)
                 }
                 if command == KwtRemoteInstaller.targetProbeCommand {
                     probeStarted.continuation.yield()
@@ -132,20 +132,20 @@ struct KwtRemoteInstallerTests {
                     while !Task.isCancelled, Date() < deadline {
                         Thread.sleep(forTimeInterval: 0.001)
                     }
-                    return (
+                    return installOutput(
                         0,
                         "GHOSTHUB_KWT_TARGET\tLinux\taarch64\n"
                     )
                 }
-                return (0, "")
+                return installOutput(0)
             },
-            uploadRunner: { host, source, destination in
+            uploadRunner: { host, source, destination, _ in
                 recorder.record(
                     host: host,
                     source: source,
                     destination: destination
                 )
-                return (0, "")
+                return installOutput(0)
             },
             resourceProvider: { _ in nil }
         )
@@ -183,24 +183,24 @@ struct KwtRemoteInstallerTests {
         let recorder = KwtInstallRecorder()
         let installer = KwtRemoteInstaller(
             revision: revision,
-            remoteRunner: { _, command in
+            remoteRunner: { _, _, command in
                 recorder.record(command: command)
                 if command == KwtRemoteInstaller.targetProbeCommand {
-                    return (
+                    return installOutput(
                         0,
                         "GHOSTHUB_KWT_TARGET\tLinux\taarch64\n"
                     )
                 }
                 if command.contains("GHOSTHUB_KWT_UPLOAD") {
-                    return (
+                    return installOutput(
                         0,
-                        "GHOSTHUB_KWT_UPLOAD\t/home/wesm/.ghosthub/"
+                        "GHOSTHUB_KWT_UPLOAD\t/home/user-a/.ghosthub/"
                             + "helpers/kwt/\(revision)/.incoming-test\n"
                     )
                 }
-                return (0, "GHOSTHUB_KWT_INSTALLED\n")
+                return installOutput(0, "GHOSTHUB_KWT_INSTALLED\n")
             },
-            uploadRunner: { host, source, destination in
+            uploadRunner: { host, source, destination, _ in
                 recorder.record(
                     host: host,
                     source: source,
@@ -211,7 +211,7 @@ struct KwtRemoteInstallerTests {
                 while !Task.isCancelled, Date() < deadline {
                     Thread.sleep(forTimeInterval: 0.001)
                 }
-                return (0, "")
+                return installOutput(0)
             },
             resourceProvider: { _ in helperURL }
         )
@@ -288,18 +288,19 @@ struct KwtRemoteInstallerTests {
     func usesPlainSFTPDestination() {
         let arguments = KwtRemoteInstaller.uploadArguments(
             host: SSHHostInfo(
-                user: "wesm",
-                hostname: "home-nuc",
+                user: "user-a",
+                hostname: "host-a.example",
                 port: nil
             ),
             source: URL(fileURLWithPath: "/tmp/pinned kwt"),
             destination:
-            "/home/wesm/.ghosthub/helpers/kwt/revision/.incoming-test"
+            "/home/user-a/.ghosthub/helpers/kwt/revision/.incoming-test",
+            connectionArguments: []
         )
 
         #expect(
             arguments.last
-                == "wesm@home-nuc:/home/wesm/.ghosthub/helpers/"
+                == "user-a@host-a.example:/home/user-a/.ghosthub/helpers/"
                 + "kwt/revision/.incoming-test"
         )
     }
@@ -308,17 +309,18 @@ struct KwtRemoteInstallerTests {
     func bracketsIPv6Destination() {
         let arguments = KwtRemoteInstaller.uploadArguments(
             host: SSHHostInfo(
-                user: "wesm",
+                user: "user-a",
                 hostname: "2001:db8::42",
                 port: nil
             ),
             source: URL(fileURLWithPath: "/tmp/kwt"),
-            destination: "/home/wesm/.ghosthub/helpers/kwt"
+            destination: "/home/user-a/.ghosthub/helpers/kwt",
+            connectionArguments: []
         )
 
         #expect(
             arguments.last
-                == "wesm@[2001:db8::42]:/home/wesm/.ghosthub/helpers/kwt"
+                == "user-a@[2001:db8::42]:/home/user-a/.ghosthub/helpers/kwt"
         )
     }
 
@@ -331,13 +333,32 @@ struct KwtRemoteInstallerTests {
                 port: 22
             ),
             source: URL(fileURLWithPath: "/tmp/kwt"),
-            destination: "/opt/ghosthub/kwt"
+            destination: "/opt/ghosthub/kwt",
+            connectionArguments: ["-o", "ControlPath=/tmp/control"]
         )
 
         #expect(arguments.contains(where: { $0.hasPrefix("ControlPath=") }))
         #expect(arguments.contains("-B"))
         let portIndex = try #require(arguments.firstIndex(of: "-P"))
         #expect(arguments[portIndex + 1] == "22")
+    }
+
+    @Test("SCP translates the kwt SSH projection port option")
+    func translatesProjectedPortForUpload() throws {
+        let arguments = KwtRemoteInstaller.uploadArguments(
+            host: SSHHostInfo(
+                user: "developer",
+                hostname: "build-node.example.test",
+                port: nil
+            ),
+            source: URL(fileURLWithPath: "/tmp/kwt"),
+            destination: "/opt/ghosthub/kwt",
+            connectionArguments: ["-F", "/dev/null", "-p", "2200"]
+        )
+
+        #expect(!arguments.contains("-p"))
+        let portIndex = try #require(arguments.firstIndex(of: "-P"))
+        #expect(arguments[portIndex + 1] == "2200")
     }
 
     @Test("upload failures preserve the SCP diagnostic")
@@ -350,22 +371,25 @@ struct KwtRemoteInstallerTests {
         let recorder = KwtInstallRecorder()
         let installer = KwtRemoteInstaller(
             revision: revision,
-            remoteRunner: { _, command in
+            remoteRunner: { _, _, command in
                 recorder.record(command: command)
                 if command == KwtRemoteInstaller.targetProbeCommand {
-                    return (
+                    return installOutput(
                         0,
                         "GHOSTHUB_KWT_TARGET\tLinux\tx86_64\n"
                     )
                 }
-                return (
+                return installOutput(
                     0,
-                    "GHOSTHUB_KWT_UPLOAD\t/home/wesm/.ghosthub/"
+                    "GHOSTHUB_KWT_UPLOAD\t/home/user-a/.ghosthub/"
                         + "helpers/kwt/\(revision)/.incoming-test\n"
                 )
             },
-            uploadRunner: { _, _, _ in
-                (1, "scp: destination is unavailable\n")
+            uploadRunner: { _, _, _, _ in
+                installOutput(
+                    1,
+                    stderr: "scp: destination is unavailable\n"
+                )
             },
             resourceProvider: { _ in helperURL }
         )
@@ -401,27 +425,27 @@ struct KwtRemoteInstallerTests {
         let recorder = KwtInstallRecorder()
         let installer = KwtRemoteInstaller(
             revision: revision,
-            remoteRunner: { _, command in
+            remoteRunner: { _, _, command in
                 recorder.record(command: command)
                 if command == KwtRemoteInstaller.targetProbeCommand {
-                    return (
+                    return installOutput(
                         0,
                         "GHOSTHUB_KWT_TARGET\tLinux\tx86_64\n"
                     )
                 }
                 if command.contains("GHOSTHUB_KWT_UPLOAD") {
-                    return (
+                    return installOutput(
                         0,
-                        "GHOSTHUB_KWT_UPLOAD\t/home/wesm/.ghosthub/"
+                        "GHOSTHUB_KWT_UPLOAD\t/home/user-a/.ghosthub/"
                             + "helpers/kwt/\(revision)/.incoming-test\n"
                     )
                 }
                 if command.contains("GHOSTHUB_KWT_INSTALLED") {
-                    return (255, "")
+                    return installOutput(255)
                 }
-                return (0, "")
+                return installOutput(0)
             },
-            uploadRunner: { _, _, _ in (0, "") },
+            uploadRunner: { _, _, _, _ in installOutput(0) },
             resourceProvider: { _ in helperURL }
         )
 
@@ -441,6 +465,57 @@ struct KwtRemoteInstallerTests {
         #expect(cleanupCommand.contains(revision))
         #expect(cleanupCommand.contains(".incoming-"))
     }
+
+    @Test("remote installation invalidates a dead pooled connection")
+    func remoteInstallInvalidatesDeadConnection() async {
+        let invalidations = LockedValue(0)
+        let installer = KwtRemoteInstaller(
+            revision: String(repeating: "a", count: 40),
+            remoteRunner: { _, _, _ in
+                AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr:
+                    "Control socket connect(/tmp/dead.sock): No such file or directory"
+                )
+            },
+            commandLease: KwtSSHCommandLease { _ in
+                KwtSSHConnection(
+                    arguments: ["-S", "/tmp/dead.sock"],
+                    routeIdentity: "reviewed-route",
+                    generation: 3,
+                    invalidate: {
+                        invalidations.withLock { $0 += 1 }
+                    }
+                )
+            }
+        )
+
+        await #expect {
+            try await installer.install(on: SSHHost(
+                configKey: "builder",
+                name: "Builder",
+                platform: .linux,
+                sshDestination: "dev@builder.example.test"
+            ))
+        } throws: { error in
+            error as? KwtRemoteInstallError
+                == .targetProbeFailed(status: 255)
+        }
+        #expect(invalidations.load() == 1)
+    }
+}
+
+private func installOutput(
+    _ status: Int32,
+    _ stdout: String = "",
+    stderr: String = ""
+) -> AccountCommandOutput {
+    AccountCommandOutput(
+        status: status,
+        stdout: stdout,
+        stderr: stderr
+    )
 }
 
 private final class KwtInstallRecorder: @unchecked Sendable {

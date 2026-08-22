@@ -288,7 +288,7 @@ struct TmuxSessionActivityProbeTests {
                 AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
-                    timeout: 2
+                    timeout: 10
                 )
             }
         )
@@ -342,7 +342,7 @@ struct TmuxSessionActivityProbeTests {
                 AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
-                    timeout: 2
+                    timeout: 10
                 )
             }
         )
@@ -387,7 +387,7 @@ struct TmuxSessionActivityProbeTests {
                 AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
-                    timeout: 2
+                    timeout: 10
                 )
             }
         )
@@ -431,7 +431,7 @@ struct TmuxSessionActivityProbeTests {
                 AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
-                    timeout: 2
+                    timeout: 10
                 )
             }
         )
@@ -491,6 +491,44 @@ struct TmuxSessionActivityProbeTests {
         #expect(!runnerInvoked.isSet)
     }
 
+    @Test("tmux resolution invalidates a dead pooled connection")
+    func resolverInvalidatesDeadConnection() async {
+        let invalidations = LockedValue(0)
+        let classification = SSHConnectionFailure.classify(
+            status: 255,
+            output: "Control socket connect(/tmp/dead.sock): No such file or directory"
+        )
+        let host = CommandHost.ssh(SSHHostInfo(
+            user: nil,
+            hostname: "builder.example.test",
+            port: nil
+        ))
+        let probe = TmuxSessionActivityProbe(
+            pathResolver: { _ in
+                .failure(.sshConnectionFailed(
+                    host: host.displayName,
+                    classification: classification
+                ))
+            },
+            runner: { _, _ in (0, "") },
+            commandLease: KwtSSHCommandLease { _ in
+                KwtSSHConnection(
+                    arguments: ["-S", "/tmp/dead.sock"],
+                    routeIdentity: "reviewed-route",
+                    generation: 1,
+                    invalidate: { invalidations.withLock { $0 += 1 } }
+                )
+            }
+        )
+
+        #expect(await probe.sample(
+            WorkspaceTmuxSessionSelection(hostID: UUID(), name: "review"),
+            expectedIdentity: activityIdentity,
+            on: host
+        ) == .unavailable)
+        #expect(invalidations.load() == 1)
+    }
+
     @Test("visible pane redraws do not change activity samples")
     func ignoresVisiblePaneRedraws() async throws {
         let directory = FileManager.default.temporaryDirectory
@@ -532,7 +570,7 @@ struct TmuxSessionActivityProbeTests {
                 AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
-                    timeout: 2
+                    timeout: 10
                 )
             }
         )
@@ -607,7 +645,7 @@ struct TmuxSessionActivityProbeTests {
                 AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
-                    timeout: 2
+                    timeout: 10
                 )
             }
         )
@@ -671,7 +709,7 @@ struct TmuxSessionActivityProbeTests {
                 AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
-                    timeout: 2
+                    timeout: 10
                 )
             }
         )

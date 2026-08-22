@@ -24,9 +24,13 @@ struct KwtProjectRegistryClientTests {
                 invoked.store(true)
                 return (0, "")
             },
-            remoteRunner: { _, _ in
+            remoteRunner: { _, _, _ in
                 invoked.store(true)
-                return (0, "")
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "",
+                    stderr: ""
+                )
             },
             localBinaryPath:
             "/Applications/Ghosthub.app/Contents/Helpers/kwt",
@@ -83,15 +87,16 @@ struct KwtProjectRegistryClientTests {
         )
         let invocation = LockedValue<(SSHHostInfo, String)?>(nil)
         let client = KwtProjectRegistryClient(
-            remoteRunner: { host, command in
+            remoteRunner: { host, _, command in
                 invocation.store((host, command))
-                return (
-                    0,
-                    """
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: """
                     banner
                     GHOSTHUB_KWT_PROJECT_JSON
                     {"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/srv/widget","last_touched":"2026-07-27T11:16:16Z"}}
-                    """
+                    """,
+                    stderr: ""
                 )
             },
             remoteBinaryRevision: revision
@@ -119,13 +124,14 @@ struct KwtProjectRegistryClientTests {
     @Test("registration preserves kwt's structured error")
     func preservesStructuredError() async {
         let client = KwtProjectRegistryClient(
-            remoteRunner: { _, _ in
-                (
-                    2,
-                    """
+            remoteRunner: { _, _, _ in
+                AccountCommandOutput(
+                    status: 2,
+                    stdout: """
                     GHOSTHUB_KWT_PROJECT_JSON
                     {"error":{"code":"invalid_repository","message":"/missing is not an accessible Git repository","retryable":false,"details":{"path":"/missing","operation":"add"}}}
-                    """
+                    """,
+                    stderr: ""
                 )
             },
             remoteBinaryRevision: String(repeating: "b", count: 40)
@@ -167,14 +173,15 @@ struct KwtProjectRegistryClientTests {
         )
         let invocation = LockedValue<String?>(nil)
         let client = KwtProjectRegistryClient(
-            remoteRunner: { _, command in
+            remoteRunner: { _, _, command in
                 invocation.store(command)
-                return (
-                    0,
-                    """
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: """
                     GHOSTHUB_KWT_PROJECT_JSON
                     {"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/srv/wesm's widget "}}
-                    """
+                    """,
+                    stderr: ""
                 )
             },
             remoteBinaryRevision: revision
@@ -184,6 +191,7 @@ struct KwtProjectRegistryClientTests {
             projectPath: "/srv/wesm's widget ",
             expectedRepository: "github.com/acme/widget",
             expectedRegistration: "opaque-registration",
+            expectedRouteIdentity: "injected-command-transport",
             on: .ssh(ssh)
         )
 
@@ -195,6 +203,41 @@ struct KwtProjectRegistryClientTests {
         ))
         #expect(project.name == "widget")
         #expect(project.path == "/srv/wesm's widget ")
+    }
+
+    @Test("remote removal rejects a changed reviewed route")
+    func remoteRemovalRejectsRouteDrift() async {
+        let invocations = LockedValue(0)
+        let ssh = SSHHostInfo(
+            user: "builder",
+            hostname: "spark",
+            port: 2222
+        )
+        let client = KwtProjectRegistryClient(
+            remoteRunner: { _, _, _ in
+                invocations.withLock { $0 += 1 }
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "",
+                    stderr: ""
+                )
+            }
+        )
+
+        await #expect {
+            try await client.unregister(
+                projectPath: "/srv/widget",
+                expectedRepository: "github.com/acme/widget",
+                expectedRegistration: "opaque-registration",
+                expectedRouteIdentity: "sha256:reviewed-route",
+                on: .ssh(ssh)
+            )
+        } throws: { error in
+            error as? KwtProjectCommandError == .routeChanged(
+                host: ssh.displayName
+            )
+        }
+        #expect(invocations.load() == 0)
     }
 
     @Test("removal preserves the authoritative project path exactly")
@@ -218,6 +261,7 @@ struct KwtProjectRegistryClientTests {
             projectPath: "/srv/widget ",
             expectedRepository: "github.com/acme/widget",
             expectedRegistration: "opaque registration ",
+            expectedRouteIdentity: nil,
             on: .local
         )
 
@@ -250,6 +294,7 @@ struct KwtProjectRegistryClientTests {
                 projectPath: "/srv/widget",
                 expectedRepository: "github.com/acme/widget",
                 expectedRegistration: "stale-registration",
+                expectedRouteIdentity: nil,
                 on: .local
             )
         } throws: { error in
@@ -263,5 +308,45 @@ struct KwtProjectRegistryClientTests {
             )
         }
         #expect(invocations.load() == 1)
+    }
+
+    @Test("remote project commands invalidate a dead pooled connection")
+    func remoteProjectCommandInvalidatesDeadConnection() async {
+        let invalidations = LockedValue(0)
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "builder.example.test",
+            port: nil
+        )
+        let client = KwtProjectRegistryClient(
+            remoteRunner: { _, _, _ in
+                AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr:
+                    "Control socket connect(/tmp/dead.sock): No such file or directory"
+                )
+            },
+            commandLease: KwtSSHCommandLease { _ in
+                KwtSSHConnection(
+                    arguments: ["-S", "/tmp/dead.sock"],
+                    routeIdentity: "reviewed-route",
+                    generation: 3,
+                    invalidate: {
+                        invalidations.withLock { $0 += 1 }
+                    }
+                )
+            }
+        )
+
+        await #expect {
+            try await client.register(projectPath: "/srv/widget", on: host)
+        } throws: { error in
+            guard case let KwtProjectCommandError.commandFailed(
+                _, status, _, _, _, _
+            ) = error else { return false }
+            return status == 255
+        }
+        #expect(invalidations.load() == 1)
     }
 }

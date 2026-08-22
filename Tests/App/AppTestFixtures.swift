@@ -189,21 +189,73 @@ final class LockedValue<T>: @unchecked Sendable {
     }
 }
 
-final class BlockingGate: @unchecked Sendable {
-    private let started = LockedValue(false)
-    private let release = DispatchSemaphore(value: 0)
+func testKwtSSHAttachment(
+    arguments: [String] = [],
+    routeIdentity: String = "sha256:test-route",
+    generation: UInt64 = 1,
+    release: @escaping @Sendable () async throws -> Void = {},
+    invalidate: @escaping @Sendable () async -> Void = {}
+) -> KwtSSHConnection {
+    KwtSSHConnection(
+        arguments: arguments,
+        routeIdentity: routeIdentity,
+        generation: generation,
+        release: release,
+        invalidate: invalidate
+    )
+}
 
-    func block() {
-        started.store(true)
-        release.wait()
-    }
-
-    func waitUntilBlocked() async {
-        await waitUntil { self.started.load() }
-    }
+/// A latching gate for async test closures: `wait()` suspends until the
+/// first `open()`, and every later `wait()` returns immediately.
+final class AsyncGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var opened = false
+    private var waiting = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func open() {
-        release.signal()
+        let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+            opened = true
+            let pending = self.waiters
+            self.waiters.removeAll()
+            return pending
+        }
+        waiters.forEach { $0.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let alreadyOpen: Bool = lock.withLock {
+                waiting = true
+                if opened {
+                    return true
+                }
+                waiters.append(continuation)
+                return false
+            }
+            if alreadyOpen {
+                continuation.resume()
+            }
+        }
+    }
+
+    func waitUntilWaiting() async {
+        await waitUntil {
+            self.lock.withLock { self.waiting }
+        }
+    }
+
+    /// Returns false when the gate stays closed past `timeout`.
+    func wait(timeout: Duration) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if lock.withLock({ opened }) {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return lock.withLock { opened }
     }
 }
 

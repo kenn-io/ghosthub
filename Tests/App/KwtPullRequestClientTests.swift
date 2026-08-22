@@ -45,9 +45,13 @@ struct KwtPullRequestClientTests {
         )
         let revision = String(repeating: "c", count: 40)
         let client = KwtPullRequestClient(
-            remoteRunner: { host, command in
+            remoteRunner: { host, _, command in
                 recorder.record(host: host, command: command)
-                return (0, Self.importResponse)
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: Self.importResponse,
+                    stderr: ""
+                )
             },
             remoteBinaryRevision: revision
         )
@@ -99,11 +103,11 @@ struct KwtPullRequestClientTests {
             platform: .windows
         )
         let client = KwtPullRequestClient(
-            remoteRunner: { host, command in
+            remoteRunner: { host, _, command in
                 recorder.record(host: host, command: command)
-                return (
-                    0,
-                    Self.listResponse
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: Self.listResponse
                         .replacingOccurrences(
                             of: "login banner\nGHOSTHUB_KWT_PR_JSON",
                             with: "login bannerGHOSTHUB_KWT_PR_JSON"
@@ -111,7 +115,8 @@ struct KwtPullRequestClientTests {
                         .replacingOccurrences(
                             of: "\n",
                             with: "\r\n"
-                        )
+                        ),
+                    stderr: ""
                 )
             },
             remoteBinaryRevision: revision
@@ -205,6 +210,49 @@ struct KwtPullRequestClientTests {
                 && message == "GitHub is unavailable"
                 && retryable
         }
+    }
+
+    @Test("remote pull request commands invalidate a dead pooled connection")
+    func remotePullRequestCommandInvalidatesDeadConnection() async {
+        let invalidations = LockedValue(0)
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "builder.example.test",
+            port: nil
+        )
+        let client = KwtPullRequestClient(
+            remoteRunner: { _, _, _ in
+                AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr:
+                    "Control socket connect(/tmp/dead.sock): No such file or directory"
+                )
+            },
+            commandLease: KwtSSHCommandLease { _ in
+                KwtSSHConnection(
+                    arguments: ["-S", "/tmp/dead.sock"],
+                    routeIdentity: "reviewed-route",
+                    generation: 3,
+                    invalidate: {
+                        invalidations.withLock { $0 += 1 }
+                    }
+                )
+            }
+        )
+
+        await #expect {
+            try await client.list(
+                projectIdentity: "github.com/acme/widget",
+                on: .ssh(host)
+            )
+        } throws: { error in
+            guard case let KwtPullRequestError.commandFailed(
+                _, status, _, _, _
+            ) = error else { return false }
+            return status == 255
+        }
+        #expect(invalidations.load() == 1)
     }
 
     private static let listResponse = """

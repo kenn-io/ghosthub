@@ -72,6 +72,14 @@ in-window pointer position because keyboard events do not carry a reliable
 mouse location. Libghostty removes the override before matching its Command
 link binding. Tmux therefore does not capture link highlighting or activation,
 and users do not need to hold Shift.
+Each remote POSIX presentation obtains one multiplexed lease from kwt before
+its first probe and holds it through terminal exit. Tmux path discovery,
+attach, pane splitting, and identity revalidation use that same frozen route
+identity and generation. Reconnect resolves and acquires again; it never
+reuses stored control-socket arguments. A presentation whose OpenSSH client
+itself exits with status 255 marks a shared lease unusable so no other caller
+joins the dead master. A masterless lease is unsupported and fails before a
+terminal surface launches.
 Each workspace window retains every presentation it explicitly opens, keyed by
 the exact host, tmux socket, and session name. Navigating to another host,
 worktree, or session removes the previous surface from the visible hierarchy
@@ -135,8 +143,9 @@ Windows sessions.
 Ghosthub resolves `herdr` in the host account's login environment and attaches
 the complete session with `herdr session attach <exact-name>`. Local sessions
 use libghostty's normal macOS login-shell path. Remote sessions use an ordinary
-OpenSSH PTY, the same trusted host configuration and pooled connection as tmux,
-and the remote account login environment. Ghosthub does not use Herdr's own
+OpenSSH PTY, the same kwt-owned lease contract as tmux, and the remote account
+login environment. The lease spans executable discovery, attachment, pane
+actions, and terminal exit. Ghosthub does not use Herdr's own
 remote-client mode.
 
 Herdr owns workspaces, tabs, panes, layout, history, key bindings, terminal
@@ -185,9 +194,11 @@ they use plain `herdr` for the default session or `herdr --session <name>` for a
 named session, which launches a missing server and attaches immediately.
 
 Stop and Delete are separate confirmed operations. Immediately before either
-command, Ghosthub reruns `herdr session list --json` through the current local
-or SSH endpoint and checks the expected running/stopped state and configuration
-paths. Stop terminates every process while retaining Herdr's saved shape;
+command, Ghosthub reacquires the reviewed SSH route rather than retaining the
+pre-confirmation lease, reruns `herdr session list --json` through the current
+endpoint, and checks the expected running/stopped state and configuration
+paths. A changed route invalidates the confirmation. Stop terminates every
+process while retaining Herdr's saved shape;
 Restart recreates processes within that shape. Delete requires a stopped,
 non-default session and permanently removes its saved state. The default
 session may be stopped and restarted but never deleted.
@@ -226,7 +237,9 @@ active session with `zellij attach <exact-name>`. **New Zellij Session** uses
 `zellij --session <exact-name>`, which creates and presents a new session while
 refusing both active and resurrectable name collisions. Local sessions use
 libghostty's normal macOS login-shell path. Remote sessions use an ordinary
-OpenSSH PTY with keepalives and the remote account login environment.
+OpenSSH PTY through one kwt-owned lease with keepalives and the remote account
+login environment. Reconnect retains only the host and session intent, then
+resolves and acquires a fresh lease; it never stores the prior lease arguments.
 
 Zellij owns tabs, panes, layout, history, key bindings, terminal state,
 configuration, plugins, and every process inside the session. Ghosthub owns
@@ -248,9 +261,11 @@ replacement client and stops recovery if the session disappears, Zellij is no
 longer available, or the failure requires connection review.
 
 **Kill Session** is the only destructive Zellij lifecycle action. Ghosthub
-confirms the host and name, establishes a shared same-session kill fence, then
-repeats active-session discovery against the current endpoint immediately
-before `zellij kill-session <exact-name>`. The fence cancels matching reconnect
+confirms the host, name, and reviewed route key without retaining the
+pre-confirmation SSH lease. Execution reacquires that route, establishes a
+shared same-session kill fence, then repeats active-session discovery against
+the current endpoint immediately before `zellij kill-session <exact-name>`.
+The fence cancels matching reconnect
 attempts and detaches matching presentations in every scene before the command,
 so neither a reconnect nor an already-launched client can immediately resurrect
 a deliberately killed session. Successful kills invalidate in-flight Zellij
@@ -582,13 +597,23 @@ failures remain retryable and are presented to the user.
 ## SSH Keepalive and Reconnect
 
 Remote clients use the user's OpenSSH configuration and add server keepalives.
-If OpenSSH requires interactive authentication, Ghosthub shows its challenge
-in a native secure-entry sheet and passes the session-only response through a
-private FIFO. Later inventory, tmux, and Herdr clients reuse that app-session
-control connection and remain noninteractive. Every control connection is named for
-one app launch and supervised by a parent-held descriptor that stays open for
-the app lifetime, so an app crash terminates the SSH master and a later launch
-cannot reuse its socket.
+For native presentations, kwt owns the multiplexed connection and sends each
+OpenSSH prompt through its ordered operation stream. Ghosthub shows the exact
+challenge in a native secure-entry sheet and returns the session-only response
+to that prompt event. Route resolution, lease ownership, and `kwt ssh exec`
+share a kwt daemon rooted at `ssh/kwt` under Ghosthub's resolved state home
+(normally `~/.ghosthub/ssh/kwt`), isolated from the account's ordinary kwt
+daemon and registry. Multiple windows may share an acquisition, but only one
+eligible window presents a prompt at a time; closing it transfers the prompt
+without extending its deadline. Kwt keeps a master available only while leases
+or its configured idle policy require it, and a dead client is reaped by the
+daemon. Project/worktree inventory and other short-lived remote commands use
+kwt-owned noninteractive connections and fail closed if OpenSSH needs a
+prompt. Worktree mutations use `kwt ssh exec`, so Ghosthub does not construct
+their OpenSSH invocation. Multi-command discovery and route-conditional
+session mutations continue to borrow explicit leases until their higher-level
+kwt contracts land. Command clients never construct or reuse an app-owned
+control socket.
 Remote attachment and establishment shell commands are one-shot: they contain
 no retry timing and never print reconnect status into the terminal buffer.
 The local wrapper around each complete remote command records its final status
@@ -638,12 +663,13 @@ the fallback otherwise. A changed known-host
 identity still requires the explicit known-hosts remediation described by that
 flow; Ghosthub never silently accepts it.
 
-A direct connection's OpenSSH `LocalCommand` writes a private marker after
-transport and authentication succeed. Host verification emits a marker only
-after the remote command begins. Status 255 and local wrapper failures such as
-an unconfirmed timeout leave the host offline; a nonzero login-shell or
-probe-command status is reachable and degraded only when that marker proves the
-remote account executed the probe.
+Host Settings and recovery first acquire a kwt-owned SSH lease. The exact host
+probe then runs through that lease and emits a marker only after the remote
+command begins; the client releases its lease ownership when probing or native
+review ends. Status 255 and local wrapper failures such as an unconfirmed
+timeout leave the host offline; a nonzero login-shell or probe-command status
+is reachable and degraded only when that marker proves the remote account
+executed the probe.
 
 The initial psmux path allocates an ordinary SSH PTY and targets Windows 11
 build 22523 or newer. Older ConPTY builds preserve keyboard input but consume

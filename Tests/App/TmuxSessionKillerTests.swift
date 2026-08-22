@@ -8,6 +8,274 @@ import Testing
 
 @Suite("tmux session termination")
 struct TmuxSessionKillerTests {
+    @Test("reviewed route is retained through conditional kill")
+    func reviewedRouteBindsKill() async throws {
+        let acquisitions = LockedValue(0)
+        let releases = LockedValue(0)
+        let commands = LockedValue<[String]>([])
+        let host = SSHHostInfo(
+            user: nil,
+            hostname: "builder.example.test",
+            port: nil
+        )
+        let commandLease = KwtSSHCommandLease { _ in
+            acquisitions.withLock { $0 += 1 }
+            return KwtSSHConnection(
+                arguments: ["-S", "/tmp/reviewed.sock"],
+                routeIdentity: "reviewed-route",
+                generation: 7,
+                release: { releases.withLock { $0 += 1 } }
+            )
+        }
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, command in
+                commands.withLock { $0.append(command) }
+                return (0, "")
+            },
+            commandLease: commandLease
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "reviewed"
+        )
+
+        try await killer.killReviewed(
+            selection,
+            expectedIdentity: TmuxSessionIdentity(
+                serverPID: "31415",
+                sessionID: "$42",
+                createdAt: "1785182057"
+            ),
+            expectedRouteIdentity: "reviewed-route",
+            on: .ssh(host)
+        )
+
+        #expect(acquisitions.load() == 1)
+        #expect(releases.load() == 1)
+        #expect(commands.load().count == 1)
+    }
+
+    @Test("changed route blocks conditional kill")
+    func changedRouteBlocksKill() async {
+        let releases = LockedValue(0)
+        let commands = LockedValue<[String]>([])
+        let host = SSHHostInfo(
+            user: nil,
+            hostname: "replacement.example.test",
+            port: nil
+        )
+        let commandLease = KwtSSHCommandLease { _ in
+            KwtSSHConnection(
+                arguments: ["-S", "/tmp/replacement.sock"],
+                routeIdentity: "replacement-route",
+                generation: 8,
+                release: { releases.withLock { $0 += 1 } }
+            )
+        }
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, command in
+                commands.withLock { $0.append(command) }
+                return (0, "")
+            },
+            commandLease: commandLease
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "reviewed"
+        )
+
+        await #expect {
+            try await killer.killReviewed(
+                selection,
+                expectedIdentity: TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1785182057"
+                ),
+                expectedRouteIdentity: "reviewed-route",
+                on: .ssh(host)
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .hostChanged(
+                session: selection.name
+            )
+        }
+        #expect(releases.load() == 1)
+        #expect(commands.load().isEmpty)
+    }
+
+    @Test("a dead pooled control socket invalidates its lease")
+    func deadPooledSocketInvalidatesLease() async {
+        let invalidations = LockedValue(0)
+        let releases = LockedValue(0)
+        let host = SSHHostInfo(
+            user: nil,
+            hostname: "builder.example.test",
+            port: nil
+        )
+        let commandLease = KwtSSHCommandLease { _ in
+            KwtSSHConnection(
+                arguments: ["-S", "/tmp/dead.sock"],
+                routeIdentity: "reviewed-route",
+                generation: 9,
+                release: { releases.withLock { $0 += 1 } },
+                invalidate: { invalidations.withLock { $0 += 1 } }
+            )
+        }
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            outputRunner: { _, _ in
+                AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr:
+                    "Control socket connect(/tmp/dead.sock): No such file or directory"
+                )
+            },
+            commandLease: commandLease
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "reviewed"
+        )
+
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1785182057"
+                ),
+                on: .ssh(host)
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .commandFailed(
+                host: host.displayName,
+                session: selection.name,
+                status: 255
+            )
+        }
+        #expect(invalidations.load() == 1)
+        #expect(releases.load() == 1)
+    }
+
+    @Test(
+        "a dead control socket during identity review invalidates its lease",
+        arguments: [1, 2]
+    )
+    func deadSocketDuringIdentityReview(failingCommand: Int) async {
+        let commands = LockedValue(0)
+        let invalidations = LockedValue(0)
+        let releases = LockedValue(0)
+        let host = SSHHostInfo(
+            user: nil,
+            hostname: "builder.example.test",
+            port: nil
+        )
+        let commandLease = KwtSSHCommandLease { _ in
+            KwtSSHConnection(
+                arguments: ["-S", "/tmp/dead.sock"],
+                routeIdentity: "reviewed-route",
+                generation: 9,
+                release: { releases.withLock { $0 += 1 } },
+                invalidate: { invalidations.withLock { $0 += 1 } }
+            )
+        }
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            outputRunner: { _, command in
+                commands.withLock { $0 += 1 }
+                let commandNumber = commands.load()
+                if commandNumber == failingCommand {
+                    return AccountCommandOutput(
+                        status: 255,
+                        stdout: "",
+                        stderr:
+                        "Control socket connect(/tmp/dead.sock): No such file or directory"
+                    )
+                }
+                let stdout = command.contains("display-message")
+                    ? "GHOSTHUB_TMUX_SESSION_IDENTITY\t31415\t$42\t1785182057\n"
+                    : ""
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: stdout,
+                    stderr: ""
+                )
+            },
+            commandLease: commandLease
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "reviewed"
+        )
+
+        await #expect {
+            try await killer.sessionIdentity(selection, on: .ssh(host))
+        } throws: { error in
+            error as? TmuxSessionKillError == .identityCommandFailed(
+                host: host.displayName,
+                session: selection.name,
+                status: 255
+            )
+        }
+        #expect(invalidations.load() == 1)
+        #expect(releases.load() == 1)
+    }
+
+    @Test("a dead control socket during tmux resolution invalidates its lease")
+    func deadSocketDuringTmuxResolution() async {
+        let invalidations = LockedValue(0)
+        let releases = LockedValue(0)
+        let host = SSHHostInfo(
+            user: nil,
+            hostname: "builder.example.test",
+            port: nil
+        )
+        let classification = SSHConnectionFailure.classify(
+            status: 255,
+            output:
+            "Control socket connect(/tmp/dead.sock): No such file or directory"
+        )
+        let commandLease = KwtSSHCommandLease { _ in
+            KwtSSHConnection(
+                arguments: ["-S", "/tmp/dead.sock"],
+                routeIdentity: "reviewed-route",
+                generation: 9,
+                release: { releases.withLock { $0 += 1 } },
+                invalidate: { invalidations.withLock { $0 += 1 } }
+            )
+        }
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in
+                .failure(.sshConnectionFailed(
+                    host: host.displayName,
+                    classification: classification
+                ))
+            },
+            runner: { _, _ in (0, "") },
+            commandLease: commandLease
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "reviewed"
+        )
+
+        await #expect {
+            try await killer.sessionIdentity(selection, on: .ssh(host))
+        } throws: { error in
+            error as? TmuxBinaryError == .sshConnectionFailed(
+                host: host.displayName,
+                classification: classification
+            )
+        }
+        #expect(invalidations.load() == 1)
+        #expect(releases.load() == 1)
+    }
+
     @Test("matching identity is killed while a replacement survives")
     func realTmuxIdentityBoundary() async throws {
         guard case let .success(tmuxPath) =

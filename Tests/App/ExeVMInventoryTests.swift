@@ -11,10 +11,80 @@ import Testing
 
 @Suite("exe.dev VM inventory")
 struct ExeVMInventoryTests {
+    @MainActor
+    @Test("automatic refresh borrows a kwt SSH lease")
+    func automaticRefreshBorrowsLease() async {
+        let leasedArguments = ["-F", "/dev/null", "-S", "/tmp/kwt.sock"]
+        let observedArguments = LockedValue<[String]?>(nil)
+        let acquisitions = LockedValue(0)
+        let client = ExeVMClient(
+            runner: { _, arguments, startMarker, endMarker in
+                observedArguments.store(arguments)
+                return (
+                    0,
+                    "\(startMarker)\n{\"vms\":[]}\n\(endMarker)",
+                    ""
+                )
+            },
+            commandLease: KwtSSHCommandLease { _ in
+                acquisitions.withLock { $0 += 1 }
+                return KwtSSHConnection(
+                    arguments: leasedArguments,
+                    routeIdentity: "sha256:exe-route",
+                    generation: 1
+                )
+            }
+        )
+        let store = ExeVMInventoryStore(client: client)
+        let account = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev"
+        )
+        let loaded = Task { @MainActor in
+            for await statuses in store.$statuses.values {
+                if case .loaded = statuses[account.configKey] {
+                    return
+                }
+            }
+        }
+
+        store.refresh(accounts: [account])
+        await loaded.value
+
+        #expect(acquisitions.load() == 1)
+        #expect(observedArguments.load() == leasedArguments)
+    }
+
+    @Test("reviewed connection arguments are used for inventory")
+    func usesReviewedConnectionArguments() throws {
+        let capturedArguments = LockedValue<[String]?>(nil)
+        let client = ExeVMClient { _, arguments, startMarker, endMarker in
+            capturedArguments.store(arguments)
+            return (
+                0,
+                "\(startMarker)\n{\"vms\":[]}\n\(endMarker)",
+                ""
+            )
+        }
+        let arguments = ["-S", "/tmp/reviewed.sock"]
+
+        _ = try client.listVMs(
+            for: ExeAccount(
+                configKey: "personal",
+                name: "Personal",
+                sshDestination: "exe.dev"
+            ),
+            sshConnectionArguments: arguments
+        )
+
+        #expect(capturedArguments.load() == arguments)
+    }
+
     @Test("decodes framed VM inventory without login-shell output")
     func decodesVMList() throws {
         let capturedHost = LockedValue<SSHHostInfo?>(nil)
-        let client = ExeVMClient { host, startMarker, endMarker in
+        let client = ExeVMClient { host, _, startMarker, endMarker in
             capturedHost.withLock { $0 = host }
             return (
                 0,
@@ -49,7 +119,7 @@ struct ExeVMInventoryTests {
 
     @Test("reports command diagnostics instead of parsing failed output")
     func reportsCommandFailure() {
-        let client = ExeVMClient { _, _, _ in
+        let client = ExeVMClient { _, _, _, _ in
             (255, "", "Permission denied (publickey).")
         }
 
@@ -67,22 +137,55 @@ struct ExeVMInventoryTests {
     }
 
     @Test("authentication failures request supervised SSH entry")
-    func classifiesAuthenticationFailure() {
-        let client = ExeVMClient { _, _, _ in
+    func classifiesAuthenticationFailure() async {
+        let client = ExeVMClient { _, _, _, _ in
             (255, "", "Permission denied (publickey,password).")
         }
 
-        #expect(client.connectionProbe(for: ExeAccount(
+        #expect(await client.connectionProbe(for: ExeAccount(
             configKey: "personal",
             name: "Personal",
             sshDestination: "exe.dev"
         )) == .authenticationRequired)
     }
 
+    @Test("a reviewed probe invalidates a dead pooled connection")
+    func reviewedProbeInvalidatesDeadConnection() async {
+        let invalidations = LockedValue(0)
+        let client = ExeVMClient { _, _, _, _ in
+            (
+                255,
+                "",
+                "Control socket connect(/tmp/dead.sock): No such file or directory"
+            )
+        }
+        let connection = KwtSSHConnection(
+            arguments: ["-S", "/tmp/dead.sock"],
+            routeIdentity: "reviewed-route",
+            generation: 1,
+            invalidate: { invalidations.withLock { $0 += 1 } }
+        )
+
+        let result = await client.connectionProbe(
+            for: ExeAccount(
+                configKey: "personal",
+                name: "Personal",
+                sshDestination: "exe.dev"
+            ),
+            connection: connection
+        )
+
+        guard case .failed = result else {
+            Issue.record("expected a failed connection probe")
+            return
+        }
+        #expect(invalidations.load() == 1)
+    }
+
     @MainActor
     @Test("changing account destination invalidates cached hosts")
     func changingAccountDestinationInvalidatesCachedHosts() async {
-        let client = ExeVMClient { host, startMarker, endMarker in
+        let client = ExeVMClient { host, _, startMarker, endMarker in
             guard host.hostname == "old.exe.dev" else {
                 return (255, "", "Connection failed")
             }
@@ -139,7 +242,7 @@ struct ExeVMInventoryTests {
     @MainActor
     @Test("refresh cancellation and invalidation stay scoped")
     func refreshLifecycleIsScopedToExactOperation() async throws {
-        let client = ExeVMClient { host, startMarker, endMarker in
+        let client = ExeVMClient { host, _, startMarker, endMarker in
             let vmName = host.hostname == "old.exe.dev" ? "old" : "new"
             return (
                 0,
@@ -231,7 +334,7 @@ struct ExeVMInventoryTests {
     @MainActor
     @Test("draft invalidation restores persisted inventory immediately")
     func draftInvalidationRestoresPersistedInventoryImmediately() async throws {
-        let client = ExeVMClient { host, startMarker, endMarker in
+        let client = ExeVMClient { host, _, startMarker, endMarker in
             let vmName = host.hostname.components(separatedBy: ".").first!
             return (
                 0,
@@ -347,7 +450,7 @@ struct ExeVMInventoryTests {
     @Test("prefetched connection inventory is published without another query")
     func prefetchedInventoryAvoidsAnotherQuery() throws {
         let queryCount = LockedValue(0)
-        let store = ExeVMInventoryStore(client: ExeVMClient { _, _, _ in
+        let store = ExeVMInventoryStore(client: ExeVMClient { _, _, _, _ in
             queryCount.withLock { $0 += 1 }
             return (255, "", "Unexpected query")
         })
@@ -388,7 +491,7 @@ struct ExeVMInventoryTests {
             AsyncStream<Void>.makeStream()
         let releaseWork = DispatchSemaphore(value: 0)
         defer { releaseWork.signal() }
-        let client = ExeVMClient { host, startMarker, endMarker in
+        let client = ExeVMClient { host, _, startMarker, endMarker in
             if host.hostname == "work.exe.dev" {
                 workStartedContinuation.yield()
                 releaseWork.wait()
@@ -473,7 +576,7 @@ struct ExeVMInventoryTests {
     @Test("renamed cached hosts survive a failed refresh")
     func renamedCachedHostsSurviveFailedRefresh() async {
         let attempts = LockedValue(0)
-        let client = ExeVMClient { _, startMarker, endMarker in
+        let client = ExeVMClient { _, _, startMarker, endMarker in
             var attempt = 0
             attempts.withLock {
                 $0 += 1
@@ -526,7 +629,7 @@ struct ExeVMInventoryTests {
     @MainActor
     @Test("account edits preserve unchanged inventory")
     func accountEditsPreserveUnchangedInventory() async {
-        let client = ExeVMClient { host, startMarker, endMarker in
+        let client = ExeVMClient { host, _, startMarker, endMarker in
             let vmName = host.hostname.components(separatedBy: ".").first!
             return (
                 0,
@@ -719,7 +822,7 @@ struct ExeVMInventoryTests {
         let (workStarted, workStartedContinuation) =
             AsyncStream<Void>.makeStream()
         let releaseWork = DispatchSemaphore(value: 0)
-        let client = ExeVMClient { host, startMarker, endMarker in
+        let client = ExeVMClient { host, _, startMarker, endMarker in
             if host.hostname == "work.exe.dev" {
                 workStartedContinuation.yield()
                 releaseWork.wait()
@@ -803,7 +906,7 @@ struct ExeVMInventoryTests {
     @MainActor
     @Test("tag filters scope discovered VMs and reported counts")
     func tagFilterScopesDiscoveredVMs() {
-        let store = ExeVMInventoryStore(client: ExeVMClient { _, _, _ in
+        let store = ExeVMInventoryStore(client: ExeVMClient { _, _, _, _ in
             (255, "", "Unexpected query")
         })
         let account = ExeAccount(
@@ -856,7 +959,7 @@ struct ExeVMInventoryTests {
     @MainActor
     @Test("reordering tags keeps cached hosts and the discovered filter")
     func reorderingTagsKeepsCachedHosts() {
-        let store = ExeVMInventoryStore(client: ExeVMClient { _, _, _ in
+        let store = ExeVMInventoryStore(client: ExeVMClient { _, _, _, _ in
             (255, "", "Unexpected query")
         })
         let account = ExeAccount(
@@ -897,7 +1000,7 @@ struct ExeVMInventoryTests {
     @MainActor
     @Test("changing only the tag filter invalidates cached hosts")
     func changingTagFilterInvalidatesCachedHosts() async {
-        let client = ExeVMClient { _, startMarker, endMarker in
+        let client = ExeVMClient { _, _, startMarker, endMarker in
             (
                 0,
                 """

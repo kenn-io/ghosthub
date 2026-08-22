@@ -27,6 +27,18 @@ struct SSHConnectionFailureTests {
                 "ssh: connect to host example.test port 22: Network is unreachable",
                 SSHConnectionFailure.Classification.Kind.transport
             ),
+            (
+                "ghosthub-kwt-ssh-error:ssh_interaction_required",
+                SSHConnectionFailure.Classification.Kind.authenticationRequired
+            ),
+            (
+                "ghosthub-kwt-ssh-error:ssh_configuration_changed",
+                SSHConnectionFailure.Classification.Kind.configurationChanged
+            ),
+            (
+                "ghosthub-kwt-ssh-error:ssh_cleanup_failed",
+                SSHConnectionFailure.Classification.Kind.transport
+            ),
         ]
     )
     func classifiesRecovery(
@@ -103,5 +115,108 @@ struct SSHConnectionFailureTests {
         )
 
         #expect(diagnostic.code == .sshConnectionFailed)
+    }
+
+    @Test(
+        "only a lost daemon master marks the pooled connection unusable",
+        arguments: [
+            (255, "Connection closed by UNKNOWN port 65535", true),
+            (
+                255,
+                "Control socket connect(/tmp/kwt.sock): Connection refused",
+                true
+            ),
+            (255, "Permission denied (publickey,password).", false),
+            (1, "Connection closed by UNKNOWN port 65535", false),
+            (
+                255,
+                "ssh: connect to host example.test port 22: Network is unreachable",
+                false
+            ),
+        ]
+    )
+    func detectsUnusableConnection(
+        status: Int32,
+        output: String,
+        expected: Bool
+    ) {
+        #expect(
+            SSHConnectionFailure.indicatesUnusableConnection(
+                status: status,
+                output: output
+            ) == expected
+        )
+        #expect(
+            SSHConnectionFailure.classify(status: status, output: output)
+                .connectionUnusable == expected
+        )
+    }
+
+    @Test("lease borrow failures classify by their typed code")
+    func classifiesLeaseErrors() {
+        let interaction = SSHConnectionFailure.classify(
+            leaseError: KwtSSHLeaseError.operationFailed(
+                code: "ssh_interaction_required",
+                message: "SSH authentication requires an active window.",
+                retryable: false
+            )
+        )
+        #expect(interaction.kind == .authenticationRequired)
+        #expect(!interaction.connectionUnusable)
+
+        let changed = SSHConnectionFailure.classify(
+            leaseError: KwtSSHLeaseError.routeChanged
+        )
+        #expect(changed.kind == .configurationChanged)
+    }
+
+    @Test("helper version drift is not blamed on the SSH configuration")
+    func classifiesUnsupportedHelperVersion() {
+        let unsupported = SSHConnectionFailure.classify(
+            leaseError: KwtSSHLeaseError.operationFailed(
+                code: "ssh_unsupported_version",
+                message: "kwt lease protocol version is unsupported.",
+                retryable: false
+            )
+        )
+        let changed = SSHConnectionFailure.classify(
+            leaseError: KwtSSHLeaseError.routeChanged
+        )
+
+        #expect(unsupported.kind == .configurationChanged)
+        #expect(unsupported.diagnostic.summary.contains("helper"))
+        #expect(unsupported.diagnostic.summary != changed.diagnostic.summary)
+    }
+
+    @Test(
+        "generic lease failures preserve native recovery signals",
+        arguments: [
+            (
+                "Permission denied (publickey,password).",
+                SSHConnectionFailure.Classification.Kind.authenticationRequired
+            ),
+            (
+                "Host key verification failed.",
+                SSHConnectionFailure.Classification.Kind.hostKeyReviewRequired
+            ),
+            (
+                "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!",
+                SSHConnectionFailure.Classification.Kind.hostKeyChanged
+            ),
+        ]
+    )
+    func classifiesGenericLeaseDiagnostics(
+        message: String,
+        expected: SSHConnectionFailure.Classification.Kind
+    ) {
+        let classification = SSHConnectionFailure.classify(
+            leaseError: KwtSSHLeaseError.operationFailed(
+                code: "ssh_connection_failed",
+                message: message,
+                retryable: true
+            )
+        )
+
+        #expect(classification.kind == expected)
     }
 }

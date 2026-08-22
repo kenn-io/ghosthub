@@ -87,6 +87,21 @@ struct KwtInventoryClientTests {
         #expect(error.localizedDescription.contains("exact SSH destination"))
     }
 
+    @Test("remote inventory requires reviewed lease arguments")
+    func remoteInventoryRequiresLease() async {
+        let host = SSHHostInfo(
+            user: "tester",
+            hostname: "builder.example.test",
+            port: nil
+        )
+
+        await #expect(throws: KwtInventoryError.sshLeaseRequired(
+            host: "tester@builder.example.test"
+        )) {
+            try await KwtInventoryClient().load(from: .ssh(host))
+        }
+    }
+
     @Test("projects and exact session names survive shell startup noise")
     func readsProjectsAndWorktrees() async throws {
         let client = KwtInventoryClient(
@@ -262,33 +277,73 @@ struct KwtInventoryClientTests {
 
     @Test("remote inventory resolves kwt on the remote host")
     func remoteInventoryDoesNotUseBundledPath() async throws {
-        let ssh = SSHHostInfo(user: "wesm", hostname: "builder", port: nil)
+        let ssh = SSHHostInfo(user: "tester", hostname: "builder", port: nil)
         let revision = String(repeating: "a", count: 40)
         let client = KwtInventoryClient(
-            remoteRunner: { host, command in
+            remoteRunner: { host, arguments, command in
                 #expect(host == ssh)
+                #expect(arguments == ["-F", "/dev/null", "-S", "/tmp/kwt.sock"])
                 #expect(command.hasPrefix(
                     "ghosthub_kwt_path=\"$HOME/.ghosthub/helpers/kwt/"
                         + "\(revision)/kwt\";"
                 ))
                 #expect(!command.contains("/Applications/Ghosthub.app"))
                 if command.contains("workspace list --json") {
-                    return (
-                        0,
-                        "GHOSTHUB_KWT_JSON\n" +
-                            #"[{"name":"hub","path":"/srv/hub","session_name":"kwt-workspace-dir-hub-abc","session_live":false}]"#
+                    return AccountCommandOutput(
+                        status: 0,
+                        stdout: "GHOSTHUB_KWT_JSON\n" +
+                            #"[{"name":"hub","path":"/srv/hub","session_name":"kwt-workspace-dir-hub-abc","session_live":false}]"#,
+                        stderr: ""
                     )
                 }
-                return (0, "GHOSTHUB_KWT_JSON\n[]")
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "GHOSTHUB_KWT_JSON\n[]",
+                    stderr: ""
+                )
             },
             localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt",
             remoteBinaryRevision: revision
         )
 
-        let inventory = try await client.load(from: .ssh(ssh))
+        let inventory = try await client.load(
+            from: .ssh(ssh),
+            sshConnectionArguments: [
+                "-F", "/dev/null", "-S", "/tmp/kwt.sock",
+            ]
+        )
 
         #expect(inventory.projects.isEmpty)
         #expect(inventory.directoryWorkspaces.map(\.path) == ["/srv/hub"])
+    }
+
+    @Test("remote inventory invalidates a lost daemon master")
+    func invalidatesLostRemoteMaster() async {
+        let invalidations = LockedValue(0)
+        let ssh = SSHHostInfo(user: "tester", hostname: "builder", port: nil)
+        let connection = KwtSSHConnection(
+            arguments: ["-F", "/dev/null", "-S", "/tmp/kwt.sock"],
+            routeIdentity: "route-one",
+            generation: 1,
+            invalidate: { invalidations.withLock { $0 += 1 } }
+        )
+        let client = KwtInventoryClient(
+            remoteRunner: { _, _, _ in
+                AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr: "Control socket connect(/tmp/kwt.sock): Connection refused"
+                )
+            }
+        )
+
+        await #expect(throws: KwtInventoryError.self) {
+            try await client.load(
+                from: .ssh(ssh),
+                sshConnection: connection
+            )
+        }
+        #expect(invalidations.load() == 1)
     }
 
     @Test("Windows inventory invokes native kwt through PowerShell")
@@ -306,8 +361,9 @@ struct KwtInventoryClientTests {
             platform: .windows
         )
         let client = KwtInventoryClient(
-            remoteRunner: { host, command in
+            remoteRunner: { host, arguments, command in
                 #expect(host == ssh)
+                #expect(arguments == ["-F", "NUL", "-S", #"C:\kwt.sock"#])
                 #expect(command.contains(
                     powerShellEncodedArgument(managedPath)
                 ))
@@ -328,16 +384,20 @@ struct KwtInventoryClientTests {
                 let json = expectedArguments.first == "workspace"
                     ? #"[{"name":"hub","path":"C:\\hub","session_name":"kwt-workspace-dir-hub-abc","session_live":false}]"#
                     : "[]"
-                return (
-                    0,
-                    "PowerShell banner without newline"
-                        + "GHOSTHUB_KWT_JSON\r\n\(json)\r\n"
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "PowerShell banner without newline"
+                        + "GHOSTHUB_KWT_JSON\r\n\(json)\r\n",
+                    stderr: ""
                 )
             },
             remoteBinaryRevision: revision
         )
 
-        let inventory = try await client.load(from: .ssh(ssh))
+        let inventory = try await client.load(
+            from: .ssh(ssh),
+            sshConnectionArguments: ["-F", "NUL", "-S", #"C:\kwt.sock"#]
+        )
 
         #expect(inventory.projects.isEmpty)
         #expect(inventory.directoryWorkspaces.map(\.name) == ["hub"])

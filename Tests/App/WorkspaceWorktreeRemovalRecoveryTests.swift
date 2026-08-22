@@ -31,7 +31,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: currentSnapshot,
             kwtInventoryLoader: { _ in currentInventory },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -119,7 +119,7 @@ extension WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterReplacement
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -185,7 +185,7 @@ extension WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterMetadataChange
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -272,7 +272,7 @@ extension WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterEndpointChange
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -351,7 +351,7 @@ extension WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterRemoval
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -465,7 +465,7 @@ extension WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterReassignment
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -575,7 +575,7 @@ extension WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterReassignment
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -673,7 +673,7 @@ extension WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : conflictedRefresh
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -743,7 +743,7 @@ extension WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterRename
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -833,7 +833,7 @@ extension WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterMove
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -903,7 +903,7 @@ extension WorkspaceWorktreeRemovalTests {
                 loads.withLock { $0 += 1 }
                 return loads.load() == 1 ? beforeRemoval : staleRefresh
             },
-            kwtWorktreeRemover: { _, _, _, _ in },
+            kwtWorktreeRemover: { _, _, _, _, _ in },
             tmuxSessionIdentityReader: { selection, host in
                 throw TmuxSessionKillError.sessionNotRunning(
                     host: host.displayName,
@@ -942,7 +942,7 @@ extension WorkspaceWorktreeRemovalTests {
             snapshot: snapshot,
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 _ = await removerHold.load(beforeRemoval)
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
@@ -1024,7 +1024,7 @@ extension WorkspaceWorktreeRemovalTests {
             snapshot: snapshot,
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 _ = await removerHold.load(beforeRemoval)
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
@@ -1087,7 +1087,7 @@ extension WorkspaceWorktreeRemovalTests {
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             localKwtPathProvider: { "/test/kwt" },
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -1156,7 +1156,7 @@ extension WorkspaceWorktreeRemovalTests {
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             localKwtPathProvider: { "/test/kwt" },
             kwtInventoryLoader: { _ in fixture.beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -1234,7 +1234,7 @@ extension WorkspaceWorktreeRemovalTests {
             nativeTmuxSurfaceStore: surfaces,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Office Linux",
                     status: 1
@@ -1294,7 +1294,7 @@ extension WorkspaceWorktreeRemovalTests {
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             localKwtPathProvider: { "/test/kwt" },
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -1357,7 +1357,7 @@ extension WorkspaceWorktreeRemovalTests {
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             localKwtPathProvider: { "/test/kwt" },
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
                     host: "Local",
                     status: 1
@@ -1434,7 +1434,7 @@ extension WorkspaceWorktreeRemovalTests {
             nativeTmuxSurfaceStore: surfaces,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 _ = await removerHold.load(beforeRemoval)
                 throw KwtWorktreeError.removalFailed(
                     host: "Office Linux",

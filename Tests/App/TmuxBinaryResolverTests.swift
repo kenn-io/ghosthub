@@ -207,7 +207,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("SSH stderr is preserved for native recovery classification")
-    func reportsRemoteSSHFailure() {
+    func reportsRemoteSSHFailure() async {
         let host = SSHHostInfo(
             user: "wesm", hostname: "untrusted-host", port: nil
         )
@@ -228,12 +228,12 @@ struct TmuxBinaryResolverTests {
             )
         )
 
-        #expect(resolver.resolveTmuxPath(on: host) == .failure(expected))
-        #expect(resolver.discoverSessions(on: host) == .failure(expected))
+        #expect(await resolver.resolveTmuxPath(on: host) == .failure(expected))
+        #expect(await resolver.discoverSessions(on: host) == .failure(expected))
     }
 
     @Test("protected POSIX probe uses exact socket and session targets")
-    func probesProtectedPOSIXSession() throws {
+    func probesProtectedPOSIXSession() async throws {
         let host = SSHHostInfo(
             user: "wesm",
             hostname: "build-box",
@@ -254,7 +254,7 @@ struct TmuxBinaryResolverTests {
             }
         )
 
-        #expect(try resolver.sessionExists(
+        #expect(try await resolver.sessionExists(
             name: "pr-32",
             socketName: "kwt-pr-0123456789abcdef",
             on: host
@@ -262,7 +262,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("exact probe recognizes an absent session")
-    func probesAbsentSession() throws {
+    func probesAbsentSession() async throws {
         let host = SSHHostInfo(
             user: "wesm",
             hostname: "build-box",
@@ -279,7 +279,7 @@ struct TmuxBinaryResolverTests {
             }
         )
 
-        #expect(try !resolver.sessionExists(
+        #expect(try await !resolver.sessionExists(
             name: "pr-32",
             socketName: nil,
             on: host
@@ -287,7 +287,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("exact probe rejects an unsupported tmux version")
-    func exactProbeRejectsOldVersion() {
+    func exactProbeRejectsOldVersion() async {
         let host = SSHHostInfo(
             user: "wesm",
             hostname: "build-box",
@@ -304,7 +304,7 @@ struct TmuxBinaryResolverTests {
             }
         )
 
-        #expect(resolver.sessionExists(
+        #expect(await resolver.sessionExists(
             name: "pr-32",
             socketName: "kwt-pr-0123456789abcdef",
             on: host
@@ -315,7 +315,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("exact probe does not treat generic tmux failure as absence")
-    func exactProbePreservesGenericFailure() {
+    func exactProbePreservesGenericFailure() async {
         let host = SSHHostInfo(
             user: "wesm",
             hostname: "build-box",
@@ -331,7 +331,7 @@ struct TmuxBinaryResolverTests {
             }
         )
 
-        #expect(resolver.sessionExists(
+        #expect(await resolver.sessionExists(
             name: "pr-32",
             socketName: "kwt-pr-0123456789abcdef",
             on: host
@@ -339,7 +339,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("protected Windows probe uses exact socket and session targets")
-    func probesProtectedWindowsSession() throws {
+    func probesProtectedWindowsSession() async throws {
         let host = SSHHostInfo(
             user: "wesm",
             hostname: "arm-builder",
@@ -370,7 +370,7 @@ struct TmuxBinaryResolverTests {
             }
         )
 
-        #expect(try resolver.sessionExists(
+        #expect(try await resolver.sessionExists(
             name: "pr-32",
             socketName: "kwt-pr-0123456789abcdef",
             on: host
@@ -378,7 +378,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("Windows resolution discovers the psmux tmux alias")
-    func resolvesWindowsPsmuxPath() throws {
+    func resolvesWindowsPsmuxPath() async throws {
         let host = SSHHostInfo(
             user: "wesm",
             hostname: "arm-builder",
@@ -402,7 +402,7 @@ struct TmuxBinaryResolverTests {
         )
 
         #expect(
-            try resolver.resolveTmuxPath(on: host).get()
+            try await resolver.resolveTmuxPath(on: host).get()
                 == #"C:\Users\wesm\scoop\apps\psmux\current\tmux.exe"#
         )
     }
@@ -496,7 +496,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("remote discovery uses the configured SSH host")
-    func discoversRemoteSessions() throws {
+    func discoversRemoteSessions() async throws {
         let host = SSHHostInfo(
             user: "wesm", hostname: "build-box", port: 2222
         )
@@ -519,7 +519,7 @@ struct TmuxBinaryResolverTests {
         )
 
         #expect(
-            try resolver.discoverSessions(on: host).get()
+            try await resolver.discoverSessions(on: host).get()
                 == [DiscoveredTmuxSession(
                     name: "remote-work", windowCount: 3,
                     serverPID: "202",
@@ -529,7 +529,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("Windows discovery uses psmux formatted session output")
-    func discoversWindowsPsmuxSessions() throws {
+    func discoversWindowsPsmuxSessions() async throws {
         let host = SSHHostInfo(
             user: "wesm",
             hostname: "arm-builder",
@@ -557,7 +557,7 @@ struct TmuxBinaryResolverTests {
         )
 
         #expect(
-            try resolver.discoverSessions(on: host).get()
+            try await resolver.discoverSessions(on: host).get()
                 == [DiscoveredTmuxSession(
                     name: "windows-work",
                     windowCount: 2,
@@ -579,7 +579,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("a missing tmux socket confirms session absence")
-    func missingSocketIsAbsence() throws {
+    func missingSocketIsAbsence() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ghosthub-tmux-absence-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
@@ -622,8 +622,8 @@ struct TmuxBinaryResolverTests {
             }
         )
 
-        #expect(try resolver.discoverSessions(on: host).get().isEmpty)
-        #expect(try !resolver.sessionExists(
+        #expect(try await resolver.discoverSessions(on: host).get().isEmpty)
+        #expect(try await !resolver.sessionExists(
             name: "pr-32",
             socketName: "kwt-pr-0123456789abcdef",
             on: host
@@ -631,7 +631,7 @@ struct TmuxBinaryResolverTests {
     }
 
     @Test("a reachable default server error is not confirmed absence")
-    func defaultServerErrorIsNotAbsence() {
+    func defaultServerErrorIsNotAbsence() async {
         let host = SSHHostInfo(
             user: "wesm",
             hostname: "build-box",
@@ -648,7 +648,7 @@ struct TmuxBinaryResolverTests {
         )
 
         #expect(
-            resolver.discoverSessions(on: host)
+            await resolver.discoverSessions(on: host)
                 == .failure(.shellFailed(status: 1))
         )
     }
@@ -792,6 +792,41 @@ struct TmuxBinaryResolverTests {
         #expect(Date().timeIntervalSince(started) < processTimeout)
     }
 
+    @Test("cancelling a borrowed remote probe terminates its process")
+    func borrowedRemoteProbeCancels() async {
+        let started = LockedValue(false)
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, _, _ in
+                started.withLock { $0 = true }
+                let output = AccountCommandRunner.runProcess(
+                    executable: "/bin/sh",
+                    arguments: ["-c", "sleep 10"],
+                    timeout: 1
+                )
+                return (output.status, output.stdout, output.stderr)
+            }
+        )
+        let task = Task {
+            await resolver.resolveTmuxPath(on: SSHHostInfo(
+                user: nil,
+                hostname: "build.example.test",
+                port: nil
+            ))
+        }
+        while !started.load() {
+            await Task.yield()
+        }
+
+        task.cancel()
+
+        let result = await task.value
+        #expect(
+            result == Result<String, TmuxBinaryError>.failure(
+                .probeCancelled(shell: "build.example.test")
+            )
+        )
+    }
+
     @Test("a background descendant cannot hold probe stdout open")
     func backgroundDescendantTimesOutAndIsKilled() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -812,10 +847,11 @@ struct TmuxBinaryResolverTests {
             [.posixPermissions: 0o755], ofItemAtPath: shell.path
         )
         // The probe kills the shell's process group on timeout, so the budget
-        // must comfortably exceed process startup. At a fraction of a second a
-        // loaded machine can reach the timeout before the shell has recorded
-        // its child, leaving nothing to assert against.
-        let processTimeout: TimeInterval = 2
+        // must comfortably exceed process startup. Under a fully parallel
+        // suite run, spawning the shell alone can take a couple of seconds, and
+        // reaching the timeout before the shell has recorded its child leaves
+        // nothing to assert against.
+        let processTimeout: TimeInterval = 5
         let resolver = TmuxBinaryResolver(
             processTimeout: processTimeout,
             loginShellProvider: { shell.path }

@@ -53,8 +53,8 @@ struct KwtPullRequestClient: Sendable {
         _ shell: String, _ command: String
     ) -> (status: Int32, stdout: String)
     typealias RemoteRunner = @Sendable (
-        _ host: SSHHostInfo, _ command: String
-    ) -> (status: Int32, stdout: String)
+        _ host: SSHHostInfo, _ connectionArguments: [String], _ command: String
+    ) -> AccountCommandOutput
 
     private static let jsonMarker = "GHOSTHUB_KWT_PR_JSON\n"
     private let localRunner: LocalRunner
@@ -62,6 +62,7 @@ struct KwtPullRequestClient: Sendable {
     private let loginShellProvider: @Sendable () -> String
     private let localBinaryPath: String?
     private let remoteBinaryRevision: String?
+    private let commandLease: KwtSSHCommandLease
 
     init(
         localRunner: LocalRunner? = nil,
@@ -70,6 +71,7 @@ struct KwtPullRequestClient: Sendable {
         localBinaryPath: String? = KwtBinaryLocator.bundledPath(),
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),
+        commandLease: KwtSSHCommandLease? = nil,
         loginShellProvider: @escaping @Sendable () -> String =
             AccountCommandRunner.loginShell
     ) {
@@ -80,13 +82,17 @@ struct KwtPullRequestClient: Sendable {
                 timeout: processTimeout
             )
         }
-        self.remoteRunner = remoteRunner ?? { host, command in
-            AccountCommandRunner.runRemoteLoginShell(
+        self.remoteRunner = remoteRunner ?? { host, arguments, command in
+            AccountCommandRunner().runRemoteLoginShell(
                 host: host,
+                connectionArguments: arguments,
                 command: command,
                 timeout: processTimeout
             )
         }
+        self.commandLease = commandLease ?? .unlessInjected(
+            remoteRunner != nil
+        )
         self.loginShellProvider = loginShellProvider
         self.localBinaryPath = localBinaryPath
         self.remoteBinaryRevision = remoteBinaryRevision
@@ -148,20 +154,23 @@ struct KwtPullRequestClient: Sendable {
         on host: CommandHost
     ) async throws -> Value {
         let localRunner = localRunner
-        let remoteRunner = remoteRunner
         let shell = loginShellProvider()
-        let task = Task.detached(priority: .userInitiated) {
-            switch host {
-            case .local:
+        let result: (status: Int32, stdout: String)
+        switch host {
+        case .local:
+            result = await BlockingTask.run(priority: .userInitiated) {
                 localRunner(shell, command)
-            case let .ssh(info):
-                remoteRunner(info, command)
             }
-        }
-        let result = await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
+        case let .ssh(info):
+            let remoteRunner = remoteRunner
+            let output = try await commandLease.withConnection(on: host) {
+                connection in
+                await commandLease.runCommand(using: connection) {
+                    arguments in
+                    remoteRunner(info, arguments, command)
+                }
+            }
+            result = (output.status, output.stdout)
         }
         return try Self.decode(
             result,

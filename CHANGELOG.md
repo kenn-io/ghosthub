@@ -7,6 +7,14 @@ test, and documentation-only changes are omitted.
 
 ### Changed
 
+- Remote SSH connections are now resolved, reviewed, and owned by Ghosthub's
+  revision-pinned kwt helper instead of an app-managed OpenSSH master.
+  Host-key trust and authentication prompts appear in native sheets during
+  the connection that needs them, and remote connections are shared while
+  windows use them rather than held for the whole app session; kwt applies
+  its idle policy after the last owner releases one.
+- Ghosthub keeps its SSH kwt daemon state in a dedicated `~/.ghosthub/ssh/kwt`
+  directory, separate from the account's ordinary kwt registry state.
 - Apple Silicon releases now support macOS 15 (Sequoia) and newer, with the
   packaged application and libghostty runtime checked on a hosted Sequoia
   runner before release changes merge.

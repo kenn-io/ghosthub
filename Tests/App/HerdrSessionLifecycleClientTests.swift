@@ -16,8 +16,7 @@ struct HerdrSessionLifecycleClientTests {
             lifecycleOutput(stopped: true),
         ])
         let client = HerdrSessionLifecycleClient(
-            commandRunner: recorder.runner,
-            connectionArgumentsProvider: { _ in [] }
+            commandRunner: recorder.runner
         )
         let confirmed = record(state: .running)
 
@@ -35,8 +34,7 @@ struct HerdrSessionLifecycleClientTests {
             listOutput(running: false),
         ])
         let stateClient = HerdrSessionLifecycleClient(
-            commandRunner: stateRecorder.runner,
-            connectionArgumentsProvider: { _ in [] }
+            commandRunner: stateRecorder.runner
         )
         #expect(stateClient.stop(record(state: .running), on: .local)
             == .failure(.stateChanged(name: "review", expected: .running)))
@@ -47,8 +45,7 @@ struct HerdrSessionLifecycleClientTests {
             listOutput(running: true, directory: "/moved/review"),
         ])
         let locationClient = HerdrSessionLifecycleClient(
-            commandRunner: locationRecorder.runner,
-            connectionArgumentsProvider: { _ in [] }
+            commandRunner: locationRecorder.runner
         )
         #expect(locationClient.stop(record(state: .running), on: .local)
             == .failure(.locationChanged("review")))
@@ -59,8 +56,7 @@ struct HerdrSessionLifecycleClientTests {
     func exclusions() {
         let recorder = LifecycleCommandRecorder(outputs: [])
         let client = HerdrSessionLifecycleClient(
-            commandRunner: recorder.runner,
-            connectionArgumentsProvider: { _ in [] }
+            commandRunner: recorder.runner
         )
         var defaultRecord = record(state: .stopped)
         defaultRecord = HerdrSessionRecord(
@@ -95,49 +91,56 @@ struct HerdrSessionLifecycleClientTests {
             hostname: "build.example",
             port: 2222
         )
-        let client = HerdrSessionLifecycleClient(
-            commandRunner: recorder.runner,
-            connectionArgumentsProvider: { supplied in
-                #expect(supplied == host)
-                return ["-F", "/tmp/ghosthub ssh config"]
-            }
-        )
+        let client = HerdrSessionLifecycleClient(commandRunner: recorder.runner)
 
-        #expect(client.record(named: "review", on: .ssh(host))
-            == .success(record(state: .running)))
+        #expect(client.record(
+            named: "review",
+            on: .ssh(host),
+            sshConnectionArguments: ["-F", "/tmp/ghosthub ssh config"]
+        ) == .success(record(state: .running)))
         #expect(recorder.commands.allSatisfy { command in
             command.contains("/usr/bin/ssh")
                 && command.contains("/tmp/ghosthub ssh config")
         })
     }
 
-    @Test("one mutation cannot drift between effective SSH routes")
+    @Test("remote lifecycle refuses to bypass the kwt SSH lease")
+    func remoteRequiresLease() {
+        let recorder = LifecycleCommandRecorder(outputs: [])
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example",
+            port: 2222
+        )
+        let client = HerdrSessionLifecycleClient(commandRunner: recorder.runner)
+
+        #expect(client.record(named: "review", on: .ssh(host))
+            == .failure(.sshLeaseRequired))
+        #expect(client.stop(record(state: .running), on: .ssh(host))
+            == .failure(.sshLeaseRequired))
+        #expect(recorder.commands.isEmpty)
+    }
+
+    @Test("one mutation runs every command through the supplied route")
     func mutationFreezesRemoteRoute() {
         let recorder = LifecycleCommandRecorder(outputs: [
             executableOutput(),
             listOutput(running: true),
             lifecycleOutput(stopped: true),
         ])
-        let routeCount = Mutex(0)
         let host = SSHHostInfo(
             user: "dev",
             hostname: "build-alias",
             port: nil
         )
-        let client = HerdrSessionLifecycleClient(
-            commandRunner: recorder.runner,
-            connectionArgumentsProvider: { _ in
-                let route = routeCount.withLock { count in
-                    count += 1
-                    return count
-                }
-                return ["-o", "HostName=route-\(route).example.test"]
-            }
-        )
+        let client = HerdrSessionLifecycleClient(commandRunner: recorder.runner)
 
-        #expect(client.stop(record(state: .running), on: .ssh(host))
-            == .success(record(state: .stopped)))
-        #expect(routeCount.withLock { $0 } == 1)
+        #expect(client.stop(
+            record(state: .running),
+            on: .ssh(host),
+            sshConnectionArguments: ["-o", "HostName=route-1.example.test"]
+        ) == .success(record(state: .stopped)))
+        #expect(recorder.commands.count == 3)
         #expect(recorder.commands.allSatisfy {
             $0.contains("HostName=route-1.example.test")
         })

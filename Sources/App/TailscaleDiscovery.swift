@@ -57,11 +57,13 @@ enum TailscaleDiscovery {
         environment: [String: String],
         sshUsernameProvider: @escaping @Sendable (String) async -> String? = {
             hostname in
-            SSHConfigurationResolver.configuration(for: SSHHostInfo(
+            let host = SSHHostInfo(
                 user: nil,
                 hostname: hostname,
                 port: nil
-            ))?.user
+            )
+            return try? KwtSSHRouteClient().resolve(host)
+                .targets.last?.effectiveTarget.user
         },
         maximumConcurrentUsernameResolutions: Int = 6,
         usernameResolutionTimeoutNanoseconds: UInt64 = 10_000_000_000

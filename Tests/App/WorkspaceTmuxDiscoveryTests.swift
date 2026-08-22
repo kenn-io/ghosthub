@@ -1400,30 +1400,52 @@ struct WorkspaceTmuxDiscoveryTests {
         private let lock = NSLock()
         private var started = false
         private var cancelled = false
+        private var waiters: [
+            UUID: CheckedContinuation<TmuxBinaryError, Never>
+        ] = [:]
 
         func discover(
             _ host: CommandHost
-        ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
-            .failure(waitForCancellation())
+        ) async -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
+            let error = await waitForCancellation()
+            return .failure(error)
         }
 
         func probe(
             _ target: TmuxSessionProbeTarget
-        ) -> Result<Bool, TmuxBinaryError> {
-            .failure(waitForCancellation())
+        ) async -> Result<Bool, TmuxBinaryError> {
+            let error = await waitForCancellation()
+            return .failure(error)
         }
 
-        private func waitForCancellation() -> TmuxBinaryError {
-            lock.lock()
-            started = true
-            lock.unlock()
-            while !Task.isCancelled {
-                Thread.sleep(forTimeInterval: 0.001)
+        private func waitForCancellation() async -> TmuxBinaryError {
+            let waiterID = UUID()
+            return await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    let resumeImmediately = lock.withLock {
+                        started = true
+                        if Task.isCancelled {
+                            cancelled = true
+                            return true
+                        }
+                        waiters[waiterID] = continuation
+                        return false
+                    }
+                    if resumeImmediately {
+                        continuation.resume(
+                            returning: .probeCancelled(shell: "test")
+                        )
+                    }
+                }
+            } onCancel: {
+                let continuation = lock.withLock {
+                    cancelled = true
+                    return waiters.removeValue(forKey: waiterID)
+                }
+                continuation?.resume(
+                    returning: .probeCancelled(shell: "test")
+                )
             }
-            lock.lock()
-            cancelled = true
-            lock.unlock()
-            return .probeCancelled(shell: "test")
         }
 
         var didStart: Bool {

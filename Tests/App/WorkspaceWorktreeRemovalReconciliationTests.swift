@@ -34,7 +34,7 @@ extension WorkspaceWorktreeRemovalTests {
                     status: 23
                 )
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -82,7 +82,7 @@ extension WorkspaceWorktreeRemovalTests {
                 loads.withLock { $0 += 1 }
                 return loads.load() == 1 ? beforeRemoval : afterRemoval
             },
-            kwtWorktreeRemover: { _, _, _, _ in },
+            kwtWorktreeRemover: { _, _, _, _, _ in },
             tmuxSessionIdentityReader: { selection, host in
                 throw TmuxSessionKillError.sessionNotRunning(
                     host: host.displayName,
@@ -147,7 +147,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in replacementInventory },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 events.withLock { $0.append("remove") }
             },
             tmuxSessionKiller: { _, _, _ in
@@ -224,7 +224,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in movedInventory },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionKiller: { _, _, _ in
@@ -287,7 +287,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in movedInventory },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -358,7 +358,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in replacementInventory },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionKiller: { _, _, _ in
@@ -441,7 +441,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in preflightInventory },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionKiller: { _, _, _ in
@@ -475,7 +475,7 @@ extension WorkspaceWorktreeRemovalTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -528,7 +528,7 @@ extension WorkspaceWorktreeRemovalTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -602,7 +602,7 @@ extension WorkspaceWorktreeRemovalTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -658,7 +658,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in recreatedInventory },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -710,7 +710,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in omissionPreflight },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -746,7 +746,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in throw expected },
+            kwtWorktreeRemover: { _, _, _, _, _ in throw expected },
             tmuxSessionIdentityReader: { selection, host in
                 throw TmuxSessionKillError.sessionNotRunning(
                     host: host.displayName,
@@ -783,7 +783,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in throw expected },
+            kwtWorktreeRemover: { _, _, _, _, _ in throw expected },
             tmuxSessionIdentityReader: { selection, host in
                 throw TmuxSessionKillError.sessionNotRunning(
                     host: host.displayName,
@@ -909,7 +909,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in preflight },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionKiller: { _, _, _ in
