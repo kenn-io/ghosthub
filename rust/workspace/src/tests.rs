@@ -1169,23 +1169,32 @@ fn revision_consistent_read_waits_for_a_multi_field_publication() {
     let revision = Arc::new(AtomicU64::new(1));
     let writers = Arc::new(AtomicUsize::new(1));
     let value = Arc::new(AtomicUsize::new(1));
-    let (read_tx, read_rx) = mpsc::channel();
     let reader_revision = Arc::clone(&revision);
     let reader_writers = Arc::clone(&writers);
     let reader_value = Arc::clone(&value);
+    // The closure records whether any invocation ever ran while a writer
+    // was active — a sticky flag rather than a timed negative window, so a
+    // regression that reads early fails no matter how threads schedule.
+    let entered_with_writer = Arc::new(AtomicBool::new(false));
+    let reader_entered_with_writer = Arc::clone(&entered_with_writer);
     let reader = thread::spawn(move || {
         read_revision_consistent(&reader_revision, &reader_writers, |captured| {
-            read_tx.send(()).expect("announce snapshot read");
+            if reader_writers.load(Ordering::Acquire) > 0 {
+                reader_entered_with_writer.store(true, Ordering::Release);
+            }
             (captured, reader_value.load(Ordering::Acquire))
         })
     });
 
-    assert!(read_rx.recv_timeout(Duration::from_millis(20)).is_err());
     value.store(2, Ordering::Release);
     revision.fetch_add(1, Ordering::Release);
     writers.fetch_sub(1, Ordering::Release);
 
     assert_eq!(reader.join().expect("snapshot reader"), (2, 2));
+    assert!(
+        !entered_with_writer.load(Ordering::Acquire),
+        "the consistent read never ran while a writer was active"
+    );
 }
 
 #[test]
@@ -1203,6 +1212,8 @@ fn session_operation_fence_spans_launch_until_publication() {
         .expect("launch operation");
     let (waiting_tx, waiting_rx) = mpsc::channel();
     let (entered_tx, entered_rx) = mpsc::channel();
+    let published = Arc::new(AtomicBool::new(false));
+    let lifecycle_published = Arc::clone(&published);
     let lifecycle_workspace = workspace.clone();
     let lifecycle = thread::spawn(move || {
         waiting_tx.send(()).expect("announce lifecycle wait");
@@ -1212,18 +1223,23 @@ fn session_operation_fence_spans_launch_until_publication() {
             .session_operations
             .lock()
             .expect("lifecycle operation");
-        entered_tx.send(()).expect("announce lifecycle entry");
+        entered_tx
+            .send(lifecycle_published.load(Ordering::Acquire))
+            .expect("announce lifecycle entry");
     });
 
     waiting_rx.recv().expect("lifecycle reached fence");
-    assert!(
-        entered_rx.try_recv().is_err(),
-        "lifecycle mutation must wait while client publication is in flight"
-    );
+    // The entering thread reports whether publication had finished when it
+    // acquired the lane; the mutex makes a true report unreachable while
+    // the launch guard is held, so an early entry fails deterministically.
+    published.store(true, Ordering::Release);
     drop(launch);
-    entered_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("lifecycle enters after publication");
+    assert!(
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("lifecycle enters after publication"),
+        "lifecycle mutation waited for the in-flight client publication"
+    );
     lifecycle.join().expect("lifecycle thread");
 }
 
@@ -1309,9 +1325,11 @@ impl CommandRunner for BlockingRestoreRunner {
 #[test]
 fn delayed_herdr_recoveries_land_on_their_owner_or_nowhere() {
     // Scene B owns a suppressed active selection; the refresh that
-    // releases it runs on scene A. The recovery must restore B's
-    // selection into B — pre-fix it restored into the refreshing scene —
-    // and once B closes, the same recovery is discarded entirely.
+    // releases it runs on scene A. In this hostless fixture the restore
+    // fails at navigation-target resolution — and that failure event is
+    // the discriminator: it must surface in the owning scene's operation
+    // events, not the refreshing scene's, and nowhere once the owner has
+    // closed.
     let a = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
     let b = a.open_scene();
     let selection = SessionSelection::for_kind("wsl", "Ubuntu", "review", SessionKind::Herdr);
@@ -1322,25 +1340,20 @@ fn delayed_herdr_recoveries_land_on_their_owner_or_nowhere() {
         navigation_generation: b.scene.navigation_generation.load(Ordering::Acquire),
     };
     Workspace::restore_delayed_herdr_presentations(&a.scene, vec![suppressed]);
-    assert_eq!(
-        b.scene
-            .selected_host
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_deref(),
-        None,
-        "restoration targets scene state, not the selection fallback"
-    );
-    let restored_on_b = a
-        .scene
-        .attachment
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .active()
-        .is_none();
+    let (a_events, _) = a.drain_events();
     assert!(
-        restored_on_b,
-        "the refreshing scene never receives the owner's recovery"
+        !a_events
+            .iter()
+            .any(|event| matches!(event, WorkspaceEvent::Error(_))),
+        "the refreshing scene never receives the owner's restore outcome"
+    );
+    let (b_events, _) = b.drain_events();
+    assert!(
+        b_events.iter().any(|event| matches!(
+            event,
+            WorkspaceEvent::Error(message) if message.contains("could not restore")
+        )),
+        "the owner's scene carries its recovery's restore outcome"
     );
 
     let owned_by_b = SuppressedHerdrPresentation {
@@ -1351,15 +1364,12 @@ fn delayed_herdr_recoveries_land_on_their_owner_or_nowhere() {
     };
     b.close();
     Workspace::restore_delayed_herdr_presentations(&a.scene, vec![owned_by_b]);
-    // Discarded silently: neither scene gains an attachment or an error.
+    let (a_events, _) = a.drain_events();
     assert!(
-        a.scene
-            .attachment
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active()
-            .is_none(),
-        "a closed owner's recovery is dropped, not reassigned"
+        !a_events
+            .iter()
+            .any(|event| matches!(event, WorkspaceEvent::Error(_))),
+        "a closed owner's recovery is dropped, not reassigned to the refresher"
     );
 }
 
@@ -6367,23 +6377,21 @@ fn remote_cancellation_waits_for_inventory_publication() {
         .remote_publication
         .lock()
         .expect("hold inventory publication");
-    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
     let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+    // The cancelling thread reports whether the publication had released
+    // when it completed; the publication mutex makes a true report
+    // unreachable while the guard is held, so a cancellation that crossed
+    // the in-progress publication fails deterministically.
+    let publication_released = Arc::new(AtomicBool::new(false));
+    let task_released = Arc::clone(&publication_released);
+    let task_workspace = workspace.clone();
     thread::scope(|scope| {
-        let cancellation_task = scope.spawn(|| {
-            entered_tx.send(()).expect("announce cancellation");
+        let cancellation_task = scope.spawn(move || {
+            let cancelled = task_workspace.cancel_host_connection("ssh:studio");
             completed_tx
-                .send(workspace.cancel_host_connection("ssh:studio"))
+                .send((cancelled, task_released.load(Ordering::Acquire)))
                 .expect("report cancellation");
         });
-        entered_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("cancellation task started");
-        assert_eq!(
-            completed_rx.recv_timeout(Duration::from_millis(50)),
-            Err(RecvTimeoutError::Timeout),
-            "cancellation cannot cross an in-progress inventory publication"
-        );
 
         set_remote_host_state(
             &workspace.scene.runtime,
@@ -6392,12 +6400,16 @@ fn remote_cancellation_waits_for_inventory_publication() {
             None,
             None,
         );
+        publication_released.store(true, Ordering::Release);
         drop(publication);
 
+        let (cancelled, after_release) = completed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancellation completes after publication");
+        assert!(cancelled);
         assert!(
-            completed_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("cancellation completes after publication")
+            after_release,
+            "cancellation cannot cross an in-progress inventory publication"
         );
         cancellation_task.join().expect("cancellation task");
     });
@@ -7064,13 +7076,13 @@ fn cancelled_remote_construction_stops_waiting_for_the_operation_lane() {
                 .expect("report cancelled wait");
         });
         cancellation.cancel();
-        assert!(
-            settled_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("cancelled waiter settles promptly")
-        );
+        let settled = settled_rx.recv_timeout(Duration::from_secs(1));
+        // Release the lane before asserting: a waiter that ignored its
+        // cancellation must fail this test, not hang the scope join
+        // spinning on the still-held mutex.
+        drop(occupied);
+        assert!(settled.expect("cancelled waiter settles promptly"));
     });
-    drop(occupied);
 }
 
 #[test]
@@ -7139,7 +7151,9 @@ fn concurrent_remote_inventory_publication_settles_pending_reconciliation() {
                 &[Duration::ZERO, Duration::ZERO],
                 |_snapshot, _cancellation| {
                     entered_tx.send(()).expect("announce stale probe");
-                    release_rx.recv().expect("release stale probe");
+                    release_rx
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("release stale probe");
                     Err::<RemoteSessionInventory, ()>(())
                 },
             );
@@ -10840,37 +10854,101 @@ fn completion_refresh_reanchors_on_a_surviving_scene() {
 
 #[test]
 fn cancellations_are_rejected_from_a_closed_scene() {
+    // Real in-flight work is armed on both cancel paths — a Connecting
+    // WSL host guards the shared refresh, and a live remote cancellation
+    // token guards the host connection — so deleting either closed-scene
+    // fence makes a cancel succeed and fail these assertions.
     let workspace = Workspace::preview(WorkspaceSnapshot::shell(
         Appearance::default(),
-        vec![HostItem::ssh(
-            "ssh:studio",
-            "Studio",
-            "studio.example",
-            HostConnectionState::Ready,
-            Vec::new(),
-            None,
-        )],
+        vec![
+            HostItem::wsl(
+                "Ubuntu",
+                None,
+                HostConnectionState::Connecting,
+                Vec::new(),
+                None,
+            ),
+            HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Ready,
+                Vec::new(),
+                None,
+            ),
+        ],
     ));
+    let config = RemoteTmuxConfig::new(
+        "ssh:studio",
+        "Studio",
+        SshTarget::new("studio.example", None, None).expect("valid target"),
+        "",
+        None,
+    )
+    .expect("valid remote host");
+    let token = CancellationToken::new();
+    workspace
+        .scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .expect("remote hosts")
+        .insert(
+            config.id().to_owned(),
+            RemoteEntry {
+                config,
+                native_host: None,
+                context: None,
+                cancellation: Some(token.clone()),
+                constructive_cancellation: None,
+                attachment_attempts: Vec::new(),
+                generation: 3,
+            },
+        );
+    let refresh_generation = workspace
+        .scene
+        .runtime
+        .refresh_generation
+        .load(Ordering::Acquire);
     workspace.close();
 
     assert!(
         !workspace.cancel_refresh(),
         "a closed scene cancels no shared refresh"
     );
-    assert!(
-        !workspace.cancel_host_connection("ssh:studio"),
-        "a closed scene cancels no host connection"
-    );
     assert_eq!(
         workspace
             .scene
             .runtime
-            .hosts
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .first()
-            .map(|host| host.connection),
-        Some(HostConnectionState::Ready),
+            .refresh_generation
+            .load(Ordering::Acquire),
+        refresh_generation,
+        "the armed refresh's fence is untouched"
+    );
+    assert!(
+        !workspace.cancel_host_connection("ssh:studio"),
+        "a closed scene cancels no host connection"
+    );
+    assert!(
+        !token.is_cancelled(),
+        "the live connection's token stays uncancelled"
+    );
+    let hosts = workspace
+        .scene
+        .runtime
+        .hosts
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(
+        hosts
+            .iter()
+            .any(|host| host.id == "wsl" && host.connection == HostConnectionState::Connecting),
+        "the armed refresh's host stays Connecting"
+    );
+    assert!(
+        hosts
+            .iter()
+            .any(|host| host.id == "ssh:studio" && host.connection == HostConnectionState::Ready),
         "the rejected cancellation published no disconnected state"
     );
 }
@@ -12970,19 +13048,34 @@ fn attach_parked_behind_a_closing_scene_fails_and_leaves_the_scene_empty() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let closer_handle = b.clone();
-    let closer = thread::spawn(move || closer_handle.close());
+    let (closed_done, closed_finished) = std::sync::mpsc::channel();
+    let closer = thread::spawn(move || {
+        closer_handle.close();
+        let _ = closed_done.send(());
+    });
     settle("close marks the scene closed", || {
         b.scene.closed.load(Ordering::Acquire)
     });
     let attacher_handle = b.clone();
+    let (attach_done, attach_finished) = std::sync::mpsc::channel();
     let attacher = thread::spawn(move || {
-        attacher_handle.attach(&SessionSelection::new("wsl", "Ubuntu", "work"))
+        let result = attacher_handle.attach(&SessionSelection::new("wsl", "Ubuntu", "work"));
+        let _ = attach_done.send(());
+        result
     });
     // Give the attacher time to park on the held mutex before releasing it.
     thread::sleep(Duration::from_millis(50));
     drop(guard);
+    // Bounded joins: a reintroduced close/attach deadlock fails as a clean
+    // timeout instead of hanging the suite.
+    closed_finished
+        .recv_timeout(Duration::from_secs(10))
+        .expect("close settles instead of deadlocking");
     closer.join().expect("close task");
 
+    attach_finished
+        .recv_timeout(Duration::from_secs(10))
+        .expect("attach settles instead of deadlocking");
     let error = attacher
         .join()
         .expect("attach task")
