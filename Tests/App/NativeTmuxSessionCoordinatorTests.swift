@@ -1495,8 +1495,8 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(store.surface.clearPreviewGridCount == 2)
     }
 
-    @Test("interactive sizing clears a grid refreshed during promotion")
-    func interactiveSizingClearsGridRefreshedDuringPromotion() async {
+    @Test("interactive sizing suppresses grid refresh during promotion")
+    func interactiveSizingSuppressesGridRefreshDuringPromotion() async {
         let promotionStarted = LockedValue(false)
         let releasePromotion = DispatchSemaphore(value: 0)
         defer { releasePromotion.signal() }
@@ -1542,7 +1542,6 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(result == TmuxClientSizingTransitionResult.applied)
         #expect(store.surface.previewGridSizes == [
             initialGrid,
-            refreshedGrid,
         ])
         #expect(store.surface.clearPreviewGridCount == 2)
     }

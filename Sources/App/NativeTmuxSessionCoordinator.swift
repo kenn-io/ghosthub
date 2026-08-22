@@ -171,6 +171,7 @@ final class NativeTmuxSessionCoordinator {
     private var unavailablePreviewIdentityHandles: Set<UUID> = []
     private var deferredPresentationStyleHandles: Set<UUID> = []
     private var interactiveSizingHandles: Set<UUID> = []
+    private var interactiveSizingTransitionHandles: Set<UUID> = []
     private var isShuttingDown = false
 
     var onStateChanged: ((BorrowedTmuxSessionHandle, ConnectionState) -> Void)?
@@ -537,7 +538,8 @@ final class NativeTmuxSessionCoordinator {
     ) {
         // Inventory refreshes repeat the current grid. Reapplying it resizes
         // and rerenders every hidden surface even when tmux did not change.
-        guard var attachment = attachments[handle.id],
+        guard !interactiveSizingTransitionHandles.contains(handle.id),
+              var attachment = attachments[handle.id],
               attachment.ignoresClientSize,
               attachment.previewGridSize != gridSize
         else { return }
@@ -604,6 +606,8 @@ final class NativeTmuxSessionCoordinator {
         case let .failure(failure):
             return .failure(failure)
         }
+        interactiveSizingTransitionHandles.insert(handle.id)
+        defer { interactiveSizingTransitionHandles.remove(handle.id) }
         terminalCoordinator.paneSurfaceIfPresent(
             for: surfaceKey(handle)
         )?.clearPreviewGridSize()
