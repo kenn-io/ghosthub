@@ -811,6 +811,34 @@ pub(crate) fn publish_pending_kill(scene: &Scene, pending: PendingKill) -> bool 
     true
 }
 
+/// Advance the kill fence and register the new capture's intent in the
+/// same critical section, so a same-session kill completing between the
+/// mint and the registration cannot slip past the fence and let the
+/// in-flight capture resurrect a confirmation for a dead session.
+pub(crate) fn invalidate_pending_kill_with_intent(
+    scene: &Scene,
+    selection: &SessionSelection,
+) -> u64 {
+    let mut pending_kill = scene
+        .pending_kill
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let generation = scene.kill_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    *scene
+        .kill_capture_intent
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(KillCaptureIntent {
+        generation,
+        selection: selection.clone(),
+    });
+    let removed = pending_kill.take().is_some();
+    drop(pending_kill);
+    if removed {
+        bump_scene_revision(scene);
+    }
+    generation
+}
+
 /// Advance this scene's kill confirmation fence and drop any pending kill
 /// dialog it fenced. Only the invalidating scene re-renders; other scenes'
 /// confirmations are untouched.
@@ -893,65 +921,6 @@ pub(crate) fn drop_matching_confirmations<T>(
             drop(pending);
             bump_scene_revision(scene);
         }
-    });
-}
-
-/// Record the target of one just-started asynchronous kill identity
-/// capture. Registration holds the slot lock and re-checks the fence, so a
-/// superseded request's late registration cannot overwrite a newer
-/// request's intent: only the capture minted against the current fence may
-/// register. This matches the slot-then-intent order publication and
-/// completion invalidation use.
-/// A held lock on one scene's pending-kill slot, constructible only by
-/// locking that scene's own mutex, so a seam demanding it is structurally
-/// tied to the correct scene - a guard from another scene or mutex cannot
-/// be supplied.
-pub(crate) struct PendingKillSlot<'scene> {
-    scene: &'scene Scene,
-    _guard: std::sync::MutexGuard<'scene, Option<PendingKill>>,
-}
-
-impl Scene {
-    pub(crate) fn lock_pending_kill(&self) -> PendingKillSlot<'_> {
-        PendingKillSlot {
-            scene: self,
-            _guard: self
-                .pending_kill
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        }
-    }
-}
-
-pub(crate) fn register_kill_capture_intent(
-    scene: &Scene,
-    generation: u64,
-    selection: &SessionSelection,
-) {
-    let slot = scene.lock_pending_kill();
-    register_kill_capture_intent_locked(&slot, generation, selection);
-}
-
-/// The fence recheck and intent write, structurally confined to the slot
-/// lock of the owning scene: the slot carries both the held guard and the
-/// scene it belongs to, so neither a check-before-lock ordering nor a
-/// wrong-scene guard can be written. A superseded request's late
-/// registration observes the advanced generation here and is refused.
-pub(crate) fn register_kill_capture_intent_locked(
-    slot: &PendingKillSlot<'_>,
-    generation: u64,
-    selection: &SessionSelection,
-) {
-    let scene = slot.scene;
-    if scene.kill_generation.load(Ordering::Acquire) != generation {
-        return;
-    }
-    *scene
-        .kill_capture_intent
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(KillCaptureIntent {
-        generation,
-        selection: selection.clone(),
     });
 }
 

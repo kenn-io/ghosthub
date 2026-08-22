@@ -200,6 +200,8 @@ not yet implement the shared sanitization vectors; that alignment is likewise
 a tracked blocker of the same milestone. Neither acceptance extends to any
 release that exposes real multiplexer sessions to a browser.
 
+### Local external state tools
+
 Local state providers such as the bundled kwt, git, and tmux are trusted
 programs running as the user. The embedded kwt revision is part of Ghosthub's
 signed release input. Their output must still be validated for compatibility

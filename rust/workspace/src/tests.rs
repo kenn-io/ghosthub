@@ -5,17 +5,16 @@ use crate::scene::{
     broadcast_event, broadcast_event_with_lossless_owner, push_lossless_event, push_operation_event,
 };
 use crate::scene::{
-    drop_matching_kwt_removal_confirmations, merge_created_inventory,
-    merge_herdr_lifecycle_inventory, publish_attach_inventory, publish_attachment_failure,
-    publish_captured_kwt_removal, publish_kwt_error, publish_kwt_inventory,
-    publish_kwt_mutation_failure, publish_kwt_project_mutation,
+    drop_matching_kwt_removal_confirmations, invalidate_pending_kill_with_intent,
+    merge_created_inventory, merge_herdr_lifecycle_inventory, publish_attach_inventory,
+    publish_attachment_failure, publish_captured_kwt_removal, publish_kwt_error,
+    publish_kwt_inventory, publish_kwt_mutation_failure, publish_kwt_project_mutation,
     publish_kwt_removal_capture_failure, publish_legacy_inventory_state, publish_local_notice,
     publish_remote_inventory, publish_retained_stale_failure, publish_stale_attachment_failure,
     reconcile_remote_constructive_with_backoff, reconcile_removed_kwt_worktree,
-    reconcile_retained_session_names, register_kill_capture_intent,
-    register_kill_capture_intent_locked, reserve_current_constructive_inventory,
-    reserve_kwt_refresh, resolve_pending_kwt_creations, resolve_pending_kwt_creations_at,
-    set_inventory_state, settle_constructive_inventory, settle_removed_kwt_worktree,
+    reconcile_retained_session_names, reserve_current_constructive_inventory, reserve_kwt_refresh,
+    resolve_pending_kwt_creations, resolve_pending_kwt_creations_at, set_inventory_state,
+    settle_constructive_inventory, settle_removed_kwt_worktree,
     settle_timed_out_kwt_worktree_remove, tombstone_removed_kwt_worktree,
     with_current_remote_attachment_launch,
 };
@@ -8597,13 +8596,9 @@ fn superseded_kill_request_cannot_overwrite_the_newer_captures_intent() {
     let newer_generation = b.scene.kill_generation.load(Ordering::Acquire);
     assert!(newer_generation > older_generation);
 
-    // The older request's late intent registration is exactly this
-    // production call; the fence re-check under the slot lock refuses it.
-    register_kill_capture_intent(
-        &b.scene,
-        older_generation,
-        &SessionSelection::new("wsl", "Ubuntu", "work"),
-    );
+    // Registration is atomic with minting, so the newer request's mint
+    // already replaced the older capture's intent; there is no late
+    // registration path left for the older request to re-assert itself.
     {
         let intent = b.scene.kill_capture_intent.lock().expect("capture intent");
         let intent = intent
@@ -8642,57 +8637,39 @@ fn superseded_kill_request_cannot_overwrite_the_newer_captures_intent() {
 }
 
 #[test]
-fn kill_capture_intent_registration_rechecks_the_fence_inside_the_slot_lock() {
+fn kill_intent_minting_is_atomic_with_the_fence() {
+    // Registration shares the minting critical section, so there is no
+    // window in which a generation exists without its intent, and a newer
+    // mint atomically replaces the older capture's intent.
     let a = Workspace::preview(WorkspaceSnapshot::ready(
         Appearance::default(),
         "Ubuntu",
         Vec::new(),
     ));
     let b = a.open_scene();
-    // The registration's generation is current when its thread starts, so
-    // an implementation that checked the fence before taking the slot lock
-    // would pass its check here, park at the held lock, and register after
-    // the release below - overwriting whatever a newer request installed.
-    let stale_generation = b.scene.kill_generation.load(Ordering::Acquire);
-    // The outer registration is lock-then-delegate by construction: the
-    // fence recheck exists only in the locked seam, which demands the held
-    // slot guard, so a check-before-lock ordering cannot be written.
-    // Advancing the fence while holding the slot lock - as every
-    // production advancer does - and invoking the seam with the
-    // pre-advance generation reproduces the straddling interleaving with
-    // no scheduling assumptions at all.
-    let slot = b.scene.lock_pending_kill();
-    b.scene.kill_generation.fetch_add(1, Ordering::AcqRel);
-    register_kill_capture_intent_locked(
-        &slot,
-        stale_generation,
-        &SessionSelection::new("wsl", "Ubuntu", "work"),
-    );
-    drop(slot);
-    assert!(
-        b.scene
-            .kill_capture_intent
-            .lock()
-            .expect("capture intent")
-            .is_none(),
-        "a registration holding a superseded generation is refused under the lock"
-    );
 
-    let current_generation = b.scene.kill_generation.load(Ordering::Acquire);
-    register_kill_capture_intent(
+    let older = invalidate_pending_kill_with_intent(
         &b.scene,
-        current_generation,
         &SessionSelection::new("wsl", "Ubuntu", "work"),
     );
-    assert!(
-        b.scene
-            .kill_capture_intent
-            .lock()
-            .expect("capture intent")
-            .as_ref()
-            .is_some_and(|intent| intent.generation == current_generation),
-        "a current-generation registration still lands"
+    {
+        let intent = b.scene.kill_capture_intent.lock().expect("capture intent");
+        let intent = intent.as_ref().expect("mint installs its intent");
+        assert_eq!(intent.generation, older);
+        assert_eq!(intent.selection.session(), "work");
+    }
+
+    let newer = invalidate_pending_kill_with_intent(
+        &b.scene,
+        &SessionSelection::new("wsl", "Ubuntu", "other"),
     );
+    assert!(newer > older);
+    {
+        let intent = b.scene.kill_capture_intent.lock().expect("capture intent");
+        let intent = intent.as_ref().expect("the newer mint installs its intent");
+        assert_eq!(intent.generation, newer, "the older intent is replaced");
+        assert_eq!(intent.selection.session(), "other");
+    }
 }
 
 #[cfg(windows)]

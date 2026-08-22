@@ -72,6 +72,9 @@ pub(crate) struct Runtime {
     pub(crate) event_drain: Mutex<()>,
     /// Latched once the background event pump is scheduled.
     pub(crate) pump_started: AtomicBool,
+    /// Serializes pump scheduling so `pump_started` is truthful (see
+    /// `start_event_pump`).
+    pub(crate) pump_scheduling: Mutex<()>,
     pub(crate) herdr_lifecycle: Mutex<HerdrLifecycleState>,
     pub(crate) session_operations: Mutex<()>,
     pub(crate) remote_constructive_in_flight: AtomicBool,

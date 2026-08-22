@@ -32,29 +32,32 @@ use crate::{
 ///
 /// Returns an error when the background pump cannot be scheduled.
 pub(crate) fn start_event_pump(runtime: &Arc<Runtime>) -> Result<(), WorkspaceError> {
-    if runtime
-        .pump_started
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    // Scheduling is serialized so the started flag is truthful: a caller
+    // returning Ok(()) has observed a successfully started pump, never a
+    // concurrent attempt that later failed and reset the flag.
+    let _scheduling = runtime
+        .pump_scheduling
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if runtime.pump_started.load(Ordering::Acquire) {
         return Ok(());
     }
     let weak: Weak<Runtime> = Arc::downgrade(runtime);
-    let result = runtime.refresh_runtime.start_pump(
-        "ghosthub-event-pump",
-        EVENT_PUMP_INTERVAL,
-        Box::new(move || {
-            weak.upgrade()
-                .map(|runtime| {
-                    let _backlog = pump_once(&runtime);
-                })
-                .is_some()
-        }),
-    );
-    if let Err(error) = result {
-        runtime.pump_started.store(false, Ordering::Release);
-        return Err(WorkspaceError::new(format!("start event pump: {error}")));
-    }
+    runtime
+        .refresh_runtime
+        .start_pump(
+            "ghosthub-event-pump",
+            EVENT_PUMP_INTERVAL,
+            Box::new(move || {
+                weak.upgrade()
+                    .map(|runtime| {
+                        let _backlog = pump_once(&runtime);
+                    })
+                    .is_some()
+            }),
+        )
+        .map_err(|error| WorkspaceError::new(format!("start event pump: {error}")))?;
+    runtime.pump_started.store(true, Ordering::Release);
     Ok(())
 }
 

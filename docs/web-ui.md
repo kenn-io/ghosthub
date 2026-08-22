@@ -65,7 +65,7 @@ presentation-specific workers:
 - The shared layer owns command resolution, spawn containment (Job Objects on
   Windows), resize delivery, shutdown ordering, and child reaping. All
   launcher and process-lifetime behavior lives here exactly once.
-- `ParsedTerminalWorker` (native): PTY bytes → alacritty parser → surface
+- `TerminalWorker` (native): PTY bytes → alacritty parser → surface
   publication. Unchanged from today's worker semantics.
 - `ByteRelayWorker` (web): PTY bytes ↔ bounded per-connection queues, with no
   server-side VT parser of any kind.
@@ -315,8 +315,10 @@ fixture pattern is the natural home — covering:
 - Paste sanitization: C0/C1 control stripping, CRLF normalization, and
   bracketed-paste wrapping keyed to the terminal's current mode.
 
-Clipboard reads from the browser remain denied unless the required user
-gesture is present, matching the native OSC 52 policy in the threat model.
+Clipboard reads from the browser are denied absolutely, matching the
+native remote OSC 52 policy pinned by the shared contract vectors.
+Gesture-gated reads, if ever offered, are a future capability outside the
+locked v1 contract.
 
 ## Accepted multiplexer multi-client behavior
 

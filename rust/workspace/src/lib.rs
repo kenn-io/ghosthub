@@ -69,20 +69,21 @@ use scene::{
     drop_matching_kill_confirmations, expire_refresh, fail_refresh_start, fail_retained_retry,
     failed_attachment_context, fallback_owns_request, finish_kwt_project_mutation,
     finish_kwt_worktree_operation, invalidate_pending_herdr_lifecycle, invalidate_pending_kill,
-    join_runtime, lock_live_navigation, presentation_is_open, publish_discovered_host,
-    publish_herdr_lifecycle_response, publish_pending_kill, publish_remote_connection,
-    publish_remote_worker, publish_restored_retained_presentation, publish_terminfo_retry_boundary,
-    reconcile_herdr_lifecycle_inventory, reconcile_presentation_session_names,
-    reconcile_remote_presentations, register_kill_capture_intent, reinsert_retained_presentation,
-    release_scene, reopen_closed_retained_presentation, request_ssh_prompt,
-    reserve_kwt_project_mutation, reserve_kwt_worktree_operation, restore_attach_fallback,
-    restore_attach_fallback_locked, restore_inventory_after_creation_failure,
-    restore_pending_kwt_removal, restore_scene_inventory_state, retire_clipboard_writes,
-    run_attach, run_attach_over_remote, run_create, run_herdr_create, run_kwt_project_mutation,
-    run_kwt_worktree_operation, run_remote_herdr_attach, run_remote_herdr_create,
-    run_remote_tmux_attach, run_remote_zellij_attach, run_remote_zellij_create, run_retained_retry,
-    run_zellij_create, schedule_inventory_refresh, schedule_kwt_refresh, set_scene_state,
-    set_terminal_notice, set_wsl_host_unavailable, start_initial_kwt_refresh, start_kwt_refresh,
+    invalidate_pending_kill_with_intent, join_runtime, lock_live_navigation, presentation_is_open,
+    publish_discovered_host, publish_herdr_lifecycle_response, publish_pending_kill,
+    publish_remote_connection, publish_remote_worker, publish_restored_retained_presentation,
+    publish_terminfo_retry_boundary, reconcile_herdr_lifecycle_inventory,
+    reconcile_presentation_session_names, reconcile_remote_presentations,
+    reinsert_retained_presentation, release_scene, reopen_closed_retained_presentation,
+    request_ssh_prompt, reserve_kwt_project_mutation, reserve_kwt_worktree_operation,
+    restore_attach_fallback, restore_attach_fallback_locked,
+    restore_inventory_after_creation_failure, restore_pending_kwt_removal,
+    restore_scene_inventory_state, retire_clipboard_writes, run_attach, run_attach_over_remote,
+    run_create, run_herdr_create, run_kwt_project_mutation, run_kwt_worktree_operation,
+    run_remote_herdr_attach, run_remote_herdr_create, run_remote_tmux_attach,
+    run_remote_zellij_attach, run_remote_zellij_create, run_retained_retry, run_zellij_create,
+    schedule_inventory_refresh, schedule_kwt_refresh, set_scene_state, set_terminal_notice,
+    set_wsl_host_unavailable, start_initial_kwt_refresh, start_kwt_refresh,
     take_pending_kwt_removal,
 };
 
@@ -3630,6 +3631,7 @@ impl Workspace {
                     discovery_cancel: Mutex::new(None),
                     event_drain: Mutex::new(()),
                     pump_started: AtomicBool::new(false),
+                    pump_scheduling: Mutex::new(()),
                     herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                     session_operations: Mutex::new(()),
                     remote_constructive_in_flight: AtomicBool::new(false),
@@ -3809,6 +3811,7 @@ impl Workspace {
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
                 pump_started: AtomicBool::new(false),
+                pump_scheduling: Mutex::new(()),
                 herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                 session_operations: Mutex::new(()),
                 remote_constructive_in_flight: AtomicBool::new(false),
@@ -3867,6 +3870,7 @@ impl Workspace {
                     discovery_cancel: Mutex::new(None),
                     event_drain: Mutex::new(()),
                     pump_started: AtomicBool::new(false),
+                    pump_scheduling: Mutex::new(()),
                     herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                     session_operations: Mutex::new(()),
                     remote_constructive_in_flight: AtomicBool::new(false),
@@ -5739,11 +5743,11 @@ impl Workspace {
             let RemotePublishError { error, worker } = *error;
             presentation.worker = worker;
             presentation.worker.set_clipboard_writes_enabled(false);
-            self.scene
-                .remote_retained
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(presentation);
+            insert_remote_retained_presentation(
+                &self.scene.runtime,
+                &self.scene.remote_retained,
+                presentation,
+            );
             return Err(error);
         }
         Ok(true)
@@ -6899,7 +6903,12 @@ impl Workspace {
         // handle of a closed scene must not re-arm a kill after the close
         // invalidated its confirmations.
         let _navigation = lock_live_navigation(&self.scene)?;
-        let generation = invalidate_pending_kill(&self.scene);
+        // Intent registration shares the minting critical section: a
+        // same-session kill completing before the capture starts advances
+        // the fence past this generation, so the late publication is
+        // refused instead of resurrecting a dialog for a dead session. The
+        // Zellij arm's immediate publication clears the intent again.
+        let generation = invalidate_pending_kill_with_intent(&self.scene, selection);
         invalidate_pending_herdr_lifecycle(&self.scene);
         let request = capture_kill_request(&self.scene, selection, generation)?;
         if let KillCaptureRequest::Zellij(pending) = request {
@@ -6919,12 +6928,6 @@ impl Workspace {
         else {
             unreachable!("Zellij kill requests return above");
         };
-        // Record the capture's target before the task starts so a kill of
-        // the same session completing mid-capture can fence the late
-        // publication. Registration re-checks the fence under the slot
-        // lock, so an overlapping newer request cannot lose its intent to
-        // this one.
-        register_kill_capture_intent(&self.scene, generation, &selection);
         let workspace = self.clone();
         thread::Builder::new()
             .name("ghosthub-session-kill-identity".to_owned())
