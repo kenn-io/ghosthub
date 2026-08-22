@@ -441,6 +441,7 @@ final class NativeTmuxSessionCoordinator {
             )
             onSurfaceReady?(handle)
         case let .failure(error):
+            interactiveSizingHandles.remove(handle.id)
             onStateChanged?(
                 handle,
                 .disconnected(reason: error.localizedDescription)

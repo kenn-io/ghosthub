@@ -1622,6 +1622,66 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(replacement == handle)
         #expect(store.surface.previewGridSizes == [grid, grid])
     }
+
+    @Test("failed provisioning does not leak pending interactive sizing")
+    func failedProvisioningDoesNotLeakInteractiveSizing() async throws {
+        let resolutions = LockedValue(0)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                var attempt = 0
+                resolutions.withLock {
+                    $0 += 1
+                    attempt = $0
+                }
+                guard attempt == 1 else {
+                    return successfulTmuxResolution("/usr/bin/tmux")
+                }
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return .failure(.shellFailed(status: 1))
+            }
+        )
+        var readyCount = 0
+        var sawDisconnected = false
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        coordinator.onStateChanged = { _, state in
+            if case .disconnected = state {
+                sawDisconnected = true
+            }
+        }
+        let grid = TmuxGridSize(columns: 120, rows: 37)
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "leaked-sizing",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: grid
+        )
+        let promotion = await coordinator.enableInteractiveSizing(for: handle)
+        #expect(promotion == TmuxClientSizingTransitionResult.pending)
+        releaseResolution.signal()
+        await waitUntilMainActor { sawDisconnected }
+
+        let replacement = coordinator.attach(
+            hostID: handle.hostID,
+            name: handle.name,
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: grid
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: replacement)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("ignore-size"))
+    }
 }
 
 private enum SurfaceLaunchTestError: LocalizedError {
