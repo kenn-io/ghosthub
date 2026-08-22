@@ -74,6 +74,27 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.budget.granted.isEmpty)
     }
 
+    @Test("Always Live throttles capture identity revalidation")
+    func alwaysLiveThrottlesIdentityRevalidation() async {
+        let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 1)
+
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 1)
+
+        harness.currentDate = harness.currentDate.addingTimeInterval(11)
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 2)
+    }
+
     @Test("Always Live waits for staged surface launch before parking")
     func alwaysLiveWaitsForSurfaceLaunchBeforeParking() {
         let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
@@ -1557,7 +1578,8 @@ private final class PreviewCoordinatorHarness {
         sleep: { duration in try await Task.sleep(for: duration) },
         activationDelay: activationDelay,
         parkingInterval: parkingInterval,
-        liveInterval: .seconds(60)
+        liveInterval: .seconds(60),
+        now: { [weak self] in self?.currentDate ?? Date() }
     )
 
     private let initialMode: SessionPreviewMode
@@ -1572,6 +1594,8 @@ private final class PreviewCoordinatorHarness {
     var keyWindow = true
     var parkShouldFail = false
     var parkAttempts = 0
+    var currentDate = Date(timeIntervalSinceReferenceDate: 0)
+    var identityRefreshes = 0
     private var captureContinuations: [CheckedContinuation<Void, Never>] = []
     private var captureSequence: UInt32 = 0
     private var activeByKey: [TmuxPreviewKey: Bool] = [:]
@@ -1623,6 +1647,7 @@ private final class PreviewCoordinatorHarness {
             },
             refreshIdentity: { [weak self] in
                 guard let self else { return nil }
+                identityRefreshes += 1
                 if let refreshed = refreshedIdentityByKey[key] {
                     return refreshed
                 }

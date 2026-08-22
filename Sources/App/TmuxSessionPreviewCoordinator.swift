@@ -144,6 +144,7 @@ final class TmuxSessionPreviewCoordinator {
     private var isShutDown = false
     private var generations: [TmuxPreviewKey: UInt64] = [:]
     private var activeCaptureIDs: [TmuxPreviewKey: UUID] = [:]
+    private var identityRevalidationAttempts: [TmuxPreviewKey: Date] = [:]
     private var activeCaptureReasons: [TmuxPreviewKey: CaptureReason] = [:]
     private var navigationCaptureCompletions:
         [TmuxPreviewKey: () -> Void] = [:]
@@ -605,6 +606,7 @@ final class TmuxSessionPreviewCoordinator {
         guard presentations[key] != nil else { return }
         invalidate(key)
         invalidateActivationDelay()
+        identityRevalidationAttempts.removeValue(forKey: key)
         deactivatingKeys.remove(key)
         navigationCaptureCompletions.removeValue(forKey: key)
         reconnectingKeys.insert(key)
@@ -747,7 +749,11 @@ final class TmuxSessionPreviewCoordinator {
                     presentation,
                     previousToken
                 ),
-                    await presentation.refreshIdentity() == identity,
+                    await revalidatedIdentity(
+                        for: key,
+                        presentation: presentation,
+                        reason: reason
+                    ) == identity,
                     captureCanPublish(
                         key,
                         presentationVersion: presentationVersion,
@@ -779,6 +785,30 @@ final class TmuxSessionPreviewCoordinator {
             finishTask(operationID, for: key)
         }
         pendingTasks[operationID] = task
+    }
+
+    /// Revalidating the attached client identity spawns a login shell or an
+    /// SSH process. Always Live schedules a capture for every parked busy
+    /// session each tick, so per-capture revalidation scales subprocess
+    /// spawns with fleet size. Scheduled Always Live captures reuse the
+    /// cached identity between periodic revalidations; a server-side session
+    /// swap is still detected within one revalidation interval, and every
+    /// navigation or unpark capture keeps revalidating immediately.
+    private static let identityRevalidationInterval: TimeInterval = 10
+
+    private func revalidatedIdentity(
+        for key: TmuxPreviewKey,
+        presentation: Presentation,
+        reason: CaptureReason
+    ) async -> TmuxSessionIdentity? {
+        if reason == .scheduled, mode == .alwaysLive,
+           let lastAttempt = identityRevalidationAttempts[key],
+           now().timeIntervalSince(lastAttempt)
+           < Self.identityRevalidationInterval {
+            return presentation.identity()
+        }
+        identityRevalidationAttempts[key] = now()
+        return await presentation.refreshIdentity()
     }
 
     private func finishTask(_ operationID: UUID, for key: TmuxPreviewKey) {
