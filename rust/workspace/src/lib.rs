@@ -2296,6 +2296,56 @@ struct KwtRemovalCaptureIntent {
     generation: String,
 }
 
+/// Execute one reserved, confirmed Zellij kill under the operation lane.
+fn run_confirmed_zellij_kill(
+    workspace: &Workspace,
+    pending: &PendingKill,
+    key: &ZellijKillKey,
+    revision: u64,
+) {
+    let KillTarget::Zellij {
+        endpoint,
+        runtime,
+        executable,
+        name,
+    } = &pending.target
+    else {
+        return;
+    };
+    // Rechecked under the lane: a kill of the same target completing while
+    // this one was queued advanced the revision, and killing again would
+    // hit a same-name replacement.
+    if !zellij_kill_is_current(&workspace.scene.runtime, key, revision) {
+        release_zellij_kill(&workspace.scene.runtime, key, false);
+        workspace.push_operation_error(
+            "the Zellij session was killed while this confirmation waited".to_owned(),
+        );
+        return;
+    }
+    let mut suppressed = None;
+    let result = pending.host.kill_zellij_session(
+        endpoint,
+        runtime,
+        executable,
+        name,
+        &CancellationToken::new(),
+        || {
+            suppressed = workspace.close_zellij_presentations(endpoint, runtime, name);
+        },
+    );
+    match result {
+        Ok(()) => {
+            workspace.finish_zellij_presentation(endpoint, runtime, name);
+            release_zellij_kill(&workspace.scene.runtime, key, true);
+        }
+        Err(error) => {
+            workspace.restore_suppressed_zellij_presentation(suppressed);
+            release_zellij_kill(&workspace.scene.runtime, key, false);
+            workspace.push_operation_error(error.to_string());
+        }
+    }
+}
+
 fn zellij_kill_key(
     endpoint: &host::WslEndpoint,
     runtime: &host::WslRuntimeIdentity,
@@ -7092,49 +7142,14 @@ impl Workspace {
                             Err(error) => workspace.push_operation_error(error.to_string()),
                         }
                     }
-                    KillTarget::Zellij {
-                        endpoint,
-                        runtime,
-                        executable,
-                        name,
-                    } => {
-                        let (key, revision) =
-                            task_reservation.expect("Zellij kills always hold a reservation");
-                        // Rechecked under the lane: a kill of the same
-                        // target completing while this one was queued
-                        // advanced the revision, and killing again would
-                        // hit a same-name replacement.
-                        if !zellij_kill_is_current(&workspace.scene.runtime, &key, revision) {
-                            release_zellij_kill(&workspace.scene.runtime, &key, false);
+                    KillTarget::Zellij { .. } => {
+                        let Some((key, revision)) = task_reservation else {
                             workspace.push_operation_error(
-                                "the Zellij session was killed while this confirmation waited"
-                                    .to_owned(),
+                                "the Zellij kill lost its reservation".to_owned(),
                             );
                             return;
-                        }
-                        let mut suppressed = None;
-                        let result = pending.host.kill_zellij_session(
-                            endpoint,
-                            runtime,
-                            executable,
-                            name,
-                            &CancellationToken::new(),
-                            || {
-                                suppressed =
-                                    workspace.close_zellij_presentations(endpoint, runtime, name);
-                            },
-                        );
-                        match result {
-                            Ok(()) => {
-                                workspace.finish_zellij_presentation(endpoint, runtime, name);
-                                release_zellij_kill(&workspace.scene.runtime, &key, true);
-                            }
-                            Err(error) => {
-                                workspace.restore_suppressed_zellij_presentation(suppressed);
-                                release_zellij_kill(&workspace.scene.runtime, &key, false);
-                                workspace.push_operation_error(error.to_string());
-                            }
-                        }
+                        };
+                        run_confirmed_zellij_kill(&workspace, &pending, &key, revision);
                     }
                 }
                 let _refresh_started = workspace.refresh_reanchored();
