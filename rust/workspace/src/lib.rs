@@ -7386,10 +7386,12 @@ impl Workspace {
         name: &str,
     ) {
         // As for killed tmux sessions: the killed Zellij session's pending
-        // confirmations are stale in every scene.
-        drop_matching_confirmations(
+        // confirmations are stale in every scene, and an in-flight request
+        // for it must not publish one — Zellij has no stable session
+        // generations, so confirming a stale dialog could kill a same-name
+        // replacement.
+        drop_matching_kill_confirmations(
             &self.scene.runtime,
-            |scene| &scene.pending_kill,
             |pending| {
                 matches!(
                     &pending.target,
@@ -7402,6 +7404,11 @@ impl Workspace {
                         && pending_runtime == runtime
                         && pending_name == name
                 )
+            },
+            |selection| {
+                selection.kind() == SessionKind::Zellij
+                    && selection.endpoint() == endpoint.distro()
+                    && selection.session() == name
             },
         );
         for_each_scene(&self.scene.runtime, |scene| {

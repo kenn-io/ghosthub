@@ -8688,6 +8688,58 @@ fn kill_intent_minting_is_atomic_with_the_fence() {
 
 #[cfg(windows)]
 #[test]
+fn a_completed_zellij_kill_fences_a_straddling_kill_request() {
+    // Zellij sessions have no stable generations, so a stale confirmation
+    // may kill a same-name replacement. A completed Zellij kill must fence
+    // a request caught between its intent mint and its publication, the
+    // same way completed tmux kills fence identity captures.
+    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
+    let host = WslHost::new(
+        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        Arc::new(RefusingRunner) as SharedCommandRunner,
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
+    );
+    let a = Workspace::preview(WorkspaceSnapshot::ready(
+        Appearance::default(),
+        "Ubuntu",
+        Vec::new(),
+    ));
+    let b = a.open_scene();
+    let selection = SessionSelection::for_kind("wsl", "Ubuntu", "review", SessionKind::Zellij);
+    let generation = invalidate_pending_kill_with_intent(&b.scene, &selection);
+
+    a.finish_zellij_presentation(snapshot.endpoint(), snapshot.runtime(), "review");
+
+    assert!(
+        b.scene
+            .kill_capture_intent
+            .lock()
+            .expect("capture intent")
+            .is_none(),
+        "the completed kill clears the straddling request's intent"
+    );
+    let published = publish_pending_kill(
+        &b.scene,
+        PendingKill {
+            generation,
+            selection,
+            host,
+            target: KillTarget::Zellij {
+                endpoint: snapshot.endpoint().clone(),
+                runtime: snapshot.runtime().clone(),
+                executable: "/usr/bin/zellij".to_owned(),
+                name: "review".to_owned(),
+            },
+        },
+    );
+    assert!(
+        !published,
+        "the straddled request cannot publish a confirmation for the dead session"
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn removal_completing_during_identity_capture_cannot_publish_a_stale_confirmation() {
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
     let host = WslHost::new(

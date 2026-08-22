@@ -995,35 +995,35 @@ fn input_overflow_closes_the_connection_with_policy() {
     let server = Server::start().expect("start server");
     let mut socket = attach_shell(&server);
     // Deliberately no readiness handshake: the unanswered startup stalls
-    // the child, so flooded input backs up against the bounded budget
-    // instead of draining. Short reads keep the flood flowing between
-    // polls for the close frame.
+    // the child, so the burst backs up against the bounded input budget
+    // instead of draining. The burst is a fixed volume above the budget,
+    // sent completely before any read, so the client never writes after
+    // the server's close — a write there would reset the connection and
+    // discard the buffered close frame this test must observe.
     socket
         .get_mut()
-        .set_read_timeout(Some(Duration::from_millis(200)))
-        .expect("short read timeout");
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .expect("bounded write timeout");
     let chunk = vec![b'z'; 250 * 1024];
+    for _burst in 0..6 {
+        socket
+            .send(Message::Binary(chunk.clone().into()))
+            .expect("burst send fits the transport");
+    }
+    socket
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("read timeout");
     let deadline = Instant::now() + Duration::from_mins(1);
     loop {
         assert!(Instant::now() < deadline, "overflow close never arrived");
-        if socket.send(Message::Binary(chunk.clone().into())).is_err() {
-            break;
-        }
-        match socket.read() {
-            Ok(Message::Close(Some(frame))) => {
-                assert_eq!(u16::from(frame.code), 1008, "policy close");
-                assert_eq!(frame.reason.as_str(), "input overflow");
-                return;
-            }
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(error))
-                if error.kind() == std::io::ErrorKind::WouldBlock
-                    || error.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(_) => break,
+        if let Message::Close(Some(frame)) = socket.read().expect("read until the advertised close")
+        {
+            assert_eq!(u16::from(frame.code), 1008, "policy close");
+            assert_eq!(frame.reason.as_str(), "input overflow");
+            return;
         }
     }
-    // The socket died before the close frame was read back; the server cut
-    // the connection, which still proves the overflow was not absorbed.
 }
 
 /// Open an authenticated attach socket and complete the hello exchange.

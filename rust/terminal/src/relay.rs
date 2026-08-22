@@ -566,6 +566,10 @@ fn run_relay(
     let mut observed_exit = None;
     let mut next_child_poll = Instant::now();
     let mut disconnect = RelayDisconnect::Closed;
+    // Resize and write failures against an already-exited child are
+    // incidental; reader failures are not — they can mean output was
+    // truncated, which a clean exit report would falsely deny.
+    let mut incidental_failure = false;
     loop {
         if child_exit_drain_expired(
             &mut observed_exit,
@@ -600,11 +604,13 @@ fn run_relay(
                     // waiting on the failure channel.
                     if let Ok(error) = channels.write_failures.try_recv() {
                         disconnect = RelayDisconnect::Failed(error);
+                        incidental_failure = true;
                     }
                     break;
                 };
                 if let Err(error) = pty.resize(request.size, request.pixel_size) {
                     disconnect = RelayDisconnect::Failed(error.to_string());
+                    incidental_failure = true;
                     break;
                 }
                 let _acknowledged = channels.resize_acks.try_send(());
@@ -612,6 +618,7 @@ fn run_relay(
             recv(channels.write_failures) -> message => match message {
                 Ok(error) => {
                     disconnect = RelayDisconnect::Failed(error);
+                    incidental_failure = true;
                     break;
                 }
                 // The writer exited without a failure, which is a shutdown.
@@ -623,10 +630,13 @@ fn run_relay(
 
     // A resize or write can fail against the PTY of a child that already
     // exited cleanly during the drain grace; the observed exit is the
-    // outcome the viewer should see, not the incidental failure. Viewer
-    // backpressure keeps its own outcome — the viewer lost output and
-    // must know.
-    if observed_exit.is_some() && matches!(disconnect, RelayDisconnect::Failed(_)) {
+    // outcome the viewer should see, not the incidental failure. Reader
+    // failures and viewer backpressure keep their own outcomes — both can
+    // mean the viewer lost output and must know.
+    if observed_exit.is_some()
+        && incidental_failure
+        && matches!(disconnect, RelayDisconnect::Failed(_))
+    {
         report_exit = true;
     }
     let exit_code = pty.reap(report_exit, observed_exit.map(|(code, _)| code));
