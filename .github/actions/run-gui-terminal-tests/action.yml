@@ -1,0 +1,15 @@
+name: Run GUI terminal tests
+description: Run serialized GUI tests through an authenticated AppKit launcher.
+
+inputs:
+  filter:
+    description: XCTest filter for the serialized GUI test lane.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GHOSTHUB_GUI_TEST_FILTER: ${{ inputs.filter }}
+      run: '"$GITHUB_ACTION_PATH/run.sh" "$GHOSTHUB_GUI_TEST_FILTER"'

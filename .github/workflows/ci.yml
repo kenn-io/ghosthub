@@ -41,6 +41,8 @@ jobs:
       # The bootstrap default is intentionally arm64 for developer Macs.
       # `native` builds the arm64 libghostty slice on each validation runner.
       LIBGHOSTTY_XCFRAMEWORK_TARGET: native
+      GHOSTHUB_GUI_TEST_FILTER: >-
+        Clipboard|Paste|TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|CmdVWithoutPaneSinkStaysLocal
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -183,7 +185,6 @@ jobs:
         shell: bash
         run: |
           gui_test_log="$RUNNER_TEMP/gui-tests.log"
-          gui_test_filter='Clipboard|Paste|TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|CmdVWithoutPaneSinkStaysLocal'
           : > "$gui_test_log"
           test_workers=2
           if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
@@ -193,7 +194,7 @@ jobs:
           test_arguments=(
             swift test --skip-build --disable-swift-testing
             --filter GhosthubTerminalSmokeTests
-            --skip "$gui_test_filter"
+            --skip "$GHOSTHUB_GUI_TEST_FILTER"
             --parallel --num-workers "$test_workers"
           )
           if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
@@ -205,22 +206,22 @@ jobs:
           sh tools/run_swift_tests.sh "${test_arguments[@]}" \
             2>&1 | tee -a "$gui_test_log"
 
-      - name: Run serialized GUI terminal smoke tests
+      - name: Run hosted serialized GUI terminal smoke tests
+        if: ${{ matrix.lane == 'hosted' }}
         shell: bash
-        env:
-          GHOSTHUB_CI_LANE: ${{ matrix.lane }}
         run: |
-          gui_test_filter='Clipboard|Paste|TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|CmdVWithoutPaneSinkStaysLocal'
           window_server_test_filter='TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|PasteboardTmuxPaneInputSinkReceivesPasteOnCmdV|CmdVWithoutPaneSinkStaysLocal'
-          test_arguments=(
-            swift test --skip-build --disable-swift-testing
-            --filter "$gui_test_filter" --no-parallel
-          )
-          if [[ "$GHOSTHUB_CI_LANE" == "hosted" ]]; then
-            test_arguments+=(--skip "$window_server_test_filter")
-          fi
-          sh tools/run_swift_tests.sh "${test_arguments[@]}" \
-            2>&1 | tee -a "$RUNNER_TEMP/gui-tests.log"
+          sh tools/run_swift_tests.sh \
+            swift test --skip-build --disable-swift-testing \
+            --filter "$GHOSTHUB_GUI_TEST_FILTER" \
+            --skip "$window_server_test_filter" \
+            --no-parallel 2>&1 | tee -a "$RUNNER_TEMP/gui-tests.log"
+
+      - name: Run trusted serialized GUI terminal smoke tests
+        if: ${{ matrix.lane == 'self-hosted' }}
+        uses: $/.github/actions/run-gui-terminal-tests
+        with:
+          filter: ${{ env.GHOSTHUB_GUI_TEST_FILTER }}
 
       - name: Verify terminal smoke coverage
         shell: bash
