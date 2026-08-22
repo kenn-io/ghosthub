@@ -1410,6 +1410,82 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @Test("entering Always Live adopts previews without touching the active client")
+    @MainActor
+    func enteringAlwaysLiveKeepsActiveClientSizing() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let mode = CurrentValueSubject<SessionPreviewMode, Never>(.off)
+        let sessions = [
+            DiscoveredTmuxSession(
+                name: "opened",
+                windowCount: 1,
+                serverPID: "101",
+                sessionID: "$1",
+                createdAt: "1001",
+                activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+                previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+                managed: false
+            ),
+            DiscoveredTmuxSession(
+                name: "fleet",
+                windowCount: 1,
+                serverPID: "101",
+                sessionID: "$2",
+                createdAt: "1002",
+                activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+                previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+                managed: false
+            ),
+        ]
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in .success(sessions) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .off,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            ),
+            sessionPreviewModePublisher: mode.eraseToAnyPublisher()
+        )
+
+        model.startTmuxSessionDiscovery()
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "opened"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 1
+        }
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == false)
+
+        mode.send(.alwaysLive)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 2
+                && surfaceStore.requestCount == 2
+        }
+
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == true)
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "fleet"
+        ) == true)
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(Set(surfaceStore.requestedKeys).count == 2)
+        await model.shutdown()
+    }
+
     @Test("failed Always Live setup does not strand a later manual open")
     @MainActor
     func alwaysLiveProvisioningFailureAllowsManualRetry() async throws {
@@ -1474,10 +1550,9 @@ struct WorkspaceTmuxDiscoveryTests {
         mode.send(.live)
         firstResolutionGate.release()
         await waitUntilMainActor { failureDelivered.load() }
-        for _ in 0 ..< 20 {
-            await Task.yield()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 0
         }
-        try #require(model.retainedBorrowedTmuxPresentationCount == 0)
 
         model.openBorrowedTmuxSession(selection)
         await waitUntilMainActor {

@@ -469,6 +469,11 @@ final class WorkspaceSceneModel: ObservableObject {
         var previewPromotionNavigationRevision: UInt64?
         var pendingPreviewPromotionNavigationRevision: UInt64?
 
+        var previewPromotionIsPending: Bool {
+            previewPromotionTask != nil
+                || pendingPreviewPromotionNavigationRevision != nil
+        }
+
         var expectedPreviewIdentity: TmuxSessionIdentity? {
             verifiedPreviewIdentity ?? reconnectExpectedIdentity
         }
@@ -7065,6 +7070,12 @@ final class WorkspaceSceneModel: ObservableObject {
                     intent: .restoreOnly
                 )
             } else if !nativeTmuxSessionCoordinator.hasLaunched(handle) {
+                // A pending promotion owns this handle's sizing transition.
+                // Launching now could attach a hidden client between the
+                // interactive-sizing commit and the preview restore, letting
+                // it resize the shared tmux session. The promotion re-drives
+                // readiness when it settles.
+                guard !presentation.previewPromotionIsPending else { continue }
                 enqueueAlwaysLiveTmuxSurface(handle)
             } else {
                 _ = protectedTmuxSurface(handle: handle)
@@ -7107,13 +7118,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard let presentation = retainedTmuxPresentations[$0] else {
                     return nil
                 }
-                let promotionIsPending =
-                    presentation.previewPromotionTask != nil
-                        || presentation
-                        .pendingPreviewPromotionNavigationRevision != nil
                 if presentation.handle == activeBorrowedTmuxHandle
-                    || promotionIsPending {
-                    if promotionIsPending {
+                    || presentation.previewPromotionIsPending {
+                    if presentation.previewPromotionIsPending {
                         pendingPromotionKeys.insert($0)
                     }
                     return nil
@@ -8793,6 +8800,10 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.pendingPreviewPromotionNavigationRevision =
                 navigationRevision
         }
+        pendingAlwaysLiveTmuxSurfaceHandleIDs.remove(presentation.handle.id)
+        pendingAlwaysLiveTmuxSurfaceHandles.removeAll {
+            $0.id == presentation.handle.id
+        }
         guard presentation.previewPromotionTask == nil else { return }
         let promotionID = UUID()
         presentation.previewPromotionID = promotionID
@@ -8807,8 +8818,17 @@ final class WorkspaceSceneModel: ObservableObject {
                         && !nativeTmuxSessionCoordinator.isProvisioning(
                             presentation.handle
                         )
-                    if resumesProvisioning || provisioningFinished,
-                       retainedTmuxPresentations[key] === presentation {
+                    let restoredManagedPreview =
+                        alwaysLiveManagedTmuxPresentationKeys.contains(key)
+                            && !nativeTmuxSessionCoordinator.isProvisioning(
+                                presentation.handle
+                            )
+                            && !nativeTmuxSessionCoordinator.hasLaunched(
+                                presentation.handle
+                            )
+                    if resumesProvisioning || provisioningFinished
+                        || restoredManagedPreview,
+                        retainedTmuxPresentations[key] === presentation {
                         tmuxSurfaceBecameReady(presentation.handle)
                     }
                 }
