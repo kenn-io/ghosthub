@@ -9478,7 +9478,7 @@ fn project_herdr_lifecycle(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(host) = hosts
         .iter_mut()
-        .find(|host| host.endpoint == endpoint.distro())
+        .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
     else {
         return;
     };

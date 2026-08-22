@@ -1668,7 +1668,7 @@ pub(crate) fn publish_herdr_lifecycle_uncertain(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(host) = hosts
         .iter_mut()
-        .find(|host| host.endpoint == pending.endpoint.distro())
+        .find(|host| host.id == "wsl" && host.endpoint == pending.endpoint.distro())
     {
         host.herdr_diagnostic = Some(HostDiagnostic::new(
             DiagnosticKind::Transport,
