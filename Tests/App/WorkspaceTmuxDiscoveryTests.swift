@@ -1486,6 +1486,61 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @Test("opening during resolution keeps a tmux 3.3 session interactive")
+    @MainActor
+    func pendingOpenSurvivesUnsupportedPreviewResolution() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let resolution = DelayedTmuxPathState(version: "tmux 3.3")
+        defer { resolution.release() }
+        let session = DiscoveredTmuxSession(
+            name: "legacy",
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1001",
+            activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+            previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: resolution.resolve,
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            resolution.didStart
+                && model.retainedBorrowedTmuxPresentationCount == 1
+        }
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "legacy"
+        )
+        model.openBorrowedTmuxSession(selection)
+        resolution.release()
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 1
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "ignore-size"
+        ) == false)
+        await model.shutdown()
+    }
+
     @Test("failed Always Live setup does not strand a later manual open")
     @MainActor
     func alwaysLiveProvisioningFailureAllowsManualRetry() async throws {
@@ -2884,14 +2939,19 @@ struct WorkspaceTmuxDiscoveryTests {
     final class DelayedTmuxPathState: @unchecked Sendable {
         private let lock = NSLock()
         private let gate = DispatchSemaphore(value: 0)
+        private let version: String
         private var started = false
+
+        init(version: String = "tmux 3.4") {
+            self.version = version
+        }
 
         func resolve() -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
             lock.lock()
             started = true
             lock.unlock()
             gate.wait()
-            return successfulTmuxResolution("/usr/bin/tmux")
+            return successfulTmuxResolution("/usr/bin/tmux", version: version)
         }
 
         var didStart: Bool {

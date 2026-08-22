@@ -9143,11 +9143,12 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         let key = TmuxPresentationKey(presentation.selection)
-        if alwaysLiveManagedTmuxPresentationKeys.contains(key),
-           !nativeTmuxSessionCoordinator.supportsPaneSplitting(handle) {
-            excludeAlwaysLiveTmuxPresentation(presentation, key: key)
-            return
-        }
+        // Resume a pending user promotion before the preview-support
+        // filter: a session the user explicitly opened during provisioning
+        // must become an ordinary interactive attachment even when the
+        // resolved tmux version cannot host automatic previews. A stale
+        // promotion restores preview sizing and re-drives readiness, so a
+        // still-managed unsupported preview reaches the exclusion below.
         if let navigationRevision = presentation
             .pendingPreviewPromotionNavigationRevision {
             guard presentation.previewPromotionTask == nil else { return }
@@ -9158,6 +9159,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 navigationRevision: navigationRevision,
                 resumesProvisioning: true
             )
+            return
+        }
+        if alwaysLiveManagedTmuxPresentationKeys.contains(key),
+           !nativeTmuxSessionCoordinator.supportsPaneSplitting(handle) {
+            excludeAlwaysLiveTmuxPresentation(presentation, key: key)
             return
         }
         if alwaysLiveManagedTmuxPresentationKeys.contains(key),
