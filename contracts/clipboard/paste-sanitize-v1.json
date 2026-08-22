@@ -85,7 +85,7 @@
     },
     {
       "id": "csi-c1-is-stripped",
-      "input": "a\u009b31mb",
+      "input": "a31mb",
       "bracketed_paste": false,
       "expected": "a31mb",
       "known_gaps": {
@@ -103,7 +103,7 @@
     },
     {
       "id": "del-is-stripped",
-      "input": "a\u007fb",
+      "input": "ab",
       "bracketed_paste": false,
       "expected": "ab",
       "known_gaps": {
@@ -112,9 +112,46 @@
     },
     {
       "id": "c1-controls-are-stripped",
-      "input": "a\u0080b\u0085c\u009fd",
+      "input": "abcd",
       "bracketed_paste": false,
       "expected": "abcd",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "bracketed-escape-is-stripped",
+      "input": "red\u001b[31mtext",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~red[31mtext\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "bracketed-csi-c1-is-stripped",
+      "input": "a31mb",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~a31mb\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      },
+      "notes": "U+009B is a single-byte end-marker equivalent on terminals that interpret C1."
+    },
+    {
+      "id": "bracketed-c0-controls-are-stripped",
+      "input": "a\u0000b\u0007c\bd",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~abcd\u001b[201~",
+      "known_gaps": {
+        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
+      }
+    },
+    {
+      "id": "bracketed-del-and-c1-are-stripped",
+      "input": "abc",
+      "bracketed_paste": true,
+      "expected": "\u001b[200~abc\u001b[201~",
       "known_gaps": {
         "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
       }
@@ -130,9 +167,9 @@
     },
     {
       "id": "multibyte-text-is-preserved",
-      "input": "h\u00e9llo \ud83d\ude00",
+      "input": "héllo 😀",
       "bracketed_paste": false,
-      "expected": "h\u00e9llo \ud83d\ude00"
+      "expected": "héllo 😀"
     }
   ]
 }
