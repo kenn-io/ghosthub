@@ -4911,6 +4911,10 @@ fn assert_inconclusive_inventory_keeps_lifecycle_fenced(
 
 #[cfg(windows)]
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the revocation, hand-off, and re-drive read as one lifecycle"
+)]
 fn a_herdr_stop_revokes_restarts_and_the_delayed_recovery_re_drives_them() {
     // The Herdr twin of the Zellij revocation test, routed through the
     // uncertain-lifecycle delayed recovery: suppression revokes the
