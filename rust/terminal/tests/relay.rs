@@ -98,6 +98,44 @@ mod unix {
     }
 
     #[test]
+    fn drop_sweeps_a_descendant_after_the_direct_child_exits_first() {
+        // The exact wedge: the direct child (sh) backgrounds a non-reading
+        // descendant that inherits the raw-mode slave, then exits. The
+        // relay observes the child's exit, so teardown takes the natural
+        // path — which must still sweep the process group, or the lingering
+        // descendant keeps the writer blocked and the join hangs.
+        let relay = attach_sh("stty raw -echo; printf desc-re''ady; sleep 600 & exit 0");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut output = Vec::new();
+        let mut child_exited = false;
+        while !child_exited {
+            assert!(Instant::now() < deadline, "the direct child never exited");
+            match relay.recv_output(POLL) {
+                Some(RelayOutput::Bytes(chunk)) => output.extend_from_slice(&chunk),
+                // The direct child's exit is the signal the natural teardown
+                // path keys on; the descendant still holds the slave.
+                Some(RelayOutput::Disconnected(_)) => child_exited = true,
+                None => {}
+            }
+        }
+        assert!(contains(&output, b"desc-ready"), "the descendant setup ran");
+        for _ in 0..64 {
+            let _ = relay.send_bytes(vec![b'z'; 1024]);
+        }
+
+        // Bounded observation: a wedged teardown fails the test instead of
+        // hanging the suite.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(relay);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("teardown sweeps the descendant the exited child left behind");
+    }
+
+    #[test]
     fn drop_tears_down_a_live_child_promptly() {
         let relay = attach_sh("sleep 600");
         // Drop joins the relay threads and reaps the child; a teardown

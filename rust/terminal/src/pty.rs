@@ -180,6 +180,9 @@ impl PtyProcess {
             job,
         } = self;
         drop(master);
+        // Captured before any wait so it stays valid; used to sweep the
+        // child's process group even when the direct child exited first.
+        let group_pid = child.process_id();
         reap_with_lifetime_guard(
             job,
             preserve_natural_exit,
@@ -188,6 +191,7 @@ impl PtyProcess {
                 ReapMode::Natural => wait_for_child_exit(&mut *child),
                 ReapMode::Contained => Some(reap_child(&mut *child)),
             },
+            || kill_process_group(group_pid),
         )
     }
 }
@@ -281,33 +285,33 @@ impl Drop for StartupPty {
 }
 
 fn reap_child(child: &mut dyn portable_pty::Child) -> u32 {
-    // Explicit teardown wants the child gone now. Killing an already
-    // exited child is harmless, while polling for a natural exit first
-    // would add up to half a second to every teardown on hosts whose
-    // process-lifetime guard is a no-op — and the relay joins this path on
-    // every viewer disconnect.
+    // Forced teardown: sweep the whole group first so a descendant holding
+    // the slave dies too, then take the direct child's status. Killing an
+    // already-exited direct child is harmless, and polling for a natural
+    // exit here would add up to half a second to every teardown on hosts
+    // whose process-lifetime guard is a no-op — the relay joins this path
+    // on every viewer disconnect.
+    kill_process_group(child.process_id());
     if let Ok(Some(status)) = child.try_wait() {
         return status.exit_code();
     }
-    kill_process_group(child);
     let _ignored = child.kill();
     child.wait().map_or(u32::MAX, |status| status.exit_code())
 }
 
-/// Kill the PTY child's whole process group on POSIX. The child is a
+/// Kill a PTY child's whole process group on POSIX. The child is a
 /// session leader, so its descendants share the group; killing only the
 /// direct child could leave a descendant holding the PTY slave open, which
 /// keeps the relay's writer blocked in `write_all` and turns teardown's
-/// thread joins — and everything serialized behind them — unbounded. On
-/// Windows the Job object already contains the tree.
+/// thread joins — and everything serialized behind them — unbounded. The
+/// pid is captured before the child is waited on, so the group id is
+/// always live here. On Windows the Job object already contains the tree.
 #[cfg(unix)]
-fn kill_process_group(child: &dyn portable_pty::Child) {
-    if let Some(pid) = child.process_id()
+fn kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid
         && let Ok(pid) = i32::try_from(pid)
     {
-        // SAFETY: signalling a process group id derived from our own
-        // still-unreaped child; a stale group id is impossible because the
-        // child has not been waited on yet.
+        // SAFETY: signalling a process group id derived from our own child.
         unsafe {
             libc::kill(-pid, libc::SIGKILL);
         }
@@ -315,7 +319,7 @@ fn kill_process_group(child: &dyn portable_pty::Child) {
 }
 
 #[cfg(not(unix))]
-fn kill_process_group(_child: &dyn portable_pty::Child) {}
+fn kill_process_group(_pid: Option<u32>) {}
 
 fn wait_for_child_exit(child: &mut dyn portable_pty::Child) -> Option<u32> {
     for _ in 0..REAP_ATTEMPTS {
@@ -333,18 +337,26 @@ enum ReapMode {
     Contained,
 }
 
-fn reap_with_lifetime_guard<G, F>(
+fn reap_with_lifetime_guard<G, F, S>(
     guard: G,
     preserve_natural_exit: bool,
     observed_exit: Option<u32>,
     mut reap: F,
+    sweep_descendants: S,
 ) -> u32
 where
     F: FnMut(ReapMode) -> Option<u32>,
+    S: FnOnce(),
 {
     if preserve_natural_exit
         && let Some(exit_code) = observed_exit.or_else(|| reap(ReapMode::Natural))
     {
+        // The direct child exited on its own; still sweep any descendant
+        // that inherited and is holding the PTY slave open, so a writer
+        // blocked in write_all unblocks and teardown's joins stay bounded.
+        // The child is a reaped/zombie process, so the group signal leaves
+        // its captured exit code untouched.
+        sweep_descendants();
         drop(guard);
         return exit_code;
     }
@@ -383,12 +395,17 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let reap_events = Arc::clone(&events);
 
-        let exit_code =
-            reap_with_lifetime_guard(DropProbe(Arc::clone(&events)), true, None, |mode| {
+        let exit_code = reap_with_lifetime_guard(
+            DropProbe(Arc::clone(&events)),
+            true,
+            None,
+            |mode| {
                 assert_eq!(mode, ReapMode::Natural);
                 reap_events.lock().expect("event log").push("reap");
                 Some(7)
-            });
+            },
+            || {},
+        );
 
         assert_eq!(exit_code, 7);
         assert_eq!(*events.lock().expect("event log"), ["reap", "drop"]);
@@ -399,12 +416,17 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let reap_events = Arc::clone(&events);
 
-        let exit_code =
-            reap_with_lifetime_guard(DropProbe(Arc::clone(&events)), false, None, |mode| {
+        let exit_code = reap_with_lifetime_guard(
+            DropProbe(Arc::clone(&events)),
+            false,
+            None,
+            |mode| {
                 assert_eq!(mode, ReapMode::Contained);
                 reap_events.lock().expect("event log").push("reap");
                 Some(1)
-            });
+            },
+            || {},
+        );
 
         assert_eq!(exit_code, 1);
         assert_eq!(*events.lock().expect("event log"), ["drop", "reap"]);
@@ -415,8 +437,11 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let reap_events = Arc::clone(&events);
 
-        let exit_code =
-            reap_with_lifetime_guard(DropProbe(Arc::clone(&events)), true, None, |mode| {
+        let exit_code = reap_with_lifetime_guard(
+            DropProbe(Arc::clone(&events)),
+            true,
+            None,
+            |mode| {
                 let mut events = reap_events.lock().expect("event log");
                 match mode {
                     ReapMode::Natural => {
@@ -428,7 +453,9 @@ mod tests {
                         Some(9)
                     }
                 }
-            });
+            },
+            || {},
+        );
 
         assert_eq!(exit_code, 9);
         assert_eq!(*events.lock().expect("event log"), ["wait", "drop", "reap"]);

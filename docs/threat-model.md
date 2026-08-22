@@ -205,10 +205,28 @@ that require the user to hand the one-time bootstrap URL to the attacker.
 endpoint accepts the ambient session cookie, diverging from the scene-secret
 rule above; this is accepted only while the web UI serves fixture data and
 local demo shells, is tracked as a blocker of the browser-terminal milestone,
-and closes when scene credentials land. The acceptance does not extend to any
-release that exposes real multiplexer sessions to a browser. (Browser-side
-paste sanitization, previously accepted here, now implements the shared
-contract vectors.)
+and closes when scene credentials land. The same milestone owns the
+credential's transport: the demo bootstrap carries a bearer token in the
+query string of an `http://127.0.0.1:<ephemeral-port>` origin, which a
+service worker a local actor registered on a previously-bound instance of
+that port could intercept before any server-side check runs. Both weaknesses
+are the same ambient-credential-over-a-reusable-loopback-origin shape and
+close together when scene credentials move the credential out of the URL and
+bind it to a per-instance origin (a high-entropy hostname or equivalent,
+chosen to resolve on every supported browser including Safari). Until then
+the deployment posture above bounds the exposure: the only actors who can run
+a loopback service and register a service worker are local, and Ghosthub is
+run only where local actors are trusted. The acceptance does not extend to
+any release that exposes real multiplexer sessions to a browser.
+
+Browser-side clipboard behavior is likewise gated by that milestone. Paste
+sanitization implements the shared contract vectors today. OSC 52 clipboard
+*writes* from the browser terminal are not yet honored: the vendored xterm
+build registers no OSC 52 handler, so a write is silently ignored rather than
+accepted. This fails safe — the browser never writes the clipboard without
+the shared gesture-provenance, base64, size, UTF-8, and selection checks —
+and the write path lands with those checks and the shared fixtures when the
+browser terminal is accepted, not during the demo.
 
 ### Local external state tools
 
