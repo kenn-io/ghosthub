@@ -197,10 +197,11 @@ pub(crate) fn reserve_zellij_kill(runtime: &Runtime, key: ZellijKillKey) -> Opti
         .zellij_kills
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !kills.in_flight.insert(key.clone()) {
+    let revision = kills.revisions.get(&key).copied().unwrap_or(0);
+    if !kills.in_flight.insert(key) {
         return None;
     }
-    Some(kills.revisions.get(&key).copied().unwrap_or(0))
+    Some(revision)
 }
 
 /// Whether a reserved kill is still current once its task holds the
