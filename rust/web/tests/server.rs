@@ -996,16 +996,19 @@ fn input_overflow_closes_the_connection_with_policy() {
     let mut socket = attach_shell(&server);
     // Deliberately no readiness handshake: the unanswered startup stalls
     // the child, so the burst backs up against the bounded input budget
-    // instead of draining. The burst is a fixed volume above the budget,
-    // sent completely before any read, so the client never writes after
-    // the server's close — a write there would reset the connection and
-    // discard the buffered close frame this test must observe.
+    // instead of draining. Sizing is exact so the close arrives over a
+    // graceful FIN: four maximum-size chunks fill the 1 MiB relay budget
+    // to the byte, and the fifth — the last frame sent — overflows after
+    // the server has read it, leaving no unread data whose teardown-time
+    // discard would reset the connection and destroy the buffered close
+    // frame this test must observe. A stalled child cannot free a whole
+    // chunk of budget mid-burst; its console input pipe buffers far less.
     socket
         .get_mut()
         .set_write_timeout(Some(Duration::from_secs(10)))
         .expect("bounded write timeout");
-    let chunk = vec![b'z'; 250 * 1024];
-    for _burst in 0..6 {
+    let chunk = vec![b'z'; 256 * 1024];
+    for _burst in 0..5 {
         socket
             .send(Message::Binary(chunk.clone().into()))
             .expect("burst send fits the transport");

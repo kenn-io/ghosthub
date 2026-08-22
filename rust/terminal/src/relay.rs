@@ -556,6 +556,18 @@ struct RelayChannels {
     writer_stop: Sender<()>,
 }
 
+/// Whether a drain-window failure defers to the child's observed clean
+/// exit. Only incidental resize/write failures against the dead PTY do;
+/// reader failures and viewer backpressure keep their own outcomes — both
+/// can mean the viewer lost output and must know.
+fn prefer_observed_exit(
+    exit_observed: bool,
+    incidental_failure: bool,
+    disconnect: &RelayDisconnect,
+) -> bool {
+    exit_observed && incidental_failure && matches!(disconnect, RelayDisconnect::Failed(_))
+}
+
 fn run_relay(
     mut pty: PtyProcess,
     output: &OutputQueue,
@@ -628,15 +640,7 @@ fn run_relay(
         }
     }
 
-    // A resize or write can fail against the PTY of a child that already
-    // exited cleanly during the drain grace; the observed exit is the
-    // outcome the viewer should see, not the incidental failure. Reader
-    // failures and viewer backpressure keep their own outcomes — both can
-    // mean the viewer lost output and must know.
-    if observed_exit.is_some()
-        && incidental_failure
-        && matches!(disconnect, RelayDisconnect::Failed(_))
-    {
+    if prefer_observed_exit(observed_exit.is_some(), incidental_failure, &disconnect) {
         report_exit = true;
     }
     let exit_code = pty.reap(report_exit, observed_exit.map(|(code, _)| code));
@@ -653,6 +657,27 @@ fn run_relay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_incidental_failures_defer_to_an_observed_exit() {
+        let failed = RelayDisconnect::Failed("io".to_owned());
+        assert!(
+            prefer_observed_exit(true, true, &failed),
+            "a resize or write failure against the exited child's PTY defers"
+        );
+        assert!(
+            !prefer_observed_exit(true, false, &failed),
+            "a reader failure can mean truncated output; it must be reported"
+        );
+        assert!(
+            !prefer_observed_exit(false, true, &failed),
+            "no observed exit, nothing to defer to"
+        );
+        assert!(
+            !prefer_observed_exit(true, true, &RelayDisconnect::Backpressure),
+            "viewer backpressure keeps its own outcome"
+        );
+    }
 
     #[test]
     fn output_queue_refuses_chunks_beyond_the_bound() {
