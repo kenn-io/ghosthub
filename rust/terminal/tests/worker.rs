@@ -6,7 +6,7 @@ mod windows {
 
     use input::{KeyInput, Modifiers};
     use session::{AttachPlan, SessionIdentity};
-    use surface::{GridSize, PixelSize};
+    use surface::{CursorShape, GridSize, PixelSize};
     use terminal::{TerminalEvent, TerminalWorker};
 
     #[test]
@@ -36,6 +36,36 @@ mod windows {
                 "child output did not reach surface"
             );
             drop(surface);
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn cursor_default_updates_reach_an_open_terminal_engine() {
+        let plan = AttachPlan::attach_only(
+            "cmd.exe",
+            ["/d", "/c", "ping -n 4 127.0.0.1 >nul"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+            "worker-cursor-test",
+            SessionIdentity::new(1, "$1", 1),
+        );
+        let worker = TerminalWorker::attach(&plan, GridSize::new(40, 4).expect("valid grid"))
+            .expect("attach ConPTY client");
+
+        worker.set_default_cursor_shape(CursorShape::Underline);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let shape = worker.surface().load().cursor().map(|cursor| cursor.shape);
+            if shape == Some(CursorShape::Underline) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "cursor default did not reach the terminal engine"
+            );
             thread::sleep(Duration::from_millis(10));
         }
     }

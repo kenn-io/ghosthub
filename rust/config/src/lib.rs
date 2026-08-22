@@ -328,6 +328,9 @@ struct TerminalFile {
     font_size: Option<u16>,
     background: Option<String>,
     foreground: Option<String>,
+    cursor_style: Option<CursorStyle>,
+    shell_integration_cursor: Option<bool>,
+    mouse_hide_while_typing: Option<bool>,
     clipboard_write: Option<bool>,
 }
 
@@ -430,6 +433,15 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
                 font_size,
                 background,
                 foreground,
+                cursor_style: terminal
+                    .cursor_style
+                    .unwrap_or(defaults.terminal.cursor_style),
+                allow_shell_integration_cursor: terminal
+                    .shell_integration_cursor
+                    .unwrap_or(defaults.terminal.allow_shell_integration_cursor),
+                hide_mouse_while_typing: terminal
+                    .mouse_hide_while_typing
+                    .unwrap_or(defaults.terminal.hide_mouse_while_typing),
                 allow_remote_clipboard_write: terminal
                     .clipboard_write
                     .unwrap_or(defaults.terminal.allow_remote_clipboard_write),
@@ -455,6 +467,9 @@ impl From<&ApplicationConfig> for ConfigFile {
                     .then(|| format!("#{:06x}", config.terminal.background)),
                 foreground: (config.terminal.theme == TerminalTheme::Custom)
                     .then(|| format!("#{:06x}", config.terminal.foreground)),
+                cursor_style: Some(config.terminal.cursor_style),
+                shell_integration_cursor: Some(config.terminal.allow_shell_integration_cursor),
+                mouse_hide_while_typing: Some(config.terminal.hide_mouse_while_typing),
                 clipboard_write: Some(config.terminal.allow_remote_clipboard_write),
             },
             ssh_hosts: config
@@ -574,6 +589,27 @@ pub enum TerminalTheme {
     Custom,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CursorStyle {
+    Block,
+    Bar,
+    Underline,
+}
+
+impl CursorStyle {
+    pub const ALL: [Self; 3] = [Self::Block, Self::Bar, Self::Underline];
+
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Block => "Block",
+            Self::Bar => "Line",
+            Self::Underline => "Underline",
+        }
+    }
+}
+
 impl TerminalTheme {
     pub const ALL: [Self; 7] = [
         Self::Pro,
@@ -647,6 +683,9 @@ pub struct TerminalAppearance {
     font_size: u16,
     background: u32,
     foreground: u32,
+    cursor_style: CursorStyle,
+    allow_shell_integration_cursor: bool,
+    hide_mouse_while_typing: bool,
     allow_remote_clipboard_write: bool,
 }
 
@@ -677,6 +716,9 @@ impl TerminalAppearance {
             font_size,
             background: parse_rgb("terminal.background", background)?,
             foreground: parse_rgb("terminal.foreground", foreground)?,
+            cursor_style: CursorStyle::Block,
+            allow_shell_integration_cursor: false,
+            hide_mouse_while_typing: true,
             allow_remote_clipboard_write,
         })
     }
@@ -714,6 +756,9 @@ impl TerminalAppearance {
             font_size,
             background,
             foreground,
+            cursor_style: CursorStyle::Block,
+            allow_shell_integration_cursor: false,
+            hide_mouse_while_typing: true,
             allow_remote_clipboard_write,
         })
     }
@@ -744,6 +789,21 @@ impl TerminalAppearance {
     }
 
     #[must_use]
+    pub const fn cursor_style(&self) -> CursorStyle {
+        self.cursor_style
+    }
+
+    #[must_use]
+    pub const fn allow_shell_integration_cursor(&self) -> bool {
+        self.allow_shell_integration_cursor
+    }
+
+    #[must_use]
+    pub const fn hide_mouse_while_typing(&self) -> bool {
+        self.hide_mouse_while_typing
+    }
+
+    #[must_use]
     pub const fn allow_remote_clipboard_write(&self) -> bool {
         self.allow_remote_clipboard_write
     }
@@ -751,6 +811,19 @@ impl TerminalAppearance {
     #[must_use]
     pub fn with_remote_clipboard_write(mut self, allowed: bool) -> Self {
         self.allow_remote_clipboard_write = allowed;
+        self
+    }
+
+    #[must_use]
+    pub fn with_terminal_preferences(
+        mut self,
+        cursor_style: CursorStyle,
+        allow_shell_integration_cursor: bool,
+        hide_mouse_while_typing: bool,
+    ) -> Self {
+        self.cursor_style = cursor_style;
+        self.allow_shell_integration_cursor = allow_shell_integration_cursor;
+        self.hide_mouse_while_typing = hide_mouse_while_typing;
         self
     }
 }
@@ -763,6 +836,9 @@ impl Default for TerminalAppearance {
             font_size: 14,
             background: 0x21_27_34,
             foreground: 0xe6_e6_e6,
+            cursor_style: CursorStyle::Block,
+            allow_shell_integration_cursor: false,
+            hide_mouse_while_typing: true,
             allow_remote_clipboard_write: true,
         }
     }

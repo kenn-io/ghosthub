@@ -1,4 +1,4 @@
-use config::{TerminalAppearance, TerminalTheme};
+use config::{CursorStyle, TerminalAppearance, TerminalTheme};
 
 #[test]
 fn default_terminal_appearance_is_projectable_without_ui_dependencies() {
@@ -9,6 +9,9 @@ fn default_terminal_appearance_is_projectable_without_ui_dependencies() {
     assert_eq!(appearance.theme(), TerminalTheme::ClearDark);
     assert_eq!(appearance.background(), 0x21_27_34);
     assert_eq!(appearance.foreground(), 0xe6_e6_e6);
+    assert_eq!(appearance.cursor_style(), CursorStyle::Block);
+    assert!(!appearance.allow_shell_integration_cursor());
+    assert!(appearance.hide_mouse_while_typing());
 }
 
 #[test]

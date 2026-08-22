@@ -1116,13 +1116,13 @@ another session or detaching restores navigation immediately and invalidates
 the background task without gaining authority to destroy any session it may
 have created.
 
-Slice 1 reads font family, font size, and theme through:
+Settings values flow through:
 
 ~~~text
 config → workspace projection → UI-facing state → GPUI
 ~~~
 
-The Settings shell exposes durable Appearance and Hosts panes. Appearance
+The Settings shell exposes durable Appearance, Terminal, and Hosts panes. Appearance
 offers the same built-in terminal color families as Swift plus a Custom
 fallback, enumerates installed fixed-pitch fonts, offers standard terminal font
 sizes, and renders a substantial live preview. Valid appearance changes apply
@@ -1133,7 +1133,10 @@ Each persisted change atomically publishes the projection to the running GPUI
 workspace. Terminal palettes never recolor Ghosthub's application chrome;
 interface appearance remains a separate settings concern. Existing terminal
 clients keep the palette they negotiated until reopened; new clients use the
-current defaults. Hosts owns only
+current defaults. Terminal persists the cursor shape, whether shell integration
+may replace that shape, and whether keyboard input hides the pointer until it
+moves again. Cursor changes apply to existing surfaces immediately, including
+dynamic DECSCUSR application requests when shell control is enabled. Hosts owns only
 `[[ssh-host]]` records. The shell's stable navigation, page header, list, and
 detail regions are the permanent container for the remaining Swift settings
 domains.
@@ -1143,7 +1146,7 @@ The parity inventory is:
 | --- | --- |
 | Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
 | Appearance | Built-in themes, Custom colors, installed-font and size pickers, live preview, and atomic persistence |
-| Terminal | Startup configuration only; pane not yet implemented |
+| Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, and atomic persistence |
 | Keyboard | Runtime shortcuts exist; pane not yet implemented |
 | Worktrees | Project/worktree workflows exist; preferences pane not yet implemented |
 | Agents | Not yet implemented |
@@ -1178,6 +1181,9 @@ font-family = "Cascadia Mono"
 font-size = 14
 background = "#0c0f14"
 foreground = "#d8dee9"
+cursor-style = "block"
+shell-integration-cursor = false
+mouse-hide-while-typing = true
 clipboard-write = true
 
 [[ssh-host]]
@@ -1196,7 +1202,8 @@ optional. Ghosthub resolves tmux, Herdr, and Zellij through the remote login
 environment by default; an explicit tmux path remains available for unusual
 installations. SSH endpoint identity is user, hostname, and port; duplicates
 are rejected. `clipboard-write` governs remote OSC 52 writes; remote OSC 52
-reads remain denied regardless of configuration.
+reads remain denied regardless of configuration. `cursor-style` accepts
+`block`, `bar`, or `underline`.
 
 Windows manual acceptance requires WSL2 and tmux. Ghosthub can create the first
 session itself; setup remains documented as deterministic commands for tests

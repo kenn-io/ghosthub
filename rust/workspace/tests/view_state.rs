@@ -190,3 +190,50 @@ fn saved_appearance_is_persisted_and_published_without_rebuilding_hosts() {
     );
     fs::remove_dir_all(root).expect("remove temporary config root");
 }
+
+#[test]
+fn saved_terminal_settings_are_persisted_and_published_without_rebuilding_hosts() {
+    let root = std::env::temp_dir().join(format!(
+        "ghosthub-workspace-terminal-settings-{}-{}",
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let value = root.to_string_lossy().into_owned();
+    let roots = Roots {
+        ghosthub_home: value.clone(),
+        config: value.clone(),
+        state: value.clone(),
+        helpers: value,
+    };
+    let workspace = Workspace::application_with_remote_hosts(
+        TerminalAppearance::default(),
+        None,
+        Vec::new(),
+        ApplicationConfig::default(),
+        roots.clone(),
+        None,
+        None,
+    );
+    let draft = workspace::TerminalSettingsDraft {
+        cursor_style: workspace::CursorStyle::Underline,
+        allow_shell_integration_cursor: true,
+        hide_mouse_while_typing: false,
+    };
+    assert!(workspace.hide_mouse_while_typing());
+
+    workspace
+        .save_terminal_settings(&draft)
+        .expect("save terminal settings");
+
+    assert!(!workspace.hide_mouse_while_typing());
+    let snapshot = workspace.snapshot();
+    assert_eq!(snapshot.appearance().cursor_style(), draft.cursor_style);
+    assert!(snapshot.appearance().allow_shell_integration_cursor());
+    assert!(!snapshot.appearance().hide_mouse_while_typing());
+    assert!(snapshot.hosts().is_empty());
+    let loaded = ApplicationConfig::load(&roots).expect("reload application config");
+    assert_eq!(loaded.terminal().cursor_style(), draft.cursor_style);
+    assert!(loaded.terminal().allow_shell_integration_cursor());
+    assert!(!loaded.terminal().hide_mouse_while_typing());
+    fs::remove_dir_all(root).expect("remove temporary config root");
+}

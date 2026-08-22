@@ -10,13 +10,13 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{
-    Color, Handler, ModifyOtherKeys as VteModifyOtherKeys, NamedColor, NamedPrivateMode,
-    PrivateMode, Processor,
+    Color, CursorShape as VteCursorShape, CursorStyle as VteCursorStyle, Handler,
+    ModifyOtherKeys as VteModifyOtherKeys, NamedColor, NamedPrivateMode, PrivateMode, Processor,
 };
 use input::{KittyKeyboard, ModifyOtherKeys, MouseTracking, TerminalModes};
 use surface::{
-    Cell as SurfaceCell, CellStyle, Cursor, Damage, GridSize, PixelSize, Rgb, SurfaceFrame,
-    SurfaceStore,
+    Cell as SurfaceCell, CellStyle, Cursor, CursorShape, Damage, GridSize, PixelSize, Rgb,
+    SurfaceFrame, SurfaceStore,
 };
 
 mod windows_job;
@@ -185,6 +185,7 @@ pub struct TerminalEngine {
     pixel_size: PixelSize,
     clipboard_policy: ClipboardPolicy,
     default_colors: DefaultColors,
+    config: Config,
 }
 
 impl TerminalEngine {
@@ -233,14 +234,34 @@ impl TerminalEngine {
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
     ) -> Self {
+        Self::with_geometry_and_defaults(
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            default_colors,
+            CursorShape::Block,
+        )
+    }
+
+    #[must_use]
+    pub fn with_geometry_and_defaults(
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
+    ) -> Self {
         let events = EventCollector::default();
         let config = Config {
             scrolling_history: 0,
+            default_cursor_style: vte_cursor_style(default_cursor_shape),
             kitty_keyboard: true,
             osc52: Osc52::CopyPaste,
             ..Config::default()
         };
-        let term = Term::new(config, &DimensionsValue(size), events.clone());
+        let term = Term::new(config.clone(), &DimensionsValue(size), events.clone());
         let surface = Arc::new(SurfaceStore::new(SurfaceFrame::blank(0, size)));
         let mut engine = Self {
             parser: Processor::new(),
@@ -256,10 +277,18 @@ impl TerminalEngine {
             pixel_size,
             clipboard_policy,
             default_colors,
+            config,
         };
         engine.publish_full();
         engine.term.reset_damage();
         engine
+    }
+
+    pub fn set_default_cursor_shape(&mut self, shape: CursorShape) {
+        self.config.default_cursor_style = vte_cursor_style(shape);
+        self.term.set_options(self.config.clone());
+        self.publish_full();
+        self.term.reset_damage();
     }
 
     #[must_use]
@@ -443,7 +472,14 @@ impl TerminalEngine {
         let cursor = Cursor {
             row: usize::try_from(renderable.cursor.point.line.0).unwrap_or(0),
             column: renderable.cursor.point.column.0,
-            visible: renderable.mode.contains(TermMode::SHOW_CURSOR),
+            visible: renderable.mode.contains(TermMode::SHOW_CURSOR)
+                && renderable.cursor.shape != VteCursorShape::Hidden,
+            shape: match renderable.cursor.shape {
+                VteCursorShape::Block | VteCursorShape::HollowBlock => CursorShape::Block,
+                VteCursorShape::Beam => CursorShape::Bar,
+                VteCursorShape::Underline => CursorShape::Underline,
+                VteCursorShape::Hidden => CursorShape::Hidden,
+            },
         };
         let resize_sequence = self.resize_sequence;
         let pixel_size = self.pixel_size;
@@ -493,6 +529,18 @@ impl TerminalEngine {
             }
         }
         output
+    }
+}
+
+const fn vte_cursor_style(shape: CursorShape) -> VteCursorStyle {
+    VteCursorStyle {
+        shape: match shape {
+            CursorShape::Block => VteCursorShape::Block,
+            CursorShape::Bar => VteCursorShape::Beam,
+            CursorShape::Underline => VteCursorShape::Underline,
+            CursorShape::Hidden => VteCursorShape::Hidden,
+        },
+        blinking: false,
     }
 }
 

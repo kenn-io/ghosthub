@@ -4,7 +4,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use config::{ApplicationConfig, Roots, SshHostSettings, TerminalAppearance, TerminalTheme};
+use config::{
+    ApplicationConfig, CursorStyle, Roots, SshHostSettings, TerminalAppearance, TerminalTheme,
+};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -23,6 +25,9 @@ fn missing_application_config_uses_documented_defaults() {
     assert_eq!(loaded.terminal().theme(), TerminalTheme::ClearDark);
     assert_eq!(loaded.terminal().background(), 0x21_27_34);
     assert_eq!(loaded.terminal().foreground(), 0xe6_e6_e6);
+    assert_eq!(loaded.terminal().cursor_style(), CursorStyle::Block);
+    assert!(!loaded.terminal().allow_shell_integration_cursor());
+    assert!(loaded.terminal().hide_mouse_while_typing());
     assert!(loaded.terminal().allow_remote_clipboard_write());
 }
 
@@ -40,6 +45,9 @@ fn application_config_projects_all_read_only_settings() {
             font-size = 16
             background = "#102030"
             foreground = "#f0e0d0"
+            cursor-style = "underline"
+            shell-integration-cursor = true
+            mouse-hide-while-typing = false
             clipboard-write = false
         "##,
     )
@@ -52,6 +60,9 @@ fn application_config_projects_all_read_only_settings() {
     assert_eq!(parsed.terminal().font_size(), 16);
     assert_eq!(parsed.terminal().background(), 0x10_20_30);
     assert_eq!(parsed.terminal().foreground(), 0xf0_e0_d0);
+    assert_eq!(parsed.terminal().cursor_style(), CursorStyle::Underline);
+    assert!(parsed.terminal().allow_shell_integration_cursor());
+    assert!(!parsed.terminal().hide_mouse_while_typing());
     assert!(!parsed.terminal().allow_remote_clipboard_write());
 }
 
@@ -259,7 +270,8 @@ fn terminal_appearance_round_trips_without_changing_other_settings() {
     let mut config = ApplicationConfig::from_toml("[wsl]\ndistro = \"Ubuntu\"\n")
         .expect("valid starting configuration");
     let appearance = TerminalAppearance::new("Berkeley Mono", 15, "#111820", "#e4e8ef", false)
-        .expect("valid appearance");
+        .expect("valid appearance")
+        .with_terminal_preferences(CursorStyle::Bar, true, false);
 
     config
         .replace_terminal_appearance(&roots, appearance)
@@ -272,6 +284,9 @@ fn terminal_appearance_round_trips_without_changing_other_settings() {
     assert_eq!(loaded.terminal().background(), 0x11_18_20);
     assert_eq!(loaded.terminal().foreground(), 0xe4_e8_ef);
     assert!(!loaded.terminal().allow_remote_clipboard_write());
+    assert_eq!(loaded.terminal().cursor_style(), CursorStyle::Bar);
+    assert!(loaded.terminal().allow_shell_integration_cursor());
+    assert!(!loaded.terminal().hide_mouse_while_typing());
     fs::remove_dir_all(root).expect("remove temporary config root");
 }
 
