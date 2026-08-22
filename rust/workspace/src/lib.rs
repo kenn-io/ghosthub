@@ -6003,16 +6003,19 @@ impl Workspace {
         drop(remote_active);
         drop(geometry);
         drop(attachment);
-        if let (Some(worker), Some(active)) = (previous_worker, previous_remote)
-            && active.retainable
-        {
-            retire_clipboard_writes(&self.scene, &worker);
-            let _cancelled = worker.cancel_paste();
-            insert_remote_retained_presentation(
-                &self.scene.runtime,
-                &self.scene.remote_retained,
-                RemoteRetainedPresentation { active, worker },
-            );
+        match (previous_worker, previous_remote) {
+            (Some(worker), Some(active)) if active.retainable => {
+                retire_clipboard_writes(&self.scene, &worker);
+                let _cancelled = worker.cancel_paste();
+                insert_remote_retained_presentation(
+                    &self.scene.runtime,
+                    &self.scene.remote_retained,
+                    RemoteRetainedPresentation { active, worker },
+                );
+            }
+            // A dropped previous worker retires the same way.
+            (Some(worker), _) => retire_clipboard_writes(&self.scene, &worker),
+            _ => {}
         }
         drop(snapshot_write);
         Ok(true)

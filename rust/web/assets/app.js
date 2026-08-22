@@ -333,6 +333,29 @@ async function attach(label, row) {
     }
   });
 
+  // The shared paste-sanitization contract (contracts/clipboard/
+  // paste-sanitize-v1.json): C0 controls except tab and line endings, DEL,
+  // and C1 controls are stripped before the paste reaches the terminal.
+  // Stripping ESC also defuses an embedded bracketed-paste end marker, so
+  // clipboard content cannot break out of the bracket and execute.
+  // Sanitization runs before wrapping: term.paste() then normalizes line
+  // endings and applies bracketed-paste markers per the terminal's mode.
+  const sanitizePaste = (text) =>
+    // eslint-disable-next-line no-control-regex
+    text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
+  elements.terminal.addEventListener(
+    "paste",
+    (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const text = event.clipboardData ? event.clipboardData.getData("text") : "";
+      if (text) {
+        term.paste(sanitizePaste(text));
+      }
+    },
+    { capture: true },
+  );
+
   term.onData((data) => {
     if (socket.readyState === WebSocket.OPEN && helloDone) {
       sendChunked(encoder.encode(data));

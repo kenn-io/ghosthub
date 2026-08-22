@@ -137,7 +137,17 @@ can be disabled in Settings or through the documented environment switches.
 
 ### Loopback web UI (Rust applications)
 
-The Rust-application web UI is loopback-only in v1: an ephemeral loopback
+Ghosthub fundamentally provides access to a shell. The web UI must therefore
+only ever be reachable over highly secure transports that bad actors cannot
+access: the loopback interface, a Tailscale-secured network, or an SSH
+tunnel. This is the same deployment posture as Kenn Software's other web
+applications (Forge): a loopback default bind, with any wider reachability
+provided by an explicitly trusted secure transport, never by the application
+listening on an untrusted network. Findings that presuppose an attacker with
+network reach the deployment posture excludes are closed against this
+paragraph.
+
+Within that posture, the v1 web UI is loopback-only: an ephemeral loopback
 bind with no non-loopback code path, an in-memory startup bearer credential,
 exact Host validation and a required credential on every request, and exact
 Origin validation on every websocket upgrade and state-changing request. The
@@ -195,10 +205,10 @@ that require the user to hand the one-time bootstrap URL to the attacker.
 endpoint accepts the ambient session cookie, diverging from the scene-secret
 rule above; this is accepted only while the web UI serves fixture data and
 local demo shells, is tracked as a blocker of the browser-terminal milestone,
-and closes when scene credentials land. Browser-side paste enforcement does
-not yet implement the shared sanitization vectors; that alignment is likewise
-a tracked blocker of the same milestone. Neither acceptance extends to any
-release that exposes real multiplexer sessions to a browser.
+and closes when scene credentials land. The acceptance does not extend to any
+release that exposes real multiplexer sessions to a browser. (Browser-side
+paste sanitization, previously accepted here, now implements the shared
+contract vectors.)
 
 ### Local external state tools
 

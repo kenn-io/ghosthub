@@ -6057,6 +6057,12 @@ pub(crate) fn publish_remote_worker(
                 RemoteRetainedPresentation { active, worker },
             );
         }
+        // A dropped (non-retained) previous worker retires the same way:
+        // its queued and in-flight clipboard writes must not land after
+        // the switch.
+        (Some(worker), Some(_), _) => {
+            retire_clipboard_writes(scene, &worker);
+        }
         (Some(worker), None, Some(attachment)) => {
             retire_clipboard_writes(scene, &worker);
             let _cancelled = worker.cancel_paste();
@@ -6195,16 +6201,19 @@ pub(crate) fn run_attach_over_remote(
     drop(remote_active);
     drop(geometry);
     drop(attachment);
-    if let (Some(worker), Some(active)) = (previous_worker, previous_remote)
-        && active.retainable
-    {
-        retire_clipboard_writes(scene, &worker);
-        let _cancelled = worker.cancel_paste();
-        insert_remote_retained_presentation(
-            &scene.runtime,
-            &scene.remote_retained,
-            RemoteRetainedPresentation { active, worker },
-        );
+    match (previous_worker, previous_remote) {
+        (Some(worker), Some(active)) if active.retainable => {
+            retire_clipboard_writes(scene, &worker);
+            let _cancelled = worker.cancel_paste();
+            insert_remote_retained_presentation(
+                &scene.runtime,
+                &scene.remote_retained,
+                RemoteRetainedPresentation { active, worker },
+            );
+        }
+        // A dropped previous worker retires the same way.
+        (Some(worker), _) => retire_clipboard_writes(scene, &worker),
+        _ => {}
     }
     drop(snapshot_write);
 }

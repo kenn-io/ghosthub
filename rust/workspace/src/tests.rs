@@ -10980,6 +10980,70 @@ fn detach_retires_the_hidden_workers_clipboard_authority() {
 
 #[cfg(windows)]
 #[test]
+fn switching_away_from_a_non_retainable_session_retires_its_clipboard_authority() {
+    // Herdr and Zellij remote presentations are not retainable; switching
+    // away drops the previous worker, and its queued and in-flight
+    // clipboard writes must be discarded, exactly as for retained tmux.
+    let workspace = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+    let identity = session::SessionIdentity::new(100, "$1", 200);
+    let snapshot = RemoteTmuxSnapshot::test_fixture(
+        "studio.example",
+        TEST_REMOTE_ROUTE,
+        8,
+        vec![session::DiscoveredSession::new("work", identity.clone(), 0)],
+        HerdrInventory::Unavailable,
+        ZellijInventory::Unavailable,
+    );
+    let previous = conpty_keepalive_worker("previous", identity.clone());
+    let generation = workspace
+        .scene
+        .worker
+        .lock()
+        .expect("worker")
+        .publish(previous);
+    *workspace.scene.remote_active.lock().expect("remote active") = Some(RemoteActive {
+        key: RemotePresentationKey {
+            host_id: "ssh:studio".to_owned(),
+            endpoint: "studio.example".to_owned(),
+            route_identity: TEST_REMOTE_ROUTE.to_owned(),
+            lease_generation: 8,
+            session_identity: RemoteSessionIdentity::Tmux(identity.clone()),
+        },
+        selection: SessionSelection::zellij("ssh:studio", "studio.example", "previous"),
+        worker_generation: generation,
+        lease: snapshot.lease().clone(),
+        presentation_id: 44,
+        term: AttachTerm::Xterm256Color,
+        retainable: false,
+        identity_mismatch_marker: None,
+    });
+    let observed = seed_clipboard_write(&workspace, "queued before the switch");
+
+    let replacement = conpty_keepalive_worker("replacement", identity.clone());
+    let published = crate::scene::publish_remote_worker(
+        &workspace.scene,
+        replacement,
+        RemotePresentationKey {
+            host_id: "ssh:studio".to_owned(),
+            endpoint: "studio.example".to_owned(),
+            route_identity: TEST_REMOTE_ROUTE.to_owned(),
+            lease_generation: 8,
+            session_identity: RemoteSessionIdentity::Tmux(identity),
+        },
+        &SessionSelection::zellij("ssh:studio", "studio.example", "replacement"),
+        snapshot.lease().clone(),
+        45,
+        AttachTerm::Xterm256Color,
+        None,
+        None,
+    );
+    assert!(published.is_ok(), "publish the replacement worker");
+
+    assert_clipboard_authority_retired(&workspace, observed, "switching away");
+}
+
+#[cfg(windows)]
+#[test]
 fn a_remote_terminal_exit_retires_its_clipboard_authority() {
     let workspace = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
     let identity = session::SessionIdentity::new(100, "$1", 200);
