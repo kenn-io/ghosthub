@@ -234,6 +234,7 @@ jobs:
           launcher_executable="$launcher_app/Contents/MacOS/launcher"
           launcher_info="$launcher_app/Contents/Info.plist"
           launcher_script="$launcher_root/run-tests.sh"
+          launcher_app_source="$launcher_root/LaunchApp.swift"
           launch_controller_source="$launcher_root/LaunchController.swift"
           launch_controller="$launcher_root/launch-controller"
           launcher_bundle_identifier="io.kenn.ghosthub-ci-gui-launcher.$(/usr/bin/uuidgen)"
@@ -338,19 +339,33 @@ jobs:
               return 0
             fi
             if kill -0 "$controller_pid" 2>/dev/null; then
-              # Keep open -W attached while the controller forwards graceful
-              # cancellation to the detached Aqua application.
               kill -TERM "$controller_pid" 2>/dev/null || true
-              for _ in {1..40}; do
-                if ! kill -0 "$controller_pid" 2>/dev/null; then
-                  break
+              local published_grace=0
+              while kill -0 "$controller_pid" 2>/dev/null; do
+                # LaunchServices owns the request until its completion callback.
+                # Do not abandon the controller before it publishes an identity.
+                if [[ -s "$launcher_pid_file" ]]; then
+                  published_grace=$((published_grace + 1))
+                  if (( published_grace >= 40 )); then
+                    break
+                  fi
                 fi
                 sleep 0.1
               done
             fi
             if kill -0 "$controller_pid" 2>/dev/null; then
+              if [[ ! -s "$launcher_pid_file" ]]; then
+                echo "GUI launch completion returned without an identity." >&2
+                return 1
+              fi
               kill -KILL -- -"$controller_pid" 2>/dev/null ||
                 kill -KILL "$controller_pid" 2>/dev/null || true
+              for _ in {1..10}; do
+                if ! kill -0 "$controller_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.1
+              done
             fi
             wait "$controller_pid" 2>/dev/null || true
             controller_pid=
@@ -395,7 +410,6 @@ jobs:
           trap 'handle_signal 129' HUP
 
           mkdir -p "$launcher_app/Contents/MacOS"
-          cp /bin/bash "$launcher_executable"
           plutil -create xml1 "$launcher_info"
           plutil -insert CFBundleExecutable -string launcher "$launcher_info"
           plutil -insert CFBundleIdentifier \
@@ -403,12 +417,149 @@ jobs:
           plutil -insert CFBundleName \
             -string GhosthubGUITestLauncher "$launcher_info"
           plutil -insert CFBundlePackageType -string APPL "$launcher_info"
+          # The launcher is a real AppKit application so the LaunchServices
+          # completion callback returns its authenticated running identity.
+          cat > "$launcher_app_source" <<'LAUNCH_APP'
+          import AppKit
+          import Darwin
+          import Foundation
+
+          guard CommandLine.arguments.count >= 6 else {
+              fputs(
+                  "usage: launcher script ready-file stdout stderr arguments...\n",
+                  stderr
+              )
+              exit(2)
+          }
+
+          let launcherScript = CommandLine.arguments[1]
+          let readyFileURL = URL(fileURLWithPath: CommandLine.arguments[2])
+          let standardOutputPath = CommandLine.arguments[3]
+          let standardErrorPath = CommandLine.arguments[4]
+          let launcherArguments = [
+              launcherScript,
+              readyFileURL.path,
+          ] + Array(CommandLine.arguments.dropFirst(5))
+
+          let standardOutputFD = open(standardOutputPath, O_WRONLY | O_APPEND)
+          guard standardOutputFD >= 0 else {
+              perror("Could not open GUI launcher stdout")
+              exit(1)
+          }
+          let standardErrorFD = open(standardErrorPath, O_WRONLY | O_APPEND)
+          guard standardErrorFD >= 0 else {
+              perror("Could not open GUI launcher stderr")
+              exit(1)
+          }
+          guard dup2(standardOutputFD, STDOUT_FILENO) >= 0,
+                dup2(standardErrorFD, STDERR_FILENO) >= 0
+          else {
+              perror("Could not redirect GUI launcher output")
+              exit(1)
+          }
+          close(standardOutputFD)
+          close(standardErrorFD)
+
+          guard setpgid(0, 0) == 0, getpgrp() == getpid() else {
+              perror("Could not isolate GUI launcher process group")
+              exit(1)
+          }
+          for signalNumber in [SIGINT, SIGTERM, SIGHUP] {
+              signal(signalNumber) { _ in }
+          }
+
+          var spawnAttributes: posix_spawnattr_t? = nil
+          guard posix_spawnattr_init(&spawnAttributes) == 0 else {
+              fputs("Could not initialize GUI test spawn attributes.\n", stderr)
+              exit(1)
+          }
+          defer { posix_spawnattr_destroy(&spawnAttributes) }
+          var defaultSignals = sigset_t()
+          sigemptyset(&defaultSignals)
+          for signalNumber in [SIGINT, SIGTERM, SIGHUP] {
+              sigaddset(&defaultSignals, signalNumber)
+          }
+          guard posix_spawnattr_setflags(
+              &spawnAttributes,
+              Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF)
+          ) == 0,
+          posix_spawnattr_setpgroup(&spawnAttributes, getpgrp()) == 0,
+          posix_spawnattr_setsigdefault(&spawnAttributes, &defaultSignals) == 0
+          else {
+              fputs("Could not configure GUI test spawn attributes.\n", stderr)
+              exit(1)
+          }
+
+          let argumentStrings = ["/bin/bash"] + launcherArguments
+          var cArguments = argumentStrings.map { strdup($0) }
+          defer { cArguments.forEach { free($0) } }
+          cArguments.append(nil)
+          var testPID = pid_t(0)
+          let spawnStatus = "/bin/bash".withCString { executablePath in
+              cArguments.withUnsafeMutableBufferPointer { arguments in
+                  posix_spawn(
+                      &testPID,
+                      executablePath,
+                      nil,
+                      &spawnAttributes,
+                      arguments.baseAddress!,
+                      environ
+                  )
+              }
+          }
+          guard spawnStatus == 0, testPID > 0 else {
+              fputs("Could not start GUI test wrapper.\n", stderr)
+              exit(1)
+          }
+          guard getpgid(testPID) == getpgrp() else {
+              fputs("GUI test wrapper escaped the launcher process group.\n", stderr)
+              _ = kill(testPID, SIGKILL)
+              _ = waitpid(testPID, nil, 0)
+              exit(1)
+          }
+
+          let application = NSApplication.shared
+          application.setActivationPolicy(.regular)
+          application.finishLaunching()
+          application.activate(ignoringOtherApps: true)
+          do {
+              try Data().write(to: readyFileURL, options: .atomic)
+          } catch {
+              fputs("Could not publish GUI launcher readiness: \(error)\n", stderr)
+              _ = kill(-getpgrp(), SIGKILL)
+              exit(1)
+          }
+
+          var waitStatus = Int32(0)
+          while true {
+              let waitedPID = waitpid(testPID, &waitStatus, WNOHANG)
+              if waitedPID == testPID {
+                  break
+              }
+              if waitedPID == -1 {
+                  if errno == EINTR {
+                      continue
+                  }
+                  perror("Could not wait for GUI test wrapper")
+                  exit(1)
+              }
+              RunLoop.current.run(
+                  mode: .default,
+                  before: Date(timeIntervalSinceNow: 0.01)
+              )
+          }
+          if waitStatus & 0x7f == 0 {
+              exit((waitStatus >> 8) & 0xff)
+          }
+          exit(128 + (waitStatus & 0x7f))
+          LAUNCH_APP
+          /usr/bin/xcrun swiftc -O -framework AppKit \
+            "$launcher_app_source" -o "$launcher_executable"
           chmod 700 "$launcher_executable"
           codesign --force --sign - "$launcher_app"
 
-          # Keep the reviewed `open -W` activation path, but discover the
-          # uniquely identified application through NSRunningApplication so
-          # cancellation never depends on the launcher publishing its own PID.
+          # Use the native LaunchServices completion callback so cancellation
+          # cannot outlive an accepted but still-unidentified launch request.
           cat > "$launch_controller_source" <<'CONTROLLER'
           import AppKit
           import Darwin
@@ -432,7 +583,14 @@ jobs:
               guard application != nil else {
                   return launcherAbsentStatus
               }
-              if kill(launcherPID, signalNumber) == 0 {
+              let processGroup = getpgid(launcherPID)
+              if processGroup == -1, errno == ESRCH {
+                  return launcherAbsentStatus
+              }
+              guard processGroup == launcherPID else {
+                  return 1
+              }
+              if kill(-launcherPID, signalNumber) == 0 {
                   return 0
               }
               if errno == ESRCH {
@@ -474,6 +632,8 @@ jobs:
 
           final class LaunchState: @unchecked Sendable {
               let queue = DispatchQueue(label: "io.kenn.ghosthub-ci-gui-launch")
+              var launchCompleted = false
+              var launcherApplication: NSRunningApplication?
               var launcherPID: pid_t?
               var cancellationSignal: Int32?
               var cancellationStatus: Int32?
@@ -533,72 +693,101 @@ jobs:
               exit(cancellationStatus)
           }
 
-          let openProcess = Process()
-          openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-          openProcess.arguments = [
-              "-n", "-W",
-              "-o", standardOutputPath,
-              "--stderr", standardErrorPath,
-              applicationURL.path,
-              "--args",
-          ] + applicationArguments
-          do {
-              try openProcess.run()
-          } catch {
-              fputs("Could not submit GUI launcher request: \(error)\n", stderr)
-              exit(1)
+          guard let launcherScript = applicationArguments.first else {
+              fputs("GUI launcher arguments are missing.\n", stderr)
+              exit(2)
+          }
+          let configuration = NSWorkspace.OpenConfiguration()
+          configuration.activates = true
+          configuration.addsToRecentItems = false
+          configuration.allowsRunningApplicationSubstitution = false
+          configuration.createsNewApplicationInstance = true
+          configuration.promptsUserIfNeeded = false
+          configuration.arguments = [
+              launcherScript,
+              CommandLine.arguments[3] + ".ready",
+              standardOutputPath,
+              standardErrorPath,
+          ] + Array(applicationArguments.dropFirst())
+
+          NSWorkspace.shared.openApplication(
+              at: applicationURL,
+              configuration: configuration
+          ) { runningApplication, error in
+              state.queue.sync {
+                  defer { state.launchCompleted = true }
+                  if let error {
+                      state.failure = "Could not launch GUI tests: \(error)"
+                      return
+                  }
+                  guard let runningApplication,
+                        runningApplication.bundleIdentifier == bundleIdentifier,
+                        runningApplication.bundleURL?.standardizedFileURL == applicationURL,
+                        runningApplication.processIdentifier > 0,
+                        getpgid(runningApplication.processIdentifier) ==
+                            runningApplication.processIdentifier
+                  else {
+                      state.failure =
+                          "LaunchServices returned an unauthenticated GUI launcher"
+                      return
+                  }
+
+                  let launcherPID = runningApplication.processIdentifier
+                  state.launcherApplication = runningApplication
+                  state.launcherPID = launcherPID
+                  do {
+                      try "\(launcherPID)\n".write(
+                          to: pidFileURL,
+                          atomically: true,
+                          encoding: .utf8
+                      )
+                      if let cancellationSignal = state.cancellationSignal {
+                          _ = signalVerifiedLauncher(
+                              bundleIdentifier: bundleIdentifier,
+                              applicationURL: applicationURL,
+                              launcherPID: launcherPID,
+                              signalNumber: cancellationSignal
+                          )
+                      }
+                  } catch {
+                      state.failure = "Could not publish GUI launcher PID: \(error)"
+                      _ = signalVerifiedLauncher(
+                          bundleIdentifier: bundleIdentifier,
+                          applicationURL: applicationURL,
+                          launcherPID: launcherPID,
+                          signalNumber: SIGKILL
+                      )
+                  }
+              }
           }
 
           withExtendedLifetime(signalSources) {
               while true {
-                  let launcherPublished = state.queue.sync {
-                      state.launcherPID != nil
-                  }
-                  if !launcherPublished {
-                      let runningApplication = NSRunningApplication
-                          .runningApplications(withBundleIdentifier: bundleIdentifier)
-                          .first { application in
-                              application.bundleURL?.standardizedFileURL == applicationURL &&
-                                  application.processIdentifier > 0
-                          }
-                      if let runningApplication {
-                          let launcherPID = runningApplication.processIdentifier
-                          state.queue.sync {
-                              state.launcherPID = launcherPID
-                              do {
-                                  try "\(launcherPID)\n".write(
-                                      to: pidFileURL,
-                                      atomically: true,
-                                      encoding: .utf8
-                                  )
-                                  if let cancellationSignal = state.cancellationSignal {
-                                      _ = signalVerifiedLauncher(
-                                          bundleIdentifier: bundleIdentifier,
-                                          applicationURL: applicationURL,
-                                          launcherPID: launcherPID,
-                                          signalNumber: cancellationSignal
-                                      )
-                                  }
-                              } catch {
-                                  state.failure =
-                                      "Could not publish GUI launcher PID: \(error)"
-                                  _ = signalVerifiedLauncher(
-                                      bundleIdentifier: bundleIdentifier,
-                                      applicationURL: applicationURL,
-                                      launcherPID: launcherPID,
-                                      signalNumber: SIGTERM
-                                  )
-                              }
-                          }
-                      }
-                  }
-                  if !openProcess.isRunning {
+                  let launchCompleted = state.queue.sync { state.launchCompleted }
+                  if launchCompleted {
                       break
                   }
-                  Thread.sleep(forTimeInterval: 0.01)
+                  RunLoop.current.run(
+                      mode: .default,
+                      before: Date(timeIntervalSinceNow: 0.01)
+                  )
+              }
+              while true {
+                  let launcherRunning = state.queue.sync {
+                      guard let launcherApplication = state.launcherApplication else {
+                          return false
+                      }
+                      return !launcherApplication.isTerminated
+                  }
+                  if !launcherRunning {
+                      break
+                  }
+                  RunLoop.current.run(
+                      mode: .default,
+                      before: Date(timeIntervalSinceNow: 0.01)
+                  )
               }
           }
-          openProcess.waitUntilExit()
           let finalState = state.queue.sync {
               let launcherTerminated: Bool
               if let launcherPID = state.launcherPID {
@@ -615,7 +804,7 @@ jobs:
                   state.launcherPID = nil
               } else if state.failure == nil {
                   state.failure =
-                      "GUI launcher remained running after open waiter exited"
+                      "GUI launcher remained running after termination was reported"
               }
               return (
                   cancellationStatus: state.cancellationStatus,
@@ -635,10 +824,7 @@ jobs:
           if finalState.failure != nil {
               exit(1)
           }
-          if openProcess.terminationReason == .uncaughtSignal {
-              exit(128 + openProcess.terminationStatus)
-          }
-          exit(openProcess.terminationStatus)
+          exit(0)
           CONTROLLER
           /usr/bin/xcrun swiftc -O -framework AppKit \
             "$launch_controller_source" -o "$launch_controller"
@@ -648,6 +834,8 @@ jobs:
           #!/bin/bash
           set -uo pipefail
 
+          ready_file=$1
+          shift
           result_file=$1
           launcher_output=$2
           workspace=$3
@@ -678,13 +866,21 @@ jobs:
               HUP) signal_status=129 ;;
             esac
             if [[ -n "$test_pid" ]]; then
-              kill -"$signal" -- -"$test_pid" 2>/dev/null ||
-                kill -"$signal" "$test_pid" 2>/dev/null || true
+              kill -"$signal" "$test_pid" 2>/dev/null || true
             fi
           }
           trap 'forward_signal INT' INT
           trap 'forward_signal TERM' TERM
           trap 'forward_signal HUP' HUP
+
+          while [[ ! -e "$ready_file" ]]; do
+            sleep 0.01
+          done
+          if [[ -n "$signal_status" ]]; then
+            printf '%s\n' "$signal_status" > "$result_file.tmp"
+            mv -- "$result_file.tmp" "$result_file"
+            exit "$signal_status"
+          fi
 
           export PATH=$runner_path
           export HOME=$runner_home
@@ -702,16 +898,8 @@ jobs:
           export GHOSTHUB_TEST_STOP_GRACE=2
 
           cd -- "$workspace"
-          set -m
           sh tools/run_swift_tests.sh "$@" > "$launcher_output" 2>&1 &
           test_pid=$!
-          set +m
-
-          while kill -0 "$test_pid" 2>/dev/null &&
-            ! kill -0 -- -"$test_pid" 2>/dev/null
-          do
-            :
-          done
           if [[ -n "$signal_status" ]]; then
             forward_signal "$pending_signal"
           fi
