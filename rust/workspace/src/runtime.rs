@@ -189,19 +189,50 @@ pub(crate) struct ZellijKillState {
     revisions: std::collections::HashMap<ZellijKillKey, u64>,
 }
 
-/// Reserve one Zellij kill; `None` means a kill for the same target is
-/// already confirmed or running and this one must be refused. The returned
-/// revision is rechecked after the operation lane is acquired.
-pub(crate) fn reserve_zellij_kill(runtime: &Runtime, key: ZellijKillKey) -> Option<u64> {
+pub(crate) enum ZellijKillReservation {
+    /// Reserved at the dialog's expected revision.
+    Reserved,
+    /// A kill for the same target is already confirmed or running.
+    InFlight,
+    /// A kill for the same target completed after the dialog appeared;
+    /// its revision moved past the dialog's, so confirming would kill a
+    /// same-name replacement.
+    Stale,
+}
+
+/// Reserve one Zellij kill at the revision its confirmation dialog was
+/// created against. Binding the dialog to its creation-time revision
+/// closes the window where a kill completes between the dialog leaving
+/// its slot and the reservation: the completed kill advanced the
+/// revision, so the stale dialog can no longer reserve.
+pub(crate) fn reserve_zellij_kill(
+    runtime: &Runtime,
+    key: ZellijKillKey,
+    expected_revision: u64,
+) -> ZellijKillReservation {
     let mut kills = runtime
         .zellij_kills
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let revision = kills.revisions.get(&key).copied().unwrap_or(0);
-    if !kills.in_flight.insert(key) {
-        return None;
+    if kills.revisions.get(&key).copied().unwrap_or(0) != expected_revision {
+        return ZellijKillReservation::Stale;
     }
-    Some(revision)
+    if !kills.in_flight.insert(key) {
+        return ZellijKillReservation::InFlight;
+    }
+    ZellijKillReservation::Reserved
+}
+
+/// The revision a new confirmation dialog must bind to.
+pub(crate) fn zellij_kill_revision(runtime: &Runtime, key: &ZellijKillKey) -> u64 {
+    runtime
+        .zellij_kills
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .revisions
+        .get(key)
+        .copied()
+        .unwrap_or(0)
 }
 
 /// Whether a reserved kill is still current once its task holds the

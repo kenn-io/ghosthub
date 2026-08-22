@@ -1233,6 +1233,10 @@ pub(crate) fn capture_attach_request(
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one request's inventory validation and target capture read as a single flow"
+)]
 pub(crate) fn capture_kill_request(
     scene: &Scene,
     selection: &SessionSelection,
@@ -1328,6 +1332,14 @@ pub(crate) fn capture_kill_request(
                         runtime: context.snapshot.runtime().clone(),
                         executable: executable.clone(),
                         name: selection.session().to_owned(),
+                        revision: crate::runtime::zellij_kill_revision(
+                            &scene.runtime,
+                            &crate::zellij_kill_key(
+                                context.snapshot.endpoint(),
+                                context.snapshot.runtime(),
+                                selection.session(),
+                            ),
+                        ),
                     },
                 }))
             }

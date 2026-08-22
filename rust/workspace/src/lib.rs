@@ -36,8 +36,8 @@ mod scene;
 
 use pump::start_event_pump;
 use runtime::{
-    Runtime, SceneId, ZellijKillKey, ZellijKillState, begin_snapshot_write, cadence_fallback_scene,
-    cancel_refresh, cancel_scene_remote_attachments,
+    Runtime, SceneId, ZellijKillKey, ZellijKillReservation, ZellijKillState, begin_snapshot_write,
+    cadence_fallback_scene, cancel_refresh, cancel_scene_remote_attachments,
     cancel_superseded_remote_constructive_navigation, capture_kwt_worktree_removal_context,
     capture_remote_herdr_attach_request, capture_remote_herdr_create_request,
     capture_remote_herdr_restart_request, capture_remote_tmux_attach_request,
@@ -2308,6 +2308,7 @@ fn run_confirmed_zellij_kill(
         runtime,
         executable,
         name,
+        ..
     } = &pending.target
     else {
         return;
@@ -2370,6 +2371,9 @@ enum KillTarget {
         runtime: host::WslRuntimeIdentity,
         executable: String,
         name: String,
+        /// The reservation revision this confirmation was created against;
+        /// see [`reserve_zellij_kill`].
+        revision: u64,
     },
 }
 
@@ -7106,16 +7110,25 @@ impl Workspace {
             endpoint,
             runtime,
             name,
+            revision,
             ..
         } = &pending.target
         {
             let key = zellij_kill_key(endpoint, runtime, name);
-            let Some(revision) = reserve_zellij_kill(&self.scene.runtime, key.clone()) else {
-                return Err(WorkspaceError::new(
-                    "a kill for this Zellij session is already in progress",
-                ));
-            };
-            Some((key, revision))
+            match reserve_zellij_kill(&self.scene.runtime, key.clone(), *revision) {
+                ZellijKillReservation::Reserved => {}
+                ZellijKillReservation::InFlight => {
+                    return Err(WorkspaceError::new(
+                        "a kill for this Zellij session is already in progress",
+                    ));
+                }
+                ZellijKillReservation::Stale => {
+                    return Err(WorkspaceError::new(
+                        "the Zellij session was killed after this confirmation appeared",
+                    ));
+                }
+            }
+            Some((key, *revision))
         } else {
             None
         };

@@ -1,6 +1,8 @@
 use super::*;
 use crate::pump::{event_source_may_have_more, pump_once, retained_event_budget};
-use crate::runtime::{pending_remote_constructive_target, read_revision_consistent};
+use crate::runtime::{
+    pending_remote_constructive_target, read_revision_consistent, zellij_kill_revision,
+};
 use crate::scene::{
     broadcast_event, broadcast_event_with_lossless_owner, push_lossless_event, push_operation_event,
 };
@@ -8039,6 +8041,7 @@ fn completed_zellij_kill_drops_matching_confirmations_in_every_scene() {
             runtime: snapshot.runtime().clone(),
             executable: "/usr/bin/zellij".to_owned(),
             name: name.to_owned(),
+            revision: 0,
         },
     };
     assert!(publish_pending_kill(&b.scene, pending(&b.scene, "review")));
@@ -8711,6 +8714,7 @@ fn concurrent_zellij_kill_confirmations_for_one_target_are_refused() {
         runtime: snapshot.runtime().clone(),
         executable: "/usr/bin/zellij".to_owned(),
         name: "review".to_owned(),
+        revision: 0,
     };
     for scene in [&a, &b] {
         let generation = invalidate_pending_kill(&scene.scene);
@@ -8762,8 +8766,11 @@ fn concurrent_zellij_kill_confirmations_for_one_target_are_refused() {
         "review".to_owned(),
     );
     assert!(
-        reserve_zellij_kill(&a.scene.runtime, key.clone()).is_some(),
-        "a failed kill releases its reservation"
+        matches!(
+            reserve_zellij_kill(&a.scene.runtime, key.clone(), 0),
+            ZellijKillReservation::Reserved
+        ),
+        "a failed kill releases its reservation without advancing the revision"
     );
     release_zellij_kill(&a.scene.runtime, &key, false);
 }
@@ -8778,17 +8785,91 @@ fn a_completed_zellij_kill_advances_the_reservation_revision() {
         "review".to_owned(),
     );
 
-    let first = reserve_zellij_kill(runtime, key.clone()).expect("first reservation");
-    assert!(zellij_kill_is_current(runtime, &key, first));
+    let bound = zellij_kill_revision(runtime, &key);
+    assert!(matches!(
+        reserve_zellij_kill(runtime, key.clone(), bound),
+        ZellijKillReservation::Reserved
+    ));
+    assert!(matches!(
+        reserve_zellij_kill(runtime, key.clone(), bound),
+        ZellijKillReservation::InFlight
+    ));
     release_zellij_kill(runtime, &key, true);
 
-    // A task still holding the pre-completion revision is fenced; a fresh
-    // reservation observes the advanced one.
-    assert!(!zellij_kill_is_current(runtime, &key, first));
-    let second = reserve_zellij_kill(runtime, key.clone()).expect("target is reservable again");
-    assert!(second > first);
-    assert!(zellij_kill_is_current(runtime, &key, second));
+    // A dialog created before the completed kill bound the old revision;
+    // its reservation is refused as stale even though nothing is in
+    // flight — the window between taking the confirmation and reserving
+    // cannot resurrect it.
+    assert!(matches!(
+        reserve_zellij_kill(runtime, key.clone(), bound),
+        ZellijKillReservation::Stale
+    ));
+    let rebound = zellij_kill_revision(runtime, &key);
+    assert!(rebound > bound);
+    assert!(matches!(
+        reserve_zellij_kill(runtime, key.clone(), rebound),
+        ZellijKillReservation::Reserved
+    ));
+    assert!(zellij_kill_is_current(runtime, &key, rebound));
     release_zellij_kill(runtime, &key, false);
+}
+
+#[test]
+fn a_confirmation_taken_before_a_completed_kill_cannot_reserve() {
+    // The exact interleaving: scene B's dialog leaves its slot, then a
+    // kill of the same target completes (advancing the revision) before B
+    // reserves. B's confirmation must be refused as stale, not reserved
+    // at the new revision.
+    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
+    let host = WslHost::new(
+        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        Arc::new(RefusingRunner) as SharedCommandRunner,
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
+    );
+    let a = Workspace::preview(WorkspaceSnapshot::ready(
+        Appearance::default(),
+        "Ubuntu",
+        Vec::new(),
+    ));
+    let b = a.open_scene();
+    let key = (
+        snapshot.endpoint().distro().to_owned(),
+        format!(
+            "{}:{}",
+            snapshot.runtime().kernel_boot_id(),
+            snapshot.runtime().init_start_ticks()
+        ),
+        "review".to_owned(),
+    );
+    let generation = invalidate_pending_kill(&b.scene);
+    let bound = zellij_kill_revision(&b.scene.runtime, &key);
+    assert!(publish_pending_kill(
+        &b.scene,
+        PendingKill {
+            generation,
+            selection: SessionSelection::zellij("wsl", "Ubuntu", "review"),
+            host,
+            target: KillTarget::Zellij {
+                endpoint: snapshot.endpoint().clone(),
+                runtime: snapshot.runtime().clone(),
+                executable: "/usr/bin/zellij".to_owned(),
+                name: "review".to_owned(),
+                revision: bound,
+            },
+        },
+    ));
+
+    // Another scene's kill of the same target completes now.
+    assert!(matches!(
+        reserve_zellij_kill(&a.scene.runtime, key.clone(), bound),
+        ZellijKillReservation::Reserved
+    ));
+    release_zellij_kill(&a.scene.runtime, &key, true);
+
+    let refusal = b
+        .confirm_session_kill()
+        .expect_err("the stale confirmation is refused");
+    assert!(refusal.to_string().contains("killed after"), "{refusal}");
 }
 
 #[cfg(windows)]
@@ -8834,6 +8915,7 @@ fn a_completed_zellij_kill_fences_a_straddling_kill_request() {
                 runtime: snapshot.runtime().clone(),
                 executable: "/usr/bin/zellij".to_owned(),
                 name: "review".to_owned(),
+                revision: 0,
             },
         },
     );
