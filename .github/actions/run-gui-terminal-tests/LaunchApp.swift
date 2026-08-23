@@ -3,24 +3,6 @@ import Darwin
 import Foundation
 import XCTest
 
-private let environmentNames = [
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "CFFIXED_USER_HOME",
-    "DEVELOPER_DIR",
-    "GHOSTHUB_CI_STATE_ROOT",
-    "LIBGHOSTTY_XCFRAMEWORK_TARGET",
-    "LIBGHOSTTY_ZIG",
-    "RUNNER_ENVIRONMENT",
-    "RUNNER_TEMP",
-    "SHELL",
-    "CI",
-    "GITHUB_ACTIONS",
-    "TMUX_TMPDIR",
-    "GHOSTHUB_TEST_TMUX_RUN_ID",
-]
-
 private func fail(_ message: String, status: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data("\(message)\n".utf8))
     exit(status)
@@ -50,11 +32,9 @@ private func leafTests(in test: XCTest) -> [XCTest] {
 
 @_cdecl("ghosthub_run_gui_tests")
 public func runGUITests() -> Int32 {
-    let fixedArgumentCount = 6
-    guard CommandLine.arguments.count == fixedArgumentCount + environmentNames.count else {
+    guard CommandLine.arguments.count == 7 else {
         fail(
-            "usage: launcher ready-file result-file output-file "
-                + "test-bundle filter environment-values...",
+            "usage: launcher ready-file result-file output-file test-bundle filter workspace",
             status: 2
         )
     }
@@ -69,18 +49,6 @@ public func runGUITests() -> Int32 {
 
     guard getpgrp() == getpid() else {
         fail("GUI launcher process group was not isolated")
-    }
-
-    for (name, value) in zip(
-        environmentNames,
-        CommandLine.arguments.dropFirst(fixedArgumentCount)
-    ) {
-        guard setenv(name, value, 1) == 0 else {
-            fail("Could not configure GUI test environment: \(name)")
-        }
-    }
-    guard setenv("GHOSTHUB_TEST_STOP_GRACE", "2", 1) == 0 else {
-        fail("Could not configure GUI test shutdown grace")
     }
 
     let application = NSApplication.shared

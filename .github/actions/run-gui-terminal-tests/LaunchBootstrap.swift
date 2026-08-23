@@ -2,6 +2,14 @@ import AppKit
 import Darwin
 import Foundation
 
+guard CommandLine.arguments.count == 7 else {
+    fputs(
+        "usage: launcher ready-file result-file output-file test-bundle filter workspace\n",
+        stderr
+    )
+    exit(2)
+}
+
 private func loaderError() -> String {
     guard let message = dlerror() else {
         return "unknown dynamic-loader error"
@@ -11,6 +19,11 @@ private func loaderError() -> String {
 
 guard setpgid(0, 0) == 0, getpgrp() == getpid() else {
     perror("Could not isolate GUI launcher process group")
+    exit(1)
+}
+
+guard chdir(CommandLine.arguments[6]) == 0 else {
+    perror("Could not enter the GUI test workspace")
     exit(1)
 }
 

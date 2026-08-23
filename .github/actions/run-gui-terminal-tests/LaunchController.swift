@@ -2,6 +2,27 @@ import AppKit
 import Darwin
 import Foundation
 
+private let requiredLauncherEnvironmentNames = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "CFFIXED_USER_HOME",
+    "DEVELOPER_DIR",
+    "GHOSTHUB_CI_STATE_ROOT",
+    "LIBGHOSTTY_XCFRAMEWORK_TARGET",
+    "LIBGHOSTTY_ZIG",
+    "RUNNER_TEMP",
+    "SHELL",
+    "TMUX_TMPDIR",
+    "GHOSTHUB_TEST_TMUX_RUN_ID",
+    "GHOSTTY_RESOURCES_DIR",
+]
+private let optionalLauncherEnvironmentNames = [
+    "RUNNER_ENVIRONMENT",
+    "CI",
+    "GITHUB_ACTIONS",
+]
+
 let launcherAbsentStatus: Int32 = 3
 
 func signalVerifiedLauncher(
@@ -89,7 +110,32 @@ let applicationURL = URL(
     fileURLWithPath: CommandLine.arguments[2]
 ).standardizedFileURL
 let pidFileURL = URL(fileURLWithPath: CommandLine.arguments[3])
-let applicationArguments = Array(CommandLine.arguments.dropFirst(4))
+let suppliedArguments = Array(CommandLine.arguments.dropFirst(4))
+let launcherArgumentCount = 6
+guard suppliedArguments.count == launcherArgumentCount else {
+    fputs("GUI launcher arguments are incomplete.\n", stderr)
+    exit(2)
+}
+let applicationArguments = suppliedArguments
+let controllerEnvironment = ProcessInfo.processInfo.environment
+var launcherEnvironment: [String: String] = [:]
+for name in requiredLauncherEnvironmentNames {
+    guard let value = controllerEnvironment[name], !value.isEmpty else {
+        fputs("GUI launcher environment is missing \(name).\n", stderr)
+        exit(2)
+    }
+    launcherEnvironment[name] = value
+}
+for name in optionalLauncherEnvironmentNames {
+    launcherEnvironment[name] = controllerEnvironment[name] ?? ""
+}
+let workspacePath = URL(
+    fileURLWithPath: applicationArguments[5],
+    isDirectory: true
+).standardizedFileURL.path
+launcherEnvironment["PWD"] = workspacePath
+launcherEnvironment["GITHUB_WORKSPACE"] = workspacePath
+launcherEnvironment["GHOSTHUB_TEST_STOP_GRACE"] = "2"
 let state = LaunchState()
 let signalStatuses: [(Int32, Int32)] = [
     (SIGINT, 130),
@@ -138,6 +184,7 @@ configuration.allowsRunningApplicationSubstitution = false
 configuration.createsNewApplicationInstance = true
 configuration.promptsUserIfNeeded = false
 configuration.arguments = applicationArguments
+configuration.environment = launcherEnvironment
 
 NSWorkspace.shared.openApplication(
     at: applicationURL,

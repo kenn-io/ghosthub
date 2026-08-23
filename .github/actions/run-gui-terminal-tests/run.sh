@@ -32,6 +32,8 @@ result_file="$launcher_root/result"
 xctest_frameworks="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/Library/Frameworks"
 xctest_libraries="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/usr/lib"
 test_bundle="$(swift build --show-bin-path)/GhosthubPackageTests.xctest"
+ghostty_resources="$GITHUB_WORKSPACE/.build/libghostty/share/ghostty"
+ghostty_terminfo="$GITHUB_WORKSPACE/.build/libghostty/share/terminfo/78/xterm-ghostty"
 user_tmpdir="/tmp/ghosthub-$(id -u)"
 test_root="$user_tmpdir/tmux-tests"
 controller_pid=
@@ -44,6 +46,10 @@ if [[ ! -d "$test_bundle" ]]; then
   echo "The built XCTest bundle is unavailable: $test_bundle" >&2
   exit 1
 fi
+if [[ ! -d "$ghostty_resources" || ! -f "$ghostty_terminfo" ]]; then
+  echo "The staged libghostty resources are unavailable." >&2
+  exit 1
+fi
 
 umask 077
 mkdir -m 700 "$user_tmpdir" 2>/dev/null || true
@@ -52,6 +58,9 @@ mkdir -m 700 "$test_root" 2>/dev/null || true
 sh "$GITHUB_WORKSPACE/tools/purge_test_tmux.sh" --stale
 tmux_tmpdir="$(mktemp -d "$test_root/run.$$.XXXXXX")"
 test_run_id=${tmux_tmpdir##*.}
+export TMUX_TMPDIR="$tmux_tmpdir"
+export GHOSTHUB_TEST_TMUX_RUN_ID="$test_run_id"
+export GHOSTTY_RESOURCES_DIR="$ghostty_resources"
 
 # shellcheck disable=SC2329  # invoked by stop_launcher below
 verified_launcher_signal() {
@@ -254,21 +263,7 @@ set -m
   "$launcher_output" \
   "$test_bundle" \
   "$gui_test_filter" \
-  "$PATH" \
-  "$HOME" \
-  "$TMPDIR" \
-  "$CFFIXED_USER_HOME" \
-  "$DEVELOPER_DIR" \
-  "$GHOSTHUB_CI_STATE_ROOT" \
-  "$LIBGHOSTTY_XCFRAMEWORK_TARGET" \
-  "$LIBGHOSTTY_ZIG" \
-  "${RUNNER_ENVIRONMENT:-}" \
-  "$RUNNER_TEMP" \
-  "$SHELL" \
-  "${CI:-}" \
-  "${GITHUB_ACTIONS:-}" \
-  "$tmux_tmpdir" \
-  "$test_run_id" &
+  "$GITHUB_WORKSPACE" &
 controller_pid=$!
 set +m
 controller_starting=0
