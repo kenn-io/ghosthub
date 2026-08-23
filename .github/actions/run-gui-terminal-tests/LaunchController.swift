@@ -76,9 +76,9 @@ final class LaunchState: @unchecked Sendable {
     var failure: String?
 }
 
-guard CommandLine.arguments.count >= 7 else {
+guard CommandLine.arguments.count >= 5 else {
     fputs(
-        "usage: launch-controller bundle-id app pid-file stdout stderr arguments...\n",
+        "usage: launch-controller bundle-id app pid-file arguments...\n",
         stderr
     )
     exit(2)
@@ -89,9 +89,7 @@ let applicationURL = URL(
     fileURLWithPath: CommandLine.arguments[2]
 ).standardizedFileURL
 let pidFileURL = URL(fileURLWithPath: CommandLine.arguments[3])
-let standardOutputPath = CommandLine.arguments[4]
-let standardErrorPath = CommandLine.arguments[5]
-let applicationArguments = Array(CommandLine.arguments.dropFirst(6))
+let applicationArguments = Array(CommandLine.arguments.dropFirst(4))
 let state = LaunchState()
 let signalStatuses: [(Int32, Int32)] = [
     (SIGINT, 130),
@@ -129,7 +127,7 @@ if let cancellationStatus = state.queue.sync(
     exit(cancellationStatus)
 }
 
-guard let launcherScript = applicationArguments.first else {
+guard !applicationArguments.isEmpty else {
     fputs("GUI launcher arguments are missing.\n", stderr)
     exit(2)
 }
@@ -139,12 +137,7 @@ configuration.addsToRecentItems = false
 configuration.allowsRunningApplicationSubstitution = false
 configuration.createsNewApplicationInstance = true
 configuration.promptsUserIfNeeded = false
-configuration.arguments = [
-    launcherScript,
-    CommandLine.arguments[3] + ".ready",
-    standardOutputPath,
-    standardErrorPath,
-] + Array(applicationArguments.dropFirst())
+configuration.arguments = applicationArguments
 
 NSWorkspace.shared.openApplication(
     at: applicationURL,
@@ -156,19 +149,29 @@ NSWorkspace.shared.openApplication(
             state.failure = "Could not launch GUI tests: \(error)"
             return
         }
-        guard let runningApplication,
-              runningApplication.bundleIdentifier == bundleIdentifier,
-              runningApplication.bundleURL?.standardizedFileURL == applicationURL,
-              runningApplication.processIdentifier > 0,
-              getpgid(runningApplication.processIdentifier) ==
-              runningApplication.processIdentifier
-        else {
+        guard let runningApplication else {
             state.failure =
-                "LaunchServices returned an unauthenticated GUI launcher"
+                "LaunchServices did not return a GUI launcher"
+            return
+        }
+        let launcherPID = runningApplication.processIdentifier
+        guard runningApplication.bundleIdentifier == bundleIdentifier else {
+            state.failure = "LaunchServices returned the wrong launcher identifier"
+            return
+        }
+        guard runningApplication.bundleURL?.standardizedFileURL == applicationURL else {
+            state.failure = "LaunchServices returned the wrong launcher URL"
+            return
+        }
+        guard launcherPID > 0 else {
+            state.failure = "LaunchServices returned an invalid launcher PID"
+            return
+        }
+        guard getpgid(launcherPID) == launcherPID else {
+            state.failure = "LaunchServices returned a launcher outside its process group"
             return
         }
 
-        let launcherPID = runningApplication.processIdentifier
         state.launcherApplication = runningApplication
         state.launcherPID = launcherPID
         do {

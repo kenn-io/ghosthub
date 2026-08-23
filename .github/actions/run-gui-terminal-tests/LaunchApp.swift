@@ -1,132 +1,146 @@
 import AppKit
 import Darwin
 import Foundation
+import XCTest
 
-guard CommandLine.arguments.count >= 6 else {
-    fputs(
-        "usage: launcher script ready-file stdout stderr arguments...\n",
-        stderr
-    )
-    exit(2)
-}
+private let environmentNames = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "CFFIXED_USER_HOME",
+    "DEVELOPER_DIR",
+    "GHOSTHUB_CI_STATE_ROOT",
+    "LIBGHOSTTY_XCFRAMEWORK_TARGET",
+    "LIBGHOSTTY_ZIG",
+    "RUNNER_ENVIRONMENT",
+    "RUNNER_TEMP",
+    "SHELL",
+    "CI",
+    "GITHUB_ACTIONS",
+    "TMUX_TMPDIR",
+    "GHOSTHUB_TEST_TMUX_RUN_ID",
+]
 
-let launcherScript = CommandLine.arguments[1]
-let readyFileURL = URL(fileURLWithPath: CommandLine.arguments[2])
-let standardOutputPath = CommandLine.arguments[3]
-let standardErrorPath = CommandLine.arguments[4]
-let launcherArguments = [
-    launcherScript,
-    readyFileURL.path,
-] + Array(CommandLine.arguments.dropFirst(5))
-
-let standardOutputFD = open(standardOutputPath, O_WRONLY | O_APPEND)
-guard standardOutputFD >= 0 else {
-    perror("Could not open GUI launcher stdout")
-    exit(1)
-}
-let standardErrorFD = open(standardErrorPath, O_WRONLY | O_APPEND)
-guard standardErrorFD >= 0 else {
-    perror("Could not open GUI launcher stderr")
-    exit(1)
-}
-guard dup2(standardOutputFD, STDOUT_FILENO) >= 0,
-      dup2(standardErrorFD, STDERR_FILENO) >= 0
-else {
-    perror("Could not redirect GUI launcher output")
-    exit(1)
-}
-close(standardOutputFD)
-close(standardErrorFD)
-
-guard setpgid(0, 0) == 0, getpgrp() == getpid() else {
-    perror("Could not isolate GUI launcher process group")
-    exit(1)
-}
-for signalNumber in [SIGINT, SIGTERM, SIGHUP] {
-    signal(signalNumber) { _ in }
+private func fail(_ message: String, status: Int32 = 1) -> Never {
+    FileHandle.standardError.write(Data("\(message)\n".utf8))
+    exit(status)
 }
 
-var spawnAttributes: posix_spawnattr_t?
-guard posix_spawnattr_init(&spawnAttributes) == 0 else {
-    fputs("Could not initialize GUI test spawn attributes.\n", stderr)
-    exit(1)
-}
-defer { posix_spawnattr_destroy(&spawnAttributes) }
-var defaultSignals = sigset_t()
-sigemptyset(&defaultSignals)
-for signalNumber in [SIGINT, SIGTERM, SIGHUP] {
-    sigaddset(&defaultSignals, signalNumber)
-}
-guard posix_spawnattr_setflags(
-    &spawnAttributes,
-    Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF)
-) == 0,
-    posix_spawnattr_setpgroup(&spawnAttributes, getpgrp()) == 0,
-    posix_spawnattr_setsigdefault(&spawnAttributes, &defaultSignals) == 0
-else {
-    fputs("Could not configure GUI test spawn attributes.\n", stderr)
-    exit(1)
-}
-
-let argumentStrings = ["/bin/bash"] + launcherArguments
-var cArguments = argumentStrings.map { strdup($0) }
-defer { cArguments.forEach { free($0) } }
-cArguments.append(nil)
-var testPID = pid_t(0)
-let spawnStatus = "/bin/bash".withCString { executablePath in
-    cArguments.withUnsafeMutableBufferPointer { arguments in
-        posix_spawn(
-            &testPID,
-            executablePath,
-            nil,
-            &spawnAttributes,
-            arguments.baseAddress!,
-            environ
-        )
-    }
-}
-guard spawnStatus == 0, testPID > 0 else {
-    fputs("Could not start GUI test wrapper.\n", stderr)
-    exit(1)
-}
-guard getpgid(testPID) == getpgrp() else {
-    fputs("GUI test wrapper escaped the launcher process group.\n", stderr)
-    _ = kill(testPID, SIGKILL)
-    _ = waitpid(testPID, nil, 0)
-    exit(1)
-}
-
-let application = NSApplication.shared
-application.setActivationPolicy(.regular)
-application.finishLaunching()
-application.activate(ignoringOtherApps: true)
-do {
-    try Data().write(to: readyFileURL, options: .atomic)
-} catch {
-    fputs("Could not publish GUI launcher readiness: \(error)\n", stderr)
-    _ = kill(-getpgrp(), SIGKILL)
-    exit(1)
-}
-
-var waitStatus = Int32(0)
-while true {
-    let waitedPID = waitpid(testPID, &waitStatus, WNOHANG)
-    if waitedPID == testPID {
-        break
-    }
-    if waitedPID == -1 {
-        if errno == EINTR {
-            continue
-        }
-        perror("Could not wait for GUI test wrapper")
+private func redirectOutput(to path: String) {
+    let descriptor = open(path, O_WRONLY | O_APPEND)
+    guard descriptor >= 0 else {
+        perror("Could not open GUI test output")
         exit(1)
     }
-    RunLoop.current.run(
-        mode: .default,
-        before: Date(timeIntervalSinceNow: 0.01)
-    )
+    guard dup2(descriptor, STDOUT_FILENO) >= 0,
+          dup2(descriptor, STDERR_FILENO) >= 0
+    else {
+        perror("Could not redirect GUI test output")
+        exit(1)
+    }
+    close(descriptor)
 }
-if waitStatus & 0x7f == 0 {
-    exit((waitStatus >> 8) & 0xff)
+
+private func leafTests(in test: XCTest) -> [XCTest] {
+    guard let suite = test as? XCTestSuite else {
+        return [test]
+    }
+    return suite.tests.flatMap(leafTests(in:))
 }
-exit(128 + (waitStatus & 0x7f))
+
+@_cdecl("ghosthub_run_gui_tests")
+public func runGUITests() -> Int32 {
+    let fixedArgumentCount = 6
+    guard CommandLine.arguments.count == fixedArgumentCount + environmentNames.count else {
+        fail(
+            "usage: launcher ready-file result-file output-file "
+                + "test-bundle filter environment-values...",
+            status: 2
+        )
+    }
+
+    let readyFileURL = URL(fileURLWithPath: CommandLine.arguments[1])
+    let resultFileURL = URL(fileURLWithPath: CommandLine.arguments[2])
+    let outputPath = CommandLine.arguments[3]
+    let testBundleURL = URL(fileURLWithPath: CommandLine.arguments[4])
+    let filter = CommandLine.arguments[5]
+
+    redirectOutput(to: outputPath)
+
+    guard getpgrp() == getpid() else {
+        fail("GUI launcher process group was not isolated")
+    }
+
+    for (name, value) in zip(
+        environmentNames,
+        CommandLine.arguments.dropFirst(fixedArgumentCount)
+    ) {
+        guard setenv(name, value, 1) == 0 else {
+            fail("Could not configure GUI test environment: \(name)")
+        }
+    }
+    guard setenv("GHOSTHUB_TEST_STOP_GRACE", "2", 1) == 0 else {
+        fail("Could not configure GUI test shutdown grace")
+    }
+
+    let application = NSApplication.shared
+    guard application.setActivationPolicy(.regular) else {
+        fail("Could not activate the GUI test application")
+    }
+    application.finishLaunching()
+    application.activate(ignoringOtherApps: true)
+
+    do {
+        try Data().write(to: readyFileURL, options: .atomic)
+    } catch {
+        fail("Could not publish GUI launcher readiness: \(error)")
+    }
+
+    guard let testBundle = Bundle(url: testBundleURL) else {
+        fail("Could not open the GUI XCTest bundle")
+    }
+    do {
+        try testBundle.loadAndReturnError()
+    } catch {
+        fail("Could not load the GUI XCTest bundle: \(error)")
+    }
+
+    let expression: NSRegularExpression
+    do {
+        expression = try NSRegularExpression(pattern: filter)
+    } catch {
+        fail("Invalid GUI XCTest filter: \(error)")
+    }
+
+    let selected = XCTestSuite(name: "Selected GUI tests")
+    for test in leafTests(in: XCTestSuite.default) {
+        let typeName = String(reflecting: type(of: test))
+        guard typeName.hasPrefix("GhosthubTerminalSmokeTests.") else {
+            continue
+        }
+        let identity = "\(typeName)/\(test.name)"
+        let range = NSRange(identity.startIndex..., in: identity)
+        if expression.firstMatch(in: identity, range: range) != nil {
+            selected.addTest(test)
+        }
+    }
+    guard selected.testCaseCount > 0 else {
+        fail("The GUI XCTest filter selected no tests")
+    }
+
+    selected.run()
+    guard let testRun = selected.testRun else {
+        fail("GUI XCTest did not report a result")
+    }
+    let status = testRun.hasSucceeded && testRun.skipCount == 0 ? 0 : 1
+    do {
+        try "\(status)\n".write(
+            to: resultFileURL,
+            atomically: true,
+            encoding: .utf8
+        )
+    } catch {
+        fail("Could not publish GUI XCTest result: \(error)")
+    }
+    return Int32(status)
+}
