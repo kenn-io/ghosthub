@@ -10,6 +10,14 @@ guard CommandLine.arguments.count == 7 else {
     exit(2)
 }
 
+// Keep the authenticated process-group leader available while cancellation
+// drains its children. An executed helper resets these caught handlers to the
+// default disposition, while cleanup can still authenticate this application
+// and escalate the complete group to SIGKILL.
+for signalNumber in [SIGINT, SIGTERM, SIGHUP] {
+    signal(signalNumber) { _ in }
+}
+
 private func loaderError() -> String {
     guard let message = dlerror() else {
         return "unknown dynamic-loader error"
