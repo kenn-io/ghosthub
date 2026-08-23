@@ -72,6 +72,13 @@ verified_launcher_signal() {
     "$launcher_pid" "$signal_number"
 }
 
+# shellcheck disable=SC2329  # invoked by stop_launcher below
+retained_group_signal() {
+  local launcher_pid=$1
+  local signal_number=$2
+  "$launch_controller" signal-process-group "$launcher_pid" "$signal_number"
+}
+
 # shellcheck disable=SC2329  # invoked by cleanup_launcher below
 stop_launcher() {
   if [[ ! -s "$launcher_pid_file" ]]; then
@@ -90,14 +97,24 @@ stop_launcher() {
   else
     launcher_signal_status=$?
     if (( launcher_signal_status == 3 )); then
-      rm -f -- "$launcher_pid_file"
-      return 0
+      if retained_group_signal "$launcher_pid" 0; then
+        :
+      else
+        launcher_signal_status=$?
+        if (( launcher_signal_status == 3 )); then
+          rm -f -- "$launcher_pid_file"
+          return 0
+        fi
+        echo "Could not inspect the serialized GUI test process group." >&2
+        return 1
+      fi
+    else
+      echo "Could not authenticate the serialized GUI test launcher." >&2
+      return 1
     fi
-    echo "Could not authenticate the serialized GUI test launcher." >&2
-    return 1
   fi
 
-  if verified_launcher_signal "$launcher_pid" 15; then
+  if retained_group_signal "$launcher_pid" 15; then
     :
   else
     launcher_signal_status=$?
@@ -109,7 +126,7 @@ stop_launcher() {
     return 1
   fi
   for _ in {1..10}; do
-    if verified_launcher_signal "$launcher_pid" 0; then
+    if retained_group_signal "$launcher_pid" 0; then
       sleep 0.1
       continue
     fi
@@ -121,7 +138,7 @@ stop_launcher() {
     echo "Could not authenticate the serialized GUI test launcher." >&2
     return 1
   done
-  if verified_launcher_signal "$launcher_pid" 9; then
+  if retained_group_signal "$launcher_pid" 9; then
     :
   else
     launcher_signal_status=$?
@@ -133,7 +150,7 @@ stop_launcher() {
     return 1
   fi
   for _ in {1..5}; do
-    if verified_launcher_signal "$launcher_pid" 0; then
+    if retained_group_signal "$launcher_pid" 0; then
       sleep 0.1
       continue
     fi

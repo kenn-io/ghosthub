@@ -13,6 +13,10 @@ LAUNCH_BOOTSTRAP = (
     Path(__file__).resolve().parents[2]
     / ".github/actions/run-gui-terminal-tests/LaunchBootstrap.swift"
 )
+LAUNCH_CONTROLLER = (
+    Path(__file__).resolve().parents[2]
+    / ".github/actions/run-gui-terminal-tests/LaunchController.swift"
+)
 
 
 @pytest.mark.parametrize(
@@ -25,6 +29,7 @@ def test_launcher_anchors_its_process_group_until_cleanup(
     runner_returns: bool,
 ) -> None:
     launcher = tmp_path / "launcher"
+    controller = tmp_path / "controller"
     library = tmp_path / "test-launcher.dylib"
     child_pid_file = tmp_path / "child.pid"
     completion_file = tmp_path / "completion"
@@ -69,6 +74,19 @@ def test_launcher_anchors_its_process_group_until_cleanup(
             str(LAUNCH_BOOTSTRAP),
             "-o",
             str(launcher),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "swiftc",
+            "-O",
+            "-framework",
+            "AppKit",
+            str(LAUNCH_CONTROLLER),
+            "-o",
+            str(controller),
         ],
         check=True,
     )
@@ -123,13 +141,39 @@ def test_launcher_anchors_its_process_group_until_cleanup(
         time.sleep(0.1)
         assert process.poll() is None
 
-        os.killpg(process.pid, signal.SIGTERM)
+        if runner_returns:
+            os.kill(process.pid, signal.SIGKILL)
+            assert process.wait(timeout=5) == -signal.SIGKILL
+            subprocess.run(
+                [str(controller), "signal-process-group", str(process.pid), "0"],
+                check=True,
+            )
+
+        subprocess.run(
+            [
+                str(controller),
+                "signal-process-group",
+                str(process.pid),
+                str(signal.SIGTERM),
+            ],
+            check=True,
+        )
         time.sleep(0.2)
-        assert process.poll() is None
+        if not runner_returns:
+            assert process.poll() is None
         os.kill(child_pid, 0)
 
-        os.killpg(process.pid, signal.SIGKILL)
-        assert process.wait(timeout=5) == -signal.SIGKILL
+        subprocess.run(
+            [
+                str(controller),
+                "signal-process-group",
+                str(process.pid),
+                str(signal.SIGKILL),
+            ],
+            check=True,
+        )
+        if not runner_returns:
+            assert process.wait(timeout=5) == -signal.SIGKILL
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             try:
@@ -140,6 +184,9 @@ def test_launcher_anchors_its_process_group_until_cleanup(
         else:
             raise AssertionError("launcher child survived process-group cleanup")
     finally:
-        if process.poll() is None:
+        try:
             os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if process.poll() is None:
             process.wait(timeout=5)

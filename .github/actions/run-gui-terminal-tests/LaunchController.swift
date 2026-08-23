@@ -25,6 +25,19 @@ private let optionalLauncherEnvironmentNames = [
 
 let launcherAbsentStatus: Int32 = 3
 
+func signalProcessGroup(
+    processGroup: pid_t,
+    signalNumber: Int32
+) -> Int32 {
+    if kill(-processGroup, signalNumber) == 0 {
+        return 0
+    }
+    if errno == ESRCH {
+        return launcherAbsentStatus
+    }
+    return 1
+}
+
 func signalVerifiedLauncher(
     bundleIdentifier: String,
     applicationURL: URL,
@@ -48,13 +61,33 @@ func signalVerifiedLauncher(
     guard processGroup == launcherPID else {
         return 1
     }
-    if kill(-launcherPID, signalNumber) == 0 {
-        return 0
+    return signalProcessGroup(
+        processGroup: processGroup,
+        signalNumber: signalNumber
+    )
+}
+
+if CommandLine.arguments.count == 4,
+   CommandLine.arguments[1] == "signal-process-group" {
+    guard let processGroup = pid_t(CommandLine.arguments[2]),
+          processGroup > 0,
+          let signalNumber = Int32(CommandLine.arguments[3]),
+          [0, SIGINT, SIGTERM, SIGHUP, SIGKILL].contains(signalNumber)
+    else {
+        fputs(
+            "usage: launch-controller signal-process-group process-group signal\n",
+            stderr
+        )
+        exit(2)
     }
-    if errno == ESRCH {
-        return launcherAbsentStatus
+    let status = signalProcessGroup(
+        processGroup: processGroup,
+        signalNumber: signalNumber
+    )
+    if status == 1 {
+        perror("Could not signal GUI launcher process group")
     }
-    return 1
+    exit(status)
 }
 
 if CommandLine.arguments.count == 6,
@@ -272,16 +305,27 @@ withExtendedLifetime(signalSources) {
                 cancelled: state.cancellationStatus != nil
             )
         }
-        guard launcherState.running, let launcherPID = launcherState.pid else {
+        guard let launcherPID = launcherState.pid else {
+            break
+        }
+        let groupStatus = signalProcessGroup(
+            processGroup: launcherPID,
+            signalNumber: 0
+        )
+        if groupStatus == launcherAbsentStatus {
+            break
+        }
+        if groupStatus == 1 {
+            state.queue.sync {
+                state.failure = "Could not inspect the GUI launcher process group"
+            }
             break
         }
         if stopStartedAt == nil,
-           launcherState.cancelled || FileManager.default
+           !launcherState.running || launcherState.cancelled || FileManager.default
            .fileExists(atPath: completionFileURL.path) {
-            let signalStatus = signalVerifiedLauncher(
-                bundleIdentifier: bundleIdentifier,
-                applicationURL: applicationURL,
-                launcherPID: launcherPID,
+            let signalStatus = signalProcessGroup(
+                processGroup: launcherPID,
                 signalNumber: SIGTERM
             )
             if signalStatus == 1 {
@@ -294,10 +338,8 @@ withExtendedLifetime(signalSources) {
         if let stopStartedAt,
            !killSent,
            Date().timeIntervalSince(stopStartedAt) >= 2 {
-            let signalStatus = signalVerifiedLauncher(
-                bundleIdentifier: bundleIdentifier,
-                applicationURL: applicationURL,
-                launcherPID: launcherPID,
+            let signalStatus = signalProcessGroup(
+                processGroup: launcherPID,
                 signalNumber: SIGKILL
             )
             if signalStatus == 1 {
@@ -315,30 +357,28 @@ withExtendedLifetime(signalSources) {
     }
 }
 let finalState = state.queue.sync {
-    let launcherTerminated: Bool
+    let processGroupTerminated: Bool
     if let launcherPID = state.launcherPID {
-        launcherTerminated = signalVerifiedLauncher(
-            bundleIdentifier: bundleIdentifier,
-            applicationURL: applicationURL,
-            launcherPID: launcherPID,
+        processGroupTerminated = signalProcessGroup(
+            processGroup: launcherPID,
             signalNumber: 0
         ) == launcherAbsentStatus
     } else {
-        launcherTerminated = true
+        processGroupTerminated = true
     }
-    if launcherTerminated {
+    if processGroupTerminated {
         state.launcherPID = nil
     } else if state.failure == nil {
         state.failure =
-            "GUI launcher remained running after termination was reported"
+            "GUI launcher process group remained after cleanup"
     }
     return (
         cancellationStatus: state.cancellationStatus,
         failure: state.failure,
-        launcherTerminated: launcherTerminated
+        processGroupTerminated: processGroupTerminated
     )
 }
-if finalState.launcherTerminated {
+if finalState.processGroupTerminated {
     _ = try? FileManager.default.removeItem(at: pidFileURL)
 }
 if let failure = finalState.failure {
