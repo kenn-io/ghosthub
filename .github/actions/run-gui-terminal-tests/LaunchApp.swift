@@ -57,7 +57,10 @@ private func executeGUITests() throws -> Int32 {
     }
 
     let application = NSApplication.shared
-    guard application.setActivationPolicy(.regular) else {
+    guard ensureRegularActivationPolicy(
+        currentPolicy: application.activationPolicy(),
+        transition: { application.setActivationPolicy(.regular) }
+    ) else {
         try fail("Could not activate the GUI test application")
     }
     application.finishLaunching()

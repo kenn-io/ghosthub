@@ -257,7 +257,10 @@ plutil -insert NSPrincipalClass -string NSApplication "$launcher_info"
   -L "$xctest_libraries" \
   -Xlinker -rpath -Xlinker "$xctest_frameworks" \
   -Xlinker -rpath -Xlinker "$xctest_libraries" \
-  -emit-library "$action_root/LaunchApp.swift" -o "$launcher_library"
+  -emit-library \
+  "$action_root/ActivationPolicy.swift" \
+  "$action_root/LaunchApp.swift" \
+  -o "$launcher_library"
 chmod 700 "$launcher_library"
 /usr/bin/xcrun swiftc -O -framework AppKit \
   "$action_root/LaunchBootstrap.swift" -o "$launcher_bootstrap"

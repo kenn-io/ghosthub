@@ -13,10 +13,58 @@ LAUNCH_BOOTSTRAP = (
     Path(__file__).resolve().parents[2]
     / ".github/actions/run-gui-terminal-tests/LaunchBootstrap.swift"
 )
+ACTIVATION_POLICY = (
+    Path(__file__).resolve().parents[2]
+    / ".github/actions/run-gui-terminal-tests/ActivationPolicy.swift"
+)
 LAUNCH_CONTROLLER = (
     Path(__file__).resolve().parents[2]
     / ".github/actions/run-gui-terminal-tests/LaunchController.swift"
 )
+
+
+def test_already_regular_activation_policy_is_accepted(tmp_path: Path) -> None:
+    probe_source = tmp_path / "ActivationPolicyProbe.swift"
+    probe = tmp_path / "activation-policy-probe"
+    probe_source.write_text(
+        """
+        import AppKit
+        import Darwin
+
+        @main
+        enum ActivationPolicyProbe {
+            static func main() {
+                var transitionAttempted = false
+                let ready = ensureRegularActivationPolicy(
+                    currentPolicy: .regular
+                ) {
+                    transitionAttempted = true
+                    return false
+                }
+                guard ready, !transitionAttempted else {
+                    exit(1)
+                }
+            }
+        }
+        """
+    )
+    compilation = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "swiftc",
+            "-O",
+            "-framework",
+            "AppKit",
+            str(ACTIVATION_POLICY),
+            str(probe_source),
+            "-o",
+            str(probe),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert compilation.returncode == 0, compilation.stderr
+    subprocess.run([str(probe)], check=True)
 
 
 @pytest.mark.parametrize(
