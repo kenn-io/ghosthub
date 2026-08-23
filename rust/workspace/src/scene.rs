@@ -5693,13 +5693,24 @@ pub(crate) fn create_fresh(
             "WSL restarted; refresh before creating the session",
         ));
     }
-    if scene.navigation_generation.load(Ordering::Acquire) != navigation_generation {
-        return Err(WorkspaceError::new("tmux creation was superseded"));
-    }
-    let (authority, receipt, term) = request
-        .host
-        .create_once(before.endpoint(), before.runtime(), request.name.clone())
-        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    // Fence the commit: the liveness re-check and create_once are atomic
+    // under the live-navigation lock, so a scene that closed before the
+    // commit never creates a host-side session. (A close landing while
+    // create_once holds the fence still leaves an orphan the post-create
+    // check cannot undo — abort-cleanup is tracked follow-up.)
+    let (authority, receipt, term) = {
+        let _navigation = lock_live_navigation(scene)
+            .map_err(|_| WorkspaceError::new("the scene closed before the session was created"))?;
+        if cancellation.is_cancelled()
+            || scene.navigation_generation.load(Ordering::Acquire) != navigation_generation
+        {
+            return Err(WorkspaceError::new("tmux creation was superseded"));
+        }
+        request
+            .host
+            .create_once(before.endpoint(), before.runtime(), request.name.clone())
+            .map_err(|error| WorkspaceError::new(error.to_string()))?
+    };
     let geometry = *scene
         .terminal_geometry
         .lock()
