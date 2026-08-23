@@ -5354,6 +5354,10 @@ pub(crate) fn run_zellij_create(
     );
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one Herdr create: fenced commit, then startup-discovery poll"
+)]
 pub(crate) fn create_herdr_fresh(
     scene: &Scene,
     request: &HerdrCreateRequest,
@@ -5393,42 +5397,55 @@ pub(crate) fn create_herdr_fresh(
         .iter()
         .find(|session| session.name() == request.name.as_str());
     validate_herdr_launch_precondition(&request.precondition, current)?;
-    if scene.navigation_generation.load(Ordering::Acquire) != navigation_generation {
-        return Err(WorkspaceError::new("Herdr creation was superseded"));
-    }
-    let (worker, geometry) = with_herdr_launch_fence(
-        &scene.runtime.herdr_lifecycle,
-        &request.operation_key(),
-        || {
-            WorkspaceError::new(
-                "Herdr session lifecycle is changing; wait for inventory to refresh",
-            )
-        },
-        || {
-            let authority = request.host.herdr_launch_once(
-                before.endpoint(),
-                &request.executable,
-                request.name.clone(),
-                request.precondition.is_default(),
-                request.term,
-            );
-            let geometry = *scene
-                .terminal_geometry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let worker = TerminalWorker::launch_herdr_with_metadata(
-                authority,
-                geometry.grid,
-                geometry.sequence,
-                geometry.pixels,
-                ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
-                current_default_colors(&scene.runtime),
-                current_default_cursor_shape(&scene.runtime),
-            )
-            .map_err(|error| WorkspaceError::new(error.to_string()))?;
-            Ok((worker, geometry))
-        },
-    )?;
+    // Fence the commit: the liveness re-check and the launch are atomic
+    // under the live-navigation lock, so a scene closed before the commit
+    // never starts a Herdr session. Released before the slow startup poll
+    // below so discovery never stalls closure or navigation. (navigation →
+    // herdr_lifecycle is safe: herdr_lifecycle is a leaf that never
+    // acquires navigation.)
+    let (worker, geometry) = {
+        let _navigation = lock_live_navigation(scene).map_err(|_| {
+            WorkspaceError::new("the scene closed before the Herdr session was created")
+        })?;
+        if cancellation.is_cancelled()
+            || scene.navigation_generation.load(Ordering::Acquire) != navigation_generation
+        {
+            return Err(WorkspaceError::new("Herdr creation was superseded"));
+        }
+        with_herdr_launch_fence(
+            &scene.runtime.herdr_lifecycle,
+            &request.operation_key(),
+            || {
+                WorkspaceError::new(
+                    "Herdr session lifecycle is changing; wait for inventory to refresh",
+                )
+            },
+            || {
+                let authority = request.host.herdr_launch_once(
+                    before.endpoint(),
+                    &request.executable,
+                    request.name.clone(),
+                    request.precondition.is_default(),
+                    request.term,
+                );
+                let geometry = *scene
+                    .terminal_geometry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let worker = TerminalWorker::launch_herdr_with_metadata(
+                    authority,
+                    geometry.grid,
+                    geometry.sequence,
+                    geometry.pixels,
+                    ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+                    current_default_colors(&scene.runtime),
+                    current_default_cursor_shape(&scene.runtime),
+                )
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+                Ok((worker, geometry))
+            },
+        )?
+    };
 
     let expected_name = request.name.as_str();
     let discovered = poll_session_startup("Zellij", cancellation, &HERDR_STARTUP_BACKOFF, || {
@@ -5510,15 +5527,25 @@ pub(crate) fn create_zellij_fresh(
             "a Zellij session with this name already exists",
         ));
     }
-    if scene.navigation_generation.load(Ordering::Acquire) != navigation_generation {
-        return Err(WorkspaceError::new("Zellij creation was superseded"));
-    }
-    let authority = request.host.zellij_launch_once(
-        before.endpoint(),
-        &request.executable,
-        request.name.clone(),
-        request.term,
-    );
+    // Fence the commit: the liveness re-check and zellij_launch_once are
+    // atomic under the live-navigation lock, so a scene closed before the
+    // commit never starts a Zellij session.
+    let authority = {
+        let _navigation = lock_live_navigation(scene).map_err(|_| {
+            WorkspaceError::new("the scene closed before the Zellij session was created")
+        })?;
+        if cancellation.is_cancelled()
+            || scene.navigation_generation.load(Ordering::Acquire) != navigation_generation
+        {
+            return Err(WorkspaceError::new("Zellij creation was superseded"));
+        }
+        request.host.zellij_launch_once(
+            before.endpoint(),
+            &request.executable,
+            request.name.clone(),
+            request.term,
+        )
+    };
     let geometry = *scene
         .terminal_geometry
         .lock()
