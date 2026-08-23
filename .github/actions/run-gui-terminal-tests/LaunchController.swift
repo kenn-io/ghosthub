@@ -24,6 +24,8 @@ private let optionalLauncherEnvironmentNames = [
 ]
 
 let launcherAbsentStatus: Int32 = 3
+let gracefulStopInterval: TimeInterval = 2
+let forcedStopInterval: TimeInterval = 1
 
 func signalProcessGroup(
     processGroup: pid_t,
@@ -169,7 +171,9 @@ let workspacePath = URL(
 ).standardizedFileURL.path
 launcherEnvironment["PWD"] = workspacePath
 launcherEnvironment["GITHUB_WORKSPACE"] = workspacePath
-launcherEnvironment["GHOSTHUB_TEST_STOP_GRACE"] = "2"
+launcherEnvironment["GHOSTHUB_TEST_STOP_GRACE"] = String(
+    Int(gracefulStopInterval)
+)
 let state = LaunchState()
 let signalStatuses: [(Int32, Int32)] = [
     (SIGINT, 130),
@@ -292,8 +296,8 @@ withExtendedLifetime(signalSources) {
             before: Date(timeIntervalSinceNow: 0.01)
         )
     }
-    var stopStartedAt: Date?
-    var killSent = false
+    var stopStartedAt: TimeInterval?
+    var killSentAt: TimeInterval?
     while true {
         let launcherState: (running: Bool, pid: pid_t?, cancelled: Bool) = state.queue.sync {
             guard let launcherApplication = state.launcherApplication else {
@@ -321,6 +325,7 @@ withExtendedLifetime(signalSources) {
             }
             break
         }
+        let now = ProcessInfo.processInfo.systemUptime
         if stopStartedAt == nil,
            !launcherState.running || launcherState.cancelled || FileManager.default
            .fileExists(atPath: completionFileURL.path) {
@@ -333,11 +338,11 @@ withExtendedLifetime(signalSources) {
                     state.failure = "Could not stop the GUI launcher process group"
                 }
             }
-            stopStartedAt = Date()
+            stopStartedAt = now
         }
         if let stopStartedAt,
-           !killSent,
-           Date().timeIntervalSince(stopStartedAt) >= 2 {
+           killSentAt == nil,
+           now - stopStartedAt >= gracefulStopInterval {
             let signalStatus = signalProcessGroup(
                 processGroup: launcherPID,
                 signalNumber: SIGKILL
@@ -348,7 +353,15 @@ withExtendedLifetime(signalSources) {
                 }
                 break
             }
-            killSent = true
+            killSentAt = now
+        }
+        if let killSentAt,
+           now - killSentAt >= forcedStopInterval {
+            state.queue.sync {
+                state.failure =
+                    "GUI launcher process group remained after SIGKILL"
+            }
+            break
         }
         RunLoop.current.run(
             mode: .default,
