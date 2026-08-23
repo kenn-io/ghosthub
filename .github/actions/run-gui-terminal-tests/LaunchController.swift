@@ -111,12 +111,13 @@ let applicationURL = URL(
 ).standardizedFileURL
 let pidFileURL = URL(fileURLWithPath: CommandLine.arguments[3])
 let suppliedArguments = Array(CommandLine.arguments.dropFirst(4))
-let launcherArgumentCount = 6
+let launcherArgumentCount = 7
 guard suppliedArguments.count == launcherArgumentCount else {
     fputs("GUI launcher arguments are incomplete.\n", stderr)
     exit(2)
 }
 let applicationArguments = suppliedArguments
+let completionFileURL = URL(fileURLWithPath: applicationArguments[6])
 let controllerEnvironment = ProcessInfo.processInfo.environment
 var launcherEnvironment: [String: String] = [:]
 for name in requiredLauncherEnvironmentNames {
@@ -258,15 +259,54 @@ withExtendedLifetime(signalSources) {
             before: Date(timeIntervalSinceNow: 0.01)
         )
     }
+    var stopStartedAt: Date?
+    var killSent = false
     while true {
-        let launcherRunning = state.queue.sync {
+        let launcherState: (running: Bool, pid: pid_t?, cancelled: Bool) = state.queue.sync {
             guard let launcherApplication = state.launcherApplication else {
-                return false
+                return (running: false, pid: nil, cancelled: false)
             }
-            return !launcherApplication.isTerminated
+            return (
+                running: !launcherApplication.isTerminated,
+                pid: state.launcherPID,
+                cancelled: state.cancellationStatus != nil
+            )
         }
-        if !launcherRunning {
+        guard launcherState.running, let launcherPID = launcherState.pid else {
             break
+        }
+        if stopStartedAt == nil,
+           launcherState.cancelled || FileManager.default
+           .fileExists(atPath: completionFileURL.path) {
+            let signalStatus = signalVerifiedLauncher(
+                bundleIdentifier: bundleIdentifier,
+                applicationURL: applicationURL,
+                launcherPID: launcherPID,
+                signalNumber: SIGTERM
+            )
+            if signalStatus == 1 {
+                state.queue.sync {
+                    state.failure = "Could not stop the GUI launcher process group"
+                }
+            }
+            stopStartedAt = Date()
+        }
+        if let stopStartedAt,
+           !killSent,
+           Date().timeIntervalSince(stopStartedAt) >= 2 {
+            let signalStatus = signalVerifiedLauncher(
+                bundleIdentifier: bundleIdentifier,
+                applicationURL: applicationURL,
+                launcherPID: launcherPID,
+                signalNumber: SIGKILL
+            )
+            if signalStatus == 1 {
+                state.queue.sync {
+                    state.failure = "Could not kill the GUI launcher process group"
+                }
+                break
+            }
+            killSent = true
         }
         RunLoop.current.run(
             mode: .default,

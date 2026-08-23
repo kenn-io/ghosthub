@@ -3,22 +3,28 @@ import Darwin
 import Foundation
 import XCTest
 
-private func fail(_ message: String, status: Int32 = 1) -> Never {
-    FileHandle.standardError.write(Data("\(message)\n".utf8))
-    exit(status)
+private struct LauncherFailure: Error {
+    let message: String
+    let status: Int32
 }
 
-private func redirectOutput(to path: String) {
+private func fail(_ message: String, status: Int32 = 1) throws -> Never {
+    throw LauncherFailure(message: message, status: status)
+}
+
+private func redirectOutput(to path: String) throws {
     let descriptor = open(path, O_WRONLY | O_APPEND)
     guard descriptor >= 0 else {
-        perror("Could not open GUI test output")
-        exit(1)
+        try fail(
+            "Could not open GUI test output: \(String(cString: strerror(errno)))"
+        )
     }
     guard dup2(descriptor, STDOUT_FILENO) >= 0,
           dup2(descriptor, STDERR_FILENO) >= 0
     else {
-        perror("Could not redirect GUI test output")
-        exit(1)
+        let message = String(cString: strerror(errno))
+        close(descriptor)
+        try fail("Could not redirect GUI test output: \(message)")
     }
     close(descriptor)
 }
@@ -30,11 +36,10 @@ private func leafTests(in test: XCTest) -> [XCTest] {
     return suite.tests.flatMap(leafTests(in:))
 }
 
-@_cdecl("ghosthub_run_gui_tests")
-public func runGUITests() -> Int32 {
-    guard CommandLine.arguments.count == 7 else {
-        fail(
-            "usage: launcher ready-file result-file output-file test-bundle filter workspace",
+private func executeGUITests() throws -> Int32 {
+    guard CommandLine.arguments.count == 8 else {
+        try fail(
+            "usage: launcher ready-file result-file output-file test-bundle filter workspace completion-file",
             status: 2
         )
     }
@@ -45,15 +50,15 @@ public func runGUITests() -> Int32 {
     let testBundleURL = URL(fileURLWithPath: CommandLine.arguments[4])
     let filter = CommandLine.arguments[5]
 
-    redirectOutput(to: outputPath)
+    try redirectOutput(to: outputPath)
 
     guard getpgrp() == getpid() else {
-        fail("GUI launcher process group was not isolated")
+        try fail("GUI launcher process group was not isolated")
     }
 
     let application = NSApplication.shared
     guard application.setActivationPolicy(.regular) else {
-        fail("Could not activate the GUI test application")
+        try fail("Could not activate the GUI test application")
     }
     application.finishLaunching()
     application.activate(ignoringOtherApps: true)
@@ -61,23 +66,23 @@ public func runGUITests() -> Int32 {
     do {
         try Data().write(to: readyFileURL, options: .atomic)
     } catch {
-        fail("Could not publish GUI launcher readiness: \(error)")
+        try fail("Could not publish GUI launcher readiness: \(error)")
     }
 
     guard let testBundle = Bundle(url: testBundleURL) else {
-        fail("Could not open the GUI XCTest bundle")
+        try fail("Could not open the GUI XCTest bundle")
     }
     do {
         try testBundle.loadAndReturnError()
     } catch {
-        fail("Could not load the GUI XCTest bundle: \(error)")
+        try fail("Could not load the GUI XCTest bundle: \(error)")
     }
 
     let expression: NSRegularExpression
     do {
         expression = try NSRegularExpression(pattern: filter)
     } catch {
-        fail("Invalid GUI XCTest filter: \(error)")
+        try fail("Invalid GUI XCTest filter: \(error)")
     }
 
     let selected = XCTestSuite(name: "Selected GUI tests")
@@ -93,12 +98,12 @@ public func runGUITests() -> Int32 {
         }
     }
     guard selected.testCaseCount > 0 else {
-        fail("The GUI XCTest filter selected no tests")
+        try fail("The GUI XCTest filter selected no tests")
     }
 
     selected.run()
     guard let testRun = selected.testRun else {
-        fail("GUI XCTest did not report a result")
+        try fail("GUI XCTest did not report a result")
     }
     let status = testRun.hasSucceeded && testRun.skipCount == 0 ? 0 : 1
     do {
@@ -108,7 +113,20 @@ public func runGUITests() -> Int32 {
             encoding: .utf8
         )
     } catch {
-        fail("Could not publish GUI XCTest result: \(error)")
+        try fail("Could not publish GUI XCTest result: \(error)")
     }
     return Int32(status)
+}
+
+@_cdecl("ghosthub_run_gui_tests")
+public func runGUITests() -> Int32 {
+    do {
+        return try executeGUITests()
+    } catch let failure as LauncherFailure {
+        FileHandle.standardError.write(Data("\(failure.message)\n".utf8))
+        return failure.status
+    } catch {
+        FileHandle.standardError.write(Data("Unexpected GUI test failure: \(error)\n".utf8))
+        return 1
+    }
 }

@@ -2,9 +2,9 @@ import AppKit
 import Darwin
 import Foundation
 
-guard CommandLine.arguments.count == 7 else {
+guard CommandLine.arguments.count == 8 else {
     fputs(
-        "usage: launcher ready-file result-file output-file test-bundle filter workspace\n",
+        "usage: launcher ready-file result-file output-file test-bundle filter workspace completion-file\n",
         stderr
     )
     exit(2)
@@ -68,4 +68,22 @@ let runTests = unsafeBitCast(
     symbol,
     to: (@convention(c) () -> Int32).self
 )
-exit(runTests())
+let testStatus = runTests()
+do {
+    try "\(testStatus)\n".write(
+        toFile: CommandLine.arguments[7],
+        atomically: true,
+        encoding: .utf8
+    )
+} catch {
+    fputs("Could not publish GUI test completion: \(error)\n", stderr)
+    _ = kill(-getpgrp(), SIGKILL)
+    exit(1)
+}
+
+// The controller owns termination after the test result is published. Retain
+// this authenticated identity so it can drain and, if necessary, kill every
+// remaining member of the detached process group.
+while true {
+    pause()
+}

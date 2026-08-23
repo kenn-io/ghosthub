@@ -29,6 +29,7 @@ launcher_bundle_identifier="io.kenn.ghosthub-ci-gui-launcher.$(/usr/bin/uuidgen)
 launcher_pid_file="$launcher_root/launcher.pid"
 launcher_output="$launcher_root/test-output.log"
 result_file="$launcher_root/result"
+completion_file="$launcher_root/completion"
 xctest_frameworks="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/Library/Frameworks"
 xctest_libraries="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/usr/lib"
 test_bundle="$(swift build --show-bin-path)/GhosthubPackageTests.xctest"
@@ -263,7 +264,8 @@ set -m
   "$launcher_output" \
   "$test_bundle" \
   "$gui_test_filter" \
-  "$GITHUB_WORKSPACE" &
+  "$GITHUB_WORKSPACE" \
+  "$completion_file" &
 controller_pid=$!
 set +m
 controller_starting=0

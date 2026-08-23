@@ -6,6 +6,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 
 LAUNCH_BOOTSTRAP = (
     Path(__file__).resolve().parents[2]
@@ -13,12 +15,19 @@ LAUNCH_BOOTSTRAP = (
 )
 
 
-def test_launcher_survives_term_until_its_process_group_is_drained(
+@pytest.mark.parametrize(
+    "runner_returns",
+    [False, True],
+    ids=["runner-active", "runner-returned"],
+)
+def test_launcher_anchors_its_process_group_until_cleanup(
     tmp_path: Path,
+    runner_returns: bool,
 ) -> None:
     launcher = tmp_path / "launcher"
     library = tmp_path / "test-launcher.dylib"
     child_pid_file = tmp_path / "child.pid"
+    completion_file = tmp_path / "completion"
     output = tmp_path / "output.log"
     home = tmp_path / "home"
     temporary = tmp_path / "tmp"
@@ -45,6 +54,7 @@ def test_launcher_survives_term_until_its_process_group_is_drained(
             if (pid_file == NULL) return 1;
             fprintf(pid_file, "%d\\n", child_pid);
             if (fclose(pid_file) != 0) return 1;
+            if (getenv("GHOSTHUB_TEST_RUNNER_RETURNS") != NULL) return 0;
             while (1) pause();
         }
         """
@@ -82,6 +92,8 @@ def test_launcher_survives_term_until_its_process_group_is_drained(
         "CFFIXED_USER_HOME": str(home),
         "GHOSTHUB_TEST_CHILD_PID_FILE": str(child_pid_file),
     }
+    if runner_returns:
+        environment["GHOSTHUB_TEST_RUNNER_RETURNS"] = "1"
     process = subprocess.Popen(
         [
             str(launcher),
@@ -91,6 +103,7 @@ def test_launcher_survives_term_until_its_process_group_is_drained(
             str(tmp_path / "unused.xctest"),
             "unused-filter",
             str(tmp_path),
+            str(completion_file),
         ],
         env=environment,
     )
@@ -102,6 +115,13 @@ def test_launcher_survives_term_until_its_process_group_is_drained(
         assert child_pid_file.exists(), output.read_text()
         child_pid = int(child_pid_file.read_text().strip())
         assert os.getpgid(process.pid) == process.pid
+        if runner_returns:
+            deadline = time.monotonic() + 5
+            while not completion_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert completion_file.read_text().strip() == "0"
+        time.sleep(0.1)
+        assert process.poll() is None
 
         os.killpg(process.pid, signal.SIGTERM)
         time.sleep(0.2)
