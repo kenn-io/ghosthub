@@ -2,7 +2,43 @@ import AppKit
 import Darwin
 import Foundation
 
+private let requiredLauncherEnvironmentNames = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "CFFIXED_USER_HOME",
+    "DEVELOPER_DIR",
+    "GHOSTHUB_CI_STATE_ROOT",
+    "LIBGHOSTTY_XCFRAMEWORK_TARGET",
+    "LIBGHOSTTY_ZIG",
+    "RUNNER_TEMP",
+    "SHELL",
+    "TMUX_TMPDIR",
+    "GHOSTHUB_TEST_TMUX_RUN_ID",
+    "GHOSTTY_RESOURCES_DIR",
+]
+private let optionalLauncherEnvironmentNames = [
+    "RUNNER_ENVIRONMENT",
+    "CI",
+    "GITHUB_ACTIONS",
+]
+
 let launcherAbsentStatus: Int32 = 3
+let gracefulStopInterval: TimeInterval = 2
+let forcedStopInterval: TimeInterval = 1
+
+func signalProcessGroup(
+    processGroup: pid_t,
+    signalNumber: Int32
+) -> Int32 {
+    if kill(-processGroup, signalNumber) == 0 {
+        return 0
+    }
+    if errno == ESRCH {
+        return launcherAbsentStatus
+    }
+    return 1
+}
 
 func signalVerifiedLauncher(
     bundleIdentifier: String,
@@ -27,13 +63,33 @@ func signalVerifiedLauncher(
     guard processGroup == launcherPID else {
         return 1
     }
-    if kill(-launcherPID, signalNumber) == 0 {
-        return 0
+    return signalProcessGroup(
+        processGroup: processGroup,
+        signalNumber: signalNumber
+    )
+}
+
+if CommandLine.arguments.count == 4,
+   CommandLine.arguments[1] == "signal-process-group" {
+    guard let processGroup = pid_t(CommandLine.arguments[2]),
+          processGroup > 0,
+          let signalNumber = Int32(CommandLine.arguments[3]),
+          [0, SIGINT, SIGTERM, SIGHUP, SIGKILL].contains(signalNumber)
+    else {
+        fputs(
+            "usage: launch-controller signal-process-group process-group signal\n",
+            stderr
+        )
+        exit(2)
     }
-    if errno == ESRCH {
-        return launcherAbsentStatus
+    let status = signalProcessGroup(
+        processGroup: processGroup,
+        signalNumber: signalNumber
+    )
+    if status == 1 {
+        perror("Could not signal GUI launcher process group")
     }
-    return 1
+    exit(status)
 }
 
 if CommandLine.arguments.count == 6,
@@ -76,9 +132,9 @@ final class LaunchState: @unchecked Sendable {
     var failure: String?
 }
 
-guard CommandLine.arguments.count >= 7 else {
+guard CommandLine.arguments.count >= 5 else {
     fputs(
-        "usage: launch-controller bundle-id app pid-file stdout stderr arguments...\n",
+        "usage: launch-controller bundle-id app pid-file arguments...\n",
         stderr
     )
     exit(2)
@@ -89,9 +145,35 @@ let applicationURL = URL(
     fileURLWithPath: CommandLine.arguments[2]
 ).standardizedFileURL
 let pidFileURL = URL(fileURLWithPath: CommandLine.arguments[3])
-let standardOutputPath = CommandLine.arguments[4]
-let standardErrorPath = CommandLine.arguments[5]
-let applicationArguments = Array(CommandLine.arguments.dropFirst(6))
+let suppliedArguments = Array(CommandLine.arguments.dropFirst(4))
+let launcherArgumentCount = 7
+guard suppliedArguments.count == launcherArgumentCount else {
+    fputs("GUI launcher arguments are incomplete.\n", stderr)
+    exit(2)
+}
+let applicationArguments = suppliedArguments
+let completionFileURL = URL(fileURLWithPath: applicationArguments[6])
+let controllerEnvironment = ProcessInfo.processInfo.environment
+var launcherEnvironment: [String: String] = [:]
+for name in requiredLauncherEnvironmentNames {
+    guard let value = controllerEnvironment[name], !value.isEmpty else {
+        fputs("GUI launcher environment is missing \(name).\n", stderr)
+        exit(2)
+    }
+    launcherEnvironment[name] = value
+}
+for name in optionalLauncherEnvironmentNames {
+    launcherEnvironment[name] = controllerEnvironment[name] ?? ""
+}
+let workspacePath = URL(
+    fileURLWithPath: applicationArguments[5],
+    isDirectory: true
+).standardizedFileURL.path
+launcherEnvironment["PWD"] = workspacePath
+launcherEnvironment["GITHUB_WORKSPACE"] = workspacePath
+launcherEnvironment["GHOSTHUB_TEST_STOP_GRACE"] = String(
+    Int(gracefulStopInterval)
+)
 let state = LaunchState()
 let signalStatuses: [(Int32, Int32)] = [
     (SIGINT, 130),
@@ -129,7 +211,7 @@ if let cancellationStatus = state.queue.sync(
     exit(cancellationStatus)
 }
 
-guard let launcherScript = applicationArguments.first else {
+guard !applicationArguments.isEmpty else {
     fputs("GUI launcher arguments are missing.\n", stderr)
     exit(2)
 }
@@ -139,12 +221,8 @@ configuration.addsToRecentItems = false
 configuration.allowsRunningApplicationSubstitution = false
 configuration.createsNewApplicationInstance = true
 configuration.promptsUserIfNeeded = false
-configuration.arguments = [
-    launcherScript,
-    CommandLine.arguments[3] + ".ready",
-    standardOutputPath,
-    standardErrorPath,
-] + Array(applicationArguments.dropFirst())
+configuration.arguments = applicationArguments
+configuration.environment = launcherEnvironment
 
 NSWorkspace.shared.openApplication(
     at: applicationURL,
@@ -156,19 +234,29 @@ NSWorkspace.shared.openApplication(
             state.failure = "Could not launch GUI tests: \(error)"
             return
         }
-        guard let runningApplication,
-              runningApplication.bundleIdentifier == bundleIdentifier,
-              runningApplication.bundleURL?.standardizedFileURL == applicationURL,
-              runningApplication.processIdentifier > 0,
-              getpgid(runningApplication.processIdentifier) ==
-              runningApplication.processIdentifier
-        else {
+        guard let runningApplication else {
             state.failure =
-                "LaunchServices returned an unauthenticated GUI launcher"
+                "LaunchServices did not return a GUI launcher"
+            return
+        }
+        let launcherPID = runningApplication.processIdentifier
+        guard runningApplication.bundleIdentifier == bundleIdentifier else {
+            state.failure = "LaunchServices returned the wrong launcher identifier"
+            return
+        }
+        guard runningApplication.bundleURL?.standardizedFileURL == applicationURL else {
+            state.failure = "LaunchServices returned the wrong launcher URL"
+            return
+        }
+        guard launcherPID > 0 else {
+            state.failure = "LaunchServices returned an invalid launcher PID"
+            return
+        }
+        guard getpgid(launcherPID) == launcherPID else {
+            state.failure = "LaunchServices returned a launcher outside its process group"
             return
         }
 
-        let launcherPID = runningApplication.processIdentifier
         state.launcherApplication = runningApplication
         state.launcherPID = launcherPID
         do {
@@ -208,14 +296,71 @@ withExtendedLifetime(signalSources) {
             before: Date(timeIntervalSinceNow: 0.01)
         )
     }
+    var stopStartedAt: TimeInterval?
+    var killSentAt: TimeInterval?
     while true {
-        let launcherRunning = state.queue.sync {
+        let launcherState: (running: Bool, pid: pid_t?, cancelled: Bool) = state.queue.sync {
             guard let launcherApplication = state.launcherApplication else {
-                return false
+                return (running: false, pid: nil, cancelled: false)
             }
-            return !launcherApplication.isTerminated
+            return (
+                running: !launcherApplication.isTerminated,
+                pid: state.launcherPID,
+                cancelled: state.cancellationStatus != nil
+            )
         }
-        if !launcherRunning {
+        guard let launcherPID = launcherState.pid else {
+            break
+        }
+        let groupStatus = signalProcessGroup(
+            processGroup: launcherPID,
+            signalNumber: 0
+        )
+        if groupStatus == launcherAbsentStatus {
+            break
+        }
+        if groupStatus == 1 {
+            state.queue.sync {
+                state.failure = "Could not inspect the GUI launcher process group"
+            }
+            break
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if stopStartedAt == nil,
+           !launcherState.running || launcherState.cancelled || FileManager.default
+           .fileExists(atPath: completionFileURL.path) {
+            let signalStatus = signalProcessGroup(
+                processGroup: launcherPID,
+                signalNumber: SIGTERM
+            )
+            if signalStatus == 1 {
+                state.queue.sync {
+                    state.failure = "Could not stop the GUI launcher process group"
+                }
+            }
+            stopStartedAt = now
+        }
+        if let stopStartedAt,
+           killSentAt == nil,
+           now - stopStartedAt >= gracefulStopInterval {
+            let signalStatus = signalProcessGroup(
+                processGroup: launcherPID,
+                signalNumber: SIGKILL
+            )
+            if signalStatus == 1 {
+                state.queue.sync {
+                    state.failure = "Could not kill the GUI launcher process group"
+                }
+                break
+            }
+            killSentAt = now
+        }
+        if let killSentAt,
+           now - killSentAt >= forcedStopInterval {
+            state.queue.sync {
+                state.failure =
+                    "GUI launcher process group remained after SIGKILL"
+            }
             break
         }
         RunLoop.current.run(
@@ -225,30 +370,28 @@ withExtendedLifetime(signalSources) {
     }
 }
 let finalState = state.queue.sync {
-    let launcherTerminated: Bool
+    let processGroupTerminated: Bool
     if let launcherPID = state.launcherPID {
-        launcherTerminated = signalVerifiedLauncher(
-            bundleIdentifier: bundleIdentifier,
-            applicationURL: applicationURL,
-            launcherPID: launcherPID,
+        processGroupTerminated = signalProcessGroup(
+            processGroup: launcherPID,
             signalNumber: 0
         ) == launcherAbsentStatus
     } else {
-        launcherTerminated = true
+        processGroupTerminated = true
     }
-    if launcherTerminated {
+    if processGroupTerminated {
         state.launcherPID = nil
     } else if state.failure == nil {
         state.failure =
-            "GUI launcher remained running after termination was reported"
+            "GUI launcher process group remained after cleanup"
     }
     return (
         cancellationStatus: state.cancellationStatus,
         failure: state.failure,
-        launcherTerminated: launcherTerminated
+        processGroupTerminated: processGroupTerminated
     )
 }
-if finalState.launcherTerminated {
+if finalState.processGroupTerminated {
     _ = try? FileManager.default.removeItem(at: pidFileURL)
 }
 if let failure = finalState.failure {

@@ -21,25 +21,47 @@ gui_test_filter=$1
 action_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 launcher_root="$(mktemp -d "$RUNNER_TEMP/ghosthub-gui-launcher.XXXXXX")"
 launcher_app="$launcher_root/GhosthubGUITestLauncher.app"
-launcher_executable="$launcher_app/Contents/MacOS/launcher"
+launcher_bootstrap="$launcher_app/Contents/MacOS/launcher"
+launcher_library="$launcher_app/Contents/MacOS/test-launcher.dylib"
 launcher_info="$launcher_app/Contents/Info.plist"
-launcher_script="$action_root/run-tests.sh"
 launch_controller="$launcher_root/launch-controller"
 launcher_bundle_identifier="io.kenn.ghosthub-ci-gui-launcher.$(/usr/bin/uuidgen)"
 launcher_pid_file="$launcher_root/launcher.pid"
 launcher_output="$launcher_root/test-output.log"
-launcher_stdout="$launcher_root/stdout.log"
-launcher_stderr="$launcher_root/stderr.log"
 result_file="$launcher_root/result"
+completion_file="$launcher_root/completion"
+xctest_frameworks="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+xctest_libraries="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/usr/lib"
+test_bundle="$(swift build --show-bin-path)/GhosthubPackageTests.xctest"
+ghostty_resources="$GITHUB_WORKSPACE/.build/libghostty/share/ghostty"
+ghostty_terminfo="$GITHUB_WORKSPACE/.build/libghostty/share/terminfo/78/xterm-ghostty"
+user_tmpdir="/tmp/ghosthub-$(id -u)"
+test_root="$user_tmpdir/tmux-tests"
 controller_pid=
 controller_starting=0
 cleanup_started=0
 signal_status=
+tmux_tmpdir=
 
-test_arguments=(
-  swift test --skip-build --disable-swift-testing
-  --filter "$gui_test_filter" --no-parallel
-)
+if [[ ! -d "$test_bundle" ]]; then
+  echo "The built XCTest bundle is unavailable: $test_bundle" >&2
+  exit 1
+fi
+if [[ ! -d "$ghostty_resources" || ! -f "$ghostty_terminfo" ]]; then
+  echo "The staged libghostty resources are unavailable." >&2
+  exit 1
+fi
+
+umask 077
+mkdir -m 700 "$user_tmpdir" 2>/dev/null || true
+sh "$GITHUB_WORKSPACE/tools/purge_test_tmux.sh" --stale
+mkdir -m 700 "$test_root" 2>/dev/null || true
+sh "$GITHUB_WORKSPACE/tools/purge_test_tmux.sh" --stale
+tmux_tmpdir="$(mktemp -d "$test_root/run.$$.XXXXXX")"
+test_run_id=${tmux_tmpdir##*.}
+export TMUX_TMPDIR="$tmux_tmpdir"
+export GHOSTHUB_TEST_TMUX_RUN_ID="$test_run_id"
+export GHOSTTY_RESOURCES_DIR="$ghostty_resources"
 
 # shellcheck disable=SC2329  # invoked by stop_launcher below
 verified_launcher_signal() {
@@ -48,6 +70,13 @@ verified_launcher_signal() {
   "$launch_controller" signal-launcher \
     "$launcher_bundle_identifier" "$launcher_app" \
     "$launcher_pid" "$signal_number"
+}
+
+# shellcheck disable=SC2329  # invoked by stop_launcher below
+retained_group_signal() {
+  local launcher_pid=$1
+  local signal_number=$2
+  "$launch_controller" signal-process-group "$launcher_pid" "$signal_number"
 }
 
 # shellcheck disable=SC2329  # invoked by cleanup_launcher below
@@ -68,14 +97,24 @@ stop_launcher() {
   else
     launcher_signal_status=$?
     if (( launcher_signal_status == 3 )); then
-      rm -f -- "$launcher_pid_file"
-      return 0
+      if retained_group_signal "$launcher_pid" 0; then
+        :
+      else
+        launcher_signal_status=$?
+        if (( launcher_signal_status == 3 )); then
+          rm -f -- "$launcher_pid_file"
+          return 0
+        fi
+        echo "Could not inspect the serialized GUI test process group." >&2
+        return 1
+      fi
+    else
+      echo "Could not authenticate the serialized GUI test launcher." >&2
+      return 1
     fi
-    echo "Could not authenticate the serialized GUI test launcher." >&2
-    return 1
   fi
 
-  if verified_launcher_signal "$launcher_pid" 15; then
+  if retained_group_signal "$launcher_pid" 15; then
     :
   else
     launcher_signal_status=$?
@@ -87,7 +126,7 @@ stop_launcher() {
     return 1
   fi
   for _ in {1..10}; do
-    if verified_launcher_signal "$launcher_pid" 0; then
+    if retained_group_signal "$launcher_pid" 0; then
       sleep 0.1
       continue
     fi
@@ -99,7 +138,7 @@ stop_launcher() {
     echo "Could not authenticate the serialized GUI test launcher." >&2
     return 1
   done
-  if verified_launcher_signal "$launcher_pid" 9; then
+  if retained_group_signal "$launcher_pid" 9; then
     :
   else
     launcher_signal_status=$?
@@ -111,7 +150,7 @@ stop_launcher() {
     return 1
   fi
   for _ in {1..5}; do
-    if verified_launcher_signal "$launcher_pid" 0; then
+    if retained_group_signal "$launcher_pid" 0; then
       sleep 0.1
       continue
     fi
@@ -136,8 +175,6 @@ stop_controller() {
     kill -TERM "$controller_pid" 2>/dev/null || true
     local published_grace=0
     while kill -0 "$controller_pid" 2>/dev/null; do
-      # LaunchServices owns the request until its completion callback.
-      # Do not abandon the controller before it publishes an identity.
       if [[ -s "$launcher_pid_file" ]]; then
         published_grace=$((published_grace + 1))
         if (( published_grace >= 40 )); then
@@ -187,6 +224,9 @@ cleanup_launcher() {
   fi
   stop_controller
   stop_launcher || stop_status=$?
+  if [[ -n "$tmux_tmpdir" ]]; then
+    sh "$GITHUB_WORKSPACE/tools/purge_test_tmux.sh" "$tmux_tmpdir" || true
+  fi
   case "$launcher_root" in
     "$RUNNER_TEMP"/ghosthub-gui-launcher.*)
       rm -rf -- "$launcher_root"
@@ -206,28 +246,29 @@ trap 'handle_signal 129' HUP
 mkdir -p "$launcher_app/Contents/MacOS"
 plutil -create xml1 "$launcher_info"
 plutil -insert CFBundleExecutable -string launcher "$launcher_info"
-plutil -insert CFBundleIdentifier \
-  -string "$launcher_bundle_identifier" "$launcher_info"
-plutil -insert CFBundleName \
-  -string GhosthubGUITestLauncher "$launcher_info"
+plutil -insert CFBundleIdentifier -string "$launcher_bundle_identifier" "$launcher_info"
+plutil -insert CFBundleName -string GhosthubGUITestLauncher "$launcher_info"
 plutil -insert CFBundlePackageType -string APPL "$launcher_info"
+plutil -insert NSPrincipalClass -string NSApplication "$launcher_info"
 
-# The launcher is a real AppKit application so the LaunchServices completion
-# callback returns its authenticated running identity.
+/usr/bin/xcrun swiftc -O \
+  -framework AppKit \
+  -F "$xctest_frameworks" -framework XCTest \
+  -L "$xctest_libraries" \
+  -Xlinker -rpath -Xlinker "$xctest_frameworks" \
+  -Xlinker -rpath -Xlinker "$xctest_libraries" \
+  -emit-library "$action_root/LaunchApp.swift" -o "$launcher_library"
+chmod 700 "$launcher_library"
 /usr/bin/xcrun swiftc -O -framework AppKit \
-  "$action_root/LaunchApp.swift" -o "$launcher_executable"
-chmod 700 "$launcher_executable"
+  "$action_root/LaunchBootstrap.swift" -o "$launcher_bootstrap"
+chmod 700 "$launcher_bootstrap"
 codesign --force --sign - "$launcher_app"
 
-# The controller owns the LaunchServices completion callback and retains the
-# application identity until authenticated termination.
 /usr/bin/xcrun swiftc -O -framework AppKit \
   "$action_root/LaunchController.swift" -o "$launch_controller"
 chmod 700 "$launch_controller"
 
 : > "$launcher_output"
-: > "$launcher_stdout"
-: > "$launcher_stderr"
 
 controller_starting=1
 set -m
@@ -235,26 +276,13 @@ set -m
   "$launcher_bundle_identifier" \
   "$launcher_app" \
   "$launcher_pid_file" \
-  "$launcher_stdout" \
-  "$launcher_stderr" \
-  "$launcher_script" \
+  "$launcher_pid_file.ready" \
   "$result_file" \
   "$launcher_output" \
+  "$test_bundle" \
+  "$gui_test_filter" \
   "$GITHUB_WORKSPACE" \
-  "$PATH" \
-  "$HOME" \
-  "$TMPDIR" \
-  "$CFFIXED_USER_HOME" \
-  "$DEVELOPER_DIR" \
-  "$GHOSTHUB_CI_STATE_ROOT" \
-  "$LIBGHOSTTY_XCFRAMEWORK_TARGET" \
-  "$LIBGHOSTTY_ZIG" \
-  "${RUNNER_ENVIRONMENT:-}" \
-  "$RUNNER_TEMP" \
-  "$SHELL" \
-  "${CI:-}" \
-  "${GITHUB_ACTIONS:-}" \
-  "${test_arguments[@]}" &
+  "$completion_file" &
 controller_pid=$!
 set +m
 controller_starting=0
@@ -267,8 +295,6 @@ controller_status=$?
 set -e
 controller_pid=
 tee -a "$RUNNER_TEMP/gui-tests.log" < "$launcher_output"
-cat "$launcher_stdout"
-cat "$launcher_stderr" >&2
 if (( controller_status != 0 )); then
   echo "Could not launch serialized GUI tests in the Aqua session." >&2
   exit "$controller_status"

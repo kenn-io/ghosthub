@@ -43,6 +43,8 @@ jobs:
       LIBGHOSTTY_XCFRAMEWORK_TARGET: native
       GHOSTHUB_GUI_TEST_FILTER: >-
         Clipboard|Paste|TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|CmdVWithoutPaneSinkStaysLocal
+      GHOSTHUB_WINDOW_SERVER_TEST_FILTER: >-
+        TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|PasteboardTmuxPaneInputSinkReceivesPasteOnCmdV|CmdVWithoutPaneSinkStaysLocal
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -206,22 +208,20 @@ jobs:
           sh tools/run_swift_tests.sh "${test_arguments[@]}" \
             2>&1 | tee -a "$gui_test_log"
 
-      - name: Run hosted serialized GUI terminal smoke tests
-        if: ${{ matrix.lane == 'hosted' }}
+      - name: Run serialized GUI terminal smoke tests
         shell: bash
         run: |
-          window_server_test_filter='TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|PasteboardTmuxPaneInputSinkReceivesPasteOnCmdV|CmdVWithoutPaneSinkStaysLocal'
           sh tools/run_swift_tests.sh \
             swift test --skip-build --disable-swift-testing \
             --filter "$GHOSTHUB_GUI_TEST_FILTER" \
-            --skip "$window_server_test_filter" \
+            --skip "$GHOSTHUB_WINDOW_SERVER_TEST_FILTER" \
             --no-parallel 2>&1 | tee -a "$RUNNER_TEMP/gui-tests.log"
 
       - name: Run trusted serialized GUI terminal smoke tests
         if: ${{ matrix.lane == 'self-hosted' }}
-        uses: $/.github/actions/run-gui-terminal-tests
+        uses: ./.github/actions/run-gui-terminal-tests
         with:
-          filter: ${{ env.GHOSTHUB_GUI_TEST_FILTER }}
+          filter: ${{ env.GHOSTHUB_WINDOW_SERVER_TEST_FILTER }}
 
       - name: Verify terminal smoke coverage
         shell: bash
