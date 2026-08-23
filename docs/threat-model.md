@@ -165,7 +165,7 @@ drive-by port scans, and credential leaks through history, cache, or
 referrers. Defenses: exact Host before routing, exact Origin on upgrades and
 state-changing requests, a credential on every request, the bootstrap
 redirect that strips the token from the location bar with `no-store` and
-`no-referrer`, an HttpOnly SameSite=Strict cookie, a strict same-origin CSP,
+`no-referrer`, an HttpOnly SameSite=Strict cookie, a same-origin CSP whose script-src is strict ('self', no inline) with inline styles allowed only for the embedded terminal library's runtime-injected stylesheet,
 and hello/idle timeouts on upgraded sockets.
 
 **In scope — other users on a shared machine.** Any local user can bind a

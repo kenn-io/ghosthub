@@ -29,9 +29,13 @@ pub fn auth_cookie_name(port: u16) -> String {
 /// Query parameter carrying the startup credential during browser bootstrap.
 pub const AUTH_QUERY_PARAMETER: &str = "auth_token";
 
-/// Strict policy for the embedded page: only same-origin embedded assets
-/// and the same-origin websocket, nothing remote.
-const CSP_PREFIX: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
+/// Policy for the embedded page: only same-origin embedded assets and the
+/// same-origin websocket, nothing remote. `script-src` stays strict —
+/// 'self', no inline — which is the XSS-relevant directive. `style-src`
+/// allows inline styles because the embedded terminal library (xterm.js)
+/// injects a `<style>` element at runtime for the terminal rows' font and
+/// character metrics; blocking it drops the monospace rendering.
+const CSP_PREFIX: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
      img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; \
      connect-src 'self'";
 

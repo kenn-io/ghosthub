@@ -98,7 +98,7 @@ fn bearer_token_fetches_the_page_with_a_strict_csp() {
     );
     assert_eq!(reply.status, 200);
     let expected_policy = format!(
-        "default-src 'none'; script-src 'self'; style-src 'self'; \
+        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
          img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; \
          connect-src 'self' ws://{}",
         host(server.addr())
