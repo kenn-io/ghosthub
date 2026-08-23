@@ -219,7 +219,7 @@ jobs:
 
       - name: Run trusted serialized GUI terminal smoke tests
         if: ${{ matrix.lane == 'self-hosted' }}
-        uses: ./.github/actions/run-gui-terminal-tests
+        uses: $/.github/actions/run-gui-terminal-tests
         with:
           filter: ${{ env.GHOSTHUB_WINDOW_SERVER_TEST_FILTER }}
 
