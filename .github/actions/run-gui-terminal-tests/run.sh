@@ -268,7 +268,9 @@ chmod 700 "$launcher_bootstrap"
 codesign --force --sign - "$launcher_app"
 
 /usr/bin/xcrun swiftc -O -framework AppKit \
-  "$action_root/LaunchController.swift" -o "$launch_controller"
+  "$action_root/LauncherEnvironment.swift" \
+  "$action_root/main.swift" \
+  -o "$launch_controller"
 chmod 700 "$launch_controller"
 
 : > "$launcher_output"
