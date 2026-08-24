@@ -5527,10 +5527,15 @@ pub(crate) fn create_zellij_fresh(
             "a Zellij session with this name already exists",
         ));
     }
-    // Fence the commit: the liveness re-check and zellij_launch_once are
-    // atomic under the live-navigation lock, so a scene closed before the
-    // commit never starts a Zellij session.
-    let authority = {
+    let geometry = *scene
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Fence the launch: the liveness re-check, zellij_launch_once, and the
+    // session-creating launch_zellij_with_metadata launch are atomic under
+    // the live-navigation lock, so a scene closed before the launch never
+    // creates an orphan Zellij session. Released before the startup poll.
+    let worker = {
         let _navigation = lock_live_navigation(scene).map_err(|_| {
             WorkspaceError::new("the scene closed before the Zellij session was created")
         })?;
@@ -5539,27 +5544,23 @@ pub(crate) fn create_zellij_fresh(
         {
             return Err(WorkspaceError::new("Zellij creation was superseded"));
         }
-        request.host.zellij_launch_once(
+        let authority = request.host.zellij_launch_once(
             before.endpoint(),
             &request.executable,
             request.name.clone(),
             request.term,
+        );
+        TerminalWorker::launch_zellij_with_metadata(
+            authority,
+            geometry.grid,
+            geometry.sequence,
+            geometry.pixels,
+            ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+            current_default_colors(&scene.runtime),
+            current_default_cursor_shape(&scene.runtime),
         )
+        .map_err(|error| WorkspaceError::new(error.to_string()))?
     };
-    let geometry = *scene
-        .terminal_geometry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let worker = TerminalWorker::launch_zellij_with_metadata(
-        authority,
-        geometry.grid,
-        geometry.sequence,
-        geometry.pixels,
-        ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
-        current_default_colors(&scene.runtime),
-        current_default_cursor_shape(&scene.runtime),
-    )
-    .map_err(|error| WorkspaceError::new(error.to_string()))?;
 
     let expected_name = request.name.as_str();
     let discovered = poll_session_startup("Herdr", cancellation, &HERDR_STARTUP_BACKOFF, || {
@@ -5720,12 +5721,17 @@ pub(crate) fn create_fresh(
             "WSL restarted; refresh before creating the session",
         ));
     }
-    // Fence the commit: the liveness re-check and create_once are atomic
-    // under the live-navigation lock, so a scene that closed before the
-    // commit never creates a host-side session. (A close landing while
-    // create_once holds the fence still leaves an orphan the post-create
-    // check cannot undo — abort-cleanup is tracked follow-up.)
-    let (authority, receipt, term) = {
+    let geometry = *scene
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let launch_geometry = creation_launch_geometry(geometry);
+    // Fence the launch: the liveness re-check, create_once, and the
+    // session-creating create_with_metadata launch are atomic under the
+    // live-navigation lock, so a scene that closed before the launch never
+    // creates an orphan host-side tmux session. Released before the slow
+    // creation-identity wait so it never stalls closure or navigation.
+    let (worker, receipt, term) = {
         let _navigation = lock_live_navigation(scene)
             .map_err(|_| WorkspaceError::new("the scene closed before the session was created"))?;
         if cancellation.is_cancelled()
@@ -5733,26 +5739,22 @@ pub(crate) fn create_fresh(
         {
             return Err(WorkspaceError::new("tmux creation was superseded"));
         }
-        request
+        let (authority, receipt, term) = request
             .host
             .create_once(before.endpoint(), before.runtime(), request.name.clone())
-            .map_err(|error| WorkspaceError::new(error.to_string()))?
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let worker = TerminalWorker::create_with_metadata(
+            authority,
+            launch_geometry.grid,
+            launch_geometry.sequence,
+            launch_geometry.pixels,
+            ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+            current_default_colors(&scene.runtime),
+            current_default_cursor_shape(&scene.runtime),
+        )
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        (worker, receipt, term)
     };
-    let geometry = *scene
-        .terminal_geometry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let launch_geometry = creation_launch_geometry(geometry);
-    let worker = TerminalWorker::create_with_metadata(
-        authority,
-        launch_geometry.grid,
-        launch_geometry.sequence,
-        launch_geometry.pixels,
-        ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
-        current_default_colors(&scene.runtime),
-        current_default_cursor_shape(&scene.runtime),
-    )
-    .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let client_identity = request
         .host
         .wait_for_creation_identity(
