@@ -1154,7 +1154,7 @@ fn a_stalled_reader_releases_the_attachment_lock() {
     let mut second = attach_shell(&server);
     second
         .get_mut()
-        .set_read_timeout(Some(Duration::from_secs(60)))
+        .set_read_timeout(Some(Duration::from_mins(1)))
         .expect("read timeout");
     await_echo(&mut second, "second-live");
 }
