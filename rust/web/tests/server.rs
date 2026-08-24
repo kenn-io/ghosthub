@@ -1133,6 +1133,32 @@ fn a_queued_attachments_invalid_resize_closes_with_policy() {
     expect_policy_close(&mut second, "invalid resize");
 }
 
+/// A viewer that stops reading must not hold the per-instance attachment
+/// lock: the stalled connection's bounded/cancellable send cuts it, so a
+/// queued replacement still gets its shell.
+#[test]
+fn a_stalled_reader_releases_the_attachment_lock() {
+    let server = Server::start().expect("start server");
+    let mut first = attach_shell(&server);
+    await_echo(&mut first, "first-live");
+    // Make the shell emit far more than the socket buffer plus the relay
+    // output queue, then never read `first` again: the bridge's outbound
+    // send blocks on the non-draining peer until the send timeout cuts it.
+    let flood = format!("1..40000 | ForEach-Object {{ '{}' }}\r", "x".repeat(50));
+    first
+        .send(Message::Binary(flood.into_bytes().into()))
+        .expect("send flood-producing command");
+
+    // Queued behind the lock the stalled first still holds; it can only
+    // reach a live shell once that first is torn down and the lock frees.
+    let mut second = attach_shell(&server);
+    second
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .expect("read timeout");
+    await_echo(&mut second, "second-live");
+}
+
 /// Open an authenticated attach socket and complete the hello exchange.
 fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
     let (status, socket) = upgrade_at(

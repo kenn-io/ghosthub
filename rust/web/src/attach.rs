@@ -42,6 +42,13 @@ const MAX_QUEUED_INPUT_BYTES: usize = 64 * 1024;
 /// viewer is gone.
 const OUTPUT_POLL: Duration = Duration::from_millis(250);
 
+/// Longest a single outbound frame may block on a non-draining viewer
+/// before the attachment is cut. On the loopback/Tailscale/SSH transports
+/// Ghosthub runs on, a send stalling this long means the viewer is gone;
+/// cutting it frees the per-instance attachment lock for a replacement
+/// instead of holding it while a wedged peer refuses to read.
+const OUTBOUND_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
 struct Geometry {
     size: GridSize,
     pixels: PixelSize,
@@ -193,8 +200,21 @@ async fn attach_session(
         tokio::select! {
             delivery = output.recv() => match delivery {
                 Some(RelayOutput::Bytes(bytes)) => {
-                    if socket.send(Message::Binary(bytes.into())).await.is_err() {
-                        break None;
+                    // The send is bounded and cancellable: a viewer that
+                    // stops reading must not wedge this loop in `send` and
+                    // hold the attachment lock, blocking replacements.
+                    tokio::select! {
+                        result = socket.send(Message::Binary(bytes.into())) => {
+                            if result.is_err() {
+                                break None;
+                            }
+                        }
+                        () = stopped(&mut shutdown) => {
+                            break Some((close_code::AWAY, "server shutting down"));
+                        }
+                        () = tokio::time::sleep(OUTBOUND_SEND_TIMEOUT) => {
+                            break Some((close_code::POLICY, "output stalled"));
+                        }
                     }
                 }
                 Some(RelayOutput::Disconnected(disconnect)) => {
@@ -351,10 +371,14 @@ fn disconnect_close(disconnect: &RelayDisconnect) -> (u16, &'static str) {
 }
 
 async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame {
+    // Bounded: the teardown close frame must not block indefinitely on a
+    // peer that has stopped reading.
+    let _ = tokio::time::timeout(
+        OUTBOUND_SEND_TIMEOUT,
+        socket.send(Message::Close(Some(CloseFrame {
             code,
             reason: Utf8Bytes::from_static(reason),
-        })))
-        .await;
+        }))),
+    )
+    .await;
 }
