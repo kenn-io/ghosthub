@@ -109,9 +109,15 @@ async fn attach_session(
             }
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(frame))) => {
-                    if let Some(resize) = parse_resize(&frame) {
-                        geometry = resize;
-                    }
+                    // A post-hello text frame is a resize control; enforce
+                    // it the same way whether the attachment is queued or
+                    // live, so a malformed or out-of-range frame is a
+                    // protocol violation here too, not silently dropped.
+                    let Some(resize) = parse_resize(&frame) else {
+                        close(&mut socket, close_code::POLICY, "invalid resize").await;
+                        return;
+                    };
+                    geometry = resize;
                 }
                 Some(Ok(Message::Binary(bytes))) => {
                     // Bounded: a viewer cannot make a queued attachment

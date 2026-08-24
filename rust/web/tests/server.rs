@@ -1111,6 +1111,28 @@ fn queued_input_replays_into_the_shell_after_the_lock_frees() {
     }
 }
 
+/// A malformed resize control from an attachment still queued behind the
+/// serialization lock is a protocol violation, closed with the same POLICY
+/// as the post-launch path — enforcement is not timing-dependent.
+#[test]
+fn a_queued_attachments_invalid_resize_closes_with_policy() {
+    let server = Server::start().expect("start server");
+    let mut first = attach_shell(&server);
+    await_echo(&mut first, "first-live");
+
+    // The second completes its hello, then waits on the lock the first
+    // holds; a malformed control frame sent now must be refused.
+    let mut second = attach_shell(&server);
+    second
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("read timeout");
+    second
+        .send(Message::Text("{not json".into()))
+        .expect("send malformed control while queued");
+    expect_policy_close(&mut second, "invalid resize");
+}
+
 /// Open an authenticated attach socket and complete the hello exchange.
 fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
     let (status, socket) = upgrade_at(
