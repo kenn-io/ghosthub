@@ -2,26 +2,8 @@ import AppKit
 import Darwin
 import Foundation
 
-private let requiredLauncherEnvironmentNames = [
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "CFFIXED_USER_HOME",
-    "DEVELOPER_DIR",
-    "GHOSTHUB_CI_STATE_ROOT",
-    "LIBGHOSTTY_XCFRAMEWORK_TARGET",
-    "LIBGHOSTTY_ZIG",
-    "RUNNER_TEMP",
-    "SHELL",
-    "TMUX_TMPDIR",
-    "GHOSTHUB_TEST_TMUX_RUN_ID",
-    "GHOSTTY_RESOURCES_DIR",
-]
-private let optionalLauncherEnvironmentNames = [
-    "RUNNER_ENVIRONMENT",
-    "CI",
-    "GITHUB_ACTIONS",
-]
+// Swift requires top-level executable code to live in main.swift when the
+// controller is compiled with supporting source files.
 
 let launcherAbsentStatus: Int32 = 3
 let gracefulStopInterval: TimeInterval = 2
@@ -154,23 +136,20 @@ guard suppliedArguments.count == launcherArgumentCount else {
 let applicationArguments = suppliedArguments
 let completionFileURL = URL(fileURLWithPath: applicationArguments[6])
 let controllerEnvironment = ProcessInfo.processInfo.environment
-var launcherEnvironment: [String: String] = [:]
-for name in requiredLauncherEnvironmentNames {
-    guard let value = controllerEnvironment[name], !value.isEmpty else {
-        fputs("GUI launcher environment is missing \(name).\n", stderr)
-        exit(2)
-    }
-    launcherEnvironment[name] = value
-}
-for name in optionalLauncherEnvironmentNames {
-    launcherEnvironment[name] = controllerEnvironment[name] ?? ""
-}
 let workspacePath = URL(
     fileURLWithPath: applicationArguments[5],
     isDirectory: true
 ).standardizedFileURL.path
-launcherEnvironment["PWD"] = workspacePath
-launcherEnvironment["GITHUB_WORKSPACE"] = workspacePath
+var launcherEnvironment: [String: String]
+do {
+    launcherEnvironment = try makeLauncherEnvironment(
+        controllerEnvironment: controllerEnvironment,
+        workspacePath: workspacePath
+    )
+} catch {
+    fputs("\(error)\n", stderr)
+    exit(2)
+}
 launcherEnvironment["GHOSTHUB_TEST_STOP_GRACE"] = String(
     Int(gracefulStopInterval)
 )

@@ -17,10 +17,82 @@ ACTIVATION_POLICY = (
     Path(__file__).resolve().parents[2]
     / ".github/actions/run-gui-terminal-tests/ActivationPolicy.swift"
 )
-LAUNCH_CONTROLLER = (
+LAUNCH_CONTROLLER_MAIN = (
     Path(__file__).resolve().parents[2]
-    / ".github/actions/run-gui-terminal-tests/LaunchController.swift"
+    / ".github/actions/run-gui-terminal-tests/main.swift"
 )
+LAUNCHER_ENVIRONMENT = (
+    Path(__file__).resolve().parents[2]
+    / ".github/actions/run-gui-terminal-tests/LauncherEnvironment.swift"
+)
+
+
+def test_launcher_environment_supplies_xctest_runtime_paths(
+    tmp_path: Path,
+) -> None:
+    probe_source = tmp_path / "LauncherEnvironmentProbe.swift"
+    probe = tmp_path / "launcher-environment-probe"
+    probe_source.write_text(
+        """
+        import Foundation
+
+        @main
+        enum LauncherEnvironmentProbe {
+            static func main() throws {
+                let developerDirectory = "/Applications/Xcode.app/Contents/Developer"
+                let input = [
+                    "PATH": "/usr/bin:/bin",
+                    "HOME": "/tmp/home",
+                    "TMPDIR": "/tmp/",
+                    "CFFIXED_USER_HOME": "/tmp/home",
+                    "DEVELOPER_DIR": developerDirectory,
+                    "GHOSTHUB_CI_STATE_ROOT": "/tmp/state",
+                    "LIBGHOSTTY_XCFRAMEWORK_TARGET": "arm64-apple-macosx",
+                    "LIBGHOSTTY_ZIG": "/tmp/zig",
+                    "RUNNER_TEMP": "/tmp/runner",
+                    "SHELL": "/bin/zsh",
+                    "TMUX_TMPDIR": "/tmp/tmux",
+                    "GHOSTHUB_TEST_TMUX_RUN_ID": "run-id",
+                    "GHOSTTY_RESOURCES_DIR": "/tmp/resources",
+                    "DYLD_LIBRARY_PATH": "/untrusted/library",
+                    "DYLD_FRAMEWORK_PATH": "/untrusted/framework",
+                ]
+                let environment = try makeLauncherEnvironment(
+                    controllerEnvironment: input,
+                    workspacePath: "/tmp/workspace"
+                )
+                let expectedLibraryPath = developerDirectory
+                    + "/Platforms/MacOSX.platform/Developer/usr/lib"
+                let expectedFrameworkPath = [
+                    developerDirectory
+                        + "/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+                    developerDirectory
+                        + "/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+                ].joined(separator: ":")
+                guard environment["DYLD_LIBRARY_PATH"] == expectedLibraryPath,
+                      environment["DYLD_FRAMEWORK_PATH"] == expectedFrameworkPath
+                else {
+                    throw NSError(domain: "LauncherEnvironmentProbe", code: 1)
+                }
+            }
+        }
+        """
+    )
+    compilation = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "swiftc",
+            "-O",
+            str(LAUNCHER_ENVIRONMENT),
+            str(probe_source),
+            "-o",
+            str(probe),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert compilation.returncode == 0, compilation.stderr
+    subprocess.run([str(probe)], check=True)
 
 
 def test_already_regular_activation_policy_is_accepted(tmp_path: Path) -> None:
@@ -132,7 +204,8 @@ def test_launcher_anchors_its_process_group_until_cleanup(
             "-O",
             "-framework",
             "AppKit",
-            str(LAUNCH_CONTROLLER),
+            str(LAUNCHER_ENVIRONMENT),
+            str(LAUNCH_CONTROLLER_MAIN),
             "-o",
             str(controller),
         ],
