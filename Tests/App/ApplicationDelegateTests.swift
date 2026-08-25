@@ -943,6 +943,44 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
+    func testCompactTitlebarSkipsUnchangedPresentationUpdate() {
+        let controller = CompactWorkspaceTitlebarController()
+        let sessionTitle = SessionTitlebarPresentation(
+            displayName: "ghosthub / feature/api",
+            hostname: "studio-mac",
+            icon: .tmuxSession
+        )
+
+        XCTAssertTrue(
+            controller.update(
+                isSidebarVisible: true,
+                sidebarWidth: 360,
+                canCreateWorktree: true,
+                sessionTitle: sessionTitle,
+                customTitle: "Review logs",
+                onToggleSidebar: {},
+                onQuickLaunch: {},
+                onSettings: {},
+                onNewWorktree: {},
+                onRenameWindow: {}
+            )
+        )
+        XCTAssertFalse(
+            controller.update(
+                isSidebarVisible: true,
+                sidebarWidth: 360,
+                canCreateWorktree: true,
+                sessionTitle: sessionTitle,
+                customTitle: "Review logs",
+                onToggleSidebar: {},
+                onQuickLaunch: {},
+                onSettings: {},
+                onNewWorktree: {},
+                onRenameWindow: {}
+            )
+        )
+    }
+
     func testWindowCloseDelegateClosesWithoutTerminating() throws {
         let delegate = ApplicationDelegate.forTesting()
         var terminationRequests = 0

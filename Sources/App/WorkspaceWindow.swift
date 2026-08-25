@@ -107,7 +107,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     }
 
     private func configureTitlebar(_ view: FocusTrackingView) {
-        view.titlebarController.update(
+        let didUpdate = view.titlebarController.update(
             isSidebarVisible: isSidebarVisible,
             sidebarWidth: sidebarWidth,
             canCreateWorktree: canCreateWorktree,
@@ -119,7 +119,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
             onNewWorktree: onNewWorktree,
             onRenameWindow: onRenameWindow
         )
-        if let window = view.window {
+        if didUpdate, let window = view.window {
             view.titlebarController.install(on: window)
         }
     }
@@ -328,6 +328,14 @@ private final class WorkspaceWindowCloseDelegate: NSObject,
 
 @MainActor
 final class CompactWorkspaceTitlebarController {
+    private struct Presentation: Equatable {
+        let isSidebarVisible: Bool
+        let sidebarWidth: CGFloat
+        let canCreateWorktree: Bool
+        let sessionTitle: SessionTitlebarPresentation?
+        let customTitle: String?
+    }
+
     private static let sidebarIdentifier = NSUserInterfaceItemIdentifier(
         "GhosthubCompactSidebarControl"
     )
@@ -356,6 +364,7 @@ final class CompactWorkspaceTitlebarController {
     private var onSettings: () -> Void = {}
     private var onNewWorktree: () -> Void = {}
     private var onRenameWindow: () -> Void = {}
+    private var renderedPresentation: Presentation?
 
     init(applicationDelegate: ApplicationDelegate? = nil) {
         closeDelegate.applicationDelegate = applicationDelegate
@@ -457,6 +466,7 @@ final class CompactWorkspaceTitlebarController {
         return max(120, sidebarWidth + 12)
     }
 
+    @discardableResult
     func update(
         isSidebarVisible: Bool,
         sidebarWidth: CGFloat = WorkspaceSidebarWidthPolicy.defaultWidth,
@@ -468,21 +478,32 @@ final class CompactWorkspaceTitlebarController {
         onSettings: @escaping () -> Void,
         onNewWorktree: @escaping () -> Void,
         onRenameWindow: @escaping () -> Void = {}
-    ) {
-        let sidebarVisibilityChanged = self.isSidebarVisible
-            != isSidebarVisible
-        self.isSidebarVisible = isSidebarVisible
-        self.sidebarWidth = WorkspaceSidebarWidthPolicy.clampedWidth(
+    ) -> Bool {
+        let sidebarWidth = WorkspaceSidebarWidthPolicy.clampedWidth(
             sidebarWidth
         )
-        self.canCreateWorktree = canCreateWorktree
-        self.sessionTitle = sessionTitle
-        self.customTitle = customTitle
+        let presentation = Presentation(
+            isSidebarVisible: isSidebarVisible,
+            sidebarWidth: sidebarWidth,
+            canCreateWorktree: canCreateWorktree,
+            sessionTitle: sessionTitle,
+            customTitle: customTitle
+        )
+        let sidebarVisibilityChanged = self.isSidebarVisible
+            != isSidebarVisible
         self.onToggleSidebar = onToggleSidebar
         self.onQuickLaunch = onQuickLaunch
         self.onSettings = onSettings
         self.onNewWorktree = onNewWorktree
         self.onRenameWindow = onRenameWindow
+        guard renderedPresentation != presentation else { return false }
+
+        renderedPresentation = presentation
+        self.isSidebarVisible = isSidebarVisible
+        self.sidebarWidth = sidebarWidth
+        self.canCreateWorktree = canCreateWorktree
+        self.sessionTitle = sessionTitle
+        self.customTitle = customTitle
         refreshHosts()
         let titleLeadingOffset = Self.titleLeadingOffset(
             isSidebarVisible: isSidebarVisible,
@@ -503,6 +524,7 @@ final class CompactWorkspaceTitlebarController {
         } else {
             titleLeadingConstraint?.constant = titleLeadingOffset
         }
+        return true
     }
 
     private func refreshHosts() {
@@ -516,7 +538,7 @@ final class CompactWorkspaceTitlebarController {
             systemImage: isSidebarVisible ? "sidebar.left" : "sidebar.right",
             help: isSidebarVisible
                 ? "Hide Sidebar (Cmd+B)" : "Show Sidebar (Cmd+B)",
-            action: onToggleSidebar
+            action: { [weak self] in self?.onToggleSidebar() }
         )
     }
 
@@ -525,12 +547,12 @@ final class CompactWorkspaceTitlebarController {
             CompactToolbarButton(
                 systemImage: "command",
                 help: "Quick Launch (Cmd+Shift+P)",
-                action: onQuickLaunch
+                action: { [weak self] in self?.onQuickLaunch() }
             )
             CompactToolbarButton(
                 systemImage: "gearshape",
                 help: "Settings (Cmd+,)",
-                action: onSettings
+                action: { [weak self] in self?.onSettings() }
             )
             CompactToolbarButton(
                 systemImage: "plus.rectangle.on.folder",
@@ -538,7 +560,7 @@ final class CompactWorkspaceTitlebarController {
                     ? "New Worktree (Cmd+Shift+N)"
                     : "Select a kwt project to create a worktree",
                 isEnabled: canCreateWorktree,
-                action: onNewWorktree
+                action: { [weak self] in self?.onNewWorktree() }
             )
         }
     }
@@ -547,7 +569,7 @@ final class CompactWorkspaceTitlebarController {
         EditableWindowTitleView(
             customTitle: customTitle,
             sessionTitle: sessionTitle,
-            onRename: onRenameWindow
+            onRename: { [weak self] in self?.onRenameWindow() }
         )
     }
 
