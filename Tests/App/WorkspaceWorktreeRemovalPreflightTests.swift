@@ -10,6 +10,55 @@ import Testing
 
 extension WorkspaceWorktreeRemovalTests {
     @MainActor
+    @Test("remote removal carries its reviewed SSH route into execution")
+    func remoteRemovalUsesReviewedRoute() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.scopedKey = worktree.path
+        worktree.generation = stableWorktreeGeneration
+        worktree.tmuxSessionName = "kwt-office-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let reviewedWorktree = worktree
+        let executedRoute = LockedValue<String?>(nil)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                inventory(environment, including: reviewedWorktree)
+            },
+            kwtWorktreeRemover: { _, _, _, routeIdentity, _ in
+                executedRoute.withLock { $0 = routeIdentity }
+            },
+            sshRouteIdentityResolver: { host in
+                #expect(host.hostname == "office-linux")
+                return "sha256:reviewed-route"
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: "Office Linux",
+                    session: "kwt-office-feature"
+                )
+            },
+            tmuxSessionIdentityReviewer: { _, _, _ in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: "Office Linux",
+                    session: "kwt-office-feature"
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        #expect(request.routeIdentity == "sha256:reviewed-route")
+
+        try await model.removeWorktree(request)
+
+        #expect(executedRoute.load() == "sha256:reviewed-route")
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test(
         "live session removal leaves a same-path worktree on another host"
     )
@@ -56,7 +105,7 @@ extension WorkspaceWorktreeRemovalTests {
                 loads.withLock { $0 += 1 }
                 return loads.load() == 1 ? beforeRemoval : afterRemoval
             },
-            kwtWorktreeRemover: { path, _, projectPath, _ in
+            kwtWorktreeRemover: { path, _, projectPath, _, _ in
                 events.withLock {
                     $0.append("remove:\(projectPath):\(path)")
                 }
@@ -127,7 +176,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory(environment) },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionKiller: { _, _, _ in
@@ -142,6 +191,104 @@ extension WorkspaceWorktreeRemovalTests {
         #expect(kills.load() == 0)
         #expect(model.snapshot.worktree(id: removable.id) == nil)
         #expect(model.snapshot.sessions.contains { $0.id == session.id } == false)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("an absent remote worktree still requires the reviewed SSH route")
+    func absentRemoteWorktreeRejectsRouteDrift() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.scopedKey = worktree.path
+        worktree.generation = stableWorktreeGeneration
+        worktree.tmuxSessionName = nil
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let route = LockedValue("sha256:reviewed-route")
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                KwtHostInventory(projects: [
+                    KwtProjectInventory(
+                        project: KwtProjectRecord(
+                            repository: environment.project.scopedKey,
+                            name: environment.project.name,
+                            path: environment.project.rootPath,
+                            lastTouched: nil
+                        ),
+                        worktrees: [],
+                        warning: nil
+                    ),
+                ])
+            },
+            sshRouteIdentityResolver: { _ in route.load() }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        route.store("sha256:replacement-route")
+
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
+            try await model.removeWorktree(request)
+        }
+        #expect(model.snapshot.worktree(id: worktree.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed remote removal does not reconcile through a changed route")
+    func failedRemoteRemovalRejectsReconciliationRouteDrift() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.scopedKey = worktree.path
+        worktree.generation = stableWorktreeGeneration
+        worktree.tmuxSessionName = "kwt-office-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let beforeRemoval = inventory(environment, including: worktree)
+        let reconciliationLoads = LockedValue(0)
+        let removalCalls = LockedValue(0)
+        let removalError = KwtWorktreeError.removalFailed(
+            host: environment.host.name,
+            status: 1
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtConditionalInventoryLoader: { _, _ in
+                reconciliationLoads.withLock { $0 += 1 }
+                throw KwtSSHLeaseError.routeChanged
+            },
+            kwtWorktreeRemover: { _, _, _, _, _ in
+                removalCalls.withLock { $0 += 1 }
+                throw removalError
+            },
+            sshRouteIdentityResolver: { _ in "sha256:reviewed-route" },
+            tmuxSessionIdentityReader: { _, _ in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: environment.host.name,
+                    session: "kwt-office-feature"
+                )
+            },
+            tmuxSessionIdentityReviewer: { _, _, _ in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: environment.host.name,
+                    session: "kwt-office-feature"
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await model.removeWorktree(request)
+        }
+
+        #expect(model.snapshot.worktree(id: worktree.id) != nil)
+        #expect(removalCalls.load() == 1)
+        #expect(reconciliationLoads.load() == 1)
         await model.shutdown()
     }
 
@@ -161,7 +308,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory(environment) },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 events.withLock { $0.append("remove") }
             },
             tmuxSessionKiller: { selection, _, _ in
@@ -203,7 +350,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory(environment) },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionKiller: { _, _, _ in
@@ -302,7 +449,7 @@ extension WorkspaceWorktreeRemovalTests {
                     status: 127
                 )
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 events.withLock { $0.append("remove") }
             },
             tmuxSessionKiller: { _, _, _ in
@@ -339,7 +486,7 @@ extension WorkspaceWorktreeRemovalTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             }
         )
@@ -371,7 +518,7 @@ extension WorkspaceWorktreeRemovalTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             }
         )
@@ -399,7 +546,7 @@ extension WorkspaceWorktreeRemovalTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             }
         )
@@ -433,7 +580,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in preflight },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -477,7 +624,7 @@ extension WorkspaceWorktreeRemovalTests {
             nativeTmuxSurfaceStore: surfaces,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionDiscovery: { _ in .success([]) },
@@ -544,7 +691,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in preflight },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -599,7 +746,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in preflight },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionKiller: { selection, _, host in
@@ -655,7 +802,7 @@ extension WorkspaceWorktreeRemovalTests {
             kwtInventoryLoader: { _ in
                 await hold.load(absentPreflight)
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             }
         )
@@ -695,7 +842,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -759,7 +906,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionKiller: { selection, _, _ in
@@ -818,7 +965,7 @@ extension WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionKiller: { selection, _, host in

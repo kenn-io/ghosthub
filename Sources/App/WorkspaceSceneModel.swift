@@ -43,8 +43,17 @@ private func presentGhosthubAlert(
 
 @MainActor
 final class WorkspaceSceneModel: ObservableObject {
+    nonisolated static func runReconnectValidationProbe<Value: Sendable>(
+        _ operation: @escaping @Sendable () -> Value
+    ) async -> Value {
+        await BlockingTask.run(operation)
+    }
+
     typealias KwtInventoryLoader = @Sendable (
         CommandHost
+    ) async throws -> KwtHostInventory
+    typealias KwtConditionalInventoryLoader = @Sendable (
+        CommandHost, String?
     ) async throws -> KwtHostInventory
     typealias KwtRemoteProvisioner = @Sendable (
         SSHHost
@@ -53,11 +62,14 @@ final class WorkspaceSceneModel: ObservableObject {
         WorktreeCreateRequest, String, CommandHost
     ) async throws -> Void
     typealias KwtWorktreeRemover = @Sendable (
-        String, String, String, CommandHost
+        String, String, String, String?, CommandHost
     ) async throws -> Void
     typealias KwtWorktreeChangeReader = @Sendable (
         String, String, CommandHost
     ) async throws -> WorktreeChangeSummary
+    typealias SSHRouteIdentityResolver = @Sendable (
+        SSHHostInfo
+    ) async throws -> String
     typealias KwtBranchLister = @Sendable (
         String, CommandHost
     ) async throws -> [WorktreeBranchCandidate]
@@ -71,17 +83,20 @@ final class WorkspaceSceneModel: ObservableObject {
         String, CommandHost
     ) async throws -> KwtProjectRecord
     typealias KwtProjectRemoval = @Sendable (
-        String, String, String, CommandHost
+        String, String, String, String?, CommandHost
     ) async throws -> KwtProjectRecord
     typealias TmuxSessionDiscovery = @Sendable (
         CommandHost
     ) async -> Result<[DiscoveredTmuxSession], TmuxBinaryError>
+    typealias TmuxSessionValidationDiscovery = @Sendable (
+        CommandHost, [String]
+    ) async -> Result<[DiscoveredTmuxSession], TmuxBinaryError>
     typealias HerdrSessionDiscovery = @Sendable (
         CommandHost
-    ) -> HerdrDiscoveryResult
+    ) async -> HerdrDiscoveryResult
     typealias ZellijSessionDiscovery = @Sendable (
         CommandHost
-    ) -> ZellijDiscoveryResult
+    ) async -> ZellijDiscoveryResult
     typealias ZellijSessionValidationDiscovery = @Sendable (
         CommandHost, [String]
     ) async -> ZellijDiscoveryResult
@@ -102,20 +117,38 @@ final class WorkspaceSceneModel: ObservableObject {
     ) async -> Result<HerdrSessionRecord, HerdrSessionLifecycleError>
     typealias TmuxSessionExactProbe = @Sendable (
         TmuxSessionProbeTarget
-    ) -> Result<Bool, TmuxBinaryError>
+    ) async -> Result<Bool, TmuxBinaryError>
+    typealias TmuxSessionValidationExactProbe = @Sendable (
+        TmuxSessionProbeTarget, [String]
+    ) async -> Result<Bool, TmuxBinaryError>
+    typealias SSHConnectionSnapshotProvider = @Sendable (
+        SSHHostInfo
+    ) async -> SSHConnectionArgumentsSnapshot
     typealias TmuxSessionKilling = @Sendable (
         WorkspaceTmuxSessionSelection, TmuxSessionIdentity, CommandHost
+    ) async throws -> Void
+    typealias ReviewedTmuxSessionKilling = @Sendable (
+        WorkspaceTmuxSessionSelection, TmuxSessionIdentity, String?, CommandHost
     ) async throws -> Void
     typealias TmuxSessionIdentityReading = @Sendable (
         WorkspaceTmuxSessionSelection, CommandHost
     ) async throws -> TmuxSessionIdentity
+    typealias TmuxSessionIdentityReviewReading = @Sendable (
+        WorkspaceTmuxSessionSelection, TmuxSessionIdentity?, CommandHost
+    ) async throws -> ReviewedTmuxSessionIdentity
     typealias TmuxSessionStyling = @Sendable (
         TmuxPresentationStyle, WorkspaceTmuxSessionSelection,
         TmuxSessionIdentity, CommandHost
     ) async throws -> Void
     typealias SSHHostProbeRunner = @Sendable (
-        SSHHostInfo, String
+        SSHHostInfo, [String], String
     ) -> (status: Int32, stdout: String, stderr: String)
+    typealias HostSSHConnectionProvider = @MainActor @Sendable (
+        SSHHostInfo, String
+    ) async throws -> KwtSSHConnection
+    typealias HostSSHSessionProvider = @MainActor @Sendable (
+        SSHHostInfo, String
+    ) -> KwtSSHConnectionSession
 
     @Published var snapshot: WorkspaceSnapshot {
         didSet {
@@ -193,10 +226,10 @@ final class WorkspaceSceneModel: ObservableObject {
     private let herdrSessionRecordReader: HerdrSessionRecordReading
     private let herdrSessionMutator: HerdrSessionMutating
     private let herdrSSHConnectionSnapshotProvider:
-        @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot
+        SSHConnectionSnapshotProvider
     private struct HerdrLifecycleAuthority {
         var host: CommandHost
-        var connection: SSHConnectionArgumentsSnapshot
+        var routeIdentity: String?
     }
     private struct HerdrSessionValidation {
         var session: HerdrSessionSummary?
@@ -357,24 +390,13 @@ final class WorkspaceSceneModel: ObservableObject {
         var selection: WorkspaceZellijSessionSelection
         var handleID: UUID
         var host: CommandHost
-        var connection: SSHConnectionArgumentsSnapshot?
+        var routeIdentity: String?
         var surfaceExitCode: UInt32?
         /// The previous attempt could not create a terminal surface, so no
         /// client ever ran and there is no exit code to inspect. Recovery is
         /// still legitimate: the transport failure that started it stands.
         var surfaceLaunchFailed = false
 
-        static func == (
-            lhs: ActiveZellijReconnectContext,
-            rhs: ActiveZellijReconnectContext
-        ) -> Bool {
-            lhs.selection == rhs.selection
-                && lhs.handleID == rhs.handleID
-                && lhs.host == rhs.host
-                && lhs.connection?.cacheKey == rhs.connection?.cacheKey
-                && lhs.surfaceExitCode == rhs.surfaceExitCode
-                && lhs.surfaceLaunchFailed == rhs.surfaceLaunchFailed
-        }
     }
     private var activeZellijReconnectContext: ActiveZellijReconnectContext?
     private struct ZellijSessionValidation {
@@ -386,7 +408,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private struct ZellijKillAuthority {
         var hostID: UUID
         var host: CommandHost
-        var connection: SSHConnectionArgumentsSnapshot
+        var routeIdentity: String?
     }
     private var zellijKillAuthorities: [UUID: ZellijKillAuthority] = [:]
     private var pendingCreatedZellijSessions:
@@ -415,6 +437,12 @@ final class WorkspaceSceneModel: ObservableObject {
     }
     @Published private(set) var sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest?
+    @Published private(set) var presentationSSHSession:
+        KwtSSHConnectionSession?
+    private var presentationSSHSessionID: UUID?
+    private var presentationSSHSessions:
+        [UUID: KwtSSHConnectionSession] = [:]
+    private var presentationSSHSessionOrder: [UUID] = []
     private enum RemoteTmuxEstablishmentPhase: Equatable {
         case establishingWorkspace
         case establishingProfile(initialCommand: String)
@@ -424,12 +452,21 @@ final class WorkspaceSceneModel: ObservableObject {
         var selection: WorkspaceTmuxSessionSelection
         var handleID: UUID
         var host: CommandHost
+        var routeIdentity: String?
         var phase: RemoteTmuxEstablishmentPhase
         var surfaceExitCode: UInt32?
         /// The previous attempt could not create a terminal surface, so no
         /// client ever ran and there is no exit code to inspect. Recovery is
         /// still legitimate: the transport failure that started it stands.
         var surfaceLaunchFailed = false
+    }
+
+    private struct TmuxReconnectProbeResult {
+        var outcome: TmuxSessionProbeOutcome
+        var discovery: (
+            sequence: UInt64,
+            result: Result<[DiscoveredTmuxSession], TmuxBinaryError>
+        )?
     }
     private struct TmuxPresentationKey: Hashable {
         var hostID: UUID
@@ -503,6 +540,7 @@ final class WorkspaceSceneModel: ObservableObject {
         var selection: WorkspaceHerdrSessionSelection
         var handleID: UUID
         var host: CommandHost
+        var routeIdentity: String?
         var surfaceExitCode: UInt32?
         /// The previous attempt could not create a terminal surface, so no
         /// client ever ran and there is no exit code to inspect. Recovery is
@@ -552,7 +590,7 @@ final class WorkspaceSceneModel: ObservableObject {
         var state: WorkspaceWindowState
         var selection: WorkspaceZellijSessionSelection
         var host: CommandHost
-        var connectionCacheKey: SSHConnectionArgumentsCacheKey?
+        var routeIdentity: String?
     }
     private struct ZellijSuccessfulKillFence {
         var killRevision: UInt64
@@ -748,17 +786,23 @@ final class WorkspaceSceneModel: ObservableObject {
     private let tmuxSessionActivityController:
         TmuxSessionActivityController?
     private let kwtInventoryLoader: KwtInventoryLoader
+    private let kwtConditionalInventoryLoader: KwtConditionalInventoryLoader
     private let kwtRemoteProvisioner: KwtRemoteProvisioner
     private let kwtWorktreeCreator: KwtWorktreeCreator
     private let kwtWorktreeRemover: KwtWorktreeRemover
     private let kwtForceWorktreeRemover: KwtWorktreeRemover
     private let kwtWorktreeChangeReader: KwtWorktreeChangeReader
+    private let sshRouteIdentityResolver: SSHRouteIdentityResolver
     private let kwtBranchLister: KwtBranchLister
     private let kwtPullRequestLister: KwtPullRequestLister
     private let kwtPullRequestImporter: KwtPullRequestImporter
     private let kwtProjectRegistration: KwtProjectRegistration
     private let kwtProjectRemoval: KwtProjectRemoval
     private let tmuxSessionDiscovery: TmuxSessionDiscovery
+    private let tmuxSessionValidationDiscovery:
+        TmuxSessionValidationDiscovery?
+    private let tmuxSessionValidationExactProbe:
+        TmuxSessionValidationExactProbe?
     private let zellijSessionDiscovery: ZellijSessionDiscovery
     private let zellijSessionValidationDiscovery:
         ZellijSessionValidationDiscovery
@@ -767,9 +811,17 @@ final class WorkspaceSceneModel: ObservableObject {
         -> Result<String, ZellijCommandError>
     private let zellijSessionKiller: ZellijSessionKilling
     private let zellijSSHConnectionSnapshotProvider:
-        @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot
-    private let tmuxSessionKiller: TmuxSessionKilling
+        SSHConnectionSnapshotProvider
+    private let presentationSSHConnectionProvider:
+        (@MainActor @Sendable (UUID, SSHHostInfo) async throws
+            -> KwtSSHConnection)?
+    private let presentationSSHAcquisitionCoordinator:
+        KwtSSHAcquisitionCoordinator
+    private let presentationSSHEnvironment: [String: String]
+    private let tmuxSessionKiller: ReviewedTmuxSessionKilling
     private let tmuxSessionIdentityReader: TmuxSessionIdentityReading
+    private let tmuxSessionIdentityReviewer:
+        TmuxSessionIdentityReviewReading
     private let tmuxSessionStyler: TmuxSessionStyling
     private let tmuxPresentationStyleProvider:
         (UInt?) -> TmuxPresentationStyle?
@@ -777,14 +829,12 @@ final class WorkspaceSceneModel: ObservableObject {
     /// rendered, so an attach cannot succeed; see `DisplayAvailability`.
     private let activeDisplayCount: @Sendable () -> Int
     private let sshHostProbeRunner: SSHHostProbeRunner
-    private let sshAuthenticationCoordinator: SSHAuthenticationCoordinator
-    private let sshAuthenticationScopeID = UUID()
-    private var pendingSSHAuthenticationTargets:
-        [String: SSHAuthenticationTarget] = [:]
-    private var configuredSSHAuthenticationTargets:
-        [String: SSHAuthenticationTarget] = [:]
-    private var sshAuthenticationControlPaths:
-        [SSHAuthenticationTarget: String] = [:]
+    private let hostSSHConnectionProvider: HostSSHConnectionProvider?
+    private let hostSSHSessionProvider: HostSSHSessionProvider
+    private var hostSSHSessionDestination: String?
+    private var hostSSHSessionOwnerID: UUID?
+    private var hostSSHSessionSurfaceID: UUID?
+    @Published private(set) var hostSSHSession: KwtSSHConnectionSession?
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
     private let configuredExeHostsProvider: () -> [ExeConfiguredHost]
@@ -876,10 +926,7 @@ final class WorkspaceSceneModel: ObservableObject {
     var tmuxWindowCountsBySessionID: [String: Int] {
         tmuxSessionActivityController?.windowCountsBySessionID ?? [:]
     }
-    convenience init(
-        terminalRuntime: LibghosttyRuntime = .shared,
-        sshAuthenticationCoordinator: SSHAuthenticationCoordinator
-    ) {
+    convenience init(terminalRuntime: LibghosttyRuntime = .shared) {
         do {
             let boot = try WorkspaceSceneBootstrap.resources()
             try self.init(
@@ -904,7 +951,6 @@ final class WorkspaceSceneModel: ObservableObject {
                     SettingsStore.shared.terminalAppearancePreferences
                         .appliesThemeToTmuxSessions
                 },
-                sshAuthenticationCoordinator: sshAuthenticationCoordinator,
                 tmuxSessionActivityController:
                 boot.tmuxSessionActivityController,
                 localHostID: boot.localHostID,
@@ -953,7 +999,32 @@ final class WorkspaceSceneModel: ObservableObject {
             DisplayAvailability.activeCount()
         },
         kwtInventoryLoader: @escaping KwtInventoryLoader = { host in
-            try await KwtInventoryClient().load(from: host)
+            try await KwtSSHCommandLease().withConnection(on: host) {
+                connection in
+                if let connection {
+                    return try await KwtInventoryClient().load(
+                        from: host,
+                        sshConnection: connection
+                    )
+                }
+                return try await KwtInventoryClient().load(from: host)
+            }
+        },
+        kwtConditionalInventoryLoader:
+        @escaping KwtConditionalInventoryLoader = {
+            host, expectedRouteIdentity in
+            try await KwtSSHCommandLease().withConnection(on: host) {
+                connection in
+                guard connection?.routeIdentity == expectedRouteIdentity
+                else { throw KwtSSHLeaseError.routeChanged }
+                if let connection {
+                    return try await KwtInventoryClient().load(
+                        from: host,
+                        sshConnection: connection
+                    )
+                }
+                return try await KwtInventoryClient().load(from: host)
+            }
         },
         kwtRemoteProvisioner: @escaping KwtRemoteProvisioner = { host in
             try await KwtRemoteProvisioningCoordinator.shared
@@ -968,21 +1039,23 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         kwtWorktreeRemover: @escaping KwtWorktreeRemover = {
-            worktreePath, generation, projectPath, host in
+            worktreePath, generation, projectPath, routeIdentity, host in
             try await KwtWorktreeClient().remove(
                 worktreePath: worktreePath,
                 generation: generation,
                 projectPath: projectPath,
+                expectedRouteIdentity: routeIdentity,
                 on: host
             )
         },
         kwtForceWorktreeRemover: @escaping KwtWorktreeRemover = {
-            worktreePath, generation, projectPath, host in
+            worktreePath, generation, projectPath, routeIdentity, host in
             try await KwtWorktreeClient().remove(
                 worktreePath: worktreePath,
                 generation: generation,
                 projectPath: projectPath,
                 force: true,
+                expectedRouteIdentity: routeIdentity,
                 on: host
             )
         },
@@ -993,6 +1066,12 @@ final class WorkspaceSceneModel: ObservableObject {
                 projectPath: projectPath,
                 on: host
             )
+        },
+        sshRouteIdentityResolver: @escaping SSHRouteIdentityResolver = {
+            host in
+            try await BlockingTask.runThrowing(priority: .userInitiated) {
+                try KwtSSHRouteClient().resolve(host).routeIdentity
+            }
         },
         worktreeMutationCoordinator: WorktreeMutationCoordinator = .shared,
         herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator = .shared,
@@ -1028,10 +1107,8 @@ final class WorkspaceSceneModel: ObservableObject {
             }.value
         },
         herdrSSHConnectionSnapshotProvider:
-        @escaping @Sendable (SSHHostInfo)
-            -> SSHConnectionArgumentsSnapshot = {
-                SSHCommandArguments.connectionSnapshot(for: $0)
-            },
+        @escaping SSHConnectionSnapshotProvider =
+            WorkspaceSceneModel.borrowedConnectionSnapshot,
         kwtBranchLister: @escaping KwtBranchLister = {
             projectPath, host in
             try await KwtWorktreeClient().branches(
@@ -1062,11 +1139,13 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         kwtProjectRemoval: @escaping KwtProjectRemoval = {
-            projectPath, expectedRepository, expectedRegistration, host in
+            projectPath, expectedRepository, expectedRegistration,
+            routeIdentity, host in
             try await KwtProjectRegistryClient().unregister(
                 projectPath: projectPath,
                 expectedRepository: expectedRepository,
                 expectedRegistration: expectedRegistration,
+                expectedRouteIdentity: routeIdentity,
                 on: host
             )
         },
@@ -1074,16 +1153,33 @@ final class WorkspaceSceneModel: ObservableObject {
             let resolver = TmuxBinaryResolver()
             return switch host {
             case .local:
-                resolver.discoverSessions()
+                await Task.detached(priority: .utility) {
+                    resolver.discoverSessions()
+                }.value
             case let .ssh(info):
-                resolver.discoverSessions(on: info)
+                await resolver.discoverSessions(on: info)
+            }
+        },
+        tmuxSessionValidationDiscovery:
+        TmuxSessionValidationDiscovery? = { host, arguments in
+            let resolver = TmuxBinaryResolver()
+            return await WorkspaceSceneModel.runReconnectValidationProbe {
+                switch host {
+                case .local:
+                    resolver.discoverSessions()
+                case let .ssh(info):
+                    resolver.discoverSessions(
+                        on: info,
+                        sshConnectionArguments: arguments
+                    )
+                }
             }
         },
         herdrSessionDiscovery: @escaping HerdrSessionDiscovery = { host in
-            HerdrInventoryClient().discover(on: host)
+            await HerdrInventoryClient().discover(on: host)
         },
         zellijSessionDiscovery: @escaping ZellijSessionDiscovery = { host in
-            ZellijInventoryClient().discover(on: host)
+            await ZellijInventoryClient().discover(on: host)
         },
         zellijSessionValidationDiscovery:
         @escaping ZellijSessionValidationDiscovery = { host, arguments in
@@ -1110,22 +1206,27 @@ final class WorkspaceSceneModel: ObservableObject {
             }.value
         },
         zellijSSHConnectionSnapshotProvider:
-        @escaping @Sendable (SSHHostInfo)
-            -> SSHConnectionArgumentsSnapshot = {
-                SSHCommandArguments.connectionSnapshot(for: $0)
-            },
+        @escaping SSHConnectionSnapshotProvider =
+            WorkspaceSceneModel.borrowedConnectionSnapshot,
+        presentationSSHConnectionProvider:
+        (@MainActor @Sendable (UUID, SSHHostInfo) async throws
+            -> KwtSSHConnection)? = nil,
+        presentationSSHAcquisitionCoordinator:
+        KwtSSHAcquisitionCoordinator = .shared,
+        presentationSSHEnvironment: [String: String] =
+            ProcessInfo.processInfo.environment,
         herdrSessionValidationDiscovery:
         @escaping HerdrSessionValidationDiscovery = { host, arguments in
-            await Task.detached(priority: .utility) {
+            await WorkspaceSceneModel.runReconnectValidationProbe {
                 HerdrInventoryClient().discover(
                     on: host,
                     sshConnectionArguments: arguments
                 )
-            }.value
+            }
         },
         herdrSessionExactProbe: @escaping HerdrSessionExactProbe = {
             name, host, arguments in
-            await Task.detached(priority: .utility) {
+            await WorkspaceSceneModel.runReconnectValidationProbe {
                 HerdrSessionProbeOutcome.exact(
                     name: name,
                     discovery: HerdrInventoryClient().discover(
@@ -1133,20 +1234,32 @@ final class WorkspaceSceneModel: ObservableObject {
                         sshConnectionArguments: arguments
                     )
                 )
-            }.value
+            }
         },
         tmuxExactSessionProbe: @escaping TmuxSessionExactProbe = { target in
-            TmuxBinaryResolver().sessionExists(
+            await TmuxBinaryResolver().sessionExists(
                 name: target.name,
                 socketName: target.socketName,
                 on: target.host
             )
         },
-        tmuxSessionKiller: @escaping TmuxSessionKilling = {
-            selection, identity, host in
-            try await TmuxSessionKiller().kill(
+        tmuxSessionValidationExactProbe:
+        TmuxSessionValidationExactProbe? = { target, arguments in
+            await WorkspaceSceneModel.runReconnectValidationProbe {
+                TmuxBinaryResolver().sessionExists(
+                    name: target.name,
+                    socketName: target.socketName,
+                    on: target.host,
+                    sshConnectionArguments: arguments
+                )
+            }
+        },
+        tmuxSessionKiller: @escaping ReviewedTmuxSessionKilling = {
+            selection, identity, routeIdentity, host in
+            try await TmuxSessionKiller().killReviewed(
                 selection,
                 expectedIdentity: identity,
+                expectedRouteIdentity: routeIdentity,
                 on: host
             )
         },
@@ -1154,6 +1267,15 @@ final class WorkspaceSceneModel: ObservableObject {
             selection, host in
             try await TmuxSessionKiller().sessionIdentity(
                 selection,
+                on: host
+            )
+        },
+        tmuxSessionIdentityReviewer:
+        @escaping TmuxSessionIdentityReviewReading = {
+            selection, knownIdentity, host in
+            try await TmuxSessionKiller().reviewedIdentity(
+                selection,
+                knownIdentity: knownIdentity,
                 on: host
             )
         },
@@ -1166,16 +1288,22 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
-        sshHostProbeRunner: @escaping SSHHostProbeRunner = { host, command in
-            let output = AccountCommandRunner.runRemoteLoginShellSeparatingStandardError(
+        sshHostProbeRunner: @escaping SSHHostProbeRunner = {
+            host, connectionArguments, command in
+            let output = AccountCommandRunner(
+                loginShellProvider: AccountCommandRunner.loginShell
+            ).runRemoteLoginShell(
                 host: host,
+                connectionArguments: connectionArguments,
                 command: command,
                 timeout: 10
             )
             return (output.status, output.stdout, output.stderr)
         },
-        sshAuthenticationCoordinator: SSHAuthenticationCoordinator =
-            SSHAuthenticationCoordinator(),
+        hostSSHConnectionProvider: HostSSHConnectionProvider? = nil,
+        hostSSHSessionProvider: @escaping HostSSHSessionProvider = {
+            KwtSSHConnectionSession(host: $0, destination: $1)
+        },
         configuredSSHHostsProvider: @escaping () -> [SSHHost] = {
             SettingsStore.shared.sshHosts
         },
@@ -1235,17 +1363,23 @@ final class WorkspaceSceneModel: ObservableObject {
         self.sceneSettings = sceneSettings
         self.terminalRuntime = terminalRuntime
         self.kwtInventoryLoader = kwtInventoryLoader
+        self.kwtConditionalInventoryLoader = kwtConditionalInventoryLoader
         self.kwtRemoteProvisioner = kwtRemoteProvisioner
         self.kwtWorktreeCreator = kwtWorktreeCreator
         self.kwtWorktreeRemover = kwtWorktreeRemover
         self.kwtForceWorktreeRemover = kwtForceWorktreeRemover
         self.kwtWorktreeChangeReader = kwtWorktreeChangeReader
+        self.sshRouteIdentityResolver = sshRouteIdentityResolver
         self.kwtBranchLister = kwtBranchLister
         self.kwtPullRequestLister = kwtPullRequestLister
         self.kwtPullRequestImporter = kwtPullRequestImporter
         self.kwtProjectRegistration = kwtProjectRegistration
         self.kwtProjectRemoval = kwtProjectRemoval
         self.tmuxSessionDiscovery = tmuxSessionDiscovery
+        self.tmuxSessionValidationDiscovery =
+            tmuxSessionValidationDiscovery
+        self.tmuxSessionValidationExactProbe =
+            tmuxSessionValidationExactProbe
         self.zellijSessionDiscovery = zellijSessionDiscovery
         self.zellijSessionValidationDiscovery =
             zellijSessionValidationDiscovery
@@ -1264,6 +1398,11 @@ final class WorkspaceSceneModel: ObservableObject {
         self.zellijSessionKiller = zellijSessionKiller
         self.zellijSSHConnectionSnapshotProvider =
             zellijSSHConnectionSnapshotProvider
+        self.presentationSSHConnectionProvider =
+            presentationSSHConnectionProvider
+        self.presentationSSHAcquisitionCoordinator =
+            presentationSSHAcquisitionCoordinator
+        self.presentationSSHEnvironment = presentationSSHEnvironment
         tmuxSessionProbeBroker = TmuxSessionProbeBroker(
             discover: { host in
                 let probe = Task.detached(priority: .utility) {
@@ -1277,7 +1416,7 @@ final class WorkspaceSceneModel: ObservableObject {
             },
             exactProbe: { target in
                 let probe = Task.detached(priority: .utility) {
-                    tmuxExactSessionProbe(target)
+                    await tmuxExactSessionProbe(target)
                 }
                 return await withTaskCancellationHandler {
                     await probe.value
@@ -1291,7 +1430,7 @@ final class WorkspaceSceneModel: ObservableObject {
         herdrSessionProbeBroker = HerdrSessionProbeBroker(
             discover: { host in
                 let probe = Task.detached(priority: .utility) {
-                    herdrSessionDiscovery(host)
+                    await herdrSessionDiscovery(host)
                 }
                 return await withTaskCancellationHandler {
                     await probe.value
@@ -1313,12 +1452,14 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         self.tmuxSessionKiller = tmuxSessionKiller
         self.tmuxSessionIdentityReader = tmuxSessionIdentityReader
+        self.tmuxSessionIdentityReviewer = tmuxSessionIdentityReviewer
         self.tmuxSessionStyler = tmuxSessionStyler
         self.tmuxPresentationStyleProvider =
             tmuxPresentationStyleProvider
         self.activeDisplayCount = activeDisplayCount
         self.sshHostProbeRunner = sshHostProbeRunner
-        self.sshAuthenticationCoordinator = sshAuthenticationCoordinator
+        self.hostSSHConnectionProvider = hostSSHConnectionProvider
+        self.hostSSHSessionProvider = hostSSHSessionProvider
         self.createdSessionDiscoveryDelays =
             createdSessionDiscoveryDelays
         self.deferredTmuxPresentationRetryDelays =
@@ -1406,6 +1547,13 @@ final class WorkspaceSceneModel: ObservableObject {
             appliesPresentationStyleToExistingSessionsProvider:
             appliesTmuxPresentationStyleToExistingSessionsProvider,
             remoteTmuxPathProvider: remoteTmuxPathProvider,
+            remoteConnectionProvider: { [weak self] hostID, info in
+                guard let self else { throw CancellationError() }
+                return try await acquirePresentationSSHConnection(
+                    hostID: hostID,
+                    info: info
+                )
+            },
             paneSplitter: nativeTmuxPaneSplitter
         )
         nativeTmuxSessionCoordinatorBacking?.onStateChanged = {
@@ -1415,11 +1563,16 @@ final class WorkspaceSceneModel: ObservableObject {
         nativeTmuxSessionCoordinatorBacking?.onSurfaceReady = {
             [weak self] handle in
             guard let self,
-                  let presentation = retainedTmuxPresentation(for: handle),
-                  acquireProtectedTmuxAttachmentScopeIfNeeded(
-                      for: presentation
-                  )
+                  let presentation = retainedTmuxPresentation(for: handle)
             else { return }
+            if presentation.reconnectContext?.handleID == handle.id,
+               let routeIdentity = nativeTmuxSessionCoordinator
+               .attachmentRouteIdentity(handle) {
+                presentation.reconnectContext?.routeIdentity = routeIdentity
+            }
+            guard acquireProtectedTmuxAttachmentScopeIfNeeded(
+                for: presentation
+            ) else { return }
             _ = protectedTmuxSurface(handle: handle)
             readTmuxPreviewIdentityIfNeeded(presentation)
             if activeBorrowedTmuxHandle == handle {
@@ -1446,8 +1599,13 @@ final class WorkspaceSceneModel: ObservableObject {
                     sshConnectionArguments: arguments
                 )
             },
-            sshConnectionArgumentsProvider:
-            herdrSSHConnectionSnapshotProvider,
+            remoteConnectionProvider: { [weak self] hostID, info in
+                guard let self else { throw CancellationError() }
+                return try await acquirePresentationSSHConnection(
+                    hostID: hostID,
+                    info: info
+                )
+            },
             paneSplitCapabilityProvider:
             herdrPaneSplitCapabilityProvider ?? { host, arguments, path, name in
                 HerdrInventoryClient().paneSplitCapability(
@@ -1475,8 +1633,13 @@ final class WorkspaceSceneModel: ObservableObject {
             terminalCoordinator: nativeZellijSurfaceStore
                 ?? terminalCoordinator,
             zellijPathProvider: zellijExecutableResolver,
-            sshConnectionArgumentsProvider:
-            zellijSSHConnectionSnapshotProvider
+            remoteConnectionProvider: { [weak self] hostID, info in
+                guard let self else { throw CancellationError() }
+                return try await acquirePresentationSSHConnection(
+                    hostID: hostID,
+                    info: info
+                )
+            }
         )
         nativeZellijSessionCoordinatorBacking?.onStateChanged = {
             [weak self] handle, state in
@@ -1485,12 +1648,6 @@ final class WorkspaceSceneModel: ObservableObject {
         nativeZellijSessionCoordinatorBacking?.onSurfaceReady = {
             [weak self] handle in
             guard let self, activeBorrowedZellijHandle == handle else { return }
-            if var context = activeZellijReconnectContext,
-               context.handleID == handle.id {
-                context.connection = nativeZellijSessionCoordinator
-                    .attachmentConnectionSnapshot(handle)
-                activeZellijReconnectContext = context
-            }
             objectWillChange.send()
             prepareActiveBorrowedZellijSurface()
         }
@@ -1768,7 +1925,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     name: descriptor.sessionName
                 ),
                 host: host,
-                connectionCacheKey: nil
+                routeIdentity: nil
             )
         }
         pendingRestoration = state
@@ -2063,7 +2220,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 state: expectedState,
                 selection: zellijSelection,
                 host: host,
-                connectionCacheKey: nil
+                routeIdentity: nil
             )
         }
         let validationID = UUID()
@@ -2088,8 +2245,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 return
             }
-            if let frozenKey = route.connectionCacheKey {
-                guard frozenKey == connection.cacheKey else {
+            if let frozenRouteIdentity = route.routeIdentity {
+                guard frozenRouteIdentity == connection.routeIdentity else {
                     cancelZellijRestorationValidation(
                         validationID,
                         expectedState: expectedState
@@ -2097,7 +2254,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     return
                 }
             } else {
-                route.connectionCacheKey = connection.cacheKey
+                route.routeIdentity = connection.routeIdentity
                 zellijRestorationRoute = route
             }
             guard !zellijSessionKillCoordinator.isPending(killKey) else {
@@ -2287,6 +2444,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func shutdown() async {
         guard !isShutDown else { return }
         isShutDown = true
+        cancelAllPresentationSSHAcquisitions()
         configuredSSHHostsCancellable?.cancel()
         configuredExeHostsCancellable?.cancel()
         worktreeMutationCancellable?.cancel()
@@ -2336,9 +2494,7 @@ final class WorkspaceSceneModel: ObservableObject {
         exhaustedCreatedTmuxSessionHandles.removeAll()
         endedCreatedTmuxSessionHandles.removeAll()
         confirmedEndedTmuxSessionHandles.removeAll()
-        nativeTmuxSessionCoordinatorBacking?.shutdown()
         failPendingHerdrLaunchOperations { _ in true }
-        nativeHerdrSessionCoordinatorBacking?.shutdown()
         invalidateZellijPresentationIntent()
         cancelZellijReconnect()
         zellijKillAuthorities.removeAll()
@@ -2347,10 +2503,22 @@ final class WorkspaceSceneModel: ObservableObject {
         suppressedZellijKillPresentations.removeAll()
         activeBorrowedZellijSelection = nil
         activeBorrowedZellijHandle = nil
-        nativeZellijSessionCoordinatorBacking?.shutdown()
-        sshAuthenticationCoordinator.cancelAll(
-            scopeID: sshAuthenticationScopeID
-        )
+        await withTaskGroup(of: Void.self) { group in
+            if let coordinator = nativeTmuxSessionCoordinatorBacking {
+                group.addTask { await coordinator.shutdown() }
+            }
+            if let coordinator = nativeHerdrSessionCoordinatorBacking {
+                group.addTask { await coordinator.shutdown() }
+            }
+            if let coordinator = nativeZellijSessionCoordinatorBacking {
+                group.addTask { await coordinator.shutdown() }
+            }
+        }
+        hostSSHSession?.cancel()
+        hostSSHSession = nil
+        hostSSHSessionDestination = nil
+        hostSSHSessionOwnerID = nil
+        hostSSHSessionSurfaceID = nil
     }
 
     /// Refreshes the sidebar from provider, kwt, and tmux inventories.
@@ -2506,16 +2674,18 @@ final class WorkspaceSceneModel: ObservableObject {
                 sessionKillRequest = try await prepareTmuxSessionKill(session)
             } else {
                 do {
-                    let identity = try await tmuxSessionIdentityReader(
+                    let review = try await tmuxSessionIdentityReviewer(
                         session,
+                        nil,
                         host
                     )
                     sessionKillRequest = TmuxSessionKillRequest(
                         session: session,
                         confirmedHost: hostSummary,
-                        serverPID: identity.serverPID,
-                        sessionID: identity.sessionID,
-                        sessionCreatedAt: identity.createdAt
+                        serverPID: review.identity.serverPID,
+                        sessionID: review.identity.sessionID,
+                        sessionCreatedAt: review.identity.createdAt,
+                        routeIdentity: review.routeIdentity
                     )
                 } catch TmuxSessionKillError.sessionNotRunning {
                     sessionKillRequest = nil
@@ -2524,10 +2694,22 @@ final class WorkspaceSceneModel: ObservableObject {
         } else {
             sessionKillRequest = nil
         }
+        let routeIdentity: String?
+        switch host {
+        case .local:
+            routeIdentity = nil
+        case let .ssh(info):
+            if let sessionRouteIdentity = sessionKillRequest?.routeIdentity {
+                routeIdentity = sessionRouteIdentity
+            } else {
+                routeIdentity = try await sshRouteIdentityResolver(info)
+            }
+        }
         return WorktreeRemovalRequest(
             worktree: worktree,
             project: project,
             confirmedHost: hostSummary,
+            routeIdentity: routeIdentity,
             sessionKillRequest: sessionKillRequest,
             changes: changes
         )
@@ -2623,6 +2805,12 @@ final class WorkspaceSceneModel: ObservableObject {
         guard removalHostEndpointMatches(request) else {
             throw KwtWorktreeError.removalHostChanged
         }
+        guard try await removalRouteIdentityMatches(
+            request.routeIdentity,
+            on: confirmedHost
+        ) else {
+            throw KwtWorktreeError.removalHostChanged
+        }
         let preflightTarget = try reconcileRemovalPreflight(
             preflight,
             request: request
@@ -2689,7 +2877,14 @@ final class WorkspaceSceneModel: ObservableObject {
             guard removalHostEndpointMatches(request) else {
                 throw KwtWorktreeError.removalHostChanged
             }
-            if !checkoutAlreadyAbsent {
+            if checkoutAlreadyAbsent {
+                guard try await removalRouteIdentityMatches(
+                    request.routeIdentity,
+                    on: confirmedHost
+                ) else {
+                    throw KwtWorktreeError.removalHostChanged
+                }
+            } else {
                 do {
                     let remover = request.forceRemoval
                         ? kwtForceWorktreeRemover
@@ -2698,6 +2893,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         worktree.path,
                         generation,
                         project.rootPath,
+                        request.routeIdentity,
                         confirmedHost
                     )
                 } catch {
@@ -2862,7 +3058,10 @@ final class WorkspaceSceneModel: ObservableObject {
         restorationTargets: Set<WorkspaceTmuxSessionSelection>?
     ) {
         do {
-            let refreshed = try await kwtInventoryLoader(confirmedHost)
+            let refreshed = try await removalReconciliationInventory(
+                on: confirmedHost,
+                expectedRouteIdentity: request.routeIdentity
+            )
             guard removalHostEndpointMatches(request) else {
                 return (false, false, nil)
             }
@@ -2929,6 +3128,8 @@ final class WorkspaceSceneModel: ObservableObject {
             } catch {
                 return (false, false, nil)
             }
+        } catch KwtSSHLeaseError.routeChanged {
+            return (false, true, nil)
         } catch {
             return (false, false, nil)
         }
@@ -3150,7 +3351,8 @@ final class WorkspaceSceneModel: ObservableObject {
             request,
             matches: updatedRequest.worktree,
             project: updatedRequest.project
-        ) || updatedRequest.sessionKillRequest != request.sessionKillRequest
+        ) || updatedRequest.routeIdentity != request.routeIdentity
+            || updatedRequest.sessionKillRequest != request.sessionKillRequest
             || updatedRequest.changes != request.changes
     }
 
@@ -3169,6 +3371,19 @@ final class WorkspaceSceneModel: ObservableObject {
             return false
         }
         return currentHost == confirmedHost
+    }
+
+    private func removalRouteIdentityMatches(
+        _ expectedRouteIdentity: String?,
+        on host: CommandHost
+    ) async throws -> Bool {
+        switch host {
+        case .local:
+            return expectedRouteIdentity == nil
+        case let .ssh(info):
+            return try await sshRouteIdentityResolver(info)
+                == expectedRouteIdentity
+        }
     }
 
     private func removeWorktreeFromCachedState(
@@ -3966,16 +4181,12 @@ final class WorkspaceSceneModel: ObservableObject {
             let activePresentationHost = activeZellijReconnectContext?.host
                 ?? snapshot.host(id: selection.hostID)
                 .flatMap(CommandHostResolver.resolve)
-            let activeConnection = activeBorrowedZellijHandle.flatMap {
-                nativeZellijSessionCoordinator
-                    .attachmentConnectionSnapshot($0)
-            } ?? activeZellijReconnectContext?.connection
             let restoresActivePresentation =
                 activeBorrowedZellijSelection == selection
                     && activePresentationHost == event.operation.host
                     && (!event.operation.host.isRemote
-                        || activeConnection?.cacheKey
-                        == event.operation.connectionCacheKey)
+                        || activeZellijReconnectContext?.routeIdentity
+                        == event.operation.connectionCacheKey.routeIdentity)
             let presentationIntent = zellijPresentationIntent.flatMap {
                 $0.selection == selection
                     && $0.navigationRevision == userNavigationRevision
@@ -4006,6 +4217,28 @@ final class WorkspaceSceneModel: ObservableObject {
             zellijDiscoveryGeneration += 1
             zellijDiscoveryTask?.cancel()
             zellijDiscoveryTask = nil
+            if zellijPresentationIntent?.selection == selection {
+                invalidateZellijPresentationIntent()
+            }
+            let activePresentationHost = activeZellijReconnectContext?.host
+                ?? snapshot.host(id: selection.hostID)
+                .flatMap(CommandHostResolver.resolve)
+            let activePresentationMatchesOperation =
+                activeBorrowedZellijSelection == selection
+                    && activePresentationHost == event.operation.host
+                    && (!event.operation.host.isRemote
+                        || activeZellijReconnectContext?.routeIdentity
+                        == event.operation.connectionCacheKey.routeIdentity)
+            if activePresentationMatchesOperation {
+                closeBorrowedZellijSession(selection)
+            } else if let route = zellijRestorationRoute,
+                      route.selection == selection,
+                      route.host == event.operation.host,
+                      let routeIdentity = route.routeIdentity,
+                      routeIdentity
+                      == event.operation.connectionCacheKey.routeIdentity {
+                cancelPendingRestoration()
+            }
             let sessions = zellijSessionsByHost[selection.hostID]
                 ?? snapshot.host(id: selection.hostID)?.zellijSessions
                 ?? []
@@ -4129,8 +4362,9 @@ final class WorkspaceSceneModel: ObservableObject {
            route.id == restorationRouteID,
            route.selection == selection,
            route.host == operation.host,
-           route.connectionCacheKey == nil
-           || route.connectionCacheKey == operation.connectionCacheKey {
+           route.routeIdentity == nil
+           || route.routeIdentity
+           == operation.connectionCacheKey.routeIdentity {
             cancelPendingRestoration()
         }
         let statePredatesKill =
@@ -5023,7 +5257,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 for (hostID, host) in targets {
                     group.addTask {
                         let probe = Task.detached(priority: .utility) {
-                            discovery(host)
+                            await discovery(host)
                         }
                         let result = await withTaskCancellationHandler {
                             await probe.value
@@ -5174,7 +5408,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 for (hostID, host) in targets {
                     group.addTask {
                         let probe = Task.detached(priority: .utility) {
-                            discovery(host)
+                            await discovery(host)
                         }
                         let result = await withTaskCancellationHandler {
                             await probe.value
@@ -5629,16 +5863,116 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func pendingSSHHostKeyConfirmation(
-        for host: SSHHost
+        for host: SSHHost,
+        reviewID: UUID = UUID()
     ) async -> Result<SSHHostKeyReviewRequirement, HostProbeError> {
         guard let resolved = resolvedSSHHost(host) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
-        let result = await resolveSSHHostTrust(for: resolved)
-        return mapSSHHostTrustRequirement(
-            result,
-            destination: resolved.destination
+        return await mapSSHHostTrustRequirement(
+            hostSSHSession(
+                for: resolved,
+                ownerID: reviewID
+            ).pendingRequirement()
         )
+    }
+
+    func cancelPresentationSSHAcquisition() {
+        guard let presentationSSHSessionID else { return }
+        removePresentationSSHSession(
+            presentationSSHSessionID,
+            cancel: true
+        )
+    }
+
+    func acquirePresentationSSHConnection(
+        hostID: UUID,
+        info: SSHHostInfo
+    ) async throws -> KwtSSHConnection {
+        let demoArguments = demoSSHIsolationArguments(
+            environment: presentationSSHEnvironment
+        )
+        if !demoArguments.isEmpty {
+            return KwtSSHConnection(
+                arguments: demoArguments,
+                routeIdentity: SSHDestination.demoRouteIdentity(info),
+                generation: 0
+            )
+        }
+        if let presentationSSHConnectionProvider {
+            return try await presentationSSHConnectionProvider(hostID, info)
+        }
+        let destination = SSHDestination.render(info)
+        let sessionID = UUID()
+        let session = KwtSSHConnectionSession(
+            host: info,
+            destination: destination,
+            coordinator: presentationSSHAcquisitionCoordinator,
+            onPresentationRequired: { [weak self] in
+                self?.presentationSSHSessionNeedsAttention(sessionID)
+            }
+        )
+        presentationSSHSessions[sessionID] = session
+        presentationSSHSessionOrder.append(sessionID)
+        do {
+            let connection = try await withTaskCancellationHandler {
+                try await session.takeConnection(waitingAcrossRetries: true)
+            } onCancel: { [weak self] in
+                Task { @MainActor in
+                    self?.removePresentationSSHSession(
+                        sessionID,
+                        cancel: true
+                    )
+                }
+            }
+            removePresentationSSHSession(sessionID, cancel: false)
+            return connection
+        } catch {
+            presentationSSHSessionNeedsAttention(sessionID)
+            throw error
+        }
+    }
+
+    private func presentationSSHSessionNeedsAttention(_ sessionID: UUID) {
+        guard presentationSSHSessions[sessionID]?.needsPresentation == true
+        else { return }
+        if let activeID = presentationSSHSessionID,
+           presentationSSHSessions[activeID]?.needsPresentation == true {
+            return
+        }
+        presentationSSHSessionID = sessionID
+        presentationSSHSession = presentationSSHSessions[sessionID]
+    }
+
+    private func removePresentationSSHSession(
+        _ sessionID: UUID,
+        cancel: Bool
+    ) {
+        guard let session = presentationSSHSessions.removeValue(
+            forKey: sessionID
+        ) else { return }
+        presentationSSHSessionOrder.removeAll { $0 == sessionID }
+        if cancel {
+            session.cancel()
+        }
+        guard presentationSSHSessionID == sessionID else { return }
+        presentationSSHSessionID = nil
+        presentationSSHSession = nil
+        if let nextID = presentationSSHSessionOrder.first(where: {
+            presentationSSHSessions[$0]?.needsPresentation == true
+        }) {
+            presentationSSHSessionID = nextID
+            presentationSSHSession = presentationSSHSessions[nextID]
+        }
+    }
+
+    private func cancelAllPresentationSSHAcquisitions() {
+        let sessions = Array(presentationSSHSessions.values)
+        presentationSSHSessions.removeAll()
+        presentationSSHSessionOrder.removeAll()
+        presentationSSHSessionID = nil
+        presentationSSHSession = nil
+        sessions.forEach { $0.cancel() }
     }
 
     func pendingSSHHostKeyConfirmation(
@@ -5649,7 +5983,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 "The selected remote host is no longer configured."
             ))
         }
-        return await pendingSSHHostKeyConfirmation(for: host)
+        return await pendingSSHHostKeyConfirmation(
+            for: host,
+            reviewID: hostID
+        )
     }
 
     func sshConnectionRecovery(
@@ -5662,28 +5999,25 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         }
 
-        guard let resolved = resolvedSSHHost(host) else {
-            return .connectionIssue("Enter a valid SSH destination.")
-        }
-        let trustResult = await resolveSSHHostTrust(for: resolved)
+        let trustResult = await pendingSSHHostKeyConfirmation(
+            for: host,
+            reviewID: hostID
+        )
         switch trustResult {
         case let .success(requirement):
             switch requirement {
             case let .confirmation(confirmation):
                 return .hostKey(confirmation)
-            case let .authentication(target):
-                pendingSSHAuthenticationTargets[resolved.destination] = target
+            case .authenticationRequired:
                 return .authenticationRequired
             case .none:
-                pendingSSHAuthenticationTargets.removeValue(
-                    forKey: resolved.destination
-                )
+                break
             }
         case let .failure(error):
             return .connectionIssue(error.displayMessage)
         }
 
-        switch await probeSSHHost(host) {
+        switch await probeSSHHost(host, reviewID: hostID) {
         case let .success(summary):
             let diagnostic = summary.diagnostics.first.map {
                 "\($0.summary) \($0.recoverySuggestion)"
@@ -5709,19 +6043,15 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let resolved = resolvedSSHHost(host) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
-        let result = await resolveSSHHostTrust(
-            for: resolved,
-            operation: { manager in
-                try manager.acceptRequirement(
-                    confirmation,
-                    for: resolved.info,
-                    destination: resolved.destination
-                )
-            }
-        )
-        return mapSSHHostTrustRequirement(
-            result,
-            destination: resolved.destination
+        let session = hostSSHSession(for: resolved)
+        guard session.hostKeyConfirmation == confirmation else {
+            return .failure(.message(
+                "The SSH host-key requirement changed. Review it and try again."
+            ))
+        }
+        session.trust(confirmation)
+        return await mapSSHHostTrustRequirement(
+            session.pendingRequirement()
         ).map { requirement in
             switch requirement {
             case let .confirmation(confirmation):
@@ -5749,21 +6079,19 @@ final class WorkspaceSceneModel: ObservableObject {
         for host: SSHHost
     ) -> AnyView? {
         guard let resolved = resolvedSSHHost(host) else { return nil }
-        guard let target = sshAuthenticationTarget(for: resolved) else {
-            return nil
-        }
-        guard let controlPath = sshAuthenticationControlPaths[target] else {
-            return nil
-        }
-        return AnyView(SSHAuthenticationView(
-            session: sshAuthenticationCoordinator.session(
-                scopeID: sshAuthenticationScopeID,
-                presentationID: surfaceID,
-                target: target,
-                controlPath: controlPath
-            ),
-            finalDestination: resolved.info
-        ))
+        guard hostSSHSessionDestination == resolved.destination,
+              let session = hostSSHSession
+        else { return nil }
+        hostSSHSessionSurfaceID = surfaceID
+        return AnyView(
+            KwtSSHAuthenticationView(
+                session: session,
+                onCancel: { [weak self] in
+                    self?.cancelSSHAuthentication(surfaceID: surfaceID)
+                }
+            )
+            .id(ObjectIdentifier(session))
+        )
     }
 
     func sshAuthenticationView(forHostID hostID: UUID) -> AnyView? {
@@ -5775,85 +6103,17 @@ final class WorkspaceSceneModel: ObservableObject {
         for host: SSHHost
     ) async -> SSHAuthenticationReadiness {
         guard let resolved = resolvedSSHHost(host) else { return .pending }
-        guard let target = sshAuthenticationTarget(for: resolved) else {
-            return .pending
-        }
-        guard let controlPath = sshAuthenticationControlPaths[target] else {
-            return .pending
-        }
-        if sshAuthenticationCoordinator.requiresRecoveryRestart(
-            target: target,
-            controlPath: controlPath
-        ) {
-            invalidateSSHAuthentication(
-                destination: resolved.destination,
-                target: target,
-                controlPath: controlPath
-            )
-            return .reviewRequired
-        }
-        let isReady = await Task.detached {
-            SSHConnectionPool.isAuthenticated(
-                target.host,
-                controlPath: controlPath
-            )
-        }.value
-        guard !Task.isCancelled else { return .pending }
-        if isReady {
-            let currentIdentity = await Task.detached(priority: .userInitiated) {
-                Self.currentSSHAuthenticationIdentity(
-                    for: target,
-                    finalHost: resolved.info
-                )
-            }.value
-            guard !Task.isCancelled else { return .pending }
-            guard currentIdentity?.target == target,
-                  currentIdentity?.controlPath == controlPath else {
-                invalidateSSHAuthentication(
-                    destination: resolved.destination,
-                    target: target,
-                    controlPath: controlPath
-                )
-                return .reviewRequired
-            }
-        }
-        sshAuthenticationCoordinator.reconcileIdentity(
-            target: target,
-            controlPath: controlPath
-        )
-        if isReady {
-            sshAuthenticationCoordinator.markConnected(
-                target: target,
-                controlPath: controlPath
-            )
-            guard let configuredTarget =
-                configuredSSHAuthenticationTargets[resolved.destination]
-            else { return .pending }
-            if target != configuredTarget {
-                pendingSSHAuthenticationTargets.removeValue(
-                    forKey: resolved.destination
-                )
-                return .reviewRequired
-            }
+        guard hostSSHSessionDestination == resolved.destination,
+              let session = hostSSHSession
+        else { return .pending }
+        switch session.state {
+        case .connected:
             return .connected
+        case .configurationChanged:
+            return .reviewRequired
+        case .starting, .prompt, .verifying, .failed:
+            return .pending
         }
-        return .pending
-    }
-
-    nonisolated static func currentSSHAuthenticationIdentity(
-        for target: SSHAuthenticationTarget,
-        finalHost: SSHHostInfo,
-        configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
-            SSHConfigurationResolver.configuration
-    ) -> SSHAuthenticationIdentity? {
-        let snapshot = SSHConnectionPool.configurationSnapshot(
-            for: finalHost,
-            configurationProvider: configurationProvider
-        )
-        return SSHConnectionPool.authenticationIdentity(
-            for: target,
-            configurationSnapshot: snapshot
-        )
     }
 
     func isSSHAuthenticationReady(
@@ -5863,32 +6123,104 @@ final class WorkspaceSceneModel: ObservableObject {
         return await isSSHAuthenticationReady(for: host)
     }
 
-    func cancelSSHAuthentication(surfaceID: UUID) {
-        sshAuthenticationCoordinator.cancel(
-            scopeID: sshAuthenticationScopeID,
-            presentationID: surfaceID
+    func probeExeAccountConnection(
+        _ account: ExeAccount,
+        probe: @escaping @Sendable (
+            ExeAccount, KwtSSHConnection?
+        ) async -> ExeAccountConnectionProbeResult = { account, connection in
+            await ExeVMClient().connectionProbe(
+                for: account,
+                connection: connection
+            )
+        }
+    ) async -> ExeAccountConnectionProbeResult {
+        let destination = account.sshDestination.trimmingCharacters(
+            in: .whitespacesAndNewlines
         )
+        let retainedConnection: KwtSSHConnection?
+        if hostSSHSessionDestination == destination,
+           let session = hostSSHSession,
+           session.state == .connected {
+            do {
+                retainedConnection = try await session.takeConnection()
+                hostSSHSession = nil
+                hostSSHSessionDestination = nil
+                hostSSHSessionOwnerID = nil
+                hostSSHSessionSurfaceID = nil
+            } catch {
+                return .failed(error.localizedDescription)
+            }
+        } else {
+            retainedConnection = nil
+        }
+
+        let result = await probe(account, retainedConnection)
+        guard let retainedConnection else { return result }
+        do {
+            try await retainedConnection.release()
+            return result
+        } catch {
+            return .failed(
+                "Ghosthub could not release the SSH connection: "
+                    + error.localizedDescription
+            )
+        }
+    }
+
+    func cancelSSHAuthentication(surfaceID: UUID) {
+        guard hostSSHSessionOwnerID == surfaceID
+            || hostSSHSessionSurfaceID == surfaceID
+        else { return }
+        let session = hostSSHSession
+        hostSSHSession = nil
+        hostSSHSessionDestination = nil
+        hostSSHSessionOwnerID = nil
+        hostSSHSessionSurfaceID = nil
+        session?.cancel()
+    }
+
+    func retainSSHAuthenticationForHandoff(surfaceID: UUID) {
+        guard hostSSHSessionSurfaceID == surfaceID,
+              hostSSHSession?.state == .connected
+        else { return }
+        hostSSHSessionSurfaceID = nil
+    }
+
+    func completeSSHAuthentication(
+        surfaceID: UUID,
+        startingNextOwner: @MainActor () -> Void
+    ) async {
+        guard hostSSHSessionSurfaceID == surfaceID,
+              let session = hostSSHSession,
+              session.state == .connected
+        else {
+            startingNextOwner()
+            return
+        }
+        hostSSHSession = nil
+        hostSSHSessionDestination = nil
+        hostSSHSessionOwnerID = nil
+        hostSSHSessionSurfaceID = nil
+        do {
+            let connection = try await session.takeConnection()
+            await connection.handoffToNextOwner(starting: startingNextOwner)
+        } catch {
+            session.cancel()
+            startingNextOwner()
+        }
     }
 
     private func mapSSHHostTrustRequirement(
-        _ result: Result<SSHHostTrustRequirement, HostProbeError>,
-        destination: String
+        _ result: Result<SSHHostTrustRequirement, HostProbeError>
     ) -> Result<SSHHostKeyReviewRequirement, HostProbeError> {
         switch result {
         case let .success(requirement):
             switch requirement {
             case let .confirmation(confirmation):
-                pendingSSHAuthenticationTargets.removeValue(
-                    forKey: destination
-                )
                 return .success(.confirmation(confirmation))
-            case let .authentication(target):
-                pendingSSHAuthenticationTargets[destination] = target
+            case .authentication:
                 return .success(.authenticationRequired)
             case .none:
-                pendingSSHAuthenticationTargets.removeValue(
-                    forKey: destination
-                )
                 return .success(.none)
             }
         case let .failure(error):
@@ -5896,103 +6228,32 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
-    private func sshAuthenticationTarget(
-        for resolved: (info: SSHHostInfo, destination: String)
-    ) -> SSHAuthenticationTarget? {
-        pendingSSHAuthenticationTargets[resolved.destination]
-            ?? configuredSSHAuthenticationTargets[resolved.destination]
-    }
-
-    private func resolveSSHHostTrust(
-        for resolved: (info: SSHHostInfo, destination: String)
-    ) async -> Result<SSHHostTrustRequirement, HostProbeError> {
-        await resolveSSHHostTrust(
-            for: resolved,
-            operation: { manager in
-                try manager.pendingRequirement(
-                    for: resolved.info,
-                    destination: resolved.destination
-                )
-            }
-        )
-    }
-
-    private func resolveSSHHostTrust(
+    private func hostSSHSession(
         for resolved: (info: SSHHostInfo, destination: String),
-        operation: @escaping @Sendable (SSHHostTrustManager) throws
-            -> SSHHostTrustRequirement
-    ) async -> Result<SSHHostTrustRequirement, HostProbeError> {
-        let resolutionTask = Task.detached(priority: .userInitiated) {
-            let snapshot = SSHConnectionPool.configurationSnapshot(
-                for: resolved.info
-            )
-            let identity = SSHConnectionPool.authenticationIdentity(
-                for: snapshot
-            )
-            do {
-                let requirement = try operation(SSHHostTrustManager(
-                    configurationSnapshot: snapshot
-                ))
-                let requirementIdentity: SSHAuthenticationIdentity?
-                if case let .authentication(target) = requirement {
-                    requirementIdentity = SSHConnectionPool
-                        .authenticationIdentity(
-                            for: target,
-                            configurationSnapshot: snapshot
-                        )
-                } else {
-                    requirementIdentity = nil
+        ownerID: UUID? = nil
+    ) -> KwtSSHConnectionSession {
+        if hostSSHSessionDestination == resolved.destination,
+           let hostSSHSession {
+            switch hostSSHSession.state {
+            case .failed, .configurationChanged:
+                break
+            case .starting, .prompt, .verifying, .connected:
+                if let ownerID {
+                    hostSSHSessionOwnerID = ownerID
                 }
-                return (
-                    identity,
-                    requirementIdentity,
-                    Result<SSHHostTrustRequirement, HostProbeError>.success(
-                        requirement
-                    )
-                )
-            } catch {
-                return (
-                    identity,
-                    nil,
-                    Result<SSHHostTrustRequirement, HostProbeError>.failure(
-                        .message(error.localizedDescription)
-                    )
-                )
+                return hostSSHSession
             }
         }
-        let resolution = await withTaskCancellationHandler {
-            await resolutionTask.value
-        } onCancel: {
-            resolutionTask.cancel()
-        }
-        if !Task.isCancelled {
-            if let identity = resolution.0 {
-                configuredSSHAuthenticationTargets[resolved.destination] =
-                    identity.target
-                sshAuthenticationControlPaths[identity.target] =
-                    identity.controlPath
-            }
-            if let requirementIdentity = resolution.1,
-               requirementIdentity.target != resolution.0?.target {
-                sshAuthenticationControlPaths[requirementIdentity.target] =
-                    requirementIdentity.controlPath
-            }
-        }
-        return resolution.2
-    }
-
-    private func invalidateSSHAuthentication(
-        destination: String,
-        target: SSHAuthenticationTarget,
-        controlPath: String
-    ) {
-        pendingSSHAuthenticationTargets.removeValue(forKey: destination)
-        configuredSSHAuthenticationTargets.removeValue(forKey: destination)
-        sshAuthenticationControlPaths.removeValue(forKey: target)
-        sshAuthenticationCoordinator.invalidate(
-            target: target,
-            controlPath: controlPath
+        hostSSHSession?.cancel()
+        let session = hostSSHSessionProvider(
+            resolved.info,
+            resolved.destination
         )
+        hostSSHSession = session
+        hostSSHSessionDestination = resolved.destination
+        hostSSHSessionOwnerID = ownerID
+        hostSSHSessionSurfaceID = nil
+        return session
     }
 
     private func configuredSSHHost(for hostID: UUID) -> SSHHost? {
@@ -6031,6 +6292,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func probeSSHHost(
         _ host: SSHHost,
+        reviewID: UUID? = nil,
         protocolNonce: String = UUID().uuidString
     ) async -> Result<
         HostProbeSummary,
@@ -6098,9 +6360,64 @@ final class WorkspaceSceneModel: ObservableObject {
                     + "else printf 'GHOSTHUB_KWT_UNAVAILABLE\\n'; fi; "
                     + "printf '\(protocolEnd)\\n'"
         }
-        return await Task.detached {
+        let connection: KwtSSHConnection
+        if let hostSSHConnectionProvider {
+            do {
+                connection = try await hostSSHConnectionProvider(
+                    sshHost,
+                    resolved.destination
+                )
+            } catch {
+                return .failure(.message(error.localizedDescription))
+            }
+        } else {
+            let session = hostSSHSession(
+                for: resolved,
+                ownerID: reviewID
+            )
+            switch await session.pendingRequirement() {
+            case .success(.confirmation):
+                return Self.pendingSSHProbeSummary(
+                    host: host,
+                    diagnostic: RemoteHostDiagnostic(
+                        code: .sshConnectionFailed,
+                        severity: .error,
+                        summary: "The SSH host key needs review.",
+                        recoverySuggestion:
+                        "Review and approve the host identity before reconnecting."
+                    )
+                )
+            case .success(.authentication):
+                return Self.pendingSSHProbeSummary(
+                    host: host,
+                    diagnostic: RemoteHostDiagnostic(
+                        code: .sshAuthenticationFailed,
+                        severity: .error,
+                        summary: "SSH authentication is required.",
+                        recoverySuggestion:
+                        "Enter the password or verification code requested by OpenSSH."
+                    )
+                )
+            case .success(.none):
+                do {
+                    connection = try await session.takeConnection()
+                    if hostSSHSession === session {
+                        hostSSHSession = nil
+                        hostSSHSessionDestination = nil
+                        hostSSHSessionOwnerID = nil
+                        hostSSHSessionSurfaceID = nil
+                    }
+                } catch {
+                    return .failure(.message(error.localizedDescription))
+                }
+            case let .failure(error):
+                return .failure(error)
+            }
+        }
+        let probe = await BlockingTask.run {
             let result = sshHostProbeRunner(
                 sshHost,
+                connection.arguments,
                 probeCommand
             )
             let protocolLines = Self.sshProbeProtocolLines(
@@ -6149,24 +6466,60 @@ final class WorkspaceSceneModel: ObservableObject {
             } else {
                 diagnostics = []
             }
-            return .success(HostProbeSummary(
-                host: HostSummary(
-                    id: UUID(),
-                    configKey: host.configKey,
-                    name: host.name,
-                    kind: .remote,
-                    platform: host.platform,
-                    sshDestination: host.sshDestination,
-                    preferredTransport: .ssh,
-                    lastKnownReachable: sshReached,
-                    lastSeenAt: sshReached ? Date() : nil,
-                    remoteDiagnostics: diagnostics,
-                    decodedConnectionState: !sshReached
-                        ? .offline
-                        : result.status == 0 ? .online : .degraded
-                )
+            let summary: Result<HostProbeSummary, HostProbeError> =
+                .success(HostProbeSummary(
+                    host: HostSummary(
+                        id: UUID(),
+                        configKey: host.configKey,
+                        name: host.name,
+                        kind: .remote,
+                        platform: host.platform,
+                        sshDestination: host.sshDestination,
+                        preferredTransport: .ssh,
+                        lastKnownReachable: sshReached,
+                        lastSeenAt: sshReached ? Date() : nil,
+                        remoteDiagnostics: diagnostics,
+                        decodedConnectionState: !sshReached
+                            ? .offline
+                            : result.status == 0 ? .online : .degraded
+                    )
+                ))
+            return (summary, result)
+        }
+        if SSHConnectionFailure.indicatesUnusableConnection(
+            status: probe.1.status,
+            output: probe.1.stderr
+        ) {
+            await connection.invalidate()
+        }
+        do {
+            try await connection.release()
+        } catch {
+            return .failure(.message(
+                "Ghosthub could not release the SSH connection: "
+                    + error.localizedDescription
             ))
-        }.value
+        }
+        return probe.0
+    }
+
+    private nonisolated static func pendingSSHProbeSummary(
+        host: SSHHost,
+        diagnostic: RemoteHostDiagnostic
+    ) -> Result<HostProbeSummary, HostProbeError> {
+        .success(HostProbeSummary(host: HostSummary(
+            id: UUID(),
+            configKey: host.configKey,
+            name: host.name,
+            kind: .remote,
+            platform: host.platform,
+            sshDestination: host.sshDestination,
+            preferredTransport: .ssh,
+            lastKnownReachable: false,
+            lastSeenAt: nil,
+            remoteDiagnostics: [diagnostic],
+            decodedConnectionState: .offline
+        )))
     }
 
     nonisolated static func sshProbeProtocolLines(
@@ -6285,10 +6638,72 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    func prepareProjectRemoval(
+        _ project: ProjectSummary,
+        confirmedHost: HostSummary
+    ) async throws -> ProjectRemovalRequest {
+        guard let capturedTarget = CommandHostResolver.resolve(confirmedHost),
+              let current = validatedProjectRemovalTarget(
+                  project,
+                  confirmedHostID: confirmedHost.id,
+                  capturedTarget: capturedTarget
+              ),
+              current.project.registrationFingerprint
+              == project.registrationFingerprint
+        else {
+            throw projectRemovalTargetChangedError
+        }
+        let routeIdentity: String?
+        switch current.host {
+        case .local:
+            routeIdentity = nil
+        case let .ssh(info):
+            routeIdentity = try await sshRouteIdentityResolver(info)
+        }
+        guard validatedProjectRemovalTarget(
+            current.project,
+            confirmedHostID: confirmedHost.id,
+            capturedTarget: capturedTarget
+        ) != nil else {
+            throw projectRemovalTargetChangedError
+        }
+        return ProjectRemovalRequest(
+            project: project,
+            confirmedHost: confirmedHost,
+            routeIdentity: routeIdentity
+        )
+    }
+
     func unregisterProject(
         _ project: ProjectSummary,
         confirmedHost: HostSummary
     ) async -> Result<String, HostProbeError> {
+        do {
+            guard let host = CommandHostResolver.resolve(confirmedHost)
+            else { throw projectRemovalTargetChangedError }
+            let routeIdentity: String?
+            switch host {
+            case .local:
+                routeIdentity = nil
+            case let .ssh(info):
+                routeIdentity = try await sshRouteIdentityResolver(info)
+            }
+            let request = ProjectRemovalRequest(
+                project: project,
+                confirmedHost: confirmedHost,
+                routeIdentity: routeIdentity
+            )
+            return await unregisterProject(request)
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
+    }
+
+    func unregisterProject(
+        _ request: ProjectRemovalRequest
+    ) async -> Result<String, HostProbeError> {
+        let project = request.project
+        let confirmedHost = request.confirmedHost
         guard let capturedTarget = CommandHostResolver.resolve(confirmedHost)
         else {
             return .failure(.message("Enter a valid SSH destination."))
@@ -6362,6 +6777,12 @@ final class WorkspaceSceneModel: ObservableObject {
             if let warning = refreshed.projectsWarning {
                 return .failure(projectRemovalInventoryError(warning))
             }
+            guard try await removalRouteIdentityMatches(
+                request.routeIdentity,
+                on: initial.host
+            ) else {
+                return .failure(projectRemovalTargetChangedError)
+            }
             let refreshedProjectWorktrees = KwtSnapshotMerger.merge(
                 refreshed,
                 hostID: initial.project.hostID,
@@ -6431,6 +6852,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     authorizedPath,
                     authorizedRepository,
                     authorizedRegistration,
+                    request.routeIdentity,
                     removal.host
                 )
                 guard validatedProjectRemovalTarget(
@@ -6483,7 +6905,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
                 let reconciliation = await reconcileFailedProjectRemoval(
                     removal.project,
-                    on: removal.host
+                    on: removal.host,
+                    expectedRouteIdentity: request.routeIdentity
                 )
                 guard snapshot.host(id: confirmedHost.id)
                     .flatMap(CommandHostResolver.resolve) == capturedTarget
@@ -6573,10 +6996,14 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func reconcileFailedProjectRemoval(
         _ project: ProjectSummary,
-        on host: CommandHost
+        on host: CommandHost,
+        expectedRouteIdentity: String?
     ) async -> FailedProjectRemovalReconciliation {
         do {
-            let inventory = try await kwtInventoryLoader(host)
+            let inventory = try await removalReconciliationInventory(
+                on: host,
+                expectedRouteIdentity: expectedRouteIdentity
+            )
             guard validatedProjectRemovalTarget(
                 project,
                 confirmedHostID: project.hostID,
@@ -6623,6 +7050,16 @@ final class WorkspaceSceneModel: ObservableObject {
         } catch {
             return .unverified
         }
+    }
+
+    private func removalReconciliationInventory(
+        on host: CommandHost,
+        expectedRouteIdentity: String?
+    ) async throws -> KwtHostInventory {
+        try await kwtConditionalInventoryLoader(
+            host,
+            expectedRouteIdentity
+        )
     }
 
     private var projectRemovalTargetChangedError: HostProbeError {
@@ -7278,7 +7715,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection: selection,
                 handleID: handle.id,
                 host: validation.host,
-                connection: validation.connection,
+                routeIdentity: validation.connection.routeIdentity,
                 surfaceExitCode: nil
             )
             : nil
@@ -7447,6 +7884,10 @@ final class WorkspaceSceneModel: ObservableObject {
             host,
             connection.arguments
         )
+        if case let .failure(error) = result,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await connection.invalidate()
+        }
         let resolvedPath: Result<String, ZellijCommandError>
         if case .available = result {
             guard !Task.isCancelled else { return nil }
@@ -7458,6 +7899,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 await probe.value
             } onCancel: {
                 probe.cancel()
+            }
+            if case let .failure(error) = resolvedPath,
+               SSHConnectionFailure.indicatesUnusableConnection(error) {
+                await connection.invalidate()
             }
         } else {
             resolvedPath = .failure(.unavailable)
@@ -7515,7 +7960,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection: selection,
                 handleID: handle.id,
                 host: host,
-                connection: nil,
+                routeIdentity: nil,
                 surfaceExitCode: nil
             )
             : nil
@@ -7535,6 +7980,10 @@ final class WorkspaceSceneModel: ObservableObject {
             host,
             connection.arguments
         )
+        if case let .failure(error) = result,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await connection.invalidate()
+        }
         let currentConnection = await zellijConnectionSnapshot(on: host)
         try requireActiveScene(activityGeneration)
         guard snapshot.host(id: selection.hostID)
@@ -7548,7 +7997,7 @@ final class WorkspaceSceneModel: ObservableObject {
         zellijKillAuthorities[authorityID] = ZellijKillAuthority(
             hostID: selection.hostID,
             host: host,
-            connection: connection
+            routeIdentity: connection.routeIdentity
         )
         return ZellijSessionKillRequest(
             authorityID: authorityID,
@@ -7580,7 +8029,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         let currentConnection = await zellijConnectionSnapshot(on: currentHost)
         try requireActiveScene(activityGeneration)
-        guard currentConnection.cacheKey == authority.connection.cacheKey else {
+        guard currentConnection.routeIdentity == authority.routeIdentity else {
             throw ZellijSessionPresentationError.hostChanged(selection.name)
         }
         let key = ZellijSessionKillCoordinator.Key(
@@ -7590,7 +8039,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let operation = zellijSessionKillCoordinator.begin(
             key: key,
             host: authority.host,
-            connectionCacheKey: authority.connection.cacheKey
+            connectionCacheKey: currentConnection.cacheKey
         )
         else {
             throw ZellijSessionPresentationError.operationPending(
@@ -7603,8 +8052,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         let result = await zellijSessionValidationDiscovery(
             currentHost,
-            authority.connection.arguments
+            currentConnection.arguments
         )
+        if case let .failure(error) = result,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await currentConnection.invalidate()
+        }
         let postDiscoveryConnection = await zellijConnectionSnapshot(
             on: authority.host
         )
@@ -7618,7 +8071,7 @@ final class WorkspaceSceneModel: ObservableObject {
             ),
             postDiscoveryHost == authority.host,
             postDiscoveryConnection.cacheKey
-            == authority.connection.cacheKey
+            == currentConnection.cacheKey
         else {
             throw ZellijSessionPresentationError.hostChanged(selection.name)
         }
@@ -7626,8 +8079,12 @@ final class WorkspaceSceneModel: ObservableObject {
         let killResult = await zellijSessionKiller(
             selection.name,
             postDiscoveryHost,
-            authority.connection.arguments
+            currentConnection.arguments
         )
+        if case let .failure(error) = killResult,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await currentConnection.invalidate()
+        }
         try killResult.get()
         outcome = .succeeded
         try requireActiveScene(activityGeneration)
@@ -7661,10 +8118,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard case let .ssh(info) = host else {
             return SSHConnectionArgumentsSnapshot(arguments: [])
         }
-        let provider = zellijSSHConnectionSnapshotProvider
-        return await Task.detached(priority: .userInitiated) {
-            provider(info)
-        }.value
+        return await zellijSSHConnectionSnapshotProvider(info)
     }
 
     private func captureSceneActivity() throws -> UInt64 {
@@ -7767,11 +8221,16 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         let connection = await herdrConnectionSnapshot(on: host)
         try requireActiveScene(activityGeneration)
-        let record = try await herdrSessionRecordReader(
+        let recordResult = await herdrSessionRecordReader(
             selection.name,
             host,
             connection.arguments
-        ).get()
+        )
+        if case let .failure(error) = recordResult,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await connection.invalidate()
+        }
+        let record = try recordResult.get()
         try requireActiveScene(activityGeneration)
         try Self.validateHerdrLifecycleState(
             record.state,
@@ -7782,7 +8241,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let authorityID = UUID()
         herdrLifecycleAuthorities[authorityID] = HerdrLifecycleAuthority(
             host: host,
-            connection: connection
+            routeIdentity: connection.routeIdentity
         )
         return HerdrSessionLifecycleRequest(
             authorityID: authorityID,
@@ -7821,7 +8280,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         let currentConnection = await herdrConnectionSnapshot(on: currentHost)
         try requireActiveScene(activityGeneration)
-        guard currentConnection.cacheKey == authority.connection.cacheKey else {
+        guard currentConnection.routeIdentity == authority.routeIdentity else {
             throw HerdrSessionLifecycleRequestError.hostChanged(
                 selection.name
             )
@@ -7843,11 +8302,16 @@ final class WorkspaceSceneModel: ObservableObject {
             herdrLifecycleCoordinator.finish(operation, outcome: outcome)
         }
 
-        let record = try await herdrSessionRecordReader(
+        let recordResult = await herdrSessionRecordReader(
             selection.name,
             currentHost,
-            authority.connection.arguments
-        ).get()
+            currentConnection.arguments
+        )
+        if case let .failure(error) = recordResult,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await currentConnection.invalidate()
+        }
+        let record = try recordResult.get()
         try requireActiveScene(activityGeneration)
         guard record.isDefault == request.isDefault,
               record.sessionDirectory == request.confirmedSessionDirectory,
@@ -7866,12 +8330,17 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         let lifecycleAction: HerdrSessionLifecycleAction =
             request.action == .stop ? .stop : .delete
-        _ = try await herdrSessionMutator(
+        let mutationResult = await herdrSessionMutator(
             lifecycleAction,
             record,
             currentHost,
-            authority.connection.arguments
-        ).get()
+            currentConnection.arguments
+        )
+        if case let .failure(error) = mutationResult,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await currentConnection.invalidate()
+        }
+        _ = try mutationResult.get()
         try requireActiveScene(activityGeneration)
         outcome = .succeeded
     }
@@ -7888,17 +8357,33 @@ final class WorkspaceSceneModel: ObservableObject {
         guard case let .ssh(info) = host else {
             return SSHConnectionArgumentsSnapshot(arguments: [])
         }
-        let provider = herdrSSHConnectionSnapshotProvider
-        return await Task.detached(priority: .userInitiated) {
-            provider(info)
-        }.value
+        return await herdrSSHConnectionSnapshotProvider(info)
+    }
+
+    /// Borrows a noninteractive kwt lease and freezes its arguments. The
+    /// snapshot owns that borrow until its last copy is gone.
+    nonisolated static func borrowedConnectionSnapshot(
+        _ host: SSHHostInfo
+    ) async -> SSHConnectionArgumentsSnapshot {
+        do {
+            return try await SSHConnectionArgumentsSnapshot(
+                KwtSSHCommandLease().acquire(on: host)
+            )
+        } catch {
+            return .failClosed(error)
+        }
     }
 
     private func validatedHerdrSessionProbe(
         named name: String,
-        on host: CommandHost
+        on host: CommandHost,
+        connection frozenConnection: SSHConnectionArgumentsSnapshot? = nil
     ) async -> HerdrSessionProbeValidation? {
-        let connection = await herdrConnectionSnapshot(on: host)
+        let connection = if let frozenConnection {
+            frozenConnection
+        } else {
+            await herdrConnectionSnapshot(on: host)
+        }
         let outcome = await herdrSessionExactProbe(
             name,
             host,
@@ -8026,6 +8511,10 @@ final class WorkspaceSceneModel: ObservableObject {
             route,
             connection.arguments
         )
+        if case let .failure(error) = result,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await connection.invalidate()
+        }
         let currentConnection = await herdrConnectionSnapshot(on: route)
         guard !Task.isCancelled else { throw CancellationError() }
         guard snapshot.host(id: selection.hostID)
@@ -8121,8 +8610,6 @@ final class WorkspaceSceneModel: ObservableObject {
                                   let authority = nativeHerdrSessionCoordinator
                                   .attachmentAuthority(handle) {
                 authority.host == validation.host
-                    && authority.sshConnectionSnapshot.cacheKey
-                    == validation.connection.cacheKey
             } else {
                 validation == nil
             }
@@ -8158,6 +8645,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection: selection,
                 handleID: handle.id,
                 host: attachmentHost,
+                routeIdentity: validation?.connection.routeIdentity,
                 surfaceExitCode: nil
             )
             : nil
@@ -8575,6 +9063,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection: selection,
                 handleID: handle.id,
                 host: attachmentHost,
+                routeIdentity: nativeTmuxSessionCoordinator
+                    .attachmentRouteIdentity(handle),
                 phase: phase,
                 surfaceExitCode: nil
             )
@@ -9221,27 +9711,27 @@ final class WorkspaceSceneModel: ObservableObject {
             selection,
             hostSummary: currentHostSummary
         )
-        let identity: TmuxSessionIdentity
-        if let discoveredIdentity {
-            identity = discoveredIdentity
-        } else if isConnectedActiveTmuxSession(selection) {
-            identity = try await tmuxSessionIdentityReader(
-                selection,
-                currentHost
-            )
-        } else {
+        guard discoveredIdentity != nil
+            || isConnectedActiveTmuxSession(selection)
+        else {
             throw TmuxSessionKillError.sessionNotRunning(
                 host: currentHost.displayName,
                 session: selection.name
             )
         }
+        let review = try await tmuxSessionIdentityReviewer(
+            selection,
+            discoveredIdentity,
+            currentHost
+        )
 
         return TmuxSessionKillRequest(
             session: selection,
             confirmedHost: currentHostSummary,
-            serverPID: identity.serverPID,
-            sessionID: identity.sessionID,
-            sessionCreatedAt: identity.createdAt
+            serverPID: review.identity.serverPID,
+            sessionID: review.identity.sessionID,
+            sessionCreatedAt: review.identity.createdAt,
+            routeIdentity: review.routeIdentity
         )
     }
 
@@ -9272,6 +9762,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 sessionID: request.sessionID,
                 createdAt: request.sessionCreatedAt
             ),
+            request.routeIdentity,
             confirmedHost
         )
 
@@ -9440,6 +9931,9 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.recoveryState = nil
             presentation.recoveryRequest = nil
             if presentation.reconnectContext?.handleID == handle.id {
+                presentation.reconnectContext?.routeIdentity =
+                    nativeTmuxSessionCoordinator
+                        .attachmentRouteIdentity(handle)
                 presentation.reconnectContext?.surfaceExitCode = nil
                 // Belt and braces: relaunch already rebuilds the context, but
                 // clearing here keeps "only the attempt that failed may skip
@@ -9468,13 +9962,16 @@ final class WorkspaceSceneModel: ObservableObject {
            == .surfaceUnavailable,
            var context = presentation.reconnectContext,
            context.handleID == handle.id {
-            // The surface could not be created, which is transient. The
-            // supervisor already stopped when it handed off this relaunch, so
-            // re-arm it; its first act is the display check, so it backs off
-            // rather than spinning on a relaunch that cannot succeed yet.
+            // The surface could not be created, which is transient. Re-arm
+            // recovery behind its configured delay instead of immediately
+            // relaunching another surface.
             context.surfaceLaunchFailed = true
             presentation.reconnectContext = context
-            startTmuxReconnect(presentation, context: context)
+            startTmuxReconnect(
+                presentation,
+                context: context,
+                waitBeforeFirstAttempt: true
+            )
             return
         }
         if case .disconnected = state,
@@ -9606,6 +10103,12 @@ final class WorkspaceSceneModel: ObservableObject {
             startHerdrReconnect(context)
             return
         }
+        if activeBorrowedHerdrRecoveryState != nil,
+           nativeHerdrSessionCoordinator.attachmentClosure(handle)
+           == .launchFailed {
+            cancelHerdrReconnect()
+            return
+        }
         guard nativeHerdrSessionCoordinator.hasLaunched(handle) else { return }
         switch nativeHerdrSessionCoordinator.attachmentClosure(handle) {
         case .detached:
@@ -9650,8 +10153,6 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             if var context = activeZellijReconnectContext,
                context.handleID == handle.id {
-                context.connection = nativeZellijSessionCoordinator
-                    .attachmentConnectionSnapshot(handle)
                 context.surfaceExitCode = nil
                 context.surfaceLaunchFailed = false
                 activeZellijReconnectContext = context
@@ -9762,14 +10263,9 @@ final class WorkspaceSceneModel: ObservableObject {
               activeBorrowedZellijHandle?.id == context.handleID
         else { return .stop }
         guard canAttachToDisplay else { return .retry }
-        guard let connection = context.connection else {
-            stopZellijReconnect(
-                "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
-            )
-            return .stop
-        }
-        let before = await zellijConnectionSnapshot(on: context.host)
-        guard before.cacheKey == connection.cacheKey else {
+        let connection = await zellijConnectionSnapshot(on: context.host)
+        if let routeIdentity = connection.routeIdentity,
+           routeIdentity != context.routeIdentity {
             stopZellijReconnect(
                 "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
             )
@@ -9786,11 +10282,16 @@ final class WorkspaceSceneModel: ObservableObject {
               snapshot.host(id: context.selection.hostID)
               .flatMap(CommandHostResolver.resolve) == context.host
         else { return .stop }
-        guard after.cacheKey == connection.cacheKey else {
-            stopZellijReconnect(
-                "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
-            )
-            return .stop
+        if connection.routeIdentity != nil {
+            guard let routeIdentity = after.routeIdentity else {
+                return .retry
+            }
+            guard routeIdentity == context.routeIdentity else {
+                stopZellijReconnect(
+                    "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
+                )
+                return .stop
+            }
         }
         let executablePath: String?
         if case .available = result {
@@ -9819,16 +10320,24 @@ final class WorkspaceSceneModel: ObservableObject {
                   snapshot.host(id: context.selection.hostID)
                   .flatMap(CommandHostResolver.resolve) == context.host
             else { return .stop }
-            guard finalConnection.cacheKey == connection.cacheKey else {
-                stopZellijReconnect(
-                    "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
-                )
-                return .stop
+            if connection.routeIdentity != nil {
+                guard let routeIdentity = finalConnection.routeIdentity else {
+                    return .retry
+                }
+                guard routeIdentity == context.routeIdentity else {
+                    stopZellijReconnect(
+                        "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
+                    )
+                    return .stop
+                }
             }
             switch resolution {
             case let .success(path):
                 executablePath = path
             case let .failure(error):
+                if SSHConnectionFailure.indicatesUnusableConnection(error) {
+                    await connection.invalidate()
+                }
                 return zellijReconnectDecision(
                     for: context,
                     result: .failure(error),
@@ -9838,6 +10347,10 @@ final class WorkspaceSceneModel: ObservableObject {
             }
         } else {
             executablePath = nil
+        }
+        if case let .failure(error) = result,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await connection.invalidate()
         }
         return zellijReconnectDecision(
             for: context,
@@ -9939,7 +10452,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         )
                 }
                 return .stop
-            case .hostKeyChanged:
+            case .hostKeyChanged, .configurationChanged:
                 let message = classification.diagnostic.summary + " "
                     + classification.diagnostic.recoverySuggestion
                 stopZellijReconnect(
@@ -10032,25 +10545,11 @@ final class WorkspaceSceneModel: ObservableObject {
                       snapshot.host(id: operation.key.hostID)
                       .flatMap(CommandHostResolver.resolve) == authority.host
                 else { return }
-                let before = await herdrConnectionSnapshot(
-                    on: authority.host
-                )
-                guard before.cacheKey
-                    == authority.sshConnectionSnapshot.cacheKey else {
-                    finishPendingHerdrLaunch(
-                        handleID: handle.id,
-                        operation: operation,
-                        outcome: .failed
-                    )
-                    scheduleHerdrSessionDiscovery()
-                    return
-                }
                 let outcome = await herdrSessionExactProbe(
                     operation.key.sessionName,
                     authority.host,
                     authority.sshConnectionSnapshot.arguments
                 )
-                let after = await herdrConnectionSnapshot(on: authority.host)
                 guard let pending = pendingHerdrLaunchOperations[handle.id],
                       pending.operation == operation,
                       pending.authority?.sshConnectionSnapshot.cacheKey
@@ -10059,16 +10558,6 @@ final class WorkspaceSceneModel: ObservableObject {
                       snapshot.host(id: operation.key.hostID)
                       .flatMap(CommandHostResolver.resolve) == authority.host
                 else { return }
-                guard after.cacheKey
-                    == authority.sshConnectionSnapshot.cacheKey else {
-                    finishPendingHerdrLaunch(
-                        handleID: handle.id,
-                        operation: operation,
-                        outcome: .failed
-                    )
-                    scheduleHerdrSessionDiscovery()
-                    return
-                }
                 if outcome == .present {
                     finishPendingHerdrLaunch(
                         handleID: handle.id,
@@ -10133,26 +10622,53 @@ final class WorkspaceSceneModel: ObservableObject {
               activeBorrowedHerdrHandle?.id == context.handleID
         else { return .stop }
         guard canAttachToDisplay else { return .retry }
-        let probe = await validatedHerdrSessionProbe(
-            named: context.selection.name,
-            on: context.host
+        let connection = await herdrConnectionSnapshot(on: context.host)
+        guard !Task.isCancelled else { return .retry }
+        guard activeHerdrReconnectContext == context,
+              activeBorrowedHerdrHandle?.id == context.handleID
+        else { return .stop }
+        if let routeIdentity = connection.routeIdentity,
+           routeIdentity != context.routeIdentity {
+            stopHerdrReconnectWithUnableToAttach(
+                "The SSH connection changed while Ghosthub was checking the Herdr session. Reopen it to use the current connection."
+            )
+            return .stop
+        }
+        let outcome = await herdrSessionExactProbe(
+            context.selection.name,
+            context.host,
+            connection.arguments
         )
+        let currentConnection = await herdrConnectionSnapshot(on: context.host)
         guard !Task.isCancelled else { return .retry }
         guard activeHerdrReconnectContext == context,
               activeBorrowedHerdrHandle?.id == context.handleID,
               snapshot.host(id: context.selection.hostID)
               .flatMap(CommandHostResolver.resolve) == context.host
         else { return .stop }
-        guard let probe else {
-            stopHerdrReconnectWithUnableToAttach(
-                "The SSH connection changed while Ghosthub was checking the Herdr session. Reopen it to use the current connection."
-            )
-            return .stop
+        if connection.routeIdentity != nil {
+            guard let routeIdentity = currentConnection.routeIdentity else {
+                return .retry
+            }
+            guard routeIdentity == context.routeIdentity else {
+                stopHerdrReconnectWithUnableToAttach(
+                    "The SSH connection changed while Ghosthub was checking the Herdr session. Reopen it to use the current connection."
+                )
+                return .stop
+            }
+        }
+        if case let .failure(error) = outcome,
+           SSHConnectionFailure.indicatesUnusableConnection(error) {
+            await connection.invalidate()
         }
         return herdrReconnectDecision(
             for: context,
-            outcome: probe.outcome,
-            validation: probe.validation
+            outcome: outcome,
+            validation: HerdrSessionValidation(
+                session: nil,
+                host: context.host,
+                connection: connection
+            )
         )
     }
 
@@ -10241,7 +10757,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         )
                 }
                 return .stop
-            case .hostKeyChanged:
+            case .hostKeyChanged, .configurationChanged:
                 activeBorrowedHerdrRecoveryState = .needsAttention(
                     message: classification.diagnostic.summary + " "
                         + classification.diagnostic.recoverySuggestion,
@@ -10288,7 +10804,8 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func startTmuxReconnect(
         _ presentation: RetainedTmuxPresentation,
-        context: TmuxReconnectContext
+        context: TmuxReconnectContext,
+        waitBeforeFirstAttempt: Bool = false
     ) {
         guard presentation.reconnectContext == context,
               presentation.handle.id == context.handleID,
@@ -10301,13 +10818,19 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         presentation.recoveryRequest = nil
         publishActiveState(for: presentation)
-        presentation.reconnectSupervisor.start { [weak self, weak presentation] in
+        let attempt: SessionReconnectSupervisor.Attempt = {
+            [weak self, weak presentation] in
             guard let presentation else { return .stop }
             guard let self else { return .stop }
             return await attemptTmuxReconnect(
                 presentation,
                 context: context
             )
+        }
+        if waitBeforeFirstAttempt {
+            presentation.reconnectSupervisor.startAfterDelay(attempt: attempt)
+        } else {
+            presentation.reconnectSupervisor.start(attempt: attempt)
         }
     }
 
@@ -10350,9 +10873,47 @@ final class WorkspaceSceneModel: ObservableObject {
               === presentation
         else { return .stop }
         guard canAttachToDisplay else { return .retry }
-        let outcome = await tmuxProbeOutcome(
+        var frozenConnection: SSHConnectionArgumentsSnapshot?
+        if case let .ssh(info) = context.host {
+            let connection: KwtSSHConnection
+            do {
+                connection = try await acquirePresentationSSHConnection(
+                    hostID: context.selection.hostID,
+                    info: info
+                )
+            } catch {
+                guard !Task.isCancelled else { return .retry }
+                guard presentation.reconnectContext == context,
+                      presentation.handle.id == context.handleID,
+                      retainedTmuxPresentation(for: presentation.handle)
+                      === presentation
+                else { return .stop }
+                stopTmuxReconnectWithUnableToAttach(
+                    presentation,
+                    error.localizedDescription
+                )
+                return .stop
+            }
+            let snapshot = SSHConnectionArgumentsSnapshot(connection)
+            guard !Task.isCancelled else { return .retry }
+            guard presentation.reconnectContext == context,
+                  presentation.handle.id == context.handleID,
+                  retainedTmuxPresentation(for: presentation.handle)
+                  === presentation
+            else { return .stop }
+            guard snapshot.routeIdentity == context.routeIdentity else {
+                stopTmuxReconnectWithUnableToAttach(
+                    presentation,
+                    "The SSH connection changed while Ghosthub was checking the tmux session. Reopen it to use the current connection."
+                )
+                return .stop
+            }
+            frozenConnection = snapshot
+        }
+        let probe = await tmuxReconnectProbe(
             for: presentation,
-            context: context
+            context: context,
+            connection: frozenConnection
         )
         guard !Task.isCancelled else { return .retry }
         guard let currentContext = presentation.reconnectContext else {
@@ -10364,16 +10925,168 @@ final class WorkspaceSceneModel: ObservableObject {
                 && currentContext.selection == context.selection
                 && currentContext.handleID == context.handleID
                 && currentContext.host == context.host
+                && currentContext.routeIdentity == context.routeIdentity
                 && currentContext.surfaceExitCode == context.surfaceExitCode
         guard currentContext == context || advancedToAttachOnly,
               presentation.handle.id == context.handleID,
               retainedTmuxPresentation(for: presentation.handle)
               === presentation
         else { return .stop }
+        if let frozenConnection,
+           case let .failure(.sshConnectionFailed(_, classification)) =
+           probe.outcome,
+           classification.connectionUnusable {
+            await frozenConnection.invalidate()
+        }
+        if let frozenConnection,
+           case let .ssh(info) = context.host {
+            let after: KwtSSHConnection
+            do {
+                after = try await acquirePresentationSSHConnection(
+                    hostID: context.selection.hostID,
+                    info: info
+                )
+            } catch {
+                guard !Task.isCancelled else { return .retry }
+                guard presentation.reconnectContext == currentContext,
+                      presentation.handle.id == context.handleID,
+                      retainedTmuxPresentation(for: presentation.handle)
+                      === presentation
+                else { return .stop }
+                stopTmuxReconnectWithUnableToAttach(
+                    presentation,
+                    error.localizedDescription
+                )
+                return .stop
+            }
+            let afterRouteIdentity = after.routeIdentity
+            try? await after.release()
+            guard !Task.isCancelled else { return .retry }
+            guard presentation.reconnectContext == currentContext,
+                  presentation.handle.id == context.handleID,
+                  retainedTmuxPresentation(for: presentation.handle)
+                  === presentation
+            else { return .stop }
+            guard afterRouteIdentity == frozenConnection.routeIdentity else {
+                stopTmuxReconnectWithUnableToAttach(
+                    presentation,
+                    "The SSH connection changed while Ghosthub was checking the tmux session. Reopen it to use the current connection."
+                )
+                return .stop
+            }
+        }
+        if let discovery = probe.discovery {
+            if isCurrentTmuxDiscoveryObservation(
+                discovery.sequence,
+                hostID: context.selection.hostID
+            ) {
+                applyTmuxDiscoveryResult(
+                    discovery.result,
+                    hostID: context.selection.hostID
+                )
+            } else {
+                scheduleTmuxSessionDiscovery()
+                // A concurrent inventory pass superseded this observation.
+                // A route-fenced positive probe can still attach safely, but
+                // absence or failure must yield to the newer observation.
+                guard probe.outcome == .present else { return .retry }
+            }
+        }
+        guard let decisionContext = presentation.reconnectContext else {
+            return .stop
+        }
+        let discoveryAdvancedToAttachOnly =
+            currentContext.phase != .attachOnly
+                && decisionContext.phase == .attachOnly
+                && decisionContext.selection == currentContext.selection
+                && decisionContext.handleID == currentContext.handleID
+                && decisionContext.host == currentContext.host
+                && decisionContext.routeIdentity
+                == currentContext.routeIdentity
+                && decisionContext.surfaceExitCode
+                == currentContext.surfaceExitCode
+        guard decisionContext == currentContext
+            || discoveryAdvancedToAttachOnly
+        else { return .stop }
         return reconnectDecision(
             for: presentation,
-            context: currentContext,
-            outcome: outcome
+            context: decisionContext,
+            outcome: probe.outcome
+        )
+    }
+
+    private func tmuxReconnectProbe(
+        for presentation: RetainedTmuxPresentation,
+        context: TmuxReconnectContext,
+        connection: SSHConnectionArgumentsSnapshot?
+    ) async -> TmuxReconnectProbeResult {
+        guard let connection,
+              case let .ssh(host) = context.host
+        else {
+            return await TmuxReconnectProbeResult(
+                outcome: tmuxProbeOutcome(
+                    for: presentation,
+                    context: context
+                ),
+                discovery: nil
+            )
+        }
+        let target = TmuxSessionProbeTarget(
+            host: host,
+            name: context.selection.name,
+            socketName: context.selection.socketName
+        )
+        if context.selection.socketName != nil {
+            guard let tmuxSessionValidationExactProbe else {
+                return await TmuxReconnectProbeResult(
+                    outcome: tmuxProbeOutcome(
+                        for: presentation,
+                        context: context
+                    ),
+                    discovery: nil
+                )
+            }
+            let outcome = switch await tmuxSessionValidationExactProbe(
+                target,
+                connection.arguments
+            ) {
+            case let .success(isPresent):
+                isPresent ? TmuxSessionProbeOutcome.present : .absent
+            case let .failure(error):
+                TmuxSessionProbeOutcome.failure(error)
+            }
+            return TmuxReconnectProbeResult(
+                outcome: outcome,
+                discovery: nil
+            )
+        }
+        guard let tmuxSessionValidationDiscovery else {
+            return await TmuxReconnectProbeResult(
+                outcome: tmuxProbeOutcome(
+                    for: presentation,
+                    context: context
+                ),
+                discovery: nil
+            )
+        }
+        let sequence = beginTmuxDiscoveryObservation(
+            hostID: context.selection.hostID
+        )
+        let result = await tmuxSessionValidationDiscovery(
+            context.host,
+            connection.arguments
+        )
+        let outcome = switch result {
+        case let .success(sessions):
+            sessions.contains(where: {
+                $0.name == context.selection.name
+            }) ? TmuxSessionProbeOutcome.present : .absent
+        case let .failure(error):
+            TmuxSessionProbeOutcome.failure(error)
+        }
+        return TmuxReconnectProbeResult(
+            outcome: outcome,
+            discovery: (sequence, result)
         )
     }
 
@@ -10584,7 +11297,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
                 publishActiveState(for: presentation)
                 return .stop
-            case .hostKeyChanged:
+            case .hostKeyChanged, .configurationChanged:
                 presentation.recoveryState = .needsAttention(
                     message: classification.diagnostic.summary + " "
                         + classification.diagnostic.recoverySuggestion,
@@ -10637,6 +11350,7 @@ final class WorkspaceSceneModel: ObservableObject {
             && selection.socketName != nil
             && selection.workspacePath != nil
         let previousHandle = presentation.handle
+        let routeIdentity = presentation.reconnectContext?.routeIdentity
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -10646,7 +11360,8 @@ final class WorkspaceSceneModel: ObservableObject {
             initialCommand: launchMode == .create ? initialCommand : nil,
             workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace,
-            sessionIdentity: presentation.reconnectExpectedIdentity
+            sessionIdentity: presentation.reconnectExpectedIdentity,
+            expectedRouteIdentity: routeIdentity
         )
         if handle.id != previousHandle.id {
             retainedTmuxPresentationKeysByHandle.removeValue(
@@ -10671,6 +11386,7 @@ final class WorkspaceSceneModel: ObservableObject {
             selection: selection,
             handleID: handle.id,
             host: attachmentHost,
+            routeIdentity: routeIdentity,
             phase: phase,
             surfaceExitCode: nil
         )

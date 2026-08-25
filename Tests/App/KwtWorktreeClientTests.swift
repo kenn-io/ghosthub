@@ -52,9 +52,13 @@ struct KwtWorktreeClientTests {
         )
         let revision = String(repeating: "b", count: 40)
         let client = KwtWorktreeClient(
-            remoteRunner: { host, command in
+            remoteRunner: { host, command, _ in
                 recorder.record(host: host, command: command)
-                return (0, "")
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "",
+                    stderr: ""
+                )
             },
             localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt",
             remoteBinaryRevision: revision
@@ -103,9 +107,13 @@ struct KwtWorktreeClientTests {
             platform: .windows
         )
         let client = KwtWorktreeClient(
-            remoteRunner: { host, command in
+            remoteRunner: { host, command, _ in
                 recorder.record(host: host, command: command)
-                return (0, "")
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "",
+                    stderr: ""
+                )
             },
             remoteBinaryRevision: revision
         )
@@ -201,15 +209,16 @@ struct KwtWorktreeClientTests {
             platform: .windows
         )
         let client = KwtWorktreeClient(
-            remoteRunner: { host, command in
+            remoteRunner: { host, command, _ in
                 recorder.record(host: host, command: command)
-                return (
-                    0,
-                    "PowerShell noise\r\nGHOSTHUB_KWT_JSON\r\n"
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "PowerShell noise\r\nGHOSTHUB_KWT_JSON\r\n"
                         + """
                         [{"name":"topic","source":"origin/topic","is_remote":true}]
                         """
-                        + "\r\n"
+                        + "\r\n",
+                    stderr: ""
                 )
             },
             remoteBinaryRevision: revision
@@ -379,6 +388,7 @@ struct KwtWorktreeClientTests {
     @Test("Windows removal uses the managed kwt helper")
     func windowsRemoteRemoval() async throws {
         let recorder = CommandRecorder()
+        let reviewedRoute = LockedValue<String?>(nil)
         let revision = String(repeating: "e", count: 40)
         let ssh = SSHHostInfo(
             user: "wesm",
@@ -387,9 +397,14 @@ struct KwtWorktreeClientTests {
             platform: .windows
         )
         let client = KwtWorktreeClient(
-            remoteRunner: { host, command in
+            remoteRunner: { host, command, routeIdentity in
                 recorder.record(host: host, command: command)
-                return (0, "")
+                reviewedRoute.withLock { $0 = routeIdentity }
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "",
+                    stderr: ""
+                )
             },
             remoteBinaryRevision: revision
         )
@@ -398,10 +413,12 @@ struct KwtWorktreeClientTests {
             worktreePath: #"C:\worktrees\ghost hub\feature"#,
             generation: "0123456789abcdef0123456789abcdef",
             projectPath: #"C:\code\ghost hub"#,
-            on: .ssh(ssh)
+            expectedRouteIdentity: "sha256:reviewed-route",
+            on: CommandHost.ssh(ssh)
         )
 
         #expect(recorder.host == ssh)
+        #expect(reviewedRoute.load() == "sha256:reviewed-route")
         #expect(recorder.command?.contains(
             [
                 "remove",

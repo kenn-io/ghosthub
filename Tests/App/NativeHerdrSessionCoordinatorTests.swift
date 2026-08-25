@@ -10,6 +10,43 @@ import Testing
 @Suite("Native Herdr presentation", .serialized)
 @MainActor
 struct NativeHerdrSessionCoordinatorTests {
+    @Test("dead remote Herdr resolution invalidates before lease release")
+    func deadResolutionInvalidatesConnection() async {
+        let events = LockedValue<[String]>([])
+        let coordinator = NativeHerdrSessionCoordinator(
+            terminalCoordinator: RecordingNativeSessionSurfaceStore(),
+            herdrPathProvider: { _, _ in
+                .failure(.commandFailed(
+                    status: 255,
+                    stderr: "Control socket connect(/tmp/dead): missing"
+                ))
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
+                    release: { events.withLock { $0.append("release") } },
+                    invalidate: { events.withLock { $0.append("invalidate") } }
+                )
+            }
+        )
+        var disconnected = false
+        coordinator.onStateChanged = { _, state in
+            if case .disconnected = state {
+                disconnected = true
+            }
+        }
+
+        _ = coordinator.attach(
+            hostID: UUID(),
+            name: "api",
+            host: remoteHost
+        )
+
+        await waitUntilMainActor {
+            disconnected && events.load().count == 2
+        }
+        #expect(events.load() == ["invalidate", "release"])
+    }
+
     @Test("launch mode is visible while Herdr provisioning is in flight")
     func provisioningPublishesLaunchMode() async {
         let started = Mutex(false)
@@ -40,10 +77,15 @@ struct NativeHerdrSessionCoordinatorTests {
         let snapshot = SSHConnectionArgumentsSnapshot(arguments: [
             "-F", "/tmp/frozen-config", "build.example.test",
         ])
+        let releases = LockedValue(0)
         let coordinator = NativeHerdrSessionCoordinator(
             terminalCoordinator: RecordingNativeSessionSurfaceStore(),
             herdrPathProvider: { _, _ in .success("/usr/bin/herdr") },
-            sshConnectionArgumentsProvider: { _ in snapshot }
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: snapshot.arguments) {
+                    releases.withLock { $0 += 1 }
+                }
+            }
         )
         var ready = false
         coordinator.onSurfaceReady = { _ in ready = true }
@@ -60,7 +102,53 @@ struct NativeHerdrSessionCoordinatorTests {
         )
         #expect(authority.host == remoteHost)
         #expect(authority.launchMode == .launchOrAttach)
-        #expect(authority.sshConnectionSnapshot.cacheKey == snapshot.cacheKey)
+        #expect(authority.sshConnectionSnapshot.arguments == snapshot.arguments)
+        #expect(
+            authority.sshConnectionSnapshot.routeIdentity == "sha256:test-route"
+        )
+
+        coordinator.detach(hostID: handle.hostID, name: handle.name)
+        await waitUntilMainActor { releases.load() == 1 }
+        coordinator.detach(hostID: handle.hostID, name: handle.name)
+        #expect(releases.load() == 1)
+    }
+
+    @Test("remote attachment rejects route drift after validation")
+    func remoteAttachmentRejectsRouteDrift() async {
+        let expectedConnection = testKwtSSHAttachment(
+            routeIdentity: "sha256:expected"
+        )
+        let expected = SSHConnectionArgumentsSnapshot(
+            expectedConnection
+        )
+        let releases = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeHerdrSessionCoordinator(
+            terminalCoordinator: store,
+            herdrPathProvider: { _, _ in .success("/usr/bin/herdr") },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(routeIdentity: "sha256:changed") {
+                    releases.withLock { $0 += 1 }
+                }
+            }
+        )
+        var state: ConnectionState?
+        coordinator.onStateChanged = { _, newState in state = newState }
+
+        _ = coordinator.attach(
+            hostID: UUID(),
+            name: "api",
+            host: remoteHost,
+            sshConnectionSnapshot: expected
+        )
+
+        await waitUntilMainActor {
+            state == .disconnected(
+                reason: KwtSSHLeaseError.routeChanged.localizedDescription
+            )
+        }
+        #expect(store.requestedConfigurations.isEmpty)
+        #expect(releases.load() == 1)
     }
 
     @Test("same route reuses a handle and route changes replace it")
@@ -423,7 +511,7 @@ struct NativeHerdrSessionCoordinatorTests {
         await waitUntilMainActor { ready }
         let statusFile = try #require(statusFiles(in: directory).first)
 
-        coordinator.shutdown()
+        await coordinator.shutdown()
 
         #expect(!FileManager.default.fileExists(atPath: statusFile.path))
         #expect(store.removedKeys.contains {
@@ -568,6 +656,43 @@ struct NativeHerdrSessionCoordinatorTests {
         #expect(store.surface.paneSplitErrorMessage == nil)
     }
 
+    @Test("a fail-closed pane split invalidates the pooled connection")
+    func failClosedPaneSplitInvalidatesConnection() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let invalidations = Mutex(0)
+        let coordinator = makeCoordinator(
+            store: store,
+            capabilityProvider: { _, _, _, name in
+                .success(testHerdrPaneSplitCapability(name: name))
+            },
+            paneSplitter: HerdrPaneSplitter { _, _, _ in
+                (
+                    255,
+                    "Control socket connect(/tmp/dead): Connection refused"
+                )
+            },
+            onConnectionInvalidated: { invalidations.withLock { $0 += 1 } }
+        )
+        var ready = false
+        coordinator.onSurfaceReady = { _ in ready = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "api",
+            host: remoteHost
+        )
+        await waitUntilMainActor { ready }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            coordinator.supportsPaneSplitting(handle)
+        }
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
+
+        handler(.right)
+
+        await waitUntilMainActor { invalidations.withLock { $0 } > 0 }
+        #expect(store.surface.paneSplitErrorMessage != nil)
+    }
+
     private var remoteHost: CommandHost {
         .ssh(.init(
             user: "dev",
@@ -582,16 +707,20 @@ struct NativeHerdrSessionCoordinatorTests {
             .PaneSplitCapabilityProvider = { _, _, _, _ in .success(nil) },
         paneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
         statusDirectory: URL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true),
+        onConnectionInvalidated: @escaping @Sendable () async -> Void = {}
     ) -> NativeHerdrSessionCoordinator {
         NativeHerdrSessionCoordinator(
             terminalCoordinator: store,
             herdrPathProvider: { _, _ in .success("/opt/homebrew/bin/herdr") },
-            sshConnectionArgumentsProvider: { _ in
-                SSHConnectionArgumentsSnapshot(arguments: [
-                    "-o", "ControlPath=/tmp/ghosthub-test-control",
-                    "-o", "StrictHostKeyChecking=yes",
-                ])
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
+                    arguments: [
+                        "-o", "ControlPath=/tmp/ghosthub-test-control",
+                        "-o", "StrictHostKeyChecking=yes",
+                    ],
+                    invalidate: onConnectionInvalidated
+                )
             },
             paneSplitCapabilityProvider: capabilityProvider,
             paneSplitter: paneSplitter,

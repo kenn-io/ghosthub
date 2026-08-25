@@ -136,7 +136,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: environment.snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 await removalGate.suspend()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -322,7 +322,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 )
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -363,7 +363,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 )
             },
             kwtProjectRemoval: {
-                path, expectedRepository, expectedRegistration, host in
+                path, expectedRepository, expectedRegistration, _, host in
                 removal.store((
                     path, expectedRepository, expectedRegistration, host
                 ))
@@ -412,7 +412,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 _ = inventoryLoads.increment()
                 return refreshedInventory
             },
-            kwtProjectRemoval: { _, _, expectedRegistration, _ in
+            kwtProjectRemoval: { _, _, expectedRegistration, _, _ in
                 removals.withLock { $0.append(expectedRegistration) }
                 throw KwtProjectCommandError.commandFailed(
                     host: "this Mac",
@@ -498,7 +498,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 return inventory
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _, _ in throw removalError }
+            kwtProjectRemoval: { _, _, _, _, _ in throw removalError }
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
@@ -551,7 +551,7 @@ extension WorkspaceTmuxDiscoveryTests {
             },
             kwtInventoryLoader: { _ in currentInventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _, _ in
+            kwtProjectRemoval: { _, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -636,7 +636,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: removalSnapshot,
             kwtInventoryLoader: { _ in currentInventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -716,7 +716,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -777,7 +777,7 @@ extension WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in currentInventory },
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -850,7 +850,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
             kwtInventoryLoader: { _ in inventory },
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -929,7 +929,7 @@ extension WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -984,7 +984,7 @@ extension WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -1045,7 +1045,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -1093,7 +1093,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: environment.snapshot,
             kwtInventoryLoader: { _ in throw inventoryError },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -1140,7 +1140,7 @@ extension WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in warnedInventory },
-            kwtProjectRemoval: { path, expectedRepository, _, _ in
+            kwtProjectRemoval: { path, expectedRepository, _, _, _ in
                 removal.store((path, expectedRepository))
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -1226,7 +1226,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 }
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _, _ in throw removalError },
+            kwtProjectRemoval: { _, _, _, _, _ in throw removalError },
             tmuxSessionIdentityReader: { selection, host in
                 throw TmuxSessionKillError.sessionNotRunning(
                     host: host.displayName,
@@ -1341,7 +1341,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 return inventory.load()
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 guard removalCalls.increment() > 1 else {
                     throw removalError
                 }
@@ -1496,7 +1496,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 }
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _, _ in
+            kwtProjectRemoval: { _, _, _, _, _ in
                 await removalGate.suspend()
                 throw removalError
             },
@@ -1951,7 +1951,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 }
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _, _ in throw removalError }
+            kwtProjectRemoval: { _, _, _, _, _ in throw removalError }
         )
 
         let result = await model.unregisterProject(
@@ -2019,7 +2019,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -2048,7 +2048,7 @@ extension WorkspaceTmuxDiscoveryTests {
             kwtWorktreeCreator: { _, _, _ in
                 _ = creationCalls.increment()
             },
-            kwtWorktreeRemover: { _, _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _, _ in
                 _ = worktreeRemovalCalls.increment()
             },
             worktreeMutationCoordinator: coordinator,
@@ -2318,7 +2318,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -2405,7 +2405,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -2584,7 +2584,7 @@ extension WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             kwtInventoryLoader: { _ in refreshedInventory },
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -2668,7 +2668,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 _ = inventoryLoads.increment()
                 return inventory
             },
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -2732,6 +2732,97 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("Remove Project rejects SSH route drift after confirmation")
+    func removeProjectRejectsRouteDrift() async throws {
+        let environment = try setupRemoteEnvironment()
+        let project = try #require(environment.snapshot.projects.first)
+        let host = try #require(environment.snapshot.hosts.first)
+        let route = LockedValue("sha256:reviewed-route")
+        let removalCalls = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtInventoryLoader: { _ in
+                WorkspaceTmuxTestSupport.inventory(
+                    project: project,
+                    worktrees: environment.snapshot.worktrees
+                )
+            },
+            sshRouteIdentityResolver: { _ in route.load() },
+            kwtProjectRemoval: { path, _, _, _, _ in
+                _ = removalCalls.increment()
+                return KwtProjectRecord(
+                    repository: project.scopedKey,
+                    name: project.name,
+                    path: path,
+                    lastTouched: nil
+                )
+            }
+        )
+
+        let request = try await model.prepareProjectRemoval(
+            project,
+            confirmedHost: host
+        )
+        route.store("sha256:replacement-route")
+        let result = await model.unregisterProject(request)
+
+        #expect(result == .failure(.message(
+            "The project or host connection changed. Try removing it again."
+        )))
+        #expect(removalCalls.count == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Remove Project does not reconcile through a changed SSH route")
+    func removeProjectRejectsReconciliationRouteDrift() async throws {
+        let environment = try setupRemoteEnvironment()
+        let snapshot = environment.snapshot
+        let project = try #require(snapshot.projects.first)
+        let host = try #require(snapshot.hosts.first)
+        let inventory = WorkspaceTmuxTestSupport.inventory(
+            project: project,
+            worktrees: snapshot.worktrees
+        )
+        let inventoryLoads = Counter()
+        let reconciliationLoads = Counter()
+        let removalError = KwtInventoryError.commandFailed(
+            host: environment.host.name,
+            status: 1
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                inventoryLoads.increment() == 1
+                    ? inventory
+                    : KwtHostInventory(projects: [])
+            },
+            kwtConditionalInventoryLoader: { _, _ in
+                _ = reconciliationLoads.increment()
+                throw KwtSSHLeaseError.routeChanged
+            },
+            sshRouteIdentityResolver: { _ in "sha256:reviewed-route" },
+            kwtProjectRemoval: { _, _, _, _, _ in throw removalError }
+        )
+
+        let result = await model.unregisterProject(
+            project,
+            confirmedHost: host
+        )
+
+        #expect(result == .failure(.message(
+            removalError.localizedDescription
+        )))
+        #expect(model.snapshot.project(id: project.id) != nil)
+        #expect(reconciliationLoads.count == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("Remove Project revalidates the host after unregistration")
     func removeProjectRevalidatesHostAfterUnregistration() async throws {
         let environment = try setupRemoteEnvironment()
@@ -2761,7 +2852,7 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 await removalGate.suspend()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -2849,7 +2940,7 @@ extension WorkspaceTmuxDiscoveryTests {
             },
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _, _ in
+            kwtProjectRemoval: { _, _, _, _, _ in
                 await removalGate.suspend()
                 throw KwtProjectCommandError.commandFailed(
                     host: initialHost.name,
@@ -2940,7 +3031,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 return inventory
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _, _ in
+            kwtProjectRemoval: { path, _, _, _, _ in
                 switch phase {
                 case .unregistration:
                     await suspensionGate.suspend()
@@ -3044,7 +3135,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 }
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _, _ in throw removalError },
+            kwtProjectRemoval: { _, _, _, _, _ in throw removalError },
             configuredSSHHostsProvider: { configuredHosts.value }
         )
         let publishedRepositories = LockedValue<[Set<String>]>([])

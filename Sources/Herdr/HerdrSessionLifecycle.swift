@@ -11,6 +11,7 @@ public enum HerdrSessionLifecycleError:
     Error, Equatable, LocalizedError, Sendable {
     case unavailable
     case unsupportedPlatform
+    case sshLeaseRequired
     case sessionMissing(String)
     case stateChanged(name: String, expected: HerdrSessionState)
     case locationChanged(String)
@@ -25,6 +26,8 @@ public enum HerdrSessionLifecycleError:
             "Herdr is unavailable on this host."
         case .unsupportedPlatform:
             "Native Herdr sessions are unavailable on Windows hosts."
+        case .sshLeaseRequired:
+            "Remote Herdr lifecycle operations require a kwt SSH lease."
         case let .sessionMissing(name):
             "Herdr session \(name) no longer exists."
         case let .stateChanged(name, expected):

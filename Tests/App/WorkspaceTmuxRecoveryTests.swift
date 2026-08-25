@@ -12,6 +12,31 @@ import Testing
 @testable import GhosthubApp
 
 extension WorkspaceTmuxDiscoveryTests {
+    @Test("reconnect validation probe cancellation reaches detached work")
+    func reconnectValidationProbeCancellation() async throws {
+        let started = Mutex(false)
+        let observedCancellation = Mutex(false)
+        let probe = Task {
+            await WorkspaceSceneModel.runReconnectValidationProbe {
+                started.withLock { $0 = true }
+                let deadline = Date().addingTimeInterval(0.5)
+                while !Task.isCancelled, Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                observedCancellation.withLock { $0 = Task.isCancelled }
+            }
+        }
+        for _ in 0 ..< 100 where !started.withLock({ $0 }) {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(started.withLock { $0 })
+
+        probe.cancel()
+        await probe.value
+
+        #expect(observedCancellation.withLock { $0 })
+    }
+
     @MainActor
     @Test("transport loss automatically reattaches when the session returns")
     func transportLossAutomaticallyReattaches() async throws {
@@ -68,6 +93,310 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(
             surfaceStore.lastConfiguration?.command?.contains("'open'") == false
         )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("immediate transport exit retains the acquired SSH route")
+    func immediateTransportExitRetainsAcquiredRoute() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = RecordingNativeSessionSurfaceStore(
+            closeOnRegistrationCode: 255
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionValidationDiscovery: { _, _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(routeIdentity: "sha256:stable-route")
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            surfaceStore.requestedConfigurations.count >= 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(surfaceStore.requestedConfigurations.count >= 2)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("dead tmux reconnect lease is invalidated before retry")
+    func deadTmuxReconnectLeaseIsInvalidatedBeforeRetry() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let generation = Mutex(UInt64(1))
+        let probedGenerations = Mutex([UInt64]())
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionValidationDiscovery: { _, _ in
+                let value = generation.withLock { $0 }
+                probedGenerations.withLock { $0.append(value) }
+                guard value == 2 else {
+                    return .success([
+                        DiscoveredTmuxSession(
+                            name: "release-work",
+                            windowCount: 1,
+                            createdAt: nil,
+                            managed: false
+                        ),
+                    ])
+                }
+                return .failure(.sshConnectionFailed(
+                    host: "build.example.test",
+                    classification: SSHConnectionFailure.classify(
+                        status: 255,
+                        output: "Control socket connect(/tmp/dead): missing"
+                    )
+                ))
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                let value = generation.withLock { $0 }
+                return testKwtSSHAttachment(
+                    arguments: ["-F", "/tmp/tmux-generation-\(value)-config"],
+                    routeIdentity: "sha256:stable-route",
+                    generation: value,
+                    invalidate: {
+                        generation.withLock { current in
+                            if current == value {
+                                current = 3
+                            }
+                        }
+                    }
+                )
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        generation.withLock { $0 = 2 }
+        probedGenerations.withLock { $0.removeAll() }
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(probedGenerations.withLock { $0.prefix(2) } == [2, 3])
+        #expect(surfaceStore.lastConfiguration?.command?.contains(
+            "/tmp/tmux-generation-3-config"
+        ) == true)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("SSH acquisition failure ends a tmux reconnect handoff")
+    func sshAcquisitionFailureEndsTmuxReconnect() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let acquisitions = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                let attempt = acquisitions.withLock {
+                    $0 += 1
+                    return $0
+                }
+                guard attempt == 1 else {
+                    throw KwtSSHLeaseError.helperUnavailable
+                }
+                return testKwtSSHAttachment()
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            acquisitions.withLock { $0 } == 2
+                && model.activeBorrowedTmuxRecoveryState == nil
+        }
+
+        #expect(surfaceStore.requestCount == 1)
+        #expect(!model.anyTmuxReconnectSupervisorIsRunning)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("reconnect rejects a different SSH route before probing")
+    func reconnectRejectsDifferentSSHRouteBeforeProbing() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let currentRoute = Mutex("sha256:original-route")
+        let probes = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                probes.withLock { $0 += 1 }
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
+                    routeIdentity: currentRoute.withLock { $0 }
+                )
+            },
+            tmuxReconnectIntervals: [.zero]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        probes.withLock { $0 = 0 }
+        currentRoute.withLock { $0 = "sha256:replacement-route" }
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            model.anyTmuxReconnectSupervisorIsRunning
+        }
+        await waitUntilMainActor {
+            probes.withLock { $0 } > 0
+                || !model.anyTmuxReconnectSupervisorIsRunning
+        }
+
+        #expect(probes.withLock { $0 } == 0)
+        #expect(surfaceStore.requestCount == 1)
+        #expect(!model.anyTmuxReconnectSupervisorIsRunning)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("reconnect discards a probe when the SSH route changes during it")
+    func reconnectRejectsRouteChangeDuringProbe() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let currentRoute = Mutex("sha256:original-route")
+        let probedArguments = Mutex([[String]]())
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionValidationDiscovery: { _, arguments in
+                probedArguments.withLock { $0.append(arguments) }
+                currentRoute.withLock {
+                    $0 = "sha256:replacement-route"
+                }
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "replacement-only",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                let route = currentRoute.withLock { $0 }
+                return testKwtSSHAttachment(
+                    arguments: ["-F", "/tmp/\(route)-config"],
+                    routeIdentity: route
+                )
+            },
+            tmuxReconnectIntervals: [.zero]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            probedArguments.withLock { !$0.isEmpty }
+                && !model.anyTmuxReconnectSupervisorIsRunning
+        }
+
+        #expect(probedArguments.withLock { $0.count } == 1)
+        #expect(
+            probedArguments.withLock { $0.first }?
+                .contains("/tmp/sha256:original-route-config") == true
+        )
+        #expect(
+            model.snapshot.host(id: environment.remoteHost.id)?
+                .tmuxSessions.contains(where: {
+                    $0.name == "replacement-only"
+                }) == false
+        )
+        #expect(surfaceStore.requestCount == 1)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
         await model.shutdown()
     }
 
@@ -170,7 +499,7 @@ extension WorkspaceTmuxDiscoveryTests {
         surfaceStore.surface.launchError = SceneSurfaceLaunchError.rejected
         surfaceStore.surface.launchFailureIsRetryable = true
         surfaceStore.surface.closeObservers.values.first?(false, 255)
-        await waitUntilMainActor { surfaceStore.requestCount == 2 }
+        await waitUntilMainActor { surfaceStore.requestCount >= 2 }
 
         // Not latched: recovery stays armed. `isRunning` is deliberately not
         // asserted — a tmux supervisor stops each time it hands off a relaunch,
@@ -227,7 +556,7 @@ extension WorkspaceTmuxDiscoveryTests {
         surfaceStore.surface.launchError = SceneSurfaceLaunchError.rejected
         surfaceStore.surface.launchFailureIsRetryable = true
         surfaceStore.surface.closeObservers.values.first?(false, 255)
-        await waitUntilMainActor { surfaceStore.requestCount == 2 }
+        await waitUntilMainActor { surfaceStore.requestCount >= 2 }
         surfaceStore.surface.launchError = nil
         surfaceStore.surface.launchFailureIsRetryable = false
         await waitUntilMainActor(timeout: .seconds(5)) {
@@ -1008,10 +1337,10 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
-            tmuxExactSessionProbe: { target in
+            tmuxSessionValidationExactProbe: { target, _ in
                 switch attempts.increment() {
                 case 1:
-                    return probe.probe(target)
+                    return await probe.probe(target)
                 default:
                     return .success(true)
                 }
@@ -1026,6 +1355,9 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
         surfaceStore.surface.closeObservers.values.first?(false, 255)
 
         await waitUntilMainActor {
@@ -1269,6 +1601,9 @@ extension WorkspaceTmuxDiscoveryTests {
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
+            tmuxSessionValidationDiscovery: { _, _ in
+                discoveries.removeFirst()
+            },
             createdSessionDiscoveryDelays: [.seconds(10)],
             tmuxReconnectIntervals: [.milliseconds(1)]
         )

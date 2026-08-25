@@ -17,12 +17,32 @@ struct KwtWindowsInstallerTests {
                 platform: .windows
             ),
             localPath: "/tmp/kwt.exe",
-            remoteName: "ghosthub-upload.exe"
+            remoteName: "ghosthub-upload.exe",
+            connectionArguments: ["-o", "ControlPath=/tmp/control"]
         )
 
         #expect(arguments.contains(where: { $0.hasPrefix("ControlPath=") }))
         let portIndex = try #require(arguments.firstIndex(of: "-P"))
         #expect(arguments[portIndex + 1] == "22")
+    }
+
+    @Test("SCP translates the kwt SSH projection port option")
+    func translatesProjectedPortForTransfer() throws {
+        let arguments = KwtWindowsInstaller.transferArguments(
+            host: SSHHostInfo(
+                user: "developer",
+                hostname: "windows-node.example.test",
+                port: nil,
+                platform: .windows
+            ),
+            localPath: "/tmp/kwt.exe",
+            remoteName: "ghosthub-upload.exe",
+            connectionArguments: ["-F", "NUL", "-p", "2200"]
+        )
+
+        #expect(!arguments.contains("-p"))
+        let portIndex = try #require(arguments.firstIndex(of: "-P"))
+        #expect(arguments[portIndex + 1] == "2200")
     }
 
     @Test("installs the matching bundled helper at the managed path")
@@ -51,14 +71,15 @@ struct KwtWindowsInstallerTests {
         let installer = KwtWindowsInstaller(
             bundleURL: bundleURL,
             revision: revision,
-            remoteRunner: { host, command in
+            remoteRunner: { host, _, command in
                 #expect(host.platform == .windows)
                 if command.contains("OSArchitecture") {
-                    return (
+                    return AccountCommandOutput(
                         status: 0,
                         stdout:
                         "banner without newline"
-                            + "GHOSTHUB_WINDOWS_ARCH=Arm64\r\n"
+                            + "GHOSTHUB_WINDOWS_ARCH=Arm64\r\n",
+                        stderr: ""
                     )
                 }
                 #expect(command.contains(
@@ -95,16 +116,17 @@ struct KwtWindowsInstallerTests {
                     #expect(stagedVerification < replacement)
                     #expect(digestVerification < replacement)
                 }
-                return (
+                return AccountCommandOutput(
                     status: 0,
-                    stdout: "GHOSTHUB_KWT_INSTALLED\n"
+                    stdout: "GHOSTHUB_KWT_INSTALLED\n",
+                    stderr: ""
                 )
             },
-            transferRunner: { host, localPath, remoteName in
+            transferRunner: { host, localPath, remoteName, _ in
                 #expect(host.hostname == "arm-builder")
                 #expect(localPath == helperURL.path)
                 #expect(remoteName == "ghosthub-upload.exe")
-                return 0
+                return AccountCommandOutput(status: 0, stdout: "", stderr: "")
             },
             uploadNameProvider: { "ghosthub-upload.exe" }
         )
@@ -123,15 +145,16 @@ struct KwtWindowsInstallerTests {
     func rejectsUnsupportedArchitecture() async {
         let installer = KwtWindowsInstaller(
             revision: String(repeating: "b", count: 40),
-            remoteRunner: { _, _ in
-                (
+            remoteRunner: { _, _, _ in
+                AccountCommandOutput(
                     status: 0,
-                    stdout: "GHOSTHUB_WINDOWS_ARCH=RISCV64\n"
+                    stdout: "GHOSTHUB_WINDOWS_ARCH=RISCV64\n",
+                    stderr: ""
                 )
             },
-            transferRunner: { _, _, _ in
+            transferRunner: { _, _, _, _ in
                 Issue.record("unsupported architecture must not upload")
-                return 0
+                return AccountCommandOutput(status: 0, stdout: "", stderr: "")
             }
         )
 
@@ -147,5 +170,43 @@ struct KwtWindowsInstallerTests {
             return
         }
         #expect(error == .unsupportedArchitecture("RISCV64"))
+    }
+
+    @Test("a dead installer connection invalidates its pooled generation")
+    func invalidatesDeadConnection() async {
+        let invalidations = LockedValue(0)
+        let installer = KwtWindowsInstaller(
+            revision: String(repeating: "c", count: 40),
+            remoteRunner: { _, _, _ in
+                AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr: "Control socket connect(/tmp/dead): No such file"
+                )
+            },
+            transferRunner: { _, _, _, _ in
+                Issue.record("a failed architecture probe must not upload")
+                return AccountCommandOutput(status: 0, stdout: "", stderr: "")
+            },
+            commandLease: KwtSSHCommandLease { _ in
+                testKwtSSHAttachment(invalidate: {
+                    invalidations.withLock { $0 += 1 }
+                })
+            }
+        )
+
+        let result = await installer.install(on: SSHHost(
+            configKey: "dead-builder",
+            name: "Dead Builder",
+            platform: .windows,
+            sshDestination: "dead-builder"
+        ))
+
+        guard case let .failure(error) = result else {
+            Issue.record("expected architecture probe failure")
+            return
+        }
+        #expect(error == .architectureProbeFailed(status: 255))
+        #expect(invalidations.load() == 1)
     }
 }

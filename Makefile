@@ -68,7 +68,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test sandbox-image-check sandbox-image-prepare-candidate sandbox-image-refresh sandbox-image-vet sandbox-image-pin sandbox-image-promote sandbox-image-clean sandbox-image-status sandbox-image-authority-configure sandbox-image-authority-enable sandbox-image-authority-audit sandbox-image-python-lint sandbox-image-python-typecheck zizmor test rust-format-check rust-test rust-test-wsl-live rust-test-ssh-controller-live rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live test-ssh-authentication-docker build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test sandbox-image-check sandbox-image-prepare-candidate sandbox-image-refresh sandbox-image-vet sandbox-image-pin sandbox-image-promote sandbox-image-clean sandbox-image-status sandbox-image-authority-configure sandbox-image-authority-enable sandbox-image-authority-audit sandbox-image-python-lint sandbox-image-python-typecheck zizmor test rust-format-check rust-test rust-test-wsl-live rust-test-ssh-controller-live rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -118,7 +118,9 @@ help:
 		'  make swift-test' \
 		'      Run SwiftPM tests. Set SWIFT_TEST_FILTER=... for a narrower slice.' \
 		'  make test-ssh-authentication-live GHOSTHUB_SSH_INTEGRATION_DESTINATION=user@host' \
-		'      Establish an opt-in live master through Ghosthub SSH authentication.' \
+		'      Exercise pinned kwt SSH leases; optionally set GHOSTHUB_SSH_PROXYJUMP_INTEGRATION_DESTINATION.' \
+		'  make test-ssh-authentication-docker' \
+		'      Exercise direct and ProxyJump kwt SSH leases against isolated Docker hosts.' \
 		'  make test-tmux-attach' \
 		'      Run the native tmux attachment tests.' \
 		'  make purge-test-tmux' \
@@ -338,13 +340,19 @@ test-essential-workflows: test-kwt-contract
 			$(SWIFT) test --filter $$filter; \
 	done
 
-test-ssh-authentication-live: bootstrap-libghostty
+test-ssh-authentication-live: bootstrap-libghostty ensure-kwt
 	@test -n "$(GHOSTHUB_SSH_INTEGRATION_DESTINATION)" || \
 		{ printf 'Set GHOSTHUB_SSH_INTEGRATION_DESTINATION=user@host\n' >&2; exit 2; }
 	@GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS=1 \
 		GHOSTHUB_SSH_INTEGRATION_DESTINATION="$(GHOSTHUB_SSH_INTEGRATION_DESTINATION)" \
+		GHOSTHUB_SSH_PROXYJUMP_INTEGRATION_DESTINATION="$(GHOSTHUB_SSH_PROXYJUMP_INTEGRATION_DESTINATION)" \
+		GHOSTHUB_KWT_CONTRACT_BINARY="$(KWT_BINARY_PATH)" \
 		sh tools/run_swift_tests.sh $(SWIFT) test \
-			--filter SSHAuthenticationSessionTests/liveAuthenticationMaster
+			--filter KwtSSHLiveIntegrationTests
+
+test-ssh-authentication-docker: bootstrap-libghostty ensure-kwt
+	@GHOSTHUB_KWT_CONTRACT_BINARY="$(KWT_BINARY_PATH)" \
+		sh tools/run_kwt_ssh_fixture.sh
 
 build: bootstrap-libghostty
 	@$(SWIFT) build

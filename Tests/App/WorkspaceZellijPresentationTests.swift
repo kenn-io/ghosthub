@@ -12,6 +12,90 @@ import Testing
 @testable import GhosthubApp
 
 extension WorkspaceZellijTests {
+    @Test("dead remote Zellij resolution invalidates before lease release")
+    func deadResolutionInvalidatesConnection() async {
+        let events = LockedValue<[String]>([])
+        let coordinator = NativeZellijSessionCoordinator(
+            terminalCoordinator: RecordingNativeSessionSurfaceStore(),
+            zellijPathProvider: { _, _ in
+                .failure(.commandFailed(
+                    status: 255,
+                    stderr: "Control socket connect(/tmp/dead): missing"
+                ))
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
+                    release: { events.withLock { $0.append("release") } },
+                    invalidate: { events.withLock { $0.append("invalidate") } }
+                )
+            }
+        )
+        var disconnected = false
+        coordinator.onStateChanged = { _, state in
+            if case .disconnected = state {
+                disconnected = true
+            }
+        }
+
+        _ = coordinator.attach(
+            hostID: UUID(),
+            name: "api",
+            host: .ssh(.init(
+                user: "dev",
+                hostname: "build.example.test",
+                port: nil
+            ))
+        )
+
+        await waitUntilMainActor {
+            disconnected && events.load().count == 2
+        }
+        #expect(events.load() == ["invalidate", "release"])
+    }
+
+    @Test("remote attachment rejects route drift after validation")
+    func remoteAttachmentRejectsRouteDrift() async {
+        let expectedConnection = testKwtSSHAttachment(
+            routeIdentity: "sha256:expected"
+        )
+        let expected = SSHConnectionArgumentsSnapshot(
+            expectedConnection
+        )
+        let releases = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeZellijSessionCoordinator(
+            terminalCoordinator: store,
+            zellijPathProvider: { _, _ in .success("/usr/bin/zellij") },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(routeIdentity: "sha256:changed") {
+                    releases.withLock { $0 += 1 }
+                }
+            }
+        )
+        var state: ConnectionState?
+        coordinator.onStateChanged = { _, newState in state = newState }
+
+        _ = coordinator.attach(
+            hostID: UUID(),
+            name: "api",
+            host: .ssh(.init(
+                user: "dev",
+                hostname: "build.example.test",
+                port: 2222
+            )),
+            sshConnectionSnapshot: expected,
+            resolvedZellijPath: "/usr/bin/zellij"
+        )
+
+        await waitUntilMainActor {
+            state == .disconnected(
+                reason: KwtSSHLeaseError.routeChanged.localizedDescription
+            )
+        }
+        #expect(store.requestedConfigurations.isEmpty)
+        #expect(releases.load() == 1)
+    }
+
     @Test("new session presentation creates and attaches through Zellij")
     func createAndAttach() async throws {
         let environment = try zellijEnvironment(sessions: [])
@@ -323,7 +407,7 @@ extension WorkspaceZellijTests {
         let zellijStore = RecordingNativeSessionSurfaceStore()
         let probeStarted = Mutex(false)
         let probeFinished = Mutex(false)
-        let releaseProbe = DispatchSemaphore(value: 0)
+        let releaseProbe = AsyncGate()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -335,7 +419,7 @@ extension WorkspaceZellijTests {
             nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
             zellijSessionDiscovery: { _ in
                 probeStarted.withLock { $0 = true }
-                releaseProbe.wait()
+                await releaseProbe.wait()
                 probeFinished.withLock { $0 = true }
                 return .available(["zellij-work"])
             }
@@ -352,7 +436,7 @@ extension WorkspaceZellijTests {
         model.openBorrowedZellijSession(zellij)
         await waitUntilMainActor { probeStarted.withLock { $0 } }
         model.openBorrowedTmuxSession(newerTmux)
-        releaseProbe.signal()
+        releaseProbe.open()
         await waitUntilMainActor { probeFinished.withLock { $0 } }
         try await Task.sleep(for: .milliseconds(50))
 
@@ -767,8 +851,8 @@ extension WorkspaceZellijTests {
         await model.shutdown()
     }
 
-    @Test("validated remote attachment uses one frozen SSH route")
-    func attachmentUsesValidatedSSHRoute() async throws {
+    @Test("validation and presentation keep independent SSH ownership")
+    func attachmentUsesKwtPresentationRoute() async throws {
         let database = try WorkspaceDatabase.inMemory()
         let host = HostSummary(
             id: UUID(),
@@ -784,6 +868,7 @@ extension WorkspaceZellijTests {
             "-F", "/tmp/frozen-zellij-config",
         ])
         let validations = Mutex([[String]]())
+        let releases = LockedValue(0)
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeModel(
             database: database,
@@ -800,7 +885,14 @@ extension WorkspaceZellijTests {
                 validations.withLock { $0.append(arguments) }
                 return .available(["api"])
             },
-            zellijSSHConnectionSnapshotProvider: { _ in frozen }
+            zellijSSHConnectionSnapshotProvider: { _ in frozen },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: [
+                    "-F", "/tmp/kwt-zellij-config",
+                ]) {
+                    releases.withLock { $0 += 1 }
+                }
+            }
         )
         let selection = WorkspaceZellijSessionSelection(
             hostID: host.id,
@@ -811,7 +903,70 @@ extension WorkspaceZellijTests {
         await waitUntilMainActor { store.lastCommand != nil }
 
         #expect(validations.withLock { $0 } == [frozen.arguments])
-        #expect(store.lastCommand?.contains("/tmp/frozen-zellij-config") == true)
+        #expect(store.lastCommand?.contains("/tmp/kwt-zellij-config") == true)
+        #expect(store.lastCommand?.contains("/tmp/frozen-zellij-config") == false)
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 0)
+        await waitUntilMainActor { releases.load() == 1 }
+        await model.shutdown()
+    }
+
+    @Test("demo presentation bypasses kwt SSH acquisition")
+    func demoPresentationBypassesKwtSSH() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let acquisitions = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let scratch = "/tmp/ghosthub-demo"
+        let demoEnvironment = [
+            "GHOSTHUB_DEMO_SCRATCH": scratch,
+            "GHOSTHUB_DEMO_SSH_DIR": "\(scratch)/ssh",
+        ]
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api"])
+            },
+            zellijSSHConnectionSnapshotProvider: { info in
+                SSHConnectionArgumentsSnapshot(KwtSSHConnection(
+                    arguments: demoSSHIsolationArguments(
+                        environment: demoEnvironment
+                    ),
+                    routeIdentity: SSHDestination.demoRouteIdentity(info),
+                    generation: 0
+                ))
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                acquisitions.withLock { $0 += 1 }
+                return testKwtSSHAttachment()
+            },
+            presentationSSHEnvironment: demoEnvironment
+        )
+
+        model.openBorrowedZellijSession(.init(
+            hostID: host.id,
+            name: "api"
+        ))
+        await waitUntilMainActor { store.lastCommand != nil }
+
+        #expect(acquisitions.load() == 0)
+        #expect(store.lastCommand?.contains("\(scratch)/ssh/config") == true)
         await model.shutdown()
     }
 
@@ -984,8 +1139,8 @@ extension WorkspaceZellijTests {
         let environment = try zellijEnvironment(sessions: [])
         let store = RecordingNativeSessionSurfaceStore()
         let probes = Mutex(0)
-        let releaseConfirmation = DispatchSemaphore(value: 0)
-        defer { releaseConfirmation.signal() }
+        let releaseConfirmation = AsyncGate()
+        defer { releaseConfirmation.open() }
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -1003,7 +1158,7 @@ extension WorkspaceZellijTests {
                 case 2:
                     return failure.result
                 default:
-                    releaseConfirmation.wait()
+                    await releaseConfirmation.wait()
                     return .available(["release", "confirmed"])
                 }
             },
@@ -1027,7 +1182,7 @@ extension WorkspaceZellijTests {
         #expect(model.snapshot.host(id: environment.host.id)?
             .zellijAvailable == true)
 
-        releaseConfirmation.signal()
+        releaseConfirmation.open()
         await waitUntilMainActor(timeout: .seconds(1)) {
             model.snapshot.host(id: environment.host.id)?
                 .zellijSessions.map(\.name) == ["release", "confirmed"]
@@ -1061,11 +1216,11 @@ extension WorkspaceZellijTests {
             port: nil
         ))
         let probes = Mutex([CommandHost: Int]())
-        let releaseLocal = DispatchSemaphore(value: 0)
-        let releaseRemote = DispatchSemaphore(value: 0)
+        let releaseLocal = AsyncGate()
+        let releaseRemote = AsyncGate()
         defer {
-            releaseLocal.signal()
-            releaseRemote.signal()
+            releaseLocal.open()
+            releaseRemote.open()
         }
         let model = try makeModel(
             database: WorkspaceDatabase.inMemory(),
@@ -1085,9 +1240,9 @@ extension WorkspaceZellijTests {
                 if attempt == 1 {
                     switch host {
                     case .local:
-                        releaseLocal.wait()
+                        await releaseLocal.wait()
                     case .ssh:
-                        releaseRemote.wait()
+                        await releaseRemote.wait()
                     }
                 }
                 return .available([])
@@ -1113,13 +1268,13 @@ extension WorkspaceZellijTests {
                 $0[localHost] == 1 && $0[remoteHost] == 1
             }
         }
-        releaseLocal.signal()
+        releaseLocal.open()
         try await Task.sleep(for: .milliseconds(100))
 
         #expect(probes.withLock { $0[localHost] } == 1)
         #expect(probes.withLock { $0[remoteHost] } == 1)
 
-        releaseRemote.signal()
+        releaseRemote.open()
         await waitUntilMainActor(timeout: .seconds(1)) {
             probes.withLock { $0[localHost] == 2 }
         }
@@ -1152,16 +1307,16 @@ extension WorkspaceZellijTests {
         )
         let localProbes = Mutex(0)
         let remoteProbes = Mutex(0)
-        let releaseInitialLocal = DispatchSemaphore(value: 0)
-        let releaseInitialRemote = DispatchSemaphore(value: 0)
-        let releaseRetryLocal = DispatchSemaphore(value: 0)
-        let releaseManualRemote = DispatchSemaphore(value: 0)
+        let releaseInitialLocal = AsyncGate()
+        let releaseInitialRemote = AsyncGate()
+        let releaseRetryLocal = AsyncGate()
+        let releaseManualRemote = AsyncGate()
         let retryTimedOut = Mutex(false)
         defer {
-            releaseInitialLocal.signal()
-            releaseInitialRemote.signal()
-            releaseRetryLocal.signal()
-            releaseManualRemote.signal()
+            releaseInitialLocal.open()
+            releaseInitialRemote.open()
+            releaseRetryLocal.open()
+            releaseManualRemote.open()
         }
         let model = try makeModel(
             database: WorkspaceDatabase.inMemory(),
@@ -1188,18 +1343,18 @@ extension WorkspaceZellijTests {
                 }
                 if attempt == 1 {
                     if isRemote {
-                        releaseInitialRemote.wait()
+                        await releaseInitialRemote.wait()
                     } else {
-                        releaseInitialLocal.wait()
+                        await releaseInitialLocal.wait()
                     }
                 } else if !isRemote, attempt == 3 {
-                    if releaseRetryLocal.wait(
-                        timeout: .now() + .seconds(1)
-                    ) == .timedOut {
+                    if await releaseRetryLocal.wait(
+                        timeout: .seconds(1)
+                    ) == false {
                         retryTimedOut.withLock { $0 = true }
                     }
                 } else if isRemote, attempt == 3 {
-                    releaseManualRemote.wait()
+                    await releaseManualRemote.wait()
                 }
                 if isRemote {
                     let names = switch attempt {
@@ -1227,8 +1382,8 @@ extension WorkspaceZellijTests {
             localProbes.withLock { $0 } == 1
                 && remoteProbes.withLock { $0 } == 1
         }
-        releaseInitialLocal.signal()
-        releaseInitialRemote.signal()
+        releaseInitialLocal.open()
+        releaseInitialRemote.open()
         await waitUntilMainActor {
             model.snapshot.host(id: remote.id)?.zellijSessions.map(\.name)
                 == ["initial"]
@@ -1249,8 +1404,8 @@ extension WorkspaceZellijTests {
             remoteProbes.withLock { $0 } == 3
         }
         #expect(!retryTimedOut.withLock { $0 })
-        releaseRetryLocal.signal()
-        releaseManualRemote.signal()
+        releaseRetryLocal.open()
+        releaseManualRemote.open()
         await waitUntilMainActor {
             model.snapshot.host(id: remote.id)?.zellijSessions.map(\.name)
                 == ["new"]

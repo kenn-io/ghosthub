@@ -8,17 +8,17 @@ import GhosthubWorkspace
 public struct SettingsActions {
     var refreshHosts: () -> Void = {}
     var probeSSHHost:
-        (SSHHost) async -> Result<
+        (UUID, SSHHost) async -> Result<
             HostProbeSummary,
             HostProbeError
-        > = { _ in
+        > = { _, _ in
             .failure(.message("SSH host probing is unavailable."))
         }
     var pendingSSHHostKeyConfirmation:
-        (SSHHost) async -> Result<
+        (UUID, SSHHost) async -> Result<
             SSHHostKeyReviewRequirement,
             HostProbeError
-        > = { _ in .success(.none) }
+        > = { _, _ in .success(.none) }
     var trustSSHHostKey:
         (SSHHostKeyConfirmation, SSHHost) async -> Result<
             SSHHostKeyConfirmation?,
@@ -30,6 +30,7 @@ public struct SettingsActions {
     var isSSHAuthenticationReady:
         (SSHHost) async -> SSHAuthenticationReadiness = { _ in .pending }
     var cancelSSHAuthentication: (UUID) -> Void = { _ in }
+    var retainSSHAuthenticationForHandoff: (UUID) -> Void = { _ in }
     var loadTailscalePeers: () async -> TailscalePeerLoadResult = {
         .failure("Tailscale import is unavailable.")
     }
@@ -61,16 +62,17 @@ public struct SettingsActions {
 
     public init(
         refreshHosts: @escaping () -> Void = {},
-        probeSSHHost: @escaping (SSHHost) async -> Result<
+        probeSSHHost: @escaping (UUID, SSHHost) async -> Result<
             HostProbeSummary,
             HostProbeError
-        > = { _ in
+        > = { _, _ in
             .failure(.message("SSH host probing is unavailable."))
         },
         pendingSSHHostKeyConfirmation: @escaping (
+            UUID,
             SSHHost
         ) async -> Result<SSHHostKeyReviewRequirement, HostProbeError> = {
-            _ in .success(.none)
+            _, _ in .success(.none)
         },
         trustSSHHostKey: @escaping (
             SSHHostKeyConfirmation,
@@ -87,6 +89,7 @@ public struct SettingsActions {
             _ in .pending
         },
         cancelSSHAuthentication: @escaping (UUID) -> Void = { _ in },
+        retainSSHAuthenticationForHandoff: @escaping (UUID) -> Void = { _ in },
         loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult = {
             .failure("Tailscale import is unavailable.")
         },
@@ -134,6 +137,8 @@ public struct SettingsActions {
         self.sshAuthenticationView = sshAuthenticationView
         self.isSSHAuthenticationReady = isSSHAuthenticationReady
         self.cancelSSHAuthentication = cancelSSHAuthentication
+        self.retainSSHAuthenticationForHandoff =
+            retainSSHAuthenticationForHandoff
         self.loadTailscalePeers = loadTailscalePeers
         self.exeAccountStatusesPublisher = exeAccountStatusesPublisher
         self.probeExeAccountConnection = probeExeAccountConnection
@@ -382,6 +387,8 @@ public struct SettingsView: View {
             actions.isSSHAuthenticationReady,
             cancelSSHAuthentication:
             actions.cancelSSHAuthentication,
+            retainSSHAuthenticationForHandoff:
+            actions.retainSSHAuthenticationForHandoff,
             installRemoteKwt: actions.installRemoteKwt,
             registerRemoteProject: actions.registerRemoteProject,
             loadTailscalePeers: actions.loadTailscalePeers,
@@ -402,6 +409,8 @@ public struct SettingsView: View {
             actions.isSSHAuthenticationReady,
             cancelSSHAuthentication:
             actions.cancelSSHAuthentication,
+            retainSSHAuthenticationForHandoff:
+            actions.retainSSHAuthenticationForHandoff,
             probeConnection: actions.probeExeAccountConnection,
             refresh: actions.refreshExeAccounts,
             invalidateRefresh: actions.invalidateExeAccountRefresh

@@ -494,7 +494,7 @@ struct WorkspaceRestorationTests {
             state: .running
         )
         let validationAttempts = Mutex(0)
-        let retryGate = BlockingGate()
+        let retryGate = AsyncGate()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -512,10 +512,8 @@ struct WorkspaceRestorationTests {
                         stderr: "temporary failure"
                     ))
                 }
-                return await Task.detached {
-                    retryGate.block()
-                    return HerdrDiscoveryResult.available([running])
-                }.value
+                await retryGate.wait()
+                return HerdrDiscoveryResult.available([running])
             }
         )
         let state = WorkspaceWindowState(
@@ -534,7 +532,7 @@ struct WorkspaceRestorationTests {
 
         model.startHerdrSessionDiscovery()
         model.beginRestoration(state)
-        await retryGate.waitUntilBlocked()
+        await retryGate.waitUntilWaiting()
 
         #expect(model.isWorkspaceRestorationPending)
         #expect(model.restorationState(windowID: state.windowID) == state)
@@ -609,8 +607,8 @@ struct WorkspaceRestorationTests {
         await model.shutdown()
     }
 
-    @Test("Zellij restoration reuses its validated SSH route")
-    func zellijRestorationUsesValidatedSSHRoute() async throws {
+    @Test("Zellij restoration validates then acquires a presentation lease")
+    func zellijRestorationAcquiresPresentationLease() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
         snapshot.hosts[0].zellijAvailable = true
@@ -623,6 +621,9 @@ struct WorkspaceRestorationTests {
         let changed = SSHConnectionArgumentsSnapshot(arguments: [
             "-F", "/tmp/changed-zellij-config", "dev@other.example.test",
         ])
+        let leaseArguments = [
+            "-F", "/tmp/lease-zellij-config", "dev@build.example.test",
+        ]
         let connectionReads = Mutex(0)
         let validationArguments = Mutex([[String]]())
         let store = RecordingNativeSessionSurfaceStore()
@@ -642,6 +643,9 @@ struct WorkspaceRestorationTests {
                     $0 += 1
                     return $0 <= 2 ? frozen : changed
                 }
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: leaseArguments)
             }
         )
         let state = WorkspaceWindowState(
@@ -667,8 +671,85 @@ struct WorkspaceRestorationTests {
 
         #expect(connectionReads.withLock { $0 } == 2)
         #expect(validationArguments.withLock { $0 } == [frozen.arguments])
-        #expect(store.lastCommand?.contains("/tmp/frozen-zellij-config") == true)
+        #expect(store.lastCommand?.contains("/tmp/lease-zellij-config") == true)
         #expect(store.lastCommand?.contains("/tmp/changed-zellij-config") == false)
+        #expect(!model.isWorkspaceRestorationPending)
+        await model.shutdown()
+    }
+
+    @Test("Zellij restoration accepts a new lease generation on retry")
+    func zellijRestorationAcceptsNewLeaseGeneration() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].zellijAvailable = true
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        let connectionReads = Mutex(0)
+        let validationAttempts = Mutex(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionDiscovery: { _ in .available(["editor"]) },
+            zellijSessionValidationDiscovery: { _, _ in
+                let attempt = validationAttempts.withLock {
+                    $0 += 1
+                    return $0
+                }
+                return attempt == 1
+                    ? .unavailable
+                    : .available(["editor"])
+            },
+            zellijSSHConnectionSnapshotProvider: { _ in
+                let read = connectionReads.withLock {
+                    $0 += 1
+                    return $0
+                }
+                let generation = UInt64(((read - 1) / 2) + 1)
+                let arguments = ["-S", "/tmp/zellij-(generation).sock"]
+                return SSHConnectionArgumentsSnapshot(
+                    testKwtSSHAttachment(
+                        arguments: arguments,
+                        routeIdentity: "sha256:stable-route",
+                        generation: generation
+                    )
+                )
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
+                    arguments: ["-presentation-lease"],
+                    routeIdentity: "sha256:stable-route"
+                )
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+
+        model.startZellijSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedZellijSurface()
+            return store.lastCommand != nil
+        }
+
+        #expect(connectionReads.withLock { $0 } >= 4)
+        #expect(validationAttempts.withLock { $0 } >= 2)
+        #expect(model.activeBorrowedZellijSelection?.name == "editor")
         #expect(!model.isWorkspaceRestorationPending)
         await model.shutdown()
     }
@@ -1008,7 +1089,7 @@ struct WorkspaceRestorationTests {
                 if attempt == 2 {
                     discoveryState.withLock { $0.blocked = true }
                     while !discoveryState.withLock({ $0.released }) {
-                        Thread.sleep(forTimeInterval: 0.001)
+                        try? await Task.sleep(for: .milliseconds(1))
                     }
                 }
                 return .available(["editor"])
@@ -1267,7 +1348,10 @@ struct WorkspaceRestorationTests {
         snapshot.hosts[0].zellijSessions = [
             ZellijSessionSummary(name: "editor"),
         ]
-        let connectionArguments = Mutex(["-o", "HostName=old.example.test"])
+        let connectionState = Mutex((
+            arguments: ["-o", "HostName=old.example.test"],
+            routeIdentity: "sha256:old-route"
+        ))
         let validationContinuation = Mutex<
             CheckedContinuation<Void, Never>?
         >(nil)
@@ -1288,11 +1372,23 @@ struct WorkspaceRestorationTests {
                 return .available(["editor"])
             },
             zellijSSHConnectionSnapshotProvider: { _ in
-                SSHConnectionArgumentsSnapshot(
-                    arguments: connectionArguments.withLock { $0 }
+                let connection = connectionState.withLock { $0 }
+                return SSHConnectionArgumentsSnapshot(
+                    testKwtSSHAttachment(
+                        arguments: connection.arguments,
+                        routeIdentity: connection.routeIdentity
+                    )
+                )
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                let connection = connectionState.withLock { $0 }
+                return testKwtSSHAttachment(
+                    arguments: ["-presentation-lease"],
+                    routeIdentity: connection.routeIdentity
                 )
             }
         )
+        let oldArguments = ["-o", "HostName=old.example.test"]
         let operation = try #require(killCoordinator.begin(
             key: .init(
                 hostID: environment.host.id,
@@ -1300,7 +1396,10 @@ struct WorkspaceRestorationTests {
             ),
             host: remoteRestorationCommandHost,
             connectionCacheKey: SSHConnectionArgumentsSnapshot(
-                arguments: ["-o", "HostName=old.example.test"]
+                testKwtSSHAttachment(
+                    arguments: oldArguments,
+                    routeIdentity: "sha256:old-route"
+                )
             ).cacheKey
         ))
         let state = WorkspaceWindowState(
@@ -1317,8 +1416,9 @@ struct WorkspaceRestorationTests {
             )
         )
 
-        connectionArguments.withLock {
-            $0 = ["-o", "HostName=replacement.example.test"]
+        connectionState.withLock {
+            $0.arguments = ["-o", "HostName=replacement.example.test"]
+            $0.routeIdentity = "sha256:replacement-route"
         }
         model.startZellijSessionDiscovery()
         model.beginRestoration(state)

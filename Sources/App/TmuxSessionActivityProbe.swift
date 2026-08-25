@@ -31,32 +31,64 @@ struct TmuxSessionActivityProbe: Sendable {
     private static let supportMarker =
         "GHOSTHUB_TMUX_ACTIVITY_SUPPORTED"
 
-    private let pathResolver: PathResolver
-    private let runner: Runner
+    private typealias RoutedPathResolver = @Sendable (
+        CommandHost, [String]?
+    ) -> Result<String, TmuxBinaryError>
+    private typealias RoutedRunner = @Sendable (
+        CommandHost, [String]?, String
+    ) -> AccountCommandOutput
+
+    private let pathResolver: RoutedPathResolver
+    private let runner: RoutedRunner
+    private let commandLease: KwtSSHCommandLease
 
     init(
         pathResolver: PathResolver? = nil,
-        runner: Runner? = nil
+        runner: Runner? = nil,
+        commandLease: KwtSSHCommandLease? = nil
     ) {
-        let cache = TmuxSessionActivityPathCache(
-            resolve: pathResolver ?? Self.resolveTmuxPath
+        self.commandLease = commandLease ?? .unlessInjected(
+            pathResolver != nil || runner != nil
         )
-        self.pathResolver = { host in
-            cache.resolve(on: host)
+        let cache = TmuxSessionActivityPathCache(
+            resolve: { host, connectionArguments in
+                if let pathResolver {
+                    return pathResolver(host)
+                }
+                return Self.resolveTmuxPath(
+                    on: host,
+                    sshConnectionArguments: connectionArguments
+                )
+            }
+        )
+        self.pathResolver = { host, connectionArguments in
+            cache.resolve(on: host, sshConnectionArguments: connectionArguments)
         }
-        self.runner = runner ?? {
-            (host: CommandHost, command: String)
-            -> (status: Int32, stdout: String) in
+        self.runner = { host, connectionArguments, command in
+            if let runner {
+                let output = runner(host, command)
+                return AccountCommandOutput(
+                    status: output.status,
+                    stdout: output.stdout,
+                    stderr: ""
+                )
+            }
             switch host {
             case .local:
-                AccountCommandRunner.runLoginShell(
+                let output = AccountCommandRunner.runLoginShell(
                     shell: AccountCommandRunner.loginShell(),
                     command: command,
                     timeout: 10
                 )
+                return AccountCommandOutput(
+                    status: output.status,
+                    stdout: output.stdout,
+                    stderr: ""
+                )
             case let .ssh(info):
-                AccountCommandRunner.runRemoteLoginShell(
+                return AccountCommandRunner().runRemoteLoginShell(
                     host: info,
+                    connectionArguments: connectionArguments ?? [],
                     command: command,
                     timeout: 10
                 )
@@ -69,45 +101,52 @@ struct TmuxSessionActivityProbe: Sendable {
         expectedIdentity: TmuxSessionIdentity,
         on host: CommandHost
     ) async -> TmuxSessionActivityProbeResult {
+        guard TmuxSessionKiller.isNumericIdentity(expectedIdentity.serverPID),
+              TmuxSessionKiller.isSessionID(expectedIdentity.sessionID),
+              TmuxSessionKiller.isSessionCreatedAt(expectedIdentity.createdAt)
+        else {
+            return .unavailable
+        }
         let pathResolver = pathResolver
         let runner = runner
-        let sampleTask = Task.detached(
-            priority: .utility
-        ) { () -> TmuxSessionActivityProbeResult in
-            guard !Task.isCancelled,
-                  TmuxSessionKiller.isNumericIdentity(
-                      expectedIdentity.serverPID
-                  ),
-                  TmuxSessionKiller.isSessionID(expectedIdentity.sessionID),
-                  TmuxSessionKiller.isSessionCreatedAt(
-                      expectedIdentity.createdAt
-                  ),
-                  let tmuxPath = try? pathResolver(host).get()
-            else {
-                return .unavailable
+        do {
+            return try await commandLease.withConnection(on: host) {
+                connection in
+                let connectionArguments = connection?.arguments
+                guard !Task.isCancelled else { return .unavailable }
+                let pathResult = await BlockingTask.run(priority: .utility) {
+                    pathResolver(host, connectionArguments)
+                }
+                if case let .failure(.sshConnectionFailed(
+                    _, classification
+                )) = pathResult,
+                    classification.connectionUnusable {
+                    await connection?.invalidate()
+                }
+                guard let tmuxPath = try? pathResult.get(),
+                      !Task.isCancelled
+                else {
+                    return .unavailable
+                }
+                let command = Self.command(
+                    tmuxPath: tmuxPath,
+                    selection: selection,
+                    expectedIdentity: expectedIdentity,
+                    platform: Self.platform(for: host)
+                )
+                let result = await commandLease.runCommand(
+                    using: connection
+                ) { _ in
+                    runner(host, connectionArguments, command)
+                }
+                guard result.status == 0 else { return .unavailable }
+                return Self.parse(
+                    result.stdout,
+                    expectedIdentity: expectedIdentity
+                )
             }
-            let command = Self.command(
-                tmuxPath: tmuxPath,
-                selection: selection,
-                expectedIdentity: expectedIdentity,
-                platform: Self.platform(for: host)
-            )
-            guard !Task.isCancelled else {
-                return .unavailable
-            }
-            let result = runner(host, command)
-            guard result.status == 0 else {
-                return .unavailable
-            }
-            return Self.parse(
-                result.stdout,
-                expectedIdentity: expectedIdentity
-            )
-        }
-        return await withTaskCancellationHandler {
-            await sampleTask.value
-        } onCancel: {
-            sampleTask.cancel()
+        } catch {
+            return .unavailable
         }
     }
 
@@ -530,35 +569,45 @@ struct TmuxSessionActivityProbe: Sendable {
     }
 
     private static func resolveTmuxPath(
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]?
     ) -> Result<String, TmuxBinaryError> {
         let resolver = TmuxBinaryResolver()
         return switch host {
         case .local:
             resolver.resolveTmuxPath()
         case let .ssh(info):
-            resolver.resolveTmuxPath(on: info)
+            resolver.resolveTmuxPath(
+                on: info,
+                sshConnectionArguments: sshConnectionArguments ?? []
+            )
         }
     }
 }
 
 private final class TmuxSessionActivityPathCache: @unchecked Sendable {
+    typealias Resolver = @Sendable (CommandHost, [String]?)
+        -> Result<String, TmuxBinaryError>
+
     private let lock = NSLock()
     private var paths: [CommandHost: String] = [:]
-    private let resolve: TmuxSessionActivityProbe.PathResolver
+    private let resolve: Resolver
 
-    init(resolve: @escaping TmuxSessionActivityProbe.PathResolver) {
+    init(resolve: @escaping Resolver) {
         self.resolve = resolve
     }
 
-    func resolve(on host: CommandHost) -> Result<String, TmuxBinaryError> {
+    func resolve(
+        on host: CommandHost,
+        sshConnectionArguments: [String]?
+    ) -> Result<String, TmuxBinaryError> {
         lock.lock()
         if let path = paths[host] {
             lock.unlock()
             return .success(path)
         }
         lock.unlock()
-        let result = resolve(host)
+        let result = resolve(host, sshConnectionArguments)
         if case let .success(path) = result {
             lock.lock()
             paths[host] = path

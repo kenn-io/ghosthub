@@ -4,34 +4,32 @@ import GhosthubTransport
 import GhosthubWorkspace
 
 struct HerdrSessionLifecycleClient: Sendable {
-    typealias ConnectionArgumentsProvider = @Sendable (SSHHostInfo) -> [String]
-
     private let commandRunner: AccountCommandRunner
-    private let connectionArgumentsProvider: ConnectionArgumentsProvider
     private let processTimeout: TimeInterval
 
     init(
         commandRunner: AccountCommandRunner = AccountCommandRunner(),
-        connectionArgumentsProvider: @escaping ConnectionArgumentsProvider = {
-            SSHCommandArguments.noninteractive(for: $0)
-        },
         processTimeout: TimeInterval = 15
     ) {
         self.commandRunner = commandRunner
-        self.connectionArgumentsProvider = connectionArgumentsProvider
         self.processTimeout = processTimeout
     }
 
+    /// Remote hosts require the caller's kwt-reviewed SSH arguments.
     func record(
         named name: String,
         on host: CommandHost,
         sshConnectionArguments: [String]? = nil
     ) -> Result<HerdrSessionRecord, HerdrSessionLifecycleError> {
-        let arguments = connectionArguments(
+        let arguments: [String]
+        switch requiredArguments(on: host, supplied: sshConnectionArguments) {
+        case let .success(value): arguments = value
+        case let .failure(error): return .failure(error)
+        }
+        switch resolvedExecutable(
             on: host,
-            frozen: sshConnectionArguments
-        )
-        switch resolvedExecutable(on: host, sshConnectionArguments: arguments) {
+            sshConnectionArguments: arguments
+        ) {
         case let .success(path):
             return record(
                 named: name,
@@ -49,15 +47,17 @@ struct HerdrSessionLifecycleClient: Sendable {
         on host: CommandHost,
         sshConnectionArguments: [String]? = nil
     ) -> Result<HerdrSessionRecord, HerdrSessionLifecycleError> {
-        mutate(
+        let arguments: [String]
+        switch requiredArguments(on: host, supplied: sshConnectionArguments) {
+        case let .success(value): arguments = value
+        case let .failure(error): return .failure(error)
+        }
+        return mutate(
             .stop,
             confirmed: confirmed,
             expected: .running,
             on: host,
-            sshConnectionArguments: connectionArguments(
-                on: host,
-                frozen: sshConnectionArguments
-            )
+            sshConnectionArguments: arguments
         )
     }
 
@@ -69,16 +69,34 @@ struct HerdrSessionLifecycleClient: Sendable {
         guard !confirmed.isDefault else {
             return .failure(.defaultSessionCannotBeDeleted)
         }
+        let arguments: [String]
+        switch requiredArguments(on: host, supplied: sshConnectionArguments) {
+        case let .success(value): arguments = value
+        case let .failure(error): return .failure(error)
+        }
         return mutate(
             .delete,
             confirmed: confirmed,
             expected: .stopped,
             on: host,
-            sshConnectionArguments: connectionArguments(
-                on: host,
-                frozen: sshConnectionArguments
-            )
+            sshConnectionArguments: arguments
         )
+    }
+
+    private func requiredArguments(
+        on host: CommandHost,
+        supplied: [String]?
+    ) -> Result<[String], HerdrSessionLifecycleError> {
+        guard supportsHerdr(host) else {
+            return .failure(.unsupportedPlatform)
+        }
+        switch host {
+        case .local:
+            return .success(supplied ?? [])
+        case .ssh:
+            guard let supplied else { return .failure(.sshLeaseRequired) }
+            return .success(supplied)
+        }
     }
 
     private func mutate(
@@ -235,13 +253,5 @@ struct HerdrSessionLifecycleClient: Sendable {
                 timeout: processTimeout
             )
         }
-    }
-
-    private func connectionArguments(
-        on host: CommandHost,
-        frozen: [String]?
-    ) -> [String] {
-        guard case let .ssh(info) = host else { return [] }
-        return frozen ?? connectionArgumentsProvider(info)
     }
 }
