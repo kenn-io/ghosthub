@@ -511,6 +511,17 @@ impl HostSnapshot {
         self.zellij.as_ref()
     }
 
+    /// Remove one killed Zellij session from this snapshot, so the stale
+    /// inventory cannot authorize another kill of a same-name replacement
+    /// before the next discovery.
+    #[must_use]
+    pub fn without_zellij_session(mut self, name: &str) -> Self {
+        if let ZellijInventory::Available { sessions, .. } = self.zellij.as_mut() {
+            sessions.retain(|session| session.name() != name);
+        }
+        self
+    }
+
     /// Apply one authoritative Herdr lifecycle response to this snapshot.
     ///
     /// Returns `None` when the snapshot does not contain the session inventory

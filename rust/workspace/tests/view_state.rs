@@ -82,6 +82,37 @@ fn application_workspace_does_not_connect_wsl_during_construction() {
 }
 
 #[test]
+fn application_facade_projects_one_consistent_snapshot_per_client() {
+    let spec = WslHostSpec::available(
+        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
+    );
+
+    let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
+
+    let snapshot = workspace.snapshot();
+    assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
+    assert_eq!(snapshot.selected_host(), Some("wsl"));
+    assert_eq!(snapshot.hosts().len(), 1);
+    assert_eq!(
+        snapshot.hosts()[0].connection(),
+        HostConnectionState::Disconnected
+    );
+    assert!(snapshot.notice().is_none());
+    assert!(snapshot.active_selection().is_none());
+    assert!(snapshot.retained_selections().is_empty());
+
+    // Draining events on an idle workspace observes nothing and publishes
+    // nothing: clones of the facade keep reading the same revision.
+    let clone = workspace.clone();
+    let before = clone.snapshot().revision();
+    let (events, has_more) = workspace.drain_events();
+    assert!(events.is_empty());
+    assert!(!has_more);
+    assert_eq!(clone.snapshot().revision(), before);
+}
+
+#[test]
 fn connecting_enabled_hosts_without_a_host_is_a_no_op() {
     let workspace = Workspace::application(TerminalAppearance::default(), None);
 

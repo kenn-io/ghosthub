@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "notes": "Provenance policy for honoring accepted OSC 52 clipboard writes. A write reaches the system clipboard only when an unconsumed trusted user gesture no older than max_gesture_age_ms exists at the moment the write is delivered, and delivering the write consumes that gesture. Terminal output can never create, extend, or stand in for a gesture, and never refreshes the gesture deadline. Steps replay in order: 'gesture' records a trusted one-shot user gesture, 'revoke' withdraws any standing grant, 'terminal-output' is arbitrary non-gesture terminal activity, 'advance-within-gesture-age' advances the clock by less than max_gesture_age_ms, 'advance-past-gesture-age' advances the clock beyond max_gesture_age_ms, and 'osc52-write' is one policy-accepted OSC 52 write. expected_writes gives the allow/deny decision for each osc52-write step in order. known_gaps lists consumers whose current implementation is known to diverge; those consumers must fail the contract expectation until the gap is fixed and the entry removed.",
+  "max_gesture_age_ms": 5000,
+  "cases": [
+    {
+      "id": "gesture-then-write-is-allowed",
+      "steps": ["gesture", "osc52-write"],
+      "expected_writes": ["allow"]
+    },
+    {
+      "id": "write-without-gesture-is-denied",
+      "steps": ["osc52-write"],
+      "expected_writes": ["deny"],
+      "known_gaps": {
+        "ghosthub-terminal": "Workers initialize the presentation clipboard gate enabled before any gesture, so a write delivered in the initial generation is honored."
+      }
+    },
+    {
+      "id": "gesture-after-write-does-not-release-it",
+      "steps": ["osc52-write", "gesture"],
+      "expected_writes": ["deny"]
+    },
+    {
+      "id": "gesture-is-one-shot",
+      "steps": ["gesture", "osc52-write", "osc52-write"],
+      "expected_writes": ["allow", "deny"],
+      "known_gaps": {
+        "ghosthub-terminal": "The presentation clipboard gate is an enabled window, not a one-shot grant; every write inside the window is honored."
+      }
+    },
+    {
+      "id": "revoked-gesture-denies-later-writes",
+      "steps": ["gesture", "revoke", "osc52-write"],
+      "expected_writes": ["deny"]
+    },
+    {
+      "id": "new-gesture-after-revoke-allows",
+      "steps": ["gesture", "revoke", "gesture", "osc52-write"],
+      "expected_writes": ["allow"]
+    },
+    {
+      "id": "terminal-output-is-not-a-gesture",
+      "steps": ["terminal-output", "osc52-write"],
+      "expected_writes": ["deny"],
+      "known_gaps": {
+        "ghosthub-terminal": "Workers initialize the presentation clipboard gate enabled before any gesture, so terminal output followed by a write in the initial generation is honored."
+      }
+    },
+    {
+      "id": "write-within-gesture-age-is-allowed",
+      "steps": ["gesture", "advance-within-gesture-age", "osc52-write"],
+      "expected_writes": ["allow"]
+    },
+    {
+      "id": "expired-gesture-denies-writes",
+      "steps": ["gesture", "advance-past-gesture-age", "osc52-write"],
+      "expected_writes": ["deny"],
+      "known_gaps": {
+        "ghosthub-terminal": "The presentation clipboard gate has no clock; a grant never expires until the gate is advanced."
+      }
+    },
+    {
+      "id": "terminal-output-does-not-refresh-gesture-age",
+      "steps": [
+        "gesture",
+        "advance-past-gesture-age",
+        "terminal-output",
+        "osc52-write"
+      ],
+      "expected_writes": ["deny"],
+      "known_gaps": {
+        "ghosthub-terminal": "The presentation clipboard gate has no clock; terminal output cannot refresh a deadline that does not exist, but the unexpired window still honors the write."
+      }
+    }
+  ]
+}

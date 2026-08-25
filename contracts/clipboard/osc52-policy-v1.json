@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "notes": "Single OSC 52 policy for the parsed native path and the web terminal frontend. Writes are accepted only for the clipboard selection ('c' or empty), with strict canonical base64, a decoded size cap, and fatal UTF-8 validation. Read requests ('?') are denied and must never return clipboard contents; an empty-payload acknowledgement is permitted. Each case is the body of one OSC 52 sequence: selection, then a ';' separator, then the payload. A case without a payload field has no separator after the selection. payload_text means the canonical base64 encoding of the UTF-8 text repeated the given number of times. known_gaps lists consumers whose current implementation is known to diverge; those consumers must fail the contract expectation until the gap is fixed and the entry removed.",
+  "max_clipboard_bytes": 1048576,
+  "cases": [
+    {
+      "id": "accept-clipboard-selection",
+      "selection": "c",
+      "payload": "SGVsbG8=",
+      "expected": {
+        "action": "accept",
+        "text": "Hello"
+      }
+    },
+    {
+      "id": "accept-empty-selection",
+      "selection": "",
+      "payload": "SGVsbG8=",
+      "expected": {
+        "action": "accept",
+        "text": "Hello"
+      },
+      "notes": "An empty selection field defaults to the clipboard."
+    },
+    {
+      "id": "accept-empty-payload",
+      "selection": "c",
+      "payload": "",
+      "expected": {
+        "action": "accept",
+        "text": ""
+      }
+    },
+    {
+      "id": "accept-multibyte-utf8",
+      "selection": "c",
+      "payload": "8J+YgA==",
+      "expected": {
+        "action": "accept",
+        "text": "😀"
+      }
+    },
+    {
+      "id": "accept-at-size-cap",
+      "selection": "c",
+      "payload_text": {
+        "text": "A",
+        "repeat": 1048576
+      },
+      "expected": {
+        "action": "accept",
+        "text_repeat": {
+          "text": "A",
+          "repeat": 1048576
+        }
+      },
+      "notes": "Exactly max_clipboard_bytes decoded bytes; also exactly the maximum encoded length."
+    },
+    {
+      "id": "reject-over-size-cap",
+      "selection": "c",
+      "payload_text": {
+        "text": "A",
+        "repeat": 1048577
+      },
+      "expected": {
+        "action": "reject",
+        "reason": "too-large"
+      },
+      "known_gaps": {
+        "ghosthub-terminal": "The parsed engine enforces no OSC 52 size cap; alacritty accepts payloads of any length."
+      }
+    },
+    {
+      "id": "reject-primary-selection-p",
+      "selection": "p",
+      "payload": "SGVsbG8=",
+      "expected": {
+        "action": "reject",
+        "reason": "unsupported-selection"
+      },
+      "known_gaps": {
+        "ghosthub-terminal": "alacritty maps 'p' to a primary-selection write instead of rejecting it."
+      }
+    },
+    {
+      "id": "reject-primary-selection-s",
+      "selection": "s",
+      "payload": "SGVsbG8=",
+      "expected": {
+        "action": "reject",
+        "reason": "unsupported-selection"
+      },
+      "known_gaps": {
+        "ghosthub-terminal": "alacritty maps 's' to a primary-selection write instead of rejecting it."
+      }
+    },
+    {
+      "id": "reject-unknown-selection-letter",
+      "selection": "x",
+      "payload": "SGVsbG8=",
+      "expected": {
+        "action": "reject",
+        "reason": "unsupported-selection"
+      }
+    },
+    {
+      "id": "reject-uppercase-selection",
+      "selection": "C",
+      "payload": "SGVsbG8=",
+      "expected": {
+        "action": "reject",
+        "reason": "unsupported-selection"
+      }
+    },
+    {
+      "id": "reject-selection-trailing-letters",
+      "selection": "cs",
+      "payload": "SGVsbG8=",
+      "expected": {
+        "action": "reject",
+        "reason": "unsupported-selection"
+      },
+      "known_gaps": {
+        "ghosthub-terminal": "The vte dispatcher reads only the first selection byte and ignores the rest."
+      }
+    },
+    {
+      "id": "deny-read-request",
+      "selection": "c",
+      "payload": "?",
+      "expected": {
+        "action": "deny-read"
+      }
+    },
+    {
+      "id": "deny-read-request-empty-selection",
+      "selection": "",
+      "payload": "?",
+      "expected": {
+        "action": "deny-read"
+      }
+    },
+    {
+      "id": "reject-missing-payload-field",
+      "selection": "c",
+      "expected": {
+        "action": "reject",
+        "reason": "malformed"
+      },
+      "notes": "The sequence body is '52;c' with no payload separator."
+    },
+    {
+      "id": "reject-invalid-base64-characters",
+      "selection": "c",
+      "payload": "SGVs*bG8=",
+      "expected": {
+        "action": "reject",
+        "reason": "malformed"
+      }
+    },
+    {
+      "id": "reject-base64-inner-whitespace",
+      "selection": "c",
+      "payload": "SGVs bG8=",
+      "expected": {
+        "action": "reject",
+        "reason": "malformed"
+      }
+    },
+    {
+      "id": "reject-missing-padding",
+      "selection": "c",
+      "payload": "QQ",
+      "expected": {
+        "action": "reject",
+        "reason": "malformed"
+      }
+    },
+    {
+      "id": "reject-excess-padding",
+      "selection": "c",
+      "payload": "QQ===",
+      "expected": {
+        "action": "reject",
+        "reason": "malformed"
+      }
+    },
+    {
+      "id": "reject-non-canonical-trailing-bits",
+      "selection": "c",
+      "payload": "QR==",
+      "expected": {
+        "action": "reject",
+        "reason": "malformed"
+      },
+      "notes": "Strict canonical base64: the unused bits of the final symbol must be zero."
+    },
+    {
+      "id": "reject-non-canonical-single-padding",
+      "selection": "c",
+      "payload": "SGVsbG9=",
+      "expected": {
+        "action": "reject",
+        "reason": "malformed"
+      },
+      "notes": "Strict canonical base64 with single padding: the two unused bits of the final symbol must be zero."
+    },
+    {
+      "id": "reject-payload-with-semicolon",
+      "selection": "c",
+      "payload": "AAAA;BBBB",
+      "expected": {
+        "action": "reject",
+        "reason": "malformed"
+      },
+      "notes": "Everything after the first separator is the payload; ';' is not in the base64 alphabet.",
+      "known_gaps": {
+        "ghosthub-terminal": "The vte dispatcher splits OSC parameters on ';' and decodes only the first payload segment."
+      }
+    },
+    {
+      "id": "reject-double-question-mark",
+      "selection": "c",
+      "payload": "??",
+      "expected": {
+        "action": "reject",
+        "reason": "malformed"
+      },
+      "notes": "Only a payload of exactly '?' is a read request; '??' is invalid base64."
+    },
+    {
+      "id": "reject-invalid-utf8",
+      "selection": "c",
+      "payload": "//4=",
+      "expected": {
+        "action": "reject",
+        "reason": "invalid-utf8"
+      },
+      "notes": "Decodes to 0xFF 0xFE, which is not valid UTF-8."
+    },
+    {
+      "id": "reject-overlong-utf8",
+      "selection": "c",
+      "payload": "wK8=",
+      "expected": {
+        "action": "reject",
+        "reason": "invalid-utf8"
+      },
+      "notes": "Decodes to 0xC0 0xAF, an overlong encoding that fatal UTF-8 decoding rejects."
+    }
+  ]
+}

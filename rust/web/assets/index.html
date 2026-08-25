@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ghosthub</title>
+    <link rel="stylesheet" href="/assets/xterm.css" />
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <header id="titlebar">
+      <button id="nav-toggle" title="Hide sidebar (Ctrl+Shift+B)">&#9776;</button>
+      <div id="window-title"><span class="title-fallback">Ghosthub</span></div>
+      <div id="titlebar-actions">
+        <button class="titlebar-icon" title="Quick Launch" disabled>&#8984;</button>
+        <button class="titlebar-icon" title="Settings" disabled>&#9881;</button>
+        <button class="titlebar-icon" title="New Worktree" disabled>&#65291;</button>
+      </div>
+    </header>
+    <main id="body">
+      <nav id="sidebar">
+        <div id="nav-header">Workspaces</div>
+        <div id="inventory"></div>
+      </nav>
+      <section id="pane">
+        <div id="empty-state">
+          <div class="empty-glyph">&gt;_</div>
+          <div class="empty-title">No Active Session</div>
+          <div class="empty-subtitle">
+            Select a multiplexer session or kwt workspace from the sidebar.
+          </div>
+        </div>
+        <div id="terminal" hidden></div>
+        <div id="disconnect-overlay" hidden>
+          <div class="overlay-glyph">&#9888;</div>
+          <div class="overlay-title">Connection lost</div>
+          <div class="overlay-detail" id="disconnect-detail"></div>
+          <div class="overlay-actions">
+            <button id="reconnect">Reconnect Now</button>
+            <button id="close-pane">Close Pane</button>
+          </div>
+        </div>
+      </section>
+    </main>
+    <div id="toast" hidden></div>
+    <script src="/assets/xterm.js"></script>
+    <script src="/assets/addon-fit.js"></script>
+    <script src="/assets/addon-unicode11.js"></script>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

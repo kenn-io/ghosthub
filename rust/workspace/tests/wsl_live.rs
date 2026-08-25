@@ -1044,7 +1044,13 @@ fn active_presentation_id(workspace: &Workspace) -> u64 {
 fn start_workspace(server: &IsolatedServer) -> Workspace {
     let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
-    Workspace::start_wsl(config, TerminalAppearance::default())
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+    // Worker events are consumed by the runtime event pump, not by
+    // drain_events; start it as the application does after first frame.
+    workspace
+        .start_inventory_cadence()
+        .expect("start the event pump");
+    workspace
 }
 
 fn wait_for_sessions(workspace: &Workspace, expected: &[&str]) {

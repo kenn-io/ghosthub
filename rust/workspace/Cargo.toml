@@ -21,6 +21,7 @@ ghosthub-terminal.workspace = true
 
 [dev-dependencies]
 ghosthub-host = { workspace = true, features = ["test-support"] }
+ghosthub-terminal = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -358,6 +358,19 @@ The first implementation therefore uses:
   commands
 - OS-pipe backpressure when the handoff is full
 
+Spawning is a shared PTY process layer consumed by two worker types, per the
+[Web UI](web-ui.md) contract: the layer owns command intake, PTY creation at
+the initial geometry, child spawn, Job Object containment, resize delivery,
+shutdown ordering, and child reaping exactly once. `TerminalWorker` (parsed,
+native) and `ByteRelayWorker` (parserless, per web viewer) are disjoint
+consumers, preserving the one-VT-interpreter-per-PTY invariant. The relay
+forwards terminal-directed device queries verbatim; ConPTY emits a
+cursor-position query at startup and stalls until the viewer's terminal
+answers it, so a relay viewer must run a real VT frontend (xterm.js answers
+DSR natively). A relay viewer that fails to drain the bounded output queue is
+disconnected with a distinct backpressure outcome and its client and PTY are
+torn down; reconnection is a fresh attachment.
+
 The invariant is bounded non-lossy delivery with no UI blocking, not the
 absence of a byte channel. PTY bytes are never dropped or placed in an
 unbounded queue. Non-coalescible UI input uses an ordered queue bounded by both

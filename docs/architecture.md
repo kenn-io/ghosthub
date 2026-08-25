@@ -9,7 +9,9 @@ The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 locked design for planned native Windows and Linux applications uses Rust and
 GPUI while preserving the same product and session model. Its crate
 boundaries, dependency findings, platform roots, substrate gates, and delivery
-order are maintained in [Windows and Linux Rust Port](rust-port.md).
+order are maintained in [Windows and Linux Rust Port](rust-port.md). The
+locked v1 contract for the loopback web UI served by the Rust application is
+maintained in [Web UI](web-ui.md).
 
 ## Mental Model
 
@@ -739,6 +741,7 @@ Ghosthub does not scan the host for repositories.
 | `rust/` | Rust workspace for native Windows and Linux applications |
 | `contracts/` | Rust-owned language-neutral behavioral fixtures; future Swift consumption is separately authorized |
 | `docs/rust-port.md` | Locked Rust-port architecture, gates, and delivery order |
+| `docs/web-ui.md` | Locked v1 loopback web UI contract for the Rust applications |
 | `tools/` | Python bootstrap and packaging automation |
 | `Tests/` | Swift tests |
 | `tools/tests/` | Python tests for build, packaging, and importable tool code |

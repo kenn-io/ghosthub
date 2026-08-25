@@ -247,7 +247,14 @@ pub fn encode_input(input: &KeyInput, modes: TerminalModes) -> EncodedInput {
             bytes.extend_from_slice(b"\x1b[200~");
             bytes.extend_from_slice(normalized.as_bytes());
             bytes.extend_from_slice(b"\x1b[201~");
-            if normalized.contains("\x1b[201~") {
+            // Any embedded control other than the normalized newline or a
+            // tab is gated, matching the unbracketed arm: ESC can smuggle
+            // an end marker, and the single-byte C1 CSI (U+009B) is an
+            // end-marker equivalent on terminals that interpret C1.
+            let embedded_control = normalized
+                .chars()
+                .any(|character| character.is_control() && character != '\n' && character != '\t');
+            if embedded_control {
                 EncodedInput::confirmation_required(bytes)
             } else {
                 EncodedInput::ready(bytes)

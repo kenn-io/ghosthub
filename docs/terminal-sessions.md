@@ -896,6 +896,22 @@ Configuration**, Quick Launch, and
 Options that libghostty cannot apply to existing surfaces retain their upstream
 restart or new-surface semantics.
 
+## Relay teardown containment
+
+The Rust byte relay spawns each client as a session leader with the PTY as
+its controlling terminal. On teardown the relay reaps the child and, on
+unix, sweeps the child's process group with `SIGKILL` — after a non-reaping
+`waitid` leaves the exited child a zombie so its process-group id cannot
+recycle before the sweep. This reaches same-group descendants; interactive
+shells additionally propagate `SIGHUP` to their own jobs on exit, and the
+kernel sends `SIGHUP` to the controlling terminal's foreground group when
+the session leader dies. A descendant that moved into its own process group
+under job control and was then disowned while holding the slave open and not
+reading is the one case the group sweep does not reach; full session/tree
+containment (enumerating every group in the child's session) is future work,
+bounded meanwhile by the trusted-network deployment posture. On Windows a Job
+Object contains the whole tree.
+
 ## Verification
 
 For terminal startup, environment, config layering, libghostty bootstrap, key

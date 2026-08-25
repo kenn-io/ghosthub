@@ -11,6 +11,7 @@ members = [
     "surface",
     "terminal",
     "ui",
+    "web",
     "workspace",
 ]
 resolver = "2"
@@ -24,6 +25,11 @@ rust-version = "1.96"
 [workspace.dependencies]
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 arc-swap = "=1.9.2"
+axum = { version = "=0.8.9", default-features = false, features = [
+    "http1",
+    "tokio",
+    "ws",
+] }
 cargo_metadata = "=0.23.0"
 crossbeam-channel = "=0.5.15"
 ghosthub-contracts = { path = "contracts", version = "=0.0.0" }
@@ -35,6 +41,7 @@ ghosthub-session = { path = "session", version = "=0.0.0" }
 ghosthub-surface = { path = "surface", version = "=0.0.0" }
 ghosthub-terminal = { path = "terminal", version = "=0.0.0" }
 ghosthub-ui = { path = "ui", version = "=0.0.0" }
+ghosthub-web = { path = "web", version = "=0.0.0" }
 getrandom = "=0.3.4"
 hex = "=0.4.3"
 ghosthub-workspace = { path = "workspace", version = "=0.0.0" }
@@ -46,7 +53,15 @@ serde_json = "=1.0.151"
 sha2 = "=0.10.9"
 static_assertions = "=1.1.0"
 tempfile = "=3.27.0"
+tokio = { version = "=1.53.1", default-features = false, features = [
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
 toml = "=1.1.4"
+tungstenite = "=0.30.0"
 unicode-segmentation = "=1.13.3"
 
 [workspace.lints.rust]
