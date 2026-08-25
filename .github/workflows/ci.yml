@@ -219,7 +219,7 @@ jobs:
 
       - name: Run trusted serialized GUI terminal smoke tests
         if: ${{ matrix.lane == 'self-hosted' }}
-        uses: kenn-io/ghosthub/.github/actions/run-gui-terminal-tests@594282df4c23b1e4ac1b053ed5cf509f9130bcb4
+        uses: kenn-io/ghosthub/.github/actions/run-gui-terminal-tests@c346e648437b3de0195769fe9d50204aa6974929
         with:
           filter: ${{ env.GHOSTHUB_WINDOW_SERVER_TEST_FILTER }}
 
