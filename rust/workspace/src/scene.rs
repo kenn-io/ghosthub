@@ -4181,35 +4181,41 @@ pub(crate) fn remote_attachment_is_current(
             })
 }
 
-pub(crate) fn with_current_remote_attachment_launch<T>(
-    scene: &Scene,
+pub(crate) fn with_current_remote_attachment_launch<'scene, T>(
+    scene: &'scene Scene,
     host_id: &str,
     navigation_generation: u64,
     cancellation: &CancellationToken,
     launch: impl FnOnce() -> Result<T, WorkspaceError>,
-) -> Result<T, WorkspaceError> {
+) -> Result<(NavigationFence<'scene>, T), WorkspaceError> {
     // The live fence, not the raw mutex: a task parked here while the
     // scene closed must fail on wake instead of launching into the window
-    // before release_scene advances generations and cancels requests.
-    let _navigation = lock_live_navigation(scene)?;
+    // before release_scene advances generations and cancels requests. The
+    // fence is returned so the caller holds it through resize and
+    // publication — the launched worker is never left unregistered and
+    // unretireable in a close/navigation gap.
+    let navigation = lock_live_navigation(scene)?;
     if scene.navigation_generation.load(Ordering::Acquire) != navigation_generation {
         return Err(WorkspaceError::new("remote attachment was superseded"));
     }
-    let entries = scene
-        .runtime
-        .remote_hosts
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let current = entries.get(host_id).is_some_and(|entry| {
-        entry.attachment_attempts.iter().any(|attempt| {
-            attempt.navigation_generation == navigation_generation
-                && !attempt.cancellation.is_cancelled()
-        })
-    });
-    if cancellation.is_cancelled() || !current {
-        return Err(WorkspaceError::new("remote attachment was superseded"));
+    {
+        let entries = scene
+            .runtime
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = entries.get(host_id).is_some_and(|entry| {
+            entry.attachment_attempts.iter().any(|attempt| {
+                attempt.navigation_generation == navigation_generation
+                    && !attempt.cancellation.is_cancelled()
+            })
+        });
+        if cancellation.is_cancelled() || !current {
+            return Err(WorkspaceError::new("remote attachment was superseded"));
+        }
     }
-    launch()
+    let value = launch()?;
+    Ok((navigation, value))
 }
 
 pub(crate) fn with_current_remote_constructive_launch<T>(
@@ -4263,16 +4269,10 @@ pub(crate) fn run_remote_tmux_attach(
     let result =
         recapture_remote_tmux_attach_request(&scene.runtime, request).and_then(|request| {
             prepare_remote_tmux_attachment(scene, &request, navigation_generation, cancellation)
-                .and_then(|(worker, term, identity_mismatch_marker)| {
-                    let navigation = scene
-                        .navigation
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if scene.navigation_generation.load(Ordering::Acquire) != navigation_generation
-                    {
-                        drop(worker);
-                        return Ok(());
-                    }
+                .and_then(|(navigation, worker, term, identity_mismatch_marker)| {
+                    // The launch fence rides into publication: the same
+                    // guard that authorized the spawn covers the publish, so
+                    // a close cannot strand the worker unregistered.
                     let key = RemotePresentationKey {
                         host_id: request.host_id.clone(),
                         endpoint: request.snapshot.endpoint().to_owned(),
@@ -4316,12 +4316,12 @@ pub(crate) fn run_remote_tmux_attach(
     }
 }
 
-pub(crate) fn prepare_remote_tmux_attachment(
-    scene: &Scene,
+pub(crate) fn prepare_remote_tmux_attachment<'scene>(
+    scene: &'scene Scene,
     request: &RemoteTmuxAttachRequest,
     navigation_generation: u64,
     cancellation: &CancellationToken,
-) -> Result<(TerminalWorker, AttachTerm, String), WorkspaceError> {
+) -> Result<(NavigationFence<'scene>, TerminalWorker, AttachTerm, String), WorkspaceError> {
     let term = request
         .host
         .probe_terminal_term(&request.snapshot, cancellation)
@@ -4334,7 +4334,7 @@ pub(crate) fn prepare_remote_tmux_attachment(
         .terminal_geometry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let worker = with_current_remote_attachment_launch(
+    let (navigation, worker) = with_current_remote_attachment_launch(
         scene,
         &request.host_id,
         navigation_generation,
@@ -4352,7 +4352,7 @@ pub(crate) fn prepare_remote_tmux_attachment(
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
     )?;
-    Ok((worker, term, identity_mismatch_marker))
+    Ok((navigation, worker, term, identity_mismatch_marker))
 }
 
 pub(crate) fn run_remote_herdr_attach(
@@ -4377,22 +4377,15 @@ pub(crate) fn run_remote_herdr_attach(
     let result =
         recapture_remote_herdr_attach_request(&scene.runtime, request).and_then(|request| {
             prepare_remote_herdr_attachment(scene, &request, navigation_generation, cancellation)
-                .and_then(|(worker, snapshot, session, geometry, term)| {
+                .and_then(|(navigation, worker, snapshot, session, geometry, term)| {
+                    // The launch fence rides into resize and publication, so
+                    // a close cannot strand the worker unregistered.
                     if let Err(error) = worker.resize_with_metadata(
                         geometry.grid,
                         geometry.sequence,
                         geometry.pixels,
                     ) {
                         return Err(WorkspaceError::from_worker(&error));
-                    }
-                    let navigation = scene
-                        .navigation
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if scene.navigation_generation.load(Ordering::Acquire) != navigation_generation
-                    {
-                        drop(worker);
-                        return Ok(());
                     }
                     let key = RemotePresentationKey {
                         host_id: request.host_id.clone(),
@@ -4440,13 +4433,14 @@ pub(crate) fn run_remote_herdr_attach(
     }
 }
 
-pub(crate) fn prepare_remote_herdr_attachment(
-    scene: &Scene,
+pub(crate) fn prepare_remote_herdr_attachment<'scene>(
+    scene: &'scene Scene,
     request: &RemoteHerdrAttachRequest,
     navigation_generation: u64,
     cancellation: &CancellationToken,
 ) -> Result<
     (
+        NavigationFence<'scene>,
         TerminalWorker,
         RemoteTmuxSnapshot,
         session::HerdrSessionRecord,
@@ -4489,7 +4483,7 @@ pub(crate) fn prepare_remote_herdr_attachment(
         .terminal_geometry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let worker = with_current_remote_attachment_launch(
+    let (navigation, worker) = with_current_remote_attachment_launch(
         scene,
         &request.host_id,
         navigation_generation,
@@ -4507,7 +4501,7 @@ pub(crate) fn prepare_remote_herdr_attachment(
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
     )?;
-    Ok((worker, snapshot, session, geometry, term))
+    Ok((navigation, worker, snapshot, session, geometry, term))
 }
 
 pub(crate) fn run_remote_zellij_attach(
@@ -4532,22 +4526,15 @@ pub(crate) fn run_remote_zellij_attach(
     let result =
         recapture_remote_zellij_attach_request(&scene.runtime, request).and_then(|request| {
             prepare_remote_zellij_attachment(scene, &request, navigation_generation, cancellation)
-                .and_then(|(worker, snapshot, session, geometry, term)| {
+                .and_then(|(navigation, worker, snapshot, session, geometry, term)| {
+                    // The launch fence rides into resize and publication, so
+                    // a close cannot strand the worker unregistered.
                     if let Err(error) = worker.resize_with_metadata(
                         geometry.grid,
                         geometry.sequence,
                         geometry.pixels,
                     ) {
                         return Err(WorkspaceError::from_worker(&error));
-                    }
-                    let navigation = scene
-                        .navigation
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if scene.navigation_generation.load(Ordering::Acquire) != navigation_generation
-                    {
-                        drop(worker);
-                        return Ok(());
                     }
                     let key = RemotePresentationKey {
                         host_id: request.host_id.clone(),
@@ -4590,13 +4577,14 @@ pub(crate) fn run_remote_zellij_attach(
     }
 }
 
-pub(crate) fn prepare_remote_zellij_attachment(
-    scene: &Scene,
+pub(crate) fn prepare_remote_zellij_attachment<'scene>(
+    scene: &'scene Scene,
     request: &RemoteZellijAttachRequest,
     navigation_generation: u64,
     cancellation: &CancellationToken,
 ) -> Result<
     (
+        NavigationFence<'scene>,
         TerminalWorker,
         RemoteTmuxSnapshot,
         session::ZellijSessionRecord,
@@ -4636,7 +4624,7 @@ pub(crate) fn prepare_remote_zellij_attachment(
         .terminal_geometry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let worker = with_current_remote_attachment_launch(
+    let (navigation, worker) = with_current_remote_attachment_launch(
         scene,
         &request.host_id,
         navigation_generation,
@@ -4654,7 +4642,7 @@ pub(crate) fn prepare_remote_zellij_attachment(
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
     )?;
-    Ok((worker, snapshot, session, geometry, term))
+    Ok((navigation, worker, snapshot, session, geometry, term))
 }
 
 #[allow(
