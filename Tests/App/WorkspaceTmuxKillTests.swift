@@ -13,7 +13,7 @@ import Testing
 
 extension WorkspaceTmuxDiscoveryTests {
     @MainActor
-    @Test("kill carries the discovered session identity through confirmation")
+    @Test("kill carries reviewed identity and route through confirmation")
     func killUsesConfirmedSessionIdentity() async throws {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
@@ -34,6 +34,12 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             tmuxSessionKiller: { _, identity, _ in
                 killedIdentity.store(identity)
+            },
+            tmuxSessionIdentityReviewer: { _, identity, _ in
+                ReviewedTmuxSessionIdentity(
+                    identity: try #require(identity),
+                    routeIdentity: "reviewed-route"
+                )
             }
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -48,6 +54,7 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(request.serverPID == "31415")
         #expect(request.sessionID == "$8")
         #expect(request.sessionCreatedAt == "1721552400")
+        #expect(request.routeIdentity == "reviewed-route")
         #expect(killedIdentity.load() == TmuxSessionIdentity(
             serverPID: "31415",
             sessionID: "$8",

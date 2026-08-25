@@ -107,6 +107,8 @@ extension ApplicationDelegate {
         delegate.requestTerminationConfirmation = { completion in
             completion(confirmTerminationResult)
         }
+        delegate.shutdownForTermination = {}
+        delegate.replyToApplicationShouldTerminate = { _ in }
         return delegate
     }
 }
@@ -349,15 +351,17 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertTrue(soundPlayer.playedSounds.isEmpty)
     }
 
-    func testApplicationShouldTerminateRepliesAfterAsyncConfirmation() {
+    func testApplicationShouldTerminateRepliesAfterAsyncConfirmation() async {
         let delegate = ApplicationDelegate()
         var confirmation: ((Bool) -> Void)?
-        var replies: [Bool] = []
+        let terminationReplied = expectation(description: "termination replied")
         delegate.requestTerminationConfirmation = { callback in
             confirmation = callback
         }
+        delegate.shutdownForTermination = {}
         delegate.replyToApplicationShouldTerminate = { confirmed in
-            replies.append(confirmed)
+            XCTAssertTrue(confirmed)
+            terminationReplied.fulfill()
         }
 
         XCTAssertEqual(
@@ -365,11 +369,10 @@ final class ApplicationDelegateTests: XCTestCase {
             .terminateLater
         )
         XCTAssertTrue(delegate.terminationConfirmationPending)
-        XCTAssertTrue(replies.isEmpty)
 
         confirmation?(true)
 
-        XCTAssertEqual(replies, [true])
+        await fulfillment(of: [terminationReplied], timeout: 1)
         XCTAssertTrue(delegate.terminationConfirmed)
         XCTAssertFalse(delegate.terminationConfirmationPending)
     }
@@ -407,7 +410,7 @@ final class ApplicationDelegateTests: XCTestCase {
 
         XCTAssertEqual(
             delegate.applicationShouldTerminate(NSApplication.shared),
-            .terminateNow
+            .terminateLater
         )
         XCTAssertFalse(delegate.terminationConfirmed)
         XCTAssertEqual(
@@ -436,8 +439,34 @@ final class ApplicationDelegateTests: XCTestCase {
         )
         XCTAssertEqual(
             delegate.applicationShouldTerminate(NSApplication.shared),
-            .terminateNow
+            .terminateLater
         )
+    }
+
+    func testTerminationRepliesAfterBoundedSSHShutdown() async {
+        let delegate = ApplicationDelegate.forTesting(
+            needsConfirmQuit: false
+        )
+        let cleanupStarted = expectation(description: "cleanup started")
+        let terminationReplied = expectation(description: "termination replied")
+        let release = AsyncStream<Void>.makeStream()
+        delegate.shutdownForTermination = {
+            cleanupStarted.fulfill()
+            var iterator = release.stream.makeAsyncIterator()
+            _ = await iterator.next()
+        }
+        delegate.replyToApplicationShouldTerminate = { shouldTerminate in
+            XCTAssertTrue(shouldTerminate)
+            terminationReplied.fulfill()
+        }
+
+        XCTAssertEqual(
+            delegate.applicationShouldTerminate(NSApplication.shared),
+            .terminateLater
+        )
+        await fulfillment(of: [cleanupStarted], timeout: 1)
+        release.continuation.yield()
+        await fulfillment(of: [terminationReplied], timeout: 1)
     }
 
     func testRequestUserInitiatedTerminationForcesAsyncConfirmationWhenSafe() {
@@ -504,19 +533,21 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertTrue(delegate.terminationConfirmed)
     }
 
-    func testAppKitTerminationJoinsPendingApplicationConfirmation() {
+    func testAppKitTerminationJoinsPendingApplicationConfirmation() async {
         let delegate = ApplicationDelegate()
         var completion: ((Bool) -> Void)?
         var terminationRequests = 0
-        var replies: [Bool] = []
+        let terminationReplied = expectation(description: "termination replied")
         delegate.requestTerminationConfirmation = { callback in
             completion = callback
         }
         delegate.terminateApplication = {
             terminationRequests += 1
         }
+        delegate.shutdownForTermination = {}
         delegate.replyToApplicationShouldTerminate = { confirmed in
-            replies.append(confirmed)
+            XCTAssertTrue(confirmed)
+            terminationReplied.fulfill()
         }
 
         delegate.requestApplicationTermination()
@@ -527,10 +558,44 @@ final class ApplicationDelegateTests: XCTestCase {
 
         completion?(true)
 
+        await fulfillment(of: [terminationReplied], timeout: 1)
         XCTAssertEqual(terminationRequests, 1)
-        XCTAssertEqual(replies, [true])
         XCTAssertTrue(delegate.terminationConfirmed)
         XCTAssertFalse(delegate.terminationConfirmationPending)
+    }
+
+    func testJoinedAppKitTerminationCallbacksStartCleanupOnce() async {
+        let delegate = ApplicationDelegate()
+        var confirmation: ((Bool) -> Void)?
+        var cleanupCount = 0
+        var replyCount = 0
+        let terminationReplied = expectation(description: "termination replied")
+        delegate.requestTerminationConfirmation = { callback in
+            confirmation = callback
+        }
+        delegate.shutdownForTermination = {
+            cleanupCount += 1
+        }
+        delegate.replyToApplicationShouldTerminate = { confirmed in
+            XCTAssertTrue(confirmed)
+            replyCount += 1
+            terminationReplied.fulfill()
+        }
+
+        XCTAssertEqual(
+            delegate.applicationShouldTerminate(NSApplication.shared),
+            .terminateLater
+        )
+        XCTAssertEqual(
+            delegate.applicationShouldTerminate(NSApplication.shared),
+            .terminateLater
+        )
+
+        confirmation?(true)
+
+        await fulfillment(of: [terminationReplied], timeout: 1)
+        XCTAssertEqual(cleanupCount, 1)
+        XCTAssertEqual(replyCount, 1)
     }
 
     func testBoundTerminalQuitUsesAsyncApplicationCoordinator() {

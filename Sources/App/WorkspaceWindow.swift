@@ -701,10 +701,7 @@ struct WorkspaceWindow: View {
         _windowState = windowState
         self.updateRelaunchRestorer = updateRelaunchRestorer
         self.openRelaunchWindow = openRelaunchWindow
-        _sceneModel = StateObject(wrappedValue: WorkspaceSceneModel(
-            sshAuthenticationCoordinator:
-            applicationDelegate.sshAuthenticationCoordinator
-        ))
+        _sceneModel = StateObject(wrappedValue: WorkspaceSceneModel())
     }
     #endif
 
@@ -822,17 +819,19 @@ struct WorkspaceWindow: View {
                                         .refreshHosts()
                                 },
                                 probeSSHHost: {
-                                    host in
+                                    reviewID, host in
                                     await sceneModel
                                         .probeSSHHost(
-                                            host
+                                            host,
+                                            reviewID: reviewID
                                         )
                                 },
                                 pendingSSHHostKeyConfirmation: {
-                                    host in
+                                    reviewID, host in
                                     await sceneModel
                                         .pendingSSHHostKeyConfirmation(
-                                            for: host
+                                            for: host,
+                                            reviewID: reviewID
                                         )
                                 },
                                 trustSSHHostKey: {
@@ -859,6 +858,13 @@ struct WorkspaceWindow: View {
                                         surfaceID: surfaceID
                                     )
                                 },
+                                retainSSHAuthenticationForHandoff: {
+                                    surfaceID in
+                                    sceneModel
+                                        .retainSSHAuthenticationForHandoff(
+                                            surfaceID: surfaceID
+                                        )
+                                },
                                 loadTailscalePeers: {
                                     await TailscaleDiscovery
                                         .discoverPeers()
@@ -868,13 +874,8 @@ struct WorkspaceWindow: View {
                                 ExeVMInventoryStore.shared.$statuses
                                     .eraseToAnyPublisher(),
                                 probeExeAccountConnection: { account in
-                                    await Task.detached(
-                                        priority: .userInitiated
-                                    ) {
-                                        ExeVMClient().connectionProbe(
-                                            for: account
-                                        )
-                                    }.value
+                                    await sceneModel
+                                        .probeExeAccountConnection(account)
                                 },
                                 refreshExeAccounts: { accounts, prefetchedVMs in
                                     ExeVMInventoryStore.shared.refresh(
@@ -1091,14 +1092,24 @@ struct WorkspaceWindow: View {
                         surfaceID: hostID
                     )
                 },
+                completeSSHAuthentication: {
+                    [sceneModel] hostID, startingNextOwner in
+                    await sceneModel.completeSSHAuthentication(
+                        surfaceID: hostID,
+                        startingNextOwner: startingNextOwner
+                    )
+                },
                 registerProject: { [sceneModel] host, path in
                     await sceneModel.registerProject(path, on: host)
                 },
-                unregisterProject: { [sceneModel] project, host in
-                    await sceneModel.unregisterProject(
+                prepareProjectRemoval: { [sceneModel] project, host in
+                    try await sceneModel.prepareProjectRemoval(
                         project,
                         confirmedHost: host
                     )
+                },
+                unregisterProject: { [sceneModel] request in
+                    await sceneModel.unregisterProject(request)
                 },
                 openProjectWorktreesAsTabs: {
                     [applicationDelegate, sceneModel] project, worktrees in
@@ -1296,6 +1307,24 @@ struct WorkspaceWindow: View {
             )
         }
         #endif
+        .sheet(isPresented: Binding(
+            get: { sceneModel.presentationSSHSession != nil },
+            set: { isPresented in
+                if !isPresented {
+                    sceneModel.cancelPresentationSSHAcquisition()
+                }
+            }
+        )) {
+            if let session = sceneModel.presentationSSHSession {
+                KwtSSHAuthenticationView(
+                    session: session,
+                    onCancel: {
+                        sceneModel.cancelPresentationSSHAcquisition()
+                    }
+                )
+                .id(ObjectIdentifier(session))
+            }
+        }
         .onChange(of: sceneModel.restorationState(
             windowID: resolvedWindowState.wrappedValue.windowID
         )) { _, state in

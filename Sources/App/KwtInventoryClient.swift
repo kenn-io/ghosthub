@@ -205,6 +205,7 @@ struct KwtWorktreeIdentity: Hashable, Sendable {
 enum KwtInventoryError: Error, Equatable, LocalizedError {
     case commandFailed(host: String, status: Int32)
     case malformedOutput(host: String)
+    case sshLeaseRequired(host: String)
 
     var errorDescription: String? {
         switch self {
@@ -217,6 +218,8 @@ enum KwtInventoryError: Error, Equatable, LocalizedError {
             return "kwt inventory failed on \(host) with status \(status)."
         case let .malformedOutput(host):
             return "kwt returned an invalid inventory on \(host)."
+        case let .sshLeaseRequired(host):
+            return "Remote kwt inventory on \(host) requires a reviewed SSH connection."
         }
     }
 }
@@ -230,8 +233,10 @@ struct KwtInventoryClient: Sendable {
         _ shell: String, _ command: String
     ) -> (status: Int32, stdout: String)
     typealias RemoteRunner = @Sendable (
-        _ host: SSHHostInfo, _ command: String
-    ) -> (status: Int32, stdout: String)
+        _ host: SSHHostInfo,
+        _ sshConnectionArguments: [String],
+        _ command: String
+    ) -> AccountCommandOutput
 
     private static let jsonMarker = "GHOSTHUB_KWT_JSON\n"
     private let localRunner: LocalRunner
@@ -257,9 +262,10 @@ struct KwtInventoryClient: Sendable {
                 timeout: processTimeout
             )
         }
-        self.remoteRunner = remoteRunner ?? { host, command in
-            AccountCommandRunner.runRemoteLoginShell(
+        self.remoteRunner = remoteRunner ?? { host, arguments, command in
+            return AccountCommandRunner().runRemoteLoginShell(
                 host: host,
+                connectionArguments: arguments,
                 command: command,
                 timeout: processTimeout
             )
@@ -270,6 +276,46 @@ struct KwtInventoryClient: Sendable {
     }
 
     func load(from host: CommandHost) async throws -> KwtHostInventory {
+        guard case .local = host else {
+            let hostLabel = switch host {
+            case .local: "this Mac"
+            case let .ssh(info): info.displayName
+            }
+            throw KwtInventoryError.sshLeaseRequired(host: hostLabel)
+        }
+        return try await load(
+            from: host,
+            sshConnectionArguments: nil
+        )
+    }
+
+    func load(
+        from host: CommandHost,
+        sshConnectionArguments: [String]
+    ) async throws -> KwtHostInventory {
+        try await load(
+            from: host,
+            sshConnectionArguments: Optional(sshConnectionArguments),
+            sshConnection: nil
+        )
+    }
+
+    func load(
+        from host: CommandHost,
+        sshConnection: KwtSSHConnection
+    ) async throws -> KwtHostInventory {
+        try await load(
+            from: host,
+            sshConnectionArguments: sshConnection.arguments,
+            sshConnection: sshConnection
+        )
+    }
+
+    private func load(
+        from host: CommandHost,
+        sshConnectionArguments: [String]?,
+        sshConnection: KwtSSHConnection? = nil
+    ) async throws -> KwtHostInventory {
         let hostLabel = switch host {
         case .local: "this Mac"
         case let .ssh(info): info.displayName
@@ -282,6 +328,7 @@ struct KwtInventoryClient: Sendable {
         let prelude = binaryPrelude(for: host)
         let projectsResult = run(
             host: host,
+            sshConnectionArguments: sshConnectionArguments,
             command: Self.projectsCommand(
                 platform: hostPlatform,
                 binaryPrelude: prelude,
@@ -290,12 +337,15 @@ struct KwtInventoryClient: Sendable {
         )
         let directoriesResult = run(
             host: host,
+            sshConnectionArguments: sshConnectionArguments,
             command: Self.directoryWorkspacesCommand(
                 platform: hostPlatform,
                 binaryPrelude: prelude,
                 windowsKwtRelativePath: windowsKwtRelativePath
             )
         )
+        let topConnectionUnusable = [projectsResult, directoriesResult]
+            .contains(where: Self.indicatesUnusableConnection)
         let projects: [KwtProjectRecord]
         let projectsWarning: String?
         let projectsError: Error?
@@ -325,17 +375,21 @@ struct KwtInventoryClient: Sendable {
         }
         if let projectsError,
            directoryWorkspaceWarning != nil {
+            if topConnectionUnusable {
+                await sshConnection?.invalidate()
+            }
             throw projectsError
         }
 
         let indexed = await withTaskGroup(
-            of: (Int, KwtProjectInventory).self,
-            returning: [(Int, KwtProjectInventory)].self
+            of: (Int, KwtProjectInventory, Bool).self,
+            returning: [(Int, KwtProjectInventory, Bool)].self
         ) { group in
             for (index, project) in projects.enumerated() {
                 group.addTask {
                     let result = run(
                         host: host,
+                        sshConnectionArguments: sshConnectionArguments,
                         command: Self.worktreesCommand(
                             projectPath: project.path,
                             platform: platform(for: host),
@@ -354,7 +408,8 @@ struct KwtInventoryClient: Sendable {
                                 project: project,
                                 worktrees: worktrees,
                                 warning: nil
-                            )
+                            ),
+                            Self.indicatesUnusableConnection(result)
                         )
                     } catch {
                         return (
@@ -363,16 +418,20 @@ struct KwtInventoryClient: Sendable {
                                 project: project,
                                 worktrees: [],
                                 warning: error.localizedDescription
-                            )
+                            ),
+                            Self.indicatesUnusableConnection(result)
                         )
                     }
                 }
             }
-            var values: [(Int, KwtProjectInventory)] = []
+            var values: [(Int, KwtProjectInventory, Bool)] = []
             for await value in group {
                 values.append(value)
             }
             return values
+        }
+        if topConnectionUnusable || indexed.contains(where: { $0.2 }) {
+            await sshConnection?.invalidate()
         }
         return KwtHostInventory(
             projects: indexed.sorted { $0.0 < $1.0 }.map(\.1),
@@ -404,18 +463,27 @@ struct KwtInventoryClient: Sendable {
 
     private func run(
         host: CommandHost,
+        sshConnectionArguments: [String]?,
         command: String
-    ) -> (status: Int32, stdout: String) {
+    ) -> AccountCommandOutput {
         switch host {
         case .local:
-            return localRunner(loginShellProvider(), command)
+            let result = localRunner(loginShellProvider(), command)
+            return AccountCommandOutput(
+                status: result.status,
+                stdout: result.stdout,
+                stderr: ""
+            )
         case let .ssh(info):
-            return remoteRunner(info, command)
+            guard let sshConnectionArguments else {
+                preconditionFailure("remote inventory requires an SSH lease")
+            }
+            return remoteRunner(info, sshConnectionArguments, command)
         }
     }
 
     private func decode<Value: Decodable>(
-        _ result: (status: Int32, stdout: String),
+        _ result: AccountCommandOutput,
         hostLabel: String
     ) throws -> Value {
         guard result.status == 0 else {
@@ -443,6 +511,15 @@ struct KwtInventoryClient: Sendable {
         } catch {
             throw KwtInventoryError.malformedOutput(host: hostLabel)
         }
+    }
+
+    private static func indicatesUnusableConnection(
+        _ result: AccountCommandOutput
+    ) -> Bool {
+        SSHConnectionFailure.indicatesUnusableConnection(
+            status: result.status,
+            output: result.stderr
+        )
     }
 
     private static func projectsCommand(

@@ -153,8 +153,9 @@ session exits on its own, **Reopen** creates the same named session again.
 
 Open **Settings → Hosts**, add an SSH address such as `devbox`,
 `alice@build-server`, or `server.example.com:2222`, and choose
-**Test Connection**. If your OpenSSH policy prompts for a new host key, verify
-the host once with system `ssh` first.
+**Test Connection**. If your OpenSSH policy prompts for a new host key,
+Ghosthub shows the destination and fingerprint in its own trust sheet for
+review.
 
 Tmux-only hosts need no other setup. For project and worktree context on remote
 macOS and Linux hosts, Ghosthub automatically installs and updates the pinned

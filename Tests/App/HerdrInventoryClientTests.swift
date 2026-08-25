@@ -27,14 +27,14 @@ private final class HerdrCommandRecorder: @unchecked Sendable {
 @Suite("Herdr inventory client")
 struct HerdrInventoryClientTests {
     @Test("local discovery resolves Herdr before listing running sessions")
-    func localDiscovery() {
+    func localDiscovery() async {
         let commands = HerdrCommandRecorder()
         let client = HerdrInventoryClient(
             commandRunner: commandRunner(capturing: commands),
             connectionArgumentsProvider: { _ in [] }
         )
 
-        let result = client.discover(on: .local)
+        let result = await client.discover(on: .local)
 
         #expect(result == .available([
             HerdrSessionSummary(name: "api", isDefault: true, state: .running),
@@ -47,7 +47,7 @@ struct HerdrInventoryClientTests {
     }
 
     @Test("remote discovery uses injected SSH routing in an account login shell")
-    func remoteDiscovery() {
+    func remoteDiscovery() async {
         let commands = HerdrCommandRecorder()
         let routeSamples = Mutex(0)
         let host = SSHHostInfo(
@@ -68,7 +68,7 @@ struct HerdrInventoryClientTests {
             }
         )
 
-        #expect(client.discover(on: .ssh(host)) == .available([
+        #expect(await client.discover(on: .ssh(host)) == .available([
             HerdrSessionSummary(name: "api", isDefault: true, state: .running),
         ]))
         let captured = commands.snapshot
@@ -81,7 +81,7 @@ struct HerdrInventoryClientTests {
     }
 
     @Test("Windows hosts are unavailable without starting a process")
-    func windowsUnavailable() {
+    func windowsUnavailable() async {
         let calls = Mutex(0)
         let routeSamples = Mutex(0)
         let runner = AccountCommandRunner(
@@ -104,13 +104,13 @@ struct HerdrInventoryClientTests {
             }
         )
 
-        #expect(client.discover(on: .ssh(host)) == .unavailable)
+        #expect(await client.discover(on: .ssh(host)) == .unavailable)
         #expect(calls.withLock { $0 } == 0)
         #expect(routeSamples.withLock { $0 } == 0)
     }
 
     @Test("exit 127 is silent unavailability")
-    func missingExecutable() {
+    func missingExecutable() async {
         let runner = AccountCommandRunner(
             processRunner: { _, _, _, _ in
                 AccountCommandOutput(
@@ -125,11 +125,11 @@ struct HerdrInventoryClientTests {
             connectionArgumentsProvider: { _ in [] }
         )
 
-        #expect(client.discover(on: .local) == .unavailable)
+        #expect(await client.discover(on: .local) == .unavailable)
     }
 
     @Test("malformed inventory remains a warning-producing failure")
-    func malformedInventory() {
+    func malformedInventory() async {
         let runner = AccountCommandRunner(
             processRunner: { _, arguments, _, _ in
                 let command = arguments.last ?? ""
@@ -149,7 +149,7 @@ struct HerdrInventoryClientTests {
             connectionArgumentsProvider: { _ in [] }
         )
 
-        #expect(client.discover(on: .local) == .failure(.malformedJSON))
+        #expect(await client.discover(on: .local) == .failure(.malformedJSON))
     }
 
     private func commandRunner(

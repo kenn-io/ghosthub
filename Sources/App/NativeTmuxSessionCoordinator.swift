@@ -44,7 +44,7 @@ private struct NativeTmuxSessionKey: Hashable {
 
 private struct NativeTmuxPathCacheKey: Hashable {
     var host: CommandHost
-    var sshConnection: SSHConnectionArgumentsCacheKey
+    var routeIdentity: String
 }
 
 private struct NativeTmuxAttachment {
@@ -61,6 +61,7 @@ private struct NativeTmuxAttachment {
     var workingDirectory: String?
     var openWorkspace: Bool
     var sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
+    var sshConnection: KwtSSHConnection?
     var sessionIdentity: TmuxSessionIdentity?
     var paneSplitClientToken: String
     var clientTTYDirectory: String?
@@ -107,8 +108,9 @@ final class NativeTmuxSessionCoordinator {
     private let remoteTmuxPathProvider:
         @Sendable (SSHHostInfo, [String])
         -> Result<ResolvedTmuxBinary, TmuxBinaryError>
-    private let sshConnectionArgumentsProvider:
-        @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot
+    private let remoteConnectionProvider:
+        @Sendable (UUID, SSHHostInfo) async throws
+        -> KwtSSHConnection
     private let localKwtPathProvider: @Sendable () -> String?
     private let remoteKwtCommandPreludeProvider: @Sendable () -> String?
     private let windowsKwtRelativePathProvider: @Sendable () -> String?
@@ -175,34 +177,10 @@ final class NativeTmuxSessionCoordinator {
                     sshConnectionArguments: $1
                 )
             },
-        sshConnectionArgumentsProvider:
-        @escaping @Sendable (SSHHostInfo)
-            -> SSHConnectionArgumentsSnapshot = {
-                let snapshot = SSHConnectionPool.configurationSnapshot(for: $0)
-                let provider = snapshot.configurationProvider
-                let controlPath = SSHConnectionPool.authenticationIdentity(
-                    for: snapshot
-                )?.controlPath
-                let connectionSnapshot = SSHConfigurationResolver
-                    .connectionArgumentsSnapshot(
-                        for: $0,
-                        configurationProvider: provider
-                    )
-                return connectionSnapshot.replacingArguments(
-                    demoSSHIsolationArguments()
-                        + connectionSnapshot.arguments
-                        + SSHConnectionPool.proxyArguments(
-                            for: snapshot.target,
-                            configurationProvider: provider
-                        )
-                        + SSHConnectionPool.connectionArguments(
-                            controlPath: controlPath
-                        )
-                        + SSHConfigurationResolver.noninteractiveHostKeyArguments(
-                            for: $0,
-                            configurationProvider: provider
-                        )
-                )
+        remoteConnectionProvider:
+        @escaping @Sendable (UUID, SSHHostInfo) async throws
+            -> KwtSSHConnection = { _, _ in
+                throw KwtSSHLeaseError.helperUnavailable
             },
         paneSplitter: TmuxPaneSplitter = TmuxPaneSplitter(),
         paneSplitErrorDuration: Duration = .seconds(4),
@@ -229,8 +207,7 @@ final class NativeTmuxSessionCoordinator {
         self.appliesPresentationStyleToExistingSessionsProvider =
             appliesPresentationStyleToExistingSessionsProvider
         self.remoteTmuxPathProvider = remoteTmuxPathProvider
-        self.sshConnectionArgumentsProvider =
-            sshConnectionArgumentsProvider
+        self.remoteConnectionProvider = remoteConnectionProvider
         self.paneSplitter = paneSplitter
         self.paneSplitErrorDuration = paneSplitErrorDuration
         self.clientIdentityRetryDelays = clientIdentityRetryDelays
@@ -249,7 +226,8 @@ final class NativeTmuxSessionCoordinator {
         initialCommand: String? = nil,
         workingDirectory: String? = nil,
         openWorkspace: Bool = false,
-        sessionIdentity: TmuxSessionIdentity? = nil
+        sessionIdentity: TmuxSessionIdentity? = nil,
+        expectedRouteIdentity: String? = nil
     ) -> BorrowedTmuxSessionHandle {
         let key = NativeTmuxSessionKey(
             hostID: hostID,
@@ -282,58 +260,73 @@ final class NativeTmuxSessionCoordinator {
         let cachedBinaries = tmuxBinariesByConnection
         let tmuxPathProvider = tmuxPathProvider
         let remoteTmuxPathProvider = remoteTmuxPathProvider
-        let sshConnectionArgumentsProvider =
-            sshConnectionArgumentsProvider
+        let remoteConnectionProvider = remoteConnectionProvider
         provisioningTasks[handle.id] = Task { [weak self] in
-            let probe = Task.detached(priority: .userInitiated) {
+            do {
+                let sshConnection: KwtSSHConnection?
                 let sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
                 if case let .ssh(info) = host {
-                    sshConnectionSnapshot =
-                        sshConnectionArgumentsProvider(info)
+                    sshConnection = try await remoteConnectionProvider(
+                        hostID,
+                        info
+                    )
+                    if let expectedRouteIdentity,
+                       sshConnection?.routeIdentity != expectedRouteIdentity {
+                        try? await sshConnection?.release()
+                        throw KwtSSHLeaseError.routeChanged
+                    }
+                    sshConnectionSnapshot = SSHConnectionArgumentsSnapshot(
+                        arguments: sshConnection?.arguments ?? []
+                    )
                 } else {
+                    sshConnection = nil
                     sshConnectionSnapshot = SSHConnectionArgumentsSnapshot(
                         arguments: []
                     )
                 }
                 let cacheKey = NativeTmuxPathCacheKey(
                     host: host,
-                    sshConnection: sshConnectionSnapshot.cacheKey
+                    routeIdentity: sshConnection?.routeIdentity ?? "local"
                 )
-                let resolution: Result<ResolvedTmuxBinary, TmuxBinaryError>
-                if let cachedBinary = cachedBinaries[cacheKey] {
-                    resolution = .success(cachedBinary)
-                } else {
-                    switch host {
-                    case .local:
-                        resolution = tmuxPathProvider()
-                    case let .ssh(info):
-                        resolution = remoteTmuxPathProvider(
-                            info,
-                            sshConnectionSnapshot.arguments
-                        )
+                let probe = Task.detached(priority: .userInitiated) {
+                    let resolution: Result<ResolvedTmuxBinary, TmuxBinaryError>
+                    if let cachedBinary = cachedBinaries[cacheKey] {
+                        resolution = .success(cachedBinary)
+                    } else {
+                        switch host {
+                        case .local:
+                            resolution = tmuxPathProvider()
+                        case let .ssh(info):
+                            resolution = remoteTmuxPathProvider(
+                                info,
+                                sshConnectionSnapshot.arguments
+                            )
+                        }
                     }
+                    return resolution
                 }
-                return (resolution, sshConnectionSnapshot, cacheKey)
-            }
-            let (resolution, sshConnectionSnapshot, cacheKey) =
-                await withTaskCancellationHandler {
+                let resolution = await withTaskCancellationHandler {
                     await probe.value
                 } onCancel: {
                     probe.cancel()
                 }
-            self?.finishAttach(
-                handle: handle,
-                host: host,
-                socketName: socketName,
-                launchMode: launchMode,
-                initialCommand: launchMode == .create ? initialCommand : nil,
-                workingDirectory: workingDirectory,
-                openWorkspace: openWorkspace,
-                sessionIdentity: sessionIdentity,
-                sshConnectionSnapshot: sshConnectionSnapshot,
-                tmuxPathCacheKey: cacheKey,
-                resolution: resolution
-            )
+                self?.finishAttach(
+                    handle: handle,
+                    host: host,
+                    socketName: socketName,
+                    launchMode: launchMode,
+                    initialCommand: launchMode == .create ? initialCommand : nil,
+                    workingDirectory: workingDirectory,
+                    openWorkspace: openWorkspace,
+                    sessionIdentity: sessionIdentity,
+                    sshConnectionSnapshot: sshConnectionSnapshot,
+                    sshConnection: sshConnection,
+                    tmuxPathCacheKey: cacheKey,
+                    resolution: resolution
+                )
+            } catch {
+                self?.finishAttachFailure(handle: handle, error: error)
+            }
         }
         return handle
     }
@@ -348,6 +341,7 @@ final class NativeTmuxSessionCoordinator {
         openWorkspace: Bool,
         sessionIdentity: TmuxSessionIdentity?,
         sshConnectionSnapshot: SSHConnectionArgumentsSnapshot,
+        sshConnection: KwtSSHConnection?,
         tmuxPathCacheKey: NativeTmuxPathCacheKey,
         resolution: Result<ResolvedTmuxBinary, TmuxBinaryError>
     ) {
@@ -356,7 +350,10 @@ final class NativeTmuxSessionCoordinator {
         let key = sessionKey(handle)
         guard handlesByKey[key] == handle,
               targetHostsByHandle[handle.id] == host,
-              attachments[handle.id] == nil else { return }
+              attachments[handle.id] == nil else {
+            Task { try? await sshConnection?.release() }
+            return
+        }
         switch resolution {
         case let .success(resolved):
             tmuxBinariesByConnection[tmuxPathCacheKey] = resolved
@@ -382,6 +379,7 @@ final class NativeTmuxSessionCoordinator {
                 workingDirectory: workingDirectory,
                 openWorkspace: openWorkspace,
                 sshConnectionSnapshot: sshConnectionSnapshot,
+                sshConnection: sshConnection,
                 sessionIdentity: sessionIdentity,
                 paneSplitClientToken: attachmentID.uuidString.lowercased(),
                 clientTTYDirectory: host.isRemote ? nil : StateHome.resolved()
@@ -399,11 +397,33 @@ final class NativeTmuxSessionCoordinator {
             )
             onSurfaceReady?(handle)
         case let .failure(error):
+            Task {
+                if case let .sshConnectionFailed(_, classification) = error,
+                   classification.connectionUnusable {
+                    await sshConnection?.invalidate()
+                }
+                try? await sshConnection?.release()
+            }
+            attachmentClosures[handle.id] = .launchFailed
             onStateChanged?(
                 handle,
                 .disconnected(reason: error.localizedDescription)
             )
         }
+    }
+
+    private func finishAttachFailure(
+        handle: BorrowedTmuxSessionHandle,
+        error: Error
+    ) {
+        provisioningTasks.removeValue(forKey: handle.id)
+        provisioningHandles.remove(handle.id)
+        guard handlesByKey[sessionKey(handle)] == handle else { return }
+        attachmentClosures[handle.id] = .launchFailed
+        onStateChanged?(
+            handle,
+            .disconnected(reason: error.localizedDescription)
+        )
     }
 
     func detach(hostID: UUID, name: String, socketName: String? = nil) {
@@ -439,9 +459,9 @@ final class NativeTmuxSessionCoordinator {
         cancelPaneSplits(handleID: handle.id)
         provisioningHandles.remove(handle.id)
         targetHostsByHandle.removeValue(forKey: handle.id)
-        remoteExitStatusStore.remove(
-            attachments.removeValue(forKey: handle.id)?.remoteExitStatusURL
-        )
+        let attachment = attachments.removeValue(forKey: handle.id)
+        remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
+        Task { try? await attachment?.sshConnection?.release() }
         attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
@@ -461,6 +481,12 @@ final class NativeTmuxSessionCoordinator {
         _ handle: BorrowedTmuxSessionHandle
     ) -> BorrowedTmuxAttachmentClosure? {
         attachmentClosures[handle.id]
+    }
+
+    func attachmentRouteIdentity(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> String? {
+        attachments[handle.id]?.sshConnection?.routeIdentity
     }
 
     func hasDeferredPresentationStyle(
@@ -832,6 +858,12 @@ final class NativeTmuxSessionCoordinator {
                     onSurfaceReady?(handle)
                     return
                 }
+                if case let .failure(failure) = result {
+                    invalidateUnusableConnection(
+                        failure,
+                        handleID: handle.id
+                    )
+                }
                 guard previewIdentityRetryHandles.contains(handle.id),
                       retryIndex < clientIdentityRetryDelays.count
                 else {
@@ -867,12 +899,25 @@ final class NativeTmuxSessionCoordinator {
         unavailablePreviewIdentityHandles.remove(handleID)
     }
 
+    private func invalidateUnusableConnection(
+        _ failure: TmuxPaneSplitFailure,
+        handleID: UUID
+    ) {
+        guard SSHConnectionFailure.indicatesUnusableConnection(
+            status: failure.status,
+            output: failure.diagnostic
+        ), let connection = attachments[handleID]?.sshConnection
+        else { return }
+        Task { await connection.invalidate() }
+    }
+
     private func presentPaneSplitError(
         _ failure: TmuxPaneSplitFailure,
         on surface: any NativeSessionPaneSurfacing,
         handle: BorrowedTmuxSessionHandle,
         attachmentID: UUID
     ) {
+        invalidateUnusableConnection(failure, handleID: handle.id)
         paneSplitErrorDismissals.removeValue(forKey: handle.id)?.task.cancel()
         surface.paneSplitErrorMessage = failure.localizedDescription
         let dismissalID = UUID()
@@ -917,9 +962,9 @@ final class NativeTmuxSessionCoordinator {
         )
         cancelPaneSplits(handleID: handle.id)
         attachmentClosures[handle.id] = closure
-        remoteExitStatusStore.remove(
-            attachments.removeValue(forKey: handle.id)?.remoteExitStatusURL
-        )
+        let attachment = attachments.removeValue(forKey: handle.id)
+        remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
+        Task { try? await attachment?.sshConnection?.release() }
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
@@ -1056,6 +1101,17 @@ final class NativeTmuxSessionCoordinator {
                 ? .detached
                 : .processExited(code: childExitCode)
         }
+        let connectionUnusable = SSHConnectionFailure
+            .presentationConnectionUnusable(
+                recordedExitCode: recordedExitCode,
+                childExitCode: childExitCode
+            )
+        Task {
+            if connectionUnusable {
+                await attachment?.sshConnection?.invalidate()
+            }
+            try? await attachment?.sshConnection?.release()
+        }
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
@@ -1067,9 +1123,10 @@ final class NativeTmuxSessionCoordinator {
         )
     }
 
-    func shutdown() {
+    func shutdown() async {
         isShuttingDown = true
         let handles = Array(handlesByKey.values)
+        let connections = attachments.values.compactMap(\.sshConnection)
         provisioningTasks.values.forEach { $0.cancel() }
         paneSplitClientBindings.values.forEach { $0.task.cancel() }
         paneSplitWorkers.values.forEach { $0.task.cancel() }
@@ -1095,6 +1152,11 @@ final class NativeTmuxSessionCoordinator {
         deferredPresentationStyleHandles.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for connection in connections {
+                group.addTask { try? await connection.release() }
+            }
         }
     }
 

@@ -29,33 +29,65 @@ struct TmuxSessionStyler: Sendable {
     typealias Runner = @Sendable (CommandHost, String)
         -> (status: Int32, stdout: String)
 
-    private let pathResolver: PathResolver
-    private let runner: Runner
+    private typealias RoutedPathResolver = @Sendable (
+        CommandHost, [String]?
+    ) -> Result<String, TmuxBinaryError>
+    private typealias RoutedRunner = @Sendable (
+        CommandHost, [String]?, String
+    ) -> AccountCommandOutput
+
+    private let pathResolver: RoutedPathResolver
+    private let runner: RoutedRunner
+    private let commandLease: KwtSSHCommandLease
 
     init(
         pathResolver: PathResolver? = nil,
-        runner: Runner? = nil
+        runner: Runner? = nil,
+        commandLease: KwtSSHCommandLease? = nil
     ) {
-        self.pathResolver = pathResolver ?? { host in
+        self.commandLease = commandLease ?? .unlessInjected(
+            pathResolver != nil || runner != nil
+        )
+        self.pathResolver = { host, connectionArguments in
+            if let pathResolver {
+                return pathResolver(host)
+            }
             let resolver = TmuxBinaryResolver()
             switch host {
             case .local:
                 return resolver.resolveTmuxPath()
             case let .ssh(info):
-                return resolver.resolveTmuxPath(on: info)
+                return resolver.resolveTmuxPath(
+                    on: info,
+                    sshConnectionArguments: connectionArguments ?? []
+                )
             }
         }
-        self.runner = runner ?? { host, command in
+        self.runner = { host, connectionArguments, command in
+            if let runner {
+                let output = runner(host, command)
+                return AccountCommandOutput(
+                    status: output.status,
+                    stdout: output.stdout,
+                    stderr: ""
+                )
+            }
             switch host {
             case .local:
-                AccountCommandRunner.runLoginShell(
+                let output = AccountCommandRunner.runLoginShell(
                     shell: AccountCommandRunner.loginShell(),
                     command: command,
                     timeout: 15
                 )
+                return AccountCommandOutput(
+                    status: output.status,
+                    stdout: output.stdout,
+                    stderr: ""
+                )
             case let .ssh(info):
-                AccountCommandRunner.runRemoteLoginShell(
+                return AccountCommandRunner().runRemoteLoginShell(
                     host: info,
+                    connectionArguments: connectionArguments ?? [],
                     command: command,
                     timeout: 15
                 )
@@ -75,19 +107,34 @@ struct TmuxSessionStyler: Sendable {
                 session: selection.name
             )
         }
-        let tmuxPath = try pathResolver(host).get()
-        let command = TmuxPresentationCommand(
-            sessionName: selection.name,
-            socketName: selection.socketName,
-            style: style
-        ).applyCommand(
-            tmuxPath: tmuxPath,
-            expectedIdentity: expectedIdentity
-        )
+        let pathResolver = pathResolver
         let runner = runner
-        let result = await Task.detached(priority: .userInitiated) {
-            runner(host, command)
-        }.value
+        let result = try await commandLease.withConnection(on: host) {
+            connection in
+            let connectionArguments = connection?.arguments
+            let pathResult = await BlockingTask.run(
+                priority: .userInitiated
+            ) {
+                pathResolver(host, connectionArguments)
+            }
+            if case let .failure(.sshConnectionFailed(_, classification)) =
+                pathResult,
+                classification.connectionUnusable {
+                await connection?.invalidate()
+            }
+            let tmuxPath = try pathResult.get()
+            let command = TmuxPresentationCommand(
+                sessionName: selection.name,
+                socketName: selection.socketName,
+                style: style
+            ).applyCommand(
+                tmuxPath: tmuxPath,
+                expectedIdentity: expectedIdentity
+            )
+            return await commandLease.runCommand(using: connection) { _ in
+                runner(host, connectionArguments, command)
+            }
+        }
         guard !result.stdout.contains(
             TmuxPresentationCommand.identityMismatchMarker
         ) else {

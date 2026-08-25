@@ -5,6 +5,7 @@ import SwiftUI
 private struct PendingExeHostTrust: Identifiable {
     var account: ExeAccount
     var confirmation: SSHHostKeyConfirmation
+    var surfaceID = UUID()
 
     var id: String {
         "\(account.id):\(confirmation.fingerprint)"
@@ -115,7 +116,7 @@ enum ExeAccountConnectionRunResult {
 @MainActor
 struct ExeAccountConnectionRunner {
     let pendingTrust:
-        (ExeAccount) async -> Result<
+        (UUID, ExeAccount) async -> Result<
             SSHHostKeyReviewRequirement,
             HostProbeError
         >
@@ -129,7 +130,7 @@ struct ExeAccountConnectionRunner {
         var connectedAccounts: [ExeAccount] = []
         var prefetchedVMs: [String: [ExeVMRecord]] = [:]
         for account in operation.accounts {
-            let trustResult = await pendingTrust(account)
+            let trustResult = await pendingTrust(operation.id, account)
             guard !Task.isCancelled, isCurrent() else {
                 return .cancelled
             }
@@ -182,7 +183,7 @@ struct ExeAccountsSettingsView: View {
     let statusesPublisher:
         AnyPublisher<[String: ExeAccountStatus], Never>
     let pendingSSHHostKeyConfirmation:
-        (SSHHost) async -> Result<
+        (UUID, SSHHost) async -> Result<
             SSHHostKeyReviewRequirement,
             HostProbeError
         >
@@ -195,6 +196,7 @@ struct ExeAccountsSettingsView: View {
     let isSSHAuthenticationReady:
         (SSHHost) async -> SSHAuthenticationReadiness
     let cancelSSHAuthentication: (UUID) -> Void
+    let retainSSHAuthenticationForHandoff: (UUID) -> Void
     let probeConnection:
         (ExeAccount) async -> ExeAccountConnectionProbeResult
     let refresh: ([ExeAccount], [String: [ExeVMRecord]]) -> UUID?
@@ -203,6 +205,7 @@ struct ExeAccountsSettingsView: View {
     @State private var statuses: [String: ExeAccountStatus] = [:]
     @State private var messages: [String: String] = [:]
     @State private var pendingTrust: PendingExeHostTrust?
+    @State private var pendingTrustSurfaceID: UUID?
     @State private var pendingAuthentication: PendingExeAuthentication?
     @State private var authenticationSucceeded = false
     @State private var isTrusting = false
@@ -245,15 +248,23 @@ struct ExeAccountsSettingsView: View {
         .onReceive(statusesPublisher) { statuses = $0 }
         .onChange(of: accounts) { _, currentAccounts in
             cancelConnection()
+            cancelPendingTrust()
+            cancelPendingAuthentication()
             invalidateInventoryRefresh(currentAccounts: currentAccounts)
         }
         .onDisappear {
             cancelConnection()
+            cancelPendingTrust()
+            cancelPendingAuthentication()
         }
-        .sheet(item: $pendingTrust) { pending in
+        .sheet(item: $pendingTrust, onDismiss: {
+            cancelPendingTrust()
+        }) { pending in
             hostTrustSheet(pending)
         }
-        .sheet(item: $pendingAuthentication) { pending in
+        .sheet(item: $pendingAuthentication, onDismiss: {
+            cancelPendingAuthentication()
+        }) { pending in
             authenticationSheet(pending)
         }
     }
@@ -490,8 +501,11 @@ struct ExeAccountsSettingsView: View {
         guard !operation.accounts.isEmpty else { return }
         connectionOperation = operation
         let runner = ExeAccountConnectionRunner(
-            pendingTrust: { account in
-                await pendingSSHHostKeyConfirmation(controlHost(account))
+            pendingTrust: { reviewID, account in
+                await pendingSSHHostKeyConfirmation(
+                    reviewID,
+                    controlHost(account)
+                )
             },
             probe: probeConnection
         )
@@ -502,20 +516,30 @@ struct ExeAccountsSettingsView: View {
             guard operation.matches(
                 connectionOperation,
                 accounts: accounts
-            ) else { return }
+            ) else {
+                cancelSSHAuthentication(operation.id)
+                return
+            }
             completeConnection(operation)
             switch result {
             case .cancelled:
+                cancelSSHAuthentication(operation.id)
                 return
             case let .review(account, confirmation, operationMessages):
                 messages = operationMessages
-                pendingTrust = PendingExeHostTrust(
+                let pending = PendingExeHostTrust(
                     account: account,
-                    confirmation: confirmation
+                    confirmation: confirmation,
+                    surfaceID: operation.id
                 )
+                pendingTrustSurfaceID = pending.surfaceID
+                pendingTrust = pending
             case let .authenticate(account, operationMessages):
                 messages = operationMessages
-                beginAuthentication(account)
+                beginAuthentication(
+                    account,
+                    surfaceID: operation.id
+                )
             case let .refresh(
                 refreshAccounts,
                 prefetchedVMs,
@@ -529,6 +553,9 @@ struct ExeAccountsSettingsView: View {
 
     private func cancelConnection() {
         connectionTask?.cancel()
+        if let connectionOperation {
+            cancelSSHAuthentication(connectionOperation.id)
+        }
         connectionTask = nil
         connectionOperation = nil
     }
@@ -600,8 +627,7 @@ struct ExeAccountsSettingsView: View {
                     .keyboardShortcut(.defaultAction)
                 } else {
                     Button("Cancel", role: .cancel) {
-                        cancelSSHAuthentication(pending.surfaceID)
-                        pendingAuthentication = nil
+                        cancelPendingAuthentication()
                     }
                 }
             }
@@ -614,11 +640,22 @@ struct ExeAccountsSettingsView: View {
         .interactiveDismissDisabled()
     }
 
-    private func beginAuthentication(_ account: ExeAccount) {
+    private func beginAuthentication(
+        _ account: ExeAccount,
+        surfaceID: UUID
+    ) {
         authenticationSucceeded = false
         pendingAuthentication = PendingExeAuthentication(
-            account: account
+            account: account,
+            surfaceID: surfaceID
         )
+    }
+
+    private func cancelPendingAuthentication() {
+        guard let pendingAuthentication else { return }
+        cancelSSHAuthentication(pendingAuthentication.surfaceID)
+        self.pendingAuthentication = nil
+        authenticationSucceeded = false
     }
 
     private func monitorAuthentication(
@@ -646,7 +683,7 @@ struct ExeAccountsSettingsView: View {
                 connectAndRefresh()
                 return
             case .connected:
-                cancelSSHAuthentication(pending.surfaceID)
+                retainSSHAuthenticationForHandoff(pending.surfaceID)
                 authenticationSucceeded = true
                 return
             }
@@ -675,7 +712,7 @@ struct ExeAccountsSettingsView: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) {
-                    pendingTrust = nil
+                    cancelPendingTrust()
                 }
                 .disabled(isTrusting)
                 Button(isTrusting ? "Trusting…" : "Trust and Refresh") {
@@ -702,15 +739,25 @@ struct ExeAccountsSettingsView: View {
             if let nextConfirmation {
                 pendingTrust = PendingExeHostTrust(
                     account: pending.account,
-                    confirmation: nextConfirmation
+                    confirmation: nextConfirmation,
+                    surfaceID: pending.surfaceID
                 )
             } else {
+                pendingTrustSurfaceID = nil
                 pendingTrust = nil
                 connectAndRefresh()
             }
         case let .failure(error):
             messages[pending.account.id] = error.displayMessage
-            pendingTrust = nil
+            cancelPendingTrust()
         }
+    }
+
+    private func cancelPendingTrust() {
+        if let pendingTrustSurfaceID {
+            cancelSSHAuthentication(pendingTrustSurfaceID)
+        }
+        pendingTrustSurfaceID = nil
+        pendingTrust = nil
     }
 }

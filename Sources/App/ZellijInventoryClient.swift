@@ -6,18 +6,32 @@ struct ZellijInventoryClient: Sendable {
     typealias ConnectionArgumentsProvider = @Sendable (SSHHostInfo) -> [String]
 
     private let commandRunner: AccountCommandRunner
-    private let connectionArgumentsProvider: ConnectionArgumentsProvider
+    private let commandLease: KwtSSHCommandLease
     private let processTimeout: TimeInterval
 
     init(
         commandRunner: AccountCommandRunner = AccountCommandRunner(),
-        connectionArgumentsProvider: @escaping ConnectionArgumentsProvider = {
-            SSHCommandArguments.noninteractive(for: $0)
-        },
         processTimeout: TimeInterval = 15
     ) {
         self.commandRunner = commandRunner
-        self.connectionArgumentsProvider = connectionArgumentsProvider
+        commandLease = KwtSSHCommandLease()
+        self.processTimeout = processTimeout
+    }
+
+    /// Uses caller-supplied SSH arguments instead of borrowing a kwt lease.
+    init(
+        commandRunner: AccountCommandRunner = AccountCommandRunner(),
+        connectionArgumentsProvider: @escaping ConnectionArgumentsProvider,
+        processTimeout: TimeInterval = 15
+    ) {
+        self.commandRunner = commandRunner
+        commandLease = KwtSSHCommandLease { host in
+            KwtSSHConnection(
+                arguments: connectionArgumentsProvider(host),
+                routeIdentity: "injected-command-transport",
+                generation: 0
+            )
+        }
         self.processTimeout = processTimeout
     }
 
@@ -47,19 +61,44 @@ struct ZellijInventoryClient: Sendable {
         }
     }
 
+    /// Discovers sessions through one borrowed kwt lease for remote hosts.
+    func discover(on host: CommandHost) async -> ZellijDiscoveryResult {
+        guard supportsZellij(host) else { return .unavailable }
+        do {
+            return try await commandLease.withConnection(on: host) {
+                connection in
+                let result = await BlockingTask.run {
+                    discover(
+                        on: host,
+                        sshConnectionArguments: connection?.arguments
+                    )
+                }
+                if case let .failure(.commandFailed(status, stderr)) = result,
+                   SSHConnectionFailure.indicatesUnusableConnection(
+                       status: status,
+                       output: stderr
+                   ) {
+                    await connection?.invalidate()
+                }
+                return result
+            }
+        } catch {
+            return .failure(.commandFailed(
+                status: 255,
+                stderr: error.localizedDescription
+            ))
+        }
+    }
+
     func discover(
         on host: CommandHost,
-        sshConnectionArguments: [String]? = nil
+        sshConnectionArguments: [String]?
     ) -> ZellijDiscoveryResult {
         guard supportsZellij(host) else { return .unavailable }
-        let connectionArguments = resolvedConnectionArguments(
-            on: host,
-            override: sshConnectionArguments
-        )
         let zellijPath: String
         switch resolveExecutable(
             on: host,
-            sshConnectionArguments: connectionArguments
+            sshConnectionArguments: sshConnectionArguments
         ) {
         case let .success(path):
             zellijPath = path
@@ -71,7 +110,7 @@ struct ZellijInventoryClient: Sendable {
         let output = run(
             ZellijSessionList.command(zellijPath: zellijPath),
             on: host,
-            sshConnectionArguments: connectionArguments
+            sshConnectionArguments: sshConnectionArguments
         )
         return ZellijSessionList.parse(
             status: output.status,
@@ -83,16 +122,12 @@ struct ZellijInventoryClient: Sendable {
     func kill(
         sessionName: String,
         on host: CommandHost,
-        sshConnectionArguments: [String]? = nil
+        sshConnectionArguments: [String]?
     ) -> Result<Void, ZellijCommandError> {
-        let connectionArguments = resolvedConnectionArguments(
-            on: host,
-            override: sshConnectionArguments
-        )
         let zellijPath: String
         switch resolveExecutable(
             on: host,
-            sshConnectionArguments: connectionArguments
+            sshConnectionArguments: sshConnectionArguments
         ) {
         case let .success(path):
             zellijPath = path
@@ -105,7 +140,7 @@ struct ZellijInventoryClient: Sendable {
                 sessionName: sessionName
             ),
             on: host,
-            sshConnectionArguments: connectionArguments
+            sshConnectionArguments: sshConnectionArguments
         )
         guard output.status == 0 else {
             return .failure(.commandFailed(
@@ -125,33 +160,24 @@ struct ZellijInventoryClient: Sendable {
         }
     }
 
-    private func resolvedConnectionArguments(
-        on host: CommandHost,
-        override: [String]?
-    ) -> [String]? {
-        if let override {
-            return override
-        }
-        guard case let .ssh(info) = host else { return nil }
-        return connectionArgumentsProvider(info)
-    }
-
     private func run(
         _ command: String,
         on host: CommandHost,
-        sshConnectionArguments: [String]? = nil
+        sshConnectionArguments: [String]?
     ) -> AccountCommandOutput {
         switch host {
         case .local:
-            commandRunner.runLocalLoginShell(
+            return commandRunner.runLocalLoginShell(
                 command: command,
                 timeout: processTimeout
             )
         case let .ssh(info):
-            commandRunner.runRemoteLoginShell(
+            guard let sshConnectionArguments else {
+                return .leaseRequired
+            }
+            return commandRunner.runRemoteLoginShell(
                 host: info,
-                connectionArguments: sshConnectionArguments
-                    ?? connectionArgumentsProvider(info),
+                connectionArguments: sshConnectionArguments,
                 command: command,
                 timeout: processTimeout
             )

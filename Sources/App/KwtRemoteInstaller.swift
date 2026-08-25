@@ -77,11 +77,12 @@ enum KwtRemoteInstallError: Error, Equatable, LocalizedError {
 
 struct KwtRemoteInstaller: Sendable {
     typealias RemoteRunner = @Sendable (
-        _ host: SSHHostInfo, _ command: String
-    ) -> (status: Int32, stdout: String)
+        _ host: SSHHostInfo, _ connectionArguments: [String], _ command: String
+    ) -> AccountCommandOutput
     typealias UploadRunner = @Sendable (
-        _ host: SSHHostInfo, _ source: URL, _ destination: String
-    ) -> (status: Int32, output: String)
+        _ host: SSHHostInfo, _ source: URL, _ destination: String,
+        _ connectionArguments: [String]
+    ) -> AccountCommandOutput
     typealias ResourceProvider = @Sendable (KwtRemoteTarget) -> URL?
 
     private static let targetMarker = "GHOSTHUB_KWT_TARGET\t"
@@ -93,19 +94,22 @@ struct KwtRemoteInstaller: Sendable {
     private let remoteRunner: RemoteRunner
     private let uploadRunner: UploadRunner
     private let resourceProvider: ResourceProvider
+    private let commandLease: KwtSSHCommandLease
 
     init(
         bundle: Bundle = .main,
         revision: String? = nil,
         remoteRunner: RemoteRunner? = nil,
         uploadRunner: UploadRunner? = nil,
-        resourceProvider: ResourceProvider? = nil
+        resourceProvider: ResourceProvider? = nil,
+        commandLease: KwtSSHCommandLease? = nil
     ) {
         self.revision = revision
             ?? KwtBinaryLocator.bundledRemoteRevision(bundle: bundle)
-        self.remoteRunner = remoteRunner ?? { host, command in
-            AccountCommandRunner.runRemoteLoginShell(
+        self.remoteRunner = remoteRunner ?? { host, arguments, command in
+            AccountCommandRunner().runRemoteLoginShell(
                 host: host,
+                connectionArguments: arguments,
                 command: command,
                 timeout: 30
             )
@@ -120,6 +124,9 @@ struct KwtRemoteInstaller: Sendable {
                 ? candidate
                 : nil
         }
+        self.commandLease = commandLease ?? .unlessInjected(
+            remoteRunner != nil || uploadRunner != nil
+        )
     }
 
     func install(on host: SSHHost) async throws {
@@ -139,10 +146,29 @@ struct KwtRemoteInstaller: Sendable {
         ) else {
             throw KwtRemoteInstallError.invalidHost
         }
+        let commandLease = commandLease
+        try await commandLease.withConnection(on: .ssh(info)) { connection in
+            guard let connection else {
+                throw KwtRemoteInstallError.invalidHost
+            }
+            try await install(
+                on: info,
+                connection: connection,
+                ifNeeded: ifNeeded
+            )
+        }
+    }
+
+    private func install(
+        on info: SSHHostInfo,
+        connection: KwtSSHConnection,
+        ifNeeded: Bool
+    ) async throws {
         let revision = revision
         let remoteRunner = remoteRunner
         let uploadRunner = uploadRunner
         let resourceProvider = resourceProvider
+        let commandLease = commandLease
         let operation = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
             guard let revision,
@@ -154,10 +180,15 @@ struct KwtRemoteInstaller: Sendable {
             }
 
             if ifNeeded {
-                let ready = remoteRunner(
-                    info,
-                    Self.readyProbeCommand(revision: revision)
-                )
+                let ready = await commandLease.runCommand(
+                    using: connection
+                ) { arguments in
+                    remoteRunner(
+                        info,
+                        arguments,
+                        Self.readyProbeCommand(revision: revision)
+                    )
+                }
                 try Task.checkCancellation()
                 if ready.status == 0,
                    ready.stdout.split(whereSeparator: \.isNewline)
@@ -166,7 +197,10 @@ struct KwtRemoteInstaller: Sendable {
                 }
             }
 
-            let probe = remoteRunner(info, Self.targetProbeCommand)
+            let probe = await commandLease.runCommand(using: connection) {
+                arguments in
+                remoteRunner(info, arguments, Self.targetProbeCommand)
+            }
             try Task.checkCancellation()
             guard probe.status == 0 else {
                 throw KwtRemoteInstallError.targetProbeFailed(
@@ -195,13 +229,17 @@ struct KwtRemoteInstaller: Sendable {
                 .joined()
             let incomingName = ".incoming-\(UUID().uuidString.lowercased())"
             try Task.checkCancellation()
-            let prepare = remoteRunner(
-                info,
-                Self.prepareCommand(
-                    revision: revision,
-                    incomingName: incomingName
+            let prepare = await commandLease.runCommand(using: connection) {
+                arguments in
+                remoteRunner(
+                    info,
+                    arguments,
+                    Self.prepareCommand(
+                        revision: revision,
+                        incomingName: incomingName
+                    )
                 )
-            )
+            }
             try Task.checkCancellation()
             guard prepare.status == 0 else {
                 throw KwtRemoteInstallError.prepareFailed(
@@ -211,9 +249,16 @@ struct KwtRemoteInstaller: Sendable {
             do {
                 let uploadPath = try Self.parseUploadPath(prepare.stdout)
                 try Task.checkCancellation()
-                let upload = uploadRunner(info, helperURL, uploadPath)
+                let upload = await commandLease.runCommand(
+                    using: connection
+                ) { arguments in
+                    uploadRunner(info, helperURL, uploadPath, arguments)
+                }
                 guard upload.status == 0 else {
-                    let message = upload.output.trimmingCharacters(
+                    let diagnostic = upload.stderr.isEmpty
+                        ? upload.stdout
+                        : upload.stderr
+                    let message = diagnostic.trimmingCharacters(
                         in: .whitespacesAndNewlines
                     )
                     throw KwtRemoteInstallError.uploadFailed(
@@ -222,15 +267,20 @@ struct KwtRemoteInstaller: Sendable {
                     )
                 }
                 try Task.checkCancellation()
-                let install = remoteRunner(
-                    info,
-                    Self.installCommand(
-                        target: target,
-                        revision: revision,
-                        incomingName: incomingName,
-                        digest: digest
+                let install = await commandLease.runCommand(
+                    using: connection
+                ) { arguments in
+                    remoteRunner(
+                        info,
+                        arguments,
+                        Self.installCommand(
+                            target: target,
+                            revision: revision,
+                            incomingName: incomingName,
+                            digest: digest
+                        )
                     )
-                )
+                }
                 try Task.checkCancellation()
                 guard install.status == 0 else {
                     throw KwtRemoteInstallError.installFailed(
@@ -243,13 +293,17 @@ struct KwtRemoteInstaller: Sendable {
                     throw KwtRemoteInstallError.malformedResponse
                 }
             } catch {
-                _ = remoteRunner(
-                    info,
-                    Self.cleanupCommand(
-                        revision: revision,
-                        incomingName: incomingName
+                _ = await commandLease.runCommand(using: connection) {
+                    arguments in
+                    remoteRunner(
+                        info,
+                        arguments,
+                        Self.cleanupCommand(
+                            revision: revision,
+                            incomingName: incomingName
+                        )
                     )
-                )
+                }
                 throw error
             }
         }
@@ -369,34 +423,37 @@ struct KwtRemoteInstaller: Sendable {
     private static func upload(
         host: SSHHostInfo,
         source: URL,
-        destination: String
-    ) -> (status: Int32, output: String) {
-        let result = AccountCommandRunner.runProcessInLoginShell(
-            executable: "/usr/bin/scp",
-            arguments: uploadArguments(
-                host: host,
-                source: source,
-                destination: destination
-            ),
-            timeout: 120,
-            captureStandardError: true
+        destination: String,
+        connectionArguments: [String]
+    ) -> AccountCommandOutput {
+        let command = (["/usr/bin/scp"] + uploadArguments(
+            host: host,
+            source: source,
+            destination: destination,
+            connectionArguments: connectionArguments
+        ))
+        .map(shellQuotedCommandArgument)
+        .joined(separator: " ")
+        return AccountCommandRunner().runLocalLoginShell(
+            command: command,
+            timeout: 120
         )
-        return (result.status, result.stdout)
     }
 
     static func uploadArguments(
         host: SSHHostInfo,
         source: URL,
-        destination: String
+        destination: String,
+        connectionArguments: [String]
     ) -> [String] {
         var arguments = [
             "-q", "-B",
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=10",
         ]
-        arguments.append(contentsOf:
-            SSHCommandArguments.noninteractive(for: host)
-        )
+        arguments.append(contentsOf: KwtSSHCommandLease.scpArguments(
+            from: connectionArguments
+        ))
         if let port = host.port {
             arguments.append(contentsOf: ["-P", String(port)])
         }

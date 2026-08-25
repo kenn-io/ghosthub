@@ -149,8 +149,6 @@ final class WorkspaceWindowLaunchIntents {
 @MainActor
 final class ApplicationDelegate: NSObject,
     NSApplicationDelegate {
-    let sshAuthenticationCoordinator = SSHAuthenticationCoordinator()
-
     var requestTerminationConfirmation: (
         (@escaping (Bool) -> Void) -> Void
     )?
@@ -167,6 +165,11 @@ final class ApplicationDelegate: NSObject,
         )
     }
 
+    var shutdownForTermination: @MainActor @Sendable () async -> Void = {
+        await WindowRegistry.shared.shutdownAll()
+        try? await KwtSSHConnectionPool.shared.releaseAll()
+    }
+
     var openWorkspaceWindow: (WorkspaceWindowState) -> Void = { _ in }
 
     private let windowRequests = WorkspaceWindowRequests<NSWindow>()
@@ -180,6 +183,8 @@ final class ApplicationDelegate: NSObject,
     private var pendingTerminationDecisions: [(Bool) -> Void] = []
     private var applicationTerminationRequestPending = false
     private var updaterTerminationAuthorized = false
+    private var terminationCleanupStarted = false
+    private var terminationCleanupCompleted = false
 
     override init() {
         super.init()
@@ -245,9 +250,6 @@ final class ApplicationDelegate: NSObject,
     func applicationDidFinishLaunching(
         _ notification: Notification
     ) {
-        if Bundle.main.bundleURL.pathExtension == "app" {
-            SSHConnectionPool.removeStaleControlSockets()
-        }
         // Cmd-N must stay an independent window even when the user's system
         // preference normally groups newly opened windows into tabs.
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -267,12 +269,6 @@ final class ApplicationDelegate: NSObject,
         _ notification: Notification
     ) {
         TelemetryController.shared.applicationWillResignActive()
-    }
-
-    func applicationWillTerminate(
-        _ notification: Notification
-    ) {
-        sshAuthenticationCoordinator.shutdown()
     }
 
     @objc func newWindowForTab(_ sender: Any?) {
@@ -524,23 +520,51 @@ final class ApplicationDelegate: NSObject,
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
-        if consumeUpdaterTerminationAuthorization() {
+        if terminationCleanupCompleted {
             return .terminateNow
         }
-        if terminationConfirmed {
-            return .terminateNow
-        }
-        guard needsConfirmQuit() else {
-            terminationConfirmed = true
-            return .terminateNow
+        if terminationCleanupStarted {
+            return .terminateLater
         }
         // Shutdown, restart, logout, and ordinary quit requests intentionally
         // use the same confirmation gate. Only Sparkle receives the narrow
         // one-shot authorization above after the user accepts its relaunch.
+        if consumeUpdaterTerminationAuthorization() || terminationConfirmed {
+            beginTerminationCleanup()
+            return .terminateLater
+        }
         requestTerminationDecision { [weak self] confirmed in
-            self?.replyToApplicationShouldTerminate(confirmed)
+            guard let self else { return }
+            guard confirmed else {
+                replyToApplicationShouldTerminate(false)
+                return
+            }
+            beginTerminationCleanup()
         }
         return .terminateLater
+    }
+
+    private func beginTerminationCleanup() {
+        guard !terminationCleanupStarted else { return }
+        terminationCleanupStarted = true
+        let shutdown = shutdownForTermination
+        Task { [weak self] in
+            let completion = AsyncStream<Void>.makeStream()
+            Task {
+                await shutdown()
+                completion.continuation.yield()
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                completion.continuation.yield()
+            }
+            var iterator = completion.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            completion.continuation.finish()
+            guard let self else { return }
+            terminationCleanupCompleted = true
+            replyToApplicationShouldTerminate(true)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(

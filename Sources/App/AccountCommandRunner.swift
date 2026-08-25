@@ -9,6 +9,40 @@ struct AccountCommandOutput: Equatable, Sendable {
     var status: Int32
     var stdout: String
     var stderr: String
+
+    /// A remote command was requested without kwt-reviewed SSH arguments.
+    /// Callers must borrow a lease first; this never reaches OpenSSH.
+    static let leaseRequired = AccountCommandOutput(
+        status: 255,
+        stdout: "",
+        stderr: "ssh_lease_required: remote commands need a kwt SSH lease"
+    )
+}
+
+enum BlockingTask {
+    static func run<Value: Sendable>(
+        priority: TaskPriority = .utility,
+        _ operation: @escaping @Sendable () -> Value
+    ) async -> Value {
+        let task = Task.detached(priority: priority, operation: operation)
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    static func runThrowing<Value: Sendable>(
+        priority: TaskPriority = .utility,
+        _ operation: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
+        let task = Task.detached(priority: priority, operation: operation)
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
 }
 
 private final class AccountCommandOutputCollector: @unchecked Sendable {
@@ -147,43 +181,15 @@ struct AccountCommandRunner: Sendable {
         )
     }
 
+    /// Runs one remote command through kwt without exposing OpenSSH arguments
+    /// to the app.
     static func runRemoteLoginShell(
         host: SSHHostInfo,
         command: String,
         timeout: TimeInterval,
-        accountShell: String = loginShell(),
-        captureStandardError: Bool = false
-    ) -> (status: Int32, stdout: String) {
-        let output = AccountCommandRunner(
-            loginShellProvider: { accountShell }
-        ).runRemoteLoginShell(
-            host: host,
-            connectionArguments: defaultConnectionArguments(for: host),
-            command: command,
-            timeout: timeout
-        )
-        return (
-            output.status,
-            captureStandardError
-                ? output.stdout + output.stderr
-                : output.stdout
-        )
-    }
-
-    static func runRemoteLoginShellSeparatingStandardError(
-        host: SSHHostInfo,
-        command: String,
-        timeout: TimeInterval,
-        accountShell: String = loginShell()
-    ) -> AccountCommandOutput {
-        AccountCommandRunner(
-            loginShellProvider: { accountShell }
-        ).runRemoteLoginShell(
-            host: host,
-            connectionArguments: defaultConnectionArguments(for: host),
-            command: command,
-            timeout: timeout
-        )
+        commandClient: KwtSSHCommandClient = KwtSSHCommandClient()
+    ) async -> AccountCommandOutput {
+        await commandClient.run(on: host, command: command, timeout: timeout)
     }
 
     static func remoteLoginCommand(
@@ -427,12 +433,6 @@ struct AccountCommandRunner: Sendable {
                 && !HerdrEnvironment.controlVariables.contains($0.key)
                 && !ZellijEnvironment.controlVariables.contains($0.key)
         }
-    }
-
-    private static func defaultConnectionArguments(
-        for host: SSHHostInfo
-    ) -> [String] {
-        SSHCommandArguments.noninteractive(for: host)
     }
 
     private static func remoteLoginArguments(

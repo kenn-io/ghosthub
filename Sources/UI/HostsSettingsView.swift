@@ -23,13 +23,15 @@ enum HostConnectionField: Hashable {
 }
 
 struct HostOperationTarget: Equatable, Identifiable, Sendable {
+    let operationID: UUID
     let draftID: UUID
     let sshDestination: String
     let platform: HostPlatform
 
-    var id: UUID { draftID }
+    var id: UUID { operationID }
 
-    init(_ draft: SSHHostDraft) {
+    init(_ draft: SSHHostDraft, operationID: UUID = UUID()) {
+        self.operationID = operationID
         draftID = draft.id
         sshDestination = draft.sshDestination
         platform = draft.platform
@@ -55,7 +57,7 @@ struct PendingSSHHostTrust: Identifiable {
 
     var id: String {
         [
-            target.draftID.uuidString,
+            target.operationID.uuidString,
             confirmation.destination,
             confirmation.algorithm,
             confirmation.fingerprint,
@@ -181,7 +183,9 @@ public struct HostsSettingsView: View {
     @State private var isRegisteringRemoteProject = false
     @State private var remoteProjectMessage: String?
     @State private var pendingSSHHostTrust: PendingSSHHostTrust?
+    @State private var pendingSSHHostTrustSurfaceID: UUID?
     @State private var pendingSSHAuthentication: HostOperationTarget?
+    @State private var activeSSHReviewID: UUID?
     @State private var sshAuthenticationSucceeded = false
     @State private var isTrustingSSHHost = false
     @State private var hostTrustErrorMessage: String?
@@ -198,12 +202,12 @@ public struct HostsSettingsView: View {
     @Binding var isTailscaleSheetPresented: Bool
     @Binding var isInstallingWindowsKwt: Bool
     let probeSSHHost:
-        (SSHHost) async -> Result<
+        (UUID, SSHHost) async -> Result<
             HostProbeSummary,
             HostProbeError
         >
     let pendingSSHHostKeyConfirmation:
-        (SSHHost) async -> Result<
+        (UUID, SSHHost) async -> Result<
             SSHHostKeyReviewRequirement,
             HostProbeError
         >
@@ -216,6 +220,7 @@ public struct HostsSettingsView: View {
     let isSSHAuthenticationReady:
         (SSHHost) async -> SSHAuthenticationReadiness
     let cancelSSHAuthentication: (UUID) -> Void
+    let retainSSHAuthenticationForHandoff: (UUID) -> Void
     let installRemoteKwt:
         (SSHHost) async -> Result<Void, HostProbeError>
     let registerRemoteProject:
@@ -237,11 +242,12 @@ public struct HostsSettingsView: View {
         isLoadingTailscale: Binding<Bool>,
         isTailscaleSheetPresented: Binding<Bool>,
         isInstallingWindowsKwt: Binding<Bool>,
-        probeSSHHost: @escaping (SSHHost) async -> Result<
+        probeSSHHost: @escaping (UUID, SSHHost) async -> Result<
             HostProbeSummary,
             HostProbeError
         >,
         pendingSSHHostKeyConfirmation: @escaping (
+            UUID,
             SSHHost
         ) async -> Result<SSHHostKeyReviewRequirement, HostProbeError>,
         trustSSHHostKey: @escaping (
@@ -253,6 +259,7 @@ public struct HostsSettingsView: View {
             SSHHost
         ) async -> SSHAuthenticationReadiness,
         cancelSSHAuthentication: @escaping (UUID) -> Void,
+        retainSSHAuthenticationForHandoff: @escaping (UUID) -> Void,
         installRemoteKwt: @escaping (
             SSHHost
         ) async -> Result<Void, HostProbeError>,
@@ -285,6 +292,8 @@ public struct HostsSettingsView: View {
         self.sshAuthenticationView = sshAuthenticationView
         self.isSSHAuthenticationReady = isSSHAuthenticationReady
         self.cancelSSHAuthentication = cancelSSHAuthentication
+        self.retainSSHAuthenticationForHandoff =
+            retainSSHAuthenticationForHandoff
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
         self.loadTailscalePeers = loadTailscalePeers
@@ -714,6 +723,9 @@ public struct HostsSettingsView: View {
             remoteProjectPath = ""
             clearSSHHostProbeFeedback()
         }
+        .onDisappear {
+            cancelSSHHostReviewOperations()
+        }
         .sheet(isPresented: $isTailscaleSheetPresented) {
             TailscalePeerPickerSheet(
                 peers: tailscalePeers ?? [],
@@ -730,10 +742,14 @@ public struct HostsSettingsView: View {
                 }
             )
         }
-        .sheet(item: $pendingSSHHostTrust) { pending in
+        .sheet(item: $pendingSSHHostTrust, onDismiss: {
+            cancelPendingSSHHostTrust()
+        }) { pending in
             sshHostTrustSheet(pending)
         }
-        .sheet(item: $pendingSSHAuthentication) { target in
+        .sheet(item: $pendingSSHAuthentication, onDismiss: {
+            cancelPendingSSHAuthentication()
+        }) { target in
             sshAuthenticationSheet(target)
         }
         .alert(
@@ -908,18 +924,32 @@ public struct HostsSettingsView: View {
     ) async {
         let target = HostOperationTarget(draft)
         clearSSHHostProbeFeedback()
+        activeSSHReviewID = target.id
         isProbingSSHHost = true
-        defer { isProbingSSHHost = false }
-
-        let result = await probeSSHHost(
-            draft.sshHost
-        )
-        guard target.isCurrent(
-            selectedDraftID: selectedSSHHostDraftID,
-            drafts: sshHosts
-        ) else {
-            return
+        defer {
+            if activeSSHReviewID == target.id {
+                activeSSHReviewID = nil
+                isProbingSSHHost = false
+            }
+            if pendingSSHHostTrust?.target.id != target.id,
+               pendingSSHAuthentication?.id != target.id {
+                cancelSSHAuthentication(target.id)
+            }
         }
+
+        let result = await withTaskCancellationHandler {
+            await probeSSHHost(target.id, draft.sshHost)
+        } onCancel: {
+            Task { @MainActor in
+                cancelSSHAuthentication(target.id)
+            }
+        }
+        guard !Task.isCancelled,
+              activeSSHReviewID == target.id,
+              target.isCurrent(
+                  selectedDraftID: selectedSSHHostDraftID,
+                  drafts: sshHosts
+              ) else { return }
         switch result {
         case let .success(summary):
             hostProbeResult = summary
@@ -931,17 +961,25 @@ public struct HostsSettingsView: View {
             ) else {
                 return
             }
-            let trustResult = await pendingSSHHostKeyConfirmation(
-                draft.sshHost
-            )
-            guard target.isCurrent(
-                selectedDraftID: selectedSSHHostDraftID,
-                drafts: sshHosts
-            ) else {
-                return
+            let trustResult = await withTaskCancellationHandler {
+                await pendingSSHHostKeyConfirmation(
+                    target.id,
+                    draft.sshHost
+                )
+            } onCancel: {
+                Task { @MainActor in
+                    cancelSSHAuthentication(target.id)
+                }
             }
+            guard !Task.isCancelled,
+                  activeSSHReviewID == target.id,
+                  target.isCurrent(
+                      selectedDraftID: selectedSSHHostDraftID,
+                      drafts: sshHosts
+                  ) else { return }
             switch trustResult {
             case let .success(.confirmation(confirmation)):
+                pendingSSHHostTrustSurfaceID = target.id
                 pendingSSHHostTrust = PendingSSHHostTrust(
                     target: target,
                     confirmation: confirmation
@@ -967,24 +1005,36 @@ public struct HostsSettingsView: View {
             selectedDraftID: selectedSSHHostDraftID,
             drafts: sshHosts
         ), let draft = selectedSSHHostDraft else {
-            pendingSSHHostTrust = nil
+            cancelPendingSSHHostTrust()
             return
         }
         isTrustingSSHHost = true
         hostTrustErrorMessage = nil
         defer { isTrustingSSHHost = false }
 
-        switch await trustSSHHostKey(
+        let result = await trustSSHHostKey(
             pending.confirmation,
             draft.sshHost
-        ) {
+        )
+        guard !Task.isCancelled,
+              pending.target.isCurrent(
+                  selectedDraftID: selectedSSHHostDraftID,
+                  drafts: sshHosts
+              ), pendingSSHHostTrust?.target.id == pending.target.id
+        else {
+            cancelSSHAuthentication(pending.target.id)
+            return
+        }
+        switch result {
         case let .success(nextConfirmation):
             if let nextConfirmation {
+                pendingSSHHostTrustSurfaceID = pending.target.id
                 pendingSSHHostTrust = PendingSSHHostTrust(
                     target: pending.target,
                     confirmation: nextConfirmation
                 )
             } else {
+                pendingSSHHostTrustSurfaceID = nil
                 pendingSSHHostTrust = nil
                 beginSSHAuthentication(pending.target)
             }
@@ -1065,11 +1115,12 @@ public struct HostsSettingsView: View {
         case .success:
             remoteKwtInstallMessage =
                 "Ghosthub’s pinned kwt worktree helper is ready on this host."
-            let probeResult = await probeSSHHost(draft.sshHost)
+            let probeResult = await probeSSHHost(target.id, draft.sshHost)
             guard target.isCurrent(
                 selectedDraftID: selectedSSHHostDraftID,
                 drafts: sshHosts
             ) else {
+                cancelSSHAuthentication(target.id)
                 return
             }
             switch probeResult {
@@ -1110,17 +1161,24 @@ public struct HostsSettingsView: View {
     }
 
     private func clearSSHHostProbeFeedback() {
-        if let pendingSSHAuthentication {
-            cancelSSHAuthentication(pendingSSHAuthentication.draftID)
-        }
+        cancelSSHHostReviewOperations()
         hostProbeResult = nil
         hostProbeErrorMessage = nil
-        pendingSSHHostTrust = nil
-        pendingSSHAuthentication = nil
         sshAuthenticationSucceeded = false
         hostTrustErrorMessage = nil
         remoteKwtInstallMessage = nil
         remoteProjectMessage = nil
+    }
+
+    private func cancelSSHHostReviewOperations() {
+        cancelPendingSSHHostTrust()
+        cancelPendingSSHAuthentication()
+        if let activeSSHReviewID {
+            cancelSSHAuthentication(activeSSHReviewID)
+        }
+        activeSSHReviewID = nil
+        isProbingSSHHost = false
+        pendingSSHAuthentication = nil
     }
 
     // MARK: - View Helpers
@@ -1146,7 +1204,7 @@ public struct HostsSettingsView: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) {
-                    pendingSSHHostTrust = nil
+                    cancelPendingSSHHostTrust()
                 }
                 .disabled(isTrustingSSHHost)
                 Button(isTrustingSSHHost ? "Trusting\u{2026}" : "Trust and Continue") {
@@ -1159,6 +1217,14 @@ public struct HostsSettingsView: View {
         .padding(24)
         .frame(width: 520)
         .interactiveDismissDisabled(isTrustingSSHHost)
+    }
+
+    private func cancelPendingSSHHostTrust() {
+        if let pendingSSHHostTrustSurfaceID {
+            cancelSSHAuthentication(pendingSSHHostTrustSurfaceID)
+        }
+        pendingSSHHostTrustSurfaceID = nil
+        pendingSSHHostTrust = nil
     }
 
     private func sshAuthenticationSheet(
@@ -1194,7 +1260,7 @@ public struct HostsSettingsView: View {
                 .foregroundStyle(.secondary)
             } else if let draft,
                       let authentication = sshAuthenticationView(
-                          target.draftID,
+                          target.id,
                           draft.sshHost
                       ) {
                 authentication
@@ -1219,8 +1285,7 @@ public struct HostsSettingsView: View {
                     .keyboardShortcut(.defaultAction)
                 } else {
                     Button("Cancel", role: .cancel) {
-                        cancelSSHAuthentication(target.draftID)
-                        pendingSSHAuthentication = nil
+                        cancelPendingSSHAuthentication()
                     }
                 }
             }
@@ -1259,12 +1324,12 @@ public struct HostsSettingsView: View {
             case .pending:
                 break
             case .reviewRequired:
-                cancelSSHAuthentication(target.draftID)
+                cancelSSHAuthentication(target.id)
                 pendingSSHAuthentication = nil
                 await probeHost(draft)
                 return
             case .connected:
-                cancelSSHAuthentication(target.draftID)
+                retainSSHAuthenticationForHandoff(target.id)
                 sshAuthenticationSucceeded = true
                 return
             }
@@ -1277,6 +1342,13 @@ public struct HostsSettingsView: View {
     ) {
         sshAuthenticationSucceeded = false
         pendingSSHAuthentication = target
+    }
+
+    private func cancelPendingSSHAuthentication() {
+        guard let pendingSSHAuthentication else { return }
+        cancelSSHAuthentication(pendingSSHAuthentication.id)
+        self.pendingSSHAuthentication = nil
+        sshAuthenticationSucceeded = false
     }
 
     private func hostSettingField<Control: View>(

@@ -388,66 +388,101 @@ twice.
 
 ### External State
 
-SSH transport, configuration resolution, and host-key storage remain owned by
-the system OpenSSH client. Effective `ssh -G` output is nonce-framed inside the
-account login shell so startup banners cannot become replayed SSH options. When
-**Test Connection** or a host-scoped inventory
-warning encounters an unseen key, Ghosthub presents the exact destination and
-fingerprint through an explicit trust sheet. Approval is returned to that same
-OpenSSH prompt through a private askpass channel; Ghosthub neither substitutes
-a short alias nor writes a key obtained from a separate scanner. The approved
-key therefore lands in the `UserKnownHostsFile` selected by the user's OpenSSH
-configuration before the ordinary noninteractive probe or inventory refresh
-retries.
-When that retry needs interactive authentication, Ghosthub presents OpenSSH's
-exact challenge in a native secure-entry sheet. The app brokers the session-only
-response to the system client through a private FIFO; it does not put the
-response in process arguments, environment variables, logs, or persistent
-storage. A successful prompt leaves a non-persistent OpenSSH master owned by
-the application session, and every window's inventory, transfer, and tmux
-clients reuse its control socket in a per-launch namespace under
-`~/.ghosthub/ssh/`. Its bounded socket
-name includes an app-launch nonce plus a digest of the logical destination,
-the normalized effective OpenSSH configuration for every route target, and the
-proxy route, so changes to credentials, known-hosts files, trust identities,
-routes, or app launches cannot reuse an authenticated master. A parent-held
-watchdog descriptor remains open for the app lifetime and terminates each
-master only when that descriptor reaches EOF. The next
-launch removes only socket namespaces owned by processes that are no longer
-running, so concurrent Ghosthub instances cannot unlink each other's masters.
-When the state-home path would exceed macOS's Unix-socket limit, Ghosthub uses
-the same process-owned namespace under `/tmp` and rejects any still-oversized
-path before launching OpenSSH.
-Routine clients and generated ProxyJump helpers explicitly disable
-`ControlMaster` and `ControlPersist`; routine clients receive only Ghosthub's
-supervised socket, while fallback proxy helpers set `ControlPath=none` so they
-cannot inherit or create an unrelated master. Generated proxy commands also
-force ordinary stdin/stdout forwarding instead of inheriting `ProxyUseFdpass`,
-because Ghosthub's nested route commands do not return file descriptors.
-Host-key review replays resolved key-exchange, cipher, MAC, and minimum RSA-key
-constraints alongside known-hosts policy. Master preparation resolves one
-effective-config snapshot, verifies that its control identity still matches
-the cached path, and launches the endpoint, route, authentication, and
-known-hosts options from that same snapshot under an empty base SSH
-configuration. An identity change restarts recovery instead of using the old
-socket path. Readiness resolves that identity again before reporting a
-connection, invalidating the stale session and returning to recovery if the
-route or control path changed. Master stderr is continuously drained into a
-bounded diagnostic buffer through a nonblocking dispatch source, so verbose
-OpenSSH logging cannot block the connection or occupy Swift concurrency
-workers. Ghosthub keeps
-the master in the foreground even if the user's SSH configuration requests
-forking, so the app watchdog retains ownership of its lifetime. It removes
-inherited tmux launcher state before starting the master through the account
-login shell, preserving the same environment boundary used
-by configuration checks and ordinary SSH operations.
+SSH transport and host-key storage remain owned by the system OpenSSH client.
+Ghosthub's revision-pinned kwt helper is the sole owner of effective SSH route
+resolution. The helper crosses only kwt's CLI boundary and may auto-start or
+reuse kwt's same-account loopback daemon; it never selects another kwt from
+`PATH`. Kwt nonce-frames `ssh -G` output inside the account login shell so
+startup banners cannot become replayed SSH options, then returns one immutable,
+ordered route snapshot. The snapshot carries a digest of the complete resolved
+route and a versioned, allowlisted execution projection for each hop. Direct
+and Tailscale-discovered destinations use the same contract.
+
+Long-lived remote tmux, Herdr, and Zellij presentations acquire multiplexed
+SSH leases from kwt. Kwt owns the OpenSSH master, route revalidation, ProxyJump
+chain, askpass transport, host-key prompt parsing, generation, idle policy, and
+cleanup. Ghosthub owns only native presentation of kwt's structured prompt
+details and the lifetime of each lease token. One attachment keeps one
+connection from its first remote probe through terminal exit, including pane
+actions and identity revalidation. Lease arguments and tokens are never stored
+in reconnect state; reconnect keeps logical intent, resolves the route again,
+and acquires a new lease. A helper failure, malformed snapshot, unsupported
+projection policy, masterless result, or route change fails closed.
+
+The shared connection pool holds one kwt lease per route identity while at
+least one caller owns it, so concurrent windows, probes, and discovery on the
+same route share one lease. The final owner's release returns the lease to
+kwt; kwt's own policy then keeps an ordinary master warm for its idle timeout
+and disconnects a forwarded-agent master at once, so a remote host never keeps
+agent access after the visible operation ends. A shared lease is marked
+unusable, so no new caller joins it, when its helper reports a terminal
+failure, when a presentation using it exits with OpenSSH status 255 (the
+recorded remote status when one exists, otherwise the client status), or
+when a borrowed command sees OpenSSH fall through
+to the lease's fail-closed proxy (a lost or refused control socket); it is
+released once its last owner lets go, and the next borrow acquires a fresh
+lease. Application shutdown releases every owned lease.
+
+Acquisition is shared across windows in two stages: one resolution per
+normalized destination, then one route-scoped lease operation after kwt returns
+the route identity. Every new ownership boundary resolves again, so edits to
+the OpenSSH configuration or environment surface as
+`ssh_configuration_changed` instead of silently joining a stale route; only
+concurrent resolutions of one destination are coalesced. Prompt ownership
+belongs to that shared operation rather than the first window. Eligible
+windows subscribe in order, and closing or canceling one presenter transfers
+an unanswered prompt to the next subscriber without resetting kwt's deadline;
+a response from a presenter that has since left is discarded and the prompt
+moves on. The final subscriber leaving cancels the operation. A route with a
+failed release is quarantined, never reused, and receives a bounded cleanup
+attempt on each later acquisition. Ordinary retry after network loss, sleep,
+or daemon replacement follows the same re-resolve and reacquire path.
+
+The system OpenSSH client remains authoritative for host-key and authentication
+prompts. Ghosthub displays the exact kwt-delivered destination, fingerprint, or
+challenge and returns the response to that same operation. It does not put
+responses in process arguments, environment variables, logs, or persistent
+storage. OpenSSH persists accepted keys in the `UserKnownHostsFile` selected by
+the resolved configuration, so presentation leases and kwt-owned short-lived
+commands share the same trust store.
+
+Host Settings connection tests and host-scoped recovery acquire a kwt lease,
+present kwt's native prompts, run the exact probe through the reviewed lease
+arguments, and release their client ownership when the probe or review ends.
+Project/worktree inventory borrows one noninteractive connection for its
+entire multi-command read, including per-project worktree queries, and
+releases it when the snapshot finishes. A prompt fails that background refresh
+with `ssh_interaction_required`; inventory never displays authentication UI or
+falls back to app-owned SSH execution. Worktree mutations invoke
+`kwt ssh exec`, so kwt resolves, acquires, constructs, and runs the complete
+short-lived OpenSSH command while Ghosthub supplies only the destination and
+remote command intent. Tmux, Herdr, and Zellij multi-command discovery,
+helper probes, project lifecycle validation, and destructive session commands
+continue borrowing connections until their route-identity and grouped-command
+contracts move behind the same higher-level boundary. Every remaining borrower
+is async: the pool is awaited, and only the blocking OpenSSH invocation itself
+runs off the cooperative thread pool.
+Confirmation requests retain only the selected host and reviewed route key;
+they release the preparation lease, then reacquire and require the same route
+before the confirmed mutation begins.
+Demo presentations are the only exception to lease
+ownership: `GHOSTHUB_DEMO_SCRATCH` constructs isolated fixture arguments and
+bypasses kwt lease acquisition.
+Local kwt processes that resolve routes, acquire leases, or execute complete
+SSH commands use a dedicated `KWT_HOME` under Ghosthub's resolved state home
+at `ssh/kwt` (normally `~/.ghosthub/ssh/kwt`). They therefore share one
+Ghosthub-owned SSH daemon without attaching to or replacing the account's
+ordinary kwt daemon. Local project and worktree registry commands continue to
+use the account's kwt home because that registry remains host authority.
 Remote connection probes emit a leading line delimiter, then parse exact
 protocol-marker lines only from stdout. SSH and login-shell diagnostics,
 including marker text embedded in a banner, cannot make a failed probe appear
 reachable.
-Window presentations hold leases on shared authentication attempts. Closing a
-window cancels an unfinished attempt only after its final presenting window
-releases it; an authenticated master remains available until the app exits.
+Application termination first closes scene-owned presentation surfaces and
+releases their lease tokens concurrently, then asks the shared kwt lease pool
+to release any remaining ownership. AppKit waits under one five-second bound;
+window close itself remains asynchronous and never kills server-side tmux,
+Herdr, or Zellij sessions.
 
 The Rust port reaches this boundary through revision-pinned KWT rather than
 reimplementing OpenSSH configuration or prompt policy. On Windows, the host
@@ -486,25 +521,6 @@ navigation cancels queued and running attachment probes before they can retain
 the shared session-operation lane. Remote destruction, tmux creation, KWT
 project/worktree management, reconnect, and restoration remain unavailable
 until their own identity and lifecycle contracts are implemented.
-
-Before opening that channel, Ghosthub reads the effective destination policy
-with `ssh -G`. It tightens `accept-new` to an explicit review but does not
-override `yes`, `no`, or `off`; approval matches the parsed algorithm and
-fingerprint rather than address-bearing prompt prose. Review-managed `ask` and
-`accept-new` connections also disable `UpdateHostKeys`, so the connection
-cannot persist additional server-advertised keys that were not reviewed.
-Trust invocations use the same local account login-shell boundary as ordinary
-SSH operations. For ProxyJump routes, Ghosthub names the host from OpenSSH's
-prompt and reviews each unseen route key sequentially. When a preceding jump
-host needs a password or other challenge, Ghosthub authenticates that reviewed
-hop first and uses its app-session control connection to reach the next host.
-The secure-entry sheet names the exact route host controlling the challenge
-using its effective SSH user, hostname, and port, and warns the user to enter
-only that host's credentials. Continue also permits a deliberate empty response
-for keyboard-interactive challenges that require one.
-Opaque ProxyCommand routes and jump hosts that introduce another proxy route
-fail closed because Ghosthub cannot independently enforce every intermediate
-host-key policy.
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and

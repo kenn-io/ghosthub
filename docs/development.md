@@ -90,6 +90,20 @@ registration, daemon-backed inventory, removal of a missing checkout, and
 inventory refresh in an isolated `KWT_HOME`. It then runs the focused kwt
 inventory, host resolution, sidebar, and ordinary tmux attachment contracts.
 
+The SSH cutover suite uses two isolated Docker hosts to exercise a direct
+connection, a ProxyJump route, and an interactive ProxyJump route through the
+pinned kwt helper:
+
+```bash
+make test-ssh-authentication-docker
+```
+
+The interactive route proves that host-key confirmation and encrypted-key
+passphrase prompts are attributed to both hops and answered through kwt's
+bounded prompt channel. The fixture creates temporary host and client keys,
+known-hosts data, SSH configuration, kwt state, and daemon endpoints. It does
+not read or modify the developer account's SSH configuration or kwt daemon.
+
 ## Apple Silicon macOS toolchain
 
 Pull requests invoke the `main`-pinned `.github/workflows/ci.yml`. The
@@ -139,8 +153,10 @@ macOS 15 release floor independently of the primary macOS 26 validation lane.
 
 ## Remote SSH Host Prerequisites
 
-Remote hosts are bootstrapped from the app (Settings → Remote Hosts);
-there is no longer a dedicated SSH e2e make target. Headless Linux
+Remote hosts are bootstrapped from the app (Settings → Remote Hosts). SSH
+end-to-end coverage runs through `make test-ssh-authentication-docker`
+(local Docker fixture) and `make test-ssh-authentication-live` (opt-in,
+against `GHOSTHUB_SSH_INTEGRATION_DESTINATION`). Headless Linux
 hosts should provide:
 
 - `git` and `tmux` on the non-interactive SSH `PATH`
@@ -162,6 +178,7 @@ history, and session lifetime.
 
 - SQLite database: `~/.ghosthub/ghosthub.db`
 - Ghosthub terminal config: `~/.config/ghosthub/ghostty.conf`
+- App-owned kwt SSH daemon state: `~/.ghosthub/ssh/kwt`
 
 ## Release packaging
 

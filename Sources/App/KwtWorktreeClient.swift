@@ -80,8 +80,8 @@ struct KwtWorktreeClient: Sendable {
         _ shell: String, _ command: String
     ) -> (status: Int32, stdout: String)
     typealias RemoteRunner = @Sendable (
-        _ host: SSHHostInfo, _ command: String
-    ) -> (status: Int32, stdout: String)
+        _ host: SSHHostInfo, _ command: String, _ expectedRouteIdentity: String?
+    ) async -> AccountCommandOutput
 
     private let localRunner: LocalRunner
     private let remoteRunner: RemoteRunner
@@ -106,11 +106,12 @@ struct KwtWorktreeClient: Sendable {
                 timeout: processTimeout
             )
         }
-        self.remoteRunner = remoteRunner ?? { host, command in
-            AccountCommandRunner.runRemoteLoginShell(
-                host: host,
+        self.remoteRunner = remoteRunner ?? { host, command, expectedRouteIdentity in
+            await KwtSSHCommandClient().run(
+                on: host,
                 command: command,
-                timeout: processTimeout
+                timeout: processTimeout,
+                expectedRouteIdentity: expectedRouteIdentity
             )
         }
         self.loginShellProvider = loginShellProvider
@@ -152,17 +153,7 @@ struct KwtWorktreeClient: Sendable {
             binaryPrelude: binaryPrelude,
             windowsKwtRelativePath: windowsKwtRelativePath
         )
-        let localRunner = localRunner
-        let remoteRunner = remoteRunner
-        let shell = loginShellProvider()
-        let result = await Task.detached(priority: .userInitiated) {
-            switch host {
-            case .local:
-                localRunner(shell, command)
-            case let .ssh(info):
-                remoteRunner(info, command)
-            }
-        }.value
+        let result = try await run(command, on: host)
         guard result.status == 0 else {
             throw KwtWorktreeError.commandFailed(
                 host: host.displayName,
@@ -204,17 +195,7 @@ struct KwtWorktreeClient: Sendable {
             binaryPrelude: binaryPrelude,
             windowsKwtRelativePath: windowsKwtRelativePath
         )
-        let localRunner = localRunner
-        let remoteRunner = remoteRunner
-        let shell = loginShellProvider()
-        let result = await Task.detached(priority: .userInitiated) {
-            switch host {
-            case .local:
-                localRunner(shell, command)
-            case let .ssh(info):
-                remoteRunner(info, command)
-            }
-        }.value
+        let result = try await run(command, on: host)
         guard result.status == 0 else {
             throw KwtWorktreeError.commandFailed(
                 host: hostLabel,
@@ -247,6 +228,7 @@ struct KwtWorktreeClient: Sendable {
         generation: String,
         projectPath: String,
         force: Bool = false,
+        expectedRouteIdentity: String? = nil,
         on host: CommandHost
     ) async throws {
         let binaryPrelude: String
@@ -278,17 +260,11 @@ struct KwtWorktreeClient: Sendable {
             binaryPrelude: binaryPrelude,
             windowsKwtRelativePath: windowsKwtRelativePath
         )
-        let localRunner = localRunner
-        let remoteRunner = remoteRunner
-        let shell = loginShellProvider()
-        let result = await Task.detached(priority: .userInitiated) {
-            switch host {
-            case .local:
-                localRunner(shell, command)
-            case let .ssh(info):
-                remoteRunner(info, command)
-            }
-        }.value
+        let result = try await run(
+            command,
+            on: host,
+            expectedRouteIdentity: expectedRouteIdentity
+        )
         guard result.status == 0 else {
             throw KwtWorktreeError.removalFailed(
                 host: host.displayName,
@@ -328,17 +304,7 @@ struct KwtWorktreeClient: Sendable {
             binaryPrelude: binaryPrelude,
             windowsKwtRelativePath: windowsKwtRelativePath
         )
-        let localRunner = localRunner
-        let remoteRunner = remoteRunner
-        let shell = loginShellProvider()
-        let result = await Task.detached(priority: .userInitiated) {
-            switch host {
-            case .local:
-                localRunner(shell, command)
-            case let .ssh(info):
-                remoteRunner(info, command)
-            }
-        }.value
+        let result = try await run(command, on: host)
         guard result.status == 0 else {
             throw KwtWorktreeError.changeStatusFailed(
                 host: host.displayName,
@@ -375,6 +341,28 @@ struct KwtWorktreeClient: Sendable {
             throw KwtWorktreeError.malformedChangeStatus(
                 host: host.displayName
             )
+        }
+    }
+
+    private func run(
+        _ command: String,
+        on host: CommandHost,
+        expectedRouteIdentity: String? = nil
+    ) async throws -> (status: Int32, stdout: String) {
+        let localRunner = localRunner
+        let shell = loginShellProvider()
+        switch host {
+        case .local:
+            return await Task.detached(priority: .userInitiated) {
+                localRunner(shell, command)
+            }.value
+        case let .ssh(info):
+            let output = await remoteRunner(
+                info,
+                command,
+                expectedRouteIdentity
+            )
+            return (output.status, output.stdout)
         }
     }
 

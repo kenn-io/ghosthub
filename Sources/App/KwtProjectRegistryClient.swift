@@ -61,6 +61,7 @@ enum KwtProjectCommandError: Error, Equatable, LocalizedError {
         details: [String: KwtProjectErrorDetail]
     )
     case malformedOutput(host: String)
+    case routeChanged(host: String)
 
     var errorDescription: String? {
         switch self {
@@ -81,6 +82,8 @@ enum KwtProjectCommandError: Error, Equatable, LocalizedError {
             return retryable ? "\(detail) Try again." : detail
         case let .malformedOutput(host):
             return "kwt returned an invalid project response on \(host)."
+        case let .routeChanged(host):
+            return "The SSH connection for \(host) changed after confirmation."
         }
     }
 }
@@ -92,8 +95,8 @@ struct KwtProjectRegistryClient: Sendable {
         _ command: String
     ) -> (status: Int32, stdout: String)
     typealias RemoteRunner = @Sendable (
-        _ host: SSHHostInfo, _ command: String
-    ) -> (status: Int32, stdout: String)
+        _ host: SSHHostInfo, _ connectionArguments: [String], _ command: String
+    ) -> AccountCommandOutput
 
     private enum Operation: String {
         case register = "add"
@@ -113,6 +116,7 @@ struct KwtProjectRegistryClient: Sendable {
     private let remoteRunner: RemoteRunner
     private let localBinaryPath: String?
     private let remoteBinaryRevision: String?
+    private let commandLease: KwtSSHCommandLease
 
     init(
         localRunner: LocalRunner? = nil,
@@ -121,6 +125,7 @@ struct KwtProjectRegistryClient: Sendable {
         localBinaryPath: String? = KwtBinaryLocator.bundledPath(),
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),
+        commandLease: KwtSSHCommandLease? = nil,
         loginShellProvider: @escaping @Sendable () -> String =
             AccountCommandRunner.loginShell
     ) {
@@ -131,13 +136,17 @@ struct KwtProjectRegistryClient: Sendable {
                 timeout: processTimeout
             )
         }
-        self.remoteRunner = remoteRunner ?? { host, command in
-            AccountCommandRunner.runRemoteLoginShell(
+        self.remoteRunner = remoteRunner ?? { host, arguments, command in
+            AccountCommandRunner().runRemoteLoginShell(
                 host: host,
+                connectionArguments: arguments,
                 command: command,
                 timeout: processTimeout
             )
         }
+        self.commandLease = commandLease ?? .unlessInjected(
+            remoteRunner != nil
+        )
         self.localBinaryPath = localBinaryPath
         self.remoteBinaryRevision = remoteBinaryRevision
     }
@@ -160,6 +169,7 @@ struct KwtProjectRegistryClient: Sendable {
         projectPath: String,
         expectedRepository: String,
         expectedRegistration: String,
+        expectedRouteIdentity: String?,
         on host: CommandHost
     ) async throws -> KwtProjectRecord {
         try await mutate(
@@ -167,6 +177,7 @@ struct KwtProjectRegistryClient: Sendable {
             projectPath: projectPath,
             expectedRepository: expectedRepository,
             expectedRegistration: expectedRegistration,
+            expectedRouteIdentity: expectedRouteIdentity,
             on: host
         )
     }
@@ -176,6 +187,7 @@ struct KwtProjectRegistryClient: Sendable {
         projectPath: String,
         expectedRepository: String? = nil,
         expectedRegistration: String? = nil,
+        expectedRouteIdentity: String? = nil,
         on host: CommandHost
     ) async throws -> KwtProjectRecord {
         switch host {
@@ -209,6 +221,7 @@ struct KwtProjectRegistryClient: Sendable {
                 projectPath: projectPath,
                 expectedRepository: expectedRepository,
                 expectedRegistration: expectedRegistration,
+                expectedRouteIdentity: expectedRouteIdentity,
                 on: info
             )
         }
@@ -219,6 +232,7 @@ struct KwtProjectRegistryClient: Sendable {
         projectPath: String,
         expectedRepository: String? = nil,
         expectedRegistration: String? = nil,
+        expectedRouteIdentity: String? = nil,
         on host: SSHHostInfo
     ) async throws -> KwtProjectRecord {
         let command = try Self.command(
@@ -230,17 +244,23 @@ struct KwtProjectRegistryClient: Sendable {
                 revision: remoteBinaryRevision
             )
         )
-        let remoteRunner = remoteRunner
-        let task = Task.detached(priority: .userInitiated) {
-            remoteRunner(host, command)
-        }
-        let result = await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
+        let result = try await commandLease.withConnection(
+            on: .ssh(host)
+        ) { connection in
+            guard operation != .unregister
+                || connection?.routeIdentity == expectedRouteIdentity
+            else {
+                throw KwtProjectCommandError.routeChanged(
+                    host: host.displayName
+                )
+            }
+            return await commandLease.runCommand(using: connection) {
+                arguments in
+                remoteRunner(host, arguments, command)
+            }
         }
         return try Self.decode(
-            result,
+            (result.status, result.stdout),
             hostLabel: host.displayName,
             expectedStatus: operation.successStatus
         )

@@ -775,10 +775,12 @@ extension WorkspaceTmuxDiscoveryTests {
     @Test("connection probe accepts a tmux-only SSH host")
     func connectionProbeAcceptsRemoteWithoutKwt() async throws {
         let environment = try setupStandardEnvironment()
+        let released = LockedValue(false)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            sshHostProbeRunner: { _, command in
+            sshHostProbeRunner: { _, connectionArguments, command in
+                #expect(connectionArguments == ["-test-connection"])
                 #expect(command.contains("command -v tmux"))
                 #expect(command.contains(
                     "GHOSTHUB_SSH_PROBE_TEST-NONCE_START"
@@ -794,6 +796,14 @@ extension WorkspaceTmuxDiscoveryTests {
                         startupOutput: "unterminated startup output"
                     ),
                     stderr: ""
+                )
+            },
+            hostSSHConnectionProvider: { host, destination in
+                #expect(host.hostname == "tmux-only")
+                #expect(destination == "tmux-only")
+                return testKwtSSHAttachment(
+                    arguments: ["-test-connection"],
+                    release: { released.store(true) }
                 )
             }
         )
@@ -815,6 +825,631 @@ extension WorkspaceTmuxDiscoveryTests {
             summary.diagnostics.first?.recoverySuggestion
                 .contains("Tmux sessions remain available") == true
         )
+        #expect(released.load())
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("successful authentication keeps its lease for the follow-up probe")
+    func authenticationLeaseFeedsFollowUpProbe() async throws {
+        let environment = try setupStandardEnvironment()
+        let acquisitions = LockedValue(0)
+        let releases = LockedValue(0)
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(hostname: "password-only"),
+            targets: [
+                KwtSSHResolvedTarget(
+                    logicalTarget: KwtSSHTarget(hostname: "password-only"),
+                    effectiveTarget: KwtSSHTarget(hostname: "password-only"),
+                    displayTarget: "password-only",
+                    hostKeyAlias: nil,
+                    strictHostKeyChecking: "ask",
+                    projection: KwtSSHExecutionProjection(
+                        arguments: ["-F", "/dev/null"],
+                        privateConfig: []
+                    )
+                ),
+            ]
+        )
+        let host = SSHHost(
+            configKey: "password-only",
+            name: "Password Only",
+            platform: .linux,
+            sshDestination: "password-only"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { _, arguments, _ in
+                #expect(arguments == ["-S", "/tmp/password-only.sock"])
+                return (
+                    status: 0,
+                    stdout: WorkspaceTmuxTestSupport.probeOutput([
+                        "GHOSTHUB_SSH_REACHED",
+                        "GHOSTHUB_TMUX_AVAILABLE",
+                        "GHOSTHUB_KWT_AVAILABLE",
+                    ]),
+                    stderr: ""
+                )
+            },
+            hostSSHConnectionProvider: nil,
+            hostSSHSessionProvider: { sessionHost, destination in
+                KwtSSHConnectionSession(
+                    route: route,
+                    host: sessionHost,
+                    destination: destination,
+                    pool: KwtSSHConnectionPool { route, _ in
+                        acquisitions.withLock { $0 += 1 }
+                        return KwtSSHTestLease(
+                            routeIdentity: route.routeIdentity,
+                            arguments: ["-S", "/tmp/password-only.sock"],
+                            releaseCount: releases
+                        )
+                    }
+                )
+            }
+        )
+
+        let requirement = await model.pendingSSHHostKeyConfirmation(for: host)
+        #expect(try requirement.get() == .none)
+        let surfaceID = UUID()
+        _ = model.sshAuthenticationView(surfaceID: surfaceID, for: host)
+        #expect(await model.isSSHAuthenticationReady(for: host) == .connected)
+
+        model.retainSSHAuthenticationForHandoff(surfaceID: surfaceID)
+        let probe = await model.probeSSHHost(
+            host,
+            protocolNonce: WorkspaceTmuxTestSupport.probeNonce
+        )
+
+        #expect(try probe.get().connectionState == .online)
+        #expect(acquisitions.load() == 1)
+        #expect(releases.load() == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("canceling connected authentication releases instead of retaining")
+    func cancelingConnectedAuthenticationReleasesLease() async throws {
+        let environment = try setupStandardEnvironment()
+        let acquisitions = LockedValue(0)
+        let releases = LockedValue(0)
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(hostname: "cancel.example.test")
+        )
+        let host = SSHHost(
+            configKey: "cancel",
+            name: "Cancel",
+            platform: .linux,
+            sshDestination: "cancel.example.test"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            hostSSHSessionProvider: { sessionHost, destination in
+                KwtSSHConnectionSession(
+                    route: route,
+                    host: sessionHost,
+                    destination: destination,
+                    pool: KwtSSHConnectionPool { route, _ in
+                        acquisitions.withLock { $0 += 1 }
+                        return KwtSSHTestLease(
+                            routeIdentity: route.routeIdentity,
+                            releaseCount: releases
+                        )
+                    }
+                )
+            }
+        )
+
+        let requirement = await model.pendingSSHHostKeyConfirmation(for: host)
+        #expect(try requirement.get() == .none)
+        let surfaceID = UUID()
+        _ = model.sshAuthenticationView(surfaceID: surfaceID, for: host)
+        #expect(await model.isSSHAuthenticationReady(for: host) == .connected)
+
+        model.cancelSSHAuthentication(surfaceID: surfaceID)
+        await waitUntil { releases.load() == 1 }
+
+        #expect(model.hostSSHSession == nil)
+        let retry = await model.pendingSSHHostKeyConfirmation(for: host)
+        #expect(try retry.get() == .none)
+        #expect(acquisitions.load() == 2)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("exe.dev discovery consumes and releases its reviewed lease")
+    func exeDiscoveryConsumesAuthenticationLease() async throws {
+        let environment = try setupStandardEnvironment()
+        let releases = LockedValue(0)
+        let capturedArguments = LockedValue<[String]?>(nil)
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(hostname: "exe.dev")
+        )
+        let account = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev"
+        )
+        let host = SSHHost(
+            configKey: "exe-control.personal",
+            name: "Personal",
+            platform: .linux,
+            sshDestination: account.sshDestination
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            hostSSHSessionProvider: { sessionHost, destination in
+                KwtSSHConnectionSession(
+                    route: route,
+                    host: sessionHost,
+                    destination: destination,
+                    pool: KwtSSHConnectionPool { route, _ in
+                        KwtSSHTestLease(
+                            routeIdentity: route.routeIdentity,
+                            arguments: ["-S", "/tmp/exe-reviewed.sock"],
+                            releaseCount: releases
+                        )
+                    }
+                )
+            }
+        )
+
+        let requirement = await model.pendingSSHHostKeyConfirmation(for: host)
+        #expect(try requirement.get() == .none)
+        let surfaceID = UUID()
+        _ = model.sshAuthenticationView(surfaceID: surfaceID, for: host)
+        model.retainSSHAuthenticationForHandoff(surfaceID: surfaceID)
+
+        let result = await model.probeExeAccountConnection(account) {
+            _, connection in
+            capturedArguments.store(connection?.arguments)
+            return .connected([])
+        }
+
+        #expect(result == .connected([]))
+        #expect(
+            capturedArguments.load() == ["-S", "/tmp/exe-reviewed.sock"]
+        )
+        #expect(releases.load() == 1)
+        #expect(model.hostSSHSession == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("canceling host-key review cancels its pending SSH prompt")
+    func cancelingHostKeyReviewCancelsPrompt() async throws {
+        let environment = try setupStandardEnvironment()
+        let sessions = LockedValue(0)
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(hostname: "review.example.test"),
+            targets: [
+                KwtSSHResolvedTarget(
+                    logicalTarget: KwtSSHTarget(
+                        hostname: "review.example.test"
+                    ),
+                    effectiveTarget: KwtSSHTarget(
+                        hostname: "review.example.test"
+                    ),
+                    displayTarget: "review.example.test",
+                    hostKeyAlias: nil,
+                    strictHostKeyChecking: "ask",
+                    projection: KwtSSHExecutionProjection(
+                        arguments: ["-F", "/dev/null"],
+                        privateConfig: []
+                    )
+                ),
+            ]
+        )
+        let prompt = KwtSSHLeasePrompt.fixture(
+            id: "host-key-review",
+            kind: .hostKey,
+            message: "Review this host key.",
+            route: route,
+            hopIndex: 0,
+            hostKey: KwtSSHHostKeyReview(
+                host: "review.example.test",
+                algorithm: "ED25519",
+                fingerprint: "SHA256:review"
+            )
+        )
+        let host = SSHHost(
+            configKey: "review",
+            name: "Review",
+            platform: .linux,
+            sshDestination: "review.example.test"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            hostSSHSessionProvider: { sessionHost, destination in
+                sessions.withLock { $0 += 1 }
+                let attempt = sessions.load()
+                return KwtSSHConnectionSession(
+                    route: route,
+                    host: sessionHost,
+                    destination: destination,
+                    pool: KwtSSHConnectionPool { _, answer in
+                        if attempt == 1 {
+                            _ = try await answer(prompt)
+                        }
+                        return KwtSSHTestLease(
+                            routeIdentity: route.routeIdentity
+                        )
+                    }
+                )
+            }
+        )
+
+        let reviewID = UUID()
+        let requirement = await model.pendingSSHHostKeyConfirmation(
+            for: host,
+            reviewID: reviewID
+        )
+        guard case .success(.confirmation) = requirement else {
+            Issue.record("Expected a host-key review requirement")
+            await model.shutdown()
+            return
+        }
+
+        model.cancelSSHAuthentication(surfaceID: reviewID)
+        let retry = await model.pendingSSHHostKeyConfirmation(for: host)
+
+        #expect(try retry.get() == .none)
+        #expect(sessions.load() == 2)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("stale review cancellation preserves the current SSH owner")
+    func staleReviewCancellationPreservesCurrentOwner() async throws {
+        let environment = try setupStandardEnvironment()
+        let releases = LockedValue(0)
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(hostname: "owner.example.test")
+        )
+        let host = SSHHost(
+            configKey: "owner",
+            name: "Owner",
+            platform: .linux,
+            sshDestination: "owner.example.test"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            hostSSHSessionProvider: { sessionHost, destination in
+                KwtSSHConnectionSession(
+                    route: route,
+                    host: sessionHost,
+                    destination: destination,
+                    pool: KwtSSHConnectionPool { route, _ in
+                        KwtSSHTestLease(
+                            routeIdentity: route.routeIdentity,
+                            releaseCount: releases
+                        )
+                    }
+                )
+            }
+        )
+        let staleReviewID = UUID()
+        let currentReviewID = UUID()
+
+        #expect(try await model.pendingSSHHostKeyConfirmation(
+            for: host,
+            reviewID: staleReviewID
+        ).get() == .none)
+        #expect(try await model.pendingSSHHostKeyConfirmation(
+            for: host,
+            reviewID: currentReviewID
+        ).get() == .none)
+
+        model.cancelSSHAuthentication(surfaceID: staleReviewID)
+        #expect(model.hostSSHSession != nil)
+        #expect(releases.load() == 0)
+
+        model.cancelSSHAuthentication(surfaceID: currentReviewID)
+        await waitUntil { releases.load() == 1 }
+        #expect(model.hostSSHSession == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("completed recovery authentication hands off its lease")
+    func completedRecoveryAuthenticationHandsOffLease() async throws {
+        let environment = try setupStandardEnvironment()
+        let releases = LockedValue(0)
+        let pool = KwtSSHConnectionPool { route, _ in
+            KwtSSHTestLease(
+                routeIdentity: route.routeIdentity,
+                releaseCount: releases
+            )
+        }
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(hostname: "recovery.example.test")
+        )
+        let host = SSHHost(
+            configKey: "recovery",
+            name: "Recovery",
+            platform: .linux,
+            sshDestination: "recovery.example.test"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            hostSSHSessionProvider: { sessionHost, destination in
+                KwtSSHConnectionSession(
+                    route: route,
+                    host: sessionHost,
+                    destination: destination,
+                    pool: pool
+                )
+            }
+        )
+
+        let requirement = await model.pendingSSHHostKeyConfirmation(for: host)
+        #expect(try requirement.get() == .none)
+        let surfaceID = UUID()
+        _ = model.sshAuthenticationView(surfaceID: surfaceID, for: host)
+
+        var nextOwner: Task<KwtSSHConnection, Error>?
+        await model.completeSSHAuthentication(
+            surfaceID: surfaceID,
+            startingNextOwner: {
+                nextOwner = Task {
+                    try await pool.acquire(
+                        route: route,
+                        prompt: { _ in "" }
+                    )
+                }
+            }
+        )
+        let task = try #require(nextOwner)
+        let connection = try await task.value
+
+        #expect(releases.load() == 0)
+        #expect(model.hostSSHSession == nil)
+        try await connection.release()
+        #expect(releases.load() == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a new host check replaces a failed SSH session")
+    func hostCheckReplacesFailedSSHSession() async throws {
+        let environment = try setupStandardEnvironment()
+        let sessions = LockedValue(0)
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(hostname: "build.example.test")
+        )
+        let host = SSHHost(
+            configKey: "builder",
+            name: "Builder",
+            platform: .linux,
+            sshDestination: "build.example.test"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            hostSSHSessionProvider: { sessionHost, destination in
+                sessions.withLock { $0 += 1 }
+                let attempt = sessions.load()
+                return KwtSSHConnectionSession(
+                    route: route,
+                    host: sessionHost,
+                    destination: destination,
+                    pool: KwtSSHConnectionPool { route, _ in
+                        if attempt == 1 {
+                            throw KwtSSHLeaseError.operationFailed(
+                                code: "ssh_connection_failed",
+                                message: "Connection failed.",
+                                retryable: true
+                            )
+                        }
+                        return KwtSSHTestLease(
+                            routeIdentity: route.routeIdentity
+                        )
+                    }
+                )
+            }
+        )
+
+        let first = await model.pendingSSHHostKeyConfirmation(for: host)
+        guard case .failure = first else {
+            Issue.record("Expected the first host check to fail")
+            return
+        }
+        let second = await model.pendingSSHHostKeyConfirmation(for: host)
+
+        #expect(try second.get() == .none)
+        #expect(sessions.load() == 2)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("concurrent presentation acquisitions do not cancel each other")
+    func concurrentPresentationAcquisitionsRemainIndependent() async throws {
+        let environment = try setupStandardEnvironment()
+        let firstGate = BlockingGate()
+        let secondGate = BlockingGate()
+        defer {
+            firstGate.release()
+            secondGate.release()
+        }
+        let releases = LockedValue(0)
+        let pool = KwtSSHConnectionPool { route, _ in
+            if route.logicalTarget.hostname == "first.example.test" {
+                firstGate.wait()
+            } else {
+                secondGate.wait()
+            }
+            return KwtSSHTestLease(
+                routeIdentity: route.routeIdentity,
+                releaseCount: releases
+            )
+        }
+        let coordinator = KwtSSHAcquisitionCoordinator(
+            resolve: { request in
+                KwtSSHRouteSnapshot.fixture(
+                    logicalTarget: KwtSSHTarget(
+                        hostname: request.host.hostname,
+                        user: request.host.user,
+                        port: request.host.port
+                    ),
+                    routeIdentity: "sha256:\(request.host.hostname)"
+                )
+            },
+            pool: pool
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            presentationSSHConnectionProvider: nil,
+            presentationSSHAcquisitionCoordinator: coordinator
+        )
+        let firstHost = SSHHostInfo(
+            user: "dev",
+            hostname: "first.example.test",
+            port: nil
+        )
+        let secondHost = SSHHostInfo(
+            user: "dev",
+            hostname: "second.example.test",
+            port: nil
+        )
+
+        let first = Task {
+            try await model.acquirePresentationSSHConnection(
+                hostID: UUID(),
+                info: firstHost
+            )
+        }
+        await waitUntil { firstGate.didStart }
+        let second = Task {
+            try await model.acquirePresentationSSHConnection(
+                hostID: UUID(),
+                info: secondHost
+            )
+        }
+        await waitUntil { secondGate.didStart }
+        firstGate.release()
+        secondGate.release()
+
+        let firstConnection = try await first.value
+        let secondConnection = try await second.value
+        #expect(firstConnection.routeIdentity == "sha256:first.example.test")
+        #expect(secondConnection.routeIdentity == "sha256:second.example.test")
+        try await firstConnection.release()
+        try await secondConnection.release()
+        #expect(releases.load() == 2)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "failed presentation acquisitions resume after retry",
+        arguments: [true, false]
+    )
+    func failedPresentationAcquisitionResumesAfterRetry(
+        promptsBeforeFailure: Bool
+    ) async throws {
+        let environment = try setupStandardEnvironment()
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "builder.example.test",
+            port: nil
+        )
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(
+                hostname: host.hostname,
+                user: host.user
+            ),
+            targets: [KwtSSHResolvedTarget(
+                logicalTarget: KwtSSHTarget(
+                    hostname: host.hostname,
+                    user: host.user
+                ),
+                effectiveTarget: KwtSSHTarget(
+                    hostname: host.hostname,
+                    user: host.user
+                ),
+                displayTarget: SSHDestination.render(host),
+                hostKeyAlias: nil,
+                strictHostKeyChecking: "ask",
+                projection: KwtSSHExecutionProjection(
+                    arguments: ["-F", "/dev/null"]
+                )
+            )]
+        )
+        let attempts = LockedValue(0)
+        let releases = LockedValue(0)
+        let coordinator = KwtSSHAcquisitionCoordinator(
+            resolve: { _ in route },
+            pool: KwtSSHConnectionPool { route, prompt in
+                attempts.withLock { $0 += 1 }
+                if attempts.load() == 1, promptsBeforeFailure {
+                    _ = try await prompt(.fixture(
+                        id: "password-1",
+                        kind: .authentication,
+                        message: "Password:",
+                        route: route,
+                        hopIndex: 0
+                    ))
+                    throw KwtSSHLeaseError.operationFailed(
+                        code: "ssh_connection_failed",
+                        message: "Authentication failed.",
+                        retryable: true
+                    )
+                }
+                if attempts.load() == 1 {
+                    throw KwtSSHLeaseError.routeChanged
+                }
+                return KwtSSHTestLease(
+                    routeIdentity: route.routeIdentity,
+                    releaseCount: releases
+                )
+            }
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            presentationSSHConnectionProvider: nil,
+            presentationSSHAcquisitionCoordinator: coordinator
+        )
+
+        let acquisition = Task {
+            try await model.acquirePresentationSSHConnection(
+                hostID: UUID(),
+                info: host
+            )
+        }
+        if promptsBeforeFailure {
+            await waitUntilMainActor {
+                model.presentationSSHSession?.isAwaitingPrompt == true
+            }
+            model.presentationSSHSession?.submit("incorrect")
+        }
+
+        await waitUntilMainActor {
+            guard let session = model.presentationSSHSession else {
+                return false
+            }
+            if promptsBeforeFailure {
+                return session.state
+                    == .failed("Authentication failed.")
+            }
+            return session.state == .configurationChanged
+        }
+        let session = try #require(model.presentationSSHSession)
+        session.retry()
+
+        let connection = try await acquisition.value
+        #expect(connection.routeIdentity == route.routeIdentity)
+        #expect(model.presentationSSHSession == nil)
+        #expect(attempts.load() == 2)
+        try await connection.release()
+        #expect(releases.load() == 1)
         await model.shutdown()
     }
 
@@ -825,7 +1460,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            sshHostProbeRunner: { _, _ in
+            sshHostProbeRunner: { _, _, _ in
                 (
                     status: 127,
                     stdout: WorkspaceTmuxTestSupport.probeOutput([
@@ -862,7 +1497,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            sshHostProbeRunner: { _, _ in
+            sshHostProbeRunner: { _, _, _ in
                 (
                     status: 255,
                     stdout:
@@ -905,7 +1540,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            sshHostProbeRunner: { _, _ in
+            sshHostProbeRunner: { _, _, _ in
                 (
                     status: status,
                     stdout: WorkspaceTmuxTestSupport.probeOutput([
@@ -943,7 +1578,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            sshHostProbeRunner: { _, _ in
+            sshHostProbeRunner: { _, _, _ in
                 (
                     status: -124,
                     stdout: "",
@@ -972,14 +1607,133 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("failed host probe invalidates its shared SSH generation")
+    func failedHostProbeInvalidatesConnection() async throws {
+        let environment = try setupStandardEnvironment()
+        let acquisitions = LockedValue(0)
+        let releases = LockedValue(0)
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(hostname: "dead.example.test")
+        )
+        let pool = KwtSSHConnectionPool { route, _ in
+            acquisitions.withLock { $0 += 1 }
+            let generation = UInt64(acquisitions.load())
+            return KwtSSHTestLease(
+                routeIdentity: route.routeIdentity,
+                generation: generation,
+                arguments: ["-S", "/tmp/dead-\(generation).sock"],
+                releaseCount: releases
+            )
+        }
+        let anchor = try await pool.acquire(route: route, prompt: { _ in "" })
+        let host = SSHHost(
+            configKey: "dead",
+            name: "Dead",
+            platform: .linux,
+            sshDestination: "dead.example.test"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { _, _, _ in
+                (
+                    status: 255,
+                    stdout: "",
+                    stderr: "Control socket connect(/tmp/dead.sock): No such file"
+                )
+            },
+            hostSSHConnectionProvider: nil,
+            hostSSHSessionProvider: { sessionHost, destination in
+                KwtSSHConnectionSession(
+                    route: route,
+                    host: sessionHost,
+                    destination: destination,
+                    pool: pool
+                )
+            }
+        )
+
+        _ = await model.probeSSHHost(
+            host,
+            protocolNonce: WorkspaceTmuxTestSupport.probeNonce
+        )
+        let replacement = try await pool.acquire(
+            route: route,
+            prompt: { _ in "" }
+        )
+
+        #expect(replacement.generation == 2)
+        #expect(releases.load() == 0)
+        try await anchor.release()
+        #expect(releases.load() == 1)
+        try await replacement.release()
+        #expect(releases.load() == 2)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("canceling a host probe stops its runner and releases its lease")
+    func cancelingHostProbeStopsRunnerAndReleasesConnection() async throws {
+        let environment = try setupStandardEnvironment()
+        let probeState = LockedValue((started: false, canceled: false))
+        let releases = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { _, _, _ in
+                probeState.withLock { $0.started = true }
+                let deadline = Date().addingTimeInterval(0.25)
+                while Date() < deadline {
+                    if Task.isCancelled {
+                        probeState.withLock { $0.canceled = true }
+                        return (
+                            status: AccountCommandRunner.cancelledStatus,
+                            stdout: "",
+                            stderr: ""
+                        )
+                    }
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                return (status: 255, stdout: "", stderr: "timed out")
+            },
+            hostSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
+                    release: { releases.withLock { $0 += 1 } }
+                )
+            }
+        )
+        let host = SSHHost(
+            configKey: "cancel-probe",
+            name: "Cancel Probe",
+            platform: .linux,
+            sshDestination: "cancel-probe.example.test"
+        )
+
+        let probe = Task {
+            await model.probeSSHHost(
+                host,
+                protocolNonce: WorkspaceTmuxTestSupport.probeNonce
+            )
+        }
+        await waitUntilMainActor { probeState.load().started }
+        probe.cancel()
+        _ = await probe.value
+
+        #expect(probeState.load().canceled)
+        #expect(releases.load() == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("connection probe uses native PowerShell for Windows hosts")
     func connectionProbeUsesWindowsPowerShell() async throws {
         let environment = try setupStandardEnvironment()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            sshHostProbeRunner: { host, command in
+            sshHostProbeRunner: { host, connectionArguments, command in
                 #expect(host.platform == .windows)
+                #expect(connectionArguments == ["-test-connection"])
                 #expect(command.contains("Get-Command tmux.exe"))
                 #expect(command.contains("[Console]::Out.WriteLine()"))
                 #expect(command.contains("GHOSTHUB_KWT_AVAILABLE"))
@@ -1034,7 +1788,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            sshHostProbeRunner: { _, _ in
+            sshHostProbeRunner: { _, _, _ in
                 (
                     status: 127,
                     stdout: WorkspaceTmuxTestSupport.probeOutput([
