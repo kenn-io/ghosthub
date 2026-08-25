@@ -141,6 +141,38 @@ async fn attach_session(
             }
         }
     };
+    // Revalidate after acquiring the lock, before spawning: the biased
+    // select prioritizes the lock, so a shutdown or a peer close that
+    // became ready in the same poll would otherwise launch a shell for a
+    // stopping server or an abandoned connection. A stopping server is
+    // refused, and one non-blocking drain catches a close/EOF (or a final
+    // control frame) already waiting on the socket.
+    if *shutdown.borrow() {
+        close(&mut socket, close_code::AWAY, "server shutting down").await;
+        return;
+    }
+    while let Ok(pending) = tokio::time::timeout(Duration::ZERO, socket.recv()).await {
+        match pending {
+            Some(Ok(Message::Text(frame))) => {
+                let Some(resize) = parse_resize(&frame) else {
+                    close(&mut socket, close_code::POLICY, "invalid resize").await;
+                    return;
+                };
+                geometry = resize;
+            }
+            Some(Ok(Message::Binary(bytes))) => {
+                if queued_input.len() + bytes.len() > MAX_QUEUED_INPUT_BYTES {
+                    close(&mut socket, close_code::POLICY, "input overflow").await;
+                    return;
+                }
+                queued_input.extend_from_slice(&bytes);
+            }
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+            // A close/EOF/error already waiting means the viewer left
+            // before its turn; do not spawn for it.
+            _ => return,
+        }
+    }
     let spawned = tokio::task::spawn_blocking(move || {
         let (program, args) = local_client();
         ByteRelayWorker::attach_command(

@@ -1159,6 +1159,33 @@ fn a_stalled_reader_releases_the_attachment_lock() {
     await_echo(&mut second, "second-live");
 }
 
+/// A queued attachment that abandons its connection before its turn must
+/// not hold or wedge the serialization lock: a later attachment still
+/// reaches a live shell. (The exact lock-and-close-ready-in-one-poll race
+/// is timing-dependent; this guards the observable property — the lock
+/// cycles cleanly through the abandoned attachment.)
+#[test]
+fn a_queued_attachment_that_closes_does_not_wedge_the_lock() {
+    let server = Server::start().expect("start server");
+    let mut first = attach_shell(&server);
+    await_echo(&mut first, "first-live");
+
+    // Two more complete their hellos and queue behind the lock the first
+    // holds; the middle one then abandons its connection.
+    let abandoned = attach_shell(&server);
+    let mut third = attach_shell(&server);
+    third
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_mins(1)))
+        .expect("read timeout");
+    drop(abandoned);
+
+    // Releasing the first must let the lock cycle past the abandoned
+    // attachment to the third.
+    drop(first);
+    await_echo(&mut third, "third-live");
+}
+
 /// Open an authenticated attach socket and complete the hello exchange.
 fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
     let (status, socket) = upgrade_at(
