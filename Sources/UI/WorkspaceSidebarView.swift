@@ -463,11 +463,12 @@ struct WorkspaceSidebarView: View {
         .padding(.vertical, 1)
         .background {
             ZStack {
-                WorkspaceSurfaceColor.color(
-                    opacity: backgroundAppearance.isTransparent
-                        ? backgroundAppearance.opacity
-                        : 1.0
-                )
+                // The sidebar column already paints the tinted surface when
+                // transparent; repainting it here would compound the alpha
+                // and make the header block more opaque than the rest.
+                backgroundAppearance.isTransparent
+                    ? Color.clear
+                    : WorkspaceSurfaceColor.color
                 Color.primary.opacity(
                     colorSchemeContrast == .increased ? 0.08 : 0.035
                 )
