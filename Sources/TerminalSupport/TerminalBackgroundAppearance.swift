@@ -3,7 +3,11 @@ public enum TerminalBackgroundBlur: Equatable, Sendable {
     case radius(Int)
     /// macOS 26 glass styles (config c-values -1/-2). The window still goes
     /// transparent, but the libghostty radius-blur call is skipped, matching
-    /// Ghostty.app.
+    /// Ghostty.app: the embedded blur function would pass the negative glass
+    /// value straight to CGSSetWindowBackgroundBlurRadius. Like Ghostty.app,
+    /// a radius installed by an earlier config survives a live reload into a
+    /// glass style; Ghosthub does not render glass and cannot clear the
+    /// radius without calling private CGS API directly.
     case systemGlass
 }
 
