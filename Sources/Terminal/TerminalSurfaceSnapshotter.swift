@@ -276,7 +276,13 @@ public final class TerminalSurfaceSnapshotter {
         return (bytes + alignment - 1) / alignment * alignment
     }
 
-    private nonisolated static func makeThumbnail(
+    /// Thumbnails flatten over this fill; a translucent layer color under
+    /// background-opacity < 1 must not let the sidebar show through previews.
+    nonisolated static func opaqueFill(from color: CGColor?) -> CGColor {
+        color?.copy(alpha: 1) ?? NSColor.black.cgColor
+    }
+
+    nonisolated static func makeThumbnail(
         _ sourceImage: CGImage,
         outputSize: (width: Int, height: Int),
         backgroundColor: CGColor
@@ -296,7 +302,7 @@ public final class TerminalSurfaceSnapshotter {
             ).union(.byteOrder32Little).rawValue
         ) else { return nil }
         let outputSize = CGSize(width: outputWidth, height: outputHeight)
-        context.setFillColor(backgroundColor)
+        context.setFillColor(opaqueFill(from: backgroundColor))
         context.fill(CGRect(origin: .zero, size: outputSize))
         context.interpolationQuality = .high
         let sourceSize = CGSize(
