@@ -788,6 +788,10 @@ final class TmuxSessionPreviewCoordinator {
             }
             return
         }
+        // Preview sizing can be rejected while libghostty is still
+        // initializing, and no notification reports when it settles, so each
+        // capture re-drives the surface's retained tmux grid until adopted.
+        presentation.surface()?.ensurePreviewGridSize()
         let captureGeneration = generations[key, default: 0]
         let presentationVersion = version(of: presentation)
         let previousToken = previewStates[key]?.visibleFrame?.captureToken

@@ -529,7 +529,11 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// fit in the existing bounds, so control-mode panes must report a fresh
     /// grid to tmux immediately after the binding action lands.
     func refreshGridSize() {
-        if previewGridSize != nil, applyPreviewGridSize() {
+        if previewGridSize != nil {
+            // A rejected apply must not fall back to view bounds: a parked
+            // preview's bounds still hold the creation frame, and sizing to
+            // them would discard the retained tmux grid.
+            _ = applyPreviewGridSize()
             return
         }
         let backingSize = convertToBacking(bounds.size)
@@ -622,12 +626,26 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Sizes a hidden preview surface to the tmux window's existing grid.
     /// The preview client must have tmux's `ignore-size` flag while this is
     /// applied so the local rendering surface cannot change the shared window.
+    /// Returns whether libghostty adopted the grid. Sizing races surface
+    /// initialization, so a false result is not final: the retained grid is
+    /// re-driven through `ensurePreviewGridSize()`.
     @discardableResult
     public func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool {
         guard columns > 0, rows > 0 else { return false }
         clearsPreviewGridOnInteractiveMount = false
         previewGridSize = (columns, rows)
         return applyPreviewGridSize()
+    }
+
+    /// Re-applies retained preview sizing when libghostty has not yet
+    /// adopted it. The initial apply can be rejected while the surface is
+    /// still initializing, and libghostty posts no notification when its
+    /// metrics settle, so periodic preview refresh drives convergence.
+    public func ensurePreviewGridSize() {
+        guard previewGridSize != nil,
+              !clearsPreviewGridOnInteractiveMount
+        else { return }
+        _ = applyPreviewGridSize()
     }
 
     /// Releases preview sizing before the caller clears tmux's `ignore-size`
@@ -656,6 +674,13 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             return false
         }
         let current = ghostty_surface_size(surface)
+        if Int(current.columns) == previewGridSize.columns,
+           Int(current.rows) == previewGridSize.rows {
+            if surfaceSize == nil {
+                surfaceSize = current
+            }
+            return true
+        }
         guard current.columns > 0, current.rows > 0,
               current.width_px > 0, current.height_px > 0,
               current.cell_width_px > 0, current.cell_height_px > 0
@@ -686,7 +711,14 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         // it. Preview sizing changes libghostty's render grid only; changing
         // the reusable view's frame here poisons SwiftUI's later interactive
         // layout with the parked grid's pixel dimensions.
-        return true
+        //
+        // Success means adoption, not merely a submitted resize: a surface
+        // mid-initialization can pass the metric guards yet not take the
+        // requested grid, and would otherwise keep rendering its creation
+        // default while the tmux client tty already has the session size.
+        let applied = ghostty_surface_size(surface)
+        return Int(applied.columns) == previewGridSize.columns
+            && Int(applied.rows) == previewGridSize.rows
     }
 
     /// Inject bytes into the terminal as OUTPUT (as if read from the pty).

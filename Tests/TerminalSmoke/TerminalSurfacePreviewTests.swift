@@ -1024,6 +1024,43 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(view.frame, originalFrame)
     }
 
+    func testPreviewSizingConvergesAfterRejectedInitialApply() throws {
+        let view = try makeSurface()
+        let realSizeSetter = TerminalSurfaceView.sizeSetter
+        defer { TerminalSurfaceView.sizeSetter = realSizeSetter }
+        // Simulate libghostty not adopting the resize while the surface is
+        // still initializing.
+        TerminalSurfaceView.sizeSetter = { _, _, _ in }
+
+        XCTAssertFalse(view.sizeForPreviewGrid(columns: 123, rows: 41))
+
+        TerminalSurfaceView.sizeSetter = realSizeSetter
+        view.ensurePreviewGridSize()
+
+        let converged = try XCTUnwrap(view.surfaceSize)
+        XCTAssertEqual(Int(converged.columns), 123)
+        XCTAssertEqual(Int(converged.rows), 41)
+    }
+
+    func testEnsurePreviewGridSizeIsIdleOnceAdopted() throws {
+        let view = try makeSurface()
+        XCTAssertTrue(view.sizeForPreviewGrid(columns: 96, rows: 28))
+        let realSizeSetter = TerminalSurfaceView.sizeSetter
+        defer { TerminalSurfaceView.sizeSetter = realSizeSetter }
+        var resizeCount = 0
+        TerminalSurfaceView.sizeSetter = { surface, width, height in
+            resizeCount += 1
+            realSizeSetter(surface, width, height)
+        }
+
+        view.ensurePreviewGridSize()
+
+        XCTAssertEqual(resizeCount, 0)
+        let size = try XCTUnwrap(view.surfaceSize)
+        XCTAssertEqual(Int(size.columns), 96)
+        XCTAssertEqual(Int(size.rows), 28)
+    }
+
     func testPromotionPreservesPreviewGridUntilInteractiveMount() throws {
         let view = try makeSurface()
         XCTAssertTrue(view.sizeForPreviewGrid(columns: 100, rows: 30))

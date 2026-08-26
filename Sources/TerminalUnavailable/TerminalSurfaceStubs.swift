@@ -169,6 +169,7 @@ public final class TerminalSurfaceView: ObservableObject {
         _ = suspended
     }
     public func completePreviewParkingMount() {}
+    public func ensurePreviewGridSize() {}
     func setPresentationResizeDeferred(_ deferred: Bool) {
         _ = deferred
     }
