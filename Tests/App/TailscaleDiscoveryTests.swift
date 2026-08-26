@@ -132,18 +132,21 @@ struct TailscaleDiscoveryTests {
             printf '%s\n' '{"Peer":{"a":{"ID":"a","HostName":"a","DNSName":"a.tailnet.ts.net.","OS":"linux","Online":true},"b":{"ID":"b","HostName":"b","DNSName":"b.tailnet.ts.net.","OS":"linux","Online":true},"c":{"ID":"c","HostName":"c","DNSName":"c.tailnet.ts.net.","OS":"linux","Online":true},"d":{"ID":"d","HostName":"d","DNSName":"d.tailnet.ts.net.","OS":"linux","Online":true}}}'
             """
         )
+        let releaseStalledLookup = AsyncGate()
 
         let result = await TailscaleDiscovery.discoverPeers(
             tailscalePaths: [tailscale.path],
             environment: [:],
             sshUsernameProvider: { hostname in
                 if hostname == "a.tailnet.ts.net" {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    await releaseStalledLookup.wait()
+                    return nil
                 }
+                releaseStalledLookup.open()
                 return "deployer"
             },
             maximumConcurrentUsernameResolutions: 2,
-            usernameResolutionTimeoutNanoseconds: 250_000_000
+            usernameResolutionTimeoutNanoseconds: .max
         )
 
         let peers = try result.get()

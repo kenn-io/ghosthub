@@ -131,6 +131,11 @@ trap 'forward_signal HUP' HUP
 
 export TMUX_TMPDIR="$tmux_tmpdir"
 export GHOSTHUB_TEST_TMUX_RUN_ID="$run_id"
+# Swift Testing schedules test bodies independently of SwiftPM's worker flag.
+# Bound that executor so process and cancellation tests are not starved by the
+# full package starting at once. Callers can override the cap when needed.
+: "${SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH:=1}"
+export SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH
 
 # Monitor mode places the background command in its own process group so
 # cancellation reaches SwiftPM and every helper it launched.
