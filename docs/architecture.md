@@ -752,6 +752,19 @@ recursive include graph with debouncing. Invalid candidates never replace the
 last valid configuration. Automatic successes are silent, automatic failures
 remain visible, and explicit reloads publish a user-visible result.
 
+### Background transparency
+
+`LibghosttyRuntime` derives a `TerminalBackgroundAppearance` (opacity, blur)
+from `background-opacity` and `background-blur` in the loaded libghostty
+config at startup and on every config reload; libghostty remains
+authoritative for parsing. When opacity is below 1, workspace windows become
+non-opaque with a near-clear background, blur is applied through
+`ghostty_set_window_background_blur`, chrome surfaces tint the canonical
+workspace surface color at the configured opacity, and layers directly
+behind the terminal render clear. Accessibility increased-contrast forces
+opaque. Native fullscreen windows stay opaque. `ghostty.conf` is the sole
+source of truth; there is no separate Ghosthub setting.
+
 ## Session Attachment
 
 Each scene owns one active interactive presentation slot shared by tmux, Herdr,
