@@ -51,8 +51,12 @@ Tmux, Herdr, and Zellij sessions are each presented through their ordinary
 native whole-session client. The selected backend alone owns its internal
 layout. Each scene has at most one active interactive presentation.
 Already-opened tmux clients may remain retained and noninteractive, and may
-render only when the user explicitly enables session previews. A preview never
-creates another client or reconstructs tmux panes, layout, or history.
+render when the user explicitly enables session previews. On POSIX hosts, the
+Always Live mode may also connect every freshly discovered tmux session without
+activating it. Windows/psmux inventory remains unattached until the user opens
+the session because psmux has no non-sizing preview-client mode.
+Preview rendering reuses that session's retained client rather than creating a
+second client or reconstructing tmux panes, layout, or history.
 
 After an attachment reaches the connected state, Ghosthub keeps that exact
 session warm for the remainder of the app launch. One app-scoped, in-memory
@@ -757,9 +761,11 @@ remain visible, and explicit reloads publish a user-visible result.
 Each scene owns one active interactive presentation slot shared by tmux, Herdr,
 and Zellij. Selecting Herdr or Zellij hides any active retained tmux client
 before opening the peer presentation; selecting another tmux session hides the
-previous retained tmux client. Already-opened retained tmux clients may render
-as noninteractive previews when the user enables them, but previewing never
-opens another client.
+previous retained tmux client. Retained tmux clients may render as
+noninteractive previews when the user enables them. On POSIX hosts, Always
+Live deliberately creates one ordinary retained client for each freshly
+discovered session;
+previewing never creates a second client for the same session.
 Herdr discovery and attachment are supported on the local Mac and configured
 remote POSIX hosts, not experimental Windows/psmux hosts. Ghosthub shows
 running and stopped sessions. Ordinary open and restoration are attach-only;
@@ -812,31 +818,70 @@ client. Ghosthub never projects tmux windows or panes into a Swift split tree.
 Changing selection only hides the previous retained client. Pressing Cmd-W
 closes the active client, while closing its workspace window or the app closes
 every client retained by that scene; none of these paths runs `kill-session`.
-Optional sidebar previews copy width-bounded bitmap frames from these retained
-clients. A tile follows its terminal's aspect ratio between 4:3 and 2:1 and
-letterboxes only content outside those limits. Efficient mode captures on
-disclosure and whenever the active tmux presentation navigates away, even when
-its tile is collapsed. Live mode
-may keep an inactive surface mounted behind the visible workspace content and
-polls at no more than two frames per second. A process-wide budget permits at
-most four such inactive live surfaces. Parked surfaces preserve their terminal
-size and cannot receive focus, pointer input, or accessibility actions. The
-active surface stays in the detail area and is copied without reparenting.
+Optional sidebar previews are GPU-native. Libghostty renders each retained
+client into its Metal-backed IOSurface; Ghosthub uses a Metal-backed Core Image
+context to scale a changed frame into a width-bounded preview IOSurface, then
+presents that surface directly through Core Animation. The path performs no CPU
+pixel readback and creates no `Data`, `CGImage`, or `NSImage` copy. Each tile
+uses the terminal's aspect ratio so the tile shows the complete viewport
+without cropping; only degenerate terminal shapes hit the bounded preview
+canvas (height clamped to 1024 pixels) and scale to fit it. The placeholder is 16:10 until the first frame
+arrives. Frame replacement disables Core Animation transitions, and parked
+surfaces do not publish transient size changes during app activation. Efficient
+mode captures on disclosure and
+whenever the active tmux
+presentation navigates away, even when its tile is collapsed. Live mode may keep
+an inactive surface mounted behind the visible workspace content and refreshes
+at no more than two frames per second.
+A process-wide budget permits at most four such inactive live surfaces. Always
+Live attaches every freshly discovered tmux session on every reachable POSIX
+host, defaults every preview tile to expanded, and bypasses that budget. A tile
+may still be collapsed to stop its rendering work while its policy-owned
+client remains connected. Leaving Always Live detaches only clients created by
+that policy; a client the user explicitly opened remains retained. Always Live
+launches those clients incrementally so early tiles can render while a large
+fleet is still connecting. Before a hidden client attaches with tmux's
+`ignore-size` flag, Ghosthub sizes its PTY to the active window dimensions plus
+the discovered tmux status rows. This exact client grid is also reapplied after
+font and backing-scale changes. The client therefore starts at the server's
+existing size even when it is the only attached client and does not resize the
+tmux window. Opening one atomically clears `ignore-size` on that exact verified
+client before activating its retained surface. The client never detaches during
+this promotion, so servers using `destroy-unattached` cannot destroy the session
+between preview and interactive presentation. A promotion that finishes after
+newer navigation restores `ignore-size` on the same verified client and never
+activates the stale surface. If the attachment changes during promotion,
+Ghosthub retries the exact-client mutation against the replacement before it
+can activate. If stale sizing cannot be restored, Ghosthub marks the preview
+ineligible and detaches it instead of retaining a hidden sizing client. Parked
+surfaces cannot receive focus, pointer input, or accessibility actions. Parking applies the destination
+window's stable backing scale and ignores hidden-host layout changes; only an
+explicit Always Live preview-grid update may change its pixel size. AppKit reparenting
+callbacks never publish transient DPI or resize values to libghostty. App
+deactivation stops capture work but leaves retained surfaces parked, avoiding a
+fleet-wide unpark/repark cycle when Ghosthub becomes active again. The active
+surface stays in the detail area and its IOSurface is sampled without
+reparenting the terminal view.
 Preview pixels are published only after the attachment's token-bound tmux
 client identity is available; a name-based session lookup never authorizes a
-cached frame. Ghosthub revalidates that attached client after copying each
-changed frame and rejects the copy if the client switched sessions. Attachments
-that cannot supply this safe identity, including psmux and tmux older than 3.4,
-show an unavailable placeholder instead of retaining unverified pixels.
+cached frame. Ghosthub revalidates that attached client after rendering each
+changed preview IOSurface and rejects the frame if the client switched
+sessions. Always Live abandons policy attachment setup before launching a client
+when binary resolution fails or the resolved tmux version cannot supply this
+safe identity. The session remains available for an ordinary manual open.
+Windows/psmux sessions are also excluded from automatic attachment.
 Reconnect identity binding uses bounded background retries only after a preview
 requests identity. Reconnecting keeps the last frame quarantined until the new
 attachment binds to the same server and session identity, while replacement
 clears the frame without collapsing the tile.
 Off and Efficient modes schedule no preview work when a window becomes key,
-and Off does not mount the hidden parking host. Live coalesces its delayed
-parking reconciliation for the key scene. Selecting a parked preview unparks
-and activates its retained surface synchronously; snapshot and identity work
-never delay that pane-activation path.
+and Off does not mount the hidden parking host. Live and Always Live coalesce
+delayed parking reconciliation for newly available surfaces in the key scene;
+already parked surfaces remain mounted across application deactivation.
+Selecting an ordinary parked
+preview unparks and activates its retained surface synchronously. Selecting an
+Always Live client promotes its verified retained attachment to normal sizing
+before activation.
 An explicit, confirmed Kill Session action
 targets the exact session (`=<name>:`) on its selected default or protected
 socket only when discovery or a currently connected active attachment

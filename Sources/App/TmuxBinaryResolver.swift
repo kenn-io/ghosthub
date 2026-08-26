@@ -1,6 +1,7 @@
 import GhosthubTransport
 import Foundation
 import GhosthubTmux
+import GhosthubWorkspace
 
 enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
     case notFound(shell: String)
@@ -55,6 +56,8 @@ struct DiscoveredTmuxSession: Equatable, Sendable {
     var serverPID: String?
     var sessionID: String?
     var createdAt: String?
+    var activeWindowSize: TmuxGridSize?
+    var previewClientSize: TmuxGridSize?
     var managed: Bool
 
     init(
@@ -63,6 +66,8 @@ struct DiscoveredTmuxSession: Equatable, Sendable {
         serverPID: String? = nil,
         sessionID: String? = nil,
         createdAt: String?,
+        activeWindowSize: TmuxGridSize? = nil,
+        previewClientSize: TmuxGridSize? = nil,
         managed: Bool
     ) {
         self.name = name
@@ -70,6 +75,8 @@ struct DiscoveredTmuxSession: Equatable, Sendable {
         self.serverPID = serverPID
         self.sessionID = sessionID
         self.createdAt = createdAt
+        self.activeWindowSize = activeWindowSize
+        self.previewClientSize = previewClientSize
         self.managed = managed
     }
 }
@@ -340,6 +347,8 @@ struct TmuxBinaryResolver: Sendable {
         "GHOSTHUB_TMUX_SESSION_ABSENT"
     private static let discoveryFormat = discoveryPrefix
         + "\t#{session_windows}\t#{pid}\t#{session_id}\t#{session_created}"
+        + "\t#{window_width}\t#{window_height}"
+        + "\t#{status}"
         + "\t#{@ghosthub_owner}\t#{session_name}"
     private static let discoveryCommand = probeCommand
         + "; ghosthub_tmux_output=$("
@@ -564,20 +573,43 @@ struct TmuxBinaryResolver: Sendable {
                 guard line.hasPrefix(prefix) else { return nil }
                 let fields = line.split(
                     separator: "\t",
-                    maxSplits: 6,
+                    maxSplits: 9,
                     omittingEmptySubsequences: false
                 )
-                guard fields.count == 7,
+                guard fields.count == 10,
                       let windowCount = Int(fields[1]),
                       windowCount >= 0
                 else { return nil }
+                let activeWindowSize: TmuxGridSize? = if let columns = Int(fields[5]),
+                                                         let rows = Int(fields[6]),
+                                                         columns > 0, rows > 0 {
+                    TmuxGridSize(columns: columns, rows: rows)
+                } else {
+                    nil
+                }
+                let statusRows: Int? = switch fields[7] {
+                case "off": 0
+                case "on": 1
+                default: Int(fields[7]).flatMap { $0 >= 0 ? $0 : nil }
+                }
+                let previewClientSize: TmuxGridSize? = activeWindowSize
+                    .flatMap { size in
+                        guard let statusRows else { return nil }
+                        let (rows, overflow) = size.rows.addingReportingOverflow(
+                            statusRows
+                        )
+                        guard !overflow, rows > 0 else { return nil }
+                        return TmuxGridSize(columns: size.columns, rows: rows)
+                    }
                 return DiscoveredTmuxSession(
-                    name: String(fields[6]),
+                    name: String(fields[9]),
                     windowCount: windowCount,
                     serverPID: fields[2].isEmpty ? nil : String(fields[2]),
                     sessionID: fields[3].isEmpty ? nil : String(fields[3]),
                     createdAt: fields[4].isEmpty ? nil : String(fields[4]),
-                    managed: !fields[5].isEmpty
+                    activeWindowSize: activeWindowSize,
+                    previewClientSize: previewClientSize,
+                    managed: !fields[8].isEmpty
                 )
             }
         return .success(sessions)

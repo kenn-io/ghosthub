@@ -85,35 +85,53 @@ launch-profile command.
 
 ## Preview opened tmux sessions
 
-Choose **Settings → Terminal → Session previews**, then select **Efficient** or
-**Live**. A disclosure control appears only beside tmux sessions that you have
-already opened in that workspace. Expand it to show a bitmap preview. The tile
-adapts to the terminal's shape between 4:3 and 2:1; only
-taller or wider frames need minimal letterboxing, and content is never cropped.
+Choose **Settings → Terminal → Session previews**, then select **Efficient**,
+**Live**, or **Always Live**. Efficient and Live add a disclosure control beside
+tmux sessions that you have already opened in that workspace. Expand it to show
+a GPU-rendered preview. Always Live connects every freshly discovered tmux
+session on every reachable POSIX host and expands its tile automatically. Each
+tile follows its terminal's aspect ratio, preserving the complete frame
+without cropping.
 Selecting the preview follows the same route as selecting its session row.
 
-![Ghosthub sidebar showing an expanded live preview for an already-opened tmux session](assets/guide-session-previews.png)
+![Ghosthub sidebar showing Always Live previews expanded for discovered tmux sessions](assets/guide-session-previews.png)
 
 The modes trade resource use for freshness:
 
 - **Off** is the default. It hides preview controls, clears cached frames, and
   avoids preview GPU work.
 - **Efficient** captures when you expand a preview and when its tmux
-  presentation stops being active. It does not poll in the background.
+  presentation stops being active. It does not refresh in the background.
 - **Live** refreshes expanded previews at no more than two frames per second.
   Across the app, at most four inactive tmux surfaces can render live at once;
   an additional tile reports that the live-preview limit was reached.
+- **Always Live** connects every freshly discovered tmux session on POSIX
+  hosts, expands its preview automatically, and refreshes all expanded tiles
+  without the four-surface limit. This can use substantial CPU, GPU, memory,
+  and SSH capacity. Collapse a tile to stop rendering it while keeping its
+  client connected. Ghosthub starts the clients incrementally, so earlier
+  tiles can appear while a large session fleet is still connecting.
 
 Expansion choices stay in memory for each workspace window, including while
-the mode is Off, and reset when that window closes. Hiding the sidebar releases
-that window's live slots. Briefly switching away from Ghosthub releases all
-live slots until the app is active again.
+the mode is Off, and reset when that window closes. Hiding the sidebar or
+briefly switching away from Ghosthub stops live rendering until it is visible
+and active again. Always Live keeps its policy-owned clients connected during
+that pause.
 
-Previews never attach to unopened sessions and never add a tmux or SSH client.
-They require a token-bound client identity, which is available for tmux 3.4 or
-newer on POSIX hosts. Other attachments, including psmux, show a **Preview
-unavailable** placeholder rather than displaying pixels that Ghosthub cannot
-verify.
+Efficient and Live never attach to unopened sessions. Always Live deliberately
+adds one ordinary retained tmux or SSH client per discovered POSIX session;
+switching away from it detaches only clients created by that policy. Every mode
+reuses a session's retained client for rendering and never creates a second
+preview client. Before a hidden Always Live client attaches, Ghosthub matches
+its terminal grid to the active tmux window and status rows. This keeps the
+server-side window unchanged even when the preview is its only client; the
+sidebar tile never dictates the session size. Opening one promotes its hidden
+non-sizing client to normal interactive sizing. Previews require a token-bound
+client identity, which is available for tmux 3.4 or newer on POSIX hosts.
+Always Live skips automatic attachment when tmux cannot provide that identity
+or setup fails; the session can still be opened normally.
+Windows/psmux sessions are not attached automatically because psmux has no
+non-sizing client mode.
 During reconnect, Ghosthub hides the cached frame behind a reconnecting
 placeholder until the replacement client proves the same tmux server, session,
 and creation identity. Closing the presentation, or detecting a replacement

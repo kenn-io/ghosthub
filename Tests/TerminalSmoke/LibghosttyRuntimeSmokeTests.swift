@@ -1400,6 +1400,25 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
+    func testFontZoomReappliesParkedPreviewGrid() throws {
+        let (coordinator, config) = try makeCoordinator()
+        defer { coordinator.removeAll() }
+        let key = SurfaceKey.fixture()
+        let view = try XCTUnwrap(coordinator.surface(
+            for: key,
+            configuration: config
+        ))
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        XCTAssertTrue(view.sizeForPreviewGrid(columns: 120, rows: 41))
+
+        coordinator.applyFontZoom(.increase)
+
+        let size = try XCTUnwrap(view.surfaceSize)
+        XCTAssertEqual(Int(size.columns), 120)
+        XCTAssertEqual(Int(size.rows), 41)
+    }
+
     func testSurfaceIdentityLookupResolvesLiveView() throws {
         let (coordinator, config) = try makeCoordinator()
         let key = SurfaceKey.fixture()

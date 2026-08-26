@@ -4,7 +4,13 @@ import GhosthubTerminalSupport
 import GhosthubWorkspace
 
 @MainActor
-public final class LibghosttyRuntime: ObservableObject {
+public protocol ApplicationQuitRequestSource: AnyObject {
+    var quitRequestHandler: (() -> Void)? { get set }
+}
+
+@MainActor
+public final class LibghosttyRuntime: ObservableObject,
+    ApplicationQuitRequestSource {
     public static let shared = LibghosttyRuntime(
         pipeline: LibghosttyConfigPipeline(
             paths: LibghosttyConfigPaths(
@@ -24,6 +30,7 @@ public final class LibghosttyRuntime: ObservableObject {
 
     public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
+    public var quitRequestHandler: (() -> Void)?
 
     private let configReloadNoticeSubject =
         PassthroughSubject<LibghosttyConfigReloadNotice?, Never>()

@@ -162,6 +162,13 @@ public final class TerminalSurfaceView: ObservableObject {
     public func sizeDidChange(_ size: CGSize) {
         _ = size
     }
+    public func setParkedForPreview(_ parked: Bool) {
+        _ = parked
+    }
+    public func setPreviewRenderingSuspended(_ suspended: Bool) {
+        _ = suspended
+    }
+    public func completePreviewParkingMount() {}
     func setPresentationResizeDeferred(_ deferred: Bool) {
         _ = deferred
     }

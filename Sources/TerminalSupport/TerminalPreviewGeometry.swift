@@ -1,9 +1,9 @@
 import Foundation
 
 public enum TerminalPreviewGeometry {
-    public static let minimumAspectRatio: CGFloat = 4 / 3
-    public static let maximumAspectRatio: CGFloat = 2
     public static let placeholderAspectRatio: CGFloat = 16 / 10
+    private static let minimumCanvasDimension: CGFloat = 1
+    private static let maximumCanvasDimension: CGFloat = 1_024
 
     public static func aspectRatio(for size: CGSize?) -> CGFloat {
         guard let size,
@@ -12,10 +12,7 @@ public enum TerminalPreviewGeometry {
               size.width > 0,
               size.height > 0
         else { return placeholderAspectRatio }
-        return min(
-            max(size.width / size.height, minimumAspectRatio),
-            maximumAspectRatio
-        )
+        return size.width / size.height
     }
 
     public static func thumbnailSize(
@@ -23,9 +20,20 @@ public enum TerminalPreviewGeometry {
         outputWidth: CGFloat
     ) -> CGSize {
         let aspectRatio = aspectRatio(for: sourceSize)
+        let width = min(
+            max(outputWidth.rounded(), minimumCanvasDimension),
+            maximumCanvasDimension
+        )
+        let height = min(
+            max(
+                (width / aspectRatio).rounded(),
+                minimumCanvasDimension
+            ),
+            maximumCanvasDimension
+        )
         return CGSize(
-            width: outputWidth,
-            height: (outputWidth / aspectRatio).rounded()
+            width: width,
+            height: height
         )
     }
 }
