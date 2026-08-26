@@ -762,8 +762,10 @@ non-opaque with a near-clear background, blur is applied through
 `ghostty_set_window_background_blur`, chrome surfaces tint the canonical
 workspace surface color at the configured opacity, and layers directly
 behind the terminal render clear. Accessibility increased-contrast forces
-opaque. Native fullscreen windows stay opaque. `ghostty.conf` is the sole
-source of truth; there is no separate Ghosthub setting.
+opaque. Native fullscreen windows stay opaque. There is no separate Ghosthub
+setting; effective values come from the loaded configuration graph rooted at
+`ghostty.conf`, where the project's `terminal.conf` and recursive
+`config-file` includes can override the root.
 
 ## Session Attachment
 
