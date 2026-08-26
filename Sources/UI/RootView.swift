@@ -25,6 +25,8 @@ public struct RootView: View {
     @State private var isSidebarTransitioning = false
     @State private var sidebarTransitionID = UUID()
     @Environment(\.controlActiveState) private var controlActiveState
+    @Environment(\.terminalBackgroundAppearance)
+    private var backgroundAppearance
     @State private var lastKnownWindowWidth: CGFloat = 0
     @State private var sidePanelAutoCollapsed = false
     @State private var sidePanelUserOverride = false
@@ -531,7 +533,11 @@ public struct RootView: View {
 
     private var workspaceContent: some View {
         workspaceColumns
-            .background(WorkspaceSurfaceColor.color)
+            .background(
+                backgroundAppearance.isTransparent
+                    ? Color.clear
+                    : WorkspaceSurfaceColor.color
+            )
     }
 
     private var workspaceColumns: some View {
@@ -754,7 +760,13 @@ public struct RootView: View {
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(WorkspaceSurfaceColor.color)
+        .background(
+            WorkspaceSurfaceColor.color(
+                opacity: backgroundAppearance.isTransparent
+                    ? backgroundAppearance.opacity
+                    : 1.0
+            )
+        )
     }
 
     private func reviewSSHHostKey(
@@ -1699,8 +1711,17 @@ public struct RootView: View {
             if let parkingView = content.tmuxSessionPreviewParkingBuilder?() {
                 parkingView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(
+                        backgroundAppearance.isTransparent ? 0.001 : 1.0
+                    )
             }
-            WorkspaceSurfaceColor.color
+            // Parked preview surfaces must keep rendering (snapshots need
+            // them drawn) but stay hidden: an opaque cover would block the
+            // desktop when the window is transparent, a clear one would
+            // expose them, so near-zero opacity hides them instead.
+            (backgroundAppearance.isTransparent
+                ? Color.clear
+                : WorkspaceSurfaceColor.color)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             terminalWorkspaceContent
         }

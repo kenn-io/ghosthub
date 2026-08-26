@@ -151,6 +151,8 @@ struct WorkspaceSidebarView: View {
     @Environment(\.accessibilityDifferentiateWithoutColor)
     private var differentiateWithoutColor
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.terminalBackgroundAppearance)
+    private var backgroundAppearance
     let snapshot: WorkspaceSnapshot
     let sectionCache: WorkspaceSidebarSectionCache?
     let snapshotRevision: UInt64
@@ -461,7 +463,11 @@ struct WorkspaceSidebarView: View {
         .padding(.vertical, 1)
         .background {
             ZStack {
-                WorkspaceSurfaceColor.color
+                WorkspaceSurfaceColor.color(
+                    opacity: backgroundAppearance.isTransparent
+                        ? backgroundAppearance.opacity
+                        : 1.0
+                )
                 Color.primary.opacity(
                     colorSchemeContrast == .increased ? 0.08 : 0.035
                 )

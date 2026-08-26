@@ -93,6 +93,18 @@ public enum WorkspaceSurfaceColor {
 
     public static let color: Color = .init(nsColor: nsColor)
 
+    /// Canonical surface color at a given alpha, for translucent chrome when
+    /// the terminal background is transparent. Alpha 1 returns the canonical
+    /// opaque color.
+    public static func nsColor(opacity: Double) -> NSColor {
+        guard opacity < 1.0 else { return nsColor }
+        return nsColor.withAlphaComponent(opacity)
+    }
+
+    public static func color(opacity: Double) -> Color {
+        Color(nsColor: nsColor(opacity: opacity))
+    }
+
     public static func hexString(
         for appearance: NSAppearance
     ) -> String {

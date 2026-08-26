@@ -1244,7 +1244,16 @@ struct WorkspaceWindow: View {
             \.availableSiblingShortcuts,
             sceneModel.availableSiblingShortcuts
         )
-        .background(WorkspaceSurfaceColor.color.ignoresSafeArea())
+        .environment(
+            \.terminalBackgroundAppearance,
+            terminalRuntime.backgroundAppearance
+        )
+        .background(
+            (terminalRuntime.backgroundAppearance.isTransparent
+                ? Color.clear
+                : WorkspaceSurfaceColor.color)
+                .ignoresSafeArea()
+        )
         .overlay(alignment: .top) {
             if let notice = visibleConfigReloadNotice {
                 ConfigReloadNoticeView(
