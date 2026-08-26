@@ -1327,6 +1327,16 @@ struct WorkspaceWindow: View {
             WorkspaceWindowChrome.apply(to: window)
         }
         .onReceive(NotificationCenter.default.publisher(
+            for: NSWindow.didEnterFullScreenNotification
+        )) { notification in
+            reapplyChromeForFullscreenTransition(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSWindow.didExitFullScreenNotification
+        )) { notification in
+            reapplyChromeForFullscreenTransition(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(
             for: .ghosthubRenameWorkspaceWindow
         )) { notification in
             guard let requestedWindow = notification.object as? NSWindow,
@@ -1563,6 +1573,17 @@ struct WorkspaceWindow: View {
             automaticTitle: automaticWindowTitle
         )
     }
+
+    #if canImport(AppKit)
+    private func reapplyChromeForFullscreenTransition(
+        _ notification: Notification
+    ) {
+        guard let window = notification.object as? NSWindow,
+              window === sceneModel.workspaceWindow
+        else { return }
+        WorkspaceWindowChrome.apply(to: window)
+    }
+    #endif
 }
 
 private struct WorkspaceWindowTitleRenameRequest: Identifiable {
