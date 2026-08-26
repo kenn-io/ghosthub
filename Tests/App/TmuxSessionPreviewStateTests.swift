@@ -2,6 +2,7 @@ import Foundation
 import GhosthubSettings
 import GhosthubTerminal
 import GhosthubTmux
+import GhosthubTransport
 import Testing
 @testable import GhosthubApp
 
@@ -13,6 +14,15 @@ struct TmuxSessionPreviewStateTests {
         createdAt: "1000"
     )
     private let capturedAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+    @Test("connecting status takes precedence over the empty preview")
+    func connectingStatus() {
+        #expect(TmuxSessionPreviewStatus.text(
+            connectionState: .connecting,
+            placeholder: .awaitingFirstFrame,
+            capturedAt: nil
+        ) == "Connecting")
+    }
 
     @Test("new state awaits its first frame")
     func emptyState() {

@@ -12,6 +12,7 @@ public final class LivePreviewParkingHost: NSView {
     }
 
     private var geometryBySurface: [ObjectIdentifier: Geometry] = [:]
+    private var renderingSuspended = false
 
     override public init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -52,8 +53,8 @@ public final class LivePreviewParkingHost: NSView {
         )
         surface.setParkedForPreview(true)
         addSubview(surface)
-        surface.bounds = geometry.bounds
-        surface.frame = geometry.frame
+        surface.completePreviewParkingMount()
+        surface.setPreviewRenderingSuspended(renderingSuspended)
         geometryBySurface[identifier] = geometry
     }
 
@@ -68,6 +69,10 @@ public final class LivePreviewParkingHost: NSView {
         let geometry = geometryBySurface.removeValue(
             forKey: ObjectIdentifier(surface)
         )
+        // Stop libghostty before AppKit mutates the layer hierarchy. The
+        // renderer reads CALayer geometry independently; letting it draw
+        // during removal can expose transient invalid bounds.
+        surface.setPreviewRenderingSuspended(true)
         surface.removeFromSuperview()
         if let geometry {
             surface.bounds = geometry.bounds
@@ -86,6 +91,16 @@ public final class LivePreviewParkingHost: NSView {
 
     public func contains(_ surface: TerminalSurfaceView) -> Bool {
         surface.superview === self
+    }
+
+    public func setRenderingSuspended(_ suspended: Bool) {
+        guard renderingSuspended != suspended else { return }
+        renderingSuspended = suspended
+        for surface in subviews.compactMap({
+            $0 as? TerminalSurfaceView
+        }) {
+            surface.setPreviewRenderingSuspended(suspended)
+        }
     }
 
     private func configure() {

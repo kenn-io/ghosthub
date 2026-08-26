@@ -7,6 +7,16 @@ public enum TmuxAttachmentLaunchMode: String, Codable, Equatable, Sendable {
     case create
 }
 
+public struct TmuxClientSize: Equatable, Sendable {
+    public let columns: Int
+    public let rows: Int
+
+    public init(columns: Int, rows: Int) {
+        self.columns = columns
+        self.rows = rows
+    }
+}
+
 /// An ordinary tmux client launched inside a libghostty terminal surface.
 /// Tmux owns rendering, windows, panes, history, input, and process lifetime.
 /// Ghosthub enables tmux's session mouse option before presenting the client so
@@ -20,6 +30,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     public let presentationStyle: TmuxPresentationStyle?
     public var launchMode: TmuxAttachmentLaunchMode
     public let initialCommand: String?
+    public let ignoresClientSize: Bool
+    public let initialClientSize: TmuxClientSize?
 
     public init(
         sessionName: String,
@@ -29,7 +41,9 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         protectedWorkspacePath: String? = nil,
         presentationStyle: TmuxPresentationStyle? = nil,
         launchMode: TmuxAttachmentLaunchMode = .attach,
-        initialCommand: String? = nil
+        initialCommand: String? = nil,
+        ignoresClientSize: Bool = false,
+        initialClientSize: TmuxClientSize? = nil
     ) {
         self.sessionName = sessionName
         self.host = host
@@ -39,6 +53,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         self.presentationStyle = presentationStyle
         self.launchMode = launchMode
         self.initialCommand = initialCommand
+        self.ignoresClientSize = ignoresClientSize
+        self.initialClientSize = initialClientSize
     }
 
     public func attachCommand(
@@ -139,7 +155,15 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             } else {
                 recordedCommand = command
             }
-            return surfaceAccountLoginShellCommand(recordedCommand)
+            let terminalCommand = if let initialSizeCommand {
+                shellCommand([
+                    "/bin/sh", "-c",
+                    initialSizeCommand + "; exec " + recordedCommand,
+                ])
+            } else {
+                recordedCommand
+            }
+            return surfaceAccountLoginShellCommand(terminalCommand)
         }
     }
 
@@ -148,11 +172,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         kwtPath: String?,
         workingDirectory: String?
     ) -> String {
-        let attach = tmuxArguments(
-            tmuxPath,
-            "attach-session", "-E", "-t", "=\(sessionName)"
-        ).map(shellQuotedCommandArgument).joined(separator: " ")
+        let attach = tmuxArguments(tmuxPath, attachArguments)
+            .map(shellQuotedCommandArgument).joined(separator: " ")
         var commands = ["unset TMUX TMUX_PANE"]
+        if let initialSizeCommand {
+            commands.append(initialSizeCommand)
+        }
         switch launchMode {
         case .attach:
             if let protectedWorkspacePath {
@@ -273,6 +298,25 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         )
     }
 
+    private var attachArguments: [String] {
+        var arguments = ["attach-session", "-E"]
+        if ignoresClientSize {
+            arguments += ["-f", "ignore-size"]
+        }
+        arguments += ["-t", "=\(sessionName)"]
+        return arguments
+    }
+
+    private var initialSizeCommand: String? {
+        guard ignoresClientSize,
+              let initialClientSize,
+              initialClientSize.columns > 0,
+              initialClientSize.rows > 0
+        else { return nil }
+        return "stty columns \(initialClientSize.columns)"
+            + " rows \(initialClientSize.rows) || exit $?"
+    }
+
     /// Kwt establishes or repairs the complete session before starting its
     /// tmux client. Run kwt as the foreground terminal's background child just
     /// long enough to observe a client on this launch's PTY, then enable mouse
@@ -350,10 +394,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             }
             attach = protectedAttach
         } else {
-            let tmuxAttach = tmuxArguments(
-                tmuxPath,
-                "attach-session", "-E", "-t", "=\(sessionName)"
-            ).map(shellQuotedCommandArgument).joined(separator: " ")
+            let tmuxAttach = tmuxArguments(tmuxPath, attachArguments)
+                .map(shellQuotedCommandArgument).joined(separator: " ")
             attach = "exec \(tmuxAttach)"
         }
         var remoteAttachCommands = ["unset TMUX TMUX_PANE"]
@@ -493,9 +535,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         } else {
             attach = windowsMuxCommand(
                 tmuxPath: tmuxPath,
-                arguments: [
-                    "attach-session", "-E", "-t", "=\(sessionName)",
-                ]
+                arguments: attachArguments
             )
         }
         let script = """
@@ -779,6 +819,13 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     private func tmuxArguments(
         _ tmuxPath: String,
         _ arguments: String...
+    ) -> [String] {
+        tmuxArguments(tmuxPath, arguments)
+    }
+
+    private func tmuxArguments(
+        _ tmuxPath: String,
+        _ arguments: [String]
     ) -> [String] {
         var result = [tmuxPath]
         if let socketName, !socketName.isEmpty {

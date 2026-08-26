@@ -53,6 +53,12 @@ let exeAccountsHex = CommandLine.arguments[6]
 let demoRoot = CommandLine.arguments[7]
 let scratch = CommandLine.arguments[8]
 let sshAuthSocket = CommandLine.arguments[9]
+let sessionPreviewMode = ProcessInfo.processInfo.environment[
+    "GHOSTHUB_DEMO_SESSION_PREVIEW_MODE"
+] ?? "live"
+guard ["live", "always-live"].contains(sessionPreviewMode) else {
+    fail("unsupported demo session preview mode: \(sessionPreviewMode)")
+}
 
 // Once LaunchServices has created the application, this helper must run until
 // it either publishes the exact PID or terminates that exact application. The
@@ -66,7 +72,7 @@ configuration.arguments = [
     "-ApplePersistenceIgnoreState", "YES",
     "-ghosthub.settings.hosts.ssh", "<\(hostsHex)>",
     "-ghosthub.settings.hosts.exeAccounts", "<\(exeAccountsHex)>",
-    "-ghosthub.settings.terminal.sessionPreviewMode", "live",
+    "-ghosthub.settings.terminal.sessionPreviewMode", sessionPreviewMode,
 ]
 configuration.createsNewApplicationInstance = true
 configuration.environment = [

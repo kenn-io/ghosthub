@@ -660,6 +660,7 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
     private(set) var requestedKeys: [SurfaceKey] = []
     private(set) var requestedConfigurations: [TerminalSurfaceConfiguration] = []
     private(set) var removedKeys: [SurfaceKey] = []
+    private var hasSurface = false
 
     var lastCommand: String? { requestedConfigurations.last?.command }
 
@@ -681,17 +682,19 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
     ) -> (any NativeSessionPaneSurfacing)? {
         requestedKeys.append(key)
         requestedConfigurations.append(configuration)
+        hasSurface = true
         return surface
     }
 
     func paneSurfaceIfPresent(
         for _: SurfaceKey
     ) -> (any NativeSessionPaneSurfacing)? {
-        requestedConfigurations.isEmpty ? nil : surface
+        hasSurface ? surface : nil
     }
 
     func removeSurface(for key: SurfaceKey) {
         removedKeys.append(key)
+        hasSurface = false
     }
 }
 
@@ -708,6 +711,10 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     private var closeOnRegistrationCode: UInt32?
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
+    private(set) var previewGridSizes: [TmuxGridSize] = []
+    private(set) var clearPreviewGridCount = 0
+    var onPreviewGridSize: ((TmuxGridSize) -> Void)?
+    var onClearPreviewGrid: (() -> Void)?
 
     init(
         launchError: Error? = nil,
@@ -717,6 +724,19 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
         self.launchError = launchError
         self.launchFailureIsRetryable = launchFailureIsRetryable
         self.closeOnRegistrationCode = closeOnRegistrationCode
+    }
+
+    @discardableResult
+    func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool {
+        let gridSize = TmuxGridSize(columns: columns, rows: rows)
+        previewGridSizes.append(gridSize)
+        onPreviewGridSize?(gridSize)
+        return true
+    }
+
+    func clearPreviewGridSize() {
+        clearPreviewGridCount += 1
+        onClearPreviewGrid?()
     }
 
     func registerSurfaceCloseObserver(

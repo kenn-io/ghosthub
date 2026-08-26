@@ -86,13 +86,7 @@ extension WorkspaceTmuxDiscoveryTests {
             budget: LivePreviewBudget(limit: 4),
             capture: { _, _ in
                 _ = captures.increment()
-                return TerminalSurfaceSnapshot(
-                    image: NSImage(size: CGSize(width: 32, height: 20)),
-                    captureToken: TerminalSurfaceCaptureToken(
-                        surfaceID: 1,
-                        seed: 1
-                    )
-                )
+                return try makePreviewSnapshot()
             }
         )
         let model = try makeModel(
@@ -137,11 +131,11 @@ extension WorkspaceTmuxDiscoveryTests {
         previewCoordinator.setExpanded(true, for: key)
         await waitUntilMainActor {
             captures.count == 1
-                && previewCoordinator.viewState(for: key)?.image != nil
+                && previewCoordinator.viewState(for: key)?.frame != nil
         }
 
         #expect(identityReads.count == 0)
-        #expect(previewCoordinator.viewState(for: key)?.image != nil)
+        #expect(previewCoordinator.viewState(for: key)?.frame != nil)
         await model.shutdown()
     }
 
@@ -181,13 +175,7 @@ extension WorkspaceTmuxDiscoveryTests {
             budget: LivePreviewBudget(limit: 4),
             capture: { _, _ in
                 _ = captures.increment()
-                return TerminalSurfaceSnapshot(
-                    image: NSImage(size: CGSize(width: 32, height: 20)),
-                    captureToken: TerminalSurfaceCaptureToken(
-                        surfaceID: 1,
-                        seed: 1
-                    )
-                )
+                return try makePreviewSnapshot()
             }
         )
         let model = try makeModel(
@@ -221,11 +209,142 @@ extension WorkspaceTmuxDiscoveryTests {
         }
 
         #expect(captures.count == 1)
-        #expect(previewCoordinator.viewState(for: key)?.image == nil)
+        #expect(previewCoordinator.viewState(for: key)?.frame == nil)
         #expect(
             previewCoordinator.viewState(for: key)?.placeholder
                 == .unavailable
         )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "a switched managed client retains only an identity-bound frame",
+        arguments: SwitchedClientDisposition.allCases
+    )
+    func switchedManagedClientRetainsOnlyAuthorizedFrame(
+        _ disposition: SwitchedClientDisposition
+    ) async throws {
+        let environment = try setupHostEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let sessionID = LockedValue("$1")
+        let captures = Counter()
+        let originalIdentity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let switchedIdentity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$2",
+            createdAt: "2000"
+        )
+        let splitter = TmuxPaneSplitter { _, _, command in
+            guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY")
+            else { return (0, "") }
+            let identity = sessionID.load() == "$1"
+                ? originalIdentity : switchedIdentity
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t\(identity.serverPID)\t789\t321"
+                    + "\t/dev/ttys001\t\(identity.sessionID)"
+                    + "\t\(identity.createdAt)\t%9\n"
+            )
+        }
+        let previewCoordinator = TmuxSessionPreviewCoordinator(
+            mode: .alwaysLive,
+            budget: LivePreviewBudget(limit: 0),
+            capture: { _, _ in
+                let sequence = captures.increment()
+                return try makePreviewSnapshot(seed: UInt32(sequence))
+            },
+            park: { _ in },
+            unpark: { _ in },
+            isKeyWindow: { true },
+            liveInterval: .seconds(60)
+        )
+        let session = DiscoveredTmuxSession(
+            name: "fleet",
+            windowCount: 1,
+            serverPID: originalIdentity.serverPID,
+            sessionID: originalIdentity.sessionID,
+            createdAt: originalIdentity.createdAt,
+            activeWindowSize: TmuxGridSize(columns: 100, rows: 30),
+            previewClientSize: TmuxGridSize(columns: 100, rows: 31),
+            managed: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            tmuxSessionDiscovery: { _ in
+                let identity = sessionID.load() == "$1"
+                    ? originalIdentity : switchedIdentity
+                return .success([DiscoveredTmuxSession(
+                    name: session.name,
+                    windowCount: session.windowCount,
+                    serverPID: identity.serverPID,
+                    sessionID: identity.sessionID,
+                    createdAt: identity.createdAt,
+                    activeWindowSize: session.activeWindowSize,
+                    previewClientSize: session.previewClientSize,
+                    managed: session.managed
+                )])
+            },
+            sessionPreviewCoordinator: previewCoordinator
+        )
+        let key = TmuxPreviewKey(
+            hostID: environment.host.id,
+            name: session.name,
+            socketName: nil
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 1
+                && surfaceStore.requestCount == 1
+        }
+        previewCoordinator.setExpanded(true, for: key)
+        await waitUntilMainActor {
+            await previewCoordinator.refreshLivePreviews()
+            return captures.count >= 1
+        }
+        await previewCoordinator.waitForPendingWork()
+        let authorizedFrame = try #require(
+            previewCoordinator.viewState(for: key)?.frame
+        )
+
+        sessionID.withLock { $0 = "$2" }
+        await previewCoordinator.refreshLivePreviews()
+        await previewCoordinator.waitForPendingWork()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxPresentationCount == 0
+        }
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(
+            previewCoordinator.viewState(for: key)?.frame
+                === authorizedFrame
+        )
+
+        switch disposition {
+        case .replacementIdentity:
+            model.refreshTmuxSessionDiscovery()
+            await waitUntilMainActor {
+                model.retainedBorrowedTmuxPresentationCount == 1
+                    && surfaceStore.requestCount == 2
+            }
+        case .removedHost:
+            var snapshot = model.snapshot
+            snapshot.hosts.removeAll { $0.id == environment.host.id }
+            model.snapshot = snapshot
+        }
+        #expect(previewCoordinator.viewState(for: key)?.frame == nil)
         await model.shutdown()
     }
 
@@ -245,13 +364,7 @@ extension WorkspaceTmuxDiscoveryTests {
             budget: LivePreviewBudget(limit: 4),
             capture: { _, _ in
                 let sequence = captures.increment()
-                return TerminalSurfaceSnapshot(
-                    image: NSImage(size: CGSize(width: 32, height: 20)),
-                    captureToken: TerminalSurfaceCaptureToken(
-                        surfaceID: 1,
-                        seed: UInt32(sequence)
-                    )
-                )
+                return try makePreviewSnapshot(seed: UInt32(sequence))
             }
         )
         let model = try makeModel(
@@ -288,8 +401,13 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(captures.count == 2)
         #expect(model.activeBorrowedTmuxSelection == nil)
         #expect(model.previewableTmuxSessionIDs == [selection.id])
-        #expect(previewCoordinator.viewState(for: key)?.image != nil)
+        #expect(previewCoordinator.viewState(for: key)?.frame != nil)
         await model.shutdown()
     }
 
+}
+
+enum SwitchedClientDisposition: CaseIterable, Sendable {
+    case replacementIdentity
+    case removedHost
 }

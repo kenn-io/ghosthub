@@ -125,6 +125,11 @@ final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
     private(set) var lastObserverID: UUID?
+    private(set) var clearPreviewGridCount = 0
+
+    func clearPreviewGridSize() {
+        clearPreviewGridCount += 1
+    }
 
     func registerSurfaceCloseObserver(
         id: UUID,
@@ -163,6 +168,12 @@ final class SceneTmuxSurfaceStoreStub: NativeSessionSurfaceStoring {
         lastConfiguration = configuration
         requestedKeys.append(key)
         return returnsSurface ? surface : nil
+    }
+
+    func paneSurfaceIfPresent(
+        for key: SurfaceKey
+    ) -> (any NativeSessionPaneSurfacing)? {
+        retainedKeys.contains(key) ? surface : nil
     }
 
     func removeSurface(for key: SurfaceKey) {
