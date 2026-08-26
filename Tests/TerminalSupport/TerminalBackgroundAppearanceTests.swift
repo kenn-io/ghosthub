@@ -66,7 +66,7 @@ struct TerminalBackgroundAppearanceTests {
         #expect(appearance.blur == .disabled)
     }
 
-    @Test("window blur call is skipped only for glass styles")
+    @Test("window blur call is skipped for glass styles and opaque windows")
     func blurCall() {
         #expect(
             TerminalBackgroundAppearance(
