@@ -66,26 +66,38 @@ can unexpectedly change zsh keymaps. It sets `TERM_PROGRAM` to `ghosthub`.
 ## Session previews
 
 **Settings → Terminal → Session previews** controls optional sidebar previews
-for tmux presentations you have already opened in a workspace:
+for tmux presentations in each workspace window:
 
 - **Off** is the default and performs no preview rendering.
-- **Efficient** keeps a bitmap of the latest frame captured on disclosure or
-  when you navigate away. It does not poll.
-- **Live** polls expanded tiles at no more than two frames per second. Ghosthub
-  limits live rendering to four inactive previews across all windows.
+- **Efficient** keeps the latest GPU-rendered frame captured on disclosure or
+  when you navigate away. It does not refresh in the background.
+- **Live** refreshes expanded tiles at no more than two frames per second.
+  Ghosthub limits live rendering to four inactive previews across all windows.
+- **Always Live** attaches every freshly discovered tmux session on every
+  reachable POSIX host, expands its tile by default, and removes the
+  four-preview limit. Individual tiles can still be collapsed without
+  disconnecting them.
+  Clients start incrementally. Ghosthub matches each hidden client's terminal
+  grid to the tmux window and status rows before attachment, so even a sole
+  preview client leaves the server-side window size unchanged.
+  Expect substantially higher CPU, GPU, memory, and SSH use.
 
 The preference takes effect when you close Settings. Each workspace window
 remembers its own expanded rows in memory, even while previews are Off. A tile
-follows the captured terminal's aspect ratio between 4:3 and 2:1. More extreme
-shapes use minimal letterboxing so the complete frame remains visible.
+follows its terminal's aspect ratio, preserving the complete
+frame without cropping.
 Reconnecting sessions show a placeholder until Ghosthub verifies that the
 replacement client is attached to the same server-side session.
-If an attachment cannot provide a safe client identity, such as psmux or tmux
-older than 3.4, its tile reports that the preview is unavailable.
+Tmux older than 3.4 cannot provide a safe client identity, so Always Live skips
+its automatic attachment. You can still open that session normally. Windows/
+psmux sessions are not attached automatically because psmux has no non-sizing
+client mode.
 
-Previews reuse retained tmux clients only. They do not open sessions, create an
-extra tmux or SSH client, persist terminal pixels to disk, or reconstruct tmux
-panes and layout.
+Efficient and Live preview only clients you opened. Always Live deliberately
+opens one retained tmux or SSH client for each discovered POSIX session.
+Preview rendering never adds a second client, persists terminal pixels to
+disk, copies terminal pixels through the CPU, or reconstructs tmux panes and
+layout.
 
 ## Tmux themes
 

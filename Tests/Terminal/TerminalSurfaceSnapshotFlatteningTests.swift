@@ -3,6 +3,10 @@ import CoreGraphics
 import Testing
 @testable import GhosthubTerminal
 
+// The composite path moved onto the GPU (CoreImage over IOSurfaces) with the
+// always-live preview rework, so flattening coverage lives at the `opaqueFill`
+// seam the composite consumes; the live-surface smoke tests exercise the full
+// render.
 @Suite("Terminal surface snapshot flattening")
 struct TerminalSurfaceSnapshotFlatteningTests {
     @Test("translucent layer color becomes an opaque fill with the same components")
@@ -34,40 +38,5 @@ struct TerminalSurfaceSnapshotFlatteningTests {
         #expect(components[0] == 0)
         #expect(components[1] == 0)
         #expect(components[2] == 0)
-    }
-
-    @Test("thumbnail from a translucent surface over a translucent fill is fully opaque")
-    func thumbnailPixelsAreOpaque() throws {
-        let source = try #require(makeTranslucentImage(width: 8, height: 8))
-        let thumbnail = try #require(TerminalSurfaceSnapshotter.makeThumbnail(
-            source,
-            outputSize: (width: 16, height: 12),
-            backgroundColor: CGColor(red: 0, green: 0, blue: 1, alpha: 0.4)
-        ))
-        let pixels = try #require(thumbnail.dataProvider?.data as Data?)
-        let bytesPerRow = thumbnail.bytesPerRow
-        for row in 0 ..< thumbnail.height {
-            for column in 0 ..< thumbnail.width {
-                let alpha = pixels[row * bytesPerRow + column * 4 + 3]
-                #expect(alpha == 255, "pixel (\(column), \(row)) is translucent")
-            }
-        }
-    }
-
-    private func makeTranslucentImage(width: Int, height: Int) -> CGImage? {
-        guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo(
-                rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
-            ).union(.byteOrder32Little).rawValue
-        ) else { return nil }
-        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 0.5))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage()
     }
 }

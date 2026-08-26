@@ -53,6 +53,205 @@ struct TmuxSessionPreviewCoordinatorTests {
         )
     }
 
+    @Test("Always Live renders every expanded inactive presentation")
+    func alwaysLiveBypassesInactiveBudget() async {
+        let harness = PreviewCoordinatorHarness(
+            mode: .alwaysLive,
+            budgetLimit: 0
+        )
+        let first = harness.presentation(index: 0, isActive: false)
+        let second = harness.presentation(index: 1, isActive: false)
+        for item in [first, second] {
+            harness.coordinator.register(item)
+            harness.coordinator.setExpanded(true, for: item.key)
+        }
+
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(Set(harness.parks) == [first.key, second.key])
+        #expect(Set(harness.captures) == [first.key, second.key])
+        #expect(harness.budget.granted.isEmpty)
+    }
+
+    @Test("Always Live rejects a switched client's changed frame")
+    func alwaysLiveRejectsChangedFrameAfterClientSwitch() async throws {
+        let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        let authorizedFrame = try #require(
+            harness.coordinator.viewState(for: presentation.key)?.frame
+        )
+        #expect(harness.identityRefreshes == 1)
+
+        harness.setRefreshedIdentity(
+            TmuxSessionIdentity(
+                serverPID: "101",
+                sessionID: "$replacement",
+                createdAt: "1001"
+            ),
+            for: presentation.key
+        )
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 2)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.frame
+                === authorizedFrame
+        )
+
+        harness.coordinator.remove(
+            presentation.key,
+            reason: .identityMismatch
+        )
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.frame
+                === authorizedFrame
+        )
+
+        harness.coordinator.setMode(.off)
+        #expect(harness.coordinator.viewState(for: presentation.key) == nil)
+    }
+
+    @Test("a replacement registration clears a mismatched session's frame")
+    func replacementRegistrationClearsMismatchedFrame() async throws {
+        let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        let staleFrame = try #require(
+            harness.coordinator.viewState(for: presentation.key)?.frame
+        )
+
+        harness.coordinator.remove(
+            presentation.key,
+            reason: .identityMismatch
+        )
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.frame
+                === staleFrame
+        )
+
+        let replacement = TmuxSessionPreviewCoordinator.Presentation(
+            key: presentation.key,
+            surface: { nil },
+            handleID: {
+                UUID(uuidString: "00000000-0000-0000-0000-0000000000FF")!
+            },
+            generation: { "generation-replacement" },
+            identity: { nil },
+            connectionState: { .connecting },
+            isActive: { false },
+            activate: {}
+        )
+        harness.coordinator.register(replacement, identityIsResolved: false)
+
+        let state = try #require(
+            harness.coordinator.viewState(for: presentation.key)
+        )
+        #expect(state.frame == nil)
+        #expect(state.placeholder == .awaitingFirstFrame)
+    }
+
+    @Test("a failed identity probe suppresses changed frames until recovery")
+    func failedIdentityProbeSuppressesFramesUntilRecovery() async {
+        let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.setRefreshedIdentity(nil, for: presentation.key)
+
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 1)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
+        )
+
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 2)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
+        )
+
+        harness.setRefreshedIdentity(
+            presentation.identity(),
+            for: presentation.key
+        )
+        await harness.coordinator.refreshLivePreviews()
+        await harness.coordinator.waitForPendingWork()
+        #expect(harness.identityRefreshes == 3)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
+        )
+    }
+
+    @Test("Always Live waits for staged surface launch before parking")
+    func alwaysLiveWaitsForSurfaceLaunchBeforeParking() {
+        let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
+        var hasLaunched = false
+        let key = TmuxPreviewKey(
+            hostID: UUID(),
+            name: "session-0",
+            socketName: nil
+        )
+        let presentation = TmuxSessionPreviewCoordinator.Presentation(
+            key: key,
+            surface: { nil },
+            handleID: { UUID() },
+            generation: { "generation" },
+            identity: { nil },
+            connectionState: { .connecting },
+            hasLaunched: { hasLaunched },
+            isActive: { false },
+            activate: {}
+        )
+        harness.coordinator.register(
+            presentation,
+            identityIsResolved: false
+        )
+
+        harness.coordinator.setExpanded(true, for: key)
+
+        #expect(harness.parks.isEmpty)
+
+        hasLaunched = true
+        harness.coordinator.presentationDidChange(key)
+
+        #expect(harness.parks == [key])
+        #expect(harness.captures.isEmpty)
+    }
+
+    @Test("Always Live leaves unavailable identities unmounted")
+    func alwaysLiveLeavesUnavailableIdentityUnmounted() {
+        let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(
+            presentation,
+            identityIsUnavailable: true
+        )
+
+        harness.coordinator.setExpanded(true, for: presentation.key)
+
+        #expect(harness.parks.isEmpty)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.placeholder
+                == .unavailable
+        )
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.isLive
+                == false
+        )
+    }
+
     @Test("Live scheduling never exceeds two frames per second")
     func liveRateIsCapped() async {
         let recorder = PreviewIntervalRecorder()
@@ -118,7 +317,7 @@ struct TmuxSessionPreviewCoordinatorTests {
             "unpark:0",
         ])
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image != nil
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
         )
     }
 
@@ -136,7 +335,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.unparks == [presentation.key])
         #expect(harness.budget.granted.isEmpty)
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image == nil
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
         )
         #expect(
             harness.coordinator.viewState(for: presentation.key)?.capturedAt == nil
@@ -234,7 +433,7 @@ struct TmuxSessionPreviewCoordinatorTests {
 
         #expect(harness.captures == [presentation.key])
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image != nil
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
         )
     }
 
@@ -346,14 +545,17 @@ struct TmuxSessionPreviewCoordinatorTests {
         harness.coordinator.register(presentation)
         harness.coordinator.setExpanded(true, for: presentation.key)
         await harness.coordinator.waitForPendingWork()
-        let image = harness.coordinator.viewState(for: presentation.key)?.image
+        let capturedAt = harness.coordinator.viewState(
+            for: presentation.key
+        )?.capturedAt
         harness.captureShouldFail = true
 
         harness.coordinator.captureActiveIfNeeded(presentation.key)
         await harness.coordinator.waitForPendingWork()
 
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image === image
+            harness.coordinator.viewState(for: presentation.key)?.capturedAt
+                == capturedAt
         )
     }
 
@@ -375,7 +577,7 @@ struct TmuxSessionPreviewCoordinatorTests {
 
         #expect(harness.captures == [presentation.key])
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image != nil
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
         )
     }
 
@@ -390,7 +592,7 @@ struct TmuxSessionPreviewCoordinatorTests {
 
         #expect(harness.captures == [presentation.key])
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image != nil
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
         )
     }
 
@@ -443,7 +645,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         await harness.coordinator.waitForPendingWork()
 
         #expect(harness.captures == [key])
-        #expect(harness.coordinator.viewState(for: key)?.image != nil)
+        #expect(harness.coordinator.viewState(for: key)?.frame != nil)
     }
 
     @Test("Deferred identity capture starts after deactivation finishes")
@@ -504,7 +706,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         await harness.coordinator.waitForPendingWork()
 
         #expect(harness.captures == [key])
-        #expect(harness.coordinator.viewState(for: key)?.image != nil)
+        #expect(harness.coordinator.viewState(for: key)?.frame != nil)
     }
 
     @Test(
@@ -587,7 +789,7 @@ struct TmuxSessionPreviewCoordinatorTests {
 
         #expect(harness.captures == [presentation.key])
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image != nil
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
         )
     }
 
@@ -607,7 +809,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         await harness.coordinator.waitForPendingWork()
 
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image != nil
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
         )
     }
 
@@ -657,7 +859,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.captures == [presentation.key, presentation.key])
         #expect(didCompleteNavigationCapture)
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image != nil
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
         )
     }
 
@@ -706,12 +908,12 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(captureAttempts == [presentation.key, presentation.key])
         #expect(didFinishDeactivation)
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image != nil
+            harness.coordinator.viewState(for: presentation.key)?.frame != nil
         )
     }
 
-    @Test("sidebar hiding and app deactivation release only this scene")
-    func visibilityAndActivityReleaseScene() {
+    @Test("sidebar hiding releases parking but app deactivation retains it")
+    func visibilityReleasesAndApplicationDeactivationRetainsParking() {
         let harness = PreviewCoordinatorHarness(mode: .live)
         let presentation = harness.presentation(index: 0, isActive: false)
         harness.coordinator.register(presentation)
@@ -722,8 +924,99 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(harness.budget.granted.isEmpty)
 
         harness.coordinator.setSidebarVisible(true)
+        harness.unparks.removeAll()
         harness.coordinator.applicationDidResignActive()
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.unparks.isEmpty)
+        #expect(harness.budget.granted.count == 1)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.isLive
+                == false
+        )
+
+        harness.coordinator.applicationDidBecomeActive()
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.unparks.isEmpty)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.isLive
+                == true
+        )
+    }
+
+    @Test("non-key app reactivation releases retained preview budget")
+    func nonKeyApplicationReactivationReleasesParking() {
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        harness.coordinator.applicationDidResignActive()
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.budget.granted.count == 1)
+
+        harness.keyWindow = false
+        harness.coordinator.applicationDidBecomeActive()
+
+        #expect(harness.parks.isEmpty)
+        #expect(harness.unparks == [presentation.key])
         #expect(harness.budget.granted.isEmpty)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.isLive
+                == false
+        )
+    }
+
+    @Test("removed Always Live rows can clear expansion before re-registering")
+    func removedAlwaysLiveRowsClearExpansion() async {
+        let harness = PreviewCoordinatorHarness(mode: .alwaysLive)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        #expect(harness.parks == [presentation.key])
+
+        harness.coordinator.remove(presentation.key, reason: .replacement)
+        harness.coordinator.setExpanded(false, for: presentation.key)
+        harness.coordinator.register(presentation)
+        await harness.coordinator.refreshLivePreviews()
+
+        #expect(harness.parks.isEmpty)
+        #expect(harness.captures.isEmpty)
+    }
+
+    @Test("non-key scenes release and reacquire parked preview budget")
+    func nonKeySceneReleasesParkedPreviewBudget() async {
+        let harness = PreviewCoordinatorHarness(
+            mode: .live,
+            activationDelay: .milliseconds(20)
+        )
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.budget.granted.count == 1)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.isLive
+                == true
+        )
+
+        harness.keyWindow = false
+        harness.coordinator.sceneWindowFocusDidChange(isKey: false)
+
+        #expect(harness.parks.isEmpty)
+        #expect(harness.unparks == [presentation.key])
+        #expect(harness.budget.granted.isEmpty)
+        #expect(
+            harness.coordinator.viewState(for: presentation.key)?.isLive
+                == false
+        )
+
+        harness.keyWindow = true
+        harness.coordinator.sceneWindowFocusDidChange(isKey: true)
+        await waitUntilMainActor {
+            harness.parks == [presentation.key]
+        }
+
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.budget.granted.count == 1)
     }
 
     @Test("reconnect releases parking without immediately reacquiring it")
@@ -773,12 +1066,16 @@ struct TmuxSessionPreviewCoordinatorTests {
         harness.coordinator.setExpanded(true, for: presentation.key)
         await harness.coordinator.waitForPendingWork()
         harness.captures.removeAll()
+        let viewModel = harness.coordinator.viewModel(for: presentation.key)
 
         harness.coordinator.remove(presentation.key, reason: .replacement)
         harness.coordinator.register(presentation)
         await harness.coordinator.waitForPendingWork()
 
         #expect(harness.captures == [presentation.key])
+        #expect(
+            harness.coordinator.viewModel(for: presentation.key) === viewModel
+        )
     }
 
     @Test("removing the parking host cannot repark during slot release")
@@ -838,10 +1135,9 @@ struct TmuxSessionPreviewCoordinatorTests {
             activationDelay: .milliseconds(20)
         )
         let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.applicationDidResignActive()
         harness.coordinator.register(presentation)
         harness.coordinator.setExpanded(true, for: presentation.key)
-        harness.coordinator.applicationDidResignActive()
-        harness.parks.removeAll()
 
         harness.coordinator.applicationDidBecomeActive()
         harness.coordinator.applicationDidResignActive()
@@ -858,10 +1154,9 @@ struct TmuxSessionPreviewCoordinatorTests {
             activationDelay: .milliseconds(20)
         )
         let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.applicationDidResignActive()
         harness.coordinator.register(presentation)
         harness.coordinator.setExpanded(true, for: presentation.key)
-        harness.coordinator.applicationDidResignActive()
-        harness.parks.removeAll()
         harness.keyWindow = false
 
         harness.coordinator.applicationDidBecomeActive()
@@ -886,9 +1181,9 @@ struct TmuxSessionPreviewCoordinatorTests {
             activationDelay: .milliseconds(20)
         )
         let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.applicationDidResignActive()
         harness.coordinator.register(presentation)
         harness.coordinator.setExpanded(true, for: presentation.key)
-        harness.coordinator.applicationDidResignActive()
         harness.keyWindow = false
         harness.coordinator.applicationDidBecomeActive()
         try? await Task.sleep(for: .milliseconds(50))
@@ -957,6 +1252,32 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(await recorder.count == 1)
     }
 
+    @Test("activation parks one terminal surface per main-thread turn")
+    func activationParksIncrementally() async {
+        let harness = PreviewCoordinatorHarness(
+            mode: .alwaysLive,
+            activationDelay: .zero,
+            parkingInterval: .seconds(60)
+        )
+        let presentations = (0 ..< 3).map {
+            harness.presentation(index: $0, isActive: false)
+        }
+        harness.coordinator.applicationDidResignActive()
+        for presentation in presentations {
+            harness.coordinator.register(presentation)
+            harness.coordinator.setExpanded(true, for: presentation.key)
+        }
+
+        harness.coordinator.applicationDidBecomeActive()
+        await waitUntilMainActor { harness.parks.count == 1 }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(harness.parks.count == 1)
+        harness.coordinator.applicationDidResignActive()
+    }
+
     @Test("invalidating a suspended capture prevents stale publication")
     func suspendedCaptureCannotPublishAfterOff() async {
         let harness = PreviewCoordinatorHarness(mode: .efficient)
@@ -971,7 +1292,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         await harness.coordinator.waitForPendingWork()
 
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image == nil
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
         )
     }
 
@@ -1006,7 +1327,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         await harness.coordinator.waitForPendingWork()
 
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image == nil
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
         )
     }
 
@@ -1028,7 +1349,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         await harness.coordinator.waitForPendingWork()
 
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image == nil
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
         )
     }
 
@@ -1050,7 +1371,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         await harness.coordinator.waitForPendingWork()
 
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image == nil
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
         )
     }
 
@@ -1108,13 +1429,51 @@ struct TmuxSessionPreviewCoordinatorTests {
         harness.coordinator.register(presentation)
         harness.events.removeAll()
         var publications = 0
-        let observation = harness.coordinator.$viewStates
+        let observation = harness.coordinator
+            .viewModel(for: presentation.key).$state
             .dropFirst()
             .sink { _ in publications += 1 }
 
         harness.coordinator.prepareToActivate(presentation.key)
 
         #expect(harness.events == ["activate:0"])
+        #expect(publications == 0)
+        withExtendedLifetime(observation) {}
+    }
+
+    @Test("one live frame does not publish sibling tile state")
+    func liveFramePublicationIsTileScoped() async {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let active = harness.presentation(index: 0, isActive: true)
+        let sibling = harness.presentation(index: 1, isActive: false)
+        harness.coordinator.register(active)
+        harness.coordinator.register(sibling)
+        var siblingPublications = 0
+        let observation = harness.coordinator.viewModel(for: sibling.key)
+            .$state.dropFirst()
+            .sink { _ in siblingPublications += 1 }
+
+        harness.coordinator.setExpanded(true, for: active.key)
+        await harness.coordinator.waitForPendingWork()
+
+        #expect(harness.captures == [active.key])
+        #expect(siblingPublications == 0)
+        withExtendedLifetime(observation) {}
+    }
+
+    @Test("unchanged preview state does not republish its tile")
+    func unchangedPreviewStateIsNotRepublished() {
+        let harness = PreviewCoordinatorHarness(mode: .efficient)
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        var publications = 0
+        let observation = harness.coordinator
+            .viewModel(for: presentation.key).$state
+            .dropFirst()
+            .sink { _ in publications += 1 }
+
+        harness.coordinator.register(presentation)
+
         #expect(publications == 0)
         withExtendedLifetime(observation) {}
     }
@@ -1163,7 +1522,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         harness.resumeCapture()
         await harness.coordinator.waitForPendingWork()
         #expect(
-            harness.coordinator.viewState(for: presentation.key)?.image == nil
+            harness.coordinator.viewState(for: presentation.key)?.frame == nil
         )
     }
 
@@ -1216,8 +1575,60 @@ struct TmuxSessionPreviewCoordinatorTests {
 
         model.handleApplicationDidResignActiveForResourceMonitoring()
 
-        #expect(harness.parks.isEmpty)
-        #expect(harness.budget.granted.isEmpty)
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.budget.granted.count == 1)
+    }
+
+    @Test("will-resign activity reaches previews before window focus loss")
+    func applicationResignationPrecedesWindowFocusLoss() async throws {
+        let workspace = try seededWorkspace()
+        let harness = PreviewCoordinatorHarness(mode: .live)
+        let model = try makeModel(
+            database: workspace.database,
+            localHostID: workspace.hostID,
+            sessionPreviewCoordinator: harness.coordinator
+        )
+        model.subscribeAppActivity()
+        model.isFocusedWindow = true
+        let presentation = harness.presentation(index: 0, isActive: false)
+        harness.coordinator.register(presentation)
+        harness.coordinator.setExpanded(true, for: presentation.key)
+        #expect(harness.parks == [presentation.key])
+
+        NotificationCenter.default.post(
+            name: NSApplication.willResignActiveNotification,
+            object: NSApp
+        )
+        #expect(model.isAppActive == false)
+        model.isFocusedWindow = false
+
+        #expect(harness.parks == [presentation.key])
+        #expect(harness.unparks.isEmpty)
+        #expect(harness.budget.granted.count == 1)
+        await model.shutdown()
+    }
+
+    @Test("rapid activation and resignation preserve inactive state")
+    func rapidApplicationActivityPreservesLatestState() async throws {
+        let workspace = try seededWorkspace()
+        let model = try makeModel(
+            database: workspace.database,
+            localHostID: workspace.hostID
+        )
+        model.subscribeAppActivity()
+
+        NotificationCenter.default.post(
+            name: NSApplication.didBecomeActiveNotification,
+            object: NSApp
+        )
+        NotificationCenter.default.post(
+            name: NSApplication.willResignActiveNotification,
+            object: NSApp
+        )
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(model.isAppActive == false)
+        await model.shutdown()
     }
 }
 
@@ -1243,12 +1654,9 @@ private final class PreviewCoordinatorHarness {
                 }
             }
             captureSequence &+= 1
-            return TerminalSurfaceSnapshot(
-                image: NSImage(size: CGSize(width: 32, height: 20)),
-                captureToken: TerminalSurfaceCaptureToken(
-                    surfaceID: UInt32(Self.index(of: presentation) + 1),
-                    seed: captureSequence
-                )
+            return try makePreviewSnapshot(
+                surfaceID: UInt32(Self.index(of: presentation) + 1),
+                seed: captureSequence
             )
         },
         park: { [weak self] presentation in
@@ -1268,11 +1676,13 @@ private final class PreviewCoordinatorHarness {
         isKeyWindow: { [weak self] in self?.keyWindow == true },
         sleep: { duration in try await Task.sleep(for: duration) },
         activationDelay: activationDelay,
+        parkingInterval: parkingInterval,
         liveInterval: .seconds(60)
     )
 
     private let initialMode: SessionPreviewMode
     private let activationDelay: Duration
+    private let parkingInterval: Duration
     var captures: [TmuxPreviewKey] = []
     var parks: Set<TmuxPreviewKey> = []
     var unparks: [TmuxPreviewKey] = []
@@ -1282,22 +1692,25 @@ private final class PreviewCoordinatorHarness {
     var keyWindow = true
     var parkShouldFail = false
     var parkAttempts = 0
+    var identityRefreshes = 0
     private var captureContinuations: [CheckedContinuation<Void, Never>] = []
     private var captureSequence: UInt32 = 0
     private var activeByKey: [TmuxPreviewKey: Bool] = [:]
     private var connectionByKey: [TmuxPreviewKey: ConnectionState] = [:]
     private var identityByKey: [TmuxPreviewKey: TmuxSessionIdentity] = [:]
     private var refreshedIdentityByKey:
-        [TmuxPreviewKey: TmuxSessionIdentity] = [:]
+        [TmuxPreviewKey: TmuxSessionIdentity?] = [:]
 
     init(
         mode: SessionPreviewMode,
         budgetLimit: Int = 4,
-        activationDelay: Duration = .milliseconds(250)
+        activationDelay: Duration = .milliseconds(250),
+        parkingInterval: Duration = .milliseconds(10)
     ) {
         initialMode = mode
         budget = LivePreviewBudget(limit: budgetLimit)
         self.activationDelay = activationDelay
+        self.parkingInterval = parkingInterval
     }
 
     func presentation(
@@ -1331,6 +1744,7 @@ private final class PreviewCoordinatorHarness {
             },
             refreshIdentity: { [weak self] in
                 guard let self else { return nil }
+                identityRefreshes += 1
                 if let refreshed = refreshedIdentityByKey[key] {
                     return refreshed
                 }
@@ -1363,7 +1777,7 @@ private final class PreviewCoordinatorHarness {
         _ identity: TmuxSessionIdentity?,
         for key: TmuxPreviewKey
     ) {
-        refreshedIdentityByKey[key] = identity
+        refreshedIdentityByKey.updateValue(identity, forKey: key)
     }
 
     private static func index(

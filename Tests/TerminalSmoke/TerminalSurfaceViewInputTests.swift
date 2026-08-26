@@ -2023,6 +2023,37 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertEqual(appliedSizes.last?.height, UInt32(expectedSize.height))
     }
 
+    func testOversizedSurfaceResizeNeverReachesLibghostty() throws {
+        let appHandle = try requireAppHandle()
+        let previousSetter = TerminalSurfaceView.sizeSetter
+        var appliedSizes: [(width: UInt32, height: UInt32)] = []
+        TerminalSurfaceView.sizeSetter = { surface, width, height in
+            appliedSizes.append((width, height))
+            ghostty_surface_set_size(surface, width, height)
+        }
+        defer {
+            TerminalSurfaceView.sizeSetter = previousSetter
+        }
+
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        appliedSizes.removeAll()
+
+        view.sizeDidChange(CGSize(
+            width: SurfacePixelSize.maximumDimension + 1,
+            height: 480
+        ))
+
+        XCTAssertTrue(
+            appliedSizes.isEmpty,
+            "A size that can overflow libghostty's grid must be rejected before its C boundary."
+        )
+    }
+
     func testPresentationResizeAppliesOnlyTheFinalSurfaceSize() throws {
         let appHandle = try requireAppHandle()
         let previousSetter = TerminalSurfaceView.sizeSetter

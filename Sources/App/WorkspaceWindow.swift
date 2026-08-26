@@ -966,14 +966,14 @@ struct WorkspaceWindow: View {
                 },
                 tmuxSessionPreviewBuilder: {
                     [sceneModel] selection, activate in
-                    AnyView(TmuxSessionPreviewTile(
-                        coordinator:
-                        sceneModel.tmuxSessionPreviewCoordinator,
-                        key: TmuxPreviewKey(
-                            hostID: selection.hostID,
-                            name: selection.name,
-                            socketName: selection.socketName
-                        ),
+                    let key = TmuxPreviewKey(
+                        hostID: selection.hostID,
+                        name: selection.name,
+                        socketName: selection.socketName
+                    )
+                    return AnyView(TmuxSessionPreviewTile(
+                        viewModel: sceneModel.tmuxSessionPreviewCoordinator
+                            .viewModel(for: key),
                         sessionName: selection.name,
                         onActivate: activate
                     ))

@@ -24,7 +24,7 @@ const imageAlt = {
   sessions:
     'Ghosthub workspace showing Tmux, Herdr, and Zellij sessions for local and remote hosts',
   sessionPreviews:
-    'Ghosthub sidebar with an expanded live bitmap preview for an already-opened tmux session',
+    'Ghosthub sidebar with Always Live previews expanded for discovered tmux sessions',
   hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
   worktree:
     'Ghosthub new worktree sheet listing available local and remote branches',
@@ -124,10 +124,11 @@ const imageAlt = {
         <div>
           <h2>Glance at opened tmux sessions</h2>
           <p>
-            Expand optional bitmap previews beside tmux sessions you already
-            opened. Efficient mode keeps the latest captured frame; Live mode
-            refreshes a bounded set without creating another client or taking
-            focus from your active terminal.
+            Expand optional GPU-rendered previews beside tmux sessions you
+            already opened. Efficient mode keeps the latest captured frame;
+            Live mode refreshes a bounded set. Always Live can connect and
+            expand every discovered tmux session on POSIX hosts for an
+            at-a-glance fleet view without taking focus from your active terminal.
           </p>
           <p><a href="/docs/sessions/#preview-opened-tmux-sessions">Explore session previews</a>.</p>
         </div>

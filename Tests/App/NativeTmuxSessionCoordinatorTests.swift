@@ -1,6 +1,7 @@
 import GhosthubTransport
 import Foundation
 import GhosthubTerminal
+import GhosthubTestSupport
 import GhosthubTmux
 import GhosthubWorkspace
 import Testing
@@ -1502,6 +1503,456 @@ struct NativeTmuxSessionCoordinatorTests {
                 == .processExited(code: 255)
         )
         await waitUntilMainActor { invalidations.load() == 1 }
+    }
+
+    @Test("interactive sizing reports an attachment replacement")
+    func interactiveSizingReportsAttachmentReplacement() async throws {
+        let identityLookups = LockedValue(0)
+        let promotionStarted = LockedValue(false)
+        let promotionMutations = LockedValue(0)
+        let releasePromotion = DispatchSemaphore(value: 0)
+        defer { releasePromotion.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    identityLookups.withLock { $0 += 1 }
+                    let lookup = identityLookups.load()
+                    if lookup == 2 {
+                        promotionStarted.withLock { $0 = true }
+                        releasePromotion.wait()
+                    }
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'!ignore-size'") {
+                    promotionMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = {
+            (_: BorrowedTmuxSessionHandle) in readyCount += 1
+        }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "replaced-preview",
+            host: CommandHost.local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: TmuxGridSize(columns: 120, rows: 37)
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { identityLookups.load() == 1 }
+
+        let firstPromotion = Task { @MainActor in
+            await coordinator.enableInteractiveSizing(for: handle)
+        }
+        await waitUntilMainActor { promotionStarted.load() }
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(true, nil as UInt32?)
+        let readyCountBeforeReplacement = readyCount
+        let replacement = coordinator.attach(
+            hostID: handle.hostID,
+            name: handle.name,
+            host: CommandHost.local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: TmuxGridSize(columns: 120, rows: 37)
+        )
+        await waitUntilMainActor {
+            readyCount > readyCountBeforeReplacement
+        }
+        _ = coordinator.surface(handle: replacement)
+        releasePromotion.signal()
+
+        let firstResult = await firstPromotion.value
+        #expect(firstResult == TmuxClientSizingTransitionResult.stale)
+        let replacementResult = await coordinator.enableInteractiveSizing(
+            for: replacement
+        )
+        #expect(replacementResult == TmuxClientSizingTransitionResult.applied)
+        #expect(promotionMutations.load() == 1)
+    }
+
+    @Test("interactive sizing refreshes geometry before clearing ignore-size")
+    func interactiveSizingRefreshesGeometryBeforePromotion() async {
+        let store = RecordingNativeSessionSurfaceStore()
+        let promotionEvents = LockedValue<[String]>([])
+        store.surface.onClearPreviewGrid = {
+            promotionEvents.withLock { $0.append("geometry") }
+        }
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'!ignore-size'") {
+                    promotionEvents.withLock { $0.append("sizing") }
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "promotion-order",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: TmuxGridSize(columns: 120, rows: 37)
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let result = await coordinator.enableInteractiveSizing(for: handle)
+
+        #expect(result == TmuxClientSizingTransitionResult.applied)
+        #expect(promotionEvents.load() == ["geometry", "sizing", "geometry"])
+        #expect(store.surface.clearPreviewGridCount == 2)
+    }
+
+    @Test("stale promotion restore recovers the tmux window dimensions")
+    func stalePromotionRestoreRecoversTmuxWindowDimensions() async throws {
+        guard case let .success(binary) = TmuxBinaryResolver()
+            .resolveTmuxBinary(),
+            TmuxPaneSplitter.supportsPaneSplitting(
+                version: binary.version,
+                host: .local
+            )
+        else { return }
+        let server = try TestTmuxServer(
+            tmuxPath: binary.path,
+            socket: .runOwned(purpose: "stale-promotion-size")
+        )
+        defer { server.stop() }
+        try server.createSession("restored")
+        let status = AccountCommandRunner.runProcess(
+            executable: binary.path,
+            arguments: server.connectionArguments + [
+                "set-option", "-g", "status", "off",
+            ],
+            timeout: 5
+        )
+        #expect(status.status == 0)
+
+        let clientToken = UUID().uuidString.lowercased()
+        let clientTTYDirectory = try #require(
+            ProcessInfo.processInfo.environment["TMUX_TMPDIR"]
+        )
+        let client = try TestTmuxClient(
+            tmuxPath: binary.path,
+            socketName: server.socketName,
+            sessionName: "restored",
+            clientToken: clientToken,
+            clientTTYDirectory: URL(
+                fileURLWithPath: clientTTYDirectory,
+                isDirectory: true
+            )
+        )
+        defer { client.stop() }
+        _ = try await client.publishedTTY()
+        let target = TmuxPaneSplitTarget(
+            host: .local,
+            tmuxPath: binary.path,
+            sessionName: "restored",
+            socketName: server.socketName,
+            sshConnectionArguments: [],
+            clientToken: clientToken,
+            clientTTYDirectory: clientTTYDirectory
+        )
+        let clientIdentity = try await TmuxPaneSplitter()
+            .clientIdentity(target: target).get()
+        let identityOutput = [
+            "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY",
+            clientIdentity.serverPID,
+            clientIdentity.clientPID,
+            clientIdentity.clientCreatedAt,
+            clientIdentity.clientTTY,
+            clientIdentity.sessionID,
+            clientIdentity.sessionCreatedAt,
+            clientIdentity.paneID,
+        ].joined(separator: "\t") + "\n"
+        let interactiveGrid = TmuxGridSize(columns: 80, rows: 24)
+        let previewGrid = TmuxGridSize(columns: 120, rows: 37)
+        let interactiveResize = AccountCommandRunner.runProcess(
+            executable: binary.path,
+            arguments: server.connectionArguments + [
+                "resize-window", "-t", "restored:",
+                "-x", String(interactiveGrid.columns),
+                "-y", String(interactiveGrid.rows),
+            ],
+            timeout: 5
+        )
+        #expect(interactiveResize.status == 0)
+
+        let store = RecordingNativeSessionSurfaceStore()
+        var previewResizeStatus: Int32?
+        store.surface.onPreviewGridSize = { gridSize in
+            let clients = AccountCommandRunner.runProcess(
+                executable: binary.path,
+                arguments: server.connectionArguments + [
+                    "list-clients", "-F",
+                    "#{client_tty}\t#{client_flags}",
+                ],
+                timeout: 5
+            )
+            let clientFlags = clients.stdout.split(whereSeparator: \.isNewline)
+                .map(String.init)
+                .first { $0.hasPrefix(clientIdentity.clientTTY + "\t") }
+            guard clientFlags?.contains("ignore-size") == false else {
+                return
+            }
+            previewResizeStatus = AccountCommandRunner.runProcess(
+                executable: binary.path,
+                arguments: server.connectionArguments + [
+                    "resize-window", "-t", "restored:",
+                    "-x", String(gridSize.columns),
+                    "-y", String(gridSize.rows),
+                ],
+                timeout: 5
+            ).status
+        }
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success(binary) },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, identityOutput)
+                }
+                let result = AccountCommandRunner.runProcess(
+                    executable: "/bin/sh",
+                    arguments: ["-c", command],
+                    timeout: 15
+                )
+                return (result.status, result.stdout + result.stderr)
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "restored",
+            host: CommandHost.local,
+            socketName: server.socketName,
+            sessionIdentity: clientIdentity.sessionIdentity
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        #expect(
+            await coordinator.restorePreviewSizing(previewGrid, for: handle)
+                == .applied
+        )
+        let measured = AccountCommandRunner.runProcess(
+            executable: binary.path,
+            arguments: server.connectionArguments + [
+                "display-message", "-p", "-t", "restored:",
+                "#{window_width}x#{window_height}",
+            ],
+            timeout: 5
+        )
+
+        #expect(previewResizeStatus == 0)
+        #expect(measured.status == 0)
+        #expect(
+            measured.stdout.trimmingCharacters(
+                in: CharacterSet.whitespacesAndNewlines
+            ) == "120x37"
+        )
+    }
+
+    @Test("interactive sizing suppresses grid refresh during promotion")
+    func interactiveSizingSuppressesGridRefreshDuringPromotion() async {
+        let promotionStarted = LockedValue(false)
+        let releasePromotion = DispatchSemaphore(value: 0)
+        defer { releasePromotion.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'!ignore-size'") {
+                    promotionStarted.withLock { $0 = true }
+                    releasePromotion.wait()
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let initialGrid = TmuxGridSize(columns: 120, rows: 37)
+        let refreshedGrid = TmuxGridSize(columns: 140, rows: 41)
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "promotion-refresh",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: initialGrid
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let promotion = Task { @MainActor in
+            await coordinator.enableInteractiveSizing(for: handle)
+        }
+        await waitUntilMainActor { promotionStarted.load() }
+        coordinator.updatePreviewGridSize(refreshedGrid, for: handle)
+        releasePromotion.signal()
+
+        let result = await promotion.value
+
+        #expect(result == TmuxClientSizingTransitionResult.applied)
+        #expect(store.surface.previewGridSizes == [
+            initialGrid,
+        ])
+        #expect(store.surface.clearPreviewGridCount == 2)
+    }
+
+    @Test("unchanged preview grids do not resize live surfaces")
+    func unchangedPreviewGridDoesNotResizeSurface() async {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                successfulTmuxResolution("/opt/homebrew/bin/tmux")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let initialGrid = TmuxGridSize(columns: 180, rows: 50)
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "stable-preview",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: initialGrid
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+        _ = coordinator.surface(handle: handle)
+
+        coordinator.updatePreviewGridSize(initialGrid, for: handle)
+        coordinator.updatePreviewGridSize(
+            TmuxGridSize(columns: 160, rows: 48),
+            for: handle
+        )
+
+        #expect(store.surface.previewGridSizes == [
+            initialGrid,
+            TmuxGridSize(columns: 160, rows: 48),
+        ])
+    }
+
+    @Test("a reconnected preview sizes its replacement surface")
+    func reconnectedPreviewSizesReplacementSurface() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                successfulTmuxResolution("/opt/homebrew/bin/tmux")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let grid = TmuxGridSize(columns: 180, rows: 50)
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "reconnected-preview",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: grid
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(true, nil)
+        let replacement = coordinator.attach(
+            hostID: handle.hostID,
+            name: handle.name,
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: grid
+        )
+        await waitUntilMainActor { readyCount == 2 }
+        _ = coordinator.surface(handle: replacement)
+
+        #expect(replacement == handle)
+        #expect(store.surface.previewGridSizes == [grid, grid])
+    }
+
+    @Test("failed provisioning does not leak pending interactive sizing")
+    func failedProvisioningDoesNotLeakInteractiveSizing() async throws {
+        let resolutions = LockedValue(0)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                var attempt = 0
+                resolutions.withLock {
+                    $0 += 1
+                    attempt = $0
+                }
+                guard attempt == 1 else {
+                    return successfulTmuxResolution("/usr/bin/tmux")
+                }
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return .failure(.shellFailed(status: 1))
+            }
+        )
+        var readyCount = 0
+        var sawDisconnected = false
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        coordinator.onStateChanged = { _, state in
+            if case .disconnected = state {
+                sawDisconnected = true
+            }
+        }
+        let grid = TmuxGridSize(columns: 120, rows: 37)
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "leaked-sizing",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: grid
+        )
+        let promotion = await coordinator.enableInteractiveSizing(for: handle)
+        #expect(promotion == TmuxClientSizingTransitionResult.pending)
+        releaseResolution.signal()
+        await waitUntilMainActor { sawDisconnected }
+
+        let replacement = coordinator.attach(
+            hostID: handle.hostID,
+            name: handle.name,
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: grid
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: replacement)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("ignore-size"))
     }
 }
 

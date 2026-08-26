@@ -1,21 +1,38 @@
 import Foundation
 import GhosthubSettings
-import GhosthubTerminalSupport
 import GhosthubWorkspace
 import SwiftUI
 
 struct TmuxSessionPreviewExpansionState: Equatable {
     private(set) var expandedSessionIDs: Set<String> = []
+    private(set) var collapsedSessionIDs: Set<String> = []
 
-    func isExpanded(_ sessionID: String) -> Bool {
-        expandedSessionIDs.contains(sessionID)
+    func isExpanded(
+        _ sessionID: String,
+        defaultExpanded: Bool = false
+    ) -> Bool {
+        if expandedSessionIDs.contains(sessionID) {
+            return true
+        }
+        if collapsedSessionIDs.contains(sessionID) {
+            return false
+        }
+        return defaultExpanded
     }
 
-    mutating func setExpanded(_ expanded: Bool, sessionID: String) {
-        if expanded {
-            expandedSessionIDs.insert(sessionID)
-        } else {
-            expandedSessionIDs.remove(sessionID)
+    mutating func setExpanded(
+        _ expanded: Bool,
+        sessionID: String,
+        defaultExpanded: Bool = false
+    ) {
+        expandedSessionIDs.remove(sessionID)
+        collapsedSessionIDs.remove(sessionID)
+        if expanded != defaultExpanded {
+            if expanded {
+                expandedSessionIDs.insert(sessionID)
+            } else {
+                collapsedSessionIDs.insert(sessionID)
+            }
         }
     }
 }
@@ -43,13 +60,6 @@ struct TmuxSessionPreviewMountState {
 }
 
 enum TmuxSessionPreviewRowPresentation {
-    static let placeholderAspectRatio =
-        TerminalPreviewGeometry.placeholderAspectRatio
-
-    static func aspectRatio(for imageSize: CGSize?) -> CGFloat {
-        TerminalPreviewGeometry.aspectRatio(for: imageSize)
-    }
-
     static func canDisclose(
         mode: SessionPreviewMode,
         sessionID: String,
@@ -68,7 +78,22 @@ enum TmuxSessionPreviewRowPresentation {
             mode: mode,
             sessionID: sessionID,
             previewableSessionIDs: previewableSessionIDs
-        ) && expansion.isExpanded(sessionID)
+        ) && isExpanded(
+            mode: mode,
+            sessionID: sessionID,
+            expansion: expansion
+        )
+    }
+
+    static func isExpanded(
+        mode: SessionPreviewMode,
+        sessionID: String,
+        expansion: TmuxSessionPreviewExpansionState
+    ) -> Bool {
+        expansion.isExpanded(
+            sessionID,
+            defaultExpanded: mode.expandsEverySession
+        )
     }
 }
 

@@ -7,6 +7,89 @@ import Testing
 
 @Suite("Native tmux attachment")
 struct TmuxAttachmentInfoTests {
+    @Test("preview attachments do not participate in tmux window sizing")
+    func previewAttachmentsIgnoreClientSize() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "release-work",
+            host: .local,
+            launchMode: .attachOnly,
+            ignoresClientSize: true,
+            initialClientSize: TmuxClientSize(columns: 200, rows: 51)
+        ).attachCommand(tmuxPath: "/opt/homebrew/bin/tmux")
+
+        #expect(command.contains("attach-session"))
+        #expect(command.contains("ignore-size"))
+        #expect(command.contains("stty columns 200 rows 51"))
+    }
+
+    @Test("a sole preview client preserves the detached tmux window size")
+    func solePreviewClientPreservesWindowSize() throws {
+        let tmuxPath = ProcessInfo.processInfo.environment["PATH"]?
+            .split(separator: ":")
+            .map { String($0) + "/tmux" }
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+        guard let tmuxPath else { return }
+        let server = try TestTmuxServer(
+            tmuxPath: tmuxPath,
+            socket: .runOwned(purpose: "preview-size")
+        )
+        defer { server.stop() }
+        let command = TmuxAttachmentInfo(
+            sessionName: "stable-preview",
+            host: .local,
+            socketName: server.socketName,
+            launchMode: .attachOnly,
+            ignoresClientSize: true,
+            initialClientSize: TmuxClientSize(columns: 200, rows: 51)
+        ).attachCommand(tmuxPath: tmuxPath)
+        let tmux = shellQuotedCommandArgument(tmuxPath)
+        let socket = shellQuotedCommandArgument(server.socketName)
+        let attach = shellQuotedCommandArgument(command)
+        let probe = Process()
+        let output = Pipe()
+        probe.executableURL = URL(fileURLWithPath: "/bin/sh")
+        probe.arguments = ["-c", """
+        set -eu
+        \(tmux) -f /dev/null -L \(socket) new-session -d -x 200 -y 50 -s stable-preview
+        /bin/sleep 5 | /usr/bin/script -q /dev/null /bin/sh -c \(attach) >/dev/null 2>&1 &
+        preview_pid=$!
+        trap 'kill "$preview_pid" 2>/dev/null || :' EXIT HUP INT TERM
+        attached=
+        attempts=0
+        while [ "$attempts" -lt 100 ]; do
+            if \(tmux) -L \(socket) list-clients >/dev/null 2>&1; then
+                attached=1
+                break
+            fi
+            attempts=$((attempts + 1))
+            sleep 0.01
+        done
+        [ -n "$attached" ]
+        attempts=0
+        while [ "$attempts" -lt 10 ]; do
+            size=$(\(tmux) -L \(
+                socket
+            ) display-message -p -t stable-preview '#{window_width}x#{window_height}')
+            [ "$size" = 200x50 ] || {
+                printf 'unexpected window size: %s\n' "$size" >&2
+                exit 1
+            }
+            attempts=$((attempts + 1))
+            sleep 0.02
+        done
+        """]
+        probe.standardOutput = output
+        probe.standardError = output
+        try probe.run()
+        probe.waitUntilExit()
+        let diagnostic = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+
+        #expect(probe.terminationStatus == 0, Comment(rawValue: diagnostic))
+    }
+
     @Test("POSIX attachments publish their client TTY under a unique token")
     func posixAttachmentsPublishClientTTY() {
         let token = "attachment-01234567"

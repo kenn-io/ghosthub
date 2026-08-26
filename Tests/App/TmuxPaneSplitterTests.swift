@@ -70,7 +70,7 @@ private func publishedClientTTY(
     throw PublishedClientTTYError.timedOut
 }
 
-private final class TestTmuxClient {
+final class TestTmuxClient {
     let process = Process()
     private let input = Pipe()
     private let tokenPath: URL
@@ -80,7 +80,8 @@ private final class TestTmuxClient {
         socketName: String,
         sessionName: String,
         clientToken: String,
-        clientTTYDirectory: URL? = nil
+        clientTTYDirectory: URL? = nil,
+        ignoresClientSize: Bool = false
     ) throws {
         tokenPath = try testClientTokenPath(
             clientToken,
@@ -90,7 +91,8 @@ private final class TestTmuxClient {
             sessionName: sessionName,
             host: .local,
             socketName: socketName,
-            launchMode: .attachOnly
+            launchMode: .attachOnly,
+            ignoresClientSize: ignoresClientSize
         ).attachCommand(
             tmuxPath: tmuxPath,
             clientTTYToken: clientToken,
@@ -214,6 +216,54 @@ private func nativePaneSplitsAreAvailable(_ tmuxPath: String) -> Bool {
 
 @Suite("tmux pane splitting", .serialized)
 struct TmuxPaneSplitterTests {
+    @Test("a preview client preserves the existing tmux window size")
+    func previewClientPreservesWindowSize() async throws {
+        guard case let .success(tmuxPath) =
+            TmuxBinaryResolver().resolveTmuxPath()
+        else { return }
+        guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "preview-size",
+            sessions: ["preview"]
+        )
+        defer { server.stop() }
+        let resized = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName,
+                "resize-window", "-t", "preview:", "-x", "180", "-y", "50",
+            ],
+            timeout: 5
+        )
+        #expect(resized.status == 0)
+        let token = UUID().uuidString.lowercased()
+        let client = try TestTmuxClient(
+            tmuxPath: tmuxPath,
+            socketName: server.socketName,
+            sessionName: "preview",
+            clientToken: token,
+            ignoresClientSize: true
+        )
+        defer { client.stop() }
+
+        _ = try await client.publishedTTY()
+        let measured = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName,
+                "display-message", "-p", "-t", "preview:",
+                "#{window_width}x#{window_height}",
+            ],
+            timeout: 5
+        )
+
+        #expect(measured.status == 0)
+        #expect(measured.stdout.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) == "180x50")
+    }
+
     @Test("version capability requires tmux 3.4")
     func versionCapabilityRequiresTmux34() {
         #expect(TmuxPaneSplitter.supportsPaneSplitting(
@@ -968,6 +1018,48 @@ struct TmuxPaneSplitterTests {
         #expect(commands.load().count == 2)
     }
 
+    @Test("cancellation removes an installed sizing hook")
+    func cancellationRemovesInstalledSizingHook() async {
+        let hookInstalled = LockedValue(false)
+        let sizingStarted = LockedValue(false)
+        let commands = LockedValue<[String]>([])
+        let splitter = TmuxPaneSplitter { _, _, command in
+            commands.withLock { $0.append(command) }
+            if command.contains("'refresh-client'") {
+                hookInstalled.store(true)
+                sizingStarted.store(true)
+                while !withUnsafeCurrentTask(body: {
+                    $0?.isCancelled == true
+                }) {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+            } else if command.contains("'set-hook' '-gu'") {
+                hookInstalled.store(false)
+            }
+            return (0, "")
+        }
+        let task = Task {
+            await splitter.enableSizing(
+                target: TmuxPaneSplitTarget(
+                    host: .local,
+                    tmuxPath: "/usr/bin/tmux",
+                    sessionName: "cancelled-sizing",
+                    socketName: nil,
+                    sshConnectionArguments: [],
+                    expectedIdentity: testSplitClient.sessionIdentity,
+                    expectedClient: testSplitClient
+                )
+            )
+        }
+
+        await waitUntil { sizingStarted.load() }
+        task.cancel()
+        _ = await task.value
+
+        #expect(!hookInstalled.load())
+        #expect(commands.load().count == 2)
+    }
+
     @Test("validation and split share one exact-client tmux queue")
     func posixCommands() {
         let right = TmuxPaneSplitter.command(
@@ -1016,6 +1108,96 @@ struct TmuxPaneSplitterTests {
         #expect(down.contains("split-window"))
         #expect(down.contains("-v"))
         #expect(!down.contains("=review"))
+    }
+
+    @Test("client sizing promotion keeps the exact client attached")
+    func sizingPromotionPreservesDestroyUnattachedSession() async throws {
+        guard case let .success(tmuxPath) =
+            TmuxBinaryResolver().resolveTmuxPath()
+        else { return }
+        guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "sizing-promotion",
+            sessions: ["promoted"]
+        )
+        defer { server.stop() }
+        let token = UUID().uuidString.lowercased()
+        let clientProcess = try TestTmuxClient(
+            tmuxPath: tmuxPath,
+            socketName: server.socketName,
+            sessionName: "promoted",
+            clientToken: token,
+            ignoresClientSize: true
+        )
+        defer { clientProcess.stop() }
+        _ = try await clientProcess.publishedTTY()
+        let splitter = TmuxPaneSplitter()
+        let target = TmuxPaneSplitTarget(
+            host: .local,
+            tmuxPath: tmuxPath,
+            sessionName: "promoted",
+            socketName: server.socketName,
+            sshConnectionArguments: [],
+            clientToken: token
+        )
+        let client = try await splitter.clientIdentity(target: target).get()
+        let destroyUnattached = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName, "set-option", "-g",
+                "destroy-unattached", "on",
+            ],
+            timeout: 5
+        )
+        #expect(destroyUnattached.status == 0)
+
+        var verifiedTarget = target
+        verifiedTarget.expectedIdentity = client.sessionIdentity
+        verifiedTarget.expectedClient = client
+        let failure = await splitter.enableSizing(target: verifiedTarget)
+
+        #expect(failure == nil)
+        let session = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName, "has-session", "-t", "=promoted:",
+            ],
+            timeout: 5
+        )
+        #expect(session.status == 0)
+        let clients = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName, "list-clients", "-F",
+                "#{client_tty}\t#{client_flags}",
+            ],
+            timeout: 5
+        )
+        let promotedFlags = clients.stdout.split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .first { $0.hasPrefix(client.clientTTY + "\t") }
+        #expect(promotedFlags != nil)
+        #expect(promotedFlags?.contains("ignore-size") == false)
+
+        let restoreFailure = await splitter.disableSizing(
+            target: verifiedTarget
+        )
+        #expect(restoreFailure == nil)
+        let restoredClients = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", server.socketName, "list-clients", "-F",
+                "#{client_tty}\t#{client_flags}",
+            ],
+            timeout: 5
+        )
+        let restoredFlags = restoredClients.stdout.split(
+            whereSeparator: \.isNewline
+        ).map(String.init).first {
+            $0.hasPrefix(client.clientTTY + "\t")
+        }
+        #expect(restoredFlags?.contains("ignore-size") == true)
     }
 
     @Test("atomic validation rejects a replacement on the expected TTY")
