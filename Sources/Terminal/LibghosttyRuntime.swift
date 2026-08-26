@@ -162,6 +162,7 @@ public final class LibghosttyRuntime: ObservableObject,
         PassthroughSubject<LibghosttyConfigReloadNotice?, Never>()
     private let pipeline: LibghosttyConfigPipeline
     private let configMonitorFactory: ConfigMonitorFactory
+    private let increasedContrastProvider: () -> Bool
     private nonisolated let resolvedColorGenerations =
         ResolvedColorGenerationTracker()
     private var resolvedColorEntries: [UInt: ResolvedColorEntry] = [:]
@@ -253,10 +254,14 @@ public final class LibghosttyRuntime: ObservableObject,
     init(
         pipeline: LibghosttyConfigPipeline,
         runtimeState: LibghosttyRuntimeState? = nil,
-        configMonitorFactory: @escaping ConfigMonitorFactory
+        configMonitorFactory: @escaping ConfigMonitorFactory,
+        increasedContrastProvider: @escaping () -> Bool = {
+            NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        }
     ) {
         self.pipeline = pipeline
         self.configMonitorFactory = configMonitorFactory
+        self.increasedContrastProvider = increasedContrastProvider
         self.runtimeState = runtimeState ?? LibghosttyRuntimeState()
         bootstrapStatus = .ready()
         phase = .loadingConfig
@@ -605,8 +610,7 @@ public final class LibghosttyRuntime: ObservableObject,
         guard let configHandle else { return }
         let appearance = Self.readBackgroundAppearance(
             from: configHandle,
-            increasedContrast: NSWorkspace.shared
-                .accessibilityDisplayShouldIncreaseContrast
+            increasedContrast: increasedContrastProvider()
         )
         if appearance != backgroundAppearance {
             backgroundAppearance = appearance

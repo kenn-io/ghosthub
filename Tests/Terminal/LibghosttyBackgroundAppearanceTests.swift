@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import GhosttyKit
 import Testing
@@ -89,6 +88,8 @@ struct LibghosttyBackgroundAppearanceTests {
 
         // A no-op change handler keeps filesystem events from triggering
         // reloads mid-test; the explicit reloadConfig below is synchronous.
+        // Contrast is pinned off so the 0.8 -> 1.0 transition is always
+        // observable regardless of this machine's accessibility settings.
         let runtime = LibghosttyRuntime(
             pipeline: pipeline,
             configMonitorFactory: { request in
@@ -97,18 +98,13 @@ struct LibghosttyBackgroundAppearanceTests {
                     errorHandler: request.errorHandler,
                     changeHandler: {}
                 )
-            }
+            },
+            increasedContrastProvider: { false }
         )
         try #require(runtime.phase == .ready)
 
-        if NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast {
-            // Increased contrast forces opaque, so transparency cannot be
-            // observed on this machine; the derivation path still runs.
-            #expect(runtime.backgroundAppearance == .opaque)
-        } else {
-            #expect(runtime.backgroundAppearance.opacity == 0.8)
-            #expect(runtime.backgroundAppearance.isTransparent)
-        }
+        #expect(runtime.backgroundAppearance.opacity == 0.8)
+        #expect(runtime.backgroundAppearance.isTransparent)
 
         try "background-opacity = 1.0\n".write(
             to: pipeline.paths.globalConfigFile,
