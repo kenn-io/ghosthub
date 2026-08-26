@@ -1814,79 +1814,91 @@ public struct RootView: View {
                       )
                   ) {
             view
-        } else if display.suppressesAutomaticWorktreeSessionOpen,
-                  !display.isWorkspaceRestorationPending,
-                  selectedWorktreeTmuxSession != nil {
-            ContentUnavailableView {
-                Label("Session detached", systemImage: "terminal")
-            } description: {
-                Text("Select this workspace to attach its tmux session.")
-            }
-        } else if let pendingSession = selectedWorktreeTmuxSession {
-            ProgressView("Opening \(displayName(for: pendingSession))…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if selection.selectedWorktreeID != nil
-            || selection.selectedDirectoryWorkspaceID != nil {
-            ContentUnavailableView {
-                Label("No tmux session", systemImage: "terminal")
-            } description: {
-                Text(
-                    "This kwt workspace does not currently report a tmux session."
-                )
-            } actions: {
-                if let refresh = handlers.refreshWorkspaceInventory {
-                    Button("Refresh", action: refresh)
-                }
-            }
-        } else if display.isWorkspaceInventoryLoading {
-            ProgressView("Loading workspaces…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let error = display.workspaceInventoryError {
-            ContentUnavailableView {
-                Label(
-                    "Unable to refresh workspaces",
-                    systemImage: "exclamationmark.triangle"
-                )
-            } description: {
-                Text(error)
-            } actions: {
-                if let refresh = handlers.refreshWorkspaceInventory {
-                    Button("Retry", action: refresh)
-                }
-            }
-        } else if snapshot.projects.isEmpty,
-                  snapshot.hosts.allSatisfy({
-                      $0.tmuxSessions.isEmpty
-                          && $0.herdrSessions.isEmpty
-                          && $0.zellijSessions.isEmpty
-                  }) {
-            VStack(spacing: 14) {
-                Text("Welcome to Ghosthub")
-                    .font(.system(size: 24, weight: .semibold))
-                Text(
-                    "Your kwt workspaces and multiplexer sessions will appear in the sidebar."
-                )
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                Text(
-                    "Register projects with kwt, or add an SSH host in Settings. Ghosthub attaches without taking over multiplexer tabs, panes, layouts, or history."
-                )
-                .font(.system(size: 13))
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 460)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ContentUnavailableView(
-                "No Active Session",
-                systemImage: "terminal",
-                description: Text(
-                    "Select a multiplexer session or kwt workspace from the sidebar."
-                )
-            )
+            emptyWorkspaceState
         }
+    }
+
+    /// Non-terminal states share one chrome-tinted backdrop: the cover
+    /// behind them stays clear for the terminal branches, so without this
+    /// they would float over the bare desktop when transparent. When
+    /// opaque the tint is the canonical surface color over an identical
+    /// opaque cover, so rendering is unchanged.
+    private var emptyWorkspaceState: some View {
+        ZStack {
+            if display.suppressesAutomaticWorktreeSessionOpen,
+               !display.isWorkspaceRestorationPending,
+               selectedWorktreeTmuxSession != nil {
+                ContentUnavailableView {
+                    Label("Session detached", systemImage: "terminal")
+                } description: {
+                    Text("Select this workspace to attach its tmux session.")
+                }
+            } else if let pendingSession = selectedWorktreeTmuxSession {
+                ProgressView("Opening \(displayName(for: pendingSession))…")
+            } else if selection.selectedWorktreeID != nil
+                || selection.selectedDirectoryWorkspaceID != nil {
+                ContentUnavailableView {
+                    Label("No tmux session", systemImage: "terminal")
+                } description: {
+                    Text(
+                        "This kwt workspace does not currently report a tmux session."
+                    )
+                } actions: {
+                    if let refresh = handlers.refreshWorkspaceInventory {
+                        Button("Refresh", action: refresh)
+                    }
+                }
+            } else if display.isWorkspaceInventoryLoading {
+                ProgressView("Loading workspaces…")
+            } else if let error = display.workspaceInventoryError {
+                ContentUnavailableView {
+                    Label(
+                        "Unable to refresh workspaces",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                } description: {
+                    Text(error)
+                } actions: {
+                    if let refresh = handlers.refreshWorkspaceInventory {
+                        Button("Retry", action: refresh)
+                    }
+                }
+            } else if snapshot.projects.isEmpty,
+                      snapshot.hosts.allSatisfy({
+                          $0.tmuxSessions.isEmpty
+                              && $0.herdrSessions.isEmpty
+                              && $0.zellijSessions.isEmpty
+                      }) {
+                VStack(spacing: 14) {
+                    Text("Welcome to Ghosthub")
+                        .font(.system(size: 24, weight: .semibold))
+                    Text(
+                        "Your kwt workspaces and multiplexer sessions will appear in the sidebar."
+                    )
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    Text(
+                        "Register projects with kwt, or add an SSH host in Settings. Ghosthub attaches without taking over multiplexer tabs, panes, layouts, or history."
+                    )
+                    .font(.system(size: 13))
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
+                }
+            } else {
+                ContentUnavailableView(
+                    "No Active Session",
+                    systemImage: "terminal",
+                    description: Text(
+                        "Select a multiplexer session or kwt workspace from the sidebar."
+                    )
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WorkspaceSurfaceColor.chrome(backgroundAppearance))
     }
 
     private var worktreeVisibility: WorktreeVisibility {
