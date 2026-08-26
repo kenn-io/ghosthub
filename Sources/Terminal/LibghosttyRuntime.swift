@@ -151,6 +151,8 @@ public final class LibghosttyRuntime: ObservableObject,
         LibghosttyConfigReloadNotice?
     @Published public private(set) var resolvedTerminalColorsBySurface:
         [UInt: TerminalResolvedColors]
+    @Published public private(set) var backgroundAppearance:
+        TerminalBackgroundAppearance = .opaque
 
     public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
@@ -171,6 +173,8 @@ public final class LibghosttyRuntime: ObservableObject,
     private var monitorFailureMessage: String?
     private var monitorFailureNoticeID: UUID?
     private nonisolated(unsafe) var notificationObservers: [NSObjectProtocol] = []
+    private nonisolated(unsafe) var workspaceNotificationObservers:
+        [NSObjectProtocol] = []
     private static var didInitializeLibrary = false
 
     public var configPaths: LibghosttyConfigPaths {
@@ -185,6 +189,17 @@ public final class LibghosttyRuntime: ObservableObject,
     public var needsConfirmQuit: Bool {
         guard let appHandle else { return false }
         return ghostty_app_needs_confirm_quit(appHandle)
+    }
+
+    /// Applies the configured background blur to a window via libghostty.
+    /// Safe to call repeatedly; radius 0 clears any existing blur. No effect
+    /// unless the window is visible, so callers re-apply on focus changes.
+    public func applyWindowBackgroundBlur(to window: NSWindow) {
+        guard let appHandle else { return }
+        ghostty_set_window_background_blur(
+            appHandle,
+            Unmanaged.passUnretained(window).toOpaque()
+        )
     }
 
     /// Colors shared by every live surface in the current configuration.
@@ -255,6 +270,10 @@ public final class LibghosttyRuntime: ObservableObject,
     deinit {
         for observer in notificationObservers {
             NotificationCenter.default.removeObserver(observer)
+        }
+
+        for observer in workspaceNotificationObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
 
         if let appHandle {
@@ -579,6 +598,19 @@ public final class LibghosttyRuntime: ObservableObject,
             ghostty_config_free(existing)
         }
         configHandle = config
+        refreshBackgroundAppearance()
+    }
+
+    private func refreshBackgroundAppearance() {
+        guard let configHandle else { return }
+        let appearance = Self.readBackgroundAppearance(
+            from: configHandle,
+            increasedContrast: NSWorkspace.shared
+                .accessibilityDisplayShouldIncreaseContrast
+        )
+        if appearance != backgroundAppearance {
+            backgroundAppearance = appearance
+        }
     }
 
     private func readDiagnostics(from config: ghostty_config_t) -> [String] {
@@ -623,6 +655,20 @@ public final class LibghosttyRuntime: ObservableObject,
             ) { [weak self] _ in
                 guard let appHandle = self?.appHandle else { return }
                 ghostty_app_set_focus(appHandle, false)
+            }
+        )
+        // Accessibility display notifications post on NSWorkspace's own
+        // notification center, not NotificationCenter.default.
+        workspaceNotificationObservers.append(
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace
+                    .accessibilityDisplayOptionsDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.refreshBackgroundAppearance()
+                }
             }
         )
     }
@@ -731,7 +777,7 @@ public final class LibghosttyRuntime: ObservableObject,
         configReloadNoticeSubject.send(notice)
     }
 
-    private static func ensureLibraryInitialized() -> Bool {
+    static func ensureLibraryInitialized() -> Bool {
         if didInitializeLibrary {
             return true
         }
@@ -1305,6 +1351,35 @@ public final class LibghosttyRuntime: ObservableObject,
               let surface = target.target.surface
         else { return nil }
         return UInt(bitPattern: surface)
+    }
+
+    nonisolated static func readBackgroundAppearance(
+        from config: ghostty_config_t,
+        increasedContrast: Bool
+    ) -> TerminalBackgroundAppearance {
+        var opacity = 1.0
+        let opacityKey = "background-opacity"
+        _ = ghostty_config_get(
+            config,
+            &opacity,
+            opacityKey,
+            UInt(opacityKey.lengthOfBytes(using: .utf8))
+        )
+
+        var blur: Int16 = 0
+        let blurKey = "background-blur"
+        _ = ghostty_config_get(
+            config,
+            &blur,
+            blurKey,
+            UInt(blurKey.lengthOfBytes(using: .utf8))
+        )
+
+        return TerminalBackgroundAppearance(
+            opacity: opacity,
+            blurCValue: blur,
+            increasedContrast: increasedContrast
+        )
     }
 
     private nonisolated static func resolvedTerminalColors(
