@@ -1249,9 +1249,8 @@ struct WorkspaceWindow: View {
             terminalRuntime.backgroundAppearance
         )
         .background(
-            (terminalRuntime.backgroundAppearance.isTransparent
-                ? Color.clear
-                : WorkspaceSurfaceColor.color)
+            WorkspaceSurfaceColor
+                .behindTerminal(terminalRuntime.backgroundAppearance)
                 .ignoresSafeArea()
         )
         .overlay(alignment: .top) {

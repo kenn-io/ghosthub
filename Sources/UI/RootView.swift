@@ -534,9 +534,7 @@ public struct RootView: View {
     private var workspaceContent: some View {
         workspaceColumns
             .background(
-                backgroundAppearance.isTransparent
-                    ? Color.clear
-                    : WorkspaceSurfaceColor.color
+                WorkspaceSurfaceColor.behindTerminal(backgroundAppearance)
             )
     }
 
@@ -760,13 +758,7 @@ public struct RootView: View {
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            WorkspaceSurfaceColor.color(
-                opacity: backgroundAppearance.isTransparent
-                    ? backgroundAppearance.opacity
-                    : 1.0
-            )
-        )
+        .background(WorkspaceSurfaceColor.chrome(backgroundAppearance))
     }
 
     private func reviewSSHHostKey(
@@ -1709,19 +1701,23 @@ public struct RootView: View {
     private var terminalWorkspaceWithPreviewParking: some View {
         ZStack {
             if let parkingView = content.tmuxSessionPreviewParkingBuilder?() {
+                // Parked preview surfaces must keep rendering (snapshots
+                // need them drawn) but stay hidden: with a transparent
+                // window the cover below goes clear, so near-zero opacity
+                // hides them instead. Terminal occlusion pausing is
+                // window-scoped (TerminalSurfaceView reads only
+                // window.occlusionState/isVisible/isKeyWindow), so 0 would
+                // not pause the surfaces, but SwiftUI may skip compositing
+                // views at exactly zero opacity; 0.001 avoids that and
+                // matches the near-clear window background convention in
+                // WorkspaceWindowChrome.apply.
                 parkingView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(
                         backgroundAppearance.isTransparent ? 0.001 : 1.0
                     )
             }
-            // Parked preview surfaces must keep rendering (snapshots need
-            // them drawn) but stay hidden: an opaque cover would block the
-            // desktop when the window is transparent, a clear one would
-            // expose them, so near-zero opacity hides them instead.
-            (backgroundAppearance.isTransparent
-                ? Color.clear
-                : WorkspaceSurfaceColor.color)
+            WorkspaceSurfaceColor.behindTerminal(backgroundAppearance)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             terminalWorkspaceContent
         }

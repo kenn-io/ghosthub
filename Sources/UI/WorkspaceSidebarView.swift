@@ -466,9 +466,7 @@ struct WorkspaceSidebarView: View {
                 // The sidebar column already paints the tinted surface when
                 // transparent; repainting it here would compound the alpha
                 // and make the header block more opaque than the rest.
-                backgroundAppearance.isTransparent
-                    ? Color.clear
-                    : WorkspaceSurfaceColor.color
+                WorkspaceSurfaceColor.behindTerminal(backgroundAppearance)
                 Color.primary.opacity(
                     colorSchemeContrast == .increased ? 0.08 : 0.035
                 )
