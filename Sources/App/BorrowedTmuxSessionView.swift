@@ -24,6 +24,7 @@ struct BorrowedTmuxSessionView: View {
     var onReviewConnection: () -> Void
     var onHostSettingsRequest: () -> Void
     @State private var isRetryConfirmationPresented = false
+    @Environment(\.terminalBackgroundAppearance) private var backgroundAppearance
 
     init(
         handle: BorrowedTmuxSessionHandle,
@@ -73,7 +74,43 @@ struct BorrowedTmuxSessionView: View {
                     defersTerminalResize: defersTerminalResize,
                     onCloseRequest: onCloseRequest
                 )
-            } else if recoveryState != nil {
+            } else {
+                sessionFallback
+            }
+        }
+        .confirmationDialog(
+            "Run the launch command again?",
+            isPresented: $isRetryConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Run Command Again", role: .destructive) {
+                onConfirmedRetryRequest()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(
+                    "The command may have started before the connection "
+                        + "dropped. Running it again could repeat its side "
+                        + "effects."
+                )
+                if let retryConfirmationCommand {
+                    Text(retryConfirmationCommand)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    /// Recovery, disconnection, and opening states share one chrome-tinted
+    /// backdrop: the cover behind them goes clear under a transparent
+    /// config, so without this they would float over the bare desktop. When
+    /// opaque the tint is the canonical surface color over an identical
+    /// opaque cover, so rendering is unchanged.
+    private var sessionFallback: some View {
+        ZStack {
+            if recoveryState != nil {
                 ContentUnavailableView {
                     Label(recoveryTitle, systemImage: "network.slash")
                 } description: {
@@ -122,32 +159,10 @@ struct BorrowedTmuxSessionView: View {
                 }
             } else {
                 ProgressView("Opening \(displayTitle ?? handle.name)…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .confirmationDialog(
-            "Run the launch command again?",
-            isPresented: $isRetryConfirmationPresented,
-            titleVisibility: .visible
-        ) {
-            Button("Run Command Again", role: .destructive) {
-                onConfirmedRetryRequest()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(
-                    "The command may have started before the connection "
-                        + "dropped. Running it again could repeat its side "
-                        + "effects."
-                )
-                if let retryConfirmationCommand {
-                    Text(retryConfirmationCommand)
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                }
-            }
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WorkspaceSurfaceColor.chrome(backgroundAppearance))
     }
 
     var recoveryTitle: String {
