@@ -130,7 +130,10 @@ available build and test gates.
 The self-hosted GUI tests use a repository-relative action from the same
 reviewed `main` commit as the reusable workflow. The pull-request checkout
 supplies the application and tests, but it cannot replace the trusted GUI
-launcher. Fork pull requests never enter this path.
+launcher. A pull request that changes this action therefore cannot exercise
+its own launcher change. Merge it through hosted validation, then use a
+follow-up same-repository pull request to exercise the reviewed action from
+`main`. Fork pull requests never enter this path.
 
 Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target.
 Local bootstrap checks every architecture required by the running Zig
