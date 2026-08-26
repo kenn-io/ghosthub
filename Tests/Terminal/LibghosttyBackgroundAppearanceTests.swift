@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GhosttyKit
 import Testing
@@ -14,6 +15,9 @@ struct LibghosttyBackgroundAppearanceTests {
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true
         )
+        // Config loading is eager, so the directory can go as soon as the
+        // finalized handle is returned.
+        defer { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appendingPathComponent("ghostty.conf")
         try contents.write(to: file, atomically: true, encoding: .utf8)
         let config = try #require(ghostty_config_new())
@@ -64,6 +68,56 @@ struct LibghosttyBackgroundAppearanceTests {
             from: config, increasedContrast: false
         )
         #expect(appearance.blur == .radius(32))
+    }
+
+    @Test("publishes appearance at startup and on reload")
+    func publishesAppearanceAcrossReloads() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pipeline = LibghosttyConfigPipeline(
+            paths: LibghosttyConfigPaths(configDirectory: dir)
+        )
+        try "background-opacity = 0.8\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        // A no-op change handler keeps filesystem events from triggering
+        // reloads mid-test; the explicit reloadConfig below is synchronous.
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    errorHandler: request.errorHandler,
+                    changeHandler: {}
+                )
+            }
+        )
+        try #require(runtime.phase == .ready)
+
+        if NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast {
+            // Increased contrast forces opaque, so transparency cannot be
+            // observed on this machine; the derivation path still runs.
+            #expect(runtime.backgroundAppearance == .opaque)
+        } else {
+            #expect(runtime.backgroundAppearance.opacity == 0.8)
+            #expect(runtime.backgroundAppearance.isTransparent)
+        }
+
+        try "background-opacity = 1.0\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        runtime.reloadConfig(force: true)
+
+        #expect(runtime.backgroundAppearance == .opaque)
     }
 
     @Test("increased contrast forces opaque")

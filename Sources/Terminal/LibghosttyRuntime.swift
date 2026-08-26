@@ -1357,6 +1357,8 @@ public final class LibghosttyRuntime: ObservableObject,
         from config: ghostty_config_t,
         increasedContrast: Bool
     ) -> TerminalBackgroundAppearance {
+        // An absent or mismatched key leaves the out-parameter untouched,
+        // so the pre-seeded values are the fallback defaults.
         var opacity = 1.0
         let opacityKey = "background-opacity"
         _ = ghostty_config_get(
