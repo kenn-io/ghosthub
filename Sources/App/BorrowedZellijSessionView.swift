@@ -1,5 +1,6 @@
 import GhosthubTerminal
 import GhosthubTransport
+import GhosthubUI
 import SwiftUI
 
 struct BorrowedZellijSessionView: View {
@@ -155,6 +156,7 @@ private struct NativeZellijTerminalView: View {
     var defersTerminalResize: Bool
     var onCloseRequest: () -> Void
     @State private var observerID = UUID()
+    @Environment(\.terminalBackgroundAppearance) private var backgroundAppearance
 
     var body: some View {
         TerminalSurfaceSwiftUIView(
@@ -162,7 +164,7 @@ private struct NativeZellijTerminalView: View {
             defersSurfaceResize: defersTerminalResize
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(TerminalSurfaceBackdrop.color(for: backgroundAppearance))
         .onAppear {
             surfaceView.registerPaneCloseRequestObserver(
                 id: observerID,

@@ -1,5 +1,6 @@
 import GhosthubTerminal
 import GhosthubTransport
+import GhosthubUI
 import SwiftUI
 
 struct BorrowedHerdrSessionView: View {
@@ -160,6 +161,7 @@ private struct NativeHerdrTerminalView: View {
     var defersTerminalResize: Bool
     var onCloseRequest: () -> Void
     @State private var observerID = UUID()
+    @Environment(\.terminalBackgroundAppearance) private var backgroundAppearance
 
     var body: some View {
         TerminalSurfaceSwiftUIView(
@@ -167,7 +169,7 @@ private struct NativeHerdrTerminalView: View {
             defersSurfaceResize: defersTerminalResize
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(TerminalSurfaceBackdrop.color(for: backgroundAppearance))
         .overlay(alignment: .top) {
             if let message = surfaceView.paneSplitErrorMessage {
                 NativePaneSplitErrorOverlay(message: message)

@@ -1,6 +1,7 @@
 import GhosthubTransport
 import GhosthubTerminal
 import GhosthubTmux
+import GhosthubUI
 import SwiftUI
 
 struct BorrowedTmuxSessionView: View {
@@ -227,6 +228,7 @@ private struct NativeTmuxTerminalView: View {
     var defersTerminalResize: Bool
     var onCloseRequest: () -> Void
     @State private var observerID = UUID()
+    @Environment(\.terminalBackgroundAppearance) private var backgroundAppearance
 
     var body: some View {
         TerminalSurfaceSwiftUIView(
@@ -234,7 +236,7 @@ private struct NativeTmuxTerminalView: View {
             defersSurfaceResize: defersTerminalResize
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(TerminalSurfaceBackdrop.color(for: backgroundAppearance))
         .overlay(alignment: .top) {
             if let message = surfaceView.paneSplitErrorMessage {
                 NativePaneSplitErrorOverlay(message: message)
