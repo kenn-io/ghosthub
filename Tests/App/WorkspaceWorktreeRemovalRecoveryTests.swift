@@ -1342,7 +1342,10 @@ extension WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("failed removal restores a pathless matching endpoint")
     func failedRemovalRestoresPathlessMatchingEndpoint() async throws {
-        let fixture = try removalFixture(socketName: "kwt-pr-0123456789abcdef")
+        let fixture = try removalFixture(
+            socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected
+        )
         let environment = fixture.environment
         let removable = fixture.removable
         let snapshot = fixture.snapshot
@@ -1377,7 +1380,8 @@ extension WorkspaceWorktreeRemovalTests {
         let pathless = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
             name: "kwt-ghosthub-feature",
-            socketName: "kwt-pr-0123456789abcdef"
+            socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected
         )
         model.openBorrowedTmuxSession(pathless)
         await waitUntilMainActor {

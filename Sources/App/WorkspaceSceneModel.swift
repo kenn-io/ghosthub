@@ -472,11 +472,13 @@ final class WorkspaceSceneModel: ObservableObject {
         var hostID: UUID
         var name: String
         var socketName: String?
+        var tmuxAttachMode: TmuxAttachMode?
 
         init(_ selection: WorkspaceTmuxSessionSelection) {
             hostID = selection.hostID
             name = selection.name
             socketName = selection.socketName
+            tmuxAttachMode = selection.tmuxAttachMode
         }
 
         var previewKey: TmuxPreviewKey {
@@ -488,8 +490,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
 
         var sessionID: String {
-            [hostID.uuidString, socketName ?? "default", name]
-                .joined(separator: ":")
+            [
+                hostID.uuidString,
+                tmuxAttachMode?.rawValue ?? "unbound",
+                socketName ?? "default",
+                name,
+            ].joined(separator: ":")
         }
     }
     private final class RetainedTmuxPresentation {
@@ -3302,7 +3308,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 && $0.tmuxSessionName == sessionName
                 && removalTmuxSocket(
                     request.worktree.tmuxSocketName,
-                    matches: $0.tmuxSocketName
+                    mode: request.worktree.tmuxAttachMode,
+                    matches: $0.tmuxSocketName,
+                    candidateMode: $0.tmuxAttachMode
                 )
         }
     }
@@ -3315,18 +3323,23 @@ final class WorkspaceSceneModel: ObservableObject {
         return record.sessionName == sessionName
             && removalTmuxSocket(
                 worktree.tmuxSocketName,
-                matches: record.tmuxSocketName
+                mode: worktree.tmuxAttachMode,
+                matches: record.tmuxSocketName,
+                candidateMode: record.tmuxAttachMode
             )
     }
 
     private func removalTmuxSocket(
         _ confirmedSocket: String?,
-        matches candidateSocket: String?
+        mode: TmuxAttachMode,
+        matches candidateSocket: String?,
+        candidateMode: TmuxAttachMode
     ) -> Bool {
-        // Missing inventory metadata cannot prove that a same-name session
-        // moved away from the confirmed protected server.
-        candidateSocket == confirmedSocket
-            || (confirmedSocket != nil && candidateSocket == nil)
+        guard candidateMode == mode else { return false }
+        return candidateSocket == confirmedSocket
+            || (mode == .protected
+                && confirmedSocket != nil
+                && candidateSocket == nil)
     }
 
     private func removalRequest(
@@ -3344,6 +3357,7 @@ final class WorkspaceSceneModel: ObservableObject {
               worktree.generation == request.worktree.generation,
               worktree.tmuxSessionName == request.worktree.tmuxSessionName,
               worktree.tmuxSocketName == request.worktree.tmuxSocketName,
+              worktree.tmuxAttachMode == request.worktree.tmuxAttachMode,
               project.id == request.project.id,
               project.hostID == request.project.hostID,
               project.scopedKey == request.project.scopedKey,
@@ -3355,6 +3369,7 @@ final class WorkspaceSceneModel: ObservableObject {
             && killRequest.session.worktreeID == worktree.id
             && killRequest.session.workspacePath == worktree.path
             && killRequest.session.socketName == worktree.tmuxSocketName
+            && killRequest.session.tmuxAttachMode == worktree.tmuxAttachMode
     }
 
     private func removalConfirmationChanged(
@@ -3591,7 +3606,8 @@ final class WorkspaceSceneModel: ObservableObject {
             createdAt: nil,
             repository: workspace.repository,
             sessionName: workspace.sessionName,
-            tmuxSocketName: workspace.tmuxSocketName
+            tmuxSocketName: workspace.tmuxSocketName,
+            tmuxAttachMode: workspace.tmuxAttachMode
         )
         if let projectIndex {
             if let worktreeIndex = inventory.projects[
@@ -3606,6 +3622,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 inventory.projects[projectIndex].worktrees[
                     worktreeIndex
                 ].tmuxSocketName = workspace.tmuxSocketName
+                inventory.projects[projectIndex].worktrees[
+                    worktreeIndex
+                ].tmuxAttachMode = workspace.tmuxAttachMode
             } else {
                 inventory.projects[projectIndex].worktrees.append(worktree)
             }
@@ -3640,6 +3659,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 workspace.sessionName
             snapshot.worktrees[index].tmuxSocketName =
                 workspace.tmuxSocketName
+            snapshot.worktrees[index].tmuxAttachMode =
+                workspace.tmuxAttachMode
             return
         }
         snapshot.worktrees.append(WorktreeSummary(
@@ -3652,6 +3673,7 @@ final class WorkspaceSceneModel: ObservableObject {
             branch: workspace.branch,
             tmuxSessionName: workspace.sessionName,
             tmuxSocketName: workspace.tmuxSocketName,
+            tmuxAttachMode: workspace.tmuxAttachMode,
             sessionBackend:
             snapshot.host(id: project.hostID)?.kind == .remote
                 ? .remoteTmux
@@ -4965,7 +4987,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 WorktreeMutationCoordinator.Scope:
                     Set<WorktreeMutationCoordinator.ProtectedEndpoint>
             ] = [:]
-        for worktree in snapshot.worktrees where worktree.tmuxSocketName != nil {
+        for worktree in snapshot.worktrees
+            where worktree.tmuxAttachMode == .protected {
             guard let scope = scopesByProjectID[worktree.projectID],
                   scope.hostID == worktree.hostID
             else { continue }
@@ -7141,7 +7164,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let protectedWorktrees = (snapshot.worktrees + cachedWorktrees).filter {
             $0.projectID == project.id
                 && $0.hostID == project.hostID
-                && $0.tmuxSocketName != nil
+                && $0.tmuxAttachMode == .protected
         }
         let localEndpoints = preferredProtectedEndpoints(
             protectedWorktrees.map { worktree in
@@ -9115,7 +9138,8 @@ final class WorkspaceSceneModel: ObservableObject {
             $0.name == selection.name
         }
         let launchMode: TmuxAttachmentLaunchMode
-        if selection.socketName != nil {
+        if selection.tmuxAttachMode == .protected
+            || selection.socketName != nil {
             launchMode = .attach
         } else {
             launchMode =
@@ -9174,9 +9198,10 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         guard !worktreeRemovalIsPending(for: selection) else { return nil }
         let effectiveLaunchMode: TmuxAttachmentLaunchMode =
-            selection.socketName != nil && launchMode == .create
-                ? .attach
-                : launchMode
+            (selection.tmuxAttachMode == .protected
+                || selection.socketName != nil) && launchMode == .create
+            ? .attach
+            : launchMode
         guard effectiveLaunchMode != .create
             || initialCommand == nil
             || commandReplayAuthorized
@@ -9281,12 +9306,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         let openWorkspace = intent == .userInitiated
             && effectiveLaunchMode == .attach
-            && selection.socketName == nil
+            && selection.tmuxAttachMode == .direct
             && selection.workspacePath != nil
             && (!sessionIsDiscovered || !managedKwtUnavailable)
         let protectedSessionNeedsEstablishment = intent == .userInitiated
             && effectiveLaunchMode == .attach
-            && selection.socketName != nil
+            && selection.tmuxAttachMode == .protected
             && selection.workspacePath != nil
         let discoveredIdentity = Self.discoveredTmuxSessionIdentity(
             selection,
@@ -9297,6 +9322,7 @@ final class WorkspaceSceneModel: ObservableObject {
             name: selection.name,
             host: attachmentHost,
             socketName: selection.socketName,
+            tmuxAttachMode: selection.tmuxAttachMode,
             launchMode: effectiveLaunchMode,
             initialCommand: effectiveLaunchMode == .create
                 ? initialCommand
@@ -9903,7 +9929,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func protectedTmuxAttachmentScope(
         for presentation: RetainedTmuxPresentation
     ) -> WorktreeMutationCoordinator.Scope? {
-        guard presentation.selection.socketName != nil,
+        guard presentation.selection.tmuxAttachMode == .protected,
               presentation.reconnectContext?.phase == .establishingWorkspace,
               let worktreeID = presentation.selection.worktreeID,
               let worktree = snapshot.worktree(id: worktreeID),
@@ -10182,6 +10208,7 @@ final class WorkspaceSceneModel: ObservableObject {
         lhs.hostID == rhs.hostID
             && lhs.name == rhs.name
             && lhs.socketName == rhs.socketName
+            && lhs.tmuxAttachMode == rhs.tmuxAttachMode
     }
 
     private func transferPendingCreation(
@@ -10325,7 +10352,8 @@ final class WorkspaceSceneModel: ObservableObject {
         nativeTmuxSessionCoordinator.detach(
             hostID: presentation.selection.hostID,
             name: presentation.selection.name,
-            socketName: presentation.selection.socketName
+            socketName: presentation.selection.socketName,
+            tmuxAttachMode: presentation.selection.tmuxAttachMode
         )
     }
 
@@ -11997,12 +12025,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         let openWorkspace = intent == .userInitiated
             && launchMode == .attach
-            && selection.socketName == nil
+            && selection.tmuxAttachMode == .direct
             && selection.workspacePath != nil
             && (!sessionIsDiscovered || !managedKwtUnavailable)
         let protectedSessionNeedsEstablishment = intent == .userInitiated
             && launchMode == .attach
-            && selection.socketName != nil
+            && selection.tmuxAttachMode == .protected
             && selection.workspacePath != nil
         let previousHandle = presentation.handle
         let routeIdentity = presentation.reconnectContext?.routeIdentity
@@ -12017,6 +12045,7 @@ final class WorkspaceSceneModel: ObservableObject {
             name: selection.name,
             host: attachmentHost,
             socketName: selection.socketName,
+            tmuxAttachMode: selection.tmuxAttachMode,
             launchMode: launchMode,
             initialCommand: launchMode == .create ? initialCommand : nil,
             workingDirectory: selection.workspacePath,
@@ -12161,7 +12190,8 @@ final class WorkspaceSceneModel: ObservableObject {
         else { return }
         presentation.establishmentConfirmationTask?.cancel()
         let initialDelays = [.zero] + createdSessionDiscoveryDelays
-        let keepsProbingUntilConfirmed = context.selection.socketName != nil
+        let keepsProbingUntilConfirmed =
+            context.selection.tmuxAttachMode == .protected
         let settledDelay = createdSessionDiscoveryDelays.last(where: {
             $0 > .zero
         }) ?? .seconds(4)

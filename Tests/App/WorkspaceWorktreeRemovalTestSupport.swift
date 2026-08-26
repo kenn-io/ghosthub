@@ -100,7 +100,8 @@ func inventory(
             generation: generation,
             repository: environment.project.scopedKey,
             sessionName: worktree.tmuxSessionName ?? "",
-            tmuxSocketName: worktree.tmuxSocketName
+            tmuxSocketName: worktree.tmuxSocketName,
+            tmuxAttachMode: worktree.tmuxAttachMode
         ))
     }
     return KwtHostInventory(projects: [
@@ -139,7 +140,8 @@ func inventory(
                     generation: worktree.generation,
                     repository: environment.project.scopedKey,
                     sessionName: worktree.tmuxSessionName ?? "",
-                    tmuxSocketName: worktree.tmuxSocketName
+                    tmuxSocketName: worktree.tmuxSocketName,
+                    tmuxAttachMode: worktree.tmuxAttachMode
                 ),
             ],
             warning: nil
@@ -162,6 +164,7 @@ func removalFixture(
     branch: String = "feature/remove",
     sessionName: String? = "kwt-ghosthub-feature",
     socketName: String? = nil,
+    tmuxAttachMode: TmuxAttachMode = .direct,
     sessionBackend: SessionBackendKind = .localPTY,
     runningSession: Bool = false
 ) throws -> RemovalFixture {
@@ -177,6 +180,7 @@ func removalFixture(
     )
     removable.tmuxSessionName = sessionName
     removable.tmuxSocketName = socketName
+    removable.tmuxAttachMode = tmuxAttachMode
     removable.sessionBackend = sessionBackend
     var snapshot = environment.snapshot
     snapshot.worktrees.append(removable)

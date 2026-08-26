@@ -15,6 +15,9 @@ test, and documentation-only changes are omitted.
   its idle policy after the last owner releases one.
 - Ghosthub keeps its SSH kwt daemon state in a dedicated `~/.ghosthub/ssh/kwt`
   directory, separate from the account's ordinary kwt registry state.
+- Kwt-managed worktree and directory sessions now use kwt's dedicated tmux
+  server. Ghosthub follows kwt's explicit direct or protected attachment mode
+  instead of guessing policy from the socket name.
 - Apple Silicon releases now support macOS 15 (Sequoia) and newer, with the
   packaged application and libghostty runtime checked on a hosted Sequoia
   runner before release changes merge.

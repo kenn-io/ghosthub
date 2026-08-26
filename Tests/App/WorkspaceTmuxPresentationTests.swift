@@ -56,7 +56,8 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: environment.host.id,
             name: "kwt-ghosthub-main",
             worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
         )
 
         model.openBorrowedTmuxSession(selection)
@@ -253,7 +254,8 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         let duplicate = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
-            name: sessionName
+            name: sessionName,
+            tmuxAttachMode: .direct
         )
 
         model.openBorrowedTmuxSession(canonical)
@@ -319,7 +321,8 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         let duplicate = WorkspaceTmuxSessionSelection(
             hostID: environment.remoteHost.id,
-            name: "release-work"
+            name: "release-work",
+            tmuxAttachMode: .direct
         )
 
         model.openBorrowedTmuxSession(canonical)
@@ -687,7 +690,8 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: UUID(),
             name: "kwt-ghosthub-main",
             worktreeID: UUID(),
-            worktreePath: "/srv/ghosthub"
+            worktreePath: "/srv/ghosthub",
+            tmuxAttachMode: .direct
         )
 
         #expect(
@@ -718,7 +722,8 @@ extension WorkspaceTmuxDiscoveryTests {
             name: "editor",
             worktreeID: environment.worktree.id,
             worktreePath: environment.worktree.path,
-            worktreeGeneration: "0123456789abcdef0123456789abcdef"
+            worktreeGeneration: "0123456789abcdef0123456789abcdef",
+            tmuxAttachMode: .direct
         )
         model.openBorrowedTmuxSession(observed)
         #expect(
@@ -775,7 +780,8 @@ extension WorkspaceTmuxDiscoveryTests {
             name: "kwt-ghosthub-main",
             worktreeID: environment.worktree.id,
             worktreePath: environment.worktree.path,
-            worktreeGeneration: "0123456789abcdef0123456789abcdef"
+            worktreeGeneration: "0123456789abcdef0123456789abcdef",
+            tmuxAttachMode: .direct
         )
         let other = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -896,7 +902,8 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: environment.host.id,
             name: sessionName,
             worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
         )
 
         model.openBorrowedTmuxSession(selection)
@@ -934,7 +941,8 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: environment.host.id,
             name: sessionName,
             worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
         )
 
         model.openBorrowedTmuxSession(selection)

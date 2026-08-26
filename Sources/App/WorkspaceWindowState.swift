@@ -156,13 +156,18 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                     workspace.id == selection.selectedDirectoryWorkspaceID,
                     workspace.path == navigation.directoryWorkspacePath,
                     active.workspacePath == workspace.path,
-                    active.socketName == nil
+                    active.socketName == workspace.tmuxSocketName,
+                    active.tmuxAttachMode == workspace.tmuxAttachMode
                 else { return nil }
                 owner = .directoryWorkspace(path: workspace.path)
             } else if let worktreeID = active.worktreeID {
+                guard let workspace = snapshot.worktree(id: worktreeID),
+                      active.socketName == workspace.tmuxSocketName,
+                      active.tmuxAttachMode == workspace.tmuxAttachMode
+                else { return nil }
                 let generation = active.worktreeGeneration == nil
                     ? WorktreeGeneration.canonical(
-                        snapshot.worktree(id: worktreeID)?.generation
+                        workspace.generation
                     )
                     : WorktreeGeneration.canonical(
                         active.worktreeGeneration
@@ -175,7 +180,8 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                 guard selection.selectedProjectID == nil,
                       selection.selectedWorktreeID == nil,
                       selection.selectedDirectoryWorkspaceID == nil,
-                      active.socketName == nil
+                      active.socketName == nil,
+                      active.tmuxAttachMode == nil
                 else { return nil }
                 owner = .unbound
             }
@@ -439,8 +445,7 @@ enum WorkspaceWindowRestorationResolver {
                 guard isNonblank(path),
                       path == navigation.directoryWorkspacePath,
                       navigation.projectKey == nil,
-                      navigation.worktreeGeneration == nil,
-                      tmux.socketName == nil
+                      navigation.worktreeGeneration == nil
                 else { return .invalid }
             }
         }
@@ -572,7 +577,9 @@ enum WorkspaceWindowRestorationResolver {
                     && $0.id == selection.selectedDirectoryWorkspaceID
                     && $0.path == path
             }
-            guard directoryOwner?.tmuxSessionName == tmux.sessionName else {
+            guard directoryOwner?.tmuxSessionName == tmux.sessionName,
+                  directoryOwner?.tmuxSocketName == tmux.socketName
+            else {
                 return .pending(selection: selection)
             }
         } else {
@@ -585,7 +592,9 @@ enum WorkspaceWindowRestorationResolver {
             directoryWorkspaceID: directoryOwner?.id,
             workspacePath: owner?.path ?? directoryOwner?.path,
             worktreeGeneration: worktreeGeneration,
-            socketName: tmux.socketName
+            socketName: tmux.socketName,
+            tmuxAttachMode: owner?.tmuxAttachMode
+                ?? directoryOwner?.tmuxAttachMode
         )
 
         if launchIntent == .openWorktree {
@@ -598,7 +607,7 @@ enum WorkspaceWindowRestorationResolver {
             return .pending(selection: selection)
         }
 
-        if tmux.socketName != nil {
+        if tmuxSelection.tmuxAttachMode == .protected {
             guard owner != nil
             else { return .pending(selection: selection) }
             return .needsProtectedProbe(

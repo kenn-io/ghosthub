@@ -528,6 +528,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         let worktree = try #require(snapshot.worktrees.first)
@@ -606,7 +607,8 @@ extension WorkspaceTmuxDiscoveryTests {
             branch: "feature/divergent-protected",
             generation: "0123456789abcdef0123456789abcdef",
             tmuxSessionName: "kwt-ghosthub-divergent-protected",
-            tmuxSocketName: "kwt-divergent-protected"
+            tmuxSocketName: "kwt-divergent-protected",
+            tmuxAttachMode: .protected
         )
         let protectedSelection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(
@@ -684,12 +686,14 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-current"
         snapshot.worktrees[0].tmuxSocketName = "kwt-current"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         var previousSnapshot = snapshot
         previousSnapshot.worktrees[0].tmuxSessionName =
             "kwt-ghosthub-retired"
         previousSnapshot.worktrees[0].tmuxSocketName = "kwt-retired"
+        previousSnapshot.worktrees[0].tmuxAttachMode = .protected
         let liveRetiredSelection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(
                 for: previousSnapshot.worktrees[0]
@@ -765,6 +769,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         let currentInventory = WorkspaceTmuxTestSupport.inventory(
@@ -818,6 +823,7 @@ extension WorkspaceTmuxDiscoveryTests {
         snapshot.projects[0].rootPath = missingCheckout.path
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-visible"
         snapshot.worktrees[0].tmuxSocketName = "kwt-visible"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let omittedWorktree = WorktreeSummary(
             id: UUID(),
             hostID: environment.host.id,
@@ -911,6 +917,7 @@ extension WorkspaceTmuxDiscoveryTests {
             "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-protected"
         snapshot.worktrees[0].tmuxSocketName = "kwt-protected"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         var refreshedWorktree = try #require(snapshot.worktrees.first)
@@ -974,6 +981,7 @@ extension WorkspaceTmuxDiscoveryTests {
             "fedcba9876543210fedcba9876543210"
         refreshedWorktree.tmuxSessionName = "kwt-ghosthub-refreshed"
         refreshedWorktree.tmuxSocketName = "kwt-refreshed"
+        refreshedWorktree.tmuxAttachMode = .protected
         let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: [refreshedWorktree]
@@ -1025,11 +1033,13 @@ extension WorkspaceTmuxDiscoveryTests {
             "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = nil
         snapshot.worktrees[0].tmuxSocketName = "kwt-stale"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         var refreshedWorktree = try #require(snapshot.worktrees.first)
         refreshedWorktree.tmuxSessionName = "kwt-ghosthub-refreshed"
         refreshedWorktree.tmuxSocketName = "kwt-refreshed"
+        refreshedWorktree.tmuxAttachMode = .protected
         let inventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: [refreshedWorktree]
@@ -1174,6 +1184,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         let worktree = try #require(snapshot.worktrees.first)
@@ -1302,6 +1313,7 @@ extension WorkspaceTmuxDiscoveryTests {
         snapshot.projects[0].rootPath = missingCheckout.path
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         let worktree = try #require(snapshot.worktrees.first)
@@ -1459,6 +1471,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         let worktree = try #require(snapshot.worktrees.first)
@@ -1585,6 +1598,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let worktree = try #require(snapshot.worktrees.first)
         let selection = try #require(
@@ -1831,6 +1845,7 @@ extension WorkspaceTmuxDiscoveryTests {
             "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let worktree = try #require(snapshot.worktrees.first)
         let selection = try #require(
@@ -1982,6 +1997,7 @@ extension WorkspaceTmuxDiscoveryTests {
         snapshot.projects[0].scopedKey = "github.com/kenn-io/ghosthub"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let removableWorktree = WorktreeSummary(
             id: UUID(),
             hostID: environment.host.id,
@@ -2118,6 +2134,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let worktree = try #require(snapshot.worktrees.first)
         let selection = try #require(
@@ -2157,6 +2174,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let worktree = try #require(snapshot.worktrees.first)
         let selection = try #require(
@@ -2214,6 +2232,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let worktree = try #require(snapshot.worktrees.first)
         let selection = try #require(
@@ -2272,6 +2291,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         let worktree = try #require(snapshot.worktrees.first)
@@ -2370,6 +2390,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
         let worktree = try #require(snapshot.worktrees.first)
@@ -2448,6 +2469,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let worktree = try #require(snapshot.worktrees.first)
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
@@ -2525,6 +2547,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let worktree = try #require(snapshot.worktrees.first)
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
@@ -2573,6 +2596,7 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         refreshedWorktree.tmuxSessionName = "kwt-ghosthub-pr-94"
         refreshedWorktree.tmuxSocketName = "kwt-pr-94"
+        refreshedWorktree.tmuxAttachMode = .protected
         let refreshedInventory = WorkspaceTmuxTestSupport.inventory(
             project: project,
             worktrees: [refreshedWorktree]
@@ -2624,6 +2648,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         let project = try #require(snapshot.projects.first)
         let confirmedHost = try #require(snapshot.hosts.first)
         let currentInventory = WorkspaceTmuxTestSupport.inventory(

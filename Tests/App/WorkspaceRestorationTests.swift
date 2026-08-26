@@ -320,6 +320,7 @@ private struct ProtectedRestorationHarness {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "pr-42"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-0123456789abcdef"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         snapshot.worktrees[0].generation = restorationWorktreeGeneration
         snapshot.hosts[0].tmuxSessions = [
             TmuxSessionSummary(name: "pr-42", managed: false, windows: []),
@@ -1925,6 +1926,7 @@ struct WorkspaceRestorationTests {
         snapshot.worktrees[0].tmuxSessionName = "pr-42"
         snapshot.worktrees[0].tmuxSocketName =
             "kwt-pr-0123456789abcdef"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         snapshot.worktrees[0].generation = restorationWorktreeGeneration
         let probe = ControlledProtectedProbe()
         let model = try makeModel(
@@ -1989,6 +1991,7 @@ struct WorkspaceRestorationTests {
         snapshot.worktrees[0].tmuxSessionName = "pr-42"
         snapshot.worktrees[0].tmuxSocketName =
             "kwt-pr-0123456789abcdef"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         snapshot.worktrees[0].generation = restorationWorktreeGeneration
         let probe = ControlledProtectedProbe()
         let model = try makeModel(
@@ -2044,6 +2047,7 @@ struct WorkspaceRestorationTests {
         snapshot.worktrees[0].tmuxSessionName = "pr-42"
         snapshot.worktrees[0].tmuxSocketName =
             "kwt-pr-0123456789abcdef"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         snapshot.worktrees[0].generation = restorationWorktreeGeneration
         let probe = ControlledProtectedProbe()
         let model = try makeModel(
@@ -2087,6 +2091,7 @@ struct WorkspaceRestorationTests {
         snapshot.worktrees[0].tmuxSessionName = "pr-42"
         snapshot.worktrees[0].tmuxSocketName =
             "kwt-pr-0123456789abcdef"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
         snapshot.worktrees[0].generation = restorationWorktreeGeneration
         let probe = ControlledProtectedProbe()
         let model = try makeModel(

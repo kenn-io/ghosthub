@@ -63,7 +63,7 @@ struct KwtSSHCommandLeaseTests {
                         status: 0,
                         stdout: "GHOSTHUB_KWT_JSON\n"
                             +
-                            #"[{"name":"demo","path":"/srv/demo","session_name":"demo-session","session_live":true}]"#,
+                            #"[{"name":"demo","path":"/srv/demo","session_name":"demo-session","session_live":true,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#,
                         stderr: ""
                     )
                 }

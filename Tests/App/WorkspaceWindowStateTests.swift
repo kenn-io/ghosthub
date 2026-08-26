@@ -30,7 +30,8 @@ private struct RestorationFixture {
 
     static func local(
         sessionName: String,
-        socketName: String? = nil
+        socketName: String? = nil,
+        tmuxAttachMode: TmuxAttachMode = .direct
     ) -> Self {
         let hostID = UUID()
         let projectID = UUID()
@@ -77,6 +78,7 @@ private struct RestorationFixture {
                     generation: worktreeGeneration,
                     tmuxSessionName: sessionName,
                     tmuxSocketName: socketName,
+                    tmuxAttachMode: tmuxAttachMode,
                     sessionBackend: .localTmux
                 ),
             ]
@@ -94,7 +96,8 @@ private struct RestorationFixture {
                 worktreeID: worktreeID,
                 worktreePath: "/tmp/ghosthub-pr-42",
                 worktreeGeneration: worktreeGeneration,
-                socketName: socketName
+                socketName: socketName,
+                tmuxAttachMode: tmuxAttachMode
             )
         )
     }
@@ -102,7 +105,8 @@ private struct RestorationFixture {
     func reidentified() -> Self {
         Self.local(
             sessionName: tmuxSelection.name,
-            socketName: tmuxSelection.socketName
+            socketName: tmuxSelection.socketName,
+            tmuxAttachMode: tmuxSelection.tmuxAttachMode ?? .direct
         )
     }
 
@@ -715,7 +719,8 @@ struct WorkspaceWindowStateTests {
     func captureUsesStableIdentity() {
         let fixture = RestorationFixture.local(
             sessionName: "kwt-ghosthub-main",
-            socketName: "kwt-pr-0123456789abcdef"
+            socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected
         )
         let state = WorkspaceWindowState.capture(
             windowID: UUID(),
@@ -922,7 +927,8 @@ struct WorkspaceWindowStateTests {
             hostID: hostID,
             name: sessionName,
             directoryWorkspaceID: directoryID,
-            workspacePath: "/workspaces/jibot"
+            workspacePath: "/workspaces/jibot",
+            tmuxAttachMode: .direct
         )
 
         let state = WorkspaceWindowState.capture(
@@ -1138,7 +1144,8 @@ struct WorkspaceWindowStateTests {
     func namedSocketDoesNotFallBack() {
         let fixture = RestorationFixture.local(
             sessionName: "editor",
-            socketName: "kwt-pr-0123456789abcdef"
+            socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected
         )
         let state = WorkspaceWindowState.capture(
             windowID: UUID(),

@@ -65,6 +65,7 @@ extension WorkspaceWorktreeRemovalTests {
     func liveSessionIsKilledFirst() async throws {
         let fixture = try removalFixture(
             socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected,
             sessionBackend: .localTmux
         )
         let environment = fixture.environment
@@ -297,6 +298,7 @@ extension WorkspaceWorktreeRemovalTests {
     func alreadyAbsentWorktreeKillsConfirmedSession() async throws {
         let fixture = try removalFixture(
             socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected,
             sessionBackend: .localTmux
         )
         let environment = fixture.environment
@@ -337,6 +339,7 @@ extension WorkspaceWorktreeRemovalTests {
     func newlyStartedSessionForAbsentWorktreeAbortsRemoval() async throws {
         let fixture = try removalFixture(
             socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected,
             sessionBackend: .localTmux
         )
         let environment = fixture.environment
@@ -642,7 +645,8 @@ extension WorkspaceWorktreeRemovalTests {
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
-            name: try #require(worktree.tmuxSessionName)
+            name: try #require(worktree.tmuxSessionName),
+            tmuxAttachMode: .direct
         )
         model.openBorrowedTmuxSession(selection)
         await waitUntilMainActor {

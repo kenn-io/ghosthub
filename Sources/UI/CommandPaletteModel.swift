@@ -575,8 +575,16 @@ public enum CommandPaletteModel {
             let workspaceSessionIDs = Set(
                 workspaceSessions.map { $0.session.id }
             )
+            let workspaceDefaultServerNames = Set(
+                workspaceSessions.compactMap { item in
+                    item.session.tmuxAttachMode == .direct
+                        && item.session.socketName == nil
+                        ? item.session.name : nil
+                }
+            )
             return workspaceSessions + discovered.filter {
                 !workspaceSessionIDs.contains($0.session.id)
+                    && !workspaceDefaultServerNames.contains($0.session.name)
             }
         }
 

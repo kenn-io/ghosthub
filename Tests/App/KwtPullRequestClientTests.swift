@@ -80,6 +80,7 @@ struct KwtPullRequestClientTests {
             result.workspace.tmuxSocketName
                 == "kwt-pr-0123456789abcdef"
         )
+        #expect(result.workspace.tmuxAttachMode == .protected)
         #expect(
             result.pullRequest.workspace?.tmuxSocketName
                 == "kwt-pr-0123456789abcdef"
@@ -158,6 +159,28 @@ struct KwtPullRequestClientTests {
         let response = Self.importResponse.replacingOccurrences(
             of: socketField,
             with: replacement
+        )
+        let client = KwtPullRequestClient(
+            localRunner: { _, _ in (0, response) }
+        )
+
+        await #expect {
+            try await client.importPullRequest(
+                id: "github:github.com/kenn-io/ghosthub#32",
+                projectIdentity: "github.com/kenn-io/ghosthub",
+                on: .local
+            )
+        } throws: { error in
+            error as? KwtPullRequestError
+                == .malformedOutput(host: "localhost")
+        }
+    }
+
+    @Test("successful imports require protected attachment mode")
+    func importRequiresProtectedAttachmentMode() async {
+        let response = Self.importResponse.replacingOccurrences(
+            of: #""tmux_attach_mode": "protected""#,
+            with: #""tmux_attach_mode": "direct""#
         )
         let client = KwtPullRequestClient(
             localRunner: { _, _ in (0, response) }
@@ -354,7 +377,8 @@ struct KwtPullRequestClientTests {
           "path": "/tmp/ghosthub-pr-32",
           "state": "ready",
           "session_name": "kwt-workspace-pr-32",
-          "tmux_socket_name": "kwt-pr-0123456789abcdef"
+          "tmux_socket_name": "kwt-pr-0123456789abcdef",
+          "tmux_attach_mode": "protected"
         }
       },
       "project": {
@@ -369,7 +393,8 @@ struct KwtPullRequestClientTests {
         "path": "/tmp/ghosthub-pr-32",
         "state": "ready",
         "session_name": "kwt-workspace-pr-32",
-        "tmux_socket_name": "kwt-pr-0123456789abcdef"
+        "tmux_socket_name": "kwt-pr-0123456789abcdef",
+        "tmux_attach_mode": "protected"
       }
     }
     """

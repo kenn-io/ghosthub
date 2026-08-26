@@ -362,10 +362,11 @@ credential names from the session's effective `update-environment`. Because
 pane processes can mutate tmux options, Ghosthub never treats that option as
 authorization. The command verifies the exact workspace marker before
 repairing an existing session, clears any parent tmux client identity, and
-executes `attach-session -E`. If provenance cannot be read, kwt fails
-inventory rather than omitting the protected socket identity.
+executes `attach-session -E`. If the endpoint cannot be resolved, inventory
+retains the explicit protected attachment mode and omits the socket; clients
+must not reinterpret that result as the default server.
 Kwt's ordinary `open` and dashboard actions refuse imported workspaces before
-they can create a parallel session on the credential-bearing default server.
+they can create a parallel direct-mode session.
 Ghosthub likewise rejects a successful import response with a missing or blank
 socket identity and never lets a pending default-server creation with the same
 session name authorize a protected workspace launch.
@@ -386,8 +387,8 @@ libghostty configuration, where keybindings and terminal behavior apply to
 every surface rather than only the selected worktree. Ghosthub therefore
 treats project terminal configuration as trusted user authorship and reads it
 only from checkouts the user controls. Selecting an imported pull-request
-workspace, identified by its protected tmux socket, falls back to the
-project's own checkout. This is a trust boundary, not a sandbox: Ghosthub
+workspace, identified by its explicit protected attachment mode, falls back to
+the project's own checkout. This is a trust boundary, not a sandbox: Ghosthub
 still does not constrain a configuration the user wrote, nor commands the
 user runs inside a pane.
 

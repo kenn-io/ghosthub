@@ -50,7 +50,8 @@ enum WorkspaceTmuxTestSupport {
                         generation: worktree.generation,
                         repository: project.scopedKey,
                         sessionName: worktree.tmuxSessionName ?? "",
-                        tmuxSocketName: worktree.tmuxSocketName
+                        tmuxSocketName: worktree.tmuxSocketName,
+                        tmuxAttachMode: worktree.tmuxAttachMode
                     )
                 },
                 warning: nil

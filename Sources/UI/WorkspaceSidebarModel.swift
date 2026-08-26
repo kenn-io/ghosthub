@@ -173,6 +173,7 @@ public struct WorkspaceTmuxSessionSelection:
     public var workspacePath: String?
     public var worktreeGeneration: String?
     public var socketName: String?
+    public var tmuxAttachMode: TmuxAttachMode?
 
     public init(
         hostID: UUID,
@@ -181,7 +182,8 @@ public struct WorkspaceTmuxSessionSelection:
         directoryWorkspaceID: UUID? = nil,
         workspacePath: String? = nil,
         worktreeGeneration: String? = nil,
-        socketName: String? = nil
+        socketName: String? = nil,
+        tmuxAttachMode: TmuxAttachMode? = nil
     ) {
         self.hostID = hostID
         self.name = name
@@ -190,6 +192,7 @@ public struct WorkspaceTmuxSessionSelection:
         self.workspacePath = workspacePath
         self.worktreeGeneration = worktreeGeneration
         self.socketName = socketName
+        self.tmuxAttachMode = tmuxAttachMode
     }
 
     /// Compatibility for callers that still construct a worktree-owned
@@ -200,7 +203,8 @@ public struct WorkspaceTmuxSessionSelection:
         worktreeID: UUID? = nil,
         worktreePath: String?,
         worktreeGeneration: String? = nil,
-        socketName: String? = nil
+        socketName: String? = nil,
+        tmuxAttachMode: TmuxAttachMode? = nil
     ) {
         self.init(
             hostID: hostID,
@@ -208,13 +212,15 @@ public struct WorkspaceTmuxSessionSelection:
             worktreeID: worktreeID,
             workspacePath: worktreePath,
             worktreeGeneration: worktreeGeneration,
-            socketName: socketName
+            socketName: socketName,
+            tmuxAttachMode: tmuxAttachMode
         )
     }
 
     public var id: String {
         [
             hostID.uuidString,
+            tmuxAttachMode?.rawValue ?? "unbound",
             socketName ?? "default",
             name,
         ].joined(separator: ":")
@@ -407,7 +413,8 @@ public enum WorkspaceSidebarModel {
             worktreeID: worktree.id,
             workspacePath: worktree.path,
             worktreeGeneration: worktree.generation,
-            socketName: worktree.tmuxSocketName
+            socketName: worktree.tmuxSocketName,
+            tmuxAttachMode: worktree.tmuxAttachMode
         )
     }
 
@@ -418,7 +425,9 @@ public enum WorkspaceSidebarModel {
             hostID: workspace.hostID,
             name: workspace.tmuxSessionName,
             directoryWorkspaceID: workspace.id,
-            workspacePath: workspace.path
+            workspacePath: workspace.path,
+            socketName: workspace.tmuxSocketName,
+            tmuxAttachMode: workspace.tmuxAttachMode
         )
     }
 
@@ -432,7 +441,7 @@ public enum WorkspaceSidebarModel {
            activeSelection?.id == selection.id {
             return true
         }
-        guard selection.socketName == nil else {
+        guard selection.tmuxAttachMode != .protected else {
             return false
         }
         return snapshot.host(id: selection.hostID)?.tmuxSessions.contains {
@@ -487,16 +496,19 @@ public enum WorkspaceSidebarModel {
             ) { sessions, session in
                 sessions[session.name] = session
             }
-            // Discovery only lists the host's default tmux server. A
-            // protected PR workspace lives on its own socket, so its session
-            // name never identifies a discovered session and must not
-            // suppress an unrelated default-server session of the same name.
+            // Discovery only lists the host's default tmux server. A workspace
+            // on any named socket must not suppress an unrelated default-server
+            // session of the same name.
             let defaultServerSessionNames = Set(
                 snapshot.worktrees.compactMap { worktree in
-                    worktree.hostID == host.id && worktree.tmuxSocketName == nil
+                    worktree.hostID == host.id
+                        && worktree.tmuxAttachMode == .direct
+                        && worktree.tmuxSocketName == nil
                         ? worktree.tmuxSessionName : nil
                 } + snapshot.directoryWorkspaces.compactMap { workspace in
                     workspace.hostID == host.id
+                        && workspace.tmuxAttachMode == .direct
+                        && workspace.tmuxSocketName == nil
                         ? workspace.tmuxSessionName : nil
                 }
             )
@@ -708,7 +720,8 @@ public enum WorkspaceSidebarModel {
         let hasConnectedPresentation = tmuxSelection.map {
             connectedTmuxSessionIDs.contains($0.id)
         } == true
-        let tmuxSession = worktree.tmuxSocketName == nil
+        let tmuxSession = worktree.tmuxAttachMode == .direct
+            && worktree.tmuxSocketName == nil
             && host.lastKnownReachable
             && host.tmuxInventoryIsAuthoritative
             ? worktree.tmuxSessionName.flatMap {

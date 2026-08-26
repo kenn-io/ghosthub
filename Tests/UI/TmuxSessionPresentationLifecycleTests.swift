@@ -1693,7 +1693,8 @@ private final class WorktreeReplacementPresentationModel: ObservableObject {
                 name: "editor",
                 worktreeID: worktree.id,
                 worktreePath: worktree.path,
-                worktreeGeneration: generation
+                worktreeGeneration: generation,
+                tmuxAttachMode: .direct
             )
         )
     }
@@ -1780,7 +1781,8 @@ private final class WorktreeRemovalPresentationModel: ObservableObject {
             name: "project-a-feature",
             worktreeID: removed.id,
             worktreePath: removed.path,
-            worktreeGeneration: removed.generation
+            worktreeGeneration: removed.generation,
+            tmuxAttachMode: .direct
         )
 
         projectID = project.id

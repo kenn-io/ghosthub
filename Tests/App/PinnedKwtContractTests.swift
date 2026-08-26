@@ -438,11 +438,12 @@ struct PinnedKwtContractTests {
         let primary = try #require(
             registeredProject.worktrees.first { $0.isMain }
         )
-        #expect(primary.tmuxSocketName == nil)
+        #expect(primary.tmuxSocketName == "kwt")
+        #expect(primary.tmuxAttachMode == .direct)
         let tmuxPath = try TmuxBinaryResolver().resolveTmuxPath().get()
         let tmuxServer = try TestTmuxServer(
             tmuxPath: tmuxPath,
-            socket: .productContract(name: "default")
+            socket: .productContract(name: "kwt")
         )
         defer { tmuxServer.stop() }
         try tmuxServer.createSession(primary.sessionName)
@@ -470,7 +471,7 @@ struct PinnedKwtContractTests {
         let liveSession = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
-                "-L", "default", "has-session",
+                "-L", "kwt", "has-session",
                 "-t", "=\(primary.sessionName):",
             ],
             timeout: 10

@@ -53,6 +53,7 @@ public struct PullRequestWorkspace: Equatable, Sendable {
     public let state: String
     public let sessionName: String
     public let tmuxSocketName: String
+    public let tmuxAttachMode: TmuxAttachMode
 
     public init(
         id: String,
@@ -61,7 +62,8 @@ public struct PullRequestWorkspace: Equatable, Sendable {
         path: String,
         state: String,
         sessionName: String,
-        tmuxSocketName: String
+        tmuxSocketName: String,
+        tmuxAttachMode: TmuxAttachMode
     ) {
         self.id = id
         self.repository = repository
@@ -70,6 +72,7 @@ public struct PullRequestWorkspace: Equatable, Sendable {
         self.state = state
         self.sessionName = sessionName
         self.tmuxSocketName = tmuxSocketName
+        self.tmuxAttachMode = tmuxAttachMode
     }
 }
 
