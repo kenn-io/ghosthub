@@ -45,7 +45,14 @@ extension FocusedValues {
 #if canImport(AppKit)
 @MainActor
 enum WorkspaceWindowChrome {
-    static func apply(to window: NSWindow) {
+    static func apply(
+        to window: NSWindow,
+        appearance: TerminalBackgroundAppearance =
+            LibghosttyRuntime.shared.backgroundAppearance,
+        applyBlur: (NSWindow) -> Void = {
+            LibghosttyRuntime.shared.applyWindowBackgroundBlur(to: $0)
+        }
+    ) {
         // Keep workspace controls in the standard titlebar. Native window tabs
         // add their own AppKit-managed row when a tab group is present.
         window.toolbar = nil
@@ -55,17 +62,38 @@ enum WorkspaceWindowChrome {
         // view hierarchy. A terminal window must remain free to shrink to the
         // compact dimensions AppKit's standard titlebar permits.
         window.contentMinSize = .zero
-        window.backgroundColor = WorkspaceSurfaceColor.nsColor
+
+        // Native fullscreen has nothing behind the window; transparency
+        // there renders as gray. Match Ghostty.app and stay opaque.
+        let transparent = appearance.isTransparent
+            && !window.styleMask.contains(.fullScreen)
+
+        if transparent {
+            window.isOpaque = false
+            // Near-clear rather than .clear matches Terminal.app rendering;
+            // same trick Ghostty.app uses.
+            window.backgroundColor = .white.withAlphaComponent(0.001)
+            if appearance.appliesWindowBlur {
+                applyBlur(window)
+            }
+        } else {
+            window.isOpaque = true
+            window.backgroundColor = WorkspaceSurfaceColor.nsColor
+        }
+
         guard let closeButton = window.standardWindowButton(.closeButton),
               let titlebar = closeButton.superview
         else { return }
         titlebar.wantsLayer = true
-        titlebar.effectiveAppearance.performAsCurrentDrawingAppearance {
-            titlebar.layer?.backgroundColor =
-                WorkspaceSurfaceColor.nsColor.cgColor
+        if transparent {
+            titlebar.layer?.backgroundColor = NSColor.clear.cgColor
+        } else {
+            titlebar.effectiveAppearance.performAsCurrentDrawingAppearance {
+                titlebar.layer?.backgroundColor =
+                    WorkspaceSurfaceColor.nsColor.cgColor
+            }
         }
     }
-
 }
 
 /// Invisible NSView that reports its hosting window's key
@@ -1284,6 +1312,20 @@ struct WorkspaceWindow: View {
                 }
             )
         )
+        .onReceive(terminalRuntime.$backgroundAppearance) { appearance in
+            guard let window = sceneModel.workspaceWindow else { return }
+            WorkspaceWindowChrome.apply(to: window, appearance: appearance)
+        }
+        .onChange(of: sceneModel.isFocusedWindow) { _, focused in
+            // Blur has no effect on invisible windows; re-apply when this
+            // window gains focus so restored/deminiaturized windows pick
+            // it up.
+            guard focused,
+                  terminalRuntime.backgroundAppearance.isTransparent,
+                  let window = sceneModel.workspaceWindow
+            else { return }
+            WorkspaceWindowChrome.apply(to: window)
+        }
         .onReceive(NotificationCenter.default.publisher(
             for: .ghosthubRenameWorkspaceWindow
         )) { notification in
