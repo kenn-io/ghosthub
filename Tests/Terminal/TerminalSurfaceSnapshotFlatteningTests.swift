@@ -3,10 +3,10 @@ import CoreGraphics
 import Testing
 @testable import GhosthubTerminal
 
-// The composite path moved onto the GPU (CoreImage over IOSurfaces) with the
-// always-live preview rework, so flattening coverage lives at the `opaqueFill`
-// seam the composite consumes; the live-surface smoke tests exercise the full
-// render.
+/// The composite path moved onto the GPU (CoreImage over IOSurfaces) with the
+/// always-live preview rework, so flattening coverage lives at the `opaqueFill`
+/// seam the composite consumes; the live-surface smoke tests exercise the full
+/// render.
 @Suite("Terminal surface snapshot flattening")
 struct TerminalSurfaceSnapshotFlatteningTests {
     @Test("translucent layer color becomes an opaque fill with the same components")
