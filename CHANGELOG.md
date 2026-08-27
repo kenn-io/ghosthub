@@ -22,6 +22,12 @@ test, and documentation-only changes are omitted.
   packaged application and libghostty runtime checked on a hosted Sequoia
   runner before release changes merge.
 
+### Fixed
+
+- Remote inventory retries a transient OpenSSH session-channel refusal instead
+  of reporting the host as unreachable when concurrent commands briefly fill
+  the server's multiplexed-session limit.
+
 ## [0.9.0] - 2026-08-15
 
 ### Added

@@ -104,6 +104,19 @@ enum SSHConnectionFailure {
             || normalized.contains("control socket connect(")
     }
 
+    /// OpenSSH failed before it opened the remote command's session channel.
+    /// A bounded retry is safe because the requested command did not start.
+    static func indicatesRefusedSessionOpen(
+        status: Int32,
+        output: String
+    ) -> Bool {
+        guard status == 255 else { return false }
+        return output.lowercased().contains(
+            "mux_client_request_session: session request failed: "
+                + "session open refused by peer"
+        )
+    }
+
     static func indicatesUnusableConnection(
         _ error: ZellijCommandError
     ) -> Bool {

@@ -79,7 +79,11 @@ identity and generation. Reconnect resolves and acquires again; it never
 reuses stored control-socket arguments. A presentation whose OpenSSH client
 itself exits with status 255 marks a shared lease unusable so no other caller
 joins the dead master. A masterless lease is unsupported and fails before a
-terminal surface launches.
+terminal surface launches. A short remote command that OpenSSH rejects with
+`session open refused by peer` retries twice with bounded backoff because that
+diagnostic proves the remote command did not start. Other command failures are
+never retried, and a persistent refusal continues through normal shared-lease
+invalidation and host diagnostics.
 Each workspace window retains every presentation it explicitly opens, keyed by
 the exact host, tmux socket, attachment mode, and session name. Navigating to
 another host,
