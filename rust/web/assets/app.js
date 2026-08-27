@@ -30,9 +30,45 @@ const state = {
   // The unresolved teardown acknowledgment, shared so every later attach
   // awaits it — not only the attach that initiated the teardown.
   pendingClose: null,
+  // The in-memory scene credential { id, secret }. Established once from
+  // the bootstrap mint code; presented only in the attach hello, never in
+  // a cookie or URL.
+  scene: null,
 };
 
 let attachSequence = 0;
+
+// Redeem the single-use bootstrap mint code (delivered in the URL
+// fragment) for a scene credential. The fragment is stripped from history
+// immediately whether or not the exchange succeeds — the code is one-shot.
+async function establishScene() {
+  const hash = location.hash || "";
+  const match = hash.match(/(?:^|[#&])mint=([0-9a-f]+)/);
+  const code = match ? match[1] : null;
+  if (hash) {
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  if (!code) {
+    return false;
+  }
+  try {
+    const response = await fetch("/api/v1/scene", {
+      method: "POST",
+      headers: { "x-ghosthub-mint": code },
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const body = await response.json();
+    if (typeof body.scene_id !== "string" || typeof body.scene_secret !== "string") {
+      return false;
+    }
+    state.scene = { id: body.scene_id, secret: body.scene_secret };
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const elements = {
   inventory: document.getElementById("inventory"),
@@ -223,6 +259,10 @@ function geometry(gridLimit) {
 }
 
 async function attach(label, row) {
+  if (!state.scene) {
+    showDisconnect("Session not established. Reopen the bootstrap link to reconnect.");
+    return;
+  }
   attachSequence += 1;
   const sequence = attachSequence;
   const acknowledged = await teardown();
@@ -328,6 +368,8 @@ async function attach(label, row) {
       socket.send(
         JSON.stringify({
           protocol: PROTOCOL_VERSION,
+          scene_id: state.scene.id,
+          scene_secret: state.scene.secret,
           capabilities: {
             unicode_width: 11,
             ignores_conpty_mode_requests: true,
@@ -585,4 +627,9 @@ async function load() {
   }
 }
 
-load();
+async function boot() {
+  await establishScene();
+  await load();
+}
+
+boot();
