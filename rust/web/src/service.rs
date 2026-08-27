@@ -59,6 +59,9 @@ pub(crate) struct ServerState {
     pub(crate) cookie_name: Arc<str>,
     pub(crate) credential: Arc<Credential>,
     pub(crate) scenes: Arc<crate::scenes::SceneRegistry>,
+    /// How often an attachment re-checks its bound scene's deadline. A
+    /// field, not the constant directly, so a test can drive expiry fast.
+    pub(crate) scene_deadline_poll: Duration,
     pub(crate) shutdown: watch::Receiver<bool>,
 }
 

@@ -231,6 +231,13 @@ impl SceneRegistry {
         registry.serials.clear();
     }
 
+    /// Drop every scene so any bound attachment's next liveness check
+    /// fails closed. A test hook for observing deadline enforcement
+    /// without waiting out the real idle/absolute bounds.
+    pub(crate) fn expire_all(&self) {
+        self.lock().scenes.clear();
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Registry> {
         self.inner.lock().expect("scene registry lock poisoned")
     }

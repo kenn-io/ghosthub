@@ -1071,6 +1071,59 @@ fn input_overflow_closes_the_connection_with_policy() {
     }
 }
 
+/// An expired scene is closed even while the connection is continuously
+/// busy. The relay loop's liveness check runs on a persistent timer, so a
+/// hot `recv` branch cannot starve it; a fresh per-iteration timer would
+/// cancel and restart on every frame and never fire, holding it open.
+///
+/// Pings are the vector: they are the one client frame the relay ignores
+/// without refreshing the scene, so a steady stream of them keeps the loop
+/// busy without itself renewing the deadline.
+#[test]
+fn continuous_activity_does_not_starve_the_scene_deadline_check() {
+    // A poll interval far shorter than the real minute so the deadline check
+    // is observable within the test, and shorter still than the ping cadence
+    // below so the buggy per-iteration timer would provably never elapse;
+    // expiry is forced directly rather than waiting out the real bounds.
+    let server = Server::start_for_test(Duration::from_millis(200)).expect("start server");
+    let scene = establish_scene(&server);
+    let mut socket = attach_shell_in_scene(&server, &scene);
+    await_echo(&mut socket, "deadline-ready");
+
+    // Read in short slices so each loop turn sends another ping; the server
+    // then sees a data frame far more often than every 200ms.
+    socket
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(5)))
+        .expect("short read timeout");
+    server.expire_scenes();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "the deadline check never closed the continuously busy attachment"
+        );
+        socket
+            .send(Message::Ping(Vec::new().into()))
+            .expect("send keepalive ping");
+        match socket.read() {
+            Ok(Message::Close(Some(frame))) => {
+                assert_eq!(u16::from(frame.code), 1008, "policy close");
+                assert_eq!(frame.reason.as_str(), "scene expired");
+                return;
+            }
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("unexpected read error: {error:?}"),
+        }
+    }
+}
+
 /// Input typed by a viewer queued behind the serialization lock is
 /// buffered and replayed into its shell once the lock frees, so a
 /// reconnecting viewer loses no keystrokes while it waits.

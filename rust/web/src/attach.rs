@@ -55,7 +55,7 @@ const OUTBOUND_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often the relay loop re-checks that the bound scene is still
 /// live, so an idle session is closed at its deadline even without any
 /// client activity to trigger a refresh.
-const SCENE_DEADLINE_POLL: Duration = Duration::from_mins(1);
+pub(crate) const SCENE_DEADLINE_POLL: Duration = Duration::from_mins(1);
 
 struct Geometry {
     size: GridSize,
@@ -72,10 +72,11 @@ pub(crate) async fn ws_attach(
     }
     let shutdown = state.shutdown.clone();
     let scenes = Arc::clone(&state.scenes);
+    let deadline_poll = state.scene_deadline_poll;
     upgrade
         .max_frame_size(MAX_FRAME_BYTES)
         .max_message_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| attach_session(socket, shutdown, scenes))
+        .on_upgrade(move |socket| attach_session(socket, shutdown, scenes, deadline_poll))
 }
 
 #[allow(
@@ -86,6 +87,7 @@ async fn attach_session(
     mut socket: WebSocket,
     mut shutdown: watch::Receiver<bool>,
     scenes: Arc<SceneRegistry>,
+    scene_deadline_poll: Duration,
 ) {
     if socket
         .send(Message::Text(server_hello().into()))
@@ -118,6 +120,13 @@ async fn attach_session(
     let serial = scenes.serialization_lock(&scene_id);
     let mut lock = std::pin::pin!(serial.lock());
     let mut queued_input: Vec<u8> = Vec::new();
+    // One persistent timer, not a fresh `sleep` per iteration: a
+    // per-iteration timer is dropped and restarted whenever another
+    // select branch fires, so a viewer that keeps the loop busy (steady
+    // input or pings) could otherwise hold an expired scene open forever.
+    let mut deadline_poll = tokio::time::interval(scene_deadline_poll);
+    deadline_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    deadline_poll.reset();
     let _serial = loop {
         tokio::select! {
             // Biased: an uncontended lock wins immediately, so a prompt
@@ -128,7 +137,7 @@ async fn attach_session(
                 close(&mut socket, close_code::AWAY, "server shutting down").await;
                 return;
             }
-            () = tokio::time::sleep(SCENE_DEADLINE_POLL) => {
+            _ = deadline_poll.tick() => {
                 // A queued attachment whose scene expired while it waited
                 // for the lock closes instead of buffering input on a dead
                 // scene until its predecessor finally releases.
@@ -265,6 +274,9 @@ async fn attach_session(
         }
     });
 
+    let mut deadline_poll = tokio::time::interval(scene_deadline_poll);
+    deadline_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    deadline_poll.reset();
     let pending_close: Option<(u16, &'static str)> = loop {
         tokio::select! {
             delivery = output.recv() => match delivery {
@@ -294,7 +306,7 @@ async fn attach_session(
             () = stopped(&mut shutdown) => {
                 break Some((close_code::AWAY, "server shutting down"));
             }
-            () = tokio::time::sleep(SCENE_DEADLINE_POLL) => {
+            _ = deadline_poll.tick() => {
                 // A non-refreshing check so an idle scene actually reaches
                 // its deadline even while the shell keeps producing output.
                 if !scenes.is_live(&scene_id, Instant::now()) {
