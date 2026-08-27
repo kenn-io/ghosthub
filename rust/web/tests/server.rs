@@ -154,7 +154,9 @@ fn query_bootstrap_sets_the_cookie_and_strips_the_parameter() {
         &[("Host", &host(server.addr()))],
     );
     assert_eq!(reply.status, 303);
-    assert_eq!(reply.header("location"), Some("/"));
+    let location = reply.header("location").expect("redirect location");
+    assert!(location.starts_with("/#mint="), "{location}");
+    assert_eq!(location.len(), "/#mint=".len() + 64, "64-hex mint code");
     let cookie = reply.header("set-cookie").expect("bootstrap cookie");
     let cookie_name = auth_cookie_name(server.addr().port());
     assert!(cookie.starts_with(&format!("{cookie_name}=")));
@@ -188,7 +190,9 @@ fn bootstrap_redirects_even_when_already_authenticated() {
         reply.status, 303,
         "an authenticated revisit must still strip the token from the location"
     );
-    assert_eq!(reply.header("location"), Some("/"));
+    let location = reply.header("location").expect("redirect location");
+    assert!(location.starts_with("/#mint="), "{location}");
+    assert_eq!(location.len(), "/#mint=".len() + 64, "64-hex mint code");
 }
 
 #[test]
@@ -277,7 +281,8 @@ fn bootstrap_preserves_other_query_parameters() {
         &[("Host", &host(server.addr()))],
     );
     assert_eq!(reply.status, 303);
-    assert_eq!(reply.header("location"), Some("/?view=hosts"));
+    let location = reply.header("location").expect("redirect location");
+    assert!(location.starts_with("/?view=hosts#mint="), "{location}");
 }
 
 #[test]
@@ -427,8 +432,9 @@ fn hello_websocket_exchanges_capabilities_and_closes() {
     assert_eq!(hello["limits"]["max_message_bytes"], MAX_FRAME_BYTES);
     assert!(hello["limits"]["max_queued_output_bytes"].is_u64());
 
+    let scene = establish_scene(&server);
     socket
-        .send(Message::Text(compatible_client_hello().into()))
+        .send(Message::Text(compatible_client_hello(&scene).into()))
         .expect("client hello");
 
     match socket.read().expect("close frame") {
@@ -439,9 +445,11 @@ fn hello_websocket_exchanges_capabilities_and_closes() {
     }
 }
 
-fn compatible_client_hello() -> String {
+fn compatible_client_hello(scene: &(String, String)) -> String {
+    let (scene_id, scene_secret) = scene;
     format!(
-        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\
+        "{{\"protocol\":{PROTOCOL_VERSION},\"scene_id\":\"{scene_id}\",\
+         \"scene_secret\":\"{scene_secret}\",\"capabilities\":{{\"unicode_width\":11,\
          \"ignores_conpty_mode_requests\":true}}}}"
     )
 }
@@ -462,9 +470,14 @@ fn client_hello_without_required_capabilities_is_rejected() {
         panic!("expected server hello");
     };
 
+    let (scene_id, scene_secret) = establish_scene(&server);
     socket
         .send(Message::Text(
-            format!("{{\"protocol\":{PROTOCOL_VERSION}}}").into(),
+            format!(
+                "{{\"protocol\":{PROTOCOL_VERSION},\"scene_id\":\"{scene_id}\",\
+                 \"scene_secret\":\"{scene_secret}\"}}"
+            )
+            .into(),
         ))
         .expect("client hello without capabilities");
 
@@ -715,9 +728,8 @@ fn attach_websocket_runs_a_live_shell() {
         panic!("expected server hello");
     };
 
-    let hello = format!(
-        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
-    );
+    let scene = establish_scene(&server);
+    let hello = full_hello(&scene);
     socket
         .send(Message::Text(hello.into()))
         .expect("client hello");
@@ -803,9 +815,8 @@ fn attach_accepts_chunked_input_beyond_the_message_limit() {
     let Message::Text(_) = socket.read().expect("server hello") else {
         panic!("expected server hello");
     };
-    let hello = format!(
-        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
-    );
+    let scene = establish_scene(&server);
+    let hello = full_hello(&scene);
     socket
         .send(Message::Text(hello.into()))
         .expect("client hello");
@@ -854,6 +865,7 @@ fn attach_accepts_chunked_input_beyond_the_message_limit() {
 #[test]
 fn attachments_serialize_across_an_abrupt_closure() {
     let server = Server::start().expect("start server");
+    let scene = establish_scene(&server);
     let attach = |timeout: Duration| {
         let (status, socket) = upgrade_at(
             server.addr(),
@@ -872,9 +884,7 @@ fn attachments_serialize_across_an_abrupt_closure() {
         let Message::Text(_) = socket.read().expect("server hello") else {
             panic!("expected server hello");
         };
-        let hello = format!(
-            "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
-        );
+        let hello = full_hello(&scene);
         socket
             .send(Message::Text(hello.into()))
             .expect("client hello");
@@ -1061,18 +1071,72 @@ fn input_overflow_closes_the_connection_with_policy() {
     }
 }
 
+/// An expired scene is closed even while the connection is continuously
+/// busy. The relay loop's liveness check runs on a persistent timer, so a
+/// hot `recv` branch cannot starve it; a fresh per-iteration timer would
+/// cancel and restart on every frame and never fire, holding it open.
+///
+/// Pings are the vector: they are the one client frame the relay ignores
+/// without refreshing the scene, so a steady stream of them keeps the loop
+/// busy without itself renewing the deadline.
+#[test]
+fn continuous_activity_does_not_starve_the_scene_deadline_check() {
+    // A poll interval far shorter than the real minute so the deadline check
+    // is observable within the test, and shorter still than the ping cadence
+    // below so the buggy per-iteration timer would provably never elapse;
+    // expiry is forced directly rather than waiting out the real bounds.
+    let server = Server::start_for_test(Duration::from_millis(200)).expect("start server");
+    let scene = establish_scene(&server);
+    let mut socket = attach_shell_in_scene(&server, &scene);
+    await_echo(&mut socket, "deadline-ready");
+
+    // Read in short slices so each loop turn sends another ping; the server
+    // then sees a data frame far more often than every 200ms.
+    socket
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(5)))
+        .expect("short read timeout");
+    server.expire_scenes();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "the deadline check never closed the continuously busy attachment"
+        );
+        socket
+            .send(Message::Ping(Vec::new().into()))
+            .expect("send keepalive ping");
+        match socket.read() {
+            Ok(Message::Close(Some(frame))) => {
+                assert_eq!(u16::from(frame.code), 1008, "policy close");
+                assert_eq!(frame.reason.as_str(), "scene expired");
+                return;
+            }
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("unexpected read error: {error:?}"),
+        }
+    }
+}
+
 /// Input typed by a viewer queued behind the serialization lock is
 /// buffered and replayed into its shell once the lock frees, so a
 /// reconnecting viewer loses no keystrokes while it waits.
 #[test]
 fn queued_input_replays_into_the_shell_after_the_lock_frees() {
     let server = Server::start().expect("start server");
-    let mut first = attach_shell(&server);
+    let scene = establish_scene(&server);
+    let mut first = attach_shell_in_scene(&server, &scene);
     await_echo(&mut first, "first-live");
 
     // The second attachment completes its hello, then waits on the lock the
     // first still holds. Input sent now must be buffered, not discarded.
-    let mut second = attach_shell(&server);
+    let mut second = attach_shell_in_scene(&server, &scene);
     second
         .get_mut()
         .set_read_timeout(Some(Duration::from_secs(30)))
@@ -1117,12 +1181,13 @@ fn queued_input_replays_into_the_shell_after_the_lock_frees() {
 #[test]
 fn a_queued_attachments_invalid_resize_closes_with_policy() {
     let server = Server::start().expect("start server");
-    let mut first = attach_shell(&server);
+    let scene = establish_scene(&server);
+    let mut first = attach_shell_in_scene(&server, &scene);
     await_echo(&mut first, "first-live");
 
     // The second completes its hello, then waits on the lock the first
     // holds; a malformed control frame sent now must be refused.
-    let mut second = attach_shell(&server);
+    let mut second = attach_shell_in_scene(&server, &scene);
     second
         .get_mut()
         .set_read_timeout(Some(Duration::from_secs(30)))
@@ -1139,7 +1204,8 @@ fn a_queued_attachments_invalid_resize_closes_with_policy() {
 #[test]
 fn a_stalled_reader_releases_the_attachment_lock() {
     let server = Server::start().expect("start server");
-    let mut first = attach_shell(&server);
+    let scene = establish_scene(&server);
+    let mut first = attach_shell_in_scene(&server, &scene);
     await_echo(&mut first, "first-live");
     // Make the shell emit far more than the socket buffer plus the relay
     // output queue, then never read `first` again: the bridge's outbound
@@ -1151,7 +1217,7 @@ fn a_stalled_reader_releases_the_attachment_lock() {
 
     // Queued behind the lock the stalled first still holds; it can only
     // reach a live shell once that first is torn down and the lock frees.
-    let mut second = attach_shell(&server);
+    let mut second = attach_shell_in_scene(&server, &scene);
     second
         .get_mut()
         .set_read_timeout(Some(Duration::from_mins(1)))
@@ -1167,13 +1233,14 @@ fn a_stalled_reader_releases_the_attachment_lock() {
 #[test]
 fn a_queued_attachment_that_closes_does_not_wedge_the_lock() {
     let server = Server::start().expect("start server");
-    let mut first = attach_shell(&server);
+    let scene = establish_scene(&server);
+    let mut first = attach_shell_in_scene(&server, &scene);
     await_echo(&mut first, "first-live");
 
     // Two more complete their hellos and queue behind the lock the first
     // holds; the middle one then abandons its connection.
-    let abandoned = attach_shell(&server);
-    let mut third = attach_shell(&server);
+    let abandoned = attach_shell_in_scene(&server, &scene);
+    let mut third = attach_shell_in_scene(&server, &scene);
     third
         .get_mut()
         .set_read_timeout(Some(Duration::from_mins(1)))
@@ -1187,7 +1254,200 @@ fn a_queued_attachment_that_closes_does_not_wedge_the_lock() {
 }
 
 /// Open an authenticated attach socket and complete the hello exchange.
+/// A hello without a scene credential is refused before any PTY work,
+/// even though it authenticated the upgrade with a valid bearer.
+#[test]
+fn an_attach_hello_without_a_scene_credential_is_refused() {
+    let server = Server::start().expect("start server");
+    let (status, socket) = upgrade_at(
+        server.addr(),
+        "/ws/v1/attach",
+        &[
+            ("Origin", &origin(server.addr())),
+            ("Authorization", &bearer(&server)),
+        ],
+    );
+    assert_eq!(status, 101);
+    let mut socket = socket.expect("upgraded socket");
+    socket
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("read timeout");
+    let Message::Text(_) = socket.read().expect("server hello") else {
+        panic!("expected server hello");
+    };
+    let hello = format!(
+        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
+    );
+    socket
+        .send(Message::Text(hello.into()))
+        .expect("scene-less hello");
+    match socket.read().expect("close frame") {
+        Message::Close(Some(frame)) => {
+            assert_eq!(u16::from(frame.code), 1008, "policy close");
+            assert_eq!(frame.reason.as_str(), "invalid scene credential");
+        }
+        other => panic!("expected close frame, got {other:?}"),
+    }
+}
+
+/// A hello with an unknown or wrong scene credential is refused.
+#[test]
+fn an_attach_hello_with_a_wrong_scene_credential_is_refused() {
+    let server = Server::start().expect("start server");
+    let (status, socket) = upgrade_at(
+        server.addr(),
+        "/ws/v1/attach",
+        &[
+            ("Origin", &origin(server.addr())),
+            ("Authorization", &bearer(&server)),
+        ],
+    );
+    assert_eq!(status, 101);
+    let mut socket = socket.expect("upgraded socket");
+    socket
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("read timeout");
+    let Message::Text(_) = socket.read().expect("server hello") else {
+        panic!("expected server hello");
+    };
+    let forged = ("f".repeat(64), "0".repeat(64));
+    socket
+        .send(Message::Text(full_hello(&forged).into()))
+        .expect("forged-scene hello");
+    match socket.read().expect("close frame") {
+        Message::Close(Some(frame)) => {
+            assert_eq!(u16::from(frame.code), 1008, "policy close");
+            assert_eq!(frame.reason.as_str(), "invalid scene credential");
+        }
+        other => panic!("expected close frame, got {other:?}"),
+    }
+}
+
+/// The session cookie alone cannot mint a scene: with no bearer and no
+/// mint code, the exchange is unauthorized.
+#[test]
+fn the_session_cookie_alone_cannot_mint_a_scene() {
+    let server = Server::start().expect("start server");
+    let cookie = bootstrap_cookie(&server);
+    let reply = request(
+        server.addr(),
+        "POST",
+        "/api/v1/scene",
+        &[
+            ("Host", &host(server.addr())),
+            ("Origin", &origin(server.addr())),
+            ("Cookie", &cookie),
+        ],
+    );
+    assert_eq!(
+        reply.status, 401,
+        "cookie without a mint code mints nothing"
+    );
+}
+
+/// A bootstrap mint code, delivered in the redirect fragment, exchanges
+/// once for a scene and never again.
+#[test]
+fn a_bootstrap_mint_code_exchanges_once() {
+    let server = Server::start().expect("start server");
+    let target = format!("/?auth_token={}", server.token());
+    let redirect = request(
+        server.addr(),
+        "GET",
+        &target,
+        &[("Host", &host(server.addr()))],
+    );
+    assert_eq!(redirect.status, 303);
+    let location = redirect.header("location").expect("redirect location");
+    let code = location
+        .split("#mint=")
+        .nth(1)
+        .expect("mint code in fragment");
+    let set_cookie = redirect.header("set-cookie").expect("bootstrap cookie");
+    let cookie = set_cookie
+        .split(';')
+        .next()
+        .expect("cookie pair")
+        .to_owned();
+
+    let exchange = request(
+        server.addr(),
+        "POST",
+        "/api/v1/scene",
+        &[
+            ("Host", &host(server.addr())),
+            ("Origin", &origin(server.addr())),
+            ("Cookie", &cookie),
+            ("x-ghosthub-mint", code),
+        ],
+    );
+    assert_eq!(exchange.status, 200, "the mint code redeems for a scene");
+    let scene: serde_json::Value = serde_json::from_str(&exchange.body).expect("scene json");
+    assert_eq!(scene["scene_id"].as_str().expect("scene_id").len(), 64);
+
+    // Single-use: the same code is spent.
+    let replay = request(
+        server.addr(),
+        "POST",
+        "/api/v1/scene",
+        &[
+            ("Host", &host(server.addr())),
+            ("Origin", &origin(server.addr())),
+            ("Cookie", &cookie),
+            ("x-ghosthub-mint", code),
+        ],
+    );
+    assert_eq!(replay.status, 401, "a spent mint code mints nothing");
+}
+
+/// Establish a scene via the exchange endpoint (bearer path) and return
+/// its (`scene_id`, `scene_secret`), for hellos that must carry a valid scene
+/// credential.
+fn establish_scene(server: &Server) -> (String, String) {
+    let reply = request(
+        server.addr(),
+        "POST",
+        "/api/v1/scene",
+        &[
+            ("Host", &host(server.addr())),
+            ("Origin", &origin(server.addr())),
+            ("Authorization", &bearer(server)),
+        ],
+    );
+    assert_eq!(reply.status, 200, "scene exchange");
+    let body: serde_json::Value = serde_json::from_str(&reply.body).expect("scene json");
+    (
+        body["scene_id"].as_str().expect("scene_id").to_owned(),
+        body["scene_secret"]
+            .as_str()
+            .expect("scene_secret")
+            .to_owned(),
+    )
+}
+
+/// A complete, valid client hello carrying the scene credential plus the
+/// standard capabilities and geometry.
+fn full_hello(scene: &(String, String)) -> String {
+    let (scene_id, scene_secret) = scene;
+    format!(
+        "{{\"protocol\":{PROTOCOL_VERSION},\"scene_id\":\"{scene_id}\",\
+         \"scene_secret\":\"{scene_secret}\",\"capabilities\":{{\"unicode_width\":11,\
+         \"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\
+         \"pixel_width\":800,\"pixel_height\":480}}}}"
+    )
+}
+
 fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
+    let scene = establish_scene(server);
+    attach_shell_in_scene(server, &scene)
+}
+
+/// Complete an attach in a specific scene. Two attachments in the same
+/// scene serialize on that scene's lock (a replacement waits for its
+/// predecessor's teardown); separate scenes never block each other.
+fn attach_shell_in_scene(server: &Server, scene: &(String, String)) -> WebSocket<TcpStream> {
     let (status, socket) = upgrade_at(
         server.addr(),
         "/ws/v1/attach",
@@ -1205,11 +1465,8 @@ fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
     let Message::Text(_) = socket.read().expect("server hello") else {
         panic!("expected server hello");
     };
-    let hello = format!(
-        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
-    );
     socket
-        .send(Message::Text(hello.into()))
+        .send(Message::Text(full_hello(scene).into()))
         .expect("client hello");
     socket
 }
@@ -1247,8 +1504,9 @@ fn attach_hello_without_geometry_is_rejected() {
         panic!("expected server hello");
     };
 
+    let scene = establish_scene(&server);
     socket
-        .send(Message::Text(compatible_client_hello().into()))
+        .send(Message::Text(compatible_client_hello(&scene).into()))
         .expect("client hello without geometry");
 
     match socket.read().expect("close frame") {

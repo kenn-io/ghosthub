@@ -11,6 +11,7 @@
 
 mod attach;
 mod credential;
+mod scenes;
 mod service;
 
 use std::io;
@@ -24,6 +25,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::credential::Credential;
+use crate::scenes::SceneRegistry;
 use crate::service::{ServerState, router};
 
 pub use crate::service::{AUTH_QUERY_PARAMETER, CLIENT_HELLO_TIMEOUT, auth_cookie_name};
@@ -47,6 +49,7 @@ pub struct Server {
     addr: SocketAddr,
     token: String,
     credential: Arc<Credential>,
+    scenes: Arc<SceneRegistry>,
     shutdown: watch::Sender<bool>,
     running: Option<(Runtime, JoinHandle<io::Result<()>>)>,
 }
@@ -60,6 +63,17 @@ impl Server {
     /// Fails when the runtime cannot start, the loopback bind fails, or the
     /// operating system entropy source is unavailable.
     pub fn start() -> io::Result<Self> {
+        Self::start_inner(crate::attach::SCENE_DEADLINE_POLL)
+    }
+
+    /// Start with an explicit scene-deadline poll interval so a test can
+    /// drive scene expiry in milliseconds instead of the production minute.
+    #[doc(hidden)]
+    pub fn start_for_test(scene_deadline_poll: Duration) -> io::Result<Self> {
+        Self::start_inner(scene_deadline_poll)
+    }
+
+    fn start_inner(scene_deadline_poll: Duration) -> io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_io()
@@ -70,13 +84,15 @@ impl Server {
 
         let (credential, token) = Credential::mint()?;
         let credential = Arc::new(credential);
+        let scenes = Arc::new(SceneRegistry::new());
         let (shutdown, stopping) = watch::channel(false);
         let state = ServerState {
-            attach_serial: Arc::new(tokio::sync::Mutex::new(())),
             authority: Arc::from(addr.to_string()),
             origin: Arc::from(format!("http://{addr}")),
             cookie_name: Arc::from(service::auth_cookie_name(addr.port())),
             credential: Arc::clone(&credential),
+            scenes: Arc::clone(&scenes),
+            scene_deadline_poll,
             shutdown: stopping.clone(),
         };
 
@@ -100,9 +116,17 @@ impl Server {
             addr,
             token,
             credential,
+            scenes,
             shutdown,
             running: Some((runtime, serve)),
         })
+    }
+
+    /// Force every live scene past its deadline, so a test can observe
+    /// expiry enforcement without waiting out the real idle/absolute bounds.
+    #[doc(hidden)]
+    pub fn expire_scenes(&self) {
+        self.scenes.expire_all();
     }
 
     /// The bound loopback address.
@@ -137,6 +161,7 @@ impl Server {
 
     fn stop(&mut self) {
         self.credential.invalidate();
+        self.scenes.invalidate();
         self.shutdown.send_replace(true);
         if let Some((runtime, mut serve)) = self.running.take() {
             // Every attachment handler awaits its relay teardown before it

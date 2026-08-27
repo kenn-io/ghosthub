@@ -204,23 +204,28 @@ non-loopback bind exists in v1, so transport-security findings are not
 applicable until a remote-bind feature changes this section first. Attacks
 that require the user to hand the one-time bootstrap URL to the attacker.
 
-**Interim acceptances (each tied to a gate).** The current demo attach
-endpoint accepts the ambient session cookie, diverging from the scene-secret
-rule above; this is accepted only while the web UI serves fixture data and
-local demo shells, is tracked as a blocker of the browser-terminal milestone,
-and closes when scene credentials land. The same milestone owns the
-credential's transport: the demo bootstrap carries a bearer token in the
-query string of an `http://127.0.0.1:<ephemeral-port>` origin, which a
-service worker a local actor registered on a previously-bound instance of
-that port could intercept before any server-side check runs. Both weaknesses
-are the same ambient-credential-over-a-reusable-loopback-origin shape and
-close together when scene credentials move the credential out of the URL and
-bind it to a per-instance origin (a high-entropy hostname or equivalent,
-chosen to resolve on every supported browser including Safari). Until then
-the deployment posture above bounds the exposure: the only actors who can run
-a loopback service and register a service worker are local, and Ghosthub is
-run only where local actors are trusted. The acceptance does not extend to
-any release that exposes real multiplexer sessions to a browser.
+**Interim acceptance (tied to a gate).** Scene credentials now gate the demo
+attach: the attach hello requires a per-scene secret, and the ambient session
+cookie alone can neither attach nor mint a scene. The single-use, seconds-TTL
+mint code rides the URL fragment, which keeps it out of the bootstrap
+navigation, server logs, history, and referrers. The residual weakness is the
+reusable loopback origin itself: a service worker a local actor registered on
+a previously-bound instance of `http://127.0.0.1:<ephemeral-port>` controls
+that origin and intercepts every same-origin HTTP request before any
+server-side check runs — the bootstrap query carrying the startup bearer, and
+the `POST /api/v1/scene` exchange carrying the mint code in a header and
+returning the scene secret in its body. The fragment keeps the mint code off
+the navigation but not out of that exchange fetch, so a stale worker still
+reaches both the bearer and the exchanged scene credentials. (The attach
+websocket handshake itself is not worker-interceptable.) It closes when the
+bootstrap and the scene exchange move to a per-instance origin — a
+high-entropy hostname or equivalent one-time handoff, chosen to resolve on
+every supported browser including Safari — tracked as a blocker of the
+browser-terminal milestone (kata#09w1). Until then the deployment posture
+above bounds the exposure: the only actors who can run a loopback service and
+register a service worker are local, and Ghosthub is run only where local
+actors are trusted. The acceptance does not extend to any release that
+exposes real multiplexer sessions to a browser.
 
 Browser-side clipboard behavior is likewise gated by that milestone. Paste
 sanitization implements the shared contract vectors today. OSC 52 clipboard

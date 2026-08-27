@@ -15,7 +15,7 @@
 
 use std::ffi::OsString;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade, close_code};
@@ -25,7 +25,10 @@ use surface::{GridSize, PixelSize};
 use terminal::{ByteRelayWorker, RelayDisconnect, RelayOutput};
 use tokio::sync::{mpsc, watch};
 
-use crate::service::{ServerState, exact_origin, server_hello, stopped, valid_client_hello};
+use crate::scenes::SceneRegistry;
+use crate::service::{
+    ServerState, exact_origin, hello_scene_credential, server_hello, stopped, valid_client_hello,
+};
 use crate::{CLIENT_HELLO_TIMEOUT, MAX_FRAME_BYTES, MAX_QUEUED_OUTPUT_BYTES};
 
 /// Largest grid dimension a viewer may request; anything bigger is a
@@ -49,6 +52,11 @@ const OUTPUT_POLL: Duration = Duration::from_millis(250);
 /// instead of holding it while a wedged peer refuses to read.
 const OUTBOUND_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How often the relay loop re-checks that the bound scene is still
+/// live, so an idle session is closed at its deadline even without any
+/// client activity to trigger a refresh.
+pub(crate) const SCENE_DEADLINE_POLL: Duration = Duration::from_mins(1);
+
 struct Geometry {
     size: GridSize,
     pixels: PixelSize,
@@ -63,11 +71,12 @@ pub(crate) async fn ws_attach(
         return StatusCode::FORBIDDEN.into_response();
     }
     let shutdown = state.shutdown.clone();
-    let serial = Arc::clone(&state.attach_serial);
+    let scenes = Arc::clone(&state.scenes);
+    let deadline_poll = state.scene_deadline_poll;
     upgrade
         .max_frame_size(MAX_FRAME_BYTES)
         .max_message_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| attach_session(socket, shutdown, serial))
+        .on_upgrade(move |socket| attach_session(socket, shutdown, scenes, deadline_poll))
 }
 
 #[allow(
@@ -77,7 +86,8 @@ pub(crate) async fn ws_attach(
 async fn attach_session(
     mut socket: WebSocket,
     mut shutdown: watch::Receiver<bool>,
-    serial: Arc<tokio::sync::Mutex<()>>,
+    scenes: Arc<SceneRegistry>,
+    scene_deadline_poll: Duration,
 ) {
     if socket
         .send(Message::Text(server_hello().into()))
@@ -86,7 +96,9 @@ async fn attach_session(
     {
         return;
     }
-    let Some(mut geometry) = client_hello_geometry(&mut socket, &mut shutdown).await else {
+    let Some((mut geometry, scene_id)) =
+        client_hello_geometry(&mut socket, &mut shutdown, &scenes).await
+    else {
         return;
     };
 
@@ -102,8 +114,19 @@ async fn attach_session(
     // is buffered (bounded) and replayed into the shell once it launches,
     // so a reconnecting viewer that types before the lock frees loses no
     // keystrokes.
+    // Serialize per scene, not server-wide: a replacement in this scene
+    // waits for its own predecessor's teardown, but a different scene's
+    // viewer is never blocked.
+    let serial = scenes.serialization_lock(&scene_id);
     let mut lock = std::pin::pin!(serial.lock());
     let mut queued_input: Vec<u8> = Vec::new();
+    // One persistent timer, not a fresh `sleep` per iteration: a
+    // per-iteration timer is dropped and restarted whenever another
+    // select branch fires, so a viewer that keeps the loop busy (steady
+    // input or pings) could otherwise hold an expired scene open forever.
+    let mut deadline_poll = tokio::time::interval(scene_deadline_poll);
+    deadline_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    deadline_poll.reset();
     let _serial = loop {
         tokio::select! {
             // Biased: an uncontended lock wins immediately, so a prompt
@@ -113,6 +136,15 @@ async fn attach_session(
             () = stopped(&mut shutdown) => {
                 close(&mut socket, close_code::AWAY, "server shutting down").await;
                 return;
+            }
+            _ = deadline_poll.tick() => {
+                // A queued attachment whose scene expired while it waited
+                // for the lock closes instead of buffering input on a dead
+                // scene until its predecessor finally releases.
+                if !scenes.is_live(&scene_id, Instant::now()) {
+                    close(&mut socket, close_code::POLICY, "scene expired").await;
+                    return;
+                }
             }
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(frame))) => {
@@ -124,9 +156,19 @@ async fn attach_session(
                         close(&mut socket, close_code::POLICY, "invalid resize").await;
                         return;
                     };
+                    if !scenes.refresh(&scene_id, Instant::now()) {
+                        close(&mut socket, close_code::POLICY, "scene expired").await;
+                        return;
+                    }
                     geometry = resize;
                 }
                 Some(Ok(Message::Binary(bytes))) => {
+                    // Client activity refreshes the scene's idle clock even
+                    // while queued; an expired scene fails closed.
+                    if !scenes.refresh(&scene_id, Instant::now()) {
+                        close(&mut socket, close_code::POLICY, "scene expired").await;
+                        return;
+                    }
                     // Bounded: a viewer cannot make a queued attachment
                     // buffer unbounded pre-launch input. Past the bound the
                     // connection is cut rather than silently truncated.
@@ -172,6 +214,10 @@ async fn attach_session(
             // before its turn; do not spawn for it.
             _ => return,
         }
+    }
+    if !scenes.is_live(&scene_id, Instant::now()) {
+        close(&mut socket, close_code::POLICY, "scene expired").await;
+        return;
     }
     let spawned = tokio::task::spawn_blocking(move || {
         let (program, args) = local_client();
@@ -228,6 +274,9 @@ async fn attach_session(
         }
     });
 
+    let mut deadline_poll = tokio::time::interval(scene_deadline_poll);
+    deadline_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    deadline_poll.reset();
     let pending_close: Option<(u16, &'static str)> = loop {
         tokio::select! {
             delivery = output.recv() => match delivery {
@@ -257,8 +306,20 @@ async fn attach_session(
             () = stopped(&mut shutdown) => {
                 break Some((close_code::AWAY, "server shutting down"));
             }
+            _ = deadline_poll.tick() => {
+                // A non-refreshing check so an idle scene actually reaches
+                // its deadline even while the shell keeps producing output.
+                if !scenes.is_live(&scene_id, Instant::now()) {
+                    break Some((close_code::POLICY, "scene expired"));
+                }
+            }
             message = socket.recv() => match message {
                 Some(Ok(Message::Binary(bytes))) => {
+                    // Authenticated client activity refreshes the scene's
+                    // idle clock; an expired scene fails closed.
+                    if !scenes.refresh(&scene_id, Instant::now()) {
+                        break Some((close_code::POLICY, "scene expired"));
+                    }
                     if let Err(error) = worker.send_bytes(bytes.to_vec())
                         && error.is_backpressure()
                     {
@@ -280,6 +341,9 @@ async fn attach_session(
                     let Some(resize) = parse_resize(&frame) else {
                         break Some((close_code::POLICY, "invalid resize"));
                     };
+                    if !scenes.refresh(&scene_id, Instant::now()) {
+                        break Some((close_code::POLICY, "scene expired"));
+                    }
                     if let Err(error) = worker.resize(resize.size, resize.pixels)
                         && error.is_backpressure()
                     {
@@ -319,7 +383,8 @@ async fn attach_session(
 async fn client_hello_geometry(
     socket: &mut WebSocket,
     shutdown: &mut watch::Receiver<bool>,
-) -> Option<Geometry> {
+    scenes: &SceneRegistry,
+) -> Option<(Geometry, String)> {
     let deadline = tokio::time::sleep(CLIENT_HELLO_TIMEOUT);
     tokio::pin!(deadline);
     loop {
@@ -335,13 +400,26 @@ async fn client_hello_geometry(
             message = socket.recv() => {
                 match message {
                     Some(Ok(Message::Text(frame))) => {
-                        let geometry = valid_client_hello(&frame)
-                            .then(|| hello_geometry(&frame))
-                            .flatten();
-                        if geometry.is_none() {
-                            close(socket, close_code::POLICY, "invalid client hello").await;
+                        // The scene credential in the hello is the per-scene
+                        // gate — validated before any PTY work, and never
+                        // from the ambient cookie the upgrade carried.
+                        let Some((scene_id, scene_secret)) = hello_scene_credential(&frame)
+                        else {
+                            close(socket, close_code::POLICY, "invalid scene credential").await;
+                            return None;
+                        };
+                        if !scenes.validate(&scene_id, &scene_secret, Instant::now()) {
+                            close(socket, close_code::POLICY, "invalid scene credential").await;
+                            return None;
                         }
-                        return geometry;
+                        let Some(geometry) = valid_client_hello(&frame)
+                            .then(|| hello_geometry(&frame))
+                            .flatten()
+                        else {
+                            close(socket, close_code::POLICY, "invalid client hello").await;
+                            return None;
+                        };
+                        return Some((geometry, scene_id));
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
                     _ => return None,

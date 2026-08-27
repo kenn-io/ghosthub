@@ -2,7 +2,7 @@
 //! websocket.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::extract::State;
@@ -51,12 +51,6 @@ const ADDON_UNICODE11_JS: &str = include_str!("../assets/vendor/addon-unicode11.
 
 #[derive(Clone)]
 pub(crate) struct ServerState {
-    /// Serializes attachments: a replacement waits until its predecessor's
-    /// relay threads have joined and its PTY child is reaped, so an
-    /// abnormal browser-side closure cannot race an un-reaped client.
-    /// Scene-scoped serialization replaces this per-server lock when scene
-    /// credentials land.
-    pub(crate) attach_serial: Arc<tokio::sync::Mutex<()>>,
     /// The literal bound authority, e.g. `127.0.0.1:49152`.
     pub(crate) authority: Arc<str>,
     /// The only acceptable `Origin`, e.g. `http://127.0.0.1:49152`.
@@ -64,6 +58,10 @@ pub(crate) struct ServerState {
     /// The port-suffixed session cookie name for this instance.
     pub(crate) cookie_name: Arc<str>,
     pub(crate) credential: Arc<Credential>,
+    pub(crate) scenes: Arc<crate::scenes::SceneRegistry>,
+    /// How often an attachment re-checks its bound scene's deadline. A
+    /// field, not the constant directly, so a test can drive expiry fast.
+    pub(crate) scene_deadline_poll: Duration,
     pub(crate) shutdown: watch::Receiver<bool>,
 }
 
@@ -79,6 +77,7 @@ pub(crate) fn router(state: ServerState) -> Router {
         .route("/assets/addon-fit.js", get(addon_fit_js))
         .route("/assets/addon-unicode11.js", get(addon_unicode11_js))
         .route("/api/v1/inventory", get(inventory))
+        .route("/api/v1/scene", axum::routing::post(scene_exchange))
         .route("/ws/v1/hello", get(ws_hello))
         .route("/ws/v1/attach", get(crate::attach::ws_attach))
         .layer(middleware::from_fn_with_state(
@@ -137,11 +136,17 @@ async fn require_credential(
             if state.credential.matches_token(presented)
                 && let Some(session) = state.credential.session_value()
             {
+                // Mint a single-use scene code and hand it to the
+                // page in the redirect fragment (browsers never send a
+                // fragment to a server), so the credential the page
+                // exchanges is not the ambient cookie.
+                let mint = state.scenes.mint_code(Instant::now()).ok();
                 return bootstrap_redirect(
                     request.uri().path(),
                     query,
                     &state.cookie_name,
                     &session,
+                    mint.as_deref(),
                 );
             }
             return StatusCode::UNAUTHORIZED.into_response();
@@ -203,7 +208,61 @@ fn query_token(query: &str) -> Option<&str> {
 /// Store the session value in the cookie and redirect to the same path with
 /// the credential parameter stripped, so the token never stays in the
 /// location bar or browser history.
-fn bootstrap_redirect(path: &str, query: &str, cookie_name: &str, session: &str) -> Response {
+/// Header carrying the single-use bootstrap mint code from the page to
+/// the scene-exchange endpoint. A header (not a query param) keeps the
+/// code out of the request line that access logs capture.
+pub(crate) const MINT_CODE_HEADER: &str = "x-ghosthub-mint";
+
+/// Exchange authority for a scene credential: a browser redeems its
+/// single-use mint code (the authenticating session cookie alone cannot);
+/// a non-browser bearer client establishes a scene directly. Reached only
+/// after the credential and exact-Origin gates in `require_credential`.
+async fn scene_exchange(State(state): State<ServerState>, headers: HeaderMap) -> Response {
+    if let Some(presented) = bearer_token(&headers)
+        && state.credential.matches_token(presented)
+    {
+        return match state.scenes.establish_direct(Instant::now()) {
+            Ok(credential) => scene_credential_response(&credential),
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+    }
+    let Some(code) = headers
+        .get(MINT_CODE_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    match state.scenes.redeem(code, Instant::now()) {
+        Ok(Some(credential)) => scene_credential_response(&credential),
+        Ok(None) => StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+fn scene_credential_response(credential: &crate::scenes::SceneCredential) -> Response {
+    let body = serde_json::json!({
+        "scene_id": credential.scene_id,
+        "scene_secret": credential.scene_secret,
+    })
+    .to_string();
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+fn bootstrap_redirect(
+    path: &str,
+    query: &str,
+    cookie_name: &str,
+    session: &str,
+    mint_code: Option<&str>,
+) -> Response {
     let remainder = query
         .split('&')
         .filter(|pair| {
@@ -212,11 +271,17 @@ fn bootstrap_redirect(path: &str, query: &str, cookie_name: &str, session: &str)
         })
         .collect::<Vec<_>>()
         .join("&");
-    let location = if remainder.is_empty() {
+    let mut location = if remainder.is_empty() {
         path.to_owned()
     } else {
         format!("{path}?{remainder}")
     };
+    // The mint code rides in the fragment: browsers do not transmit it to
+    // the server, and the page strips it from history immediately.
+    if let Some(code) = mint_code {
+        location.push_str("#mint=");
+        location.push_str(code);
+    }
     let cookie = format!("{cookie_name}={session}; HttpOnly; SameSite=Strict; Path=/");
     (
         StatusCode::SEE_OTHER,
@@ -395,6 +460,16 @@ const UNICODE_WIDTH_VERSION: u32 = 11;
 /// A client hello must state the protocol version and declare the required
 /// capabilities: Unicode-11 width tables and tolerance for ConPTY-injected
 /// mode requests. Anything else closes with a policy code.
+/// Extract a borrowed (`scene_id`, `scene_secret`) pair from a client hello,
+/// or None when either is absent or not a string. The caller validates
+/// them against the scene registry.
+pub(crate) fn hello_scene_credential(frame: &Utf8Bytes) -> Option<(String, String)> {
+    let hello = serde_json::from_str::<serde_json::Value>(frame.as_str()).ok()?;
+    let scene_id = hello.get("scene_id")?.as_str()?.to_owned();
+    let scene_secret = hello.get("scene_secret")?.as_str()?.to_owned();
+    Some((scene_id, scene_secret))
+}
+
 pub(crate) fn valid_client_hello(frame: &Utf8Bytes) -> bool {
     let Ok(hello) = serde_json::from_str::<serde_json::Value>(frame.as_str()) else {
         return false;
