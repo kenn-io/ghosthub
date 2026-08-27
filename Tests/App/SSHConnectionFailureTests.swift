@@ -197,6 +197,66 @@ struct SSHConnectionFailureTests {
     }
 
     @Test(
+        "only transport-class lease failures allow automatic retry",
+        arguments: [
+            (KwtSSHLeaseError.acquisitionTimedOut, true),
+            (KwtSSHLeaseError.commandFailed(status: 255), true),
+            (KwtSSHLeaseError.commandFailed(status: 1), false),
+            (KwtSSHLeaseError.helperUnavailable, false),
+            (KwtSSHLeaseError.launchFailed, false),
+            (KwtSSHLeaseError.poolClosed, false),
+            (
+                KwtSSHLeaseError.operationFailed(
+                    code: "ssh_connection_failed",
+                    message: "ssh: connect to host example.test port 22: No route to host",
+                    retryable: true
+                ),
+                true
+            ),
+            (
+                KwtSSHLeaseError.operationFailed(
+                    code: "ssh_connection_failed",
+                    message: "ssh: connect to host example.test port 22: No route to host",
+                    retryable: false
+                ),
+                false
+            ),
+            (
+                KwtSSHLeaseError.operationFailed(
+                    code: "ssh_connection_failed",
+                    message: "Permission denied (publickey,password).",
+                    retryable: true
+                ),
+                false
+            ),
+        ]
+    )
+    func classifiesRetryableTransportFailures(
+        error: KwtSSHLeaseError,
+        retryable: Bool
+    ) {
+        let classification = SSHConnectionFailure.retryableTransportFailure(
+            error
+        )
+
+        #expect((classification != nil) == retryable)
+        #expect(classification.map(\.kind) == (retryable ? .transport : nil))
+    }
+
+    @Test("an acquisition timeout keeps its specific connection diagnosis")
+    func classifiesAcquisitionTimeout() {
+        let classification = SSHConnectionFailure.classify(
+            leaseError: KwtSSHLeaseError.acquisitionTimedOut
+        )
+
+        #expect(classification.kind == .transport)
+        #expect(
+            classification.diagnostic.summary
+                == "The SSH connection timed out."
+        )
+    }
+
+    @Test(
         "generic lease failures preserve native recovery signals",
         arguments: [
             (

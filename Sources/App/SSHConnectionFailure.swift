@@ -94,10 +94,21 @@ enum SSHConnectionFailure {
     static func retryableTransportFailure(
         _ error: Error
     ) -> Classification? {
-        guard let leaseError = error as? KwtSSHLeaseError,
-              case let .operationFailed(_, _, retryable) = leaseError,
-              retryable
-        else { return nil }
+        guard let leaseError = error as? KwtSSHLeaseError else { return nil }
+        switch leaseError {
+        case let .operationFailed(_, _, retryable):
+            guard retryable else { return nil }
+        case .acquisitionTimedOut:
+            break
+        case let .commandFailed(status):
+            // 255 is OpenSSH's own exit status, so the helper died on the
+            // transport; any other status is a helper defect.
+            guard status == 255 else { return nil }
+        case .helperUnavailable, .launchFailed, .malformedEvent,
+             .persistentUnsupported, .cleanupFailed, .routeChanged,
+             .releaseTimedOut, .poolClosed:
+            return nil
+        }
         let classification = classify(leaseError: leaseError)
         return classification.kind == .transport ? classification : nil
     }
@@ -263,6 +274,17 @@ enum SSHConnectionFailure {
                     summary: "The effective SSH configuration changed or cannot be reviewed.",
                     recoverySuggestion:
                     "Review the host's SSH configuration before reconnecting."
+                )
+            )
+        case "ssh_acquisition_timed_out":
+            return Classification(
+                kind: .transport,
+                diagnostic: RemoteHostDiagnostic(
+                    code: .sshConnectionFailed,
+                    severity: .error,
+                    summary: "The SSH connection timed out.",
+                    recoverySuggestion:
+                    "Check the destination, network access, and SSH server, then retry."
                 )
             )
         case "ssh_unsupported_version", "ssh_persistent_unsupported":

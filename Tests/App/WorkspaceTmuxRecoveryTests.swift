@@ -274,8 +274,21 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("initial SSH transport failure starts tmux reconnect")
-    func initialSSHTransportFailureStartsTmuxReconnect() async throws {
+    @Test(
+        "initial SSH transport failure starts tmux reconnect",
+        arguments: [
+            KwtSSHLeaseError.operationFailed(
+                code: "ssh_connection_failed",
+                message: "ssh: connect to host build.example.test port 22: No route to host",
+                retryable: true
+            ),
+            .acquisitionTimedOut,
+            .commandFailed(status: 255),
+        ]
+    )
+    func initialSSHTransportFailureStartsTmuxReconnect(
+        transportError: KwtSSHLeaseError
+    ) async throws {
         let environment = try setupRemoteTmuxEnvironment()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let acquisitions = Mutex(0)
@@ -304,11 +317,7 @@ extension WorkspaceTmuxDiscoveryTests {
             presentationSSHConnectionProvider: { _, _ in
                 acquisitions.withLock { $0 += 1 }
                 if transportUnavailable.withLock({ $0 }) {
-                    throw KwtSSHLeaseError.operationFailed(
-                        code: "ssh_connection_failed",
-                        message: "ssh: connect to host build.example.test port 22: No route to host",
-                        retryable: true
-                    )
+                    throw transportError
                 }
                 return testKwtSSHAttachment(
                     routeIdentity: "sha256:recovered-route"
