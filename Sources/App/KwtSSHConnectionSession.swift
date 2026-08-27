@@ -48,8 +48,18 @@ final class KwtSSHConnectionSession: ObservableObject {
             return true
         }
         switch state {
-        case .failed, .configurationChanged:
+        case .configurationChanged:
             return true
+        case .failed:
+            guard let connectionFailure else { return false }
+            switch SSHConnectionFailure.classify(
+                leaseError: connectionFailure
+            ).kind {
+            case .authenticationRequired, .hostKeyReviewRequired:
+                return true
+            case .transport, .hostKeyChanged, .configurationChanged:
+                return false
+            }
         case .starting, .prompt, .verifying, .connected:
             return false
         }
@@ -252,11 +262,14 @@ final class KwtSSHConnectionSession: ObservableObject {
                 state = error as? KwtSSHLeaseError == .routeChanged
                     ? .configurationChanged
                     : .failed(error.localizedDescription)
-                onPresentationRequired()
+                let retainsRetryWaiters = needsPresentation
+                if retainsRetryWaiters {
+                    onPresentationRequired()
+                }
                 publishRequirement()
                 publishConnection(
                     .failure(error),
-                    retainingRetryWaiters: true
+                    retainingRetryWaiters: retainsRetryWaiters
                 )
             }
         }
@@ -470,14 +483,17 @@ final class KwtSSHConnectionSession: ObservableObject {
             state = .failed(
                 failure.localizedDescription
             )
-            onPresentationRequired()
+            let retainsRetryWaiters = needsPresentation
+            if retainsRetryWaiters {
+                onPresentationRequired()
+            }
             if self.acquisitionID == acquisitionID {
                 self.acquisitionID = nil
             }
             publishRequirement()
             publishConnection(
                 .failure(failure),
-                retainingRetryWaiters: true
+                retainingRetryWaiters: retainsRetryWaiters
             )
             Task { try? await connection.release() }
         }

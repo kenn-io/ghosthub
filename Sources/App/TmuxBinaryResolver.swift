@@ -131,7 +131,8 @@ struct TmuxBinaryResolver: Sendable {
                 host: host,
                 connectionArguments: sshConnectionArguments,
                 command: command,
-                timeout: processTimeout
+                timeout: processTimeout,
+                retryPolicy: .idempotent
             )
             return (result.status, result.stdout, result.stderr)
         }

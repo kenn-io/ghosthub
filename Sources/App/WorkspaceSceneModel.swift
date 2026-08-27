@@ -392,9 +392,8 @@ final class WorkspaceSceneModel: ObservableObject {
         var host: CommandHost
         var routeIdentity: String?
         var surfaceExitCode: UInt32?
-        /// The previous attempt could not create a terminal surface, so no
-        /// client ever ran and there is no exit code to inspect. Recovery is
-        /// still legitimate: the transport failure that started it stands.
+        /// The previous attempt failed before the terminal client could start,
+        /// so there is no exit code to inspect and reattachment is still safe.
         var surfaceLaunchFailed = false
 
     }
@@ -455,9 +454,8 @@ final class WorkspaceSceneModel: ObservableObject {
         var routeIdentity: String?
         var phase: RemoteTmuxEstablishmentPhase
         var surfaceExitCode: UInt32?
-        /// The previous attempt could not create a terminal surface, so no
-        /// client ever ran and there is no exit code to inspect. Recovery is
-        /// still legitimate: the transport failure that started it stands.
+        /// The previous attempt failed before the terminal client could start,
+        /// so there is no exit code to inspect and replay is still safe.
         var surfaceLaunchFailed = false
     }
 
@@ -570,9 +568,8 @@ final class WorkspaceSceneModel: ObservableObject {
         var host: CommandHost
         var routeIdentity: String?
         var surfaceExitCode: UInt32?
-        /// The previous attempt could not create a terminal surface, so no
-        /// client ever ran and there is no exit code to inspect. Recovery is
-        /// still legitimate: the transport failure that started it stands.
+        /// The previous attempt failed before the terminal client could start,
+        /// so there is no exit code to inspect and reattachment is still safe.
         var surfaceLaunchFailed = false
     }
     private var activeHerdrReconnectContext: ActiveHerdrReconnectContext?
@@ -1324,7 +1321,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 host: host,
                 connectionArguments: connectionArguments,
                 command: command,
-                timeout: 10
+                timeout: 10,
+                retryPolicy: .idempotent
             )
             return (output.status, output.stdout, output.stderr)
         },
@@ -5972,7 +5970,11 @@ final class WorkspaceSceneModel: ObservableObject {
             removePresentationSSHSession(sessionID, cancel: false)
             return connection
         } catch {
-            presentationSSHSessionNeedsAttention(sessionID)
+            if session.needsPresentation {
+                presentationSSHSessionNeedsAttention(sessionID)
+            } else {
+                removePresentationSSHSession(sessionID, cancel: false)
+            }
             throw error
         }
     }
@@ -8098,6 +8100,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 return
             }
             let failureReason: String
+            var retryableTransportFailure = false
             switch validation.result {
             case let .available(names):
                 let sessionIsActive = names.contains(selection.name)
@@ -8129,11 +8132,24 @@ final class WorkspaceSceneModel: ObservableObject {
                     .localizedDescription
             case let .failure(error):
                 failureReason = error.localizedDescription
+                if case let .commandFailed(status, stderr) = error,
+                   host.isRemote,
+                   validation.connection.routeIdentity != nil,
+                   status == 255,
+                   SSHConnectionFailure.classify(
+                       status: status,
+                       output: stderr
+                   ).kind == .transport {
+                    retryableTransportFailure = true
+                }
             }
             retainFailedZellijSession(
                 selection,
                 host: host,
-                reason: failureReason
+                reason: failureReason,
+                routeIdentity: retryableTransportFailure
+                    ? validation.connection.routeIdentity : nil,
+                reconnectsAutomatically: retryableTransportFailure
             )
             scheduleZellijSessionDiscovery()
         }
@@ -8204,7 +8220,9 @@ final class WorkspaceSceneModel: ObservableObject {
     private func retainFailedZellijSession(
         _ selection: WorkspaceZellijSessionSelection,
         host: CommandHost,
-        reason: String
+        reason: String,
+        routeIdentity: String? = nil,
+        reconnectsAutomatically: Bool = false
     ) {
         guard activeBorrowedTmuxSelection == nil,
               activeBorrowedHerdrSelection == nil,
@@ -8228,10 +8246,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection: selection,
                 handleID: handle.id,
                 host: host,
-                routeIdentity: nil,
+                routeIdentity: routeIdentity,
                 surfaceExitCode: nil
             )
             : nil
+        if reconnectsAutomatically,
+           var context = activeZellijReconnectContext {
+            context.surfaceLaunchFailed = true
+            activeZellijReconnectContext = context
+            startZellijReconnect(context)
+        }
     }
 
     func prepareZellijSessionKill(
@@ -10592,7 +10616,9 @@ final class WorkspaceSceneModel: ObservableObject {
            alwaysLiveManagedTmuxPresentationKeys.contains(key),
            !nativeTmuxSessionCoordinator.hasLaunched(handle),
            nativeTmuxSessionCoordinator.attachmentClosure(handle)
-           != .surfaceUnavailable {
+           != .surfaceUnavailable,
+           nativeTmuxSessionCoordinator.attachmentClosure(handle)
+           != .retryableTransportFailure {
             // Identity exclusion is for permanent launch and setup failures.
             // A retryable surface failure (for example the display vanished
             // during creation) keeps the policy-owned presentation so
@@ -10636,6 +10662,18 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxActivityEnrollmentTasks.removeValue(
                 forKey: handle.id
             )?.cancel()
+        }
+        if case .disconnected = state,
+           nativeTmuxSessionCoordinator.attachmentClosure(handle)
+           == .retryableTransportFailure,
+           var context = presentation.reconnectContext,
+           context.handleID == handle.id {
+            // SSH failed before the tmux client could start, so retrying the
+            // original attachment cannot replay remote client side effects.
+            context.surfaceLaunchFailed = true
+            presentation.reconnectContext = context
+            startTmuxReconnect(presentation, context: context)
+            return
         }
         if case .disconnected = state,
            presentation.recoveryState != nil,
@@ -10772,6 +10810,15 @@ final class WorkspaceSceneModel: ObservableObject {
         }) {
             return
         }
+        if nativeHerdrSessionCoordinator.attachmentClosure(handle)
+            == .retryableTransportFailure,
+            var context = activeHerdrReconnectContext,
+            context.handleID == handle.id {
+            context.surfaceLaunchFailed = true
+            activeHerdrReconnectContext = context
+            startHerdrReconnect(context)
+            return
+        }
         // Checked before `hasLaunched`: a surface that failed to be created
         // never launched, so the guard below would drop this transient failure
         // and the session would latch. See the tmux path.
@@ -10808,7 +10855,7 @@ final class WorkspaceSceneModel: ObservableObject {
             context.surfaceExitCode = code
             activeHerdrReconnectContext = context
             startHerdrReconnect(context)
-        case .surfaceUnavailable:
+        case .retryableTransportFailure, .surfaceUnavailable:
             // Recoverable failures are re-armed above, before `hasLaunched`.
             // Reaching here means no matching reconnect context survives.
             cancelHerdrReconnect()
@@ -10841,6 +10888,15 @@ final class WorkspaceSceneModel: ObservableObject {
             sessionConnectionRecoveryRequest = nil
             scheduleZellijSessionDiscovery()
         case .disconnected:
+            if nativeZellijSessionCoordinator.attachmentClosure(handle)
+                == .retryableTransportFailure,
+                var context = activeZellijReconnectContext,
+                context.handleID == handle.id {
+                context.surfaceLaunchFailed = true
+                activeZellijReconnectContext = context
+                startZellijReconnect(context)
+                return
+            }
             // Checked before `hasLaunched`: a surface that failed to be created
             // never launched, so the guard below would drop this transient
             // failure and the session would latch. See the tmux path.
@@ -10894,7 +10950,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 context.surfaceExitCode = code
                 activeZellijReconnectContext = context
                 startZellijReconnect(context)
-            case .surfaceUnavailable:
+            case .retryableTransportFailure, .surfaceUnavailable:
                 // Recoverable failures are re-armed above, before
                 // `hasLaunched`. Reaching here means no matching reconnect
                 // context survives.
@@ -11556,6 +11612,42 @@ final class WorkspaceSceneModel: ObservableObject {
               === presentation
         else { return .stop }
         guard canAttachToDisplay else { return .retry }
+        if case let .ssh(info) = context.host,
+           context.routeIdentity == nil {
+            let routeIdentity: String
+            do {
+                routeIdentity = try await sshRouteIdentityResolver(info)
+            } catch {
+                guard !Task.isCancelled else { return .retry }
+                guard presentation.reconnectContext == context,
+                      presentation.handle.id == context.handleID,
+                      retainedTmuxPresentation(for: presentation.handle)
+                      === presentation
+                else { return .stop }
+                stopTmuxReconnectWithUnableToAttach(
+                    presentation,
+                    "Ghosthub could not verify the SSH route before reconnecting. Reopen the session to use the current connection. \(error.localizedDescription)"
+                )
+                return .stop
+            }
+            guard !Task.isCancelled else { return .retry }
+            guard presentation.reconnectContext == context,
+                  presentation.handle.id == context.handleID,
+                  retainedTmuxPresentation(for: presentation.handle)
+                  === presentation,
+                  snapshot.host(id: context.selection.hostID)
+                  .flatMap(CommandHostResolver.resolve) == context.host
+            else { return .stop }
+            var anchoredContext = context
+            anchoredContext.routeIdentity = routeIdentity
+            presentation.reconnectContext = anchoredContext
+            startTmuxReconnect(
+                presentation,
+                context: anchoredContext,
+                waitBeforeFirstAttempt: false
+            )
+            return .stop
+        }
         var frozenConnection: SSHConnectionArgumentsSnapshot?
         if case let .ssh(info) = context.host {
             let connection: KwtSSHConnection
@@ -11571,11 +11663,10 @@ final class WorkspaceSceneModel: ObservableObject {
                       retainedTmuxPresentation(for: presentation.handle)
                       === presentation
                 else { return .stop }
-                stopTmuxReconnectWithUnableToAttach(
+                return tmuxSSHAcquisitionFailureDecision(
                     presentation,
-                    error.localizedDescription
+                    error: error
                 )
-                return .stop
             }
             let snapshot = SSHConnectionArgumentsSnapshot(connection)
             guard !Task.isCancelled else { return .retry }
@@ -11584,7 +11675,8 @@ final class WorkspaceSceneModel: ObservableObject {
                   retainedTmuxPresentation(for: presentation.handle)
                   === presentation
             else { return .stop }
-            guard snapshot.routeIdentity == context.routeIdentity else {
+            if let expectedRouteIdentity = context.routeIdentity,
+               snapshot.routeIdentity != expectedRouteIdentity {
                 stopTmuxReconnectWithUnableToAttach(
                     presentation,
                     "The SSH connection changed while Ghosthub was checking the tmux session. Reopen it to use the current connection."
@@ -11636,11 +11728,10 @@ final class WorkspaceSceneModel: ObservableObject {
                       retainedTmuxPresentation(for: presentation.handle)
                       === presentation
                 else { return .stop }
-                stopTmuxReconnectWithUnableToAttach(
+                return tmuxSSHAcquisitionFailureDecision(
                     presentation,
-                    error.localizedDescription
+                    error: error
                 )
-                return .stop
             }
             let afterRouteIdentity = after.routeIdentity
             try? await after.release()
@@ -11675,7 +11766,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard probe.outcome == .present else { return .retry }
             }
         }
-        guard let decisionContext = presentation.reconnectContext else {
+        guard var decisionContext = presentation.reconnectContext else {
             return .stop
         }
         let discoveryAdvancedToAttachOnly =
@@ -11691,11 +11782,44 @@ final class WorkspaceSceneModel: ObservableObject {
         guard decisionContext == currentContext
             || discoveryAdvancedToAttachOnly
         else { return .stop }
+        if decisionContext.routeIdentity == nil,
+           let frozenConnection {
+            switch probe.outcome {
+            case .present, .absent:
+                // Initial attachment recovery has no route to fence until its
+                // first successful probe. Bind that stable route before any
+                // relaunch so the new client cannot switch SSH destinations.
+                decisionContext.routeIdentity = frozenConnection.routeIdentity
+                presentation.reconnectContext = decisionContext
+            case .failure:
+                break
+            }
+        }
         return reconnectDecision(
             for: presentation,
             context: decisionContext,
             outcome: probe.outcome
         )
+    }
+
+    private func tmuxSSHAcquisitionFailureDecision(
+        _ presentation: RetainedTmuxPresentation,
+        error: Error
+    ) -> SessionReconnectDecision {
+        if let classification = SSHConnectionFailure
+            .retryableTransportFailure(error) {
+            presentation.recoveryState = .reconnecting(
+                message: classification.diagnostic.summary + " "
+                    + "Ghosthub will reconnect automatically."
+            )
+            publishActiveState(for: presentation)
+            return .retry
+        }
+        stopTmuxReconnectWithUnableToAttach(
+            presentation,
+            error.localizedDescription
+        )
+        return .stop
     }
 
     private func tmuxReconnectProbe(

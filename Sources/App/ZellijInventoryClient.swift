@@ -45,7 +45,8 @@ struct ZellijInventoryClient: Sendable {
         let output = run(
             ZellijExecutable.command(),
             on: host,
-            sshConnectionArguments: sshConnectionArguments
+            sshConnectionArguments: sshConnectionArguments,
+            retryPolicy: .idempotent
         )
         switch ZellijExecutable.parse(
             status: output.status,
@@ -110,7 +111,8 @@ struct ZellijInventoryClient: Sendable {
         let output = run(
             ZellijSessionList.command(zellijPath: zellijPath),
             on: host,
-            sshConnectionArguments: sshConnectionArguments
+            sshConnectionArguments: sshConnectionArguments,
+            retryPolicy: .idempotent
         )
         return ZellijSessionList.parse(
             status: output.status,
@@ -163,7 +165,8 @@ struct ZellijInventoryClient: Sendable {
     private func run(
         _ command: String,
         on host: CommandHost,
-        sshConnectionArguments: [String]?
+        sshConnectionArguments: [String]?,
+        retryPolicy: AccountCommandRunner.RemoteRetryPolicy = .never
     ) -> AccountCommandOutput {
         switch host {
         case .local:
@@ -179,7 +182,8 @@ struct ZellijInventoryClient: Sendable {
                 host: info,
                 connectionArguments: sshConnectionArguments,
                 command: command,
-                timeout: processTimeout
+                timeout: processTimeout,
+                retryPolicy: retryPolicy
             )
         }
     }

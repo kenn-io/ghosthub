@@ -34,6 +34,8 @@ enum BorrowedTmuxAttachmentClosure: Equatable {
     case detached
     case processExited(code: UInt32?)
     case launchFailed
+    /// SSH transport failed before the terminal client could start.
+    case retryableTransportFailure
     /// The terminal surface could not be created. Transient — no display was
     /// available to render it — so recovery keeps trying instead of latching.
     case surfaceUnavailable
@@ -455,7 +457,13 @@ final class NativeTmuxSessionCoordinator {
                 }
                 try? await sshConnection?.release()
             }
-            attachmentClosures[handle.id] = .launchFailed
+            attachmentClosures[handle.id] = switch error {
+            case let .sshConnectionFailed(_, classification)
+                where classification.kind == .transport:
+                .retryableTransportFailure
+            default:
+                .launchFailed
+            }
             interactiveSizingHandles.remove(handle.id)
             onStateChanged?(
                 handle,
@@ -471,7 +479,10 @@ final class NativeTmuxSessionCoordinator {
         provisioningTasks.removeValue(forKey: handle.id)
         provisioningHandles.remove(handle.id)
         guard handlesByKey[sessionKey(handle)] == handle else { return }
-        attachmentClosures[handle.id] = .launchFailed
+        attachmentClosures[handle.id] =
+            SSHConnectionFailure.retryableTransportFailure(error) == nil
+                ? .launchFailed
+                : .retryableTransportFailure
         interactiveSizingHandles.remove(handle.id)
         onStateChanged?(
             handle,

@@ -97,6 +97,149 @@ struct AccountCommandRunnerTests {
         #expect(command.contains("${SHELL:-/bin/sh}"))
     }
 
+    @Test("idempotent remote commands retry a refused multiplexed session")
+    func remoteLoginShellRetriesRefusedSession() {
+        let attempts = Mutex(0)
+        let runner = AccountCommandRunner(
+            processRunner: { _, _, _, _ in
+                let attempt = attempts.withLock { value in
+                    value += 1
+                    return value
+                }
+                if attempt == 1 {
+                    return AccountCommandOutput(
+                        status: 255,
+                        stdout: "",
+                        stderr: """
+                        mux_client_request_session: session request failed: Session open refused by peer
+                        Connection closed by UNKNOWN port 65535
+                        """
+                    )
+                }
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "ready\n",
+                    stderr: ""
+                )
+            },
+            loginShellProvider: { "/bin/account-shell" }
+        )
+
+        let result = runner.runRemoteLoginShell(
+            host: SSHHostInfo(
+                user: "dev",
+                hostname: "build.example",
+                port: 22
+            ),
+            connectionArguments: ["-S", "/tmp/kwt.sock"],
+            command: "printf ready",
+            timeout: 6,
+            retryPolicy: .idempotent
+        )
+
+        #expect(result.status == 0)
+        #expect(result.stdout == "ready\n")
+        #expect(attempts.withLock { $0 } == 2)
+    }
+
+    @Test("remote commands do not retry refused sessions by default")
+    func remoteLoginShellDoesNotRetryRefusedSessionByDefault() {
+        let attempts = Mutex(0)
+        let runner = AccountCommandRunner(
+            processRunner: { _, _, _, _ in
+                attempts.withLock { $0 += 1 }
+                return AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr: """
+                    mux_client_request_session: session request failed: Session open refused by peer
+                    Connection closed by UNKNOWN port 65535
+                    """
+                )
+            },
+            loginShellProvider: { "/bin/account-shell" }
+        )
+
+        let result = runner.runRemoteLoginShell(
+            host: SSHHostInfo(
+                user: "dev",
+                hostname: "build.example",
+                port: 22
+            ),
+            connectionArguments: ["-S", "/tmp/kwt.sock"],
+            command: "printf ready",
+            timeout: 6
+        )
+
+        #expect(result.status == 255)
+        #expect(attempts.withLock { $0 } == 1)
+    }
+
+    @Test("remote commands do not retry other SSH failures")
+    func remoteLoginShellDoesNotRetryOtherFailures() {
+        let attempts = Mutex(0)
+        let runner = AccountCommandRunner(
+            processRunner: { _, _, _, _ in
+                attempts.withLock { $0 += 1 }
+                return AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr: "Permission denied (publickey).\n"
+                )
+            },
+            loginShellProvider: { "/bin/account-shell" }
+        )
+
+        let result = runner.runRemoteLoginShell(
+            host: SSHHostInfo(
+                user: "dev",
+                hostname: "build.example",
+                port: 22
+            ),
+            connectionArguments: ["-S", "/tmp/kwt.sock"],
+            command: "printf ready",
+            timeout: 6,
+            retryPolicy: .idempotent
+        )
+
+        #expect(result.status == 255)
+        #expect(attempts.withLock { $0 } == 1)
+    }
+
+    @Test("remote commands bound refused session retries")
+    func remoteLoginShellBoundsRefusedSessionRetries() {
+        let attempts = Mutex(0)
+        let runner = AccountCommandRunner(
+            processRunner: { _, _, _, _ in
+                attempts.withLock { $0 += 1 }
+                return AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr: """
+                    mux_client_request_session: session request failed: Session open refused by peer
+                    Connection closed by UNKNOWN port 65535
+                    """
+                )
+            },
+            loginShellProvider: { "/bin/account-shell" }
+        )
+
+        let result = runner.runRemoteLoginShell(
+            host: SSHHostInfo(
+                user: "dev",
+                hostname: "build.example",
+                port: 22
+            ),
+            connectionArguments: ["-S", "/tmp/kwt.sock"],
+            command: "printf ready",
+            timeout: 6,
+            retryPolicy: .idempotent
+        )
+
+        #expect(result.status == 255)
+        #expect(attempts.withLock { $0 } == 3)
+    }
+
     @Test("subprocesses do not inherit enclosing multiplexer clients")
     func sanitizedEnvironment() {
         let sanitized = AccountCommandRunner.sanitizedProcessEnvironment([

@@ -16,6 +16,8 @@ enum BorrowedHerdrAttachmentClosure: Equatable {
     case detached
     case processExited(code: UInt32?)
     case launchFailed
+    /// SSH transport failed before the terminal client could start.
+    case retryableTransportFailure
     /// The terminal surface could not be created. Transient — no display was
     /// available to render it — so recovery keeps trying instead of latching.
     case surfaceUnavailable
@@ -286,7 +288,17 @@ final class NativeHerdrSessionCoordinator {
                 }
                 try? await sshConnection?.release()
             }
-            attachmentClosures[handle.id] = .launchFailed
+            attachmentClosures[handle.id] = switch error {
+            case let .commandFailed(status, stderr)
+                where host.isRemote && status == 255
+                && SSHConnectionFailure.classify(
+                    status: status,
+                    output: stderr
+                ).kind == .transport:
+                .retryableTransportFailure
+            default:
+                .launchFailed
+            }
             onStateChanged?(
                 handle,
                 .disconnected(reason: error.localizedDescription)
@@ -301,7 +313,10 @@ final class NativeHerdrSessionCoordinator {
         provisioningTasks.removeValue(forKey: handle.id)
         provisioningHandles.remove(handle.id)
         guard handlesByKey[sessionKey(handle)] == handle else { return }
-        attachmentClosures[handle.id] = .launchFailed
+        attachmentClosures[handle.id] =
+            SSHConnectionFailure.retryableTransportFailure(error) == nil
+                ? .launchFailed
+                : .retryableTransportFailure
         onStateChanged?(
             handle,
             .disconnected(reason: error.localizedDescription)

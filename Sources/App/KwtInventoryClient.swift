@@ -273,7 +273,8 @@ struct KwtInventoryClient: Sendable {
                 host: host,
                 connectionArguments: arguments,
                 command: command,
-                timeout: processTimeout
+                timeout: processTimeout,
+                retryPolicy: .idempotent
             )
         }
         self.loginShellProvider = loginShellProvider
