@@ -14,8 +14,11 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use tokio::sync::Mutex as AsyncMutex;
 
 /// How long a bootstrap mint code remains redeemable. Seconds-scale: the
 /// code is handed to the page in the redirect fragment and exchanged
@@ -56,6 +59,9 @@ struct Registry {
     /// first redemption attempt, success or not.
     mint_codes: HashMap<String, Instant>,
     scenes: HashMap<String, Scene>,
+    /// Per-scene attachment serialization: a scene's replacement waits for
+    /// its own predecessor's teardown, but scenes never block each other.
+    serials: HashMap<String, Arc<AsyncMutex<()>>>,
 }
 
 /// The live scene registry. All state is in memory and dies with the
@@ -208,11 +214,21 @@ impl SceneRegistry {
         }
     }
 
+    /// The attachment serialization lock for one scene, created on first
+    /// use. Two attachments in the same scene serialize on it (so a
+    /// replacement waits for its predecessor's teardown); attachments in
+    /// different scenes hold different locks and never block each other.
+    pub(crate) fn serialization_lock(&self, scene_id: &str) -> Arc<AsyncMutex<()>> {
+        let mut registry = self.lock();
+        Arc::clone(registry.serials.entry(scene_id.to_owned()).or_default())
+    }
+
     /// Permanently drop every scene and mint code. Called on shutdown.
     pub(crate) fn invalidate(&self) {
         let mut registry = self.lock();
         registry.mint_codes.clear();
         registry.scenes.clear();
+        registry.serials.clear();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Registry> {
@@ -227,6 +243,9 @@ impl Registry {
     fn sweep(&mut self, now: Instant) {
         self.mint_codes.retain(|_, expires_at| now <= *expires_at);
         self.scenes.retain(|_, scene| scene.is_live(now));
+        // A serialization lock for a scene that is gone is dead weight; an
+        // in-flight attachment keeps its own clone regardless.
+        self.serials.retain(|id, _| self.scenes.contains_key(id));
     }
 }
 

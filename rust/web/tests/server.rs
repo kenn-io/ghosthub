@@ -1077,12 +1077,13 @@ fn input_overflow_closes_the_connection_with_policy() {
 #[test]
 fn queued_input_replays_into_the_shell_after_the_lock_frees() {
     let server = Server::start().expect("start server");
-    let mut first = attach_shell(&server);
+    let scene = establish_scene(&server);
+    let mut first = attach_shell_in_scene(&server, &scene);
     await_echo(&mut first, "first-live");
 
     // The second attachment completes its hello, then waits on the lock the
     // first still holds. Input sent now must be buffered, not discarded.
-    let mut second = attach_shell(&server);
+    let mut second = attach_shell_in_scene(&server, &scene);
     second
         .get_mut()
         .set_read_timeout(Some(Duration::from_secs(30)))
@@ -1127,12 +1128,13 @@ fn queued_input_replays_into_the_shell_after_the_lock_frees() {
 #[test]
 fn a_queued_attachments_invalid_resize_closes_with_policy() {
     let server = Server::start().expect("start server");
-    let mut first = attach_shell(&server);
+    let scene = establish_scene(&server);
+    let mut first = attach_shell_in_scene(&server, &scene);
     await_echo(&mut first, "first-live");
 
     // The second completes its hello, then waits on the lock the first
     // holds; a malformed control frame sent now must be refused.
-    let mut second = attach_shell(&server);
+    let mut second = attach_shell_in_scene(&server, &scene);
     second
         .get_mut()
         .set_read_timeout(Some(Duration::from_secs(30)))
@@ -1149,7 +1151,8 @@ fn a_queued_attachments_invalid_resize_closes_with_policy() {
 #[test]
 fn a_stalled_reader_releases_the_attachment_lock() {
     let server = Server::start().expect("start server");
-    let mut first = attach_shell(&server);
+    let scene = establish_scene(&server);
+    let mut first = attach_shell_in_scene(&server, &scene);
     await_echo(&mut first, "first-live");
     // Make the shell emit far more than the socket buffer plus the relay
     // output queue, then never read `first` again: the bridge's outbound
@@ -1161,7 +1164,7 @@ fn a_stalled_reader_releases_the_attachment_lock() {
 
     // Queued behind the lock the stalled first still holds; it can only
     // reach a live shell once that first is torn down and the lock frees.
-    let mut second = attach_shell(&server);
+    let mut second = attach_shell_in_scene(&server, &scene);
     second
         .get_mut()
         .set_read_timeout(Some(Duration::from_mins(1)))
@@ -1177,13 +1180,14 @@ fn a_stalled_reader_releases_the_attachment_lock() {
 #[test]
 fn a_queued_attachment_that_closes_does_not_wedge_the_lock() {
     let server = Server::start().expect("start server");
-    let mut first = attach_shell(&server);
+    let scene = establish_scene(&server);
+    let mut first = attach_shell_in_scene(&server, &scene);
     await_echo(&mut first, "first-live");
 
     // Two more complete their hellos and queue behind the lock the first
     // holds; the middle one then abandons its connection.
-    let abandoned = attach_shell(&server);
-    let mut third = attach_shell(&server);
+    let abandoned = attach_shell_in_scene(&server, &scene);
+    let mut third = attach_shell_in_scene(&server, &scene);
     third
         .get_mut()
         .set_read_timeout(Some(Duration::from_mins(1)))
@@ -1383,6 +1387,14 @@ fn full_hello(scene: &(String, String)) -> String {
 }
 
 fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
+    let scene = establish_scene(server);
+    attach_shell_in_scene(server, &scene)
+}
+
+/// Complete an attach in a specific scene. Two attachments in the same
+/// scene serialize on that scene's lock (a replacement waits for its
+/// predecessor's teardown); separate scenes never block each other.
+fn attach_shell_in_scene(server: &Server, scene: &(String, String)) -> WebSocket<TcpStream> {
     let (status, socket) = upgrade_at(
         server.addr(),
         "/ws/v1/attach",
@@ -1400,10 +1412,8 @@ fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
     let Message::Text(_) = socket.read().expect("server hello") else {
         panic!("expected server hello");
     };
-    let scene = establish_scene(server);
-    let hello = full_hello(&scene);
     socket
-        .send(Message::Text(hello.into()))
+        .send(Message::Text(full_hello(scene).into()))
         .expect("client hello");
     socket
 }

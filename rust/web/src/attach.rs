@@ -71,12 +71,11 @@ pub(crate) async fn ws_attach(
         return StatusCode::FORBIDDEN.into_response();
     }
     let shutdown = state.shutdown.clone();
-    let serial = Arc::clone(&state.attach_serial);
     let scenes = Arc::clone(&state.scenes);
     upgrade
         .max_frame_size(MAX_FRAME_BYTES)
         .max_message_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| attach_session(socket, shutdown, serial, scenes))
+        .on_upgrade(move |socket| attach_session(socket, shutdown, scenes))
 }
 
 #[allow(
@@ -86,7 +85,6 @@ pub(crate) async fn ws_attach(
 async fn attach_session(
     mut socket: WebSocket,
     mut shutdown: watch::Receiver<bool>,
-    serial: Arc<tokio::sync::Mutex<()>>,
     scenes: Arc<SceneRegistry>,
 ) {
     if socket
@@ -114,6 +112,10 @@ async fn attach_session(
     // is buffered (bounded) and replayed into the shell once it launches,
     // so a reconnecting viewer that types before the lock frees loses no
     // keystrokes.
+    // Serialize per scene, not server-wide: a replacement in this scene
+    // waits for its own predecessor's teardown, but a different scene's
+    // viewer is never blocked.
+    let serial = scenes.serialization_lock(&scene_id);
     let mut lock = std::pin::pin!(serial.lock());
     let mut queued_input: Vec<u8> = Vec::new();
     let _serial = loop {
@@ -126,6 +128,15 @@ async fn attach_session(
                 close(&mut socket, close_code::AWAY, "server shutting down").await;
                 return;
             }
+            () = tokio::time::sleep(SCENE_DEADLINE_POLL) => {
+                // A queued attachment whose scene expired while it waited
+                // for the lock closes instead of buffering input on a dead
+                // scene until its predecessor finally releases.
+                if !scenes.is_live(&scene_id, Instant::now()) {
+                    close(&mut socket, close_code::POLICY, "scene expired").await;
+                    return;
+                }
+            }
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(frame))) => {
                     // A post-hello text frame is a resize control; enforce
@@ -136,9 +147,19 @@ async fn attach_session(
                         close(&mut socket, close_code::POLICY, "invalid resize").await;
                         return;
                     };
+                    if !scenes.refresh(&scene_id, Instant::now()) {
+                        close(&mut socket, close_code::POLICY, "scene expired").await;
+                        return;
+                    }
                     geometry = resize;
                 }
                 Some(Ok(Message::Binary(bytes))) => {
+                    // Client activity refreshes the scene's idle clock even
+                    // while queued; an expired scene fails closed.
+                    if !scenes.refresh(&scene_id, Instant::now()) {
+                        close(&mut socket, close_code::POLICY, "scene expired").await;
+                        return;
+                    }
                     // Bounded: a viewer cannot make a queued attachment
                     // buffer unbounded pre-launch input. Past the bound the
                     // connection is cut rather than silently truncated.

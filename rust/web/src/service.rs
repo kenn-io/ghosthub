@@ -51,12 +51,6 @@ const ADDON_UNICODE11_JS: &str = include_str!("../assets/vendor/addon-unicode11.
 
 #[derive(Clone)]
 pub(crate) struct ServerState {
-    /// Serializes attachments: a replacement waits until its predecessor's
-    /// relay threads have joined and its PTY child is reaped, so an
-    /// abnormal browser-side closure cannot race an un-reaped client.
-    /// Scene-scoped serialization replaces this per-server lock when scene
-    /// credentials land.
-    pub(crate) attach_serial: Arc<tokio::sync::Mutex<()>>,
     /// The literal bound authority, e.g. `127.0.0.1:49152`.
     pub(crate) authority: Arc<str>,
     /// The only acceptable `Origin`, e.g. `http://127.0.0.1:49152`.

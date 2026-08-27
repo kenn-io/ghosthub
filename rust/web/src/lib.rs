@@ -76,7 +76,6 @@ impl Server {
         let scenes = Arc::new(SceneRegistry::new());
         let (shutdown, stopping) = watch::channel(false);
         let state = ServerState {
-            attach_serial: Arc::new(tokio::sync::Mutex::new(())),
             authority: Arc::from(addr.to_string()),
             origin: Arc::from(format!("http://{addr}")),
             cookie_name: Arc::from(service::auth_cookie_name(addr.port())),
