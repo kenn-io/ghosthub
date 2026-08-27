@@ -1332,6 +1332,48 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         }
     }
 
+    func testClipboardWriteCallbackRetainsTokenUntilMainDispatch() throws {
+        try skipUnlessLibghosttyReady()
+        let runtime = retainedRuntime()
+        let appHandle = try XCTUnwrap(runtime.unsafeAppHandle)
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        var token: SurfaceCallbackToken? = SurfaceCallbackToken(view: view)
+        let userdata = token.map {
+            Unmanaged.passUnretained($0).toOpaque()
+        }
+        XCTAssertTrue(isKnownUniquelyReferenced(&token))
+
+        "text/plain".withCString { mime in
+            "owned callback token".withCString { data in
+                let contents = [ghostty_clipboard_content_s(
+                    mime: mime,
+                    data: data
+                )]
+                contents.withUnsafeBufferPointer { buffer in
+                    LibghosttyRuntime.handleWriteClipboard(
+                        userdata: userdata,
+                        location: GHOSTTY_CLIPBOARD_STANDARD,
+                        content: buffer.baseAddress,
+                        len: buffer.count,
+                        confirm: false
+                    )
+                }
+            }
+        }
+
+        XCTAssertFalse(
+            isKnownUniquelyReferenced(&token),
+            "The queued clipboard write must own its callback token"
+        )
+        waitUntil {
+            self.pasteboard.string(forType: .string) == "owned callback token"
+        }
+        XCTAssertTrue(isKnownUniquelyReferenced(&token))
+    }
+
     func testGhosthubShimContainsConfigFileDirectives() throws {
         let ctx = try makeIsolatedRuntime()
 

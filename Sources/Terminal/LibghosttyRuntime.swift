@@ -1051,8 +1051,13 @@ public final class LibghosttyRuntime: ObservableObject,
         len: Int,
         confirm: Bool
     ) {
-        let userdataValue = userdata.map { UInt(bitPattern: $0) }
         guard let content, len > 0 else { return }
+        // Resolve userdata while libghostty still guarantees its lifetime.
+        // The queued write captures this token across the async hop.
+        let token = userdata.map {
+            Unmanaged<SurfaceCallbackToken>.fromOpaque($0)
+                .takeUnretainedValue()
+        }
         let entries: [ClipboardWriteEntry] = (0 ..< len).compactMap { index in
             let item = content[index]
             guard let mimePtr = item.mime,
@@ -1084,7 +1089,7 @@ public final class LibghosttyRuntime: ObservableObject,
         // synchronously for AppKit can deadlock with main-thread input events
         // that call back into the same surface.
         DispatchQueue.main.async {
-            guard surfaceView(from: userdataValue) != nil else {
+            guard token?.view != nil else {
                 if isOSC52Write {
                     recordOSC52ClipboardWriteDiagnostic(
                         .surfaceUnavailable
