@@ -1242,10 +1242,9 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
                 }
             }
         }
-        XCTAssertEqual(
-            pasteboard.string(forType: .string),
-            "selected text"
-        )
+        waitUntil {
+            self.pasteboard.string(forType: .string) == "selected text"
+        }
 
         "text/plain".withCString { mime in
             "remote payload".withCString { data in
@@ -1268,11 +1267,69 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
                 }
             }
         }
-        XCTAssertEqual(
-            pasteboard.string(forType: .string),
-            "remote payload",
-            "OSC 52 copy must reach the clipboard from an SSH surface"
+        waitUntil {
+            self.pasteboard.string(forType: .string) == "remote payload"
+        }
+    }
+
+    func testClipboardWriteCallbackDoesNotWaitForMainQueue() throws {
+        try skipUnlessLibghosttyReady()
+        let runtime = retainedRuntime()
+        let appHandle = try XCTUnwrap(runtime.unsafeAppHandle)
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
         )
+        let userdataValue = UInt(bitPattern: Unmanaged.passUnretained(
+            view.callbackToken
+        ).toOpaque())
+        let mainQueueBlocked = DispatchSemaphore(value: 0)
+        let releaseMainQueue = DispatchSemaphore(value: 0)
+        let callbackReturned = expectation(
+            description: "clipboard callback returned"
+        )
+        let callbackReleasedMainQueue = expectation(
+            description: "callback returned before main queue resumed"
+        )
+
+        DispatchQueue.main.async {
+            mainQueueBlocked.signal()
+            if releaseMainQueue.wait(timeout: .now() + 1) == .success {
+                callbackReleasedMainQueue.fulfill()
+            }
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            mainQueueBlocked.wait()
+            "text/plain".withCString { mime in
+                "nonblocking copy".withCString { data in
+                    let contents = [ghostty_clipboard_content_s(
+                        mime: mime,
+                        data: data
+                    )]
+                    contents.withUnsafeBufferPointer { buffer in
+                        LibghosttyRuntime.handleWriteClipboard(
+                            userdata: UnsafeMutableRawPointer(
+                                bitPattern: userdataValue
+                            ),
+                            location: GHOSTTY_CLIPBOARD_STANDARD,
+                            content: buffer.baseAddress,
+                            len: buffer.count,
+                            confirm: false
+                        )
+                    }
+                }
+            }
+            callbackReturned.fulfill()
+            releaseMainQueue.signal()
+        }
+
+        wait(
+            for: [callbackReturned, callbackReleasedMainQueue],
+            timeout: 2
+        )
+        waitUntil {
+            self.pasteboard.string(forType: .string) == "nonblocking copy"
+        }
     }
 
     func testGhosthubShimContainsConfigFileDirectives() throws {

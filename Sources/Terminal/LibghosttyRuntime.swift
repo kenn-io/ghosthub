@@ -1072,7 +1072,7 @@ public final class LibghosttyRuntime: ObservableObject,
             // Confirmed writes require user approval UI. Deny rather
             // than silently allowing remote clipboard overwrites.
             if isOSC52Write {
-                dispatchToMainSync {
+                DispatchQueue.main.async {
                     recordOSC52ClipboardWriteDiagnostic(
                         .confirmationRequired
                     )
@@ -1080,7 +1080,10 @@ public final class LibghosttyRuntime: ObservableObject,
             }
             return
         }
-        dispatchToMainSync {
+        // libghostty may call this while holding its renderer lock. Waiting
+        // synchronously for AppKit can deadlock with main-thread input events
+        // that call back into the same surface.
+        DispatchQueue.main.async {
             guard surfaceView(from: userdataValue) != nil else {
                 if isOSC52Write {
                     recordOSC52ClipboardWriteDiagnostic(
