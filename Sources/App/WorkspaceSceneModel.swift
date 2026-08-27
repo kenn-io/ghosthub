@@ -8100,6 +8100,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 return
             }
             let failureReason: String
+            var retryableTransportFailure = false
             switch validation.result {
             case let .available(names):
                 let sessionIsActive = names.contains(selection.name)
@@ -8131,11 +8132,24 @@ final class WorkspaceSceneModel: ObservableObject {
                     .localizedDescription
             case let .failure(error):
                 failureReason = error.localizedDescription
+                if case let .commandFailed(status, stderr) = error,
+                   host.isRemote,
+                   validation.connection.routeIdentity != nil,
+                   status == 255,
+                   SSHConnectionFailure.classify(
+                       status: status,
+                       output: stderr
+                   ).kind == .transport {
+                    retryableTransportFailure = true
+                }
             }
             retainFailedZellijSession(
                 selection,
                 host: host,
-                reason: failureReason
+                reason: failureReason,
+                routeIdentity: retryableTransportFailure
+                    ? validation.connection.routeIdentity : nil,
+                reconnectsAutomatically: retryableTransportFailure
             )
             scheduleZellijSessionDiscovery()
         }
@@ -8206,7 +8220,9 @@ final class WorkspaceSceneModel: ObservableObject {
     private func retainFailedZellijSession(
         _ selection: WorkspaceZellijSessionSelection,
         host: CommandHost,
-        reason: String
+        reason: String,
+        routeIdentity: String? = nil,
+        reconnectsAutomatically: Bool = false
     ) {
         guard activeBorrowedTmuxSelection == nil,
               activeBorrowedHerdrSelection == nil,
@@ -8230,10 +8246,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection: selection,
                 handleID: handle.id,
                 host: host,
-                routeIdentity: nil,
+                routeIdentity: routeIdentity,
                 surfaceExitCode: nil
             )
             : nil
+        if reconnectsAutomatically,
+           var context = activeZellijReconnectContext {
+            context.surfaceLaunchFailed = true
+            activeZellijReconnectContext = context
+            startZellijReconnect(context)
+        }
     }
 
     func prepareZellijSessionKill(
@@ -11590,6 +11612,42 @@ final class WorkspaceSceneModel: ObservableObject {
               === presentation
         else { return .stop }
         guard canAttachToDisplay else { return .retry }
+        if case let .ssh(info) = context.host,
+           context.routeIdentity == nil {
+            let routeIdentity: String
+            do {
+                routeIdentity = try await sshRouteIdentityResolver(info)
+            } catch {
+                guard !Task.isCancelled else { return .retry }
+                guard presentation.reconnectContext == context,
+                      presentation.handle.id == context.handleID,
+                      retainedTmuxPresentation(for: presentation.handle)
+                      === presentation
+                else { return .stop }
+                stopTmuxReconnectWithUnableToAttach(
+                    presentation,
+                    "Ghosthub could not verify the SSH route before reconnecting. Reopen the session to use the current connection. \(error.localizedDescription)"
+                )
+                return .stop
+            }
+            guard !Task.isCancelled else { return .retry }
+            guard presentation.reconnectContext == context,
+                  presentation.handle.id == context.handleID,
+                  retainedTmuxPresentation(for: presentation.handle)
+                  === presentation,
+                  snapshot.host(id: context.selection.hostID)
+                  .flatMap(CommandHostResolver.resolve) == context.host
+            else { return .stop }
+            var anchoredContext = context
+            anchoredContext.routeIdentity = routeIdentity
+            presentation.reconnectContext = anchoredContext
+            startTmuxReconnect(
+                presentation,
+                context: anchoredContext,
+                waitBeforeFirstAttempt: false
+            )
+            return .stop
+        }
         var frozenConnection: SSHConnectionArgumentsSnapshot?
         if case let .ssh(info) = context.host {
             let connection: KwtSSHConnection

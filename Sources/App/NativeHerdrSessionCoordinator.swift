@@ -288,7 +288,17 @@ final class NativeHerdrSessionCoordinator {
                 }
                 try? await sshConnection?.release()
             }
-            attachmentClosures[handle.id] = .launchFailed
+            attachmentClosures[handle.id] = switch error {
+            case let .commandFailed(status, stderr)
+                where host.isRemote && status == 255
+                && SSHConnectionFailure.classify(
+                    status: status,
+                    output: stderr
+                ).kind == .transport:
+                .retryableTransportFailure
+            default:
+                .launchFailed
+            }
             onStateChanged?(
                 handle,
                 .disconnected(reason: error.localizedDescription)

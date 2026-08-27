@@ -1831,6 +1831,67 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("initial Herdr executable probe transport failure reconnects")
+    func initialHerdrExecutableProbeTransportFailureReconnects() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let resolutions = Mutex(0)
+        let displays = Mutex(1)
+        let route = SSHConnectionArgumentsSnapshot(testKwtSSHAttachment(
+            routeIdentity: "sha256:stable-route"
+        ))
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            exactProbe: { _, _, _ in .present },
+            sshConnectionSnapshotProvider: { _ in route },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(routeIdentity: "sha256:stable-route")
+            },
+            nativeHerdrPathProvider: { _ in
+                let attempt = resolutions.withLock {
+                    $0 += 1
+                    return $0
+                }
+                guard attempt > 1 else {
+                    displays.withLock { $0 = 0 }
+                    return .failure(.commandFailed(
+                        status: 255,
+                        stderr: "ssh: connect to host build.example.test port 22: Network is unreachable"
+                    ))
+                }
+                return .success("/usr/bin/herdr")
+            },
+            activeDisplayCount: { displays.withLock { $0 } }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+
+        try await model.openBorrowedHerdrSession(selection)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            model.activeBorrowedHerdrRecoveryState?.isReconnecting == true
+        }
+
+        #expect(resolutions.withLock { $0 } == 1)
+        #expect(model.herdrReconnectSupervisorIsRunning)
+        #expect(model.presentationSSHSession == nil)
+        #expect(store.requestedConfigurations.isEmpty)
+
+        displays.withLock { $0 = 1 }
+        model.reconnectActiveHerdrSessionNow()
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            store.requestedConfigurations.count == 1
+                && model.activeBorrowedHerdrConnectionState == .connected
+        }
+
+        #expect(resolutions.withLock { $0 } == 2)
+        #expect(model.activeBorrowedHerdrConnectionState == .connected)
+        #expect(model.activeBorrowedHerdrRecoveryState == nil)
+        await model.shutdown()
+    }
+
     @Test("retryable Herdr surface failure keeps recovering instead of latching")
     func retryableHerdrSurfaceFailureKeepsRecovering() async throws {
         let environment = try remoteEnvironment()

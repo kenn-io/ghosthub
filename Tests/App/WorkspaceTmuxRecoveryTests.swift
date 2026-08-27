@@ -288,6 +288,9 @@ extension WorkspaceTmuxDiscoveryTests {
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            sshRouteIdentityResolver: { _ in
+                "sha256:recovered-route"
+            },
             tmuxSessionValidationDiscovery: { _, _ in
                 .success([
                     DiscoveredTmuxSession(
@@ -462,6 +465,76 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(model.activeBorrowedTmuxSessionIsConnected)
         #expect(model.activeBorrowedTmuxRecoveryState == nil)
         #expect(model.presentationSSHSession == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("initial tmux recovery anchors its SSH route before probing")
+    func initialTmuxRecoveryAnchorsRouteBeforeProbing() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let acquisitions = Mutex(0)
+        let routeResolutions = Mutex(0)
+        let probes = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            sshRouteIdentityResolver: { _ in
+                routeResolutions.withLock { $0 += 1 }
+                return "sha256:original-route"
+            },
+            tmuxSessionValidationDiscovery: { _, _ in
+                probes.withLock { $0 += 1 }
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                let attempt = acquisitions.withLock {
+                    $0 += 1
+                    return $0
+                }
+                guard attempt > 1 else {
+                    throw KwtSSHLeaseError.operationFailed(
+                        code: "ssh_connection_failed",
+                        message: "ssh: connect to host build.example.test port 22: Network is unreachable",
+                        retryable: true
+                    )
+                }
+                return testKwtSSHAttachment(
+                    routeIdentity: "sha256:replacement-route"
+                )
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        model.prepareActiveBorrowedTmuxSurface()
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            acquisitions.withLock { $0 } >= 2
+                && !model.anyTmuxReconnectSupervisorIsRunning
+        }
+
+        #expect(routeResolutions.withLock { $0 } == 1)
+        #expect(acquisitions.withLock { $0 } == 2)
+        #expect(probes.withLock { $0 } == 0)
+        #expect(surfaceStore.requestCount == 0)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        #expect(!model.anyTmuxReconnectSupervisorIsRunning)
         await model.shutdown()
     }
 
