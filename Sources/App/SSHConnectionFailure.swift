@@ -91,6 +91,17 @@ enum SSHConnectionFailure {
         )
     }
 
+    static func retryableTransportFailure(
+        _ error: Error
+    ) -> Classification? {
+        guard let leaseError = error as? KwtSSHLeaseError,
+              case let .operationFailed(_, _, retryable) = leaseError,
+              retryable
+        else { return nil }
+        let classification = classify(leaseError: leaseError)
+        return classification.kind == .transport ? classification : nil
+    }
+
     /// True when OpenSSH could not reach the daemon-owned master and fell
     /// through to the lease's fail-closed proxy, so the master must be
     /// re-established before the route is used again.

@@ -84,6 +84,11 @@ terminal surface launches. A short remote command that OpenSSH rejects with
 diagnostic proves the remote command did not start. Other command failures are
 never retried, and a persistent refusal continues through normal shared-lease
 invalidation and host diagnostics.
+Presentation lease failures open a modal only when OpenSSH needs host review,
+authentication, or explicit configuration recovery. Ordinary transport
+failures return to the session reconnect supervisor, which keeps retrying in
+the background and exposes its immediate Reconnect Now action without taking
+window focus.
 Each workspace window retains every presentation it explicitly opens, keyed by
 the exact host, tmux socket, attachment mode, and session name. Navigating to
 another host,

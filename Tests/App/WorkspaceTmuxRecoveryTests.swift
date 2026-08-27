@@ -274,6 +274,68 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("retryable SSH transport acquisition keeps tmux reconnecting")
+    func retryableSSHTransportAcquisitionKeepsTmuxReconnect() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let acquisitions = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                let attempt = acquisitions.withLock {
+                    $0 += 1
+                    return $0
+                }
+                guard attempt == 1 else {
+                    throw KwtSSHLeaseError.operationFailed(
+                        code: "ssh_connection_failed",
+                        message: "ssh: connect to host build.example.test port 22: No route to host",
+                        retryable: true
+                    )
+                }
+                return testKwtSSHAttachment()
+            },
+            tmuxReconnectIntervals: [.seconds(30)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            acquisitions.withLock { $0 } == 2
+        }
+
+        guard case .reconnecting = model.activeBorrowedTmuxRecoveryState else {
+            Issue.record("expected automatic tmux reconnect to remain active")
+            await model.shutdown()
+            return
+        }
+        #expect(model.anyTmuxReconnectSupervisorIsRunning)
+        #expect(model.presentationSSHSession == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("reconnect rejects a different SSH route before probing")
     func reconnectRejectsDifferentSSHRouteBeforeProbing() async throws {
         let environment = try setupRemoteTmuxEnvironment()

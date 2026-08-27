@@ -1347,6 +1347,62 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("transport failures do not request SSH presentation")
+    func transportFailureDoesNotRequestSSHPresentation() async throws {
+        let environment = try setupStandardEnvironment()
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "offline.example.test",
+            port: nil
+        )
+        let route = KwtSSHRouteSnapshot.fixture(
+            logicalTarget: KwtSSHTarget(
+                hostname: host.hostname,
+                user: host.user
+            )
+        )
+        let coordinator = KwtSSHAcquisitionCoordinator(
+            resolve: { _ in route },
+            pool: KwtSSHConnectionPool { _, _ in
+                throw KwtSSHLeaseError.operationFailed(
+                    code: "ssh_connection_failed",
+                    message: "ssh: connect to host offline.example.test port 22: No route to host",
+                    retryable: true
+                )
+            }
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            presentationSSHConnectionProvider: nil,
+            presentationSSHAcquisitionCoordinator: coordinator
+        )
+
+        let acquisitionFailed = LockedValue(false)
+        let acquisition = Task {
+            do {
+                _ = try await model.acquirePresentationSSHConnection(
+                    hostID: UUID(),
+                    info: host
+                )
+                Issue.record("offline SSH acquisition unexpectedly succeeded")
+            } catch {
+                acquisitionFailed.store(true)
+            }
+        }
+        await waitUntilMainActor {
+            acquisitionFailed.load()
+                || model.presentationSSHSession != nil
+        }
+
+        #expect(model.presentationSSHSession == nil)
+        #expect(acquisitionFailed.load())
+        acquisition.cancel()
+        await acquisition.value
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test(
         "failed presentation acquisitions resume after retry",
         arguments: [true, false]

@@ -5972,7 +5972,11 @@ final class WorkspaceSceneModel: ObservableObject {
             removePresentationSSHSession(sessionID, cancel: false)
             return connection
         } catch {
-            presentationSSHSessionNeedsAttention(sessionID)
+            if session.needsPresentation {
+                presentationSSHSessionNeedsAttention(sessionID)
+            } else {
+                removePresentationSSHSession(sessionID, cancel: false)
+            }
             throw error
         }
     }
@@ -11571,11 +11575,10 @@ final class WorkspaceSceneModel: ObservableObject {
                       retainedTmuxPresentation(for: presentation.handle)
                       === presentation
                 else { return .stop }
-                stopTmuxReconnectWithUnableToAttach(
+                return tmuxSSHAcquisitionFailureDecision(
                     presentation,
-                    error.localizedDescription
+                    error: error
                 )
-                return .stop
             }
             let snapshot = SSHConnectionArgumentsSnapshot(connection)
             guard !Task.isCancelled else { return .retry }
@@ -11636,11 +11639,10 @@ final class WorkspaceSceneModel: ObservableObject {
                       retainedTmuxPresentation(for: presentation.handle)
                       === presentation
                 else { return .stop }
-                stopTmuxReconnectWithUnableToAttach(
+                return tmuxSSHAcquisitionFailureDecision(
                     presentation,
-                    error.localizedDescription
+                    error: error
                 )
-                return .stop
             }
             let afterRouteIdentity = after.routeIdentity
             try? await after.release()
@@ -11696,6 +11698,26 @@ final class WorkspaceSceneModel: ObservableObject {
             context: decisionContext,
             outcome: probe.outcome
         )
+    }
+
+    private func tmuxSSHAcquisitionFailureDecision(
+        _ presentation: RetainedTmuxPresentation,
+        error: Error
+    ) -> SessionReconnectDecision {
+        if let classification = SSHConnectionFailure
+            .retryableTransportFailure(error) {
+            presentation.recoveryState = .reconnecting(
+                message: classification.diagnostic.summary + " "
+                    + "Ghosthub will reconnect automatically."
+            )
+            publishActiveState(for: presentation)
+            return .retry
+        }
+        stopTmuxReconnectWithUnableToAttach(
+            presentation,
+            error.localizedDescription
+        )
+        return .stop
     }
 
     private func tmuxReconnectProbe(
