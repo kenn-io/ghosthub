@@ -200,6 +200,7 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
         project.project().registration_fingerprint(),
         generation,
         worktree.session_name(),
+        worktree.tmux_socket_name().map(str::to_owned),
     );
 
     assert_guarded_open_rejected(
@@ -212,6 +213,7 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
             "stale-registration",
             generation,
             worktree.session_name(),
+            worktree.tmux_socket_name().map(str::to_owned),
         ),
         &cancellation,
     );
@@ -225,6 +227,7 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
             project.project().registration_fingerprint(),
             "00000000000000000000000000000000",
             worktree.session_name(),
+            worktree.tmux_socket_name().map(str::to_owned),
         ),
         &cancellation,
     );
@@ -635,7 +638,7 @@ fn wait_for_exact_client(
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         if let Some(identity) = host
-            .kwt_client_session_identity(endpoint, runtime, readiness_path, cancellation)
+            .kwt_client_session_identity(endpoint, runtime, readiness_path, None, cancellation)
             .expect("query exact KWT client readiness")
         {
             return identity;

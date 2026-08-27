@@ -442,7 +442,10 @@ fn worktree_removal_capture_requires_the_reviewed_tmux_socket() {
             false,
             Some(generation.to_owned()),
             "project-protected",
-            Some("kwt-pr-reviewed".to_owned()),
+            KwtTmuxEndpoint::new(
+                Some("kwt-pr-reviewed".to_owned()),
+                KwtTmuxAttachMode::Protected,
+            ),
             false,
         ));
 
@@ -457,6 +460,7 @@ fn worktree_removal_capture_requires_the_reviewed_tmux_socket() {
         generation,
         "project-protected",
         Some("kwt-pr-reviewed"),
+        KwtTmuxAttachMode::Protected,
     )
     .expect("the reviewed protected socket grants removal capture");
     assert_eq!(captured.3.as_deref(), Some("kwt-pr-reviewed"));
@@ -475,6 +479,7 @@ fn worktree_removal_capture_requires_the_reviewed_tmux_socket() {
             generation,
             "project-protected",
             Some("kwt-pr-reviewed"),
+            KwtTmuxAttachMode::Protected,
         )
         .is_err(),
         "a changed protected socket requires a fresh removal confirmation"
@@ -505,7 +510,7 @@ fn later_kwt_inventory_resolves_a_pending_created_worktree_once() {
         });
     let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
-            br#"[{"path":"/work/widget/new","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-new","tmux_socket_name":null}]"#,
+            br#"[{"path":"/work/widget/new","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-new","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
             b"[]",
         )
         .expect("valid KWT inventory");
@@ -565,7 +570,7 @@ fn pending_creation_ignores_a_preexisting_same_branch_worktree_and_expires() {
         });
     let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
-            br#"[{"path":"/work/widget/existing","branch":"feature/new","commit_hash":"def","is_main":false,"created_at":null,"generation":"fedcba9876543210fedcba9876543210","repository":"github.com/acme/widget","session_name":"widget-existing","tmux_socket_name":null}]"#,
+            br#"[{"path":"/work/widget/existing","branch":"feature/new","commit_hash":"def","is_main":false,"created_at":null,"generation":"fedcba9876543210fedcba9876543210","repository":"github.com/acme/widget","session_name":"widget-existing","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
             b"[]",
         )
         .expect("valid KWT inventory");
@@ -609,7 +614,7 @@ fn confirmed_creation_expiry_rejects_a_late_same_branch_worktree() {
         });
     let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
-            br#"[{"path":"/work/widget/late","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-late","tmux_socket_name":null}]"#,
+            br#"[{"path":"/work/widget/late","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-late","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
             b"[]",
         )
         .expect("valid KWT inventory");
@@ -666,6 +671,7 @@ fn worktree_removal_authority_can_be_restored_before_dispatch() {
             generation: "0123456789abcdef0123456789abcdef".to_owned(),
             session_name: "widget-topic".to_owned(),
             socket_name: None,
+            attach_mode: KwtTmuxAttachMode::Direct,
             live_target: Some(Arc::new(host::LiveSessionTarget::test_fixture(
                 &snapshot,
                 "widget-topic",
@@ -683,6 +689,7 @@ fn worktree_removal_authority_can_be_restored_before_dispatch() {
         "/work/widget/topic",
         "0123456789abcdef0123456789abcdef",
         "widget-topic",
+        KwtTmuxAttachMode::Direct,
     )
     .expect("exact confirmation authority");
 
@@ -730,7 +737,7 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 true,
                 Some("11111111111111111111111111111111".to_owned()),
                 "widget-main",
-                None,
+                KwtTmuxEndpoint::new(None, KwtTmuxAttachMode::Direct),
                 false,
             ),
             WorktreeItem::new(
@@ -739,7 +746,7 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 false,
                 Some("22222222222222222222222222222222".to_owned()),
                 "widget-topic",
-                None,
+                KwtTmuxEndpoint::new(None, KwtTmuxAttachMode::Direct),
                 true,
             ),
             WorktreeItem::new(
@@ -748,7 +755,10 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 false,
                 Some("33333333333333333333333333333333".to_owned()),
                 "widget-protected",
-                Some("protected-socket".to_owned()),
+                KwtTmuxEndpoint::new(
+                    Some("protected-socket".to_owned()),
+                    KwtTmuxAttachMode::Protected,
+                ),
                 false,
             ),
         ],
@@ -759,60 +769,60 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
             generation: generation.to_owned(),
             session_name: session.to_owned(),
             socket_name: socket_name.map(str::to_owned),
+            attach_mode: if socket_name.is_some() {
+                KwtTmuxAttachMode::Protected
+            } else {
+                KwtTmuxAttachMode::Direct
+            },
             live_target: None,
             operation_id: 1,
         }
     };
 
-    assert!(
-        validate_kwt_worktree_operation(
-            &project,
-            &remove(
+    let cases = [
+        (
+            remove(
                 "/work/widget/topic",
                 "22222222222222222222222222222222",
                 "widget-topic",
                 None,
             ),
-        )
-        .is_ok()
-    );
-    assert!(
-        validate_kwt_worktree_operation(
-            &project,
-            &remove(
+            true,
+        ),
+        (
+            remove(
                 "/code/widget",
                 "11111111111111111111111111111111",
                 "widget-main",
                 None,
             ),
-        )
-        .is_err()
-    );
-    assert!(
-        validate_kwt_worktree_operation(
-            &project,
-            &remove(
+            false,
+        ),
+        (
+            remove(
                 "/work/widget/topic",
                 "22222222222222222222222222222222",
                 "replacement",
                 None,
             ),
-        )
-        .is_err()
-    );
-    assert!(
-        validate_kwt_worktree_operation(
-            &project,
-            &remove(
+            false,
+        ),
+        (
+            remove(
                 "/work/widget/protected",
                 "33333333333333333333333333333333",
                 "widget-protected",
                 Some("protected-socket"),
             ),
-        )
-        .is_ok(),
-        "custom-socket worktrees are removable only through their exact protected socket"
-    );
+            true,
+        ),
+    ];
+    for (operation, valid) in cases {
+        assert_eq!(
+            validate_kwt_worktree_operation(&project, &operation).is_ok(),
+            valid
+        );
+    }
 }
 
 #[test]
@@ -824,6 +834,7 @@ fn killed_tmux_cleanup_matches_worktree_presentations_by_authoritative_name() {
         path: "/work/project/topic".to_owned(),
         generation: Some("generation".to_owned()),
         session_name: "project-topic".to_owned(),
+        tmux_socket_name: None,
     };
 
     assert!(attach_target_matches_killed_tmux(
@@ -865,6 +876,7 @@ fn worktree_navigation_reuses_the_equivalent_discovered_tmux_identity() {
         path: "/work/project/topic".to_owned(),
         generation: Some("generation".to_owned()),
         session_name: "project-topic".to_owned(),
+        tmux_socket_name: None,
     };
 
     let key = worktree_tmux_presentation_key(&worktree, &snapshot)
@@ -894,6 +906,7 @@ fn launched_worktree_identity_remains_reusable_after_it_becomes_unbound() {
         path: "/work/project/topic".to_owned(),
         generation: Some("generation".to_owned()),
         session_name: "project-topic".to_owned(),
+        tmux_socket_name: None,
     };
     let worktree_key = worktree.presentation_key();
 
@@ -959,7 +972,7 @@ fn successful_worktree_removal_tombstones_only_the_exact_cached_generation() {
                 false,
                 Some("old-generation".to_owned()),
                 "project-topic",
-                None,
+                KwtTmuxEndpoint::new(None, KwtTmuxAttachMode::Direct),
                 false,
             ),
             WorktreeItem::new(
@@ -968,7 +981,7 @@ fn successful_worktree_removal_tombstones_only_the_exact_cached_generation() {
                 false,
                 Some("replacement-generation".to_owned()),
                 "project-topic",
-                None,
+                KwtTmuxEndpoint::new(None, KwtTmuxAttachMode::Direct),
                 false,
             ),
         ],
@@ -1575,7 +1588,7 @@ fn kwt_worktree_workspace_fixture() -> (Workspace, Arc<ManualRefreshRuntime>) {
         .store(7, Ordering::Release);
     let inventory = KwtInventory::parse(
             br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
-            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"project-id","session_name":"project-main","tmux_socket_name":null}]"#,
+            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"project-id","session_name":"project-main","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
             b"[]",
         )
         .expect("valid KWT inventory");
@@ -5527,6 +5540,16 @@ fn host_refresh_keeps_cached_multiplexer_rows_visible() {
     assert_eq!(host.zellij_sessions()[0].name(), "zellij-work");
 }
 
+fn publish_kwt_fixture(workspace: &Workspace, snapshot: &HostSnapshot, inventory: &KwtInventory) {
+    publish_kwt_inventory(
+        &workspace.scene,
+        7,
+        snapshot.endpoint(),
+        snapshot.runtime(),
+        inventory,
+    );
+}
+
 #[test]
 fn kwt_inventory_projects_worktrees_without_replacing_session_state() {
     let bundle =
@@ -5570,18 +5593,12 @@ fn kwt_inventory_projects_worktrees_without_replacing_session_state() {
         .store(7, Ordering::Release);
     let inventory = KwtInventory::parse(
             br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
-            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"project-id","session_name":"project-main","tmux_socket_name":null}]"#,
-            br#"[{"name":"scratch","path":"/work/scratch","session_name":"scratch","session_live":false}]"#,
+            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"project-id","session_name":"project-main","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
+            br#"[{"name":"scratch","path":"/work/scratch","session_name":"scratch","session_live":false,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#,
         )
         .expect("valid KWT inventory");
 
-    publish_kwt_inventory(
-        &workspace.scene,
-        7,
-        snapshot.endpoint(),
-        snapshot.runtime(),
-        &inventory,
-    );
+    publish_kwt_fixture(&workspace, &snapshot, &inventory);
 
     let projected = workspace.snapshot();
     assert!(matches!(projected.content(), WorkspaceContent::Shell));
@@ -5590,8 +5607,15 @@ fn kwt_inventory_projects_worktrees_without_replacing_session_state() {
     assert_eq!(host.projects()[0].name(), "project");
     assert_eq!(host.projects()[0].worktrees()[0].branch(), "main");
     assert!(host.projects()[0].worktrees()[0].session_available());
-    assert_eq!(host.directory_workspaces()[0].name(), "scratch");
-    assert!(!host.directory_workspaces()[0].session_available());
+    let directory = &host.directory_workspaces()[0];
+    assert_eq!(
+        (directory.name(), directory.session_available()),
+        ("scratch", false)
+    );
+    assert_eq!(
+        (directory.tmux_socket_name(), directory.tmux_attach_mode()),
+        (Some("kwt"), KwtTmuxAttachMode::Direct)
+    );
 
     set_inventory_state(
         &workspace.scene.runtime,
@@ -5673,8 +5697,8 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         .store(7, Ordering::Release);
     let inventory = KwtInventory::parse(
             br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
-            br#"[{"path":"/work/project/topic","branch":"topic","commit_hash":"abc","is_main":false,"created_at":null,"generation":"g7","repository":"project-id","session_name":"project-topic","tmux_socket_name":null},{"path":"/work/project/pr-17","branch":"pr-17","commit_hash":"def","is_main":false,"created_at":null,"generation":"g8","repository":"project-id","session_name":"project-pr-17","tmux_socket_name":"kwt-pr-a1b2"}]"#,
-            b"[]",
+            br#"[{"path":"/work/project/topic","branch":"topic","commit_hash":"abc","is_main":false,"created_at":null,"generation":"g7","repository":"project-id","session_name":"project-topic","tmux_socket_name":"kwt","tmux_attach_mode":"direct"},{"path":"/work/project/pr-17","branch":"pr-17","commit_hash":"def","is_main":false,"created_at":null,"generation":"g8","repository":"project-id","session_name":"project-pr-17","tmux_socket_name":"kwt-pr-a1b2","tmux_attach_mode":"protected"}]"#,
+            br#"[{"name":"scratch","path":"/work/scratch","session_name":"kwt-workspace-dir-scratch","session_live":true,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#,
         )
         .expect("valid KWT inventory");
     publish_kwt_inventory(
@@ -5695,11 +5719,24 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         "/work/project/topic",
         Some("g7"),
         "project-topic",
-        None,
+        Some("kwt"),
+        KwtTmuxAttachMode::Direct,
     )
     .expect("KWT identity grants repair-or-open authority");
-    assert!(matches!(request.target, AttachTarget::Worktree { .. }));
+    assert!(matches!(
+        request.target,
+        AttachTarget::Worktree {
+            ref tmux_socket_name,
+            ..
+        } if tmux_socket_name.as_deref() == Some("kwt")
+    ));
     assert_eq!(request.name, "project-topic");
+    let direct_selection = request.selection();
+    assert_eq!(
+        direct_selection.tmux_attach_mode(),
+        Some(KwtTmuxAttachMode::Direct)
+    );
+    assert_eq!(direct_selection.tmux_socket_name(), Some("kwt"));
     let protected = capture_kwt_worktree_request(
         &workspace.scene,
         "wsl",
@@ -5711,6 +5748,7 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         Some("g8"),
         "project-pr-17",
         Some("kwt-pr-a1b2"),
+        KwtTmuxAttachMode::Protected,
     )
     .expect("KWT identity grants protected attach authority");
     assert!(matches!(
@@ -5719,11 +5757,38 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
             if tmux_socket_name == "kwt-pr-a1b2"
     ));
     let protected_selection = protected.selection();
+    assert_eq!(
+        protected_selection.tmux_attach_mode(),
+        Some(KwtTmuxAttachMode::Protected)
+    );
     assert_eq!(protected_selection.tmux_socket_name(), Some("kwt-pr-a1b2"));
     assert_ne!(
         protected_selection,
         SessionSelection::new("wsl", "Ubuntu", "project-pr-17"),
         "a same-named default-socket session is a different presentation"
+    );
+    let directory = capture_kwt_directory_workspace_request(
+        &workspace.scene,
+        "wsl",
+        "Ubuntu",
+        "/work/scratch",
+        "kwt-workspace-dir-scratch",
+        Some("kwt"),
+        KwtTmuxAttachMode::Direct,
+    )
+    .expect("KWT directory identity grants open authority");
+    assert!(matches!(
+        directory.target,
+        AttachTarget::DirectoryWorkspace {
+            ref tmux_socket_name,
+            ..
+        } if tmux_socket_name.as_deref() == Some("kwt")
+    ));
+    let directory_selection = directory.selection();
+    assert_eq!(directory_selection.tmux_socket_name(), Some("kwt"));
+    assert_eq!(
+        directory_selection.tmux_attach_mode(),
+        Some(KwtTmuxAttachMode::Direct)
     );
     assert!(
         capture_kwt_worktree_request(
@@ -5737,6 +5802,7 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
             Some("g8"),
             "project-pr-17",
             Some("kwt-pr-replaced"),
+            KwtTmuxAttachMode::Protected,
         )
         .is_err(),
         "a stale protected-socket action cannot open the replacement server"
@@ -5758,7 +5824,8 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
             "/work/project/topic",
             Some("stale"),
             "project-topic",
-            None,
+            Some("kwt"),
+            KwtTmuxAttachMode::Direct,
         )
         .is_err()
     );
@@ -8281,6 +8348,7 @@ fn removed_kwt_worktree_drops_matching_confirmations_in_every_scene() {
         generation: generation.to_owned(),
         session_name: "widget-topic".to_owned(),
         socket_name: None,
+        attach_mode: KwtTmuxAttachMode::Direct,
         live_target: None,
     };
     *b.scene
@@ -8336,7 +8404,7 @@ fn removed_kwt_worktree_drops_matching_confirmations_in_every_scene() {
 fn kwt_removal_reconciliation_branches_gate_confirmation_drops() {
     fn widget_inventory(with_topic_worktree: bool) -> KwtInventory {
         let worktrees: &[u8] = if with_topic_worktree {
-            br#"[{"path":"/work/widget/topic","branch":"topic","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-topic","tmux_socket_name":null}]"#
+            br#"[{"path":"/work/widget/topic","branch":"topic","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-topic","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#
         } else {
             b"[]"
         };
@@ -8367,6 +8435,7 @@ fn kwt_removal_reconciliation_branches_gate_confirmation_drops() {
             generation: generation.to_owned(),
             session_name: "widget-topic".to_owned(),
             socket_name: None,
+            attach_mode: KwtTmuxAttachMode::Direct,
             live_target: None,
         });
     };
@@ -8421,6 +8490,7 @@ fn kwt_removal_reconciliation_branches_gate_confirmation_drops() {
             generation: generation.to_owned(),
             session_name: "widget-topic".to_owned(),
             socket_name: None,
+            attach_mode: KwtTmuxAttachMode::Direct,
             live_target: None,
             operation_id: 9,
         },
@@ -9341,6 +9411,7 @@ fn removal_completing_during_identity_capture_cannot_publish_a_stale_confirmatio
         generation: generation.to_owned(),
         session_name: "widget-topic".to_owned(),
         socket_name: None,
+        attach_mode: KwtTmuxAttachMode::Direct,
     };
     // Both scenes' removal requests recorded their capture intents (the
     // request registration writes exactly this shape) and the captured
@@ -10843,6 +10914,7 @@ fn created_worktree_target() -> KwtWorktreeTarget {
         generation: Some("0123456789abcdef0123456789abcdef".to_owned()),
         session_name: "widget-topic".to_owned(),
         tmux_socket_name: None,
+        tmux_attach_mode: KwtTmuxAttachMode::Direct,
     }
 }
 
@@ -11824,6 +11896,7 @@ fn destructive_lifecycle_paths_refuse_a_closed_scene() {
             &"a".repeat(40),
             "ghosthub/web",
             None,
+            KwtTmuxAttachMode::Direct,
         )
         .expect_err("a closed scene arms no worktree removal");
     assert!(error.to_string().contains("closed"), "{error}");

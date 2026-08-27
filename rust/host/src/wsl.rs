@@ -23,9 +23,9 @@ use crate::kwt::{
 use crate::zellij;
 use crate::{
     CancellationToken, CommandOutput, CommandPrefix, CommandRunner, KwtBranchCandidate, KwtBundle,
-    KwtInventory, KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport,
-    KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen, RemoteTmuxConfig,
-    RemoteTmuxHost,
+    KwtDirectoryWorkspaceOpen, KwtInventory, KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest,
+    KwtPullRequestImport, KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen,
+    RemoteTmuxConfig, RemoteTmuxHost,
 };
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
@@ -1296,6 +1296,71 @@ impl<R: CommandRunner> WslHost<R> {
         ))
     }
 
+    /// Resolve the revision-pinned helper and build a re-runnable ordinary
+    /// client for one exact registered directory workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the helper or captured WSL runtime cannot be
+    /// verified, or when KWT supplied an unsafe named socket.
+    pub fn kwt_directory_open_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        request: &KwtDirectoryWorkspaceOpen,
+        term: AttachTerm,
+        cancellation: &CancellationToken,
+    ) -> Result<RepairOrOpenPlan, HostError> {
+        if let Some(socket_name) = request.tmux_socket_name() {
+            require_kwt_socket_name(socket_name)?;
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let readiness_path = kwt_client_readiness_path()?;
+        let readiness_staging_path = format!("{readiness_path}.tmp");
+        let mut args = pinned_prefix(endpoint);
+        let kwt_home = self
+            .config
+            .kwt_home
+            .as_deref()
+            .map(|path| format!("KWT_HOME={path}"));
+        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        append_tmux_environment(
+            &mut args,
+            Some(term.environment()),
+            self.config.tmux_tmpdir.as_deref(),
+            &extra_environment,
+        );
+        args.extend(
+            [
+                "/bin/sh",
+                "-c",
+                "umask 077; /usr/bin/printf '%s\\n' \"$$\" > \"$1\" && /usr/bin/mv -T -- \"$1\" \"$2\" && shift 2 && exec \"$@\"",
+                "ghosthub-directory-workspace-client",
+                readiness_staging_path.as_str(),
+                readiness_path.as_str(),
+                helper.as_str(),
+                "open",
+                request.path(),
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        Ok(RepairOrOpenPlan::worktree(
+            self.wsl_executable.as_os_str(),
+            args,
+            request.session_name(),
+            &readiness_path,
+        ))
+    }
+
     /// Build a re-runnable protected attach for one imported PR workspace.
     ///
     /// # Errors
@@ -1391,8 +1456,12 @@ impl<R: CommandRunner> WslHost<R> {
         endpoint: &WslEndpoint,
         runtime: &WslRuntimeIdentity,
         readiness_path: &str,
+        tmux_socket_name: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<Option<SessionIdentity>, HostError> {
+        if let Some(socket_name) = tmux_socket_name {
+            require_kwt_socket_name(socket_name)?;
+        }
         require_kwt_client_readiness_path(readiness_path)?;
         self.require_runtime(endpoint, runtime, cancellation)?;
         let receipt = self.run_scrubbed(
@@ -1417,17 +1486,18 @@ impl<R: CommandRunner> WslHost<R> {
             return Ok(None);
         }
         let client_pid = parse_kwt_client_pid(&receipt.stdout)?;
-        let output = self.run_tmux_command(
-            endpoint,
-            cancellation,
-            &[
-                "-f",
-                "/dev/null",
-                "list-clients",
-                "-F",
-                CLIENT_READINESS_FORMAT,
-            ],
-        )?;
+        let mut command = Vec::new();
+        if let Some(socket_name) = tmux_socket_name {
+            command.extend(["-L", socket_name]);
+        }
+        command.extend([
+            "-f",
+            "/dev/null",
+            "list-clients",
+            "-F",
+            CLIENT_READINESS_FORMAT,
+        ]);
+        let output = self.run_tmux_command(endpoint, cancellation, &command)?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if is_no_server(&stderr) {
@@ -5249,7 +5319,7 @@ mod tests {
             } else if args.windows(2).any(|pair| pair == ["pr", "list"]) {
                 br#"{"pull_requests":[{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":false}]}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["pr", "import"]) {
-                br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2"}}"#.to_vec()
+                br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2","tmux_attach_mode":"protected"}}"#.to_vec()
             } else if (args.iter().any(|argument| argument == "add")
                 && args.iter().any(|argument| argument == "--no-launch"))
                 || (args.iter().any(|argument| argument == "remove")
@@ -5754,6 +5824,7 @@ mod tests {
                     "registration-fingerprint",
                     "0123456789abcdef0123456789abcdef",
                     "widget-topic",
+                    None,
                 ),
                 AttachTerm::Xterm256Color,
                 &CancellationToken::new(),
@@ -5799,6 +5870,36 @@ mod tests {
             .expect("plan uses a private canonical readiness path");
         assert_eq!(plan.target_name(), "widget-topic");
         assert_eq!(plan.clone(), plan);
+    }
+
+    #[test]
+    fn kwt_directory_open_plan_uses_the_exact_registered_path() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let plan = host
+            .kwt_directory_open_plan(
+                &endpoint,
+                &runtime,
+                &KwtDirectoryWorkspaceOpen::new(
+                    "/work/scratch",
+                    "kwt-workspace-dir-scratch-abc",
+                    Some("kwt".to_owned()),
+                ),
+                AttachTerm::Xterm256Color,
+                &CancellationToken::new(),
+            )
+            .expect("build directory workspace open plan");
+        let args = plan
+            .args()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>();
+
+        assert!(
+            args.windows(3)
+                .any(|args| { args == [&test_kwt_helper_path(), "open", "/work/scratch",] })
+        );
+        assert!(!args.iter().any(|argument| argument == "--expected-session"));
+        assert_eq!(plan.target_name(), "kwt-workspace-dir-scratch-abc");
     }
 
     #[test]

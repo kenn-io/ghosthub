@@ -20,9 +20,9 @@ use surface::{CellStyle, CursorShape, Damage, GridSize, Rgb, SurfaceFrame, Surfa
 use workspace::{
     AppearanceSettingsDraft, ConfiguredSshHost, CursorStyle, HerdrSessionState,
     HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput, KwtProjectAction,
-    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionName,
-    SessionSelection, SshHostDraft, SshPromptRequest, TerminalSettingsDraft, TerminalTheme,
-    Workspace, WorkspaceContent, WorkspaceEvent,
+    KwtTmuxAttachMode, Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey,
+    SessionName, SessionSelection, SshHostDraft, SshPromptRequest, TerminalSettingsDraft,
+    TerminalTheme, Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
@@ -996,6 +996,7 @@ struct WorktreeOpenTarget {
     generation: Option<String>,
     session_name: String,
     tmux_socket_name: Option<String>,
+    tmux_attach_mode: KwtTmuxAttachMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1789,14 +1790,28 @@ impl RootView {
             return;
         }
 
-        let switching = matches!(
-            snapshot.content(),
-            WorkspaceContent::Attaching { .. } | WorkspaceContent::Terminal { .. }
-        );
-        let result = if switching {
-            self.workspace.switch_session(selection)
+        let result = if let (Some(attach_mode), Some(path)) =
+            (selection.tmux_attach_mode(), selection.worktree_path())
+            && selection.worktree_generation().is_none()
+        {
+            self.workspace.open_kwt_directory_workspace(
+                selection.host_id(),
+                selection.endpoint(),
+                path,
+                selection.session(),
+                selection.tmux_socket_name(),
+                attach_mode,
+            )
         } else {
-            self.workspace.attach(selection)
+            let switching = matches!(
+                snapshot.content(),
+                WorkspaceContent::Attaching { .. } | WorkspaceContent::Terminal { .. }
+            );
+            if switching {
+                self.workspace.switch_session(selection)
+            } else {
+                self.workspace.attach(selection)
+            }
         };
         if let Err(error) = result {
             self.diagnostic = Some(error.to_string());
@@ -1827,6 +1842,7 @@ impl RootView {
             target.generation.as_deref(),
             &target.session_name,
             target.tmux_socket_name.as_deref(),
+            target.tmux_attach_mode,
         );
         if let Err(error) = result {
             self.diagnostic = Some(error.to_string());
@@ -2578,6 +2594,7 @@ impl RootView {
                 generation,
                 &target.open.session_name,
                 target.open.tmux_socket_name.as_deref(),
+                target.open.tmux_attach_mode,
             )
         } else {
             target.authority = None;
@@ -2759,6 +2776,7 @@ impl RootView {
                 generation,
                 &open.session_name,
                 open.tmux_socket_name.as_deref(),
+                open.tmux_attach_mode,
             ) {
                 Ok(operation_id) => {
                     if let Some(ProjectDialog::RemoveWorktree { target, error, .. }) =
@@ -2924,6 +2942,7 @@ impl RootView {
                         &target.open.worktree_path,
                         generation,
                         &target.open.session_name,
+                        target.open.tmux_attach_mode,
                         authority,
                     )
                     .map(|()| None)
@@ -3435,6 +3454,7 @@ impl RootView {
                         generation: target.generation().map(str::to_owned),
                         session_name: target.session_name().to_owned(),
                         tmux_socket_name: target.tmux_socket_name().map(str::to_owned),
+                        tmux_attach_mode: target.tmux_attach_mode(),
                     };
                     let dialog_project_path = self.project_dialog.as_ref().map(|dialog| {
                         if let ProjectDialog::NewWorktree { project_path, .. } = dialog {
@@ -3471,6 +3491,7 @@ impl RootView {
                         open.generation.as_deref(),
                         &open.session_name,
                         open.tmux_socket_name.as_deref(),
+                        open.tmux_attach_mode,
                     ) {
                         self.diagnostic = Some(error.to_string());
                     } else {
@@ -7431,23 +7452,15 @@ impl RootView {
             }
             tree = tree.child(row);
             for (worktree_index, worktree) in project.worktrees().iter().enumerate() {
-                let selection = worktree
-                    .tmux_socket_name()
-                    .and_then(|socket| {
-                        worktree.generation().map(|generation| {
-                            SessionSelection::protected_worktree(
-                                host.id(),
-                                host.endpoint(),
-                                worktree.session_name(),
-                                socket,
-                                worktree.path(),
-                                generation,
-                            )
-                        })
-                    })
-                    .unwrap_or_else(|| {
-                        SessionSelection::new(host.id(), host.endpoint(), worktree.session_name())
-                    });
+                let selection = SessionSelection::worktree(
+                    host.id(),
+                    host.endpoint(),
+                    worktree.session_name(),
+                    worktree.tmux_socket_name().map(str::to_owned),
+                    worktree.tmux_attach_mode(),
+                    worktree.path(),
+                    worktree.generation().map(str::to_owned),
+                );
                 let is_active = active == Some(&selection);
                 let is_retained = retained.contains(&selection);
                 let has_generation = worktree.generation().is_some();
@@ -7496,6 +7509,7 @@ impl RootView {
                     generation: worktree.generation().map(str::to_owned),
                     session_name: worktree.session_name().to_owned(),
                     tmux_socket_name: worktree.tmux_socket_name().map(str::to_owned),
+                    tmux_attach_mode: worktree.tmux_attach_mode(),
                 };
                 let repair_open_target =
                     (open_mode == WorktreeOpenMode::RepairOrOpen).then(|| open_target.clone());
@@ -7562,8 +7576,14 @@ impl RootView {
             );
         }
         for (index, workspace) in host.directory_workspaces().iter().enumerate() {
-            let selection =
-                SessionSelection::new(host.id(), host.endpoint(), workspace.session_name());
+            let selection = SessionSelection::directory_workspace(
+                host.id(),
+                host.endpoint(),
+                workspace.session_name(),
+                workspace.tmux_socket_name().map(str::to_owned),
+                workspace.tmux_attach_mode(),
+                workspace.path(),
+            );
             let is_active = active == Some(&selection);
             let is_retained = retained.contains(&selection);
             let can_open = is_active
@@ -8447,8 +8467,8 @@ fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelecti
 }
 
 fn host_owns_worktree_presentation(host: &HostItem, selection: &SessionSelection) -> bool {
-    if selection.tmux_socket_name().is_some() {
-        host.kwt_owns_protected_presentation(selection)
+    if selection.tmux_attach_mode().is_some() {
+        host.kwt_owns_worktree_presentation(selection)
     } else {
         selection.host_id() == host.id()
             && selection.endpoint() == host.endpoint()
@@ -9507,9 +9527,9 @@ mod tests {
     use workspace::{
         AppearanceSettingsDraft, CursorStyle, HerdrSessionItem, HerdrSessionState,
         HostConnectionState, HostDiagnostic, HostItem, KeyEvent, KeyInput, KwtBranchItem,
-        KwtPullRequestItem, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, ProjectItem,
-        SessionItem, SessionSelection, SshHostDraft, TerminalSettingsDraft, TerminalTheme,
-        WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
+        KwtPullRequestItem, KwtTmuxAttachMode, Modifiers, MouseAction, MouseButton, MouseInput,
+        NamedKey, ProjectItem, SessionItem, SessionSelection, SshHostDraft, TerminalSettingsDraft,
+        TerminalTheme, WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
     };
 
     #[test]
@@ -10023,6 +10043,7 @@ mod tests {
                     generation: Some("11111111111111111111111111111111".to_owned()),
                     session_name: "widget-topic".to_owned(),
                     tmux_socket_name: None,
+                    tmux_attach_mode: KwtTmuxAttachMode::Direct,
                 },
                 project_name: "widget".to_owned(),
                 branch: "topic".to_owned(),
@@ -10496,7 +10517,7 @@ mod tests {
                         true,
                         None,
                         "project-main",
-                        None,
+                        workspace::KwtTmuxEndpoint::new(None, KwtTmuxAttachMode::Direct),
                         true,
                     ),
                     WorktreeItem::new(
@@ -10505,7 +10526,10 @@ mod tests {
                         false,
                         None,
                         "custom-socket",
-                        Some("project-socket".to_owned()),
+                        workspace::KwtTmuxEndpoint::new(
+                            Some("project-socket".to_owned()),
+                            KwtTmuxAttachMode::Direct,
+                        ),
                         false,
                     ),
                 ],
@@ -10548,19 +10572,23 @@ mod tests {
                     false,
                     Some("0123456789abcdef0123456789abcdef".to_owned()),
                     "project-pr-17",
-                    Some("kwt-pr-0123456789abcdef".to_owned()),
+                    workspace::KwtTmuxEndpoint::new(
+                        Some("kwt-pr-0123456789abcdef".to_owned()),
+                        KwtTmuxAttachMode::Protected,
+                    ),
                     false,
                 )],
             )],
             Vec::new(),
         );
-        let active = SessionSelection::protected_worktree(
+        let active = SessionSelection::worktree(
             "wsl",
             "Ubuntu",
             "project-pr-17",
-            "kwt-pr-0123456789abcdef",
+            Some("kwt-pr-0123456789abcdef".to_owned()),
+            KwtTmuxAttachMode::Protected,
             "/repos/project-pr",
-            "0123456789abcdef0123456789abcdef",
+            Some("0123456789abcdef0123456789abcdef".to_owned()),
         );
         let rows = tree_sessions(&host, Some(&active), &[]);
 
@@ -10586,7 +10614,10 @@ mod tests {
                             false,
                             Some("0123456789abcdef0123456789abcdef".to_owned()),
                             "project-pr-17",
-                            Some("kwt-pr-replacement".to_owned()),
+                            workspace::KwtTmuxEndpoint::new(
+                                Some("kwt-pr-replacement".to_owned()),
+                                KwtTmuxAttachMode::Protected,
+                            ),
                             false,
                         )],
                     )],

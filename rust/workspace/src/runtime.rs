@@ -535,8 +535,13 @@ pub(crate) fn require_current_protected_selection(
     runtime: &Runtime,
     selection: &SessionSelection,
 ) -> Result<(), WorkspaceError> {
-    let Some(socket_name) = selection.tmux_socket_name() else {
+    if selection.tmux_attach_mode() != Some(crate::KwtTmuxAttachMode::Protected) {
         return Ok(());
+    }
+    let Some(socket_name) = selection.tmux_socket_name() else {
+        return Err(WorkspaceError::new(
+            "protected worktree endpoint is unresolved",
+        ));
     };
     let exact_worktree = runtime
         .hosts
@@ -552,6 +557,7 @@ pub(crate) fn require_current_protected_selection(
         .flat_map(ProjectItem::worktrees)
         .any(|worktree| {
             worktree.session_name() == selection.session()
+                && worktree.tmux_attach_mode() == crate::KwtTmuxAttachMode::Protected
                 && worktree.tmux_socket_name() == Some(socket_name)
                 && worktree.path() == selection.worktree_path().unwrap_or_default()
                 && worktree.generation() == selection.worktree_generation()
@@ -1037,6 +1043,7 @@ pub(crate) fn capture_kwt_worktree_removal_context(
     generation: &str,
     session_name: &str,
     tmux_socket_name: Option<&str>,
+    tmux_attach_mode: crate::KwtTmuxAttachMode,
 ) -> Result<
     (
         RuntimeHost,
@@ -1095,6 +1102,7 @@ pub(crate) fn capture_kwt_worktree_removal_context(
                     && worktree.generation.as_deref() == Some(generation)
                     && worktree.session_name == session_name
                     && worktree.tmux_socket_name.as_deref() == tmux_socket_name
+                    && worktree.tmux_attach_mode() == tmux_attach_mode
             })
         })
         .ok_or_else(|| {
