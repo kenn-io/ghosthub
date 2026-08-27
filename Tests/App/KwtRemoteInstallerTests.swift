@@ -55,15 +55,15 @@ struct KwtRemoteInstallerTests {
         )
 
         try await installer.ensureInstalled(on: SSHHost(
-            configKey: "spark",
-            name: "DGX Spark",
+            configKey: "linux-build",
+            name: "Linux Build Host",
             platform: .linux,
-            sshDestination: "wesm@spark:2222"
+            sshDestination: "operator@build.example.test:2222"
         ))
 
         #expect(recorder.host == SSHHostInfo(
-            user: "wesm",
-            hostname: "spark",
+            user: "operator",
+            hostname: "build.example.test",
             port: 2222
         ))
         #expect(recorder.source == helperURL)
@@ -100,10 +100,10 @@ struct KwtRemoteInstallerTests {
         )
 
         try await installer.ensureInstalled(on: SSHHost(
-            configKey: "mbp",
-            name: "MacBook Pro",
+            configKey: "mac-build",
+            name: "macOS Build Host",
             platform: .macOS,
-            sshDestination: "wesm@mbp"
+            sshDestination: "operator@mac-build.example.test"
         ))
 
         #expect(recorder.commands == [
@@ -116,6 +116,7 @@ struct KwtRemoteInstallerTests {
     func cancellationStopsProvisioningBeforeUpload() async throws {
         let revision = String(repeating: "b", count: 40)
         let probeStarted = AsyncStream<Void>.makeStream()
+        let probeCancelled = AsyncStream<Void>.makeStream()
         let recorder = KwtInstallRecorder()
         let installer = KwtRemoteInstaller(
             revision: revision,
@@ -128,10 +129,11 @@ struct KwtRemoteInstallerTests {
                 }
                 if command == KwtRemoteInstaller.targetProbeCommand {
                     probeStarted.continuation.yield()
-                    let deadline = Date().addingTimeInterval(2)
-                    while !Task.isCancelled, Date() < deadline {
+                    while !Task.isCancelled {
                         Thread.sleep(forTimeInterval: 0.001)
                     }
+                    probeCancelled.continuation.yield()
+                    probeCancelled.continuation.finish()
                     return installOutput(
                         0,
                         "GHOSTHUB_KWT_TARGET\tLinux\taarch64\n"
@@ -154,16 +156,18 @@ struct KwtRemoteInstallerTests {
         )
         let task = Task {
             try await coordinator.ensureInstalled(on: SSHHost(
-                configKey: "spark",
-                name: "DGX Spark",
+                configKey: "linux-build",
+                name: "Linux Build Host",
                 platform: .linux,
-                sshDestination: "wesm@spark"
+                sshDestination: "operator@build.example.test"
             ))
         }
 
         var probeEvents = probeStarted.stream.makeAsyncIterator()
         _ = await probeEvents.next()
         task.cancel()
+        var cancellationEvents = probeCancelled.stream.makeAsyncIterator()
+        _ = await cancellationEvents.next()
         await #expect {
             try await task.value
         } throws: {
@@ -180,6 +184,7 @@ struct KwtRemoteInstallerTests {
         try Data("pinned kwt".utf8).write(to: helperURL)
         defer { try? FileManager.default.removeItem(at: helperURL) }
         let uploadStarted = AsyncStream<Void>.makeStream()
+        let uploadCancelled = AsyncStream<Void>.makeStream()
         let recorder = KwtInstallRecorder()
         let installer = KwtRemoteInstaller(
             revision: revision,
@@ -207,26 +212,29 @@ struct KwtRemoteInstallerTests {
                     destination: destination
                 )
                 uploadStarted.continuation.yield()
-                let deadline = Date().addingTimeInterval(2)
-                while !Task.isCancelled, Date() < deadline {
+                while !Task.isCancelled {
                     Thread.sleep(forTimeInterval: 0.001)
                 }
+                uploadCancelled.continuation.yield()
+                uploadCancelled.continuation.finish()
                 return installOutput(0)
             },
             resourceProvider: { _ in helperURL }
         )
         let task = Task {
             try await installer.install(on: SSHHost(
-                configKey: "spark",
-                name: "DGX Spark",
+                configKey: "linux-build",
+                name: "Linux Build Host",
                 platform: .linux,
-                sshDestination: "wesm@spark"
+                sshDestination: "operator@build.example.test"
             ))
         }
 
         var uploadEvents = uploadStarted.stream.makeAsyncIterator()
         _ = await uploadEvents.next()
         task.cancel()
+        var cancellationEvents = uploadCancelled.stream.makeAsyncIterator()
+        _ = await cancellationEvents.next()
         await #expect {
             try await task.value
         } throws: {
@@ -396,10 +404,10 @@ struct KwtRemoteInstallerTests {
 
         await #expect {
             try await installer.install(on: SSHHost(
-                configKey: "nuc",
-                name: "Home NUC",
+                configKey: "linux-build",
+                name: "Linux Build Host",
                 platform: .linux,
-                sshDestination: "wesm@home-nuc"
+                sshDestination: "operator@build.example.test"
             ))
         } throws: {
             $0 as? KwtRemoteInstallError
@@ -451,10 +459,10 @@ struct KwtRemoteInstallerTests {
 
         await #expect {
             try await installer.install(on: SSHHost(
-                configKey: "nuc",
-                name: "Home NUC",
+                configKey: "linux-build",
+                name: "Linux Build Host",
                 platform: .linux,
-                sshDestination: "wesm@home-nuc"
+                sshDestination: "operator@build.example.test"
             ))
         } throws: {
             $0 as? KwtRemoteInstallError == .installFailed(status: 255)

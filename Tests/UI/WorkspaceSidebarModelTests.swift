@@ -546,7 +546,8 @@ struct WorkspaceSidebarModelTests {
                 hostID: hostID,
                 name: "kwt-ghosthub-main",
                 worktreeID: worktree.id,
-                worktreePath: worktree.path
+                worktreePath: worktree.path,
+                tmuxAttachMode: .direct
             )
         )
     }
@@ -583,7 +584,8 @@ struct WorkspaceSidebarModelTests {
                 hostID: hostID,
                 name: "kwt-ghosthub-topic",
                 worktreeID: worktree.id,
-                worktreePath: worktree.path
+                worktreePath: worktree.path,
+                tmuxAttachMode: .direct
             )
         )
     }
@@ -626,7 +628,8 @@ struct WorkspaceSidebarModelTests {
         let protected = WorkspaceTmuxSessionSelection(
             hostID: hostID,
             name: "pr-519",
-            socketName: "kwt-pr-0123456789abcdef"
+            socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected
         )
         let optimistic = WorkspaceTmuxSessionSelection(
             hostID: hostID,
@@ -864,7 +867,8 @@ struct WorkspaceSidebarModelTests {
                 hostID: hostID,
                 name: directory.tmuxSessionName,
                 directoryWorkspaceID: directory.id,
-                workspacePath: directory.path
+                workspacePath: directory.path,
+                tmuxAttachMode: .direct
             )
         )
         let selection = WorkspaceSidebarModel.tmuxSessionSelection(

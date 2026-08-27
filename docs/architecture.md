@@ -86,7 +86,8 @@ into native UI.
 The workspace `WindowGroup` is data-backed. Each scene continuously captures a
 small logical descriptor containing stable host and project keys, the durable
 kwt worktree generation or registered directory path, and an exact tmux
-session/protected-socket, Herdr session, or Zellij session identity. Its window UUID exists only for native scene
+session, socket, and attachment mode, Herdr session, or Zellij session
+identity. Its window UUID exists only for native scene
 adoption; runtime model UUIDs and worktree paths are never persisted as host,
 project, or worktree identity. A worktree without a canonical generation
 degrades to project-only navigation and does not persist its worktree-owned
@@ -260,12 +261,14 @@ ten-second tmux/Herdr cadence: once after WSL admission and then every 60
 seconds while the window is active. Its three machine-readable CLI reads and
 managed-helper verification run entirely on the background host lane. A late
 or failed KWT generation keeps the last usable project tree, and a session-only
-refresh updates only worktree session availability. The sidebar treats a
-KWT-owned default-socket tmux session as a project row instead of duplicating
-it in the unbound tmux group. Active and retained protected-socket
-presentations likewise remain on their worktree row, where a live indicator
-shows that the client exists. A genuinely separate same-named default-socket
-session remains visible as unbound inventory. When WSL config selects an
+refresh updates only worktree session availability. KWT inventory reports the
+selected tmux socket and an explicit `direct` or `protected` attachment mode.
+Ghosthub never infers attachment policy from whether the socket is named.
+Direct workspaces normally use kwt's dedicated `kwt` server, while a verified
+matching default-server session may be adopted during rollout. Worktree-owned
+presentations remain on their worktree row, and a genuinely separate
+same-named default-server session remains visible as unbound inventory. When
+WSL config selects an
 explicit `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery
 and attachment; cached rows never correlate sessions across those server roots.
 In the macOS app, removing a generation-backed worktree is separately
@@ -574,11 +577,11 @@ result. Rust worktree creation passes the repository identity and registration
 fingerprint reviewed by the user into the same guarded `kwt add` invocation;
 KWT verifies both while holding its project lifecycle lock before mutation.
 Successful worktree removal tombstones the exact path and generation locally
-before reconciliation. If a default-socket session is live, Ghosthub captures
-its exact tmux identity before enabling confirmation and consumes only that
-authority after approval; a same-named replacement requires a new
-confirmation. Live worktree presentations are keyed by their tmux identity so
-project registration changes cannot duplicate clients.
+before reconciliation. If a direct-mode session is live, Ghosthub captures
+its exact socket and tmux identity before enabling confirmation and consumes
+only that authority after approval; a same-named replacement requires a new
+confirmation. Live worktree presentations are keyed by their endpoint and
+attachment mode so project registration changes cannot duplicate clients.
 Native Windows hosts do not expose project registry mutations until
 that command boundary supports native Windows paths.
 On macOS and Linux, the account login shell initializes the command
@@ -649,7 +652,8 @@ Candidate discovery begins only after the user opens the pull-request import
 surface for a project; startup inventory must not issue one provider request
 per project. The opaque candidate ID returned by kwt is passed back unchanged,
 and the successful import response supplies the canonical worktree path,
-branch, tmux session name, and isolated tmux socket name. Ghosthub requests a
+branch, tmux session name, isolated tmux socket name, and protected attachment
+mode. Ghosthub requests a
 durable import without session startup; importing contributor-controlled code
 does not start tmux or execute project layout and bootstrap commands. A
 successful result is presented through kwt's protected attach command. That
@@ -660,8 +664,9 @@ workspace-specific server. It then executes an ordinary client with
 environment updates disabled. Provider discovery is user-initiated,
 cancellable, and receives a five-minute network-operation budget rather than
 the 15-second local probe deadline. The user
-may explicitly run project commands after attachment. Other workspaces and
-unbound sessions continue to attach directly to the host's normal tmux server.
+may explicitly run project commands after attachment. Direct workspaces open
+through kwt on its selected endpoint; unbound sessions continue to attach
+directly to the host's normal tmux server.
 
 Adding a remote macOS or Linux host authorizes Ghosthub to maintain its
 per-user managed kwt helper as part of inventory refresh. Provisioning failure
@@ -1018,8 +1023,9 @@ demotes later retries to attach-only. Host endpoint changes and scene shutdown
 cancel pending probes.
 
 Each retained remote tmux presentation owns at most one native reconnect
-supervisor. It uses the host's shared in-flight default-socket inventory probe,
-or an exact headless `has-session` probe for a protected socket. Attempt starts
+supervisor. It uses the host's shared in-flight inventory probe for an unnamed
+default-server endpoint, or an exact headless `has-session` probe for any named
+socket. Attempt starts
 follow 1, 2, 4, 8, 16, and 30-second intervals, include probe runtime, and are
 bounded by a 15-second probe deadline. Transport failures continue
 automatically and **Reconnect Now** advances the existing schedule;

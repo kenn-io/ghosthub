@@ -11,19 +11,22 @@ struct BorrowedTmuxSessionHandle: Equatable, Sendable {
     var name: String
     var surfaceID: UUID
     var socketName: String?
+    var tmuxAttachMode: TmuxAttachMode?
 
     init(
         id: UUID,
         hostID: UUID,
         name: String,
         surfaceID: UUID,
-        socketName: String? = nil
+        socketName: String? = nil,
+        tmuxAttachMode: TmuxAttachMode? = nil
     ) {
         self.id = id
         self.hostID = hostID
         self.name = name
         self.surfaceID = surfaceID
         self.socketName = socketName
+        self.tmuxAttachMode = tmuxAttachMode
     }
 }
 
@@ -40,6 +43,7 @@ private struct NativeTmuxSessionKey: Hashable {
     var hostID: UUID
     var name: String
     var socketName: String?
+    var tmuxAttachMode: TmuxAttachMode?
 }
 
 private struct NativeTmuxPathCacheKey: Hashable {
@@ -256,6 +260,7 @@ final class NativeTmuxSessionCoordinator {
         name: String,
         host: CommandHost,
         socketName: String? = nil,
+        tmuxAttachMode: TmuxAttachMode? = nil,
         launchMode: TmuxAttachmentLaunchMode = .attach,
         initialCommand: String? = nil,
         workingDirectory: String? = nil,
@@ -268,7 +273,8 @@ final class NativeTmuxSessionCoordinator {
         let key = NativeTmuxSessionKey(
             hostID: hostID,
             name: name,
-            socketName: socketName
+            socketName: socketName,
+            tmuxAttachMode: tmuxAttachMode
         )
         if let existing = handlesByKey[key],
            targetHostsByHandle[existing.id] != host {
@@ -280,7 +286,8 @@ final class NativeTmuxSessionCoordinator {
                 hostID: hostID,
                 name: name,
                 surfaceID: UUID(),
-                socketName: socketName
+                socketName: socketName,
+                tmuxAttachMode: tmuxAttachMode
             )
         handlesByKey[key] = handle
         targetHostsByHandle[handle.id] = host
@@ -346,6 +353,7 @@ final class NativeTmuxSessionCoordinator {
                     handle: handle,
                     host: host,
                     socketName: socketName,
+                    tmuxAttachMode: tmuxAttachMode,
                     launchMode: launchMode,
                     initialCommand: launchMode == .create ? initialCommand : nil,
                     workingDirectory: workingDirectory,
@@ -369,6 +377,7 @@ final class NativeTmuxSessionCoordinator {
         handle: BorrowedTmuxSessionHandle,
         host: CommandHost,
         socketName: String?,
+        tmuxAttachMode: TmuxAttachMode?,
         launchMode: TmuxAttachmentLaunchMode,
         initialCommand: String?,
         workingDirectory: String?,
@@ -396,9 +405,9 @@ final class NativeTmuxSessionCoordinator {
             let enablesInteractiveSizing = interactiveSizingHandles.remove(
                 handle.id
             ) != nil
-            let protectedWorkspacePath = socketName == nil
-                ? nil
-                : workingDirectory
+            let protectedWorkspacePath = tmuxAttachMode == .protected
+                ? workingDirectory
+                : nil
             attachments[handle.id] = NativeTmuxAttachment(
                 id: attachmentID,
                 host: host,
@@ -470,11 +479,17 @@ final class NativeTmuxSessionCoordinator {
         )
     }
 
-    func detach(hostID: UUID, name: String, socketName: String? = nil) {
+    func detach(
+        hostID: UUID,
+        name: String,
+        socketName: String? = nil,
+        tmuxAttachMode: TmuxAttachMode? = nil
+    ) {
         let key = NativeTmuxSessionKey(
             hostID: hostID,
             name: name,
-            socketName: socketName
+            socketName: socketName,
+            tmuxAttachMode: tmuxAttachMode
         )
         guard let handle = handlesByKey.removeValue(forKey: key) else {
             return
@@ -1419,7 +1434,8 @@ final class NativeTmuxSessionCoordinator {
         NativeTmuxSessionKey(
             hostID: handle.hostID,
             name: handle.name,
-            socketName: handle.socketName
+            socketName: handle.socketName,
+            tmuxAttachMode: handle.tmuxAttachMode
         )
     }
 

@@ -143,15 +143,14 @@ struct KwtSSHCommandClientTests {
 
     @Test("canceling a command stops its detached runner")
     func cancellationStopsRunner() async {
-        let started = Mutex(false)
+        let started = AsyncStream<Void>.makeStream()
+        let allowRunnerToFinish = DispatchSemaphore(value: 0)
         let observedCancellation = Mutex(false)
         let client = KwtSSHCommandClient(
             runner: { _, _, _ in
-                started.withLock { $0 = true }
-                let deadline = Date().addingTimeInterval(0.5)
-                while !Task.isCancelled, Date() < deadline {
-                    Thread.sleep(forTimeInterval: 0.005)
-                }
+                started.continuation.yield()
+                started.continuation.finish()
+                allowRunnerToFinish.wait()
                 observedCancellation.withLock { $0 = Task.isCancelled }
                 return AccountCommandOutput(status: 0, stdout: "late\n", stderr: "")
             },
@@ -169,8 +168,10 @@ struct KwtSSHCommandClientTests {
                 timeout: 30
             )
         }
-        await waitUntil { started.withLock { $0 } }
+        var startedIterator = started.stream.makeAsyncIterator()
+        _ = await startedIterator.next()
         task.cancel()
+        allowRunnerToFinish.signal()
 
         let output = await task.value
         #expect(observedCancellation.withLock { $0 })

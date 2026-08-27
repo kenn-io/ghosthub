@@ -71,6 +71,7 @@ struct KwtWorktreeRecord: Codable, Equatable, Sendable {
     var repository: String
     var sessionName: String
     var tmuxSocketName: String?
+    var tmuxAttachMode: TmuxAttachMode = .direct
 
     private enum CodingKeys: String, CodingKey {
         case path, branch, repository
@@ -80,6 +81,7 @@ struct KwtWorktreeRecord: Codable, Equatable, Sendable {
         case generation
         case sessionName = "session_name"
         case tmuxSocketName = "tmux_socket_name"
+        case tmuxAttachMode = "tmux_attach_mode"
     }
 }
 
@@ -88,11 +90,15 @@ struct KwtDirectoryWorkspaceRecord: Codable, Equatable, Sendable {
     var path: String
     var sessionName: String
     var sessionLive: Bool
+    var tmuxSocketName: String? = nil
+    var tmuxAttachMode: TmuxAttachMode = .direct
 
     private enum CodingKeys: String, CodingKey {
         case name, path
         case sessionName = "session_name"
         case sessionLive = "session_live"
+        case tmuxSocketName = "tmux_socket_name"
+        case tmuxAttachMode = "tmux_attach_mode"
     }
 }
 
@@ -583,11 +589,6 @@ enum KwtSnapshotMerger {
         let path: String
     }
 
-    private struct WorktreeGenerationKey: Hashable {
-        let projectID: UUID
-        let generation: String
-    }
-
     static func merge(
         _ inventory: KwtHostInventory,
         hostID: UUID,
@@ -618,20 +619,6 @@ enum KwtSnapshotMerger {
                 )
             }
         )
-        var existingSocketByProjectAndGeneration:
-            [WorktreeGenerationKey: String] = [:]
-        var seenWorktreeGenerations = Set<WorktreeGenerationKey>()
-        for worktree in existingWorktrees {
-            guard let generation = worktree.generation else { continue }
-            let key = WorktreeGenerationKey(
-                projectID: worktree.projectID,
-                generation: generation
-            )
-            guard seenWorktreeGenerations.insert(key).inserted,
-                  let socketName = worktree.tmuxSocketName
-            else { continue }
-            existingSocketByProjectAndGeneration[key] = socketName
-        }
         var projects: [ProjectSummary] = []
         var worktrees: [WorktreeSummary] = []
         if inventory.projectsWarning != nil,
@@ -663,7 +650,9 @@ enum KwtSnapshotMerger {
                     name: $0.name,
                     path: $0.path,
                     sessionName: $0.tmuxSessionName,
-                    sessionLive: $0.sessionLive
+                    sessionLive: $0.sessionLive,
+                    tmuxSocketName: $0.tmuxSocketName,
+                    tmuxAttachMode: $0.tmuxAttachMode
                 )
             }
             : inventory.directoryWorkspaces
@@ -679,12 +668,16 @@ enum KwtSnapshotMerger {
                 name: record.name,
                 path: record.path,
                 tmuxSessionName: record.sessionName,
+                tmuxSocketName: record.tmuxSocketName,
+                tmuxAttachMode: record.tmuxAttachMode,
                 sessionLive: record.sessionLive
             )
             workspace.hostID = hostID
             workspace.name = record.name
             workspace.path = record.path
             workspace.tmuxSessionName = record.sessionName
+            workspace.tmuxSocketName = record.tmuxSocketName
+            workspace.tmuxAttachMode = record.tmuxAttachMode
             workspace.sessionLive = record.sessionLive
             return workspace
         }
@@ -793,31 +786,8 @@ enum KwtSnapshotMerger {
                         consistentExisting?.generation
                     )
                 worktree.tmuxSessionName = record.sessionName
-                // The protected socket is a fail-closed marker: it keeps
-                // contributor-authored terminal configuration out of the app
-                // config and routes attachment through kwt's protected
-                // command. A refresh can omit it without unprotecting the same
-                // workspace. Its last canonical generation is retained when
-                // that same incomplete record also omits identity, but a new
-                // canonical generation must not inherit the socket from the
-                // prior owner of a reused path. Canonical generation therefore
-                // outranks path identity.
-                // Deleting the workspace drops the record entirely, which is
-                // how a protected marker is actually retired.
-                if let generation = WorktreeGeneration.canonical(
-                    record.generation
-                ) {
-                    worktree.tmuxSocketName = record.tmuxSocketName
-                        ?? existingSocketByProjectAndGeneration[
-                            WorktreeGenerationKey(
-                                projectID: projectID,
-                                generation: generation
-                            )
-                        ]
-                } else {
-                    worktree.tmuxSocketName = record.tmuxSocketName
-                        ?? consistentExisting?.tmuxSocketName
-                }
+                worktree.tmuxSocketName = record.tmuxSocketName
+                worktree.tmuxAttachMode = record.tmuxAttachMode
                 worktree.sessionBackend = snapshot.host(id: hostID)?.kind == .remote
                     ? .remoteTmux : .localTmux
                 worktrees.append(worktree)

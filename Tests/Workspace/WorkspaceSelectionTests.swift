@@ -346,6 +346,7 @@ struct WorkspaceSelectionTests {
             branch: "contributor/pr-32"
         )
         worktree.tmuxSocketName = "kwt-pr-0123456789abcdef"
+        worktree.tmuxAttachMode = .protected
         let (snapshot, selection) = makeSnapshotAndSelection(
             host: host, project: project, worktree: worktree
         )

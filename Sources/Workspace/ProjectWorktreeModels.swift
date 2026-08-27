@@ -272,6 +272,12 @@ enum PlatformRepository {
     }
 }
 
+/// Kwt's policy for attaching to a reported tmux endpoint.
+public enum TmuxAttachMode: String, Codable, Equatable, Sendable {
+    case direct
+    case protected
+}
+
 /// A kwt-registered plain directory with one canonical tmux workspace.
 /// Directory workspaces are host-level peers of projects rather than
 /// synthetic repositories: they have no Git branch or child worktrees.
@@ -281,7 +287,9 @@ public struct DirectoryWorkspaceSummary: Identifiable, Equatable, Sendable {
     public var name: String
     public var path: String
     public var tmuxSessionName: String
-    /// Advisory inventory state. Direct tmux discovery remains authoritative
+    public var tmuxSocketName: String?
+    public var tmuxAttachMode: TmuxAttachMode
+    /// Advisory inventory state. Exact endpoint identity remains authoritative
     /// for destructive actions and active-session presentation.
     public var sessionLive: Bool
 
@@ -291,6 +299,8 @@ public struct DirectoryWorkspaceSummary: Identifiable, Equatable, Sendable {
         name: String,
         path: String,
         tmuxSessionName: String,
+        tmuxSocketName: String? = nil,
+        tmuxAttachMode: TmuxAttachMode = .direct,
         sessionLive: Bool
     ) {
         self.id = id
@@ -298,6 +308,8 @@ public struct DirectoryWorkspaceSummary: Identifiable, Equatable, Sendable {
         self.name = name
         self.path = path
         self.tmuxSessionName = tmuxSessionName
+        self.tmuxSocketName = tmuxSocketName
+        self.tmuxAttachMode = tmuxAttachMode
         self.sessionLive = sessionLive
     }
 }
@@ -337,8 +349,11 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
     /// Exact tmux session identity reported by kwt for this worktree.
     /// Ghosthub borrows this session through its ordinary tmux client.
     public var tmuxSessionName: String?
-    /// Named tmux socket returned by kwt for an isolated PR workspace.
+    /// Exact tmux endpoint selected by kwt. A direct workspace can use the
+    /// dedicated `kwt` server or an adopted default-server session.
     public var tmuxSocketName: String?
+    /// Attachment policy returned alongside the tmux endpoint by kwt.
+    public var tmuxAttachMode: TmuxAttachMode
     public var sessionBackend: SessionBackendKind
     public var pullRequestReviewDecision: PullRequestReviewDecision?
     public var pullRequestMergeable: PullRequestMergeable?
@@ -377,6 +392,7 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
         lastViewedAt: Date? = nil,
         tmuxSessionName: String? = nil,
         tmuxSocketName: String? = nil,
+        tmuxAttachMode: TmuxAttachMode = .direct,
         sessionBackend: SessionBackendKind = .localPTY,
         pullRequestReviewDecision: PullRequestReviewDecision? = nil,
         pullRequestMergeable: PullRequestMergeable? = nil,
@@ -414,6 +430,7 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
         self.lastViewedAt = lastViewedAt
         self.tmuxSessionName = tmuxSessionName
         self.tmuxSocketName = tmuxSocketName
+        self.tmuxAttachMode = tmuxAttachMode
         self.sessionBackend = sessionBackend
         self.pullRequestReviewDecision = pullRequestReviewDecision
         self.pullRequestMergeable = pullRequestMergeable

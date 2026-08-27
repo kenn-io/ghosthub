@@ -629,12 +629,14 @@ struct CommandPaletteModelTests {
         )
         worktree.tmuxSessionName = "kwt-msgvault-pr-519"
         worktree.tmuxSocketName = "kwt-pr-0123456789abcdef"
+        worktree.tmuxAttachMode = .protected
         let protectedSession = WorkspaceTmuxSessionSelection(
             hostID: host.id,
             name: "kwt-msgvault-pr-519",
             worktreeID: worktree.id,
             worktreePath: worktree.path,
-            socketName: "kwt-pr-0123456789abcdef"
+            socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected
         )
         let commands = makeCommandPaletteCommands(
             snapshot: WorkspaceSnapshot(

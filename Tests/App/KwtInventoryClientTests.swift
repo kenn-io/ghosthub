@@ -120,7 +120,7 @@ struct KwtInventoryClientTests {
                 return (
                     0,
                     "GHOSTHUB_KWT_JSON\n" +
-                        #"[{"path":"/code/docbank","branch":"main","commit_hash":"abc","is_main":true,"repository":"github.com/kenn-io/docbank","session_name":"kwt-docbank-main","tmux_socket_name":"kwt-pr-0123456789abcdef"}]"#
+                        #"[{"path":"/code/docbank","branch":"main","commit_hash":"abc","is_main":true,"repository":"github.com/kenn-io/docbank","session_name":"kwt-docbank-main","tmux_socket_name":"kwt-pr-0123456789abcdef","tmux_attach_mode":"protected"}]"#
                 )
             },
             localBinaryPath: "/Applications/Ghost Hub/kwt",
@@ -189,7 +189,7 @@ struct KwtInventoryClientTests {
                     return (
                         0,
                         "GHOSTHUB_KWT_JSON\n" +
-                            #"[{"name":"jibot","path":"/workspaces/jibot","session_name":"kwt-workspace-dir-jibot-abc","session_live":true}]"#
+                            #"[{"name":"jibot","path":"/workspaces/jibot","session_name":"kwt-workspace-dir-jibot-abc","session_live":true,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#
                     )
                 }
                 return (0, "GHOSTHUB_KWT_JSON\n[]")
@@ -204,7 +204,9 @@ struct KwtInventoryClientTests {
                 name: "jibot",
                 path: "/workspaces/jibot",
                 sessionName: "kwt-workspace-dir-jibot-abc",
-                sessionLive: true
+                sessionLive: true,
+                tmuxSocketName: "kwt",
+                tmuxAttachMode: .direct
             ),
         ])
         #expect(inventory.directoryWorkspaceWarning == nil)
@@ -246,7 +248,7 @@ struct KwtInventoryClientTests {
                     return (
                         0,
                         "GHOSTHUB_KWT_JSON\n" +
-                            #"[{"name":"jibot","path":"/workspaces/jibot","session_name":"kwt-workspace-dir-jibot-abc","session_live":true}]"#
+                            #"[{"name":"jibot","path":"/workspaces/jibot","session_name":"kwt-workspace-dir-jibot-abc","session_live":true,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#
                     )
                 }
                 return (0, "GHOSTHUB_KWT_JSON\n[]")
@@ -292,7 +294,7 @@ struct KwtInventoryClientTests {
                     return AccountCommandOutput(
                         status: 0,
                         stdout: "GHOSTHUB_KWT_JSON\n" +
-                            #"[{"name":"hub","path":"/srv/hub","session_name":"kwt-workspace-dir-hub-abc","session_live":false}]"#,
+                            #"[{"name":"hub","path":"/srv/hub","session_name":"kwt-workspace-dir-hub-abc","session_live":false,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#,
                         stderr: ""
                     )
                 }
@@ -382,7 +384,7 @@ struct KwtInventoryClientTests {
                 ))
                 #expect(!command.contains("command -v"))
                 let json = expectedArguments.first == "workspace"
-                    ? #"[{"name":"hub","path":"C:\\hub","session_name":"kwt-workspace-dir-hub-abc","session_live":false}]"#
+                    ? #"[{"name":"hub","path":"C:\\hub","session_name":"kwt-workspace-dir-hub-abc","session_live":false,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#
                     : "[]"
                 return AccountCommandOutput(
                     status: 0,
@@ -535,8 +537,8 @@ struct KwtInventoryClientTests {
         #expect(merged.worktrees[0].sessionBackend == .localTmux)
     }
 
-    @Test("a refresh without a socket cannot unprotect a workspace")
-    func retainsProtectedSocketWhenRefreshOmitsIt() {
+    @Test("a protected refresh can publish an unresolved endpoint")
+    func protectedRefreshCanClearSocket() {
         let hostID = UUID()
         let projectID = UUID()
         let worktreeID = UUID()
@@ -563,7 +565,8 @@ struct KwtInventoryClientTests {
                 path: "/repo-pr-32",
                 branch: "contributor/pr-32",
                 tmuxSessionName: "kwt-repo-pr-32",
-                tmuxSocketName: "kwt-pr-0123456789abcdef"
+                tmuxSocketName: "kwt-pr-0123456789abcdef",
+                tmuxAttachMode: .protected
             )]
         )
         let inventory = KwtHostInventory(projects: [
@@ -582,7 +585,8 @@ struct KwtInventoryClientTests {
                     createdAt: nil,
                     repository: "repo",
                     sessionName: "kwt-repo-pr-32",
-                    tmuxSocketName: nil
+                    tmuxSocketName: nil,
+                    tmuxAttachMode: .protected
                 )],
                 warning: nil
             ),
@@ -595,13 +599,12 @@ struct KwtInventoryClientTests {
         )
 
         #expect(merged.worktrees.count == 1)
-        #expect(
-            merged.worktrees[0].tmuxSocketName == "kwt-pr-0123456789abcdef"
-        )
+        #expect(merged.worktrees[0].tmuxSocketName == nil)
+        #expect(merged.worktrees[0].tmuxAttachMode == .protected)
     }
 
-    @Test("an incomplete refresh retains protected generation evidence")
-    func retainsProtectedGenerationAcrossIncompleteRefresh() {
+    @Test("an unresolved protected refresh retains generation identity")
+    func unresolvedProtectedRefreshRetainsGeneration() {
         let hostID = UUID()
         let projectID = UUID()
         let generation = "0123456789abcdef0123456789abcdef"
@@ -624,7 +627,8 @@ struct KwtInventoryClientTests {
                 branch: "feature/protected",
                 generation: generation,
                 tmuxSessionName: "kwt-repo-feature",
-                tmuxSocketName: socketName
+                tmuxSocketName: socketName,
+                tmuxAttachMode: .protected
             )]
         )
         func inventory(generation: String?) -> KwtHostInventory {
@@ -644,7 +648,8 @@ struct KwtInventoryClientTests {
                     generation: generation,
                     repository: "repo",
                     sessionName: "kwt-repo-feature",
-                    tmuxSocketName: nil
+                    tmuxSocketName: nil,
+                    tmuxAttachMode: .protected
                 )],
                 warning: nil
             )])
@@ -662,9 +667,11 @@ struct KwtInventoryClientTests {
         )
 
         #expect(incomplete.worktrees[0].generation == generation)
-        #expect(incomplete.worktrees[0].tmuxSocketName == socketName)
+        #expect(incomplete.worktrees[0].tmuxSocketName == nil)
+        #expect(incomplete.worktrees[0].tmuxAttachMode == .protected)
         #expect(restored.worktrees[0].generation == generation)
-        #expect(restored.worktrees[0].tmuxSocketName == socketName)
+        #expect(restored.worktrees[0].tmuxSocketName == nil)
+        #expect(restored.worktrees[0].tmuxAttachMode == .protected)
     }
 
     @Test("generationless replacements do not inherit protected identity")
@@ -745,10 +752,10 @@ struct KwtInventoryClientTests {
     }
 
     @Test(
-        "canonical generation outranks a reused path for socket identity",
+        "authoritative endpoint replaces cached generation endpoint",
         arguments: ["same-generation-socket", nil] as [String?]
     )
-    func generationOutranksReusedPathForSocketIdentity(
+    func authoritativeEndpointReplacesCachedGenerationEndpoint(
         _ generationSocketName: String?
     ) {
         let hostID = UUID()
@@ -857,7 +864,8 @@ struct KwtInventoryClientTests {
         }
         #expect(unrelated?.id == unrelatedWorktreeID)
         #expect(target?.id != unrelated?.id)
-        #expect(target?.tmuxSocketName == generationSocketName)
+        #expect(target?.tmuxSocketName == nil)
+        #expect(target?.tmuxAttachMode == .direct)
     }
 
     @Test("noncanonical generations do not transfer socket identity")

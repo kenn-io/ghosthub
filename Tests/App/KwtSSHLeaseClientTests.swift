@@ -60,9 +60,22 @@ struct KwtSSHLeaseClientTests {
     func cancelsSilentAcquisition() async throws {
         let fixture = try TempDirectoryFixture()
         let pidFile = fixture.childURL("pid")
-        let script = "#!/bin/sh\nprintf '%s\\n' \"$$\" > "
-            + shellQuotedCommandArgument(pidFile.path)
-            + "\nsleep 30\n"
+        let cancellationProbe = fixture.childURL("cancellation-probe")
+        let terminationResult = fixture.childURL("termination-result")
+        let script = """
+        #!/bin/sh
+        termination_result=\(shellQuotedCommandArgument(terminationResult.path))
+        handle_term() {
+            printf '%s\n' terminated > "$termination_result"
+            exit 0
+        }
+        trap handle_term TERM
+        printf '%s\n' "$$" > \(shellQuotedCommandArgument(pidFile.path))
+        while [ ! -f \(shellQuotedCommandArgument(cancellationProbe.path)) ]; do
+            sleep 0.01
+        done
+        printf '%s\n' survived > \(shellQuotedCommandArgument(terminationResult.path))
+        """
         let helper = try fixture.createExecutable(name: "kwt", content: script)
         let task = Task {
             try await KwtSSHLeaseClient(
@@ -70,12 +83,9 @@ struct KwtSSHLeaseClientTests {
                 inactivityTimeout: .seconds(30)
             ).acquire(route: Self.route, prompt: { _ in "" })
         }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !FileManager.default.fileExists(atPath: pidFile.path),
-              ContinuousClock.now < deadline {
+        while !FileManager.default.fileExists(atPath: pidFile.path) {
             try await Task.sleep(for: .milliseconds(10))
         }
-        _ = try #require(FileManager.default.fileExists(atPath: pidFile.path))
         let pid = try #require(Int32(
             String(contentsOf: pidFile, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -86,11 +96,15 @@ struct KwtSSHLeaseClientTests {
         await #expect(throws: CancellationError.self) {
             _ = try await task.value
         }
-        let exitDeadline = ContinuousClock.now + .seconds(1)
-        while Darwin.kill(pid, 0) == 0, ContinuousClock.now < exitDeadline {
+        try Data().write(to: cancellationProbe)
+        while !FileManager.default.fileExists(atPath: terminationResult.path) {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(Darwin.kill(pid, 0) != 0)
+        #expect(
+            try String(contentsOf: terminationResult, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                == "terminated"
+        )
     }
 
     @Test("rejects a masterless presentation lease with a stable error")

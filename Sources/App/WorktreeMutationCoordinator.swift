@@ -68,11 +68,13 @@ final class WorktreeMutationCoordinator {
         let hostID: UUID
         let name: String
         let socketName: String?
+        let tmuxAttachMode: TmuxAttachMode?
 
         init(_ selection: WorkspaceTmuxSessionSelection) {
             hostID = selection.hostID
             name = selection.name
             socketName = selection.socketName
+            tmuxAttachMode = selection.tmuxAttachMode
         }
     }
 

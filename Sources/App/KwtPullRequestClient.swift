@@ -135,8 +135,9 @@ struct KwtPullRequestClient: Sendable {
             ),
             on: host
         )
-        guard response.workspace.hasValidSocketName,
-              response.pullRequest.workspace?.hasValidSocketName != false
+        guard response.workspace.hasValidProtectedEndpoint,
+              response.pullRequest.workspace?.hasValidProtectedEndpoint
+              != false
         else {
             throw KwtPullRequestError.malformedOutput(
                 host: host.displayName
@@ -358,15 +359,18 @@ private struct PullRequestWorkspaceDTO: Decodable {
     var state: String
     var sessionName: String
     var tmuxSocketName: String
+    var tmuxAttachMode: TmuxAttachMode
 
     private enum CodingKeys: String, CodingKey {
         case id, repository, branch, path, state
         case sessionName = "session_name"
         case tmuxSocketName = "tmux_socket_name"
+        case tmuxAttachMode = "tmux_attach_mode"
     }
 
-    var hasValidSocketName: Bool {
-        !tmuxSocketName
+    var hasValidProtectedEndpoint: Bool {
+        tmuxAttachMode == .protected
+            && !tmuxSocketName
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -378,7 +382,8 @@ private struct PullRequestWorkspaceDTO: Decodable {
             path: path,
             state: state,
             sessionName: sessionName,
-            tmuxSocketName: tmuxSocketName
+            tmuxSocketName: tmuxSocketName,
+            tmuxAttachMode: tmuxAttachMode
         )
     }
 }

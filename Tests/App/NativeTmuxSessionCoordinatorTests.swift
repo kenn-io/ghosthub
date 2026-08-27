@@ -510,8 +510,8 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!coordinator.shouldApplyPresentationStyle(handle))
     }
 
-    @Test("isolated session socket participates in command routing")
-    func isolatedSessionUsesReturnedSocket() async throws {
+    @Test("protected attachment uses the reviewed workspace path")
+    func protectedAttachmentUsesReviewedWorkspacePath() async throws {
         let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
@@ -534,6 +534,7 @@ struct NativeTmuxSessionCoordinatorTests {
             name: "pr-32",
             host: .local,
             socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected,
             workingDirectory: "/worktrees/pr-32",
             sessionIdentity: coordinatorSplitIdentity
         )
@@ -550,6 +551,41 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(command.contains("/worktrees/pr-32"))
         #expect(command.contains("kwt-pr-0123456789abcdef"))
         #expect(!command.contains("'open'"))
+    }
+
+    @Test("direct named socket uses ordinary kwt attachment")
+    func directNamedSocketUsesKwtAttachment() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            localKwtPathProvider: {
+                "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "kwt-widget-feature",
+            host: .local,
+            socketName: "kwt",
+            tmuxAttachMode: .direct,
+            workingDirectory: "/worktrees/widget",
+            openWorkspace: true,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("Helpers/kwt"))
+        #expect(command.contains("'open'"))
+        #expect(command.contains("/worktrees/widget"))
+        #expect(!command.contains("'pr' 'attach'"))
     }
 
     @Test("ordinary worktree attachment enables mouse after kwt connects")

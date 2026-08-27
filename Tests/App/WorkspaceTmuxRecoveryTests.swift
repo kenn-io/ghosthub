@@ -959,7 +959,8 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: environment.host.id,
             name: sessionName,
             worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
@@ -1003,7 +1004,8 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: environment.host.id,
             name: sessionName,
             worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
@@ -1560,7 +1562,8 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: environment.host.id,
             name: sessionName,
             worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
@@ -1613,7 +1616,8 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: environment.host.id,
             name: sessionName,
             worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
@@ -1761,7 +1765,8 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: environment.remoteHost.id,
             name: "protected-work",
             worktreePath: "/srv/ghosthub-pr-42",
-            socketName: "kwt-pr-0123456789abcdef"
+            socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
@@ -1823,6 +1828,7 @@ extension WorkspaceTmuxDiscoveryTests {
         snapshot.worktrees[worktreeIndex].tmuxSessionName =
             "kwt-ghosthub-pr-94"
         snapshot.worktrees[worktreeIndex].tmuxSocketName = "kwt-pr-94"
+        snapshot.worktrees[worktreeIndex].tmuxAttachMode = .protected
         let worktree = snapshot.worktrees[worktreeIndex]
         let protected = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)

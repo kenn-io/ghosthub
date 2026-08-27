@@ -523,7 +523,8 @@ struct WorkspaceWorktreeCreationTests {
             path: "/tmp/ghosthub-pr-43",
             state: "ready",
             sessionName: "kwt-workspace-pr-43",
-            tmuxSocketName: "kwt-pr-fedcba9876543210"
+            tmuxSocketName: "kwt-pr-fedcba9876543210",
+            tmuxAttachMode: .protected
         )
         let candidate = PullRequestCandidate(
             id: "github:github.com/kenn-io/ghosthub#43",
@@ -611,7 +612,8 @@ struct WorkspaceWorktreeCreationTests {
             path: "/tmp/ghosthub-pr-32",
             state: "ready",
             sessionName: "kwt-workspace-pr-32",
-            tmuxSocketName: "kwt-pr-0123456789abcdef"
+            tmuxSocketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected
         )
         let candidate = PullRequestCandidate(
             id: "github:github.com/kenn-io/ghosthub#32",
@@ -659,10 +661,12 @@ struct WorkspaceWorktreeCreationTests {
         #expect(imported.path == workspace.path)
         #expect(imported.tmuxSessionName == workspace.sessionName)
         #expect(imported.tmuxSocketName == workspace.tmuxSocketName)
+        #expect(imported.tmuxAttachMode == .protected)
         let selectedSession = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: imported)
         )
         #expect(selectedSession.socketName == workspace.tmuxSocketName)
+        #expect(selectedSession.tmuxAttachMode == .protected)
         #expect(imported.linkedPullRequestNumber == 32)
         #expect(imported.pullRequestTitle == candidate.title)
         #expect(imported.pullRequestState == .open)

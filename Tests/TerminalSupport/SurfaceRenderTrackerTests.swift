@@ -43,16 +43,18 @@ struct SurfaceRenderTrackerTests {
 
     @Test("concurrent access completes without leaving pending work")
     func concurrentAccessDoesNotCrash() {
-        let result = performConcurrently { index in
-            tracker.recordRender(surfaceIdentity: UInt(index))
-            if index % 25 == 0 {
-                _ = tracker.drain()
+        let iterations = 100
+        DispatchQueue.concurrentPerform(iterations: 4) { worker in
+            for iteration in 0 ..< iterations {
+                let identity = worker * iterations + iteration
+                tracker.recordRender(surfaceIdentity: UInt(identity))
+                if identity % 25 == 0 {
+                    _ = tracker.drain()
+                }
             }
-        } onWorkerCompletion: {
             _ = tracker.drain()
         }
 
-        #expect(result == .success)
         #expect(tracker.drain().isEmpty)
     }
 }

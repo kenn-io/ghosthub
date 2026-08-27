@@ -94,9 +94,10 @@ complete automation contract consumed by the app, including the isolated tmux
 socket identity
 returned by session-free `pr import`, the inert shell-only protected session
 created or repaired by `pr attach`, and refusal to open protected imports
-through kwt's ordinary default-server open paths. It also supports
+through kwt's ordinary direct open paths. It also supports
 `open <exact-worktree-path>`, which establishes or repairs an ordinary
-workspace's canonical session and keeps its initial tmux client attached.
+workspace's canonical session on the selected endpoint and keeps its initial
+tmux client attached.
 Exact-path resolution operates from the supplied Git worktree before global
 pattern matching, so it does not depend on the configured global base when
 repository-local inventory reports primary or linked worktrees stored
@@ -109,7 +110,11 @@ kwt must preserve backward compatibility for supported on-disk state and
 machine-readable commands. Before advancing `KWT_REVISION`, test the new revision
 both through Ghosthub and as a standalone CLI against representative existing
 state. The current pin includes kwt's provider-neutral `pr list`, `pr import`,
-and `pr attach` contract; changing that contract requires
+and `pr attach` contract. Every worktree, directory workspace, and import
+object reports the required `tmux_attach_mode`; `tmux_socket_name` may be
+absent for an unresolved protected endpoint. Clients must use the mode, not
+socket presence, to select direct or protected attachment. Changing that
+contract requires
 exercising candidate discovery, an idempotent existing-import result, creation
 of the exact returned tmux session only on protected attachment, and a
 protected attach that can re-establish an absent session without executing a
@@ -145,10 +150,13 @@ restore credentials. Existing sessions must carry the exact workspace marker
 before reuse. The command removes the caller's parent tmux identity so the
 isolated cross-server attachment also works when invoked from an existing tmux
 pane.
-Attachment validates the recorded project clone and exact live worktree
+Direct worktree and directory sessions normally use kwt's dedicated `kwt`
+server, while a verified live default-server session may be adopted. The
+pinned contract test exercises that dedicated endpoint with standalone kwt
+state. Attachment validates the recorded project clone and exact live worktree
 identity, honoring registered upstream identity for fork-origin checkouts while
-excluding prunable or missing worktrees. Unreadable provenance makes inventory
-fail instead of omitting the protected socket marker.
+excluding prunable or missing worktrees. An unresolved protected endpoint must
+remain protected even when inventory omits its socket.
 Session-start safety and configuration failures are non-retryable. Kwt also
 resolves a session-local `default-shell` before falling back to the
 server-global value, so every pane follows the same tmux shell policy.

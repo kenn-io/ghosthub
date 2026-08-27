@@ -286,14 +286,14 @@ public extension WorkspaceSelection {
 
     /// Project terminal configuration is user-authored input to the app's
     /// libghostty config, so it may only come from a checkout the user
-    /// controls. An imported pull request carries a protected tmux socket and
-    /// contributor-controlled source, so its `.ghosthub/terminal.conf` is
+    /// controls. An imported pull request carries protected attachment policy
+    /// and contributor-controlled source, so its `.ghosthub/terminal.conf` is
     /// skipped in favor of the project's own checkout.
     func terminalConfigRoot(in snapshot: WorkspaceSnapshot) -> URL? {
         if let selectedWorktreeID,
            let worktree = snapshot.worktree(id: selectedWorktreeID),
            !worktree.isStale,
-           worktree.tmuxSocketName == nil,
+           worktree.tmuxAttachMode == .direct,
            snapshot.host(id: worktree.hostID)?.kind == .selfHost {
             return URL(fileURLWithPath: worktree.path, isDirectory: true)
         }

@@ -81,7 +81,8 @@ itself exits with status 255 marks a shared lease unusable so no other caller
 joins the dead master. A masterless lease is unsupported and fails before a
 terminal surface launches.
 Each workspace window retains every presentation it explicitly opens, keyed by
-the exact host, tmux socket, and session name. Navigating to another host,
+the exact host, tmux socket, attachment mode, and session name. Navigating to
+another host,
 worktree, or session removes the previous surface from the visible hierarchy
 and marks it occluded without freeing the surface or terminating its tmux/SSH
 client. Returning to it reuses the same handle and surface. Cmd-W or a
@@ -496,8 +497,10 @@ session. Pending automatic restoration also expires after three completed
 failed refreshes, ten minutes, or user navigation, whichever comes first.
 
 A protected worktree is distinct from a same-named session on the default tmux
-server. Restoration first probes the descriptor's exact host, protected socket,
-and session name. Only a successful probe may delegate attachment to `kwt pr
+server. Kwt identifies that policy with `tmux_attach_mode: "protected"`; a
+named socket alone does not imply it. Restoration first probes the descriptor's
+exact host, protected socket, and session name. Only a successful probe may
+delegate attachment to `kwt pr
 attach`, which remains authoritative for validating and repairing that
 workspace before executing the ordinary tmux client. The session can still
 disappear between Ghosthub's probe and kwt's command; eliminating that benign
@@ -642,11 +645,12 @@ interval, and an overrun clamps the next delay to zero. Attempts never overlap.
 **Reconnect Now** wakes
 the same supervisor immediately instead of starting a parallel path.
 
-Default-socket recovery shares the host's in-flight `list-sessions` probe with
-inventory discovery. Protected sockets use a headless
+Unnamed default-server recovery shares the host's in-flight `list-sessions`
+probe with inventory discovery. Named sockets, including kwt's direct server
+and protected endpoints, use a headless
 `tmux -L <socket> has-session -t =<name>` probe so an unsuccessful attempt never
 creates or flashes a terminal surface. Confirmed presence launches one new
-attach-only client. Confirmed absence ends a default-socket or protected-socket
+attach-only client. Confirmed absence ends an unnamed- or named-socket
 presentation only when that exact session had already been established; an
 unconfirmed interrupted kwt establishment may rerun its one-shot creation path.
 A reachable non-transport client failure is presented as unable to attach
@@ -727,7 +731,7 @@ endpoint changed while Add Project was open. No filesystem scan occurs.
 The project row's confirmed **Remove Project** action similarly revalidates the
 project path and host endpoint, then asks kwt to unregister only that project
 metadata. Repository and worktree directories are untouched. Before
-unregistering, Ghosthub probes every protected-socket worktree and requires its
+unregistering, Ghosthub probes every protected-mode worktree and requires its
 tmux session to be absent; a live or unverifiable protected session blocks
 removal because it cannot be recovered through default-server discovery after
 the project disappears. Ordinary live tmux sessions remain discoverable under
@@ -742,8 +746,8 @@ visible while either is in flight.
 
 In the macOS app, removing a generation-backed worktree is a distinct
 destructive action. The confirmation is bound to its exact project,
-generation, tmux socket, and a fresh live session identity or freshly
-confirmed absence. Pinned KWT
+generation, tmux attachment mode and socket, and a fresh live session identity
+or freshly confirmed absence. Pinned KWT
 also reports the worktree's staged, unstaged, and untracked change counts
 before Ghosthub presents the confirmation. A worktree with uncommitted changes
 names that data-loss risk and requires an explicit **Force Remove Worktree**
@@ -769,8 +773,9 @@ unsigned Windows helper automatically.
 This restriction does not apply to the Rust app's WSL host, which executes the
 pinned Linux helper.
 
-Direct tmux discovery marks a default-server worktree session as running when
-its exact kwt session name is present and the host remains reachable. Cached
+Direct tmux discovery marks an adopted default-server worktree session as
+running when its exact kwt session name is present and the host remains
+reachable. Cached
 inventory does not preserve the live indicator through a discovery failure.
 Kwt session names are removed from the generic session group by default and
 remain rendered under their project/worktree. Settings → Worktrees can expose

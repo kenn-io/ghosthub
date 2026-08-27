@@ -148,6 +148,7 @@ enum TailscaleDiscovery {
     ) async -> [TailscalePeer] {
         guard !peers.isEmpty else { return peers }
         let concurrentCount = min(max(1, maximumConcurrent), peers.count)
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         var resolved = peers
 
         let (resolutions, continuation) = AsyncStream<UsernameResolution>
@@ -187,6 +188,9 @@ enum TailscaleDiscovery {
         for await resolution in resolutions {
             switch resolution {
             case let .peer(index, username):
+                guard DispatchTime.now().uptimeNanoseconds - startedAt
+                    < timeoutNanoseconds
+                else { return resolved }
                 resolved[index] = peers[index]
                     .resolvingSSHUsername(username)
             case .workerFinished:
