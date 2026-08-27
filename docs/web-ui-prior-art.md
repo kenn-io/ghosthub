@@ -63,12 +63,15 @@ simpler — see the state-authority principle in [Web UI](web-ui.md).
 
 ## Worth adopting later (mainly for the SPA pipeline, `y5d7`)
 
-- **Asset-cache discipline.** Serve `index.html` with `no-store`, hashed assets
-  as `immutable`, and — importantly — a **missing hashed asset must 404, never
-  fall back to the SPA shell**, so version skew fails loudly instead of serving
-  a broken bundle. Pair with a protocol-mismatch close that tells a stale client
-  to reload. Ghosthub embeds assets in the binary rather than serving from disk,
-  but the cache rules still apply.
+- **Asset-cache discipline.** *(Adopted, `y5d7`.)* Serve `index.html` with
+  `no-store`, hashed assets as `immutable`, and — importantly — a **missing
+  hashed asset must 404, never fall back to the SPA shell**, so version skew
+  fails loudly instead of serving a broken bundle. Ghosthub embeds assets in the
+  binary rather than serving from disk, but the cache rules still apply:
+  `build.rs` content-hashes each asset into a `stem.<hash>.ext` name and rewrites
+  the page to match, and `service.rs` serves those names `immutable` and 404s an
+  unknown one. A protocol-mismatch close that tells a stale client to reload is
+  still worth pairing with this once the versioned frontend ships.
 - **Typed gap frames instead of silent loss.** Where bytes can be dropped
   (queue overflow, replay eviction), freshell emits a typed frame telling the
   client scrollback was truncated rather than losing it silently. Low priority

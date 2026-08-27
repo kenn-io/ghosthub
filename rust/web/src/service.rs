@@ -39,15 +39,11 @@ const CSP_PREFIX: &str = "default-src 'none'; script-src 'self'; style-src 'self
      img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; \
      connect-src 'self'";
 
-/// Embedded single-page app. Every asset is compiled into the binary; the
-/// strict CSP means nothing else can load.
-const INDEX_PAGE: &str = include_str!("../assets/index.html");
-const APP_CSS: &str = include_str!("../assets/app.css");
-const APP_JS: &str = include_str!("../assets/app.js");
-const XTERM_JS: &str = include_str!("../assets/vendor/xterm.js");
-const XTERM_CSS: &str = include_str!("../assets/vendor/xterm.css");
-const ADDON_FIT_JS: &str = include_str!("../assets/vendor/addon-fit.js");
-const ADDON_UNICODE11_JS: &str = include_str!("../assets/vendor/addon-unicode11.js");
+// Embedded single-page app. `build.rs` content-hashes every static asset,
+// rewrites the page to point at the hashed names, and generates the
+// `EMBEDDED_ASSETS` table and rewritten `INDEX_PAGE` below. Every asset is
+// compiled into the binary; the strict CSP means nothing else can load.
+include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
 #[derive(Clone)]
 pub(crate) struct ServerState {
@@ -70,12 +66,7 @@ pub(crate) fn router(state: ServerState) -> Router {
     // validation runs before authentication, and both run before routing.
     Router::new()
         .route("/", get(index))
-        .route("/assets/app.css", get(app_css))
-        .route("/assets/app.js", get(app_js))
-        .route("/assets/xterm.js", get(xterm_js))
-        .route("/assets/xterm.css", get(xterm_css))
-        .route("/assets/addon-fit.js", get(addon_fit_js))
-        .route("/assets/addon-unicode11.js", get(addon_unicode11_js))
+        .route("/assets/{file}", get(hashed_asset))
         .route("/api/v1/inventory", get(inventory))
         .route("/api/v1/scene", axum::routing::post(scene_exchange))
         .route("/ws/v1/hello", get(ws_hello))
@@ -313,39 +304,22 @@ async fn index(State(state): State<ServerState>) -> Response {
         .into_response()
 }
 
-fn asset(content_type: &'static str, body: &'static str) -> Response {
+/// Serve one content-hashed asset by its exact filename. A name the table
+/// does not know is a 404 — never a fallback to the SPA shell — so a stale
+/// reference after a rebuild fails loudly instead of loading wrong bytes.
+/// Hashed names are content-addressed, so the response is `immutable`.
+async fn hashed_asset(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
+    let Some(asset) = EMBEDDED_ASSETS.iter().find(|asset| asset.file == file) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     (
         [
-            (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_TYPE, asset.content_type),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
-        body,
+        asset.body,
     )
         .into_response()
-}
-
-async fn app_css() -> Response {
-    asset("text/css; charset=utf-8", APP_CSS)
-}
-
-async fn app_js() -> Response {
-    asset("text/javascript; charset=utf-8", APP_JS)
-}
-
-async fn xterm_js() -> Response {
-    asset("text/javascript; charset=utf-8", XTERM_JS)
-}
-
-async fn xterm_css() -> Response {
-    asset("text/css; charset=utf-8", XTERM_CSS)
-}
-
-async fn addon_fit_js() -> Response {
-    asset("text/javascript; charset=utf-8", ADDON_FIT_JS)
-}
-
-async fn addon_unicode11_js() -> Response {
-    asset("text/javascript; charset=utf-8", ADDON_UNICODE11_JS)
 }
 
 /// Demo inventory: the real local host carries a live console entry; every
