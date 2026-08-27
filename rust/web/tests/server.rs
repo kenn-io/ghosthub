@@ -115,6 +115,77 @@ fn bearer_token_fetches_the_page_with_a_strict_csp() {
 }
 
 #[test]
+fn hashed_assets_are_served_immutable_and_coherent_with_the_page() {
+    let server = Server::start().expect("start server");
+    let page = request(
+        server.addr(),
+        "GET",
+        "/",
+        &[
+            ("Host", &host(server.addr())),
+            ("Authorization", &bearer(&server)),
+        ],
+    );
+    assert_eq!(page.status, 200);
+
+    // Pull a hashed asset path out of the served page and prove it is
+    // actually served — end to end, not a source-string assertion.
+    let start = page
+        .body
+        .find("/assets/")
+        .expect("the page references a hashed asset");
+    let reference = &page.body[start..];
+    let end = reference.find('"').expect("the asset reference is quoted");
+    let asset_path = &reference[..end];
+    assert_ne!(asset_path, "/assets/", "the reference carries a filename");
+    assert!(
+        asset_path.matches('.').count() >= 2,
+        "the reference is content-hashed (stem.hash.ext): {asset_path}"
+    );
+
+    let asset = request(
+        server.addr(),
+        "GET",
+        asset_path,
+        &[
+            ("Host", &host(server.addr())),
+            ("Authorization", &bearer(&server)),
+        ],
+    );
+    assert_eq!(asset.status, 200, "hashed asset {asset_path} is served");
+    assert_eq!(
+        asset.header("cache-control"),
+        Some("public, max-age=31536000, immutable"),
+        "content-addressed assets are immutable"
+    );
+    let content_type = asset.header("content-type").expect("asset content type");
+    assert!(
+        content_type.starts_with("text/javascript") || content_type.starts_with("text/css"),
+        "unexpected asset content type: {content_type}"
+    );
+}
+
+#[test]
+fn an_unknown_asset_name_returns_404_not_the_spa_shell() {
+    let server = Server::start().expect("start server");
+    // A well-formed but stale hashed name: nothing in the table matches.
+    let reply = request(
+        server.addr(),
+        "GET",
+        "/assets/app.0000000000000000.js",
+        &[
+            ("Host", &host(server.addr())),
+            ("Authorization", &bearer(&server)),
+        ],
+    );
+    assert_eq!(reply.status, 404, "a stale hashed name must fail loudly");
+    assert!(
+        !reply.body.contains("Ghosthub"),
+        "a missing asset must never fall back to the page shell"
+    );
+}
+
+#[test]
 fn wrong_bearer_token_is_denied() {
     let server = Server::start().expect("start server");
     let reply = request(
