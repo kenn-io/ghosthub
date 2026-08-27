@@ -15,7 +15,7 @@
 
 use std::ffi::OsString;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade, close_code};
@@ -25,7 +25,10 @@ use surface::{GridSize, PixelSize};
 use terminal::{ByteRelayWorker, RelayDisconnect, RelayOutput};
 use tokio::sync::{mpsc, watch};
 
-use crate::service::{ServerState, exact_origin, server_hello, stopped, valid_client_hello};
+use crate::scenes::SceneRegistry;
+use crate::service::{
+    ServerState, exact_origin, hello_scene_credential, server_hello, stopped, valid_client_hello,
+};
 use crate::{CLIENT_HELLO_TIMEOUT, MAX_FRAME_BYTES, MAX_QUEUED_OUTPUT_BYTES};
 
 /// Largest grid dimension a viewer may request; anything bigger is a
@@ -64,10 +67,11 @@ pub(crate) async fn ws_attach(
     }
     let shutdown = state.shutdown.clone();
     let serial = Arc::clone(&state.attach_serial);
+    let scenes = Arc::clone(&state.scenes);
     upgrade
         .max_frame_size(MAX_FRAME_BYTES)
         .max_message_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| attach_session(socket, shutdown, serial))
+        .on_upgrade(move |socket| attach_session(socket, shutdown, serial, scenes))
 }
 
 #[allow(
@@ -78,6 +82,7 @@ async fn attach_session(
     mut socket: WebSocket,
     mut shutdown: watch::Receiver<bool>,
     serial: Arc<tokio::sync::Mutex<()>>,
+    scenes: Arc<SceneRegistry>,
 ) {
     if socket
         .send(Message::Text(server_hello().into()))
@@ -86,7 +91,8 @@ async fn attach_session(
     {
         return;
     }
-    let Some(mut geometry) = client_hello_geometry(&mut socket, &mut shutdown).await else {
+    let Some(mut geometry) = client_hello_geometry(&mut socket, &mut shutdown, &scenes).await
+    else {
         return;
     };
 
@@ -319,6 +325,7 @@ async fn attach_session(
 async fn client_hello_geometry(
     socket: &mut WebSocket,
     shutdown: &mut watch::Receiver<bool>,
+    scenes: &SceneRegistry,
 ) -> Option<Geometry> {
     let deadline = tokio::time::sleep(CLIENT_HELLO_TIMEOUT);
     tokio::pin!(deadline);
@@ -335,6 +342,18 @@ async fn client_hello_geometry(
             message = socket.recv() => {
                 match message {
                     Some(Ok(Message::Text(frame))) => {
+                        // The scene credential in the hello is the per-scene
+                        // gate — validated before any PTY work, and never
+                        // from the ambient cookie the upgrade carried.
+                        let scene_ok = hello_scene_credential(&frame).is_some_and(
+                            |(scene_id, scene_secret)| {
+                                scenes.validate(&scene_id, &scene_secret, Instant::now())
+                            },
+                        );
+                        if !scene_ok {
+                            close(socket, close_code::POLICY, "invalid scene credential").await;
+                            return None;
+                        }
                         let geometry = valid_client_hello(&frame)
                             .then(|| hello_geometry(&frame))
                             .flatten();

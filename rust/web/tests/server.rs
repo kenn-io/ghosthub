@@ -154,7 +154,9 @@ fn query_bootstrap_sets_the_cookie_and_strips_the_parameter() {
         &[("Host", &host(server.addr()))],
     );
     assert_eq!(reply.status, 303);
-    assert_eq!(reply.header("location"), Some("/"));
+    let location = reply.header("location").expect("redirect location");
+    assert!(location.starts_with("/#mint="), "{location}");
+    assert_eq!(location.len(), "/#mint=".len() + 64, "64-hex mint code");
     let cookie = reply.header("set-cookie").expect("bootstrap cookie");
     let cookie_name = auth_cookie_name(server.addr().port());
     assert!(cookie.starts_with(&format!("{cookie_name}=")));
@@ -188,7 +190,9 @@ fn bootstrap_redirects_even_when_already_authenticated() {
         reply.status, 303,
         "an authenticated revisit must still strip the token from the location"
     );
-    assert_eq!(reply.header("location"), Some("/"));
+    let location = reply.header("location").expect("redirect location");
+    assert!(location.starts_with("/#mint="), "{location}");
+    assert_eq!(location.len(), "/#mint=".len() + 64, "64-hex mint code");
 }
 
 #[test]
@@ -277,7 +281,8 @@ fn bootstrap_preserves_other_query_parameters() {
         &[("Host", &host(server.addr()))],
     );
     assert_eq!(reply.status, 303);
-    assert_eq!(reply.header("location"), Some("/?view=hosts"));
+    let location = reply.header("location").expect("redirect location");
+    assert!(location.starts_with("/?view=hosts#mint="), "{location}");
 }
 
 #[test]
@@ -427,8 +432,9 @@ fn hello_websocket_exchanges_capabilities_and_closes() {
     assert_eq!(hello["limits"]["max_message_bytes"], MAX_FRAME_BYTES);
     assert!(hello["limits"]["max_queued_output_bytes"].is_u64());
 
+    let scene = establish_scene(&server);
     socket
-        .send(Message::Text(compatible_client_hello().into()))
+        .send(Message::Text(compatible_client_hello(&scene).into()))
         .expect("client hello");
 
     match socket.read().expect("close frame") {
@@ -439,9 +445,11 @@ fn hello_websocket_exchanges_capabilities_and_closes() {
     }
 }
 
-fn compatible_client_hello() -> String {
+fn compatible_client_hello(scene: &(String, String)) -> String {
+    let (scene_id, scene_secret) = scene;
     format!(
-        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\
+        "{{\"protocol\":{PROTOCOL_VERSION},\"scene_id\":\"{scene_id}\",\
+         \"scene_secret\":\"{scene_secret}\",\"capabilities\":{{\"unicode_width\":11,\
          \"ignores_conpty_mode_requests\":true}}}}"
     )
 }
@@ -462,9 +470,14 @@ fn client_hello_without_required_capabilities_is_rejected() {
         panic!("expected server hello");
     };
 
+    let (scene_id, scene_secret) = establish_scene(&server);
     socket
         .send(Message::Text(
-            format!("{{\"protocol\":{PROTOCOL_VERSION}}}").into(),
+            format!(
+                "{{\"protocol\":{PROTOCOL_VERSION},\"scene_id\":\"{scene_id}\",\
+                 \"scene_secret\":\"{scene_secret}\"}}"
+            )
+            .into(),
         ))
         .expect("client hello without capabilities");
 
@@ -715,9 +728,8 @@ fn attach_websocket_runs_a_live_shell() {
         panic!("expected server hello");
     };
 
-    let hello = format!(
-        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
-    );
+    let scene = establish_scene(&server);
+    let hello = full_hello(&scene);
     socket
         .send(Message::Text(hello.into()))
         .expect("client hello");
@@ -803,9 +815,8 @@ fn attach_accepts_chunked_input_beyond_the_message_limit() {
     let Message::Text(_) = socket.read().expect("server hello") else {
         panic!("expected server hello");
     };
-    let hello = format!(
-        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
-    );
+    let scene = establish_scene(&server);
+    let hello = full_hello(&scene);
     socket
         .send(Message::Text(hello.into()))
         .expect("client hello");
@@ -854,6 +865,7 @@ fn attach_accepts_chunked_input_beyond_the_message_limit() {
 #[test]
 fn attachments_serialize_across_an_abrupt_closure() {
     let server = Server::start().expect("start server");
+    let scene = establish_scene(&server);
     let attach = |timeout: Duration| {
         let (status, socket) = upgrade_at(
             server.addr(),
@@ -872,9 +884,7 @@ fn attachments_serialize_across_an_abrupt_closure() {
         let Message::Text(_) = socket.read().expect("server hello") else {
             panic!("expected server hello");
         };
-        let hello = format!(
-            "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
-        );
+        let hello = full_hello(&scene);
         socket
             .send(Message::Text(hello.into()))
             .expect("client hello");
@@ -1187,6 +1197,191 @@ fn a_queued_attachment_that_closes_does_not_wedge_the_lock() {
 }
 
 /// Open an authenticated attach socket and complete the hello exchange.
+/// A hello without a scene credential is refused before any PTY work,
+/// even though it authenticated the upgrade with a valid bearer.
+#[test]
+fn an_attach_hello_without_a_scene_credential_is_refused() {
+    let server = Server::start().expect("start server");
+    let (status, socket) = upgrade_at(
+        server.addr(),
+        "/ws/v1/attach",
+        &[
+            ("Origin", &origin(server.addr())),
+            ("Authorization", &bearer(&server)),
+        ],
+    );
+    assert_eq!(status, 101);
+    let mut socket = socket.expect("upgraded socket");
+    socket
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("read timeout");
+    let Message::Text(_) = socket.read().expect("server hello") else {
+        panic!("expected server hello");
+    };
+    let hello = format!(
+        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
+    );
+    socket
+        .send(Message::Text(hello.into()))
+        .expect("scene-less hello");
+    match socket.read().expect("close frame") {
+        Message::Close(Some(frame)) => {
+            assert_eq!(u16::from(frame.code), 1008, "policy close");
+            assert_eq!(frame.reason.as_str(), "invalid scene credential");
+        }
+        other => panic!("expected close frame, got {other:?}"),
+    }
+}
+
+/// A hello with an unknown or wrong scene credential is refused.
+#[test]
+fn an_attach_hello_with_a_wrong_scene_credential_is_refused() {
+    let server = Server::start().expect("start server");
+    let (status, socket) = upgrade_at(
+        server.addr(),
+        "/ws/v1/attach",
+        &[
+            ("Origin", &origin(server.addr())),
+            ("Authorization", &bearer(&server)),
+        ],
+    );
+    assert_eq!(status, 101);
+    let mut socket = socket.expect("upgraded socket");
+    socket
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("read timeout");
+    let Message::Text(_) = socket.read().expect("server hello") else {
+        panic!("expected server hello");
+    };
+    let forged = ("f".repeat(64), "0".repeat(64));
+    socket
+        .send(Message::Text(full_hello(&forged).into()))
+        .expect("forged-scene hello");
+    match socket.read().expect("close frame") {
+        Message::Close(Some(frame)) => {
+            assert_eq!(u16::from(frame.code), 1008, "policy close");
+            assert_eq!(frame.reason.as_str(), "invalid scene credential");
+        }
+        other => panic!("expected close frame, got {other:?}"),
+    }
+}
+
+/// The session cookie alone cannot mint a scene: with no bearer and no
+/// mint code, the exchange is unauthorized.
+#[test]
+fn the_session_cookie_alone_cannot_mint_a_scene() {
+    let server = Server::start().expect("start server");
+    let cookie = bootstrap_cookie(&server);
+    let reply = request(
+        server.addr(),
+        "POST",
+        "/api/v1/scene",
+        &[
+            ("Host", &host(server.addr())),
+            ("Origin", &origin(server.addr())),
+            ("Cookie", &cookie),
+        ],
+    );
+    assert_eq!(
+        reply.status, 401,
+        "cookie without a mint code mints nothing"
+    );
+}
+
+/// A bootstrap mint code, delivered in the redirect fragment, exchanges
+/// once for a scene and never again.
+#[test]
+fn a_bootstrap_mint_code_exchanges_once() {
+    let server = Server::start().expect("start server");
+    let target = format!("/?auth_token={}", server.token());
+    let redirect = request(
+        server.addr(),
+        "GET",
+        &target,
+        &[("Host", &host(server.addr()))],
+    );
+    assert_eq!(redirect.status, 303);
+    let location = redirect.header("location").expect("redirect location");
+    let code = location
+        .split("#mint=")
+        .nth(1)
+        .expect("mint code in fragment");
+    let set_cookie = redirect.header("set-cookie").expect("bootstrap cookie");
+    let cookie = set_cookie
+        .split(';')
+        .next()
+        .expect("cookie pair")
+        .to_owned();
+
+    let exchange = request(
+        server.addr(),
+        "POST",
+        "/api/v1/scene",
+        &[
+            ("Host", &host(server.addr())),
+            ("Origin", &origin(server.addr())),
+            ("Cookie", &cookie),
+            ("x-ghosthub-mint", code),
+        ],
+    );
+    assert_eq!(exchange.status, 200, "the mint code redeems for a scene");
+    let scene: serde_json::Value = serde_json::from_str(&exchange.body).expect("scene json");
+    assert_eq!(scene["scene_id"].as_str().expect("scene_id").len(), 64);
+
+    // Single-use: the same code is spent.
+    let replay = request(
+        server.addr(),
+        "POST",
+        "/api/v1/scene",
+        &[
+            ("Host", &host(server.addr())),
+            ("Origin", &origin(server.addr())),
+            ("Cookie", &cookie),
+            ("x-ghosthub-mint", code),
+        ],
+    );
+    assert_eq!(replay.status, 401, "a spent mint code mints nothing");
+}
+
+/// Establish a scene via the exchange endpoint (bearer path) and return
+/// its (`scene_id`, `scene_secret`), for hellos that must carry a valid scene
+/// credential.
+fn establish_scene(server: &Server) -> (String, String) {
+    let reply = request(
+        server.addr(),
+        "POST",
+        "/api/v1/scene",
+        &[
+            ("Host", &host(server.addr())),
+            ("Origin", &origin(server.addr())),
+            ("Authorization", &bearer(server)),
+        ],
+    );
+    assert_eq!(reply.status, 200, "scene exchange");
+    let body: serde_json::Value = serde_json::from_str(&reply.body).expect("scene json");
+    (
+        body["scene_id"].as_str().expect("scene_id").to_owned(),
+        body["scene_secret"]
+            .as_str()
+            .expect("scene_secret")
+            .to_owned(),
+    )
+}
+
+/// A complete, valid client hello carrying the scene credential plus the
+/// standard capabilities and geometry.
+fn full_hello(scene: &(String, String)) -> String {
+    let (scene_id, scene_secret) = scene;
+    format!(
+        "{{\"protocol\":{PROTOCOL_VERSION},\"scene_id\":\"{scene_id}\",\
+         \"scene_secret\":\"{scene_secret}\",\"capabilities\":{{\"unicode_width\":11,\
+         \"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\
+         \"pixel_width\":800,\"pixel_height\":480}}}}"
+    )
+}
+
 fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
     let (status, socket) = upgrade_at(
         server.addr(),
@@ -1205,9 +1400,8 @@ fn attach_shell(server: &Server) -> WebSocket<TcpStream> {
     let Message::Text(_) = socket.read().expect("server hello") else {
         panic!("expected server hello");
     };
-    let hello = format!(
-        "{{\"protocol\":{PROTOCOL_VERSION},\"capabilities\":{{\"unicode_width\":11,\"ignores_conpty_mode_requests\":true}},\"initial\":{{\"columns\":100,\"rows\":30,\"pixel_width\":800,\"pixel_height\":480}}}}"
-    );
+    let scene = establish_scene(server);
+    let hello = full_hello(&scene);
     socket
         .send(Message::Text(hello.into()))
         .expect("client hello");
@@ -1247,8 +1441,9 @@ fn attach_hello_without_geometry_is_rejected() {
         panic!("expected server hello");
     };
 
+    let scene = establish_scene(&server);
     socket
-        .send(Message::Text(compatible_client_hello().into()))
+        .send(Message::Text(compatible_client_hello(&scene).into()))
         .expect("client hello without geometry");
 
     match socket.read().expect("close frame") {

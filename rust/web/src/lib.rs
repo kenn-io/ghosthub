@@ -11,6 +11,7 @@
 
 mod attach;
 mod credential;
+mod scenes;
 mod service;
 
 use std::io;
@@ -24,6 +25,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::credential::Credential;
+use crate::scenes::SceneRegistry;
 use crate::service::{ServerState, router};
 
 pub use crate::service::{AUTH_QUERY_PARAMETER, CLIENT_HELLO_TIMEOUT, auth_cookie_name};
@@ -47,6 +49,7 @@ pub struct Server {
     addr: SocketAddr,
     token: String,
     credential: Arc<Credential>,
+    scenes: Arc<SceneRegistry>,
     shutdown: watch::Sender<bool>,
     running: Option<(Runtime, JoinHandle<io::Result<()>>)>,
 }
@@ -70,6 +73,7 @@ impl Server {
 
         let (credential, token) = Credential::mint()?;
         let credential = Arc::new(credential);
+        let scenes = Arc::new(SceneRegistry::new());
         let (shutdown, stopping) = watch::channel(false);
         let state = ServerState {
             attach_serial: Arc::new(tokio::sync::Mutex::new(())),
@@ -77,6 +81,7 @@ impl Server {
             origin: Arc::from(format!("http://{addr}")),
             cookie_name: Arc::from(service::auth_cookie_name(addr.port())),
             credential: Arc::clone(&credential),
+            scenes: Arc::clone(&scenes),
             shutdown: stopping.clone(),
         };
 
@@ -100,6 +105,7 @@ impl Server {
             addr,
             token,
             credential,
+            scenes,
             shutdown,
             running: Some((runtime, serve)),
         })
@@ -137,6 +143,7 @@ impl Server {
 
     fn stop(&mut self) {
         self.credential.invalidate();
+        self.scenes.invalidate();
         self.shutdown.send_replace(true);
         if let Some((runtime, mut serve)) = self.running.take() {
             // Every attachment handler awaits its relay teardown before it
