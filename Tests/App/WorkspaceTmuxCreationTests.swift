@@ -273,13 +273,7 @@ extension WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             remoteTmuxPathProvider: { _, _ in
-                .failure(.sshConnectionFailed(
-                    host: "office-linux",
-                    classification: SSHConnectionFailure.classify(
-                        status: 255,
-                        output: ""
-                    )
-                ))
+                .failure(.notFound(shell: "office-linux"))
             }
         )
         let selection = WorkspaceTmuxSessionSelection(

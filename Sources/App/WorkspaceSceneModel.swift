@@ -392,9 +392,8 @@ final class WorkspaceSceneModel: ObservableObject {
         var host: CommandHost
         var routeIdentity: String?
         var surfaceExitCode: UInt32?
-        /// The previous attempt could not create a terminal surface, so no
-        /// client ever ran and there is no exit code to inspect. Recovery is
-        /// still legitimate: the transport failure that started it stands.
+        /// The previous attempt failed before the terminal client could start,
+        /// so there is no exit code to inspect and reattachment is still safe.
         var surfaceLaunchFailed = false
 
     }
@@ -569,9 +568,8 @@ final class WorkspaceSceneModel: ObservableObject {
         var host: CommandHost
         var routeIdentity: String?
         var surfaceExitCode: UInt32?
-        /// The previous attempt could not create a terminal surface, so no
-        /// client ever ran and there is no exit code to inspect. Recovery is
-        /// still legitimate: the transport failure that started it stands.
+        /// The previous attempt failed before the terminal client could start,
+        /// so there is no exit code to inspect and reattachment is still safe.
         var surfaceLaunchFailed = false
     }
     private var activeHerdrReconnectContext: ActiveHerdrReconnectContext?
@@ -10790,6 +10788,15 @@ final class WorkspaceSceneModel: ObservableObject {
         }) {
             return
         }
+        if nativeHerdrSessionCoordinator.attachmentClosure(handle)
+            == .retryableTransportFailure,
+            var context = activeHerdrReconnectContext,
+            context.handleID == handle.id {
+            context.surfaceLaunchFailed = true
+            activeHerdrReconnectContext = context
+            startHerdrReconnect(context)
+            return
+        }
         // Checked before `hasLaunched`: a surface that failed to be created
         // never launched, so the guard below would drop this transient failure
         // and the session would latch. See the tmux path.
@@ -10826,7 +10833,7 @@ final class WorkspaceSceneModel: ObservableObject {
             context.surfaceExitCode = code
             activeHerdrReconnectContext = context
             startHerdrReconnect(context)
-        case .surfaceUnavailable:
+        case .retryableTransportFailure, .surfaceUnavailable:
             // Recoverable failures are re-armed above, before `hasLaunched`.
             // Reaching here means no matching reconnect context survives.
             cancelHerdrReconnect()
@@ -10859,6 +10866,15 @@ final class WorkspaceSceneModel: ObservableObject {
             sessionConnectionRecoveryRequest = nil
             scheduleZellijSessionDiscovery()
         case .disconnected:
+            if nativeZellijSessionCoordinator.attachmentClosure(handle)
+                == .retryableTransportFailure,
+                var context = activeZellijReconnectContext,
+                context.handleID == handle.id {
+                context.surfaceLaunchFailed = true
+                activeZellijReconnectContext = context
+                startZellijReconnect(context)
+                return
+            }
             // Checked before `hasLaunched`: a surface that failed to be created
             // never launched, so the guard below would drop this transient
             // failure and the session would latch. See the tmux path.
@@ -10912,7 +10928,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 context.surfaceExitCode = code
                 activeZellijReconnectContext = context
                 startZellijReconnect(context)
-            case .surfaceUnavailable:
+            case .retryableTransportFailure, .surfaceUnavailable:
                 // Recoverable failures are re-armed above, before
                 // `hasLaunched`. Reaching here means no matching reconnect
                 // context survives.

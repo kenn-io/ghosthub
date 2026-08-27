@@ -109,7 +109,9 @@ enum SSHConnectionFailure {
         status: Int32,
         output: String
     ) -> Bool {
-        guard status == 255 else { return false }
+        guard status == 255,
+              !indicatesRefusedSessionOpen(status: status, output: output)
+        else { return false }
         let normalized = output.lowercased()
         return normalized.contains("connection closed by unknown port 65535")
             || normalized.contains("control socket connect(")

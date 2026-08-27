@@ -12,6 +12,88 @@ import Testing
 @testable import GhosthubApp
 
 extension WorkspaceZellijTests {
+    @Test("initial Zellij transport failure starts automatic reconnect")
+    func initialZellijTransportFailureStartsReconnect() async throws {
+        let database = try WorkspaceDatabase.inMemory()
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let acquisitions = Mutex(0)
+        let displays = Mutex(1)
+        let route = SSHConnectionArgumentsSnapshot(testKwtSSHAttachment(
+            routeIdentity: "sha256:stable-route"
+        ))
+        let model = try makeModel(
+            database: database,
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            activeDisplayCount: { displays.withLock { $0 } },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api"])
+            },
+            zellijSSHConnectionSnapshotProvider: { _ in route },
+            presentationSSHConnectionProvider: { _, _ in
+                let attempt = acquisitions.withLock {
+                    $0 += 1
+                    return $0
+                }
+                guard attempt > 1 else {
+                    displays.withLock { $0 = 0 }
+                    throw KwtSSHLeaseError.operationFailed(
+                        code: "ssh_connection_failed",
+                        message: "ssh: connect to host build.example.test port 22: No route to host",
+                        retryable: true
+                    )
+                }
+                return testKwtSSHAttachment(
+                    routeIdentity: "sha256:stable-route"
+                )
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)],
+            tmuxReconnectProbeDeadline: .seconds(1)
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            model.activeBorrowedZellijRecoveryState?.isReconnecting == true
+        }
+
+        #expect(acquisitions.withLock { $0 } == 1)
+        #expect(model.zellijReconnectSupervisorIsRunning)
+        #expect(model.presentationSSHSession == nil)
+        #expect(store.requestedConfigurations.isEmpty)
+
+        displays.withLock { $0 = 1 }
+        model.reconnectActiveZellijSessionNow()
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            store.requestedConfigurations.count == 1
+                && model.activeBorrowedZellijConnectionState == .connected
+        }
+
+        #expect(acquisitions.withLock { $0 } == 2)
+        #expect(model.activeBorrowedZellijConnectionState == .connected)
+        #expect(model.activeBorrowedZellijRecoveryState == nil)
+        await model.shutdown()
+    }
+
     @Test("remote transport loss reconnects an active Zellij session")
     func remoteReconnect() async throws {
         let database = try WorkspaceDatabase.inMemory()

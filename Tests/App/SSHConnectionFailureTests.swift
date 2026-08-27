@@ -126,6 +126,14 @@ struct SSHConnectionFailureTests {
                 "Control socket connect(/tmp/kwt.sock): Connection refused",
                 true
             ),
+            (
+                255,
+                """
+                mux_client_request_session: session request failed: Session open refused by peer
+                Connection closed by UNKNOWN port 65535
+                """,
+                false
+            ),
             (255, "Permission denied (publickey,password).", false),
             (1, "Connection closed by UNKNOWN port 65535", false),
             (

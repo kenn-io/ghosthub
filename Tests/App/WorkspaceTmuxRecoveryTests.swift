@@ -407,6 +407,65 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("initial tmux resolution transport failure reconnects")
+    func initialTmuxResolutionTransportFailureReconnects() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let resolutions = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { host, _ in
+                let attempt = resolutions.withLock {
+                    $0 += 1
+                    return $0
+                }
+                guard attempt > 1 else {
+                    return .failure(.sshConnectionFailed(
+                        host: host.hostname,
+                        classification: SSHConnectionFailure.classify(
+                            status: 255,
+                            output: "ssh: connect to host build.example.test port 22: Network is unreachable"
+                        )
+                    ))
+                }
+                return successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionValidationDiscovery: { _, _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        model.prepareActiveBorrowedTmuxSurface()
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            surfaceStore.requestCount == 1
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(resolutions.withLock { $0 } == 2)
+        #expect(surfaceStore.requestCount == 1)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        #expect(model.activeBorrowedTmuxRecoveryState == nil)
+        #expect(model.presentationSSHSession == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("reconnect rejects a different SSH route before probing")
     func reconnectRejectsDifferentSSHRouteBeforeProbing() async throws {
         let environment = try setupRemoteTmuxEnvironment()

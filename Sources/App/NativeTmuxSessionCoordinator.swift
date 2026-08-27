@@ -457,7 +457,13 @@ final class NativeTmuxSessionCoordinator {
                 }
                 try? await sshConnection?.release()
             }
-            attachmentClosures[handle.id] = .launchFailed
+            attachmentClosures[handle.id] = switch error {
+            case let .sshConnectionFailed(_, classification)
+                where classification.kind == .transport:
+                .retryableTransportFailure
+            default:
+                .launchFailed
+            }
             interactiveSizingHandles.remove(handle.id)
             onStateChanged?(
                 handle,
