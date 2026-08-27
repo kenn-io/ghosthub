@@ -52,6 +52,11 @@ const OUTPUT_POLL: Duration = Duration::from_millis(250);
 /// instead of holding it while a wedged peer refuses to read.
 const OUTBOUND_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How often the relay loop re-checks that the bound scene is still
+/// live, so an idle session is closed at its deadline even without any
+/// client activity to trigger a refresh.
+const SCENE_DEADLINE_POLL: Duration = Duration::from_mins(1);
+
 struct Geometry {
     size: GridSize,
     pixels: PixelSize,
@@ -91,7 +96,8 @@ async fn attach_session(
     {
         return;
     }
-    let Some(mut geometry) = client_hello_geometry(&mut socket, &mut shutdown, &scenes).await
+    let Some((mut geometry, scene_id)) =
+        client_hello_geometry(&mut socket, &mut shutdown, &scenes).await
     else {
         return;
     };
@@ -179,6 +185,10 @@ async fn attach_session(
             _ => return,
         }
     }
+    if !scenes.is_live(&scene_id, Instant::now()) {
+        close(&mut socket, close_code::POLICY, "scene expired").await;
+        return;
+    }
     let spawned = tokio::task::spawn_blocking(move || {
         let (program, args) = local_client();
         ByteRelayWorker::attach_command(
@@ -263,8 +273,20 @@ async fn attach_session(
             () = stopped(&mut shutdown) => {
                 break Some((close_code::AWAY, "server shutting down"));
             }
+            () = tokio::time::sleep(SCENE_DEADLINE_POLL) => {
+                // A non-refreshing check so an idle scene actually reaches
+                // its deadline even while the shell keeps producing output.
+                if !scenes.is_live(&scene_id, Instant::now()) {
+                    break Some((close_code::POLICY, "scene expired"));
+                }
+            }
             message = socket.recv() => match message {
                 Some(Ok(Message::Binary(bytes))) => {
+                    // Authenticated client activity refreshes the scene's
+                    // idle clock; an expired scene fails closed.
+                    if !scenes.refresh(&scene_id, Instant::now()) {
+                        break Some((close_code::POLICY, "scene expired"));
+                    }
                     if let Err(error) = worker.send_bytes(bytes.to_vec())
                         && error.is_backpressure()
                     {
@@ -286,6 +308,9 @@ async fn attach_session(
                     let Some(resize) = parse_resize(&frame) else {
                         break Some((close_code::POLICY, "invalid resize"));
                     };
+                    if !scenes.refresh(&scene_id, Instant::now()) {
+                        break Some((close_code::POLICY, "scene expired"));
+                    }
                     if let Err(error) = worker.resize(resize.size, resize.pixels)
                         && error.is_backpressure()
                     {
@@ -326,7 +351,7 @@ async fn client_hello_geometry(
     socket: &mut WebSocket,
     shutdown: &mut watch::Receiver<bool>,
     scenes: &SceneRegistry,
-) -> Option<Geometry> {
+) -> Option<(Geometry, String)> {
     let deadline = tokio::time::sleep(CLIENT_HELLO_TIMEOUT);
     tokio::pin!(deadline);
     loop {
@@ -345,22 +370,23 @@ async fn client_hello_geometry(
                         // The scene credential in the hello is the per-scene
                         // gate — validated before any PTY work, and never
                         // from the ambient cookie the upgrade carried.
-                        let scene_ok = hello_scene_credential(&frame).is_some_and(
-                            |(scene_id, scene_secret)| {
-                                scenes.validate(&scene_id, &scene_secret, Instant::now())
-                            },
-                        );
-                        if !scene_ok {
+                        let Some((scene_id, scene_secret)) = hello_scene_credential(&frame)
+                        else {
+                            close(socket, close_code::POLICY, "invalid scene credential").await;
+                            return None;
+                        };
+                        if !scenes.validate(&scene_id, &scene_secret, Instant::now()) {
                             close(socket, close_code::POLICY, "invalid scene credential").await;
                             return None;
                         }
-                        let geometry = valid_client_hello(&frame)
+                        let Some(geometry) = valid_client_hello(&frame)
                             .then(|| hello_geometry(&frame))
-                            .flatten();
-                        if geometry.is_none() {
+                            .flatten()
+                        else {
                             close(socket, close_code::POLICY, "invalid client hello").await;
-                        }
-                        return geometry;
+                            return None;
+                        };
+                        return Some((geometry, scene_id));
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
                     _ => return None,

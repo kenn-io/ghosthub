@@ -174,6 +174,40 @@ impl SceneRegistry {
         true
     }
 
+    /// Refresh a live scene's idle clock on authenticated client activity
+    /// (a websocket data frame), returning whether it is still live. An
+    /// expired scene is dropped and reports `false`. Terminal output and
+    /// keepalives never call this, so they do not keep an idle scene alive.
+    pub(crate) fn refresh(&self, scene_id: &str, now: Instant) -> bool {
+        let mut registry = self.lock();
+        match registry.scenes.get_mut(scene_id) {
+            Some(scene) if scene.is_live(now) => {
+                scene.last_used_at = now;
+                true
+            }
+            Some(_) => {
+                registry.scenes.remove(scene_id);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a scene is still within its bounds, WITHOUT refreshing the
+    /// idle clock — for a periodic deadline check that must let an idle
+    /// scene actually expire. An expired scene is dropped.
+    pub(crate) fn is_live(&self, scene_id: &str, now: Instant) -> bool {
+        let mut registry = self.lock();
+        match registry.scenes.get(scene_id) {
+            Some(scene) if scene.is_live(now) => true,
+            Some(_) => {
+                registry.scenes.remove(scene_id);
+                false
+            }
+            None => false,
+        }
+    }
+
     /// Permanently drop every scene and mint code. Called on shutdown.
     pub(crate) fn invalidate(&self) {
         let mut registry = self.lock();
@@ -323,6 +357,40 @@ mod tests {
         let t = base();
         let credential = registry.establish_direct(t).expect("establish");
         assert!(registry.validate(&credential.scene_id, &credential.scene_secret, t));
+    }
+
+    #[test]
+    fn refresh_extends_the_idle_clock_but_is_live_does_not() {
+        let registry = SceneRegistry::new();
+        let t = base();
+        let code = registry.mint_code(t).expect("mint code");
+        let c = registry.redeem(&code, t).expect("redeem").expect("scene");
+
+        // is_live near the idle bound reports live but does NOT refresh, so
+        // the scene still expires on schedule.
+        let near = t + SCENE_IDLE_TIMEOUT.saturating_sub(Duration::from_secs(1));
+        assert!(registry.is_live(&c.scene_id, near));
+        let idle_out = t + SCENE_IDLE_TIMEOUT + Duration::from_secs(1);
+        assert!(!registry.is_live(&c.scene_id, idle_out));
+    }
+
+    #[test]
+    fn refresh_keeps_a_scene_alive_across_activity() {
+        let registry = SceneRegistry::new();
+        let t = base();
+        let code = registry.mint_code(t).expect("mint code");
+        let c = registry.redeem(&code, t).expect("redeem").expect("scene");
+
+        let near = t + SCENE_IDLE_TIMEOUT.saturating_sub(Duration::from_secs(1));
+        assert!(registry.refresh(&c.scene_id, near));
+        // Refreshed: another near-idle span is still live.
+        let again = near + SCENE_IDLE_TIMEOUT.saturating_sub(Duration::from_secs(1));
+        assert!(registry.is_live(&c.scene_id, again));
+
+        // Past the idle bound from the last refresh, both report expired.
+        let out = again + SCENE_IDLE_TIMEOUT + Duration::from_secs(1);
+        assert!(!registry.refresh(&c.scene_id, out));
+        assert!(!registry.is_live(&c.scene_id, out));
     }
 
     #[test]
