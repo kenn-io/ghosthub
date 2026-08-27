@@ -455,9 +455,8 @@ final class WorkspaceSceneModel: ObservableObject {
         var routeIdentity: String?
         var phase: RemoteTmuxEstablishmentPhase
         var surfaceExitCode: UInt32?
-        /// The previous attempt could not create a terminal surface, so no
-        /// client ever ran and there is no exit code to inspect. Recovery is
-        /// still legitimate: the transport failure that started it stands.
+        /// The previous attempt failed before the terminal client could start,
+        /// so there is no exit code to inspect and replay is still safe.
         var surfaceLaunchFailed = false
     }
 
@@ -10597,7 +10596,9 @@ final class WorkspaceSceneModel: ObservableObject {
            alwaysLiveManagedTmuxPresentationKeys.contains(key),
            !nativeTmuxSessionCoordinator.hasLaunched(handle),
            nativeTmuxSessionCoordinator.attachmentClosure(handle)
-           != .surfaceUnavailable {
+           != .surfaceUnavailable,
+           nativeTmuxSessionCoordinator.attachmentClosure(handle)
+           != .retryableTransportFailure {
             // Identity exclusion is for permanent launch and setup failures.
             // A retryable surface failure (for example the display vanished
             // during creation) keeps the policy-owned presentation so
@@ -10641,6 +10642,18 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxActivityEnrollmentTasks.removeValue(
                 forKey: handle.id
             )?.cancel()
+        }
+        if case .disconnected = state,
+           nativeTmuxSessionCoordinator.attachmentClosure(handle)
+           == .retryableTransportFailure,
+           var context = presentation.reconnectContext,
+           context.handleID == handle.id {
+            // SSH failed before the tmux client could start, so retrying the
+            // original attachment cannot replay remote client side effects.
+            context.surfaceLaunchFailed = true
+            presentation.reconnectContext = context
+            startTmuxReconnect(presentation, context: context)
+            return
         }
         if case .disconnected = state,
            presentation.recoveryState != nil,
@@ -11588,7 +11601,8 @@ final class WorkspaceSceneModel: ObservableObject {
                   retainedTmuxPresentation(for: presentation.handle)
                   === presentation
             else { return .stop }
-            guard snapshot.routeIdentity == context.routeIdentity else {
+            if let expectedRouteIdentity = context.routeIdentity,
+               snapshot.routeIdentity != expectedRouteIdentity {
                 stopTmuxReconnectWithUnableToAttach(
                     presentation,
                     "The SSH connection changed while Ghosthub was checking the tmux session. Reopen it to use the current connection."
@@ -11678,7 +11692,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard probe.outcome == .present else { return .retry }
             }
         }
-        guard let decisionContext = presentation.reconnectContext else {
+        guard var decisionContext = presentation.reconnectContext else {
             return .stop
         }
         let discoveryAdvancedToAttachOnly =
@@ -11694,6 +11708,19 @@ final class WorkspaceSceneModel: ObservableObject {
         guard decisionContext == currentContext
             || discoveryAdvancedToAttachOnly
         else { return .stop }
+        if decisionContext.routeIdentity == nil,
+           let frozenConnection {
+            switch probe.outcome {
+            case .present, .absent:
+                // Initial attachment recovery has no route to fence until its
+                // first successful probe. Bind that stable route before any
+                // relaunch so the new client cannot switch SSH destinations.
+                decisionContext.routeIdentity = frozenConnection.routeIdentity
+                presentation.reconnectContext = decisionContext
+            case .failure:
+                break
+            }
+        }
         return reconnectDecision(
             for: presentation,
             context: decisionContext,

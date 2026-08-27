@@ -274,6 +274,77 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("initial SSH transport failure starts tmux reconnect")
+    func initialSSHTransportFailureStartsTmuxReconnect() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let acquisitions = Mutex(0)
+        let transportUnavailable = Mutex(true)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionValidationDiscovery: { _, _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                acquisitions.withLock { $0 += 1 }
+                if transportUnavailable.withLock({ $0 }) {
+                    throw KwtSSHLeaseError.operationFailed(
+                        code: "ssh_connection_failed",
+                        message: "ssh: connect to host build.example.test port 22: No route to host",
+                        retryable: true
+                    )
+                }
+                return testKwtSSHAttachment(
+                    routeIdentity: "sha256:recovered-route"
+                )
+            },
+            tmuxReconnectIntervals: [.seconds(30)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        model.prepareActiveBorrowedTmuxSurface()
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            acquisitions.withLock { $0 } >= 2
+        }
+
+        #expect(acquisitions.withLock { $0 } >= 2)
+        #expect(model.activeBorrowedTmuxRecoveryState?.isReconnecting == true)
+        #expect(model.activeBorrowedTmuxRecoveryState?.allowsReconnectNow == true)
+        #expect(model.anyTmuxReconnectSupervisorIsRunning)
+        #expect(model.presentationSSHSession == nil)
+        #expect(surfaceStore.requestCount == 0)
+
+        transportUnavailable.withLock { $0 = false }
+        model.reconnectActiveTmuxSessionNow()
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            surfaceStore.requestCount == 1
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(surfaceStore.requestCount == 1)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        #expect(!model.anyTmuxReconnectSupervisorIsRunning)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("retryable SSH transport acquisition keeps tmux reconnecting")
     func retryableSSHTransportAcquisitionKeepsTmuxReconnect() async throws {
         let environment = try setupRemoteTmuxEnvironment()

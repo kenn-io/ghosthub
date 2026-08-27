@@ -122,6 +122,54 @@ struct ZellijInventoryClientTests {
         #expect(calls.withLock { $0 } == 0)
     }
 
+    @Test("remote kill does not retry a refused SSH session")
+    func remoteKillDoesNotRetryRefusedSSHSession() {
+        let killAttempts = Mutex(0)
+        let runner = AccountCommandRunner(
+            processRunner: { _, arguments, _, _ in
+                let command = arguments.last ?? ""
+                if command.contains("command -v zellij") {
+                    return AccountCommandOutput(
+                        status: 0,
+                        stdout: "GHOSTHUB_ZELLIJ_PATH\n/usr/bin/zellij\n",
+                        stderr: ""
+                    )
+                }
+                killAttempts.withLock { $0 += 1 }
+                return AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr: """
+                    mux_client_request_session: session request failed: Session open refused by peer
+                    Connection closed by UNKNOWN port 65535
+                    """
+                )
+            },
+            loginShellProvider: { "/bin/account-shell" }
+        )
+        let client = ZellijInventoryClient(
+            commandRunner: runner,
+            connectionArgumentsProvider: { _ in ["-S", "/tmp/kwt.sock"] }
+        )
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example",
+            port: 22
+        )
+
+        let result = client.kill(
+            sessionName: "api",
+            on: .ssh(host),
+            sshConnectionArguments: ["-S", "/tmp/kwt.sock"]
+        )
+
+        guard case .failure = result else {
+            Issue.record("refused remote kill unexpectedly succeeded")
+            return
+        }
+        #expect(killAttempts.withLock { $0 } == 1)
+    }
+
     private func commandRunner(
         capturing commands: ZellijCommandRecorder
     ) -> AccountCommandRunner {
