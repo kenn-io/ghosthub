@@ -115,8 +115,10 @@ enum SSHConnectionFailure {
             || normalized.contains("control socket connect(")
     }
 
-    /// OpenSSH failed before it opened the remote command's session channel.
-    /// A bounded retry is safe because the requested command did not start.
+    /// Matches OpenSSH's multiplexed session-channel refusal diagnostic.
+    ///
+    /// The captured stream also contains remote stderr, so callers must opt in
+    /// only when repeating the requested command is safe.
     static func indicatesRefusedSessionOpen(
         status: Int32,
         output: String

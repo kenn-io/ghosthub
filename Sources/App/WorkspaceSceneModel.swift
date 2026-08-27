@@ -1324,7 +1324,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 host: host,
                 connectionArguments: connectionArguments,
                 command: command,
-                timeout: 10
+                timeout: 10,
+                retryPolicy: .idempotent
             )
             return (output.status, output.stdout, output.stderr)
         },

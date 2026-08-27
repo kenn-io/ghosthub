@@ -179,7 +179,8 @@ struct ZellijInventoryClient: Sendable {
                 host: info,
                 connectionArguments: sshConnectionArguments,
                 command: command,
-                timeout: processTimeout
+                timeout: processTimeout,
+                retryPolicy: .idempotent
             )
         }
     }

@@ -79,6 +79,11 @@ private final class AccountCommandOutputCollector: @unchecked Sendable {
 }
 
 struct AccountCommandRunner: Sendable {
+    enum RemoteRetryPolicy: Sendable {
+        case never
+        case idempotent
+    }
+
     static let timedOutStatus: Int32 = -124
     static let outputExceededStatus: Int32 = -125
     static let cancelledStatus: Int32 = -130
@@ -120,7 +125,8 @@ struct AccountCommandRunner: Sendable {
         host: SSHHostInfo,
         connectionArguments: [String],
         command: String,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        retryPolicy: RemoteRetryPolicy = .never
     ) -> AccountCommandOutput {
         let invocation = (["/usr/bin/ssh"] + Self.remoteLoginArguments(
             host: host,
@@ -128,6 +134,7 @@ struct AccountCommandRunner: Sendable {
             command: command
         )).map(shellQuotedCommandArgument).joined(separator: " ")
         var output = runLocalLoginShell(command: invocation, timeout: timeout)
+        guard case .idempotent = retryPolicy else { return output }
         for delay in Self.sessionOpenRetryDelays {
             guard SSHConnectionFailure.indicatesRefusedSessionOpen(
                 status: output.status,

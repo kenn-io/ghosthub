@@ -90,7 +90,8 @@ struct TmuxSessionActivityProbe: Sendable {
                     host: info,
                     connectionArguments: connectionArguments ?? [],
                     command: command,
-                    timeout: 10
+                    timeout: 10,
+                    retryPolicy: .idempotent
                 )
             }
         }

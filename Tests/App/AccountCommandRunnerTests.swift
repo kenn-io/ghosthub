@@ -97,7 +97,7 @@ struct AccountCommandRunnerTests {
         #expect(command.contains("${SHELL:-/bin/sh}"))
     }
 
-    @Test("remote commands retry a refused multiplexed session")
+    @Test("idempotent remote commands retry a refused multiplexed session")
     func remoteLoginShellRetriesRefusedSession() {
         let attempts = Mutex(0)
         let runner = AccountCommandRunner(
@@ -133,12 +133,46 @@ struct AccountCommandRunnerTests {
             ),
             connectionArguments: ["-S", "/tmp/kwt.sock"],
             command: "printf ready",
-            timeout: 6
+            timeout: 6,
+            retryPolicy: .idempotent
         )
 
         #expect(result.status == 0)
         #expect(result.stdout == "ready\n")
         #expect(attempts.withLock { $0 } == 2)
+    }
+
+    @Test("remote commands do not retry refused sessions by default")
+    func remoteLoginShellDoesNotRetryRefusedSessionByDefault() {
+        let attempts = Mutex(0)
+        let runner = AccountCommandRunner(
+            processRunner: { _, _, _, _ in
+                attempts.withLock { $0 += 1 }
+                return AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr: """
+                    mux_client_request_session: session request failed: Session open refused by peer
+                    Connection closed by UNKNOWN port 65535
+                    """
+                )
+            },
+            loginShellProvider: { "/bin/account-shell" }
+        )
+
+        let result = runner.runRemoteLoginShell(
+            host: SSHHostInfo(
+                user: "dev",
+                hostname: "build.example",
+                port: 22
+            ),
+            connectionArguments: ["-S", "/tmp/kwt.sock"],
+            command: "printf ready",
+            timeout: 6
+        )
+
+        #expect(result.status == 255)
+        #expect(attempts.withLock { $0 } == 1)
     }
 
     @Test("remote commands do not retry other SSH failures")
@@ -164,7 +198,8 @@ struct AccountCommandRunnerTests {
             ),
             connectionArguments: ["-S", "/tmp/kwt.sock"],
             command: "printf ready",
-            timeout: 6
+            timeout: 6,
+            retryPolicy: .idempotent
         )
 
         #expect(result.status == 255)
@@ -197,7 +232,8 @@ struct AccountCommandRunnerTests {
             ),
             connectionArguments: ["-S", "/tmp/kwt.sock"],
             command: "printf ready",
-            timeout: 6
+            timeout: 6,
+            retryPolicy: .idempotent
         )
 
         #expect(result.status == 255)
