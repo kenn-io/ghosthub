@@ -248,6 +248,24 @@ jobs:
       - name: Run essential kwt and tmux workflows
         run: make test-essential-workflows
 
+      - name: Stop Xcode background services
+        if: ${{ always() && runner.environment == 'self-hosted' }}
+        shell: bash
+        run: |
+          uid="$(/usr/bin/id -u)"
+          for label in \
+            com.apple.CoreSimulator.SimLaunchHost-arm64 \
+            com.apple.CoreSimulator.SimLaunchHost-x86 \
+            com.apple.CoreSimulator.SimulatorTrampoline \
+            com.apple.CoreSimulator.CoreSimulatorService \
+            com.apple.CoreDevice.CoreDeviceService; do
+            target="gui/$uid/$label"
+            if /bin/launchctl print "$target" >/dev/null 2>&1; then
+              /bin/launchctl bootout "$target" ||
+                ! /bin/launchctl print "$target" >/dev/null 2>&1
+            fi
+          done
+
       - name: Remove isolated macOS test state
         if: ${{ always() && runner.environment == 'self-hosted' }}
         shell: bash
