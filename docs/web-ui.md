@@ -25,6 +25,19 @@ Explicitly excluded from v1 (see [V1 exclusions](#v1-exclusions)): output
 replay, PTY pooling and multi-viewer arbitration, constructive and destructive
 session operations, and any non-loopback access.
 
+**Design principle — the multiplexer is the session-state authority.**
+Ghosthub never relays a bare shell; it relays an *attach client* to tmux,
+Zellij, or Herdr, which already owns scrollback, cursor and DEC-mode state,
+history, and session lifetime. That single fact justifies most of the
+exclusions above: there is no server-side replay ring, no mode-resync
+preamble, and no cross-device resume protocol because the backend already
+provides them — a reconnect is a fresh attach and the multiplexer redraws.
+The relay is deliberately parserless and byte-transparent for the same
+reason: the browser's xterm.js is the one VT interpreter, and a second
+interpreter on the server would be a liability, not a feature. Adjacent
+raw-shell terminals must build all of this themselves; see
+[Web UI prior art](web-ui-prior-art.md) for that contrast and its lessons.
+
 ## Ownership: Runtime, Scene, TerminalRelay
 
 The current Rust `Workspace` mixes durable runtime state with what is really
@@ -263,6 +276,9 @@ configuration:
   credential, and closes websockets with proper close frames.
 
 ### Scene credentials
+
+*Implemented in `ghosthub-web` (`scenes.rs`, the exchange endpoint, and the
+attach hello gate); the contract below is the authority.*
 
 Scene identity is a credential, not an inference, and it is never minted
 from ambient state alone. The bootstrap redirect mints a single-use

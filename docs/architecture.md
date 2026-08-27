@@ -11,7 +11,11 @@ GPUI while preserving the same product and session model. Its crate
 boundaries, dependency findings, platform roots, substrate gates, and delivery
 order are maintained in [Windows and Linux Rust Port](rust-port.md). The
 locked v1 contract for the loopback web UI served by the Rust application is
-maintained in [Web UI](web-ui.md).
+maintained in [Web UI](web-ui.md). The web UI relays an attach client to the
+multiplexer rather than a bare shell, so the multiplexer remains the authority
+for scrollback, mode state, history, and session lifetime; the web relay is a
+parserless byte transport with no server-side replay or resume, and a
+reconnect is always a fresh attachment.
 
 ## Mental Model
 
