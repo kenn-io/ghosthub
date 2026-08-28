@@ -2602,13 +2602,23 @@ final class WorkspaceSceneModel: ObservableObject {
 
         do {
             try await ensureRemoteKwtForOperation(hostID: project.hostID)
-            try await kwtWorktreeCreator(request, project.rootPath, host)
+            guard let current = validatedProjectOperationTarget(
+                project,
+                capturedHost: host
+            ) else {
+                throw KwtWorktreeError.projectUnavailable
+            }
+            try await kwtWorktreeCreator(
+                request,
+                current.project.rootPath,
+                current.host
+            )
             cancelPendingRestoration()
 
-            let refreshed = try await kwtInventoryLoader(host)
+            let refreshed = try await kwtInventoryLoader(current.host)
             applyAuthoritativeKwtInventory(
                 refreshed,
-                hostID: project.hostID
+                hostID: current.project.hostID
             )
             scheduleTmuxSessionDiscovery()
         } catch {
@@ -2648,7 +2658,16 @@ final class WorkspaceSceneModel: ObservableObject {
             throw KwtWorktreeError.projectUnavailable
         }
         try await ensureRemoteKwtForOperation(hostID: project.hostID)
-        return try await kwtBranchLister(project.rootPath, host)
+        guard let current = validatedProjectOperationTarget(
+            project,
+            capturedHost: host
+        ) else {
+            throw KwtWorktreeError.projectUnavailable
+        }
+        return try await kwtBranchLister(
+            current.project.rootPath,
+            current.host
+        )
     }
 
     func prepareWorktreeRemoval(
@@ -2674,6 +2693,12 @@ final class WorkspaceSceneModel: ObservableObject {
             throw KwtWorktreeError.removalIdentityUnavailable
         }
         try await ensureRemoteKwtForOperation(hostID: project.hostID)
+        guard validatedProjectOperationTarget(
+            project,
+            capturedHost: host
+        ) != nil else {
+            throw KwtWorktreeError.removalHostChanged
+        }
         let changes = try await kwtWorktreeChangeReader(
             worktree.path,
             project.rootPath,
@@ -2818,6 +2843,9 @@ final class WorkspaceSceneModel: ObservableObject {
             try await ensureRemoteKwtForOperation(
                 hostID: requestedProject.hostID
             )
+            guard removalHostEndpointMatches(request) else {
+                throw KwtWorktreeError.removalHostChanged
+            }
             preflight = try await kwtInventoryLoader(confirmedHost)
         } catch {
             recordKwtUnavailability(
@@ -3475,9 +3503,15 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         do {
             try await ensureRemoteKwtForOperation(hostID: project.hostID)
+            guard let current = validatedProjectOperationTarget(
+                project,
+                capturedHost: host
+            ) else {
+                throw KwtPullRequestError.projectUnavailable
+            }
             return try await kwtPullRequestLister(
-                project.scopedKey,
-                host
+                current.project.scopedKey,
+                current.host
             )
         } catch {
             if isRemoteKwtUnavailable(error, hostID: project.hostID) {
@@ -3524,14 +3558,25 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         }
 
-        let result: KwtPullRequestImportResult
+        let operation: (
+            result: KwtPullRequestImportResult,
+            project: ProjectSummary,
+            host: CommandHost
+        )
         do {
             try await ensureRemoteKwtForOperation(hostID: project.hostID)
-            result = try await kwtPullRequestImporter(
+            guard let current = validatedProjectOperationTarget(
+                project,
+                capturedHost: host
+            ) else {
+                throw KwtPullRequestError.projectUnavailable
+            }
+            let result = try await kwtPullRequestImporter(
                 request.pullRequestID,
-                project.scopedKey,
-                host
+                current.project.scopedKey,
+                current.host
             )
+            operation = (result, current.project, current.host)
             cancelPendingRestoration()
         } catch {
             if isRemoteKwtUnavailable(error, hostID: project.hostID) {
@@ -3546,42 +3591,42 @@ final class WorkspaceSceneModel: ObservableObject {
         }
 
         do {
-            let refreshed = try await kwtInventoryLoader(host)
+            let refreshed = try await kwtInventoryLoader(operation.host)
             applyAuthoritativeKwtInventory(
                 refreshed,
-                hostID: project.hostID
+                hostID: operation.project.hostID
             )
         } catch {
-            kwtInventoryFailuresByHost[project.hostID] =
+            kwtInventoryFailuresByHost[operation.project.hostID] =
                 error.localizedDescription
         }
 
         mergeImportedWorkspace(
-            result.workspace,
-            project: project
+            operation.result.workspace,
+            project: operation.project
         )
-        kwtAvailabilityByHost[project.hostID] = true
+        kwtAvailabilityByHost[operation.project.hostID] = true
         applyInventoryOverlayIfNeeded()
         annotateImportedPullRequest(
-            result.pullRequest,
-            workspace: result.workspace,
-            hostID: project.hostID
+            operation.result.pullRequest,
+            workspace: operation.result.workspace,
+            hostID: operation.project.hostID
         )
         updateWorkspaceInventoryState()
         scheduleTmuxSessionDiscovery()
 
-        guard let imported = snapshot.worktrees.first(where: {
-            $0.hostID == project.hostID
+        guard let importedWorktree = snapshot.worktrees.first(where: {
+            $0.hostID == operation.project.hostID
                 && normalizedWorkspacePath($0.path)
-                == normalizedWorkspacePath(result.workspace.path)
+                == normalizedWorkspacePath(operation.result.workspace.path)
         }) else {
             throw KwtPullRequestError.importedWorkspaceMissing(
-                path: result.workspace.path
+                path: operation.result.workspace.path
             )
         }
         var importedSelection = selection
         importedSelection.select(
-            .worktree(imported.id),
+            .worktree(importedWorktree.id),
             in: snapshot,
             visibility: worktreeVisibility
         )
@@ -6666,7 +6711,8 @@ final class WorkspaceSceneModel: ObservableObject {
             provisioningHost: host,
             hostID: snapshot.hosts.first {
                 $0.configKey == host.configKey
-            }?.id
+            }?.id,
+            revalidatingHostID: nil
         )
     }
 
@@ -6689,7 +6735,8 @@ final class WorkspaceSceneModel: ObservableObject {
             projectPath,
             on: currentTarget,
             provisioningHost: configuredSSHHost(for: host.id),
-            hostID: host.kind == .remote ? host.id : nil
+            hostID: host.kind == .remote ? host.id : nil,
+            revalidatingHostID: host.id
         )
     }
 
@@ -6697,7 +6744,8 @@ final class WorkspaceSceneModel: ObservableObject {
         _ projectPath: String,
         on target: CommandHost,
         provisioningHost: SSHHost?,
-        hostID: UUID?
+        hostID: UUID?,
+        revalidatingHostID: UUID?
     ) async -> Result<String, HostProbeError> {
         let registryHost = projectRegistryHost(for: target)
         guard worktreeMutationCoordinator.acquireProjectRegistry(
@@ -6718,6 +6766,18 @@ final class WorkspaceSceneModel: ObservableObject {
                     on: provisioningHost,
                     hostID: hostID
                 )
+            }
+            if let revalidatingHostID {
+                guard let currentHost = snapshot.host(
+                    id: revalidatingHostID
+                ),
+                    CommandHostResolver.resolve(currentHost) == target
+                else {
+                    return .failure(.message(
+                        "The host connection changed. "
+                            + "Close Add Project and try again."
+                    ))
+                }
             }
             let project = try await kwtProjectRegistration(
                 projectPath,
@@ -6868,6 +6928,13 @@ final class WorkspaceSceneModel: ObservableObject {
             try await ensureRemoteKwtForOperation(
                 hostID: initial.project.hostID
             )
+            guard validatedProjectRemovalTarget(
+                project,
+                confirmedHostID: confirmedHost.id,
+                capturedTarget: capturedTarget
+            ) != nil else {
+                return .failure(projectRemovalTargetChangedError)
+            }
             let refreshed = try await kwtInventoryLoader(initial.host)
             if let warning = refreshed.projectsWarning {
                 return .failure(projectRemovalInventoryError(warning))
@@ -7161,6 +7228,24 @@ final class WorkspaceSceneModel: ObservableObject {
         .message(
             "The project or host connection changed. Try removing it again."
         )
+    }
+
+    private func validatedProjectOperationTarget(
+        _ capturedProject: ProjectSummary,
+        capturedHost: CommandHost
+    ) -> (project: ProjectSummary, host: CommandHost)? {
+        guard let currentProject = snapshot.project(id: capturedProject.id),
+              currentProject.hostID == capturedProject.hostID,
+              currentProject.scopedKey == capturedProject.scopedKey,
+              currentProject.registryID == capturedProject.registryID,
+              currentProject.rootPath == capturedProject.rootPath,
+              currentProject.registrationFingerprint
+              == capturedProject.registrationFingerprint,
+              let currentHost = snapshot.host(id: capturedProject.hostID),
+              let currentTarget = CommandHostResolver.resolve(currentHost),
+              currentTarget == capturedHost
+        else { return nil }
+        return (currentProject, currentTarget)
     }
 
     private func projectRemovalInventoryError(

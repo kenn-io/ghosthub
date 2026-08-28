@@ -71,6 +71,139 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("Add Project rejects an endpoint changed during kwt provisioning")
+    func addProjectRejectsEndpointChangedDuringProvisioning() async throws {
+        let environment = try setupRemoteEnvironment()
+        let initialHost = SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: environment.host.platform,
+            sshDestination: try #require(environment.host.sshDestination)
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([
+            initialHost,
+        ])
+        let provisioningGate = AsyncGate()
+        let registrationCalls = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: environment.snapshot,
+            kwtRemoteProvisioner: { _ in
+                await provisioningGate.wait()
+            },
+            kwtProjectRegistration: { _, _ in
+                _ = registrationCalls.increment()
+                return KwtProjectRecord(
+                    repository: environment.project.scopedKey,
+                    name: environment.project.name,
+                    path: environment.project.rootPath,
+                    lastTouched: nil
+                )
+            },
+            configuredSSHHostsProvider: { configuredHosts.value }
+        )
+        let capturedHost = try #require(
+            model.snapshot.host(id: environment.host.id)
+        )
+
+        let registration = Task { @MainActor in
+            await model.registerProject(
+                environment.project.rootPath,
+                on: capturedHost
+            )
+        }
+        await provisioningGate.waitUntilWaiting()
+        configuredHosts.send([
+            SSHHost(
+                configKey: initialHost.configKey,
+                name: initialHost.name,
+                platform: initialHost.platform,
+                sshDestination: "user-a@host-b.example.com"
+            ),
+        ])
+        model.refreshHosts()
+        provisioningGate.open()
+
+        #expect(await registration.value == .failure(.message(
+            "The host connection changed. "
+                + "Close Add Project and try again."
+        )))
+        #expect(registrationCalls.count == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Remove Project stops when provisioning changes the endpoint")
+    func removeProjectStopsAfterProvisioningEndpointChange() async throws {
+        let environment = try setupRemoteEnvironment()
+        let project = try #require(environment.snapshot.projects.first)
+        let confirmedHost = try #require(environment.snapshot.hosts.first)
+        let initialHost = SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: environment.host.platform,
+            sshDestination: try #require(environment.host.sshDestination)
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([
+            initialHost,
+        ])
+        let provisioningGate = AsyncGate()
+        let inventoryLoads = Counter()
+        let removalCalls = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: environment.snapshot,
+            kwtInventoryLoader: { _ in
+                _ = inventoryLoads.increment()
+                return WorkspaceTmuxTestSupport.inventory(
+                    project: project,
+                    worktrees: environment.snapshot.worktrees
+                )
+            },
+            kwtRemoteProvisioner: { _ in
+                await provisioningGate.wait()
+            },
+            kwtProjectRemoval: { path, _, _, _, _ in
+                _ = removalCalls.increment()
+                return KwtProjectRecord(
+                    repository: project.scopedKey,
+                    name: project.name,
+                    path: path,
+                    lastTouched: nil
+                )
+            },
+            configuredSSHHostsProvider: { configuredHosts.value }
+        )
+
+        let removal = Task { @MainActor in
+            await model.unregisterProject(
+                project,
+                confirmedHost: confirmedHost
+            )
+        }
+        await provisioningGate.waitUntilWaiting()
+        configuredHosts.send([
+            SSHHost(
+                configKey: initialHost.configKey,
+                name: initialHost.name,
+                platform: initialHost.platform,
+                sshDestination: "user-a@host-b.example.com"
+            ),
+        ])
+        model.refreshHosts()
+        provisioningGate.open()
+
+        #expect(await removal.value == .failure(.message(
+            "The project or host connection changed. Try removing it again."
+        )))
+        #expect(inventoryLoads.count == 0)
+        #expect(removalCalls.count == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("Host Settings registers a project on an unsaved host draft")
     func hostSettingsRegistersProjectOnUnsavedDraft() async throws {
         let environment = try setupHostEnvironment()
