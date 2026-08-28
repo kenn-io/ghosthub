@@ -821,8 +821,12 @@ struct ExeVMInventoryTests {
     func inFlightEditsPreserveRetainedResults() async {
         let (workStarted, workStartedContinuation) =
             AsyncStream<Void>.makeStream()
+        let releasePersonal = DispatchSemaphore(value: 0)
         let releaseWork = DispatchSemaphore(value: 0)
         let client = ExeVMClient { host, _, startMarker, endMarker in
+            if host.hostname == "personal.exe.dev" {
+                releasePersonal.wait()
+            }
             if host.hostname == "work.exe.dev" {
                 workStartedContinuation.yield()
                 releaseWork.wait()
@@ -853,6 +857,15 @@ struct ExeVMInventoryTests {
                 sshDestination: "work.exe.dev"
             ),
         ]
+        let personalPublished = Task { @MainActor in
+            for await hosts in store.$hosts.values {
+                if hosts.contains(where: {
+                    $0.metadata.accountConfigKey == "personal"
+                }) {
+                    return
+                }
+            }
+        }
         let published = Task { @MainActor in
             for await hosts in store.$hosts.values {
                 if hosts.contains(where: {
@@ -864,6 +877,8 @@ struct ExeVMInventoryTests {
         }
         let refreshID = store.refresh(accounts: accounts)
         for await _ in workStarted.prefix(1) {}
+        releasePersonal.signal()
+        await personalPublished.value
 
         store.invalidateRefresh(
             refreshID,
