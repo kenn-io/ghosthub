@@ -463,7 +463,7 @@ fn bracketed_paste_is_mode_dependent() {
                 ..TerminalModes::default()
             },
         ),
-        b"\x1b[200~line one\nline two\x1b[201~"
+        b"\x1b[200~line one\rline two\x1b[201~"
     );
 }
 
@@ -479,7 +479,7 @@ fn bracketed_paste_normalizes_windows_line_endings() {
                 ..TerminalModes::default()
             },
         ),
-        b"\x1b[200~first\nsecond\nthird\nfourth\x1b[201~"
+        b"\x1b[200~first\rsecond\rthird\rfourth\x1b[201~"
     );
 }
 
@@ -496,8 +496,10 @@ fn control_characters_require_confirmation_without_bracketed_mode() {
 
     let encoded = encode_input(&input, TerminalModes::default());
 
+    // The control still gates the paste, and the delivered bytes have the
+    // ESC stripped rather than passing the control sequence through.
     assert!(encoded.requires_confirmation());
-    assert_eq!(encoded.approve(), b"echo safe\x1b[2J");
+    assert_eq!(encoded.approve(), b"echo safe[2J");
 }
 
 #[test]

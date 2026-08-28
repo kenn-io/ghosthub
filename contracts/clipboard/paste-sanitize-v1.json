@@ -54,19 +54,13 @@
       "id": "bracketed-crlf-normalizes-to-cr",
       "input": "one\r\ntwo",
       "bracketed_paste": true,
-      "expected": "\u001b[200~one\rtwo\u001b[201~",
-      "known_gaps": {
-        "ghosthub-input": "Bracketed pastes currently normalize line endings to LF instead of CR."
-      }
+      "expected": "\u001b[200~one\rtwo\u001b[201~"
     },
     {
       "id": "bracketed-lone-lf-normalizes-to-cr",
       "input": "one\ntwo",
       "bracketed_paste": true,
-      "expected": "\u001b[200~one\rtwo\u001b[201~",
-      "known_gaps": {
-        "ghosthub-input": "Bracketed pastes currently normalize line endings to LF instead of CR."
-      }
+      "expected": "\u001b[200~one\rtwo\u001b[201~"
     },
     {
       "id": "tab-is-preserved",
@@ -78,92 +72,62 @@
       "id": "escape-is-stripped",
       "input": "red\u001b[31mtext",
       "bracketed_paste": false,
-      "expected": "red[31mtext",
-      "known_gaps": {
-        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
-      }
+      "expected": "red[31mtext"
     },
     {
       "id": "csi-c1-is-stripped",
       "input": "a\u009b31mb",
       "bracketed_paste": false,
-      "expected": "a31mb",
-      "known_gaps": {
-        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
-      }
+      "expected": "a31mb"
     },
     {
       "id": "c0-controls-are-stripped",
       "input": "a\u0000b\u0007c\bd\u000be\ff",
       "bracketed_paste": false,
-      "expected": "abcdef",
-      "known_gaps": {
-        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
-      }
+      "expected": "abcdef"
     },
     {
       "id": "del-is-stripped",
       "input": "a\u007fb",
       "bracketed_paste": false,
-      "expected": "ab",
-      "known_gaps": {
-        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
-      }
+      "expected": "ab"
     },
     {
       "id": "c1-controls-are-stripped",
       "input": "a\u0080b\u0085c\u009fd",
       "bracketed_paste": false,
-      "expected": "abcd",
-      "known_gaps": {
-        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
-      }
+      "expected": "abcd"
     },
     {
       "id": "bracketed-escape-is-stripped",
       "input": "red\u001b[31mtext",
       "bracketed_paste": true,
-      "expected": "\u001b[200~red[31mtext\u001b[201~",
-      "known_gaps": {
-        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
-      }
+      "expected": "\u001b[200~red[31mtext\u001b[201~"
     },
     {
       "id": "bracketed-csi-c1-is-stripped",
       "input": "a\u009b31mb",
       "bracketed_paste": true,
       "expected": "\u001b[200~a31mb\u001b[201~",
-      "known_gaps": {
-        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
-      },
       "notes": "U+009B is a single-byte end-marker equivalent on terminals that interpret C1."
     },
     {
       "id": "bracketed-c0-controls-are-stripped",
       "input": "a\u0000b\u0007c\bd",
       "bracketed_paste": true,
-      "expected": "\u001b[200~abcd\u001b[201~",
-      "known_gaps": {
-        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
-      }
+      "expected": "\u001b[200~abcd\u001b[201~"
     },
     {
       "id": "bracketed-del-and-c1-are-stripped",
       "input": "a\u007fb\u0085c",
       "bracketed_paste": true,
-      "expected": "\u001b[200~abc\u001b[201~",
-      "known_gaps": {
-        "ghosthub-input": "Control characters are gated behind a paste confirmation instead of being stripped."
-      }
+      "expected": "\u001b[200~abc\u001b[201~"
     },
     {
       "id": "bracketed-end-marker-is-defused",
       "input": "safe\u001b[201~rm -rf /",
       "bracketed_paste": true,
-      "expected": "\u001b[200~safe[201~rm -rf /\u001b[201~",
-      "known_gaps": {
-        "ghosthub-input": "An embedded end marker is gated behind a paste confirmation and sent intact instead of having its escape stripped."
-      }
+      "expected": "\u001b[200~safe[201~rm -rf /\u001b[201~"
     },
     {
       "id": "multibyte-text-is-preserved",

@@ -1,7 +1,7 @@
-//! The confirmation gate for bracketed pastes: embedded controls that
-//! could smuggle an end marker (or its single-byte C1 equivalent) never
-//! reach the PTY without explicit approval, while ordinary multi-line or
-//! tabbed pastes flow through.
+//! The confirmation gate for bracketed pastes: embedded controls that could
+//! smuggle an end marker (or its single-byte C1 equivalent) are stripped from
+//! the delivered bytes and still gate the paste behind explicit approval,
+//! while ordinary multi-line or tabbed pastes flow through.
 
 use input::{KeyInput, TerminalModes, encode_input};
 
