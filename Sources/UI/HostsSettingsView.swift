@@ -352,175 +352,344 @@ public struct HostsSettingsView: View {
                         .tag(host.id)
                     }
                 }
-                .frame(minHeight: 300)
+                .frame(minHeight: 300, maxHeight: .infinity)
             }
             .frame(width: 300)
+            .frame(maxHeight: .infinity, alignment: .top)
 
-            VStack(alignment: .leading, spacing: 18) {
-                settingsSection("SSH Tmux Hosts") {
-                    Text(
-                        "Ghosthub uses kwt, a Git worktree manager, to discover"
-                            + " projects and worktrees alongside ordinary tmux"
-                            + " sessions. Closing Ghosthub detaches the client"
-                            + " and never kills host sessions."
-                    )
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    settingsSection("SSH Tmux Hosts") {
+                        Text(
+                            "Ghosthub uses kwt, a Git worktree manager, to discover"
+                                + " projects and worktrees alongside ordinary tmux"
+                                + " sessions. Closing Ghosthub detaches the client"
+                                + " and never kills host sessions."
+                        )
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                    Link(
-                        "Learn about kwt at kwt.sh",
-                        destination: URL(string: "https://kwt.sh")!
-                    )
-                    .font(.system(size: 12))
-                }
+                        Link(
+                            "Learn about kwt at kwt.sh",
+                            destination: URL(string: "https://kwt.sh")!
+                        )
+                        .font(.system(size: 12))
+                    }
 
-                if let draft = selectedSSHHostDraft,
-                   let binding = selectedSSHHostDraftBinding() {
-                    settingsSection("Connection") {
-                        hostSettingField("Display name") {
-                            TextField("Office Studio", text: binding.name)
-                                .textFieldStyle(.roundedBorder)
-                                .focused(
-                                    $focusedConnectionField,
-                                    equals: .displayName
-                                )
-                                .onKeyPress(
-                                    .tab,
-                                    phases: .down
-                                ) { keyPress in
-                                    moveConnectionFocus(
-                                        from: .displayName,
-                                        backwards:
-                                        keyPress.modifiers.contains(.shift)
+                    if let draft = selectedSSHHostDraft,
+                       let binding = selectedSSHHostDraftBinding() {
+                        settingsSection("Connection") {
+                            hostSettingField("Display name") {
+                                TextField("Office Studio", text: binding.name)
+                                    .textFieldStyle(.roundedBorder)
+                                    .focused(
+                                        $focusedConnectionField,
+                                        equals: .displayName
                                     )
-                                }
-                        }
+                                    .onKeyPress(
+                                        .tab,
+                                        phases: .down
+                                    ) { keyPress in
+                                        moveConnectionFocus(
+                                            from: .displayName,
+                                            backwards:
+                                            keyPress.modifiers.contains(.shift)
+                                        )
+                                    }
+                            }
 
-                        hostSettingField("SSH address") {
-                            TextField("user@hostname", text: binding.sshDestination)
-                                .textFieldStyle(.roundedBorder)
-                                .focused(
-                                    $focusedConnectionField,
-                                    equals: .sshAddress
-                                )
-                                .onKeyPress(
-                                    .tab,
-                                    phases: .down
-                                ) { keyPress in
-                                    moveConnectionFocus(
-                                        from: .sshAddress,
-                                        backwards:
-                                        keyPress.modifiers.contains(.shift)
+                            hostSettingField("SSH address") {
+                                TextField("user@hostname", text: binding.sshDestination)
+                                    .textFieldStyle(.roundedBorder)
+                                    .focused(
+                                        $focusedConnectionField,
+                                        equals: .sshAddress
                                     )
-                                }
-                        }
+                                    .onKeyPress(
+                                        .tab,
+                                        phases: .down
+                                    ) { keyPress in
+                                        moveConnectionFocus(
+                                            from: .sshAddress,
+                                            backwards:
+                                            keyPress.modifiers.contains(.shift)
+                                        )
+                                    }
+                            }
 
-                        if draft.platform == .macOS {
+                            if draft.platform == .macOS {
+                                Text(
+                                    "Requires Remote Login enabled on the target Mac: "
+                                        + "System Settings > General > Sharing > Remote Login"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            hostSettingField("Platform") {
+                                Picker("Platform", selection: binding.platform) {
+                                    Text("Linux").tag(HostPlatform.linux)
+                                    Text("macOS").tag(HostPlatform.macOS)
+                                    Text("Windows (psmux)")
+                                        .tag(HostPlatform.windows)
+                                }
+                                .labelsHidden()
+                            }
+
                             Text(
-                                "Requires Remote Login enabled on the target Mac: "
-                                    + "System Settings > General > Sharing > Remote Login"
+                                "Ghosthub uses this connection to discover tmux"
+                                    + " sessions and keep open attachments alive."
                             )
-                            .font(.caption)
+                            .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         }
 
-                        hostSettingField("Platform") {
-                            Picker("Platform", selection: binding.platform) {
-                                Text("Linux").tag(HostPlatform.linux)
-                                Text("macOS").tag(HostPlatform.macOS)
-                                Text("Windows (psmux)")
-                                    .tag(HostPlatform.windows)
-                            }
-                            .labelsHidden()
-                        }
-
-                        Text(
-                            "Ghosthub uses this connection to discover tmux"
-                                + " sessions and keep open attachments alive."
-                        )
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    settingsSection("Verification") {
-                        Text(
-                            "Test Connection follows your OpenSSH host-key"
-                                + " policy. For an unseen key, Ghosthub shows"
-                                + " the exact destination and fingerprint for"
-                                + " approval before OpenSSH saves it. A short"
-                                + " hostname or alias is a separate identity."
-                        )
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                        ViewThatFits(in: .horizontal) {
-                            HStack(spacing: 12) {
-                                Button(isProbingSSHHost ? "Testing\u{2026}" :
-                                    "Test Connection") {
-                                        Task {
-                                            await probeHost(draft)
-                                        }
-                                    }
-                                    .disabled(
-                                        isHostActionInProgress
-                                    )
-
-                                if hostProbeResult?.host.lastKnownReachable
-                                    == true {
-                                    Button(remoteKwtButtonTitle) {
-                                        Task {
-                                            await installKwt(on: draft)
-                                        }
-                                    }
-                                    .disabled(
-                                        isHostActionInProgress
-                                    )
-                                }
-
-                                Button("Remove Host", role: .destructive) {
-                                    removeSelectedSSHHost()
-                                }
-                                .disabled(sshHosts.isEmpty)
-                            }
-
-                            VStack(alignment: .leading, spacing: 12) {
-                                Button(isProbingSSHHost ? "Testing\u{2026}" :
-                                    "Test Connection") {
-                                        Task {
-                                            await probeHost(draft)
-                                        }
-                                    }
-                                    .disabled(
-                                        isHostActionInProgress
-                                    )
-
-                                if hostProbeResult?.host.lastKnownReachable
-                                    == true {
-                                    Button(remoteKwtButtonTitle) {
-                                        Task {
-                                            await installKwt(on: draft)
-                                        }
-                                    }
-                                    .disabled(
-                                        isHostActionInProgress
-                                    )
-                                }
-
-                                Button("Remove Host", role: .destructive) {
-                                    removeSelectedSSHHost()
-                                }
-                                .disabled(sshHosts.isEmpty)
-                            }
-                        }
-
-                        if draft.platform == .windows {
+                        settingsSection("Verification") {
                             Text(
-                                "Installs Ghosthub’s unsigned experimental"
-                                    + " AMD64 or ARM64 kwt.exe for this user."
+                                "Test Connection follows your OpenSSH host-key"
+                                    + " policy. For an unseen key, Ghosthub shows"
+                                    + " the exact destination and fingerprint for"
+                                    + " approval before OpenSSH saves it. A short"
+                                    + " hostname or alias is a separate identity."
+                            )
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 12) {
+                                    Button(isProbingSSHHost ? "Testing\u{2026}" :
+                                        "Test Connection") {
+                                            Task {
+                                                await probeHost(draft)
+                                            }
+                                        }
+                                        .disabled(
+                                            isHostActionInProgress
+                                        )
+
+                                    if hostProbeResult?.host.lastKnownReachable
+                                        == true {
+                                        Button(remoteKwtButtonTitle) {
+                                            Task {
+                                                await installKwt(on: draft)
+                                            }
+                                        }
+                                        .disabled(
+                                            isHostActionInProgress
+                                        )
+                                    }
+
+                                    Button("Remove Host", role: .destructive) {
+                                        removeSelectedSSHHost()
+                                    }
+                                    .disabled(sshHosts.isEmpty)
+                                }
+
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Button(isProbingSSHHost ? "Testing\u{2026}" :
+                                        "Test Connection") {
+                                            Task {
+                                                await probeHost(draft)
+                                            }
+                                        }
+                                        .disabled(
+                                            isHostActionInProgress
+                                        )
+
+                                    if hostProbeResult?.host.lastKnownReachable
+                                        == true {
+                                        Button(remoteKwtButtonTitle) {
+                                            Task {
+                                                await installKwt(on: draft)
+                                            }
+                                        }
+                                        .disabled(
+                                            isHostActionInProgress
+                                        )
+                                    }
+
+                                    Button("Remove Host", role: .destructive) {
+                                        removeSelectedSSHHost()
+                                    }
+                                    .disabled(sshHosts.isEmpty)
+                                }
+                            }
+
+                            if draft.platform == .windows {
+                                Text(
+                                    "Installs Ghosthub’s unsigned experimental"
+                                        + " AMD64 or ARM64 kwt.exe for this user."
+                                )
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(
+                                    horizontal: false,
+                                    vertical: true
+                                )
+                            }
+
+                            if let hostProbeResult {
+                                Text(hostProbeResult.subtitle)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(hostStatusColor(for: hostProbeResult))
+
+                                if hostProbeResult.dependencySummary != "unknown" {
+                                    Text(
+                                        "Dependencies: "
+                                            + hostProbeResult.dependencySummary
+                                    )
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                }
+
+                                if hostProbeResult.featureSummary != "unknown" {
+                                    Text(
+                                        "Features: "
+                                            + hostProbeResult.featureSummary
+                                    )
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                }
+
+                                if !hostProbeResult.diagnostics.isEmpty {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        ForEach(hostProbeResult.diagnostics) { diagnostic in
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(diagnostic.summary)
+                                                    .font(.system(size: 12, weight: .semibold))
+                                                    .foregroundStyle(
+                                                        diagnostic.severity == .error
+                                                            ? .red
+                                                            : .orange
+                                                    )
+                                                Text(diagnostic.recoverySuggestion)
+                                                    .font(.system(size: 12))
+                                                    .foregroundStyle(.secondary)
+                                                    .fixedSize(horizontal: false, vertical: true)
+                                            }
+                                        }
+                                    }
+                                }
+                                if let remoteKwtInstallMessage {
+                                    Text(remoteKwtInstallMessage)
+                                        .font(.system(
+                                            size: 12,
+                                            weight: .semibold
+                                        ))
+                                        .foregroundStyle(.green)
+                                }
+                            } else if hostProbeErrorMessage == nil {
+                                Text(
+                                    "Test the SSH connection before saving so tmux"
+                                        + " discovery and reconnects are ready."
+                                )
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            if let hostProbeErrorMessage {
+                                Text(hostProbeErrorMessage)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.red)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+
+                        if draft.platform != .windows,
+                           let profilesBinding = selectedLaunchProfilesBinding() {
+                            settingsSection("Launch Profiles") {
+                                Text(
+                                    "Saved commands run as trusted user code only"
+                                        + " when you explicitly create a new tmux"
+                                        + " session with that profile. Commands are"
+                                        + " stored in local Ghosthub settings; do"
+                                        + " not put passwords or other secrets here."
+                                )
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                                ForEach(profilesBinding) { $profile in
+                                    TmuxLaunchProfileEditorRow(
+                                        profile: $profile,
+                                        profiles: profilesBinding.wrappedValue,
+                                        onRemove: {
+                                            removeLaunchProfile(profile.id)
+                                        }
+                                    )
+                                }
+
+                                Button {
+                                    addLaunchProfile()
+                                } label: {
+                                    Label("Add Launch Profile", systemImage: "plus")
+                                }
+                                .accessibilityIdentifier("add-launch-profile")
+                            }
+                            .accessibilityIdentifier("launch-profiles-section")
+                        }
+
+                        if isRemoteKwtReady, draft.platform != .windows {
+                            settingsSection("Projects") {
+                                Text(
+                                    "Register an existing Git checkout explicitly."
+                                        + " Ghosthub does not scan the remote"
+                                        + " filesystem or edit kwt configuration."
+                                )
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                                HStack(spacing: 8) {
+                                    TextField(
+                                        "/absolute/path/to/repository",
+                                        text: $remoteProjectPath
+                                    )
+                                    .textFieldStyle(.roundedBorder)
+
+                                    Button(
+                                        isRegisteringRemoteProject
+                                            ? "Adding\u{2026}"
+                                            : "Add Project"
+                                    ) {
+                                        Task {
+                                            await addRemoteProject(on: draft)
+                                        }
+                                    }
+                                    .disabled(
+                                        isHostActionInProgress
+                                            || !isRemoteProjectPathAbsolute
+                                    )
+                                }
+
+                                if !normalizedRemoteProjectPath.isEmpty,
+                                   !isRemoteProjectPathAbsolute {
+                                    Text("Enter an absolute path beginning with /.")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.red)
+                                }
+
+                                if let remoteProjectMessage {
+                                    Text(remoteProjectMessage)
+                                        .font(.system(
+                                            size: 12,
+                                            weight: .semibold
+                                        ))
+                                        .foregroundStyle(.green)
+                                }
+                            }
+                        }
+                    } else {
+                        settingsSection("Hosts") {
+                            Text(
+                                "Add each machine where you keep tmux sessions."
+                                    + " Tailscale hostnames work well, but any"
+                                    + " reachable SSH destination is supported."
                             )
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
@@ -528,197 +697,41 @@ public struct HostsSettingsView: View {
                                 horizontal: false,
                                 vertical: true
                             )
-                        }
-
-                        if let hostProbeResult {
-                            Text(hostProbeResult.subtitle)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(hostStatusColor(for: hostProbeResult))
-
-                            if hostProbeResult.dependencySummary != "unknown" {
-                                Text(
-                                    "Dependencies: "
-                                        + hostProbeResult.dependencySummary
-                                )
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                            }
-
-                            if hostProbeResult.featureSummary != "unknown" {
-                                Text(
-                                    "Features: "
-                                        + hostProbeResult.featureSummary
-                                )
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                            }
-
-                            if !hostProbeResult.diagnostics.isEmpty {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    ForEach(hostProbeResult.diagnostics) { diagnostic in
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(diagnostic.summary)
-                                                .font(.system(size: 12, weight: .semibold))
-                                                .foregroundStyle(
-                                                    diagnostic.severity == .error
-                                                        ? .red
-                                                        : .orange
-                                                )
-                                            Text(diagnostic.recoverySuggestion)
-                                                .font(.system(size: 12))
-                                                .foregroundStyle(.secondary)
-                                                .fixedSize(horizontal: false, vertical: true)
-                                        }
-                                    }
-                                }
-                            }
-                            if let remoteKwtInstallMessage {
-                                Text(remoteKwtInstallMessage)
-                                    .font(.system(
-                                        size: 12,
-                                        weight: .semibold
-                                    ))
-                                    .foregroundStyle(.green)
-                            }
-                        } else if hostProbeErrorMessage == nil {
-                            Text(
-                                "Test the SSH connection before saving so tmux"
-                                    + " discovery and reconnects are ready."
-                            )
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        }
-
-                        if let hostProbeErrorMessage {
-                            Text(hostProbeErrorMessage)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-
-                    if draft.platform != .windows,
-                       let profilesBinding = selectedLaunchProfilesBinding() {
-                        settingsSection("Launch Profiles") {
-                            Text(
-                                "Saved commands run as trusted user code only"
-                                    + " when you explicitly create a new tmux"
-                                    + " session with that profile. Commands are"
-                                    + " stored in local Ghosthub settings; do"
-                                    + " not put passwords or other secrets here."
-                            )
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                            ForEach(profilesBinding) { $profile in
-                                TmuxLaunchProfileEditorRow(
-                                    profile: $profile,
-                                    profiles: profilesBinding.wrappedValue,
-                                    onRemove: {
-                                        removeLaunchProfile(profile.id)
-                                    }
-                                )
-                            }
-
-                            Button {
-                                addLaunchProfile()
-                            } label: {
-                                Label("Add Launch Profile", systemImage: "plus")
-                            }
-                            .accessibilityIdentifier("add-launch-profile")
-                        }
-                        .accessibilityIdentifier("launch-profiles-section")
-                    }
-
-                    if isRemoteKwtReady, draft.platform != .windows {
-                        settingsSection("Projects") {
-                            Text(
-                                "Register an existing Git checkout explicitly."
-                                    + " Ghosthub does not scan the remote"
-                                    + " filesystem or edit kwt configuration."
-                            )
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
 
                             HStack(spacing: 8) {
-                                TextField(
-                                    "/absolute/path/to/repository",
-                                    text: $remoteProjectPath
-                                )
-                                .textFieldStyle(.roundedBorder)
-
                                 Button(
-                                    isRegisteringRemoteProject
-                                        ? "Adding\u{2026}"
-                                        : "Add Project"
+                                    "Import from Tailscale"
                                 ) {
-                                    Task {
-                                        await addRemoteProject(on: draft)
-                                    }
+                                    requestTailscalePeers()
                                 }
                                 .disabled(
-                                    isHostActionInProgress
-                                        || !isRemoteProjectPathAbsolute
+                                    isLoadingTailscale
+                                        || isTailscaleSheetPresented
+                                )
+                                Button(
+                                    "Add Host Manually",
+                                    action: addSSHHost
                                 )
                             }
-
-                            if !normalizedRemoteProjectPath.isEmpty,
-                               !isRemoteProjectPathAbsolute {
-                                Text("Enter an absolute path beginning with /.")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.red)
-                            }
-
-                            if let remoteProjectMessage {
-                                Text(remoteProjectMessage)
-                                    .font(.system(
-                                        size: 12,
-                                        weight: .semibold
-                                    ))
-                                    .foregroundStyle(.green)
-                            }
-                        }
-                    }
-                } else {
-                    settingsSection("Hosts") {
-                        Text(
-                            "Add each machine where you keep tmux sessions."
-                                + " Tailscale hostnames work well, but any"
-                                + " reachable SSH destination is supported."
-                        )
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(
-                            horizontal: false,
-                            vertical: true
-                        )
-
-                        HStack(spacing: 8) {
-                            Button(
-                                "Import from Tailscale"
-                            ) {
-                                requestTailscalePeers()
-                            }
-                            .disabled(
-                                isLoadingTailscale
-                                    || isTailscaleSheetPresented
-                            )
-                            Button(
-                                "Add Host Manually",
-                                action: addSSHHost
-                            )
                         }
                     }
                 }
+                .frame(
+                    maxWidth: .infinity,
+                    alignment: .topLeading
+                )
             }
             .frame(
                 maxWidth: .infinity,
+                maxHeight: .infinity,
                 alignment: .topLeading
             )
         }
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: .infinity,
+            alignment: .topLeading
+        )
         .onChange(of: selectedSSHHostDraftID) { _, _ in
             remoteProjectPath = ""
             clearSSHHostProbeFeedback()
