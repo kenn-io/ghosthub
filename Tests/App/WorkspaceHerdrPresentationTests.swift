@@ -1820,7 +1820,7 @@ struct WorkspaceHerdrPresentationTests {
 
         displays.withLock { $0 = 1 }
         model.reconnectActiveHerdrSessionNow()
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             store.requestedConfigurations.count == 1
                 && model.activeBorrowedHerdrConnectionState == .connected
         }

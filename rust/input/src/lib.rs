@@ -242,18 +242,16 @@ pub fn encode_input(input: &KeyInput, modes: TerminalModes) -> EncodedInput {
             event,
         } => EncodedInput::ready(encode_named(*key, *modifiers, *event, modes)),
         KeyInput::Paste(text) if modes.bracketed_paste => {
-            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-            let mut bytes = Vec::with_capacity(normalized.len() + 12);
+            let sanitized = sanitize_paste(text);
+            let mut bytes = Vec::with_capacity(sanitized.len() + 12);
             bytes.extend_from_slice(b"\x1b[200~");
-            bytes.extend_from_slice(normalized.as_bytes());
+            bytes.extend_from_slice(sanitized.as_bytes());
             bytes.extend_from_slice(b"\x1b[201~");
-            // Any embedded control other than the normalized newline or a
-            // tab is gated, matching the unbracketed arm: ESC can smuggle
-            // an end marker, and the single-byte C1 CSI (U+009B) is an
-            // end-marker equivalent on terminals that interpret C1.
-            let embedded_control = normalized
-                .chars()
-                .any(|character| character.is_control() && character != '\n' && character != '\t');
+            // The sanitized bytes above carry no smuggled controls, but an
+            // embedded control in the source still gates the paste: it is a
+            // signal the user pasted something that was rewritten. Newlines
+            // and tabs are ordinary paste content, not that signal.
+            let embedded_control = text.chars().any(is_unsafe_control);
             if embedded_control {
                 EncodedInput::confirmation_required(bytes)
             } else {
@@ -261,14 +259,46 @@ pub fn encode_input(input: &KeyInput, modes: TerminalModes) -> EncodedInput {
             }
         }
         KeyInput::Paste(text) => {
-            let normalized = text.replace("\r\n", "\n").replace('\n', "\r");
+            let sanitized = sanitize_paste(text);
+            // A bare (unbracketed) paste reaches the shell as typed input, so
+            // any control in the source — a newline auto-executes — gates it.
+            // The delivered bytes are sanitized regardless.
             if text.chars().any(char::is_control) {
-                EncodedInput::confirmation_required(normalized.into_bytes())
+                EncodedInput::confirmation_required(sanitized.into_bytes())
             } else {
-                EncodedInput::ready(normalized.into_bytes())
+                EncodedInput::ready(sanitized.into_bytes())
             }
         }
     }
+}
+
+/// A control the paste policy strips: every C0/C1/DEL control except the tab
+/// and the carriage return and line feed that newline normalization keeps.
+fn is_unsafe_control(character: char) -> bool {
+    character.is_control() && character != '\t' && character != '\r' && character != '\n'
+}
+
+/// Apply the shared paste-sanitization policy: normalize every line ending to
+/// a lone carriage return (CRLF and bare LF both become CR; a bare CR is
+/// kept), then drop unsafe controls by code point. Stripping ESC also defuses
+/// an embedded bracketed-paste end marker.
+fn sanitize_paste(text: &str) -> String {
+    let mut sanitized = String::with_capacity(text.len());
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '\r' => {
+                if characters.peek() == Some(&'\n') {
+                    characters.next();
+                }
+                sanitized.push('\r');
+            }
+            '\n' => sanitized.push('\r'),
+            other if is_unsafe_control(other) => {}
+            other => sanitized.push(other),
+        }
+    }
+    sanitized
 }
 
 /// Encode one terminal-grid mouse event using SGR 1006 coordinates.

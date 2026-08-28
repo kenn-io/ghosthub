@@ -47,15 +47,23 @@ attempt() {
 os.setpgid(0, 0)
 os.execvp(sys.argv[1], sys.argv[1:])' "$@" &
     cmd_pid=$!
-    # The watchdog detaches from stdout/stderr so a leftover sleep child
-    # (it dies with the subshell only after its current sleep ends)
-    # cannot hold the caller's output pipes open.
-    (
-        sleep "$seconds"
-        kill -TERM -"$cmd_pid" 2>/dev/null
-        sleep 5
-        kill -KILL -"$cmd_pid" 2>/dev/null
-    ) >/dev/null 2>&1 &
+    # Keep the timer and signal escalation in one process. Killing a shell
+    # watchdog while it waits on sleep leaves that sleep orphaned until the
+    # full timeout expires, which is not acceptable on persistent CI hosts.
+    python3 -c 'import os, signal, sys, time
+timeout = float(sys.argv[1])
+process_group = int(sys.argv[2])
+time.sleep(timeout)
+try:
+    os.killpg(process_group, signal.SIGTERM)
+except ProcessLookupError:
+    raise SystemExit
+time.sleep(5)
+try:
+    os.killpg(process_group, signal.SIGKILL)
+except ProcessLookupError:
+    pass
+' "$seconds" "$cmd_pid" >/dev/null 2>&1 &
     watchdog_pid=$!
     wait "$cmd_pid"
     status=$?

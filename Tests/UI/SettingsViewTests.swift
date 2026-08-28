@@ -108,6 +108,112 @@ final class SettingsViewTests: XCTestCase {
         assertStableSize(fittingSize(for: store))
     }
 
+    func testHostEditorScrollDoesNotMoveHostList() throws {
+        let store = makeSettingsStore()
+        store.selectedDomain = .hosts
+        store.setSSHHosts([
+            SSHHost(
+                configKey: "host-a",
+                name: "Host A",
+                platform: .linux,
+                sshDestination: "user-a@host-a.example",
+                launchProfiles: [
+                    TmuxLaunchProfile(name: "Runner", command: "runner"),
+                ]
+            ),
+        ])
+        let sheetHost = NSHostingView(
+            rootView: SettingsSheetHost(store: store)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1600, height: 1000),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = sheetHost
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        addTeardownBlock { window.close() }
+        let sheet = try XCTUnwrap(waitForAttachedSheet(on: window))
+        let hostingView = try XCTUnwrap(sheet.contentView)
+        sheet.displayIfNeeded()
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let allViews = descendants(of: hostingView)
+        let tables = allViews.compactMap { $0 as? NSTableView }
+        let editorField = try XCTUnwrap(
+            allViews.compactMap { $0 as? NSTextField }
+                .first { $0.isEditable && $0.stringValue == "Host A" }
+        )
+        let hostList = try XCTUnwrap(
+            tables.first { $0.numberOfRows == 1 }
+        )
+        let hostListScrollView = try XCTUnwrap(hostList.enclosingScrollView)
+
+        var ancestor = editorField.superview
+        var locatedEditorScrollView: NSScrollView?
+        while let view = ancestor {
+            if let scrollView = view as? NSScrollView {
+                locatedEditorScrollView = scrollView
+                break
+            }
+            ancestor = view.superview
+        }
+        let editorScrollView = try XCTUnwrap(locatedEditorScrollView)
+        XCTAssertFalse(hostListScrollView.isDescendant(of: editorScrollView))
+        let documentView = try XCTUnwrap(editorScrollView.documentView)
+        let maximumScrollY = max(
+            0,
+            documentView.bounds.height
+                - editorScrollView.contentView.bounds.height
+        )
+        XCTAssertGreaterThan(maximumScrollY, 100)
+
+        let hostListY = hostListScrollView.convert(
+            hostListScrollView.bounds,
+            to: hostingView
+        ).minY
+        let editorFieldY = editorField.convert(
+            editorField.bounds,
+            to: hostingView
+        ).minY
+        let originalOrigin = editorScrollView.contentView.bounds.origin
+        editorScrollView.contentView.scroll(
+            to: NSPoint(
+                x: originalOrigin.x,
+                y: min(originalOrigin.y + 100, maximumScrollY)
+            )
+        )
+        editorScrollView.reflectScrolledClipView(
+            editorScrollView.contentView
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        hostingView.displayIfNeeded()
+
+        XCTAssertNotEqual(
+            editorScrollView.contentView.bounds.origin.y,
+            originalOrigin.y
+        )
+        XCTAssertEqual(
+            hostListScrollView.convert(
+                hostListScrollView.bounds,
+                to: hostingView
+            ).minY,
+            hostListY,
+            accuracy: 0.5
+        )
+        XCTAssertNotEqual(
+            editorField.convert(
+                editorField.bounds,
+                to: hostingView
+            ).minY,
+            editorFieldY,
+            accuracy: 0.5
+        )
+    }
+
     func testLaunchProfileCommandEditorDisablesAutomaticTextChanges() throws {
         let command = #"runner --mode "safe""#
         let store = makeSettingsStore()
