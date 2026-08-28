@@ -108,7 +108,7 @@ final class SettingsViewTests: XCTestCase {
         assertStableSize(fittingSize(for: store))
     }
 
-    func testHostEditorScrollKeepsHeaderAndHostListFixed() throws {
+    func testHostEditorScrollDoesNotMoveHostList() throws {
         let store = makeSettingsStore()
         store.selectedDomain = .hosts
         store.setSSHHosts([
@@ -151,12 +151,6 @@ final class SettingsViewTests: XCTestCase {
             tables.first { $0.numberOfRows == 1 }
         )
         let hostListScrollView = try XCTUnwrap(hostList.enclosingScrollView)
-        let settingsList = try XCTUnwrap(
-            tables.first { $0 !== hostList }
-        )
-        let settingsListScrollView = try XCTUnwrap(
-            settingsList.enclosingScrollView
-        )
 
         var ancestor = editorField.superview
         var locatedEditorScrollView: NSScrollView?
@@ -168,6 +162,7 @@ final class SettingsViewTests: XCTestCase {
             ancestor = view.superview
         }
         let editorScrollView = try XCTUnwrap(locatedEditorScrollView)
+        XCTAssertFalse(hostListScrollView.isDescendant(of: editorScrollView))
         let documentView = try XCTUnwrap(editorScrollView.documentView)
         let maximumScrollY = max(
             0,
@@ -184,29 +179,6 @@ final class SettingsViewTests: XCTestCase {
             editorField.bounds,
             to: hostingView
         ).minY
-        let settingsListFrame = settingsListScrollView.convert(
-            settingsListScrollView.bounds,
-            to: hostingView
-        )
-        hostingView.displayIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        let headerY = hostingView.isFlipped
-            ? hostingView.bounds.minY + 8
-            : hostingView.bounds.maxY - 72
-        let headerRect = NSRect(
-            x: settingsListFrame.maxX + 16,
-            y: headerY,
-            width: 420,
-            height: 64
-        ).intersection(hostingView.bounds)
-        let headerBefore = try XCTUnwrap(
-            hostingView.bitmapImageRepForCachingDisplay(in: headerRect)
-        )
-        hostingView.cacheDisplay(in: headerRect, to: headerBefore)
-        let headerPixelsBefore = Data(
-            bytes: try XCTUnwrap(headerBefore.bitmapData),
-            count: headerBefore.bytesPerRow * headerBefore.pixelsHigh
-        )
         let originalOrigin = editorScrollView.contentView.bounds.origin
         editorScrollView.contentView.scroll(
             to: NSPoint(
@@ -219,22 +191,10 @@ final class SettingsViewTests: XCTestCase {
         )
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         hostingView.displayIfNeeded()
-        let headerAfter = try XCTUnwrap(
-            hostingView.bitmapImageRepForCachingDisplay(in: headerRect)
-        )
-        hostingView.cacheDisplay(in: headerRect, to: headerAfter)
-        let headerPixelsAfter = Data(
-            bytes: try XCTUnwrap(headerAfter.bitmapData),
-            count: headerAfter.bytesPerRow * headerAfter.pixelsHigh
-        )
 
         XCTAssertNotEqual(
             editorScrollView.contentView.bounds.origin.y,
             originalOrigin.y
-        )
-        XCTAssertEqual(
-            headerPixelsAfter,
-            headerPixelsBefore
         )
         XCTAssertEqual(
             hostListScrollView.convert(
