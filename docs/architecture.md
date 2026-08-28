@@ -594,8 +594,9 @@ under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not
 asked to interpret those commands. Windows commands execute through encoded
 noninteractive PowerShell.
 Direct tmux discovery provides every otherwise-unbound session. A remote host
-without kwt remains a valid tmux-only host; remote inventory failures stay
-attached to that host and never replace usable local or cached inventory with a
+without kwt remains a valid tmux-only host. Passive remote kwt maintenance and
+inventory failures stay private, retain the current scene's cached project
+inventory, and never replace usable terminal inventory with a host or
 workspace-wide error. Ghosthub has no Middleman runtime or API dependency.
 
 An enabled exe.dev account is a host-inventory provider, not a terminal
@@ -673,12 +674,14 @@ through kwt on its selected endpoint; unbound sessions continue to attach
 directly to the host's normal tmux server.
 
 Adding a remote macOS or Linux host authorizes Ghosthub to maintain its
-per-user managed kwt helper as part of inventory refresh. Provisioning failure
-disables that host's worktree actions and reports the error without blocking
-ordinary tmux discovery or attachment. The helper never replaces or resolves
-a host's system kwt. Versioned directories retain older pinned helpers, so an
-older Ghosthub build can select and restore its own revision; reinstalling one
-revision also retains `kwt.previous`.
+per-user managed kwt helper. Inventory refresh maintains it quietly. Before an
+explicit project or worktree operation, Ghosthub revalidates and repairs the
+helper; a repair failure stops that operation and appears in its action error,
+without degrading the host or terminal discovery, attachment, and reconnect.
+The helper never replaces or resolves a host's system kwt. Versioned
+directories retain older pinned helpers, so an older Ghosthub build can select
+and restore its own revision; reinstalling one revision also retains
+`kwt.previous`.
 
 In the Rust port's WSL host, a managed-helper path cache is never execution
 authority. The host revalidates the pinned digest and revision before every

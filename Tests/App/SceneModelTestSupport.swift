@@ -384,6 +384,13 @@ func makeModel(
     @escaping WorkspaceSceneModel.SSHConnectionSnapshotProvider = {
         _ in SSHConnectionArgumentsSnapshot(arguments: [])
     },
+    kwtBranchLister: @escaping WorkspaceSceneModel.KwtBranchLister = {
+        projectPath, host in
+        try await KwtWorktreeClient().branches(
+            projectPath: projectPath,
+            on: host
+        )
+    },
     kwtPullRequestLister:
     @escaping WorkspaceSceneModel.KwtPullRequestLister = {
         projectIdentity, host in
@@ -573,6 +580,7 @@ func makeModel(
         herdrSessionMutator: herdrSessionMutator,
         herdrSSHConnectionSnapshotProvider:
         herdrSSHConnectionSnapshotProvider,
+        kwtBranchLister: kwtBranchLister,
         kwtPullRequestLister: kwtPullRequestLister,
         kwtPullRequestImporter: kwtPullRequestImporter,
         kwtProjectRegistration: kwtProjectRegistration,

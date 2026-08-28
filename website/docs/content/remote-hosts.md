@@ -119,8 +119,10 @@ Tmux-only hosts do not need kwt. To show projects and worktrees on a remote
 macOS or Linux host, configure the host normally. Ghosthub automatically copies
 or updates its matching revision-pinned helper during project inventory. It
 verifies the helper, stores it under `~/.ghosthub/`, and does not install or
-replace a system-wide kwt. If provisioning fails, tmux sessions remain usable
-and the host warning offers a retry and a shortcut to Host Settings.
+replace a system-wide kwt. Passive maintenance failures stay out of the way of
+tmux, Herdr, and Zellij sessions. When you request a project or worktree
+operation, Ghosthub repairs the helper first and shows an error on that action
+only if repair still fails.
 
 Register individual repositories with the explicit **Add Project** action.
 Ghosthub never scans a remote filesystem. See

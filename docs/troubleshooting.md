@@ -95,10 +95,12 @@ Use **Test Connection** to verify authentication and that `tmux` is on the
 remote login-shell `PATH`.
 Kwt does not need a system installation: Ghosthub automatically installs or
 updates its managed helper when it loads inventory for a configured remote
-macOS or Linux host. If provisioning fails, use the host warning to retry or
-open Host Settings. If the host has never used kwt, enter an existing
-checkout's absolute path with the **+** beside the **Projects** group for that
-host; repeat for each repository Ghosthub should display.
+macOS or Linux host. Passive maintenance failures do not affect terminal
+sessions or show a host warning. Ghosthub retries the repair when you request a
+project or worktree operation and reports an error there if it still cannot
+prepare the helper. If the host has never used kwt, enter an existing checkout's
+absolute path with the **+** beside the **Projects** group for that host; repeat
+for each repository Ghosthub should display.
 
 **Test Connection** follows your OpenSSH host-key policy. If the exact full
 destination has an unseen key, Ghosthub presents OpenSSH's fingerprint for

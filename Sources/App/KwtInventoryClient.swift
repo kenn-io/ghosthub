@@ -958,7 +958,8 @@ enum HostInventoryOverlay {
             updated.hosts[index].remoteDiagnostics.removeAll {
                 $0.code == .missingKwt
             }
-            if !isAvailable {
+            if !isAvailable,
+               updated.hosts[index].platform == .windows {
                 updated.hosts[index].remoteDiagnostics.append(
                     .missingKwtCapability
                 )

@@ -246,15 +246,73 @@ extension WorkspaceTmuxDiscoveryTests {
                     $0.configKey == remote.configKey
                         && $0.tmuxSessions.map(\.name) == ["build"]
                 }
-                && !model.workspaceInventoryWarningsByHost.isEmpty
+                && model.isWorkspaceInventoryRefreshComplete
         }
 
         #expect(remoteInventoryLoads.count == 0)
         let remoteSummary = try #require(
             model.snapshot.hosts.first { $0.configKey == remote.configKey }
         )
-        #expect(remoteSummary.primaryDiagnostic?.code == .missingKwt)
-        #expect(!remoteSummary.canCreateWorktree)
+        #expect(model.workspaceInventoryWarningsByHost[remoteSummary.id] == nil)
+        #expect(remoteSummary.primaryDiagnostic == nil)
+        #expect(remoteSummary.connectionState == .online)
+        #expect(remoteSummary.lastKnownReachable)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("remote kwt inventory failure stays out of terminal host health")
+    func remoteKwtInventoryFailureIsSilent() async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "build-box",
+            name: "Build Box",
+            platform: .linux,
+            sshDestination: "build-box"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                guard host.isRemote else {
+                    return KwtHostInventory(projects: [])
+                }
+                throw KwtInventoryError.commandFailed(
+                    host: host.displayName,
+                    status: 1
+                )
+            },
+            tmuxSessionDiscovery: { host in
+                .success(host.isRemote ? [
+                    DiscoveredTmuxSession(
+                        name: "build",
+                        windowCount: 1,
+                        createdAt: "1721552400",
+                        managed: false
+                    ),
+                ] : [])
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+                && model.snapshot.hosts.contains {
+                    $0.configKey == remote.configKey
+                        && $0.tmuxSessions.map(\.name) == ["build"]
+                }
+        }
+
+        let remoteSummary = try #require(
+            model.snapshot.hosts.first { $0.configKey == remote.configKey }
+        )
+        #expect(remoteSummary.tmuxSessions.map(\.name) == ["build"])
+        #expect(remoteSummary.primaryDiagnostic == nil)
+        #expect(model.workspaceInventoryWarningsByHost[remoteSummary.id] == nil)
         await model.shutdown()
     }
 
@@ -488,16 +546,16 @@ extension WorkspaceTmuxDiscoveryTests {
         let remoteSummary = try #require(
             model.snapshot.host(id: remoteHostID)
         )
-        #expect(remoteSummary.primaryDiagnostic?.code == .missingKwt)
+        #expect(remoteSummary.primaryDiagnostic == nil)
         #expect(remoteSummary.lastKnownReachable)
-        #expect(remoteSummary.connectionState == .degraded)
-        #expect(!remoteSummary.canCreateWorktree)
+        #expect(remoteSummary.connectionState == .online)
+        #expect(remoteSummary.canCreateWorktree)
         await model.shutdown()
     }
 
     @MainActor
-    @Test("losing remote kwt retains cached inventory but disables creation")
-    func remoteKwtLossDisablesCreation() async throws {
+    @Test("losing remote kwt repairs before branch listing")
+    func remoteKwtLossRepairsBeforeBranchListing() async throws {
         let environment = try setupStandardEnvironment()
         let remote = SSHHost(
             configKey: "build-box",
@@ -506,29 +564,41 @@ extension WorkspaceTmuxDiscoveryTests {
             sshDestination: "build-box"
         )
         let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
-        let availability = KwtAvailabilityState(
-            remoteInventory: KwtHostInventory(projects: [
-                KwtProjectInventory(
-                    project: KwtProjectRecord(
-                        repository: "github.com/kenn-io/docbank",
-                        name: "docbank",
-                        path: "/srv/docbank",
-                        lastTouched: nil
-                    ),
-                    worktrees: [],
-                    warning: nil
+        let inventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "github.com/kenn-io/docbank",
+                    name: "docbank",
+                    path: "/srv/docbank",
+                    lastTouched: nil
                 ),
-            ])
+                worktrees: [],
+                warning: nil
+            ),
+        ])
+        let provisioningShouldFail = LockedValue(false)
+        let provisioningAttempts = Counter()
+        let branchListAttempts = Counter()
+        let branch = WorktreeBranchCandidate(
+            name: "feature/repaired",
+            source: "feature/repaired",
+            isRemote: false
         )
-        let creationAttempts = Counter()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             kwtInventoryLoader: { host in
-                try availability.load(host)
+                host.isRemote ? inventory : KwtHostInventory(projects: [])
             },
-            kwtWorktreeCreator: { _, _, _ in
-                _ = creationAttempts.increment()
+            kwtRemoteProvisioner: { _ in
+                _ = provisioningAttempts.increment()
+                if provisioningShouldFail.load() {
+                    throw KwtRemoteInstallError.bundleIncomplete
+                }
+            },
+            kwtBranchLister: { _, _ in
+                _ = branchListAttempts.increment()
+                return [branch]
             },
             tmuxSessionDiscovery: { host in
                 .success(host.isRemote ? [
@@ -558,51 +628,71 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         #expect(model.snapshot.canCreateWorktree(in: cachedProject))
 
-        availability.markRemoteKwtUnavailable()
+        provisioningShouldFail.store(true)
+        let attemptsBeforeFailure = provisioningAttempts.count
         model.refreshKwtInventory()
         await waitUntilMainActor {
-            model.snapshot.host(id: cachedProject.hostID)?
-                .primaryDiagnostic?.code == .missingKwt
+            provisioningAttempts.count > attemptsBeforeFailure
+                && model.isWorkspaceInventoryRefreshComplete
         }
 
         let unavailableHost = try #require(
             model.snapshot.host(id: cachedProject.hostID)
         )
-        #expect(!unavailableHost.canCreateWorktree)
-        #expect(!model.snapshot.canCreateWorktree(in: cachedProject))
+        #expect(unavailableHost.canCreateWorktree)
+        #expect(model.snapshot.canCreateWorktree(in: cachedProject))
         #expect(model.snapshot.project(id: cachedProject.id) != nil)
         #expect(unavailableHost.tmuxSessions.map(\.name) == ["docbank"])
+        #expect(unavailableHost.primaryDiagnostic == nil)
         #expect(model.workspaceInventoryWarningsByHost[unavailableHost.id] == nil)
 
-        do {
-            try await model.createWorktree(WorktreeCreateRequest(
-                projectID: cachedProject.id,
-                branchName: "feature/should-not-run",
-                createsBranch: true
-            ))
-            Issue.record("Expected unavailable kwt to reject creation")
-        } catch let error as KwtWorktreeError {
-            #expect(error == .projectUnavailable)
-        }
-        #expect(creationAttempts.count == 0)
+        provisioningShouldFail.store(false)
+        let attemptsBeforeAction = provisioningAttempts.count
+        let branches = try await model.branches(for: cachedProject.id)
 
-        availability.markRemoteKwtAvailable()
-        model.refreshKwtInventory()
-        await waitUntilMainActor {
-            let host = model.snapshot.host(id: cachedProject.hostID)
-            return host?.primaryDiagnostic?.code != .missingKwt
-                && host?.canCreateWorktree == true
+        #expect(provisioningAttempts.count == attemptsBeforeAction + 1)
+        #expect(branches == [branch])
+        #expect(branchListAttempts.count == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("repair failure prevents branch listing")
+    func repairFailurePreventsBranchListing() async throws {
+        let environment = try setupRemoteEnvironment()
+        let branchListAttempts = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtRemoteProvisioner: { _ in
+                throw KwtRemoteInstallError.bundleIncomplete
+            },
+            kwtBranchLister: { _, _ in
+                _ = branchListAttempts.increment()
+                return [
+                    WorktreeBranchCandidate(
+                        name: "feature/should-not-run",
+                        source: "feature/should-not-run",
+                        isRemote: false
+                    ),
+                ]
+            }
+        )
+
+        await #expect(throws: KwtRemoteInstallError.bundleIncomplete) {
+            try await model.branches(for: environment.project.id)
         }
-        #expect(model.snapshot.canCreateWorktree(in: cachedProject))
+        #expect(branchListAttempts.count == 0)
         await model.shutdown()
     }
 
     @MainActor
     @Test(
-        "status 127 during creation disables kwt and schedules discovery",
+        "status 127 during creation keeps repair actions available",
         arguments: CreationKwtFailurePhase.allCases
     )
-    private func creationKwtLossDisablesCapability(
+    private func creationKwtLossKeepsCapability(
         phase: CreationKwtFailurePhase
     ) async throws {
         let environment = try setupStandardEnvironment()
@@ -688,12 +778,14 @@ extension WorkspaceTmuxDiscoveryTests {
 
         await waitUntilMainActor {
             availability.remoteLoadCount >= 2
-                && model.snapshot.host(id: cachedProject.hostID)?
-                .primaryDiagnostic?.code == .missingKwt
         }
         #expect(creationAttempts.count == 1)
         #expect(model.snapshot.project(id: cachedProject.id) != nil)
-        #expect(!model.snapshot.canCreateWorktree(in: cachedProject))
+        #expect(model.snapshot.canCreateWorktree(in: cachedProject))
+        #expect(
+            model.snapshot.host(id: cachedProject.hostID)?
+                .primaryDiagnostic == nil
+        )
         await model.shutdown()
     }
 
@@ -818,13 +910,7 @@ extension WorkspaceTmuxDiscoveryTests {
 
         #expect(summary.connectionState == .online)
         #expect(summary.host.lastKnownReachable)
-        #expect(summary.diagnostics.count == 1)
-        #expect(summary.diagnostics.first?.code == .missingKwt)
-        #expect(summary.diagnostics.first?.severity == .warning)
-        #expect(
-            summary.diagnostics.first?.recoverySuggestion
-                .contains("Tmux sessions remain available") == true
-        )
+        #expect(summary.diagnostics.isEmpty)
         #expect(released.load())
         await model.shutdown()
     }

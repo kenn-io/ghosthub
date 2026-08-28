@@ -81,12 +81,19 @@ extension WorkspaceTmuxDiscoveryTests {
             sshDestination: " \nwesm@builder.example.com:2222\t"
         )
         let capturedTarget = LockedValue<CommandHost?>(nil)
+        let provisionedHost = LockedValue<SSHHost?>(nil)
+        let events = LockedValue<[String]>([])
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
+            kwtRemoteProvisioner: { host in
+                provisionedHost.store(host)
+                events.withLock { $0.append("provision") }
+            },
             kwtProjectRegistration: { path, target in
                 capturedTarget.store(target)
+                events.withLock { $0.append("register") }
                 return KwtProjectRecord(
                     repository: "github.com/kenn-io/ghosthub",
                     name: "ghosthub",
@@ -102,12 +109,45 @@ extension WorkspaceTmuxDiscoveryTests {
         )
 
         #expect(result == .success("ghosthub"))
+        #expect(provisionedHost.load() == draft)
+        #expect(events.load() == ["provision", "register"])
         #expect(capturedTarget.load() == .ssh(SSHHostInfo(
             user: "wesm",
             hostname: "builder.example.com",
             port: 2222,
             platform: .posix
         )))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Host Settings install uses managed kwt provisioning")
+    func hostSettingsInstallUsesManagedProvisioning() async throws {
+        let environment = try setupHostEnvironment()
+        let draft = SSHHost(
+            configKey: "new-builder",
+            name: "New Builder",
+            platform: .linux,
+            sshDestination: ""
+        )
+        let provisionedHost = LockedValue<SSHHost?>(nil)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtRemoteProvisioner: { host in
+                provisionedHost.store(host)
+            }
+        )
+
+        let result = await model.installRemoteKwt(on: draft)
+
+        guard case .success = result else {
+            Issue.record("Expected managed kwt provisioning to succeed")
+            await model.shutdown()
+            return
+        }
+        #expect(provisionedHost.load() == draft)
         await model.shutdown()
     }
 
