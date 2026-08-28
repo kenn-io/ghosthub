@@ -259,7 +259,7 @@ jobs:
             com.apple.CoreSimulator.SimulatorTrampoline \
             com.apple.CoreSimulator.CoreSimulatorService \
             com.apple.CoreDevice.CoreDeviceService; do
-            target="gui/$uid/$label"
+            target="user/$uid/$label"
             if /bin/launchctl print "$target" >/dev/null 2>&1; then
               /bin/launchctl bootout "$target" ||
                 ! /bin/launchctl print "$target" >/dev/null 2>&1
