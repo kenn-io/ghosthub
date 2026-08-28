@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -19,9 +22,73 @@ def run(seconds: str, *command: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def descendant_pids(root_pid: int) -> set[int]:
+    result = subprocess.run(
+        ["ps", "-axo", "pid=,ppid="],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    children: dict[int, set[int]] = {}
+    for line in result.stdout.splitlines():
+        pid, parent_pid = (int(value) for value in line.split())
+        children.setdefault(parent_pid, set()).add(pid)
+
+    descendants: set[int] = set()
+    pending = list(children.get(root_pid, set()))
+    while pending:
+        pid = pending.pop()
+        if pid in descendants:
+            continue
+        descendants.add(pid)
+        pending.extend(children.get(pid, set()))
+    return descendants
+
+
 def test_fast_command_passes_through() -> None:
     result = run("30", "true")
     assert result.returncode == 0
+
+
+def test_fast_command_does_not_leave_watchdog_timer() -> None:
+    wrapper = subprocess.Popen(
+        ["sh", str(SCRIPT), "60421", "sleep", "1"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    observed_descendants: set[int] = set()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        observed_descendants.update(descendant_pids(wrapper.pid))
+        if len(observed_descendants) >= 2:
+            break
+        time.sleep(0.01)
+
+    _, stderr = wrapper.communicate(timeout=10)
+    leaked = {
+        pid
+        for pid in observed_descendants
+        if not _process_has_exited(pid)
+    }
+    try:
+        assert wrapper.returncode == 0, stderr
+        assert len(observed_descendants) >= 2, (
+            "did not observe the command and watchdog"
+        )
+        assert not leaked, "wrapper descendants remained after a fast command"
+    finally:
+        for pid in leaked:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+
+
+def _process_has_exited(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
 
 
 def test_failing_command_is_retried_once_then_fails(tmp_path: Path) -> None:
@@ -85,8 +152,6 @@ def test_terminating_wrapper_kills_child_group(tmp_path: Path) -> None:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         try:
-            import os
-
             os.kill(child_pid, 0)
         except ProcessLookupError:
             return
