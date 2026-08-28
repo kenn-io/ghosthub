@@ -236,13 +236,12 @@ public struct SettingsView: View {
                     max: 240
                 )
         } detail: {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    header
-                    detail
-                }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                domainContent
             }
             .background(paneFill)
         }
@@ -264,6 +263,27 @@ public struct SettingsView: View {
             }
         } else {
             content
+        }
+    }
+
+    @ViewBuilder
+    private var domainContent: some View {
+        if draft.selectedDomain == .hosts {
+            detail
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity,
+                    alignment: .topLeading
+                )
+        } else {
+            ScrollView {
+                detail
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
         }
     }
 
