@@ -203,8 +203,9 @@ final class SettingsViewTests: XCTestCase {
             hostingView.bitmapImageRepForCachingDisplay(in: headerRect)
         )
         hostingView.cacheDisplay(in: headerRect, to: headerBefore)
-        let headerDataBefore = try XCTUnwrap(
-            headerBefore.representation(using: .png, properties: [:])
+        let headerPixelsBefore = Data(
+            bytes: try XCTUnwrap(headerBefore.bitmapData),
+            count: headerBefore.bytesPerRow * headerBefore.pixelsHigh
         )
         let originalOrigin = editorScrollView.contentView.bounds.origin
         editorScrollView.contentView.scroll(
@@ -222,8 +223,9 @@ final class SettingsViewTests: XCTestCase {
             hostingView.bitmapImageRepForCachingDisplay(in: headerRect)
         )
         hostingView.cacheDisplay(in: headerRect, to: headerAfter)
-        let headerDataAfter = try XCTUnwrap(
-            headerAfter.representation(using: .png, properties: [:])
+        let headerPixelsAfter = Data(
+            bytes: try XCTUnwrap(headerAfter.bitmapData),
+            count: headerAfter.bytesPerRow * headerAfter.pixelsHigh
         )
 
         XCTAssertNotEqual(
@@ -231,8 +233,8 @@ final class SettingsViewTests: XCTestCase {
             originalOrigin.y
         )
         XCTAssertEqual(
-            headerDataAfter,
-            headerDataBefore
+            headerPixelsAfter,
+            headerPixelsBefore
         )
         XCTAssertEqual(
             hostListScrollView.convert(
