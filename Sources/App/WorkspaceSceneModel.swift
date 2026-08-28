@@ -6720,10 +6720,12 @@ final class WorkspaceSceneModel: ObservableObject {
             port: sshHost.port,
             platform: host.platform == .windows ? .windows : .posix
         ))
+        var provisioningHost = host
+        provisioningHost.sshDestination = destination
         return await performProjectRegistration(
             projectPath,
             on: target,
-            provisioningHost: host,
+            provisioningHost: provisioningHost,
             hostID: snapshot.hosts.first {
                 $0.configKey == host.configKey
             }?.id,

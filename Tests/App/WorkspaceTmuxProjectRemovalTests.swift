@@ -211,7 +211,7 @@ extension WorkspaceTmuxDiscoveryTests {
             configKey: "new-builder",
             name: "New Builder",
             platform: .linux,
-            sshDestination: " \nwesm@builder.example.com:2222\t"
+            sshDestination: " \noperator@builder.example.com:2222\t"
         )
         let capturedTarget = LockedValue<CommandHost?>(nil)
         let provisionedHost = LockedValue<SSHHost?>(nil)
@@ -242,10 +242,15 @@ extension WorkspaceTmuxDiscoveryTests {
         )
 
         #expect(result == .success("ghosthub"))
-        #expect(provisionedHost.load() == draft)
+        #expect(provisionedHost.load() == SSHHost(
+            configKey: draft.configKey,
+            name: draft.name,
+            platform: draft.platform,
+            sshDestination: "operator@builder.example.com:2222"
+        ))
         #expect(events.load() == ["provision", "register"])
         #expect(capturedTarget.load() == .ssh(SSHHostInfo(
-            user: "wesm",
+            user: "operator",
             hostname: "builder.example.com",
             port: 2222,
             platform: .posix
