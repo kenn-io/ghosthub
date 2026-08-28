@@ -1,4 +1,5 @@
 import AppKit
+import GhosthubTerminalSupport
 import SwiftUI
 
 // MARK: - Appearance-aware surface colors
@@ -92,6 +93,37 @@ public enum WorkspaceSurfaceColor {
     )
 
     public static let color: Color = .init(nsColor: nsColor)
+
+    /// Canonical surface color at a given alpha, for translucent chrome when
+    /// the terminal background is transparent. Alpha 1 returns the canonical
+    /// opaque color.
+    public static func nsColor(opacity: Double) -> NSColor {
+        let clamped = min(max(opacity, 0.0), 1.0)
+        guard clamped < 1.0 else { return nsColor }
+        return nsColor.withAlphaComponent(clamped)
+    }
+
+    public static func color(opacity: Double) -> Color {
+        Color(nsColor: nsColor(opacity: opacity))
+    }
+
+    /// Clear when the terminal background is transparent — the surface
+    /// behind draws its own alpha, and any paint here would stack and
+    /// darken it. Canonical surface color otherwise.
+    public static func behindTerminal(
+        _ appearance: TerminalBackgroundAppearance
+    ) -> Color {
+        appearance.isTransparent ? .clear : color
+    }
+
+    /// Chrome surfaces (sidebar, panels): tinted at the configured opacity
+    /// when transparent so the window shows one consistent translucency;
+    /// canonical opaque color otherwise.
+    public static func chrome(
+        _ appearance: TerminalBackgroundAppearance
+    ) -> Color {
+        color(opacity: appearance.isTransparent ? appearance.opacity : 1.0)
+    }
 
     public static func hexString(
         for appearance: NSAppearance

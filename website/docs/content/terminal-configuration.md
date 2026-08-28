@@ -35,6 +35,24 @@ theme = Catppuccin Macchiato
 Conditional light and dark themes, and paths to your own theme files, work the
 same way.
 
+## Background transparency
+
+Ghosthub reads `background-opacity` and `background-blur` from `ghostty.conf`
+at startup and on every reload:
+
+```text
+background-opacity = 0.85
+background-blur = 20
+```
+
+When opacity is below 1, workspace windows and their chrome become
+translucent at the configured opacity, and blur is applied behind the window.
+Increased contrast (**System Settings → Accessibility → Display**) forces an
+opaque window, and native fullscreen always stays opaque. There is no
+separate Ghosthub setting; effective values come from your loaded
+configuration graph rooted at `ghostty.conf`, so a project `terminal.conf` or
+a `config-file` include can override the root.
+
 ## Shell startup
 
 For local shells, Ghosthub preserves libghostty's normal macOS login-shell and

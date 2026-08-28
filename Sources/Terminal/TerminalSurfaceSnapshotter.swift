@@ -226,7 +226,7 @@ public final class TerminalSurfaceSnapshotter {
                     y: (outputBounds.height - scaledSize.height) / 2
                 ))
             let background = CIImage(
-                color: CIColor(cgColor: source.backgroundColor)
+                color: CIColor(cgColor: opaqueFill(from: source.backgroundColor))
             ).cropped(to: outputBounds)
             source.gpu.context.render(
                 transformed.composited(over: background),
@@ -277,5 +277,11 @@ public final class TerminalSurfaceSnapshotter {
             surfaceID: IOSurfaceGetID(ioSurface),
             seed: IOSurfaceGetSeed(ioSurface)
         )
+    }
+
+    /// Snapshots flatten over this fill; a translucent layer color under
+    /// background-opacity < 1 must not let the sidebar show through previews.
+    nonisolated static func opaqueFill(from color: CGColor?) -> CGColor {
+        color?.copy(alpha: 1) ?? NSColor.black.cgColor
     }
 }

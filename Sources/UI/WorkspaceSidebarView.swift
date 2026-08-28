@@ -151,6 +151,8 @@ struct WorkspaceSidebarView: View {
     @Environment(\.accessibilityDifferentiateWithoutColor)
     private var differentiateWithoutColor
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.terminalBackgroundAppearance)
+    private var backgroundAppearance
     let snapshot: WorkspaceSnapshot
     let sectionCache: WorkspaceSidebarSectionCache?
     let snapshotRevision: UInt64
@@ -461,7 +463,10 @@ struct WorkspaceSidebarView: View {
         .padding(.vertical, 1)
         .background {
             ZStack {
-                WorkspaceSurfaceColor.color
+                // The sidebar column already paints the tinted surface when
+                // transparent; repainting it here would compound the alpha
+                // and make the header block more opaque than the rest.
+                WorkspaceSurfaceColor.behindTerminal(backgroundAppearance)
                 Color.primary.opacity(
                     colorSchemeContrast == .increased ? 0.08 : 0.035
                 )

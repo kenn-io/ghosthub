@@ -1,5 +1,6 @@
 import GhosthubTerminal
 import GhosthubTransport
+import GhosthubUI
 import SwiftUI
 
 struct BorrowedHerdrSessionView: View {
@@ -16,6 +17,7 @@ struct BorrowedHerdrSessionView: View {
     var onReconnectNow: () -> Void
     var onReviewConnection: () -> Void
     var onHostSettingsRequest: () -> Void
+    @Environment(\.terminalBackgroundAppearance) private var backgroundAppearance
 
     init(
         handle: BorrowedHerdrSessionHandle,
@@ -54,49 +56,63 @@ struct BorrowedHerdrSessionView: View {
                 defersTerminalResize: defersTerminalResize,
                 onCloseRequest: onCloseRequest
             )
-        } else if recoveryState != nil {
-            ContentUnavailableView {
-                Label(recoveryTitle, systemImage: "network.slash")
-            } description: {
-                VStack(spacing: 10) {
-                    if showsReconnectProgress {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    Text(recoveryMessage)
-                        .multilineTextAlignment(.center)
-                }
-            } actions: {
-                if primaryRecoveryActionTitle != nil {
-                    Button("Reconnect Now", action: onReconnectNow)
-                }
-                if showsReviewConnection {
-                    Button("Review Connection", action: onReviewConnection)
-                }
-                if showsHostSettingsAction {
-                    Button("Host Settings", action: onHostSettingsRequest)
-                }
-            }
-        } else if let disconnectionReason {
-            ContentUnavailableView {
-                Label(
-                    disconnectionTitle,
-                    systemImage: attachmentClosure == .detached
-                        ? "rectangle.portrait.and.arrow.right"
-                        : "network.slash"
-                )
-            } description: {
-                Text(disconnectionReason)
-            } actions: {
-                Button(recoveryActionTitle, action: onRetryRequest)
-                if showsHostSettingsAction {
-                    Button("Host Settings", action: onHostSettingsRequest)
-                }
-            }
         } else {
-            ProgressView("Opening \(handle.name)…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            sessionFallback
         }
+    }
+
+    /// Recovery, disconnection, and opening states share one chrome-tinted
+    /// backdrop: the cover behind them goes clear under a transparent
+    /// config, so without this they would float over the bare desktop. When
+    /// opaque the tint is the canonical surface color over an identical
+    /// opaque cover, so rendering is unchanged.
+    private var sessionFallback: some View {
+        ZStack {
+            if recoveryState != nil {
+                ContentUnavailableView {
+                    Label(recoveryTitle, systemImage: "network.slash")
+                } description: {
+                    VStack(spacing: 10) {
+                        if showsReconnectProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(recoveryMessage)
+                            .multilineTextAlignment(.center)
+                    }
+                } actions: {
+                    if primaryRecoveryActionTitle != nil {
+                        Button("Reconnect Now", action: onReconnectNow)
+                    }
+                    if showsReviewConnection {
+                        Button("Review Connection", action: onReviewConnection)
+                    }
+                    if showsHostSettingsAction {
+                        Button("Host Settings", action: onHostSettingsRequest)
+                    }
+                }
+            } else if let disconnectionReason {
+                ContentUnavailableView {
+                    Label(
+                        disconnectionTitle,
+                        systemImage: attachmentClosure == .detached
+                            ? "rectangle.portrait.and.arrow.right"
+                            : "network.slash"
+                    )
+                } description: {
+                    Text(disconnectionReason)
+                } actions: {
+                    Button(recoveryActionTitle, action: onRetryRequest)
+                    if showsHostSettingsAction {
+                        Button("Host Settings", action: onHostSettingsRequest)
+                    }
+                }
+            } else {
+                ProgressView("Opening \(handle.name)…")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WorkspaceSurfaceColor.chrome(backgroundAppearance))
     }
 
     var recoveryTitle: String {
@@ -160,6 +176,7 @@ private struct NativeHerdrTerminalView: View {
     var defersTerminalResize: Bool
     var onCloseRequest: () -> Void
     @State private var observerID = UUID()
+    @Environment(\.terminalBackgroundAppearance) private var backgroundAppearance
 
     var body: some View {
         TerminalSurfaceSwiftUIView(
@@ -167,7 +184,7 @@ private struct NativeHerdrTerminalView: View {
             defersSurfaceResize: defersTerminalResize
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(TerminalSurfaceBackdrop.color(for: backgroundAppearance))
         .overlay(alignment: .top) {
             if let message = surfaceView.paneSplitErrorMessage {
                 NativePaneSplitErrorOverlay(message: message)
