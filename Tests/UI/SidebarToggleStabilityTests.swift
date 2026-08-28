@@ -103,6 +103,51 @@ struct SidebarToggleStabilityTests {
         #expect(transitionWidth < finalWidth)
     }
 
+    @Test("transparent sidebar divider overlaps the terminal seam")
+    func transparentSidebarDividerOverlapsTerminalSeam() throws {
+        let env = StabilityTestEnvironment(
+            backgroundAppearance: TerminalBackgroundAppearance(
+                opacity: 0.82,
+                blurCValue: 0,
+                increasedContrast: false
+            )
+        )
+        defer { env.close() }
+
+        let terminal = try #require(env.findStableContent())
+        let terminalFrame = terminal.convert(
+            terminal.bounds,
+            to: env.hostingView
+        )
+        #expect(
+            abs(
+                terminalFrame.minX
+                    - WorkspaceSidebarWidthPolicy.defaultWidth
+            ) < 1
+        )
+
+        let handle = try #require(viewByAccessibilityID(
+            "workspace-sidebar-resize-handle",
+            in: env.hostingView
+        ))
+        let handleFrame = handle.convert(
+            handle.bounds,
+            to: env.hostingView
+        )
+        #expect(
+            abs(
+                handleFrame.width
+                    - WorkspaceSidebarWidthPolicy.dividerHitWidth
+            ) < 1
+        )
+        #expect(
+            abs(
+                handleFrame.midX
+                    - WorkspaceSidebarWidthPolicy.defaultWidth
+            ) < 1
+        )
+    }
+
     @Test("sidebar command toggles only its targeted window")
     func sidebarCommandTogglesOnlyTargetedWindow() {
         let firstTarget = SidebarToggleTarget()
@@ -275,7 +320,7 @@ private final class StabilityTestEnvironment {
 
     private let model: StabilityTestModel
     private let window: NSWindow?
-    private let hostingView: NSHostingView<StabilityTestHarness>
+    let hostingView: NSHostingView<StabilityTestHarness>
     private let settingsStore: SettingsStore
     private let tempRoot: URL
     private let defaults: UserDefaults
@@ -326,6 +371,7 @@ private final class StabilityTestEnvironment {
     }
 
     init(
+        backgroundAppearance: TerminalBackgroundAppearance = .opaque,
         sidebarToggleTarget: AnyObject = SidebarToggleTarget(),
         presentsWindow: Bool = true
     ) {
@@ -393,6 +439,7 @@ private final class StabilityTestEnvironment {
                 model: model,
                 settingsStore: settingsStore,
                 defaults: defaults,
+                backgroundAppearance: backgroundAppearance,
                 sidebarToggleTarget: sidebarToggleTarget,
                 workspaceWindowProvider: {
                     windowReference.window
@@ -508,6 +555,7 @@ private struct StabilityTestHarness: View {
     @ObservedObject var model: StabilityTestModel
     let settingsStore: SettingsStore
     let defaults: UserDefaults
+    let backgroundAppearance: TerminalBackgroundAppearance
     let sidebarToggleTarget: AnyObject
     let workspaceWindowProvider: () -> NSWindow?
 
@@ -543,6 +591,10 @@ private struct StabilityTestHarness: View {
         )
         .defaultAppStorage(defaults)
         .environment(\.controlActiveState, .key)
+        .environment(
+            \.terminalBackgroundAppearance,
+            backgroundAppearance
+        )
     }
 }
 

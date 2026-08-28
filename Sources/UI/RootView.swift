@@ -544,7 +544,7 @@ public struct RootView: View {
                 HStack(spacing: 0) {
                     Color.clear
                         .frame(
-                            width: (sidebarWidth + Self.dividerHit)
+                            width: sidebarWidth
                                 * sidebarVisibilityProgress
                         )
 
@@ -559,10 +559,11 @@ public struct RootView: View {
                         .frame(width: sidebarWidth)
 
                     columnDivider
+                        .offset(x: -Self.dividerHit / 2)
                         .gesture(sidebarDragGesture)
                 }
                 .offset(
-                    x: -(sidebarWidth + Self.dividerHit)
+                    x: -sidebarWidth
                         * (1 - sidebarVisibilityProgress)
                 )
                 .opacity(sidebarVisibilityProgress)
@@ -612,7 +613,11 @@ public struct RootView: View {
     /// cursor shows reliably regardless of adjacent views.
     private struct ResizeCursorView: NSViewRepresentable {
         func makeNSView(context: Context) -> CursorRectView {
-            CursorRectView()
+            let view = CursorRectView()
+            view.setAccessibilityIdentifier(
+                "workspace-sidebar-resize-handle"
+            )
+            return view
         }
 
         func updateNSView(
