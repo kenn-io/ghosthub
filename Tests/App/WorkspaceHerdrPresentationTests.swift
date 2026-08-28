@@ -1701,7 +1701,7 @@ struct WorkspaceHerdrPresentationTests {
         current.withLock { $0 = dead }
         let close = try #require(store.surface.closeObservers.values.first)
         close(false, 255)
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             invalidations.withLock { $0 } == 1
                 || deadAttempts.withLock { $0 } >= 3
         }
@@ -1712,7 +1712,7 @@ struct WorkspaceHerdrPresentationTests {
             withExtendedLifetime(deadConnection) {}
             return
         }
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             store.requestedConfigurations.count == 2
                 && model.activeBorrowedHerdrConnectionState == .connected
         }
