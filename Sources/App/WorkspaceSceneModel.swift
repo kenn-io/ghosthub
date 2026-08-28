@@ -58,6 +58,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias KwtRemoteProvisioner = @Sendable (
         SSHHost
     ) async throws -> Void
+    typealias KwtRemoteInstalling = @Sendable (
+        SSHHost
+    ) async throws -> Void
     typealias KwtWorktreeCreator = @Sendable (
         WorktreeCreateRequest, String, CommandHost
     ) async throws -> Void
@@ -813,6 +816,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let kwtInventoryLoader: KwtInventoryLoader
     private let kwtConditionalInventoryLoader: KwtConditionalInventoryLoader
     private let kwtRemoteProvisioner: KwtRemoteProvisioner
+    private let kwtRemoteInstaller: KwtRemoteInstalling
     private let kwtWorktreeCreator: KwtWorktreeCreator
     private let kwtWorktreeRemover: KwtWorktreeRemover
     private let kwtForceWorktreeRemover: KwtWorktreeRemover
@@ -1054,6 +1058,10 @@ final class WorkspaceSceneModel: ObservableObject {
         kwtRemoteProvisioner: @escaping KwtRemoteProvisioner = { host in
             try await KwtRemoteProvisioningCoordinator.shared
                 .ensureInstalled(on: host)
+        },
+        kwtRemoteInstaller: @escaping KwtRemoteInstalling = { host in
+            try await KwtRemoteProvisioningCoordinator.shared
+                .install(on: host)
         },
         kwtWorktreeCreator: @escaping KwtWorktreeCreator = {
             request, projectPath, host in
@@ -1391,6 +1399,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.kwtInventoryLoader = kwtInventoryLoader
         self.kwtConditionalInventoryLoader = kwtConditionalInventoryLoader
         self.kwtRemoteProvisioner = kwtRemoteProvisioner
+        self.kwtRemoteInstaller = kwtRemoteInstaller
         self.kwtWorktreeCreator = kwtWorktreeCreator
         self.kwtWorktreeRemover = kwtWorktreeRemover
         self.kwtForceWorktreeRemover = kwtForceWorktreeRemover
@@ -6665,7 +6674,13 @@ final class WorkspaceSceneModel: ObservableObject {
             let hostID = snapshot.hosts.first {
                 $0.configKey == host.configKey
             }?.id
-            try await ensureRemoteKwtForOperation(on: host, hostID: hostID)
+            try await kwtRemoteInstaller(host)
+            if let hostID {
+                kwtAvailabilityByHost[hostID] = true
+                kwtInventoryFailuresByHost.removeValue(forKey: hostID)
+                applyInventoryOverlayIfNeeded()
+                updateWorkspaceInventoryState()
+            }
             refreshHosts()
             refreshKwtInventory()
             return .success(())

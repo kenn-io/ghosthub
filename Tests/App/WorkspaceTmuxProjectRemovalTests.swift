@@ -254,8 +254,8 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("Host Settings install uses managed kwt provisioning")
-    func hostSettingsInstallUsesManagedProvisioning() async throws {
+    @Test("Host Settings reinstall bypasses passive kwt provisioning")
+    func hostSettingsReinstallBypassesPassiveProvisioning() async throws {
         let environment = try setupHostEnvironment()
         let draft = SSHHost(
             configKey: "new-builder",
@@ -263,13 +263,17 @@ extension WorkspaceTmuxDiscoveryTests {
             platform: .linux,
             sshDestination: ""
         )
-        let provisionedHost = LockedValue<SSHHost?>(nil)
+        let passiveProvisioningCalls = Counter()
+        let installedHost = LockedValue<SSHHost?>(nil)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
-            kwtRemoteProvisioner: { host in
-                provisionedHost.store(host)
+            kwtRemoteProvisioner: { _ in
+                _ = passiveProvisioningCalls.increment()
+            },
+            kwtRemoteInstaller: { host in
+                installedHost.store(host)
             }
         )
 
@@ -280,7 +284,8 @@ extension WorkspaceTmuxDiscoveryTests {
             await model.shutdown()
             return
         }
-        #expect(provisionedHost.load() == draft)
+        #expect(passiveProvisioningCalls.count == 0)
+        #expect(installedHost.load() == draft)
         await model.shutdown()
     }
 

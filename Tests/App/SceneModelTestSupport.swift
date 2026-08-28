@@ -338,6 +338,8 @@ func makeModel(
     WorkspaceSceneModel.KwtConditionalInventoryLoader? = nil,
     kwtRemoteProvisioner:
     @escaping WorkspaceSceneModel.KwtRemoteProvisioner = { _ in },
+    kwtRemoteInstaller:
+    @escaping WorkspaceSceneModel.KwtRemoteInstalling = { _ in },
     kwtWorktreeCreator: @escaping WorkspaceSceneModel.KwtWorktreeCreator = {
         request, projectPath, host in
         try await KwtWorktreeClient().create(
@@ -568,6 +570,7 @@ func makeModel(
             try await kwtInventoryLoader(host)
         },
         kwtRemoteProvisioner: kwtRemoteProvisioner,
+        kwtRemoteInstaller: kwtRemoteInstaller,
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtWorktreeRemover: kwtWorktreeRemover,
         kwtForceWorktreeRemover: kwtForceWorktreeRemover,
