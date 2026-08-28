@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import GhosthubSettings
 import GhosthubTmux
+import Synchronization
 import Testing
 @testable import GhosthubApp
 
@@ -243,6 +244,92 @@ struct KwtRemoteInstallerTests {
         try await forced.value
         #expect(targetProbeCalls.load() == 2)
         #expect(recorder.destination != nil)
+    }
+
+    @Test("concurrent explicit installs await a replacement install failure")
+    func concurrentForcedInstallsAwaitReplacementFailure() async throws {
+        let revision = String(repeating: "6", count: 40)
+        let passiveProbe = BlockingGate()
+        let forcedProbe = BlockingGate()
+        let targetProbeCalls = Mutex(0)
+        let forcedStarts = Mutex(0)
+        let installer = KwtRemoteInstaller(
+            revision: revision,
+            remoteRunner: { _, _, command in
+                if command == KwtRemoteInstaller.readyProbeCommand(
+                    revision: revision
+                ) {
+                    return installOutput(1)
+                }
+                guard command == KwtRemoteInstaller.targetProbeCommand else {
+                    return installOutput(0)
+                }
+                let call = targetProbeCalls.withLock { calls in
+                    calls += 1
+                    return calls
+                }
+                switch call {
+                case 1:
+                    passiveProbe.block()
+                    return installOutput(1)
+                case 2:
+                    forcedProbe.block()
+                    return installOutput(23)
+                default:
+                    return installOutput(24)
+                }
+            }
+        )
+        let coordinator = KwtRemoteProvisioningCoordinator(
+            installer: installer
+        )
+        let host = SSHHost(
+            configKey: "linux-build",
+            name: "Linux Build Host",
+            platform: .linux,
+            sshDestination: "operator@build.example.test"
+        )
+
+        let passive = Task {
+            try await coordinator.ensureInstalled(on: host)
+        }
+        await passiveProbe.waitUntilBlocked()
+        let forcedInstall: @Sendable () async -> Int32? = {
+            forcedStarts.withLock { $0 += 1 }
+            do {
+                try await coordinator.install(on: host)
+                return nil
+            } catch {
+                guard case let .targetProbeFailed(status) =
+                    error as? KwtRemoteInstallError
+                else { return -1 }
+                return status
+            }
+        }
+        let firstForced = Task {
+            await forcedInstall()
+        }
+        let secondForced = Task {
+            await forcedInstall()
+        }
+        await waitUntil {
+            forcedStarts.withLock { $0 } == 2
+        }
+        passiveProbe.open()
+        await forcedProbe.waitUntilBlocked()
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+        forcedProbe.open()
+
+        await #expect {
+            try await passive.value
+        } throws: {
+            $0 as? KwtRemoteInstallError == .targetProbeFailed(status: 1)
+        }
+        #expect(await firstForced.value == 23)
+        #expect(await secondForced.value == 23)
+        #expect(targetProbeCalls.withLock { $0 } == 2)
     }
 
     @Test("cancelling the last provisioning waiter stops before upload")
