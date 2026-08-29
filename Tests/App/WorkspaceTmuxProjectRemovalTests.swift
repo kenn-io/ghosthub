@@ -134,6 +134,66 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("Host Settings Add Project rejects an endpoint changed during kwt provisioning")
+    func hostSettingsAddProjectRejectsEndpointChangedDuringProvisioning() async throws {
+        let environment = try setupRemoteEnvironment()
+        let initialHost = SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: environment.host.platform,
+            sshDestination: try #require(environment.host.sshDestination)
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([
+            initialHost,
+        ])
+        let provisioningGate = AsyncGate()
+        let registrationCalls = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: environment.snapshot,
+            kwtRemoteProvisioner: { _ in
+                await provisioningGate.wait()
+            },
+            kwtProjectRegistration: { _, _ in
+                _ = registrationCalls.increment()
+                return KwtProjectRecord(
+                    repository: environment.project.scopedKey,
+                    name: environment.project.name,
+                    path: environment.project.rootPath,
+                    lastTouched: nil
+                )
+            },
+            configuredSSHHostsProvider: { configuredHosts.value }
+        )
+
+        let registration = Task { @MainActor in
+            await model.registerRemoteProject(
+                environment.project.rootPath,
+                on: initialHost
+            )
+        }
+        await provisioningGate.waitUntilWaiting()
+        configuredHosts.send([
+            SSHHost(
+                configKey: initialHost.configKey,
+                name: initialHost.name,
+                platform: initialHost.platform,
+                sshDestination: "user-a@host-b.example.com"
+            ),
+        ])
+        model.refreshHosts()
+        provisioningGate.open()
+
+        #expect(await registration.value == .failure(.message(
+            "The host connection changed. "
+                + "Close Add Project and try again."
+        )))
+        #expect(registrationCalls.count == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("Remove Project stops when provisioning changes the endpoint")
     func removeProjectStopsAfterProvisioningEndpointChange() async throws {
         let environment = try setupRemoteEnvironment()

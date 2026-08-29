@@ -6779,14 +6779,15 @@ final class WorkspaceSceneModel: ObservableObject {
         ))
         var provisioningHost = host
         provisioningHost.sshDestination = destination
+        let hostID = snapshot.hosts.first {
+            $0.configKey == host.configKey
+        }?.id
         return await performProjectRegistration(
             projectPath,
             on: target,
             provisioningHost: provisioningHost,
-            hostID: snapshot.hosts.first {
-                $0.configKey == host.configKey
-            }?.id,
-            revalidatingHostID: nil
+            hostID: hostID,
+            revalidatingHostID: hostID
         )
     }
 
