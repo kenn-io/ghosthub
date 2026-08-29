@@ -19,6 +19,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     private static var retainedRuntime: LibghosttyRuntime?
     private static var transientRuntimes: [LibghosttyRuntime] = []
     private var pasteboard: InMemoryTerminalPasteboard!
+    private var surfaces: [TerminalSurfaceView] = []
 
     override func setUp() async throws {
         try await super.setUp()
@@ -29,10 +30,32 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        for surface in surfaces {
+            await surface.shutdown()
+        }
+        surfaces.removeAll()
         LibghosttyRuntime.osc52ClipboardWriteDiagnosticObserver = nil
         TerminalPasteboardAccess.reset()
         pasteboard = nil
         try await super.tearDown()
+    }
+
+    private func makeSurface(
+        app: ghostty_app_t,
+        configuration: TerminalSurfaceConfiguration,
+        keyEventInterpreter: (([NSEvent]) -> Void)? = nil,
+        textInputObserver: ((String) -> Void)? = nil,
+        commandObserver: ((Selector) -> Void)? = nil
+    ) -> TerminalSurfaceView {
+        let surface = TerminalSurfaceView(
+            app: app,
+            configuration: configuration,
+            keyEventInterpreter: keyEventInterpreter,
+            textInputObserver: textInputObserver,
+            commandObserver: commandObserver
+        )
+        surfaces.append(surface)
+        return surface
     }
 
     private func requireAppHandle(
@@ -633,9 +656,12 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         var inserted: [String] { storage.inserted }
         var commands: [String] { storage.commands }
 
-        init(appHandle: ghostty_app_t) {
+        init(
+            appHandle: ghostty_app_t,
+            owner: TerminalSurfaceViewInputTests
+        ) {
             let s = storage
-            view = TerminalSurfaceView(
+            view = owner.makeSurface(
                 app: appHandle,
                 configuration: TerminalSurfaceConfiguration(),
                 textInputObserver: { s.inserted.append($0) },
@@ -664,7 +690,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     ) throws {
         let appHandle = try requireAppHandle()
         let scriptURL = makeRawInputProbeScript(readBytes: readBytes)
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -735,7 +761,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let appHandle = try requireAppHandle()
 
         var interpretedEvents = 0
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(),
             keyEventInterpreter: { _ in interpretedEvents += 1 }
@@ -763,7 +789,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let appHandle = try requireAppHandle()
 
         var interpretedEvents = 0
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(),
             keyEventInterpreter: { _ in interpretedEvents += 1 }
@@ -788,7 +814,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testControlChordsMapToAppKitCommandSelectors() throws {
         let appHandle = try requireAppHandle()
-        let harness = ObserverHarness(appHandle: appHandle)
+        let harness = ObserverHarness(appHandle: appHandle, owner: self)
         let window = hostInWindow(harness.view)
 
         for event in [
@@ -820,7 +846,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testReservedAppShortcutBypassesTerminalDispatchState() throws {
         let appHandle = try requireAppHandle()
-        let harness = ObserverHarness(appHandle: appHandle)
+        let harness = ObserverHarness(appHandle: appHandle, owner: self)
         let window = hostInWindow(harness.view)
 
         let event = makeKeyEvent(
@@ -841,7 +867,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testMenuOwnedSidebarReleaseStopsBeforeTerminalDispatch() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -886,7 +912,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testTmuxSplitShortcutsReachAttachedClientHandler() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -917,7 +943,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testTmuxSplitShortcutRepeatIsConsumedWithoutSplitting() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -937,7 +963,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testTmuxSplitShortcutConsumesKeyUpAfterCommandRelease() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -961,7 +987,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testCommandShiftBracketsAreReservedForTabNavigation() throws {
         let appHandle = try requireAppHandle()
-        let harness = ObserverHarness(appHandle: appHandle)
+        let harness = ObserverHarness(appHandle: appHandle, owner: self)
         let window = hostInWindow(harness.view)
 
         // Cmd-Shift-] (keyCode 30)
@@ -1008,7 +1034,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testTerminalYieldsKeyboardFocusWhenSheetIsAttached() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1084,7 +1110,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testCommandPlusUsesSessionFontZoomHandler() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1115,7 +1141,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testOptionDObservedAppKitCallbacksDoNotInvokeCommands() throws {
         let appHandle = try requireAppHandle()
-        let harness = ObserverHarness(appHandle: appHandle)
+        let harness = ObserverHarness(appHandle: appHandle, owner: self)
         let window = hostInWindow(harness.view)
 
         let event = makeKeyEvent(
@@ -1140,7 +1166,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let appHandle = try requireAppHandle()
 
         var interpretedEvents = 0
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(),
             keyEventInterpreter: { _ in interpretedEvents += 1 }
@@ -1175,7 +1201,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1220,7 +1246,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testRemovingOlderPaneObserverDoesNotClearNewerPaneObserver() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1260,7 +1286,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testPaneCloseObserversReceiveCloseRequests() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1285,7 +1311,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testSurfaceClosedErrorNotifiesSurfaceCloseObserver() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1311,7 +1337,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
         let appHandle = try requireAppHandle(from: runtime)
         let home = makeShellHome()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 environmentVariables: [
@@ -1477,7 +1503,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testDefaultShellUsesDefaultZshControlABindingInGhosthubWorkspaceHost() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: makeDefaultLocalZshConfiguration()
         )
@@ -1507,7 +1533,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testInteractiveZshCommandLoadsUserZshrcInGhosthubWorkspaceHost() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: makeDefaultLocalZshConfiguration()
         )
@@ -1545,7 +1571,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         RPROMPT=''
         """.write(to: zshrc, atomically: true, encoding: .utf8)
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 environmentVariables: [
@@ -1588,7 +1614,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 "__CFBundleIdentifier",
                 "TERM_PROGRAM",
             ])
-            let view = TerminalSurfaceView(
+            let view = makeSurface(
                 app: appHandle,
                 configuration: TerminalSurfaceConfiguration(
                     command: "python3 '\(scriptURL.path)'"
@@ -1631,7 +1657,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testSurfacePublishesChildProcessIDAfterLaunchingShell() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 -c 'import time; time.sleep(10)'"
@@ -1795,11 +1821,11 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             ]
         )
 
-        let surfaceA = TerminalSurfaceView(
+        let surfaceA = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
-        let surfaceB = TerminalSurfaceView(
+        let surfaceB = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1849,7 +1875,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testNonKeyWindowCannotMarkTerminalFocused() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1879,7 +1905,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testWindowResigningKeyClearsTerminalFocus() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1901,7 +1927,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testDetachingViewClearsFocusState() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1929,7 +1955,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             TerminalSurfaceView.occlusionSetter = previousSetter
         }
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1963,7 +1989,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             TerminalSurfaceView.sizeSetter = previousSetter
         }
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2000,7 +2026,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             TerminalSurfaceView.sizeSetter = previousSetter
         }
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2035,7 +2061,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             TerminalSurfaceView.sizeSetter = previousSetter
         }
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2066,7 +2092,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             TerminalSurfaceView.sizeSetter = previousSetter
         }
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2107,7 +2133,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             TerminalSurfaceView.sizeSetter = previousSetter
         }
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2141,7 +2167,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             TerminalSurfaceView.occlusionSetter = previousSetter
         }
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2201,7 +2227,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testUnboundCmdShiftScreenshotKeysPassThrough() throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2234,7 +2260,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testTmuxPaneInputSinkReceivesPlainKeyAndSkipsLocalCore() throws {
         let appHandle = try requireAppHandle()
         let scriptURL = makeRawInputProbeScript(readBytes: 1)
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -2274,7 +2300,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let appHandle = try requireAppHandle()
         var view: TerminalSurfaceView!
         var interpretation = 0
-        view = TerminalSurfaceView(
+        view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(),
             keyEventInterpreter: { _ in
@@ -2330,7 +2356,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testTmuxPaneInputSinkOptionDSendsMetaEscape() throws {
         let appHandle = try requireAppHandle()
         let scriptURL = makeRawInputProbeScript(readBytes: 1)
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -2372,7 +2398,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testTmuxPaneInputSinkCtrlEnterSendsCSIU() throws {
         let appHandle = try requireAppHandle()
         let scriptURL = makeRawInputProbeScript(readBytes: 1)
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -2413,7 +2439,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testTmuxPaneInputSinkCtrlShiftLetterSendsControlByte() throws {
         let appHandle = try requireAppHandle()
         let scriptURL = makeRawInputProbeScript(readBytes: 1)
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -2460,7 +2486,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     /// but the local monitor's keyDown short-circuit does not.
     func testPasteboardTmuxPaneInputSinkReceivesPasteOnCmdVViaApplicationDispatch() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2511,7 +2537,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     /// the attached tmux pane sink.
     func testPasteboardTmuxPaneInputSinkReceivesPasteOnCmdVWithCapsLockActive() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2556,7 +2582,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     func testCmdVWithoutPaneSinkStaysLocal() throws {
         let appHandle = try requireAppHandle()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2599,7 +2625,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let scriptURL = makeRawInputProbeScript(
             readBytes: pastedText.utf8.count
         )
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -2674,7 +2700,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let scriptURL = makeBracketedPasteProbeScript(
             readBytes: expectedData.count
         )
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -2737,7 +2763,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let scriptURL = makeRawInputProbeScript(
             readBytes: expectedData.count
         )
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -2789,7 +2815,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let runtime = try runtimeWithClipboardReadsAllowed()
         let appHandle = try requireAppHandle(from: runtime)
         let scriptURL = makeOSC52ReadProbeScript()
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -2836,7 +2862,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             print("<WROTE>", flush=True)
             """
         )
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
                 command: "python3 '\(scriptURL.path)'"
@@ -2906,7 +2932,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         }
         defer { TerminalSurfaceView.focusSetter = previousSetter }
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -2937,7 +2963,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     ) throws {
         let appHandle = try requireAppHandle()
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: configuration
         )
