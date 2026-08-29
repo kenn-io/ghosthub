@@ -261,14 +261,18 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("remote kwt inventory failure stays out of terminal host health")
-    func remoteKwtInventoryFailureIsSilent() async throws {
+    @Test("Windows kwt inventory failure preserves the actual error")
+    func windowsKwtInventoryFailurePreservesError() async throws {
         let environment = try setupStandardEnvironment()
         let remote = SSHHost(
             configKey: "build-box",
             name: "Build Box",
-            platform: .linux,
+            platform: .windows,
             sshDestination: "build-box"
+        )
+        let inventoryFailure = KwtInventoryError.commandFailed(
+            host: remote.sshDestination,
+            status: 1
         )
         let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
         let model = try makeModel(
@@ -278,10 +282,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 guard host.isRemote else {
                     return KwtHostInventory(projects: [])
                 }
-                throw KwtInventoryError.commandFailed(
-                    host: host.displayName,
-                    status: 1
-                )
+                throw inventoryFailure
             },
             tmuxSessionDiscovery: { host in
                 .success(host.isRemote ? [
@@ -300,7 +301,9 @@ extension WorkspaceTmuxDiscoveryTests {
         )
 
         await waitUntilMainActor {
-            model.isWorkspaceInventoryRefreshComplete
+            model.workspaceInventoryWarningsByHost.values.contains(
+                inventoryFailure.localizedDescription
+            )
                 && model.snapshot.hosts.contains {
                     $0.configKey == remote.configKey
                         && $0.tmuxSessions.map(\.name) == ["build"]
@@ -312,7 +315,11 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         #expect(remoteSummary.tmuxSessions.map(\.name) == ["build"])
         #expect(remoteSummary.primaryDiagnostic == nil)
-        #expect(model.workspaceInventoryWarningsByHost[remoteSummary.id] == nil)
+        #expect(remoteSummary.canCreateWorktree)
+        #expect(
+            model.workspaceInventoryWarningsByHost[remoteSummary.id]
+                == inventoryFailure.localizedDescription
+        )
         await model.shutdown()
     }
 

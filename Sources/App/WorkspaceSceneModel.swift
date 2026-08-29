@@ -43,6 +43,12 @@ private func presentGhosthubAlert(
 
 @MainActor
 final class WorkspaceSceneModel: ObservableObject {
+    private enum KwtInventoryRefreshOutcome: Sendable {
+        case loaded(KwtHostInventory)
+        case provisioningFailed
+        case inventoryFailed(any Error)
+    }
+
     nonisolated static func runReconnectValidationProbe<Value: Sendable>(
         _ operation: @escaping @Sendable () -> Value
     ) async -> Value {
@@ -4003,36 +4009,44 @@ final class WorkspaceSceneModel: ObservableObject {
                 of: (
                     UUID,
                     CommandHost,
-                    Result<KwtHostInventory, Error>
+                    KwtInventoryRefreshOutcome
                 ).self
             ) { group in
                 for (hostID, host) in targets {
                     group.addTask {
-                        do {
-                            if let remoteHost =
-                                automaticProvisioningHosts[hostID] {
+                        if let remoteHost =
+                            automaticProvisioningHosts[hostID] {
+                            do {
                                 try await kwtRemoteProvisioner(remoteHost)
+                            } catch {
+                                return (
+                                    hostID,
+                                    host,
+                                    .provisioningFailed
+                                )
                             }
+                        }
+                        do {
                             return await (
                                 hostID,
                                 host,
-                                .success(
+                                .loaded(
                                     try kwtInventoryLoader(host)
                                 )
                             )
                         } catch {
-                            return (hostID, host, .failure(error))
+                            return (hostID, host, .inventoryFailed(error))
                         }
                     }
                 }
-                for await (hostID, sourceHost, result) in group {
+                for await (hostID, sourceHost, outcome) in group {
                     guard let self, !Task.isCancelled,
                           generation == self.kwtInventoryGeneration else {
                         group.cancelAll()
                         return
                     }
-                    switch result {
-                    case let .success(inventory):
+                    switch outcome {
+                    case let .loaded(inventory):
                         let tombstones =
                             self.activeRemovalTombstones(
                                 after: inventory,
@@ -4044,12 +4058,20 @@ final class WorkspaceSceneModel: ObservableObject {
                             excludingWorktrees: tombstones,
                             publish: false
                         )
-                    case let .failure(error):
-                        if sourceHost.isRemote {
-                            // Remote kwt is optional. Keep its readiness
-                            // private so terminal inventory and recovery stay
-                            // independent while explicit worktree actions can
-                            // repair the managed helper when they need it.
+                    case .provisioningFailed:
+                        // Remote kwt is optional. Keep passive maintenance
+                        // failures private so terminal inventory and recovery
+                        // stay independent while explicit worktree actions can
+                        // repair the managed helper when they need it.
+                        self.kwtAvailabilityByHost[hostID] = false
+                        self.kwtInventoryFailuresByHost.removeValue(
+                            forKey: hostID
+                        )
+                    case let .inventoryFailed(error):
+                        if self.isRemoteKwtUnavailable(
+                            error,
+                            hostID: hostID
+                        ) {
                             self.kwtAvailabilityByHost[hostID] = false
                             self.kwtInventoryFailuresByHost.removeValue(
                                 forKey: hostID
@@ -4063,7 +4085,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         hostID: hostID,
                         includeKwtInventory: true
                     )
-                    if case let .success(inventory) = result {
+                    if case let .loaded(inventory) = outcome {
                         self.reconcileRetainedTmuxPresentations(
                             afterAuthoritativeInventoryFor: hostID
                         )
