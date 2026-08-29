@@ -207,6 +207,9 @@ parent's checklist.
 - Tests that start a real tmux server must use `TestTmuxServer` and run under
   `tools/run_swift_tests.sh`; command-construction-only and Zellij tests do not
   need that fixture.
+- Tests that create a `TerminalSurfaceView`, directly or through a coordinator,
+  must own it through teardown and await `shutdown()` before the test worker
+  exits. Do not rely on view deinitialization or process exit to stop its shell.
 - Run Python tests with `make python-test`.
 
 ## Naming
