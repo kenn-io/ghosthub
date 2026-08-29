@@ -463,6 +463,7 @@ final class WorkspaceSceneModel: ObservableObject {
         var routeIdentity: String?
         var phase: RemoteTmuxEstablishmentPhase
         var surfaceExitCode: UInt32?
+        var usesKwtWorkspaceCommand = false
         /// The previous attempt failed before the terminal client could start,
         /// so there is no exit code to inspect and replay is still safe.
         var surfaceLaunchFailed = false
@@ -3530,6 +3531,10 @@ final class WorkspaceSceneModel: ObservableObject {
         hostID: UUID
     ) {
         guard isRemoteKwtUnavailable(error, hostID: hostID) else { return }
+        markRemoteKwtUnavailable(hostID: hostID)
+    }
+
+    private func markRemoteKwtUnavailable(hostID: UUID) {
         kwtAvailabilityByHost[hostID] = false
         kwtInventoryFailuresByHost.removeValue(forKey: hostID)
         applyInventoryOverlayIfNeeded()
@@ -6434,12 +6439,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 applyInventoryOverlayIfNeeded()
                 updateWorkspaceInventoryState()
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             if let hostID {
-                kwtAvailabilityByHost[hostID] = false
-                kwtInventoryFailuresByHost.removeValue(forKey: hostID)
-                applyInventoryOverlayIfNeeded()
-                updateWorkspaceInventoryState()
+                markRemoteKwtUnavailable(hostID: hostID)
             }
             throw error
         }
@@ -9592,7 +9596,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 routeIdentity: nativeTmuxSessionCoordinator
                     .attachmentRouteIdentity(handle),
                 phase: phase,
-                surfaceExitCode: nil
+                surfaceExitCode: nil,
+                usesKwtWorkspaceCommand: openWorkspace
             )
             : nil
         let presentation = RetainedTmuxPresentation(
@@ -10925,6 +10930,11 @@ final class WorkspaceSceneModel: ObservableObject {
                nativeTmuxSessionCoordinator.attachmentClosure(handle) {
                 presentation.establishmentConfirmationTask?.cancel()
                 presentation.establishmentConfirmationTask = nil
+                if code == 127, context.usesKwtWorkspaceCommand {
+                    markRemoteKwtUnavailable(
+                        hostID: context.selection.hostID
+                    )
+                }
                 context.surfaceExitCode = code
                 presentation.reconnectContext = context
                 startTmuxReconnect(presentation, context: context)
@@ -12242,6 +12252,8 @@ final class WorkspaceSceneModel: ObservableObject {
         case .present:
             guard context.surfaceExitCode == 255
                 || context.surfaceLaunchFailed
+                || (context.surfaceExitCode == 127
+                    && context.usesKwtWorkspaceCommand)
             else {
                 stopTmuxReconnectWithUnableToAttach(
                     presentation,
@@ -12419,7 +12431,8 @@ final class WorkspaceSceneModel: ObservableObject {
             host: attachmentHost,
             routeIdentity: routeIdentity,
             phase: phase,
-            surfaceExitCode: nil
+            surfaceExitCode: nil,
+            usesKwtWorkspaceCommand: openWorkspace
         )
         borrowedTmuxConnectionStates[handle.id] = .connecting
         if activeBorrowedTmuxHandle == previousHandle {

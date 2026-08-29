@@ -1012,6 +1012,51 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("cancelling kwt provisioning preserves workspace-aware attach")
+    func cancelledProvisioningPreservesWorkspaceOpen() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtRemoteProvisioner: { _ in throw CancellationError() }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        await #expect(throws: CancellationError.self) {
+            try await model.branches(for: environment.project.id)
+        }
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'open'"))
+        #expect(command.contains(environment.worktree.path))
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a missing helper during branch listing restores direct attach")
     func branchStatus127FallsBackToDirectAttach() async throws {
         let environment = try setupRemoteEnvironment()
