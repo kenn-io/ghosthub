@@ -488,7 +488,7 @@ actor KwtRemoteProvisioningCoordinator {
     private struct InFlight {
         let intent: Intent
         let task: Task<Void, Error>
-        var waiters: Set<UUID>
+        var waiters: [UUID: Intent]
     }
 
     private var inFlight: [HostKey: InFlight] = [:]
@@ -515,29 +515,23 @@ actor KwtRemoteProvisioningCoordinator {
             platform: host.platform.rawValue,
             sshDestination: host.sshDestination
         )
+        let waiterID = UUID()
         while true {
-            let waiterID = UUID()
             let task: Task<Void, Error>
             let runningIntent: Intent
             if var existing = inFlight[key] {
-                existing.waiters.insert(waiterID)
-                inFlight[key] = existing
+                if existing.waiters[waiterID] == nil {
+                    existing.waiters[waiterID] = requestedIntent
+                    inFlight[key] = existing
+                }
                 task = existing.task
                 runningIntent = existing.intent
             } else {
-                let installer = installer
-                task = Task {
-                    switch requestedIntent {
-                    case .ensureInstalled:
-                        try await installer.ensureInstalled(on: host)
-                    case .install:
-                        try await installer.install(on: host)
-                    }
-                }
+                task = provisioningTask(on: host, intent: requestedIntent)
                 inFlight[key] = InFlight(
                     intent: requestedIntent,
                     task: task,
-                    waiters: [waiterID]
+                    waiters: [waiterID: requestedIntent]
                 )
                 runningIntent = requestedIntent
             }
@@ -552,31 +546,64 @@ actor KwtRemoteProvisioningCoordinator {
                         await self.releaseWaiter(waiterID, for: key)
                     }
                 }
-                releaseWaiter(waiterID, for: key)
             } catch {
-                releaseWaiter(waiterID, for: key)
                 guard requestedIntent == .install,
                       runningIntent == .ensureInstalled,
                       !Task.isCancelled
-                else { throw error }
-                if inFlight[key]?.intent == .ensureInstalled {
-                    inFlight.removeValue(forKey: key)
+                else {
+                    releaseWaiter(waiterID, for: key)
+                    throw error
                 }
+                promoteEnsureToInstall(on: host, for: key)
                 continue
             }
 
             guard requestedIntent == .install,
                   runningIntent == .ensureInstalled
-            else { return }
-            if inFlight[key]?.intent == .ensureInstalled {
-                inFlight.removeValue(forKey: key)
+            else {
+                releaseWaiter(waiterID, for: key)
+                return
+            }
+            promoteEnsureToInstall(on: host, for: key)
+        }
+    }
+
+    private func provisioningTask(
+        on host: SSHHost,
+        intent: Intent
+    ) -> Task<Void, Error> {
+        let installer = installer
+        return Task {
+            switch intent {
+            case .ensureInstalled:
+                try await installer.ensureInstalled(on: host)
+            case .install:
+                try await installer.install(on: host)
             }
         }
     }
 
+    private func promoteEnsureToInstall(
+        on host: SSHHost,
+        for key: HostKey
+    ) {
+        guard let existing = inFlight[key],
+              existing.intent == .ensureInstalled
+        else { return }
+        let forcedWaiters = existing.waiters.filter {
+            $0.value == .install
+        }
+        guard !forcedWaiters.isEmpty else { return }
+        inFlight[key] = InFlight(
+            intent: .install,
+            task: provisioningTask(on: host, intent: .install),
+            waiters: forcedWaiters
+        )
+    }
+
     private func releaseWaiter(_ waiterID: UUID, for key: HostKey) {
         guard var existing = inFlight[key],
-              existing.waiters.remove(waiterID) != nil
+              existing.waiters.removeValue(forKey: waiterID) != nil
         else { return }
         guard !existing.waiters.isEmpty else {
             inFlight.removeValue(forKey: key)

@@ -246,11 +246,10 @@ struct KwtRemoteInstallerTests {
         #expect(recorder.destination != nil)
     }
 
-    @Test("concurrent explicit installs await a replacement install failure")
+    @Test("concurrent explicit installs share a fast replacement failure")
     func concurrentForcedInstallsAwaitReplacementFailure() async throws {
         let revision = String(repeating: "6", count: 40)
         let passiveProbe = BlockingGate()
-        let forcedProbe = BlockingGate()
         let targetProbeCalls = Mutex(0)
         let forcedStarts = Mutex(0)
         let installer = KwtRemoteInstaller(
@@ -273,7 +272,6 @@ struct KwtRemoteInstallerTests {
                     passiveProbe.block()
                     return installOutput(1)
                 case 2:
-                    forcedProbe.block()
                     return installOutput(23)
                 default:
                     return installOutput(24)
@@ -306,29 +304,28 @@ struct KwtRemoteInstallerTests {
                 return status
             }
         }
-        let firstForced = Task {
-            await forcedInstall()
-        }
-        let secondForced = Task {
-            await forcedInstall()
+        let forcedCount = 64
+        let forcedInstalls = (0 ..< forcedCount).map { index in
+            Task(priority: index == 0 ? .high : .background) {
+                await forcedInstall()
+            }
         }
         await waitUntil {
-            forcedStarts.withLock { $0 } == 2
+            forcedStarts.withLock { $0 } == forcedCount
         }
-        passiveProbe.open()
-        await forcedProbe.waitUntilBlocked()
-        for _ in 0 ..< 100 {
+        for _ in 0 ..< 1_000 {
             await Task.yield()
         }
-        forcedProbe.open()
+        passiveProbe.open()
 
         await #expect {
             try await passive.value
         } throws: {
             $0 as? KwtRemoteInstallError == .targetProbeFailed(status: 1)
         }
-        #expect(await firstForced.value == 23)
-        #expect(await secondForced.value == 23)
+        for forcedInstall in forcedInstalls {
+            #expect(await forcedInstall.value == 23)
+        }
         #expect(targetProbeCalls.withLock { $0 } == 2)
     }
 
