@@ -26,6 +26,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         [TerminalSurfaceCoordinator] = []
     private static var retainedConditionalThemeWindows: [NSWindow] = []
     private var pasteboard: InMemoryTerminalPasteboard!
+    private var surfaces: [TerminalSurfaceView] = []
 
     override func setUp() async throws {
         try await super.setUp()
@@ -34,12 +35,28 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        for surface in surfaces {
+            await surface.shutdown()
+        }
+        surfaces.removeAll()
         TerminalPasteboardAccess.reset()
         pasteboard = nil
         try await super.tearDown()
     }
 
     // MARK: - Helpers
+
+    private func makeSurface(
+        app: ghostty_app_t,
+        configuration: TerminalSurfaceConfiguration
+    ) -> TerminalSurfaceView {
+        let surface = TerminalSurfaceView(
+            app: app,
+            configuration: configuration
+        )
+        surfaces.append(surface)
+        return surface
+    }
 
     /// Creates an isolated runtime with automatic temp directory
     /// cleanup registered via `addTeardownBlock`.
@@ -72,9 +89,19 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         try skipUnlessLibghosttyReady()
         let runtime = retainedRuntime()
         return (
-            TerminalSurfaceCoordinator(runtime: runtime),
+            makeCoordinator(runtime: runtime),
             TerminalSurfaceConfiguration()
         )
+    }
+
+    private func makeCoordinator(
+        runtime: LibghosttyRuntime
+    ) -> TerminalSurfaceCoordinator {
+        let coordinator = TerminalSurfaceCoordinator(runtime: runtime)
+        coordinator.onSurfaceCreated = { [weak self] _, surface in
+            self?.surfaces.append(surface)
+        }
+        return coordinator
     }
 
     private func hostInWindow(
@@ -199,7 +226,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
         let runtime = LibghosttyRuntime(pipeline: pipeline)
         Self.retainedConditionalThemeRuntimes.append(runtime)
-        let coordinator = TerminalSurfaceCoordinator(runtime: runtime)
+        let coordinator = makeCoordinator(runtime: runtime)
         Self.retainedConditionalThemeCoordinators.append(coordinator)
         let view = try XCTUnwrap(coordinator.surface(
             for: SurfaceKey.fixture(leafID: UUID()),
@@ -267,7 +294,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
             """
         )
 
-        let coordinator = TerminalSurfaceCoordinator(runtime: runtime)
+        let coordinator = makeCoordinator(runtime: runtime)
         Self.retainedConditionalThemeCoordinators.append(coordinator)
         let view = try XCTUnwrap(coordinator.surface(
             for: SurfaceKey.fixture(leafID: UUID()),
@@ -342,7 +369,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         let runtime = LibghosttyRuntime(pipeline: pipeline)
         Self.retainedConditionalThemeRuntimes.append(runtime)
         let app = try XCTUnwrap(runtime.unsafeAppHandle)
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: app,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -401,7 +428,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
         let runtime = LibghosttyRuntime(pipeline: pipeline)
         Self.retainedConditionalThemeRuntimes.append(runtime)
-        let coordinator = TerminalSurfaceCoordinator(runtime: runtime)
+        let coordinator = makeCoordinator(runtime: runtime)
         let firstKey = SurfaceKey.fixture(leafID: UUID())
         let secondKey = SurfaceKey.fixture(leafID: UUID())
         let first = try XCTUnwrap(coordinator.surface(
@@ -1219,7 +1246,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         try skipUnlessLibghosttyReady()
         let runtime = retainedRuntime()
         let appHandle = try XCTUnwrap(runtime.unsafeAppHandle)
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1276,7 +1303,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         try skipUnlessLibghosttyReady()
         let runtime = retainedRuntime()
         let appHandle = try XCTUnwrap(runtime.unsafeAppHandle)
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1336,7 +1363,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         try skipUnlessLibghosttyReady()
         let runtime = retainedRuntime()
         let appHandle = try XCTUnwrap(runtime.unsafeAppHandle)
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
@@ -1646,7 +1673,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
             return XCTFail("Expected libghostty runtime app handle")
         }
 
-        let view = TerminalSurfaceView(
+        let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
