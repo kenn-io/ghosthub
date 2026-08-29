@@ -359,8 +359,8 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             // callbacks before returning, so keeping `token` alive across
             // the free (via `withExtendedLifetime` below) guarantees no
             // in-flight callback can resolve a dangling token afterward.
-            Task.detached { @MainActor in
-                Self.freeSurface(
+            Task { @MainActor in
+                await Self.freeSurface(
                     surfaceHandle,
                     identity: surfaceIdentity,
                     keyInputQueue: queue,
@@ -376,10 +376,10 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Normal AppKit view disposal still uses the deferred `deinit` path. A
     /// caller with a shorter process lifetime, such as an isolated XCTest
     /// worker, can use this method to finish libghostty cleanup before exit.
-    package func shutdown() {
+    package func shutdown() async {
         guard let surfaceHandle = surface else { return }
         surface = nil
-        Self.freeSurface(
+        await Self.freeSurface(
             surfaceHandle,
             identity: UInt(bitPattern: surfaceHandle),
             keyInputQueue: keyInputQueue,
@@ -394,8 +394,14 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         keyInputQueue: DispatchQueue,
         callbackToken: SurfaceCallbackToken,
         onSurfaceDestroyed: ((UInt) -> Void)?
-    ) {
-        keyInputQueue.sync {}
+    ) async {
+        // Suspend instead of blocking the main actor. A queued key send can
+        // wait for main-thread libghostty work when its message queue is full.
+        await withCheckedContinuation { continuation in
+            keyInputQueue.async {
+                continuation.resume()
+            }
+        }
         viewsBySurfaceIdentity.removeValue(forKey: identity)
         onSurfaceDestroyed?(identity)
         callbackToken.view = nil

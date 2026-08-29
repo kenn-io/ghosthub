@@ -24,23 +24,27 @@ final class TerminalSurfacePreviewTests: XCTestCase {
 
     override func tearDown() async throws {
         for surface in surfaces {
-            surface.shutdown()
+            await surface.shutdown()
         }
         surfaces.removeAll()
         try await super.tearDown()
     }
 
-    func testSurfaceShutdownStopsChildProcessGroup() throws {
+    func testSurfaceShutdownStopsChildProcessGroup() async throws {
         let view = try makeSurface()
+        let launchDeadline = Date().addingTimeInterval(5)
+        while view.childProcessID == nil, Date() < launchDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         let childPID = try XCTUnwrap(view.childProcessID)
         let processGroup = getpgid(childPID)
         XCTAssertGreaterThan(processGroup, 0)
 
-        view.shutdown()
+        await view.shutdown()
 
         let deadline = Date().addingTimeInterval(2)
         while kill(-processGroup, 0) == 0, Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(kill(-processGroup, 0), -1)
         XCTAssertEqual(errno, ESRCH)
