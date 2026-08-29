@@ -343,7 +343,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         let monitor = eventMonitor
         let surfaceHandle = surface
         let queue = keyInputQueue
-        let token = callbackToken
+        let token = callbackToken!
         let onSurfaceDestroyed = onSurfaceDestroyed
         NotificationCenter.default.removeObserver(self)
 
@@ -359,16 +359,54 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             // callbacks before returning, so keeping `token` alive across
             // the free (via `withExtendedLifetime` below) guarantees no
             // in-flight callback can resolve a dangling token afterward.
-            Task.detached { @MainActor in
-                queue.sync {}
-                Self.viewsBySurfaceIdentity.removeValue(
-                    forKey: surfaceIdentity
+            Task { @MainActor in
+                await Self.freeSurface(
+                    surfaceHandle,
+                    identity: surfaceIdentity,
+                    keyInputQueue: queue,
+                    callbackToken: token,
+                    onSurfaceDestroyed: onSurfaceDestroyed
                 )
-                onSurfaceDestroyed?(surfaceIdentity)
-                ghostty_surface_free(surfaceHandle)
-                withExtendedLifetime(token) {}
             }
         }
+    }
+
+    /// Stops this surface and its child process before the view is released.
+    ///
+    /// Normal AppKit view disposal still uses the deferred `deinit` path. A
+    /// caller with a shorter process lifetime, such as an isolated XCTest
+    /// worker, can use this method to finish libghostty cleanup before exit.
+    package func shutdown() async {
+        guard let surfaceHandle = surface else { return }
+        surface = nil
+        await Self.freeSurface(
+            surfaceHandle,
+            identity: UInt(bitPattern: surfaceHandle),
+            keyInputQueue: keyInputQueue,
+            callbackToken: callbackToken,
+            onSurfaceDestroyed: onSurfaceDestroyed
+        )
+    }
+
+    private static func freeSurface(
+        _ surfaceHandle: ghostty_surface_t,
+        identity: UInt,
+        keyInputQueue: DispatchQueue,
+        callbackToken: SurfaceCallbackToken,
+        onSurfaceDestroyed: ((UInt) -> Void)?
+    ) async {
+        // Suspend instead of blocking the main actor. A queued key send can
+        // wait for main-thread libghostty work when its message queue is full.
+        await withCheckedContinuation { continuation in
+            keyInputQueue.async {
+                continuation.resume()
+            }
+        }
+        viewsBySurfaceIdentity.removeValue(forKey: identity)
+        onSurfaceDestroyed?(identity)
+        callbackToken.view = nil
+        ghostty_surface_free(surfaceHandle)
+        withExtendedLifetime(callbackToken) {}
     }
 
     // MARK: - Public API
