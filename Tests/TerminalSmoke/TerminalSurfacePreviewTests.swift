@@ -1,5 +1,6 @@
 import AppKit
 import CoreVideo
+import Darwin
 import GhosttyKit
 import GhosthubTmux
 import GhosthubTransport
@@ -14,10 +15,39 @@ import XCTest
 @MainActor
 final class TerminalSurfacePreviewTests: XCTestCase {
     private static var retainedRuntime: LibghosttyRuntime?
+    private var surfaces: [TerminalSurfaceView] = []
 
     override func setUpWithError() throws {
         try super.setUpWithError()
         try skipUnlessLibghosttyReady()
+    }
+
+    override func tearDown() async throws {
+        for surface in surfaces {
+            await surface.shutdown()
+        }
+        surfaces.removeAll()
+        try await super.tearDown()
+    }
+
+    func testSurfaceShutdownStopsChildProcessGroup() async throws {
+        let view = try makeSurface()
+        let launchDeadline = Date().addingTimeInterval(5)
+        while view.childProcessID == nil, Date() < launchDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let childPID = try XCTUnwrap(view.childProcessID)
+        let processGroup = getpgid(childPID)
+        XCTAssertGreaterThan(processGroup, 0)
+
+        await view.shutdown()
+
+        let deadline = Date().addingTimeInterval(2)
+        while kill(-processGroup, 0) == 0, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(kill(-processGroup, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
     }
 
     func testSnapshotProducesGPUFrameWithoutMutatingSurface() async throws {
@@ -1398,6 +1428,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             view.error?.localizedDescription
                 ?? "libghostty surface creation failed"
         )
+        surfaces.append(view)
         return view
     }
 
