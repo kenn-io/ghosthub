@@ -2637,12 +2637,7 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             scheduleTmuxSessionDiscovery()
         } catch {
-            if isRemoteKwtUnavailable(error, hostID: project.hostID) {
-                kwtAvailabilityByHost[project.hostID] = false
-                kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
-                applyInventoryOverlayIfNeeded()
-                updateWorkspaceInventoryState()
-            }
+            recordKwtUnavailability(error, hostID: project.hostID)
             throw error
         }
 
@@ -2672,17 +2667,22 @@ final class WorkspaceSceneModel: ObservableObject {
         else {
             throw KwtWorktreeError.projectUnavailable
         }
-        try await ensureRemoteKwtForOperation(hostID: project.hostID)
-        guard let current = validatedProjectOperationTarget(
-            project,
-            capturedHost: host
-        ) else {
-            throw KwtWorktreeError.projectUnavailable
+        do {
+            try await ensureRemoteKwtForOperation(hostID: project.hostID)
+            guard let current = validatedProjectOperationTarget(
+                project,
+                capturedHost: host
+            ) else {
+                throw KwtWorktreeError.projectUnavailable
+            }
+            return try await kwtBranchLister(
+                current.project.rootPath,
+                current.host
+            )
+        } catch {
+            recordKwtUnavailability(error, hostID: project.hostID)
+            throw error
         }
-        return try await kwtBranchLister(
-            current.project.rootPath,
-            current.host
-        )
     }
 
     func prepareWorktreeRemoval(
@@ -2707,18 +2707,24 @@ final class WorkspaceSceneModel: ObservableObject {
         ) else {
             throw KwtWorktreeError.removalIdentityUnavailable
         }
-        try await ensureRemoteKwtForOperation(hostID: project.hostID)
-        guard validatedProjectOperationTarget(
-            project,
-            capturedHost: host
-        ) != nil else {
-            throw KwtWorktreeError.removalHostChanged
+        let changes: WorktreeChangeSummary
+        do {
+            try await ensureRemoteKwtForOperation(hostID: project.hostID)
+            guard validatedProjectOperationTarget(
+                project,
+                capturedHost: host
+            ) != nil else {
+                throw KwtWorktreeError.removalHostChanged
+            }
+            changes = try await kwtWorktreeChangeReader(
+                worktree.path,
+                project.rootPath,
+                host
+            )
+        } catch {
+            recordKwtUnavailability(error, hostID: project.hostID)
+            throw error
         }
-        let changes = try await kwtWorktreeChangeReader(
-            worktree.path,
-            project.rootPath,
-            host
-        )
 
         let sessionKillRequest: TmuxSessionKillRequest?
         if let session = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -2889,11 +2895,17 @@ final class WorkspaceSceneModel: ObservableObject {
             throw KwtWorktreeError.removalTargetChanged
         }
         if !checkoutAlreadyAbsent {
-            let currentChanges = try await kwtWorktreeChangeReader(
-                worktree.path,
-                project.rootPath,
-                confirmedHost
-            )
+            let currentChanges: WorktreeChangeSummary
+            do {
+                currentChanges = try await kwtWorktreeChangeReader(
+                    worktree.path,
+                    project.rootPath,
+                    confirmedHost
+                )
+            } catch {
+                recordKwtUnavailability(error, hostID: project.hostID)
+                throw error
+            }
             guard removalHostEndpointMatches(request) else {
                 throw KwtWorktreeError.removalHostChanged
             }
@@ -2984,14 +2996,34 @@ final class WorkspaceSceneModel: ObservableObject {
                     let killedRestorationTarget = terminatedSession
                         ? outcome.restorationTargets?.first
                         : nil
+                    let shouldReadChanges: Bool
                     if !request.forceRemoval,
                        let worktreeError = removalError as? KwtWorktreeError,
-                       case .removalFailed = worktreeError,
-                       let changes = try? await kwtWorktreeChangeReader(
-                           worktree.path,
-                           project.rootPath,
-                           confirmedHost
-                       ),
+                       case .removalFailed = worktreeError {
+                        shouldReadChanges = true
+                    } else {
+                        shouldReadChanges = false
+                    }
+                    let changes: WorktreeChangeSummary?
+                    if shouldReadChanges {
+                        do {
+                            changes = try await kwtWorktreeChangeReader(
+                                worktree.path,
+                                project.rootPath,
+                                confirmedHost
+                            )
+                        } catch {
+                            recordKwtUnavailability(
+                                error,
+                                hostID: project.hostID
+                            )
+                            changes = nil
+                        }
+                    } else {
+                        changes = nil
+                    }
+                    if shouldReadChanges,
+                       let changes,
                        removalHostEndpointMatches(request),
                        !terminatedSession || killedRestorationTarget != nil,
                        changes.hasUncommittedChanges {
@@ -3031,9 +3063,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 ]
             )
         } catch {
-            if isRemoteKwtUnavailable(error, hostID: project.hostID) {
-                kwtAvailabilityByHost[project.hostID] = false
-            }
+            recordKwtUnavailability(error, hostID: project.hostID)
             kwtInventoryFailuresByHost[project.hostID] =
                 "The worktree was removed, but inventory refresh failed: "
                     + error.localizedDescription
@@ -3529,11 +3559,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 current.host
             )
         } catch {
-            if isRemoteKwtUnavailable(error, hostID: project.hostID) {
-                kwtAvailabilityByHost[project.hostID] = false
-                applyInventoryOverlayIfNeeded()
-                updateWorkspaceInventoryState()
-            }
+            recordKwtUnavailability(error, hostID: project.hostID)
             throw error
         }
     }
@@ -3594,17 +3620,11 @@ final class WorkspaceSceneModel: ObservableObject {
             operation = (result, current.project, current.host)
             cancelPendingRestoration()
         } catch {
-            if isRemoteKwtUnavailable(error, hostID: project.hostID) {
-                kwtAvailabilityByHost[project.hostID] = false
-                kwtInventoryFailuresByHost.removeValue(
-                    forKey: project.hostID
-                )
-                applyInventoryOverlayIfNeeded()
-                updateWorkspaceInventoryState()
-            }
+            recordKwtUnavailability(error, hostID: project.hostID)
             throw error
         }
 
+        kwtAvailabilityByHost[operation.project.hostID] = true
         do {
             let refreshed = try await kwtInventoryLoader(operation.host)
             applyAuthoritativeKwtInventory(
@@ -3612,6 +3632,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostID: operation.project.hostID
             )
         } catch {
+            recordKwtUnavailability(
+                error,
+                hostID: operation.project.hostID
+            )
             kwtInventoryFailuresByHost[operation.project.hostID] =
                 error.localizedDescription
         }
@@ -3620,7 +3644,6 @@ final class WorkspaceSceneModel: ObservableObject {
             operation.result.workspace,
             project: operation.project
         )
-        kwtAvailabilityByHost[operation.project.hostID] = true
         applyInventoryOverlayIfNeeded()
         annotateImportedPullRequest(
             operation.result.pullRequest,
@@ -5100,8 +5123,16 @@ final class WorkspaceSceneModel: ObservableObject {
            case .removalFailed(_, 127) = worktreeError {
             return true
         }
+        if let worktreeError = error as? KwtWorktreeError,
+           case .changeStatusFailed(_, 127) = worktreeError {
+            return true
+        }
         if let pullRequestError = error as? KwtPullRequestError,
            case .commandFailed(_, 127, _, _, _) = pullRequestError {
+            return true
+        }
+        if let projectError = error as? KwtProjectCommandError,
+           case .commandFailed(_, 127, _, _, _, _) = projectError {
             return true
         }
         return false
@@ -6825,6 +6856,9 @@ final class WorkspaceSceneModel: ObservableObject {
             refreshKwtInventory()
             return .success(project.name)
         } catch {
+            if let hostID {
+                recordKwtUnavailability(error, hostID: hostID)
+            }
             return .failure(.message(error.localizedDescription))
         }
     }
@@ -7078,6 +7112,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 return .success(removed.name)
             } catch {
                 let removalError = error
+                recordKwtUnavailability(
+                    removalError,
+                    hostID: removal.project.hostID
+                )
                 if case let .commandFailed(
                     _, _, code, _, _, _
                 ) = removalError as? KwtProjectCommandError,
@@ -7150,6 +7188,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             }
         } catch {
+            recordKwtUnavailability(
+                error,
+                hostID: initial.project.hostID
+            )
             return .failure(.message(error.localizedDescription))
         }
     }
@@ -7249,6 +7291,7 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             return .removed
         } catch {
+            recordKwtUnavailability(error, hostID: project.hostID)
             return .unverified
         }
     }

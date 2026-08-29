@@ -1012,6 +1012,106 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a missing helper during branch listing restores direct attach")
+    func branchStatus127FallsBackToDirectAttach() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let failure = KwtWorktreeError.commandFailed(
+            host: environment.host.name,
+            status: 127
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtBranchLister: { _, _ in throw failure }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        await #expect(throws: failure) {
+            try await model.branches(for: environment.project.id)
+        }
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'attach-session'"))
+        #expect(!command.contains("'open'"))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a missing helper during change status restores direct attach")
+    func changeStatus127FallsBackToDirectAttach() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let failure = KwtWorktreeError.changeStatusFailed(
+            host: environment.host.name,
+            status: 127
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtWorktreeChangeReader: { _, _, _ in throw failure }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        await #expect(throws: failure) {
+            try await model.prepareWorktreeRemoval(environment.worktree.id)
+        }
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'attach-session'"))
+        #expect(!command.contains("'open'"))
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("cached worktree session uses kwt when the helper is available")
     func cachedWorktreeSessionUsesKwt() async throws {
         let environment = try setupRemoteEnvironment()
