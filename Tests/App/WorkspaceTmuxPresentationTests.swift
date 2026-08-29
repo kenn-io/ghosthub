@@ -889,14 +889,40 @@ extension WorkspaceTmuxDiscoveryTests {
                 windows: []
             ),
         ]
-        snapshot.hosts[0].remoteDiagnostics = [.missingKwtCapability]
+        let remote = SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: environment.host.platform,
+            sshDestination: try #require(environment.host.sshDestination)
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            kwtRemoteProvisioner: { _ in
+                throw KwtRemoteInstallError.bundleIncomplete
+            },
+            tmuxSessionDiscovery: { host in
+                .success(host.isRemote ? [
+                    DiscoveredTmuxSession(
+                        name: sessionName,
+                        windowCount: 1,
+                        createdAt: "1721552400",
+                        managed: true
+                    ),
+                ] : [])
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher(),
+            startServices: true
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -906,6 +932,9 @@ extension WorkspaceTmuxDiscoveryTests {
             tmuxAttachMode: .direct
         )
 
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+        }
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
 
@@ -913,6 +942,218 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(command.contains("'attach-session'"))
         #expect(!command.contains("'open'"))
         #expect(!command.contains("managed kwt is unavailable"))
+        #expect(model.snapshot.host(id: environment.host.id)?.primaryDiagnostic == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("repairing managed kwt restores workspace-aware attach")
+    func repairedHelperRestoresWorkspaceOpen() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let remote = SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: environment.host.platform,
+            sshDestination: try #require(environment.host.sshDestination)
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let provisioningShouldFail = LockedValue(true)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            kwtRemoteProvisioner: { _ in
+                if provisioningShouldFail.load() {
+                    throw KwtRemoteInstallError.bundleIncomplete
+                }
+            },
+            kwtBranchLister: { _, _ in [] },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+        }
+        provisioningShouldFail.store(false)
+        _ = try await model.branches(for: environment.project.id)
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'open'"))
+        #expect(command.contains(environment.worktree.path))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("cancelling kwt provisioning preserves workspace-aware attach")
+    func cancelledProvisioningPreservesWorkspaceOpen() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtRemoteProvisioner: { _ in throw CancellationError() }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        await #expect(throws: CancellationError.self) {
+            try await model.branches(for: environment.project.id)
+        }
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'open'"))
+        #expect(command.contains(environment.worktree.path))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a missing helper during branch listing restores direct attach")
+    func branchStatus127FallsBackToDirectAttach() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let failure = KwtWorktreeError.commandFailed(
+            host: environment.host.name,
+            status: 127
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtBranchLister: { _, _ in throw failure }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        await #expect(throws: failure) {
+            try await model.branches(for: environment.project.id)
+        }
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'attach-session'"))
+        #expect(!command.contains("'open'"))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a missing helper during change status restores direct attach")
+    func changeStatus127FallsBackToDirectAttach() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let failure = KwtWorktreeError.changeStatusFailed(
+            host: environment.host.name,
+            status: 127
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtWorktreeChangeReader: { _, _, _ in throw failure }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        await #expect(throws: failure) {
+            try await model.prepareWorktreeRemoval(environment.worktree.id)
+        }
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'attach-session'"))
+        #expect(!command.contains("'open'"))
+        await model.shutdown()
     }
 
     @MainActor

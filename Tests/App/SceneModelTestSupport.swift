@@ -338,6 +338,8 @@ func makeModel(
     WorkspaceSceneModel.KwtConditionalInventoryLoader? = nil,
     kwtRemoteProvisioner:
     @escaping WorkspaceSceneModel.KwtRemoteProvisioner = { _ in },
+    kwtRemoteInstaller:
+    @escaping WorkspaceSceneModel.KwtRemoteInstalling = { _ in },
     kwtWorktreeCreator: @escaping WorkspaceSceneModel.KwtWorktreeCreator = {
         request, projectPath, host in
         try await KwtWorktreeClient().create(
@@ -383,6 +385,13 @@ func makeModel(
     herdrSSHConnectionSnapshotProvider:
     @escaping WorkspaceSceneModel.SSHConnectionSnapshotProvider = {
         _ in SSHConnectionArgumentsSnapshot(arguments: [])
+    },
+    kwtBranchLister: @escaping WorkspaceSceneModel.KwtBranchLister = {
+        projectPath, host in
+        try await KwtWorktreeClient().branches(
+            projectPath: projectPath,
+            on: host
+        )
     },
     kwtPullRequestLister:
     @escaping WorkspaceSceneModel.KwtPullRequestLister = {
@@ -561,6 +570,7 @@ func makeModel(
             try await kwtInventoryLoader(host)
         },
         kwtRemoteProvisioner: kwtRemoteProvisioner,
+        kwtRemoteInstaller: kwtRemoteInstaller,
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtWorktreeRemover: kwtWorktreeRemover,
         kwtForceWorktreeRemover: kwtForceWorktreeRemover,
@@ -573,6 +583,7 @@ func makeModel(
         herdrSessionMutator: herdrSessionMutator,
         herdrSSHConnectionSnapshotProvider:
         herdrSSHConnectionSnapshotProvider,
+        kwtBranchLister: kwtBranchLister,
         kwtPullRequestLister: kwtPullRequestLister,
         kwtPullRequestImporter: kwtPullRequestImporter,
         kwtProjectRegistration: kwtProjectRegistration,

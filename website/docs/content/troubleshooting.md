@@ -30,8 +30,9 @@ tmux list-sessions
 ```
 
 An expanded host with no discovered tmux, Herdr, or Zellij sessions or projects reports
-that it is empty. Project inventory is separate from SSH reachability, so a
-reachable host can also show a separate kwt diagnostic.
+that it is empty. Project inventory is separate from SSH reachability. A
+managed kwt maintenance failure stays silent until you request a project or
+worktree operation that needs the helper.
 
 ## Herdr Sessions does not appear
 
@@ -103,11 +104,10 @@ potentially stale or misidentified frame.
 ## A project does not appear
 
 For a remote macOS or Linux host, Ghosthub installs its managed kwt helper
-automatically. If the host shows a provisioning warning, retry it or open Host
-Settings. Then select the **+** beside that host's **Projects** group and
-provide the absolute path to an existing checkout on that host. Ghosthub does
-not discover
-repositories by scanning.
+automatically. Select the **+** beside that host's **Projects** group and provide
+the absolute path to an existing checkout on that host. Ghosthub repairs the
+helper before registration and reports an error on that action if repair fails.
+It does not discover repositories by scanning.
 
 Project registration is not yet supported for native Windows hosts.
 

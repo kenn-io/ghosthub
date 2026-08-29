@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import GhosthubSettings
 import GhosthubTmux
+import Synchronization
 import Testing
 @testable import GhosthubApp
 
@@ -110,6 +111,222 @@ struct KwtRemoteInstallerTests {
             KwtRemoteInstaller.readyProbeCommand(revision: revision),
         ])
         #expect(recorder.destination == nil)
+    }
+
+    @Test("explicit coordinator install replaces an exact helper")
+    func coordinatorPreservesForcedInstall() async throws {
+        let revision = String(repeating: "8", count: 40)
+        let helperURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try Data("pinned kwt".utf8).write(to: helperURL)
+        defer { try? FileManager.default.removeItem(at: helperURL) }
+        let recorder = KwtInstallRecorder()
+        let installer = KwtRemoteInstaller(
+            revision: revision,
+            remoteRunner: { _, _, command in
+                recorder.record(command: command)
+                if command == KwtRemoteInstaller.targetProbeCommand {
+                    return installOutput(
+                        0,
+                        "GHOSTHUB_KWT_TARGET\tLinux\taarch64\n"
+                    )
+                }
+                if command.contains("GHOSTHUB_KWT_UPLOAD") {
+                    return installOutput(
+                        0,
+                        "GHOSTHUB_KWT_UPLOAD\t/var/tmp/ghosthub/"
+                            + "helpers/kwt/\(revision)/.incoming-test\n"
+                    )
+                }
+                return installOutput(0, "GHOSTHUB_KWT_INSTALLED\n")
+            },
+            uploadRunner: { host, source, destination, _ in
+                recorder.record(
+                    host: host,
+                    source: source,
+                    destination: destination
+                )
+                return installOutput(0)
+            },
+            resourceProvider: { _ in helperURL }
+        )
+        let coordinator = KwtRemoteProvisioningCoordinator(
+            installer: installer
+        )
+
+        try await coordinator.install(on: SSHHost(
+            configKey: "linux-build",
+            name: "Linux Build Host",
+            platform: .linux,
+            sshDestination: "operator@build.example.test"
+        ))
+
+        #expect(!recorder.commands.contains(
+            KwtRemoteInstaller.readyProbeCommand(revision: revision)
+        ))
+        #expect(recorder.destination != nil)
+    }
+
+    @Test("explicit install retries after a concurrent passive failure")
+    func forcedInstallFollowsFailedPassiveProvisioning() async throws {
+        let revision = String(repeating: "7", count: 40)
+        let helperURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try Data("pinned kwt".utf8).write(to: helperURL)
+        defer { try? FileManager.default.removeItem(at: helperURL) }
+        let firstProbe = BlockingGate()
+        let targetProbeCalls = LockedValue(0)
+        let recorder = KwtInstallRecorder()
+        let installer = KwtRemoteInstaller(
+            revision: revision,
+            remoteRunner: { _, _, command in
+                recorder.record(command: command)
+                if command == KwtRemoteInstaller.readyProbeCommand(
+                    revision: revision
+                ) {
+                    return installOutput(1)
+                }
+                if command == KwtRemoteInstaller.targetProbeCommand {
+                    targetProbeCalls.withLock { $0 += 1 }
+                    let call = targetProbeCalls.load()
+                    if call == 1 {
+                        firstProbe.block()
+                        return installOutput(1)
+                    }
+                    return installOutput(
+                        0,
+                        "GHOSTHUB_KWT_TARGET\tLinux\taarch64\n"
+                    )
+                }
+                if command.contains("GHOSTHUB_KWT_UPLOAD") {
+                    return installOutput(
+                        0,
+                        "GHOSTHUB_KWT_UPLOAD\t/var/tmp/ghosthub/"
+                            + "helpers/kwt/\(revision)/.incoming-test\n"
+                    )
+                }
+                return installOutput(0, "GHOSTHUB_KWT_INSTALLED\n")
+            },
+            uploadRunner: { host, source, destination, _ in
+                recorder.record(
+                    host: host,
+                    source: source,
+                    destination: destination
+                )
+                return installOutput(0)
+            },
+            resourceProvider: { _ in helperURL }
+        )
+        let coordinator = KwtRemoteProvisioningCoordinator(
+            installer: installer
+        )
+        let host = SSHHost(
+            configKey: "linux-build",
+            name: "Linux Build Host",
+            platform: .linux,
+            sshDestination: "operator@build.example.test"
+        )
+
+        let passive = Task {
+            try await coordinator.ensureInstalled(on: host)
+        }
+        await firstProbe.waitUntilBlocked()
+        let forced = Task {
+            try await coordinator.install(on: host)
+        }
+        firstProbe.open()
+
+        await #expect {
+            try await passive.value
+        } throws: {
+            $0 as? KwtRemoteInstallError == .targetProbeFailed(status: 1)
+        }
+        try await forced.value
+        #expect(targetProbeCalls.load() == 2)
+        #expect(recorder.destination != nil)
+    }
+
+    @Test("concurrent explicit installs share a fast replacement failure")
+    func concurrentForcedInstallsAwaitReplacementFailure() async throws {
+        let revision = String(repeating: "6", count: 40)
+        let passiveProbe = BlockingGate()
+        let targetProbeCalls = Mutex(0)
+        let forcedStarts = Mutex(0)
+        let installer = KwtRemoteInstaller(
+            revision: revision,
+            remoteRunner: { _, _, command in
+                if command == KwtRemoteInstaller.readyProbeCommand(
+                    revision: revision
+                ) {
+                    return installOutput(1)
+                }
+                guard command == KwtRemoteInstaller.targetProbeCommand else {
+                    return installOutput(0)
+                }
+                let call = targetProbeCalls.withLock { calls in
+                    calls += 1
+                    return calls
+                }
+                switch call {
+                case 1:
+                    passiveProbe.block()
+                    return installOutput(1)
+                case 2:
+                    return installOutput(23)
+                default:
+                    return installOutput(24)
+                }
+            }
+        )
+        let coordinator = KwtRemoteProvisioningCoordinator(
+            installer: installer
+        )
+        let host = SSHHost(
+            configKey: "linux-build",
+            name: "Linux Build Host",
+            platform: .linux,
+            sshDestination: "operator@build.example.test"
+        )
+
+        let passive = Task {
+            try await coordinator.ensureInstalled(on: host)
+        }
+        await passiveProbe.waitUntilBlocked()
+        let forcedInstall: @Sendable () async -> Int32? = {
+            forcedStarts.withLock { $0 += 1 }
+            do {
+                try await coordinator.install(on: host)
+                return nil
+            } catch {
+                guard case let .targetProbeFailed(status) =
+                    error as? KwtRemoteInstallError
+                else { return -1 }
+                return status
+            }
+        }
+        let forcedCount = 64
+        let forcedInstalls = (0 ..< forcedCount).map { index in
+            Task(priority: index == 0 ? .high : .background) {
+                await forcedInstall()
+            }
+        }
+        await waitUntil {
+            forcedStarts.withLock { $0 } == forcedCount
+        }
+        for _ in 0 ..< 1_000 {
+            await Task.yield()
+        }
+        passiveProbe.open()
+
+        await #expect {
+            try await passive.value
+        } throws: {
+            $0 as? KwtRemoteInstallError == .targetProbeFailed(status: 1)
+        }
+        for forcedInstall in forcedInstalls {
+            #expect(await forcedInstall.value == 23)
+        }
+        #expect(targetProbeCalls.withLock { $0 } == 2)
     }
 
     @Test("cancelling the last provisioning waiter stops before upload")

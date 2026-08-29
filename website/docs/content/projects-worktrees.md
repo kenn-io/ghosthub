@@ -26,8 +26,10 @@ not scan the machine or edit kwt configuration itself.
 
 Ghosthub automatically maintains the
 [managed kwt helper](remote-hosts.md#managed-kwt-helper) on configured remote
-macOS and Linux hosts. Project registration is not yet available for native
-Windows hosts.
+macOS and Linux hosts. Before a project or worktree operation, Ghosthub repairs
+the helper if needed; if repair fails, that operation shows the error without
+affecting ordinary terminal sessions. Project registration is not yet available
+for native Windows hosts.
 
 If the SSH destination changes while the Add Project sheet is open, close the
 sheet and start again so the confirmation applies to the current host.

@@ -1,4 +1,7 @@
+import Combine
 import Foundation
+import GhosthubSettings
+import GhosthubTransport
 import GhosthubUI
 import GhosthubWorkspace
 import Testing
@@ -57,6 +60,63 @@ private enum WorktreeMutationProbeError: Error, Equatable {
 
 @Suite("Workspace worktree creation", .serialized)
 struct WorkspaceWorktreeCreationTests {
+    @Test("creation rejects an endpoint changed during kwt provisioning")
+    @MainActor
+    func creationRejectsEndpointChangedDuringProvisioning() async throws {
+        let environment = try setupRemoteEnvironment()
+        let initialHost = SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: environment.host.platform,
+            sshDestination: try #require(environment.host.sshDestination)
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([
+            initialHost,
+        ])
+        let provisioningGate = AsyncGate()
+        let creationCalls = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: environment.snapshot,
+            kwtRemoteProvisioner: { _ in
+                await provisioningGate.wait()
+            },
+            kwtWorktreeCreator: { _, _, _ in
+                creationCalls.withLock { $0 += 1 }
+            },
+            configuredSSHHostsProvider: { configuredHosts.value }
+        )
+
+        let creation = Task { @MainActor in
+            do {
+                try await model.createWorktree(WorktreeCreateRequest(
+                    projectID: environment.project.id,
+                    branchName: "feature/endpoint-change",
+                    createsBranch: true
+                ))
+                return nil as KwtWorktreeError?
+            } catch {
+                return error as? KwtWorktreeError
+            }
+        }
+        await provisioningGate.waitUntilWaiting()
+        configuredHosts.send([
+            SSHHost(
+                configKey: initialHost.configKey,
+                name: initialHost.name,
+                platform: initialHost.platform,
+                sshDestination: "user-a@host-b.example.com"
+            ),
+        ])
+        model.refreshHosts()
+        provisioningGate.open()
+
+        #expect(await creation.value == .projectUnavailable)
+        #expect(creationCalls.load() == 0)
+        await model.shutdown()
+    }
+
     @Test("separate scene models serialize mutations by host and project")
     @MainActor
     func separateModelsShareMutationGate() async throws {

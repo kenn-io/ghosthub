@@ -474,6 +474,11 @@ struct KwtRemoteInstaller: Sendable {
 actor KwtRemoteProvisioningCoordinator {
     static let shared = KwtRemoteProvisioningCoordinator()
 
+    private enum Intent: Equatable {
+        case ensureInstalled
+        case install
+    }
+
     private struct HostKey: Hashable {
         let configKey: String
         let platform: String
@@ -481,8 +486,9 @@ actor KwtRemoteProvisioningCoordinator {
     }
 
     private struct InFlight {
+        let intent: Intent
         let task: Task<Void, Error>
-        var waiters: Set<UUID>
+        var waiters: [UUID: Intent]
     }
 
     private var inFlight: [HostKey: InFlight] = [:]
@@ -493,48 +499,111 @@ actor KwtRemoteProvisioningCoordinator {
     }
 
     func ensureInstalled(on host: SSHHost) async throws {
+        try await provision(on: host, intent: .ensureInstalled)
+    }
+
+    func install(on host: SSHHost) async throws {
+        try await provision(on: host, intent: .install)
+    }
+
+    private func provision(
+        on host: SSHHost,
+        intent requestedIntent: Intent
+    ) async throws {
         let key = HostKey(
             configKey: host.configKey,
             platform: host.platform.rawValue,
             sshDestination: host.sshDestination
         )
         let waiterID = UUID()
-        let task: Task<Void, Error>
-        if var existing = inFlight[key] {
-            existing.waiters.insert(waiterID)
-            inFlight[key] = existing
-            task = existing.task
-        } else {
-            let installer = installer
-            task = Task {
-                try await installer.ensureInstalled(on: host)
-            }
-            inFlight[key] = InFlight(
-                task: task,
-                waiters: [waiterID]
-            )
-        }
-
-        do {
-            try await withTaskCancellationHandler {
-                try Task.checkCancellation()
-                try await task.value
-                try Task.checkCancellation()
-            } onCancel: {
-                Task {
-                    await self.releaseWaiter(waiterID, for: key)
+        while true {
+            let task: Task<Void, Error>
+            let runningIntent: Intent
+            if var existing = inFlight[key] {
+                if existing.waiters[waiterID] == nil {
+                    existing.waiters[waiterID] = requestedIntent
+                    inFlight[key] = existing
                 }
+                task = existing.task
+                runningIntent = existing.intent
+            } else {
+                task = provisioningTask(on: host, intent: requestedIntent)
+                inFlight[key] = InFlight(
+                    intent: requestedIntent,
+                    task: task,
+                    waiters: [waiterID: requestedIntent]
+                )
+                runningIntent = requestedIntent
             }
-            releaseWaiter(waiterID, for: key)
-        } catch {
-            releaseWaiter(waiterID, for: key)
-            throw error
+
+            do {
+                try await withTaskCancellationHandler {
+                    try Task.checkCancellation()
+                    try await task.value
+                    try Task.checkCancellation()
+                } onCancel: {
+                    Task {
+                        await self.releaseWaiter(waiterID, for: key)
+                    }
+                }
+            } catch {
+                guard requestedIntent == .install,
+                      runningIntent == .ensureInstalled,
+                      !Task.isCancelled
+                else {
+                    releaseWaiter(waiterID, for: key)
+                    throw error
+                }
+                promoteEnsureToInstall(on: host, for: key)
+                continue
+            }
+
+            guard requestedIntent == .install,
+                  runningIntent == .ensureInstalled
+            else {
+                releaseWaiter(waiterID, for: key)
+                return
+            }
+            promoteEnsureToInstall(on: host, for: key)
         }
+    }
+
+    private func provisioningTask(
+        on host: SSHHost,
+        intent: Intent
+    ) -> Task<Void, Error> {
+        let installer = installer
+        return Task {
+            switch intent {
+            case .ensureInstalled:
+                try await installer.ensureInstalled(on: host)
+            case .install:
+                try await installer.install(on: host)
+            }
+        }
+    }
+
+    private func promoteEnsureToInstall(
+        on host: SSHHost,
+        for key: HostKey
+    ) {
+        guard let existing = inFlight[key],
+              existing.intent == .ensureInstalled
+        else { return }
+        let forcedWaiters = existing.waiters.filter {
+            $0.value == .install
+        }
+        guard !forcedWaiters.isEmpty else { return }
+        inFlight[key] = InFlight(
+            intent: .install,
+            task: provisioningTask(on: host, intent: .install),
+            waiters: forcedWaiters
+        )
     }
 
     private func releaseWaiter(_ waiterID: UUID, for key: HostKey) {
         guard var existing = inFlight[key],
-              existing.waiters.remove(waiterID) != nil
+              existing.waiters.removeValue(forKey: waiterID) != nil
         else { return }
         guard !existing.waiters.isEmpty else {
             inFlight.removeValue(forKey: key)

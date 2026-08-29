@@ -170,8 +170,10 @@ or updates its pinned architecture-matched helper in the remote user's
 Linux host. On a fresh host, enter each existing checkout's absolute path under
 **Add Project**. The managed helper records it through kwt's supported registry
 command and Ghosthub refreshes project/worktree inventory. Tmux discovery and
-attachment continue to work if helper provisioning fails. Windows provisioning
-remains explicit until its kwt executables are Authenticode-signed.
+attachment continue to work if passive helper provisioning fails. Ghosthub
+retries managed-helper repair before an explicit project or worktree operation
+and reports a failure on that operation. Windows provisioning remains explicit
+until its kwt executables are Authenticode-signed.
 
 Ghosthub uses the host's OpenSSH configuration directly and invokes an
 ordinary tmux client on the target host. Tmux owns windows, panes, layouts,

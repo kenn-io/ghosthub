@@ -1258,6 +1258,104 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("missing kwt during workspace open falls back to direct attach")
+    func missingKwtDuringWorkspaceOpenFallsBackToDirectAttach() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        let otherSessionName = "kwt-ghosthub-other"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+            TmuxSessionSummary(
+                name: otherSessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let provisioningCalls = Counter()
+        let discoveryCalls = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtRemoteProvisioner: { _ in
+                _ = provisioningCalls.increment()
+            },
+            tmuxSessionDiscovery: { _ in
+                _ = discoveryCalls.increment()
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: sessionName,
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: true
+                    ),
+                    DiscoveredTmuxSession(
+                        name: otherSessionName,
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: true
+                    ),
+                ])
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        #expect(
+            surfaceStore.lastConfiguration?.command?.contains("'open'")
+                == true
+        )
+        await waitUntilMainActor { discoveryCalls.count >= 1 }
+
+        surfaceStore.surface.closeObservers.values.first?(false, 127)
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'attach-session'"))
+        #expect(!command.contains("'open'"))
+        #expect(provisioningCalls.count == 0)
+
+        let otherSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: otherSessionName,
+            worktreePath: "/srv/ghosthub-other",
+            tmuxAttachMode: .direct
+        )
+        model.openBorrowedTmuxSession(otherSelection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 3
+        }
+        let otherCommand = try #require(
+            surfaceStore.lastConfiguration?.command
+        )
+        #expect(otherCommand.contains("'attach-session'"))
+        #expect(!otherCommand.contains("'open'"))
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("retryable surface failure relaunches an absent workspace")
     func retryableSurfaceFailureRelaunchesAbsentWorkspace() async throws {
         let environment = try setupRemoteEnvironment()

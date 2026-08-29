@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import plistlib
 import pwd
+import selectors
 import shutil
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -318,22 +321,55 @@ def run_zellij_until_render(
     arguments: list[str],
     *,
     env: dict[str, str],
+    expected_output: str,
 ) -> tuple[str, str]:
     process = subprocess.Popen(
         [str(fixture), *arguments],
         cwd=ROOT,
         env=env,
-        text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout = bytearray()
+    stderr = bytearray()
+    expected = expected_output.encode()
+    deadline = time.monotonic() + 5
+
     try:
-        stdout, stderr = process.communicate(timeout=0.2)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGTERM)
-        stdout, stderr = process.communicate(timeout=1)
-    return stdout, stderr
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ, stdout)
+            selector.register(process.stderr, selectors.EVENT_READ, stderr)
+            while expected not in stdout and process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                events = selector.select(timeout=remaining)
+                if not events:
+                    break
+                for key, _ in events:
+                    chunk = os.read(key.fd, 4096)
+                    if chunk:
+                        key.data.extend(chunk)
+                    else:
+                        selector.unregister(key.fileobj)
+                if not selector.get_map():
+                    break
+    finally:
+        if process.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGTERM)
+        try:
+            remaining_stdout, remaining_stderr = process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            remaining_stdout, remaining_stderr = process.communicate(timeout=1)
+        stdout.extend(remaining_stdout)
+        stderr.extend(remaining_stderr)
+    return stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
 @pytest.mark.parametrize(
@@ -365,16 +401,20 @@ def test_demo_zellij_accepts_hardened_session_arguments(
     (scratch / ".ghosthub-demo-scratch").touch()
     fixture = DEMO / fixture_name
     env = {**os.environ, scratch_variable: str(scratch)}
+    attached_expected = f"{render_prefix}: -release"
+    created_expected = f"{render_prefix}: -new-release"
 
     attached, attach_error = run_zellij_until_render(
         fixture,
         ["attach", "--", "-release"],
         env=env,
+        expected_output=attached_expected,
     )
     created, create_error = run_zellij_until_render(
         fixture,
         ["--session=-new-release"],
         env=env,
+        expected_output=created_expected,
     )
     killed = subprocess.run(
         [str(fixture), "kill-session", "--", kill_name],
@@ -385,8 +425,8 @@ def test_demo_zellij_accepts_hardened_session_arguments(
         check=False,
     )
 
-    assert f"{render_prefix}: -release" in attached, attach_error
-    assert f"{render_prefix}: -new-release" in created, create_error
+    assert attached_expected in attached, attach_error
+    assert created_expected in created, create_error
     assert killed.returncode == 0, killed.stderr
     assert (scratch / f"zellij-killed-{kill_name}").is_file()
 
