@@ -1,0 +1,518 @@
+From 15d61f17d55e2476690ffe4b4da02daee03d1aaa Mon Sep 17 00:00:00 2001
+From: Mitchell Hashimoto <m@mitchellh.com>
+Date: Tue, 7 Jul 2026 13:47:38 -0700
+Subject: [PATCH 3/4] terminal: track page ownership explicitly on pagelist
+ nodes
+
+PageList decided whether a page's backing memory belongs to the memory
+pool or the heap by comparing its length against std_size. This was super
+error-prone and the source of many bugs historically. We locked it down
+but its bothered me and has gotten in the way of another feature I've
+wanted to do: memory compaction.
+
+First, this commit records the ownership explicitly on each node and uses it
+everywhere ownership was previously inferred from size.
+
+Second, createPage gains an exact_size option that forces an exact-size
+heap allocation even when the layout would fit a pool item.
+
+Third, compact() now uses it to shrink any page to its minimum size,
+including standard pages. Nothing calls compact [YET!] but this is going
+to be the key to compressing scrollback history.
+
+This is groundwork for a ton of memory savings. Coming soon.
+---
+ src/terminal/PageList.zig | 281 ++++++++++++++++++++++++++++----------
+ 1 file changed, 209 insertions(+), 72 deletions(-)
+
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 6e39428db..95669ab40 100644
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -46,6 +46,22 @@ const Node = struct {
+     next: ?*Node = null,
+     data: Page,
+     serial: u64,
++
++    /// How the backing memory of `data` was allocated. Pool-owned
++    /// memory is always a full standard-size item from the memory
++    /// pool, regardless of the page layout size. Heap-owned memory
++    /// is allocated directly with the page allocator and is exactly
++    /// `data.memory.len` bytes.
++    ///
++    /// This must never be inferred from the memory length: heap-owned
++    /// pages can be smaller than the standard size (e.g. compacted
++    /// pages), and returning one to the pool would corrupt it.
++    ///
++    /// This has no default on purpose so that every construction site
++    /// is forced to make an explicit decision.
++    owned: Owned,
++
++    const Owned = enum { pool, heap };
+ };
+ 
+ /// The memory pool we get page nodes from.
+@@ -444,13 +460,14 @@ fn initPages(
+     // redundant here for safety.
+     assert(layout.total_size <= size.max_page_size);
+ 
+-    // If we have an error, we need to clean up our non-standard pages
++    // If we have an error, we need to clean up our heap-owned pages
+     // since they're not in the pool.
+     errdefer {
+         var it = page_list.first;
+         while (it) |node| : (it = node.next) {
+-            if (node.data.memory.len > std_size) {
+-                page_alloc.free(node.data.memory);
++            switch (node.owned) {
++                .pool => {},
++                .heap => page_alloc.free(node.data.memory),
+             }
+         }
+     }
+@@ -487,6 +504,7 @@ fn initPages(
+         node.* = .{
+             .data = .initBuf(.init(page_buf), layout),
+             .serial = serial.*,
++            .owned = if (pooled) .pool else .heap,
+         };
+         node.data.size.rows = @min(rem, node.data.capacity.rows);
+         rem -= node.data.size.rows;
+@@ -631,12 +649,13 @@ pub fn deinit(self: *PageList) void {
+     self.tracked_pins.deinit(self.pool.alloc);
+ 
+     // Go through our linked list and deallocate all pages that are
+-    // not standard size.
++    // heap-owned (not in the pool).
+     const page_alloc = self.pool.pages.arena.child_allocator;
+     var it = self.pages.first;
+     while (it) |node| : (it = node.next) {
+-        if (node.data.memory.len > std_size) {
+-            page_alloc.free(node.data.memory);
++        switch (node.owned) {
++            .pool => {},
++            .heap => page_alloc.free(node.data.memory),
+         }
+     }
+ 
+@@ -670,14 +689,14 @@ pub fn reset(self: *PageList) void {
+     ) catch unreachable;
+ 
+     // Before resetting our pools we need to free any pages that
+-    // are non-standard size since those were allocated outside
+-    // the pool.
++    // are heap-owned since those were allocated outside the pool.
+     {
+         const page_alloc = self.pool.pages.arena.child_allocator;
+         var it = self.pages.first;
+         while (it) |node| : (it = node.next) {
+-            if (node.data.memory.len > std_size) {
+-                page_alloc.free(node.data.memory);
++            switch (node.owned) {
++                .pool => {},
++                .heap => page_alloc.free(node.data.memory),
+             }
+         }
+     }
+@@ -817,8 +836,9 @@ pub fn clone(
+         const page_alloc = pool.pages.arena.child_allocator;
+         var page_it = page_list.first;
+         while (page_it) |node| : (page_it = node.next) {
+-            if (node.data.memory.len > std_size) {
+-                page_alloc.free(node.data.memory);
++            switch (node.owned) {
++                .pool => {},
++                .heap => page_alloc.free(node.data.memory),
+             }
+         }
+     }
+@@ -832,7 +852,7 @@ pub fn clone(
+         // we don't know if the source page has a standard size.
+         const node = try createPageExt(
+             &pool,
+-            chunk.node.data.capacity,
++            .{ .cap = chunk.node.data.capacity },
+             &page_serial,
+             &page_size,
+         );
+@@ -1074,7 +1094,7 @@ fn resizeCols(
+             break :err cap;
+         };
+ 
+-        const node = try self.createPage(cap);
++        const node = try self.createPage(.{ .cap = cap });
+         node.data.size.rows = 1;
+         break :node node;
+     };
+@@ -1910,7 +1930,7 @@ const ReflowCursor = struct {
+         // after reinitializing our cursor on the new page.
+         const new_rows = self.new_rows;
+ 
+-        const node = try list.createPage(cap);
++        const node = try list.createPage(.{ .cap = cap });
+         errdefer comptime unreachable;
+         node.data.size.rows = 1;
+         list.pages.insertAfter(self.node, node);
+@@ -2289,7 +2309,7 @@ fn resizeWithoutReflowGrowCols(
+     // We need to loop because our col growth may force us
+     // to split pages.
+     while (copied < page.size.rows) {
+-        const new_node = try self.createPage(cap);
++        const new_node = try self.createPage(.{ .cap = cap });
+         defer new_node.data.assertIntegrity();
+ 
+         // The length we can copy into the new page is at most the number
+@@ -2760,13 +2780,15 @@ pub fn scrollClear(self: *PageList) Allocator.Error!void {
+ 
+ /// Compact a page to use the minimum required memory for the contents
+ /// it stores. Returns the new node pointer if compaction occurred, or null
+-/// if the page was already compact or compaction would not provide meaningful
++/// if the page was already compact or compaction would not provide any
+ /// savings.
+ ///
+-/// The current design of PageList at the time of writing this doesn't
+-/// allow for smaller than `std_size` nodes so if the current node's backing
+-/// page is standard size or smaller, no compaction will occur. In the
+-/// future we should fix this up.
++/// The compacted page is always an exact-size heap allocation, never
++/// a pool item, since a pool item always retains a full std_size
++/// buffer regardless of the page layout. Note that this means that
++/// when compacting a pool-owned node, the freed pool item is returned
++/// to the pool free list, so the memory savings are only fully
++/// realized once the pool itself is reset or freed.
+ ///
+ /// If this returns OOM, the PageList is left unchanged and no dangling
+ /// memory references exist. It is safe to ignore the error and continue using
+@@ -2778,18 +2800,23 @@ pub fn compact(self: *PageList, node: *List.Node) Allocator.Error!?*List.Node {
+     // We should never have empty rows in our pagelist anyways...
+     assert(page.size.rows > 0);
+ 
+-    // We never compact standard size or smaller pages because changing
+-    // the capacity to something smaller won't save memory.
+-    if (page.memory.len <= std_size) return null;
+-
+     // Compute the minimum capacity required for this page's content
+     const req_cap = page.exactRowCapacity(0, page.size.rows);
+     const new_size = Page.layout(req_cap).total_size;
+-    const old_size = page.memory.len;
++
++    // The memory this node currently retains. A pool-owned node always
++    // retains a full pool item no matter its layout size.
++    const old_size: usize = switch (node.owned) {
++        .pool => PagePool.item_size,
++        .heap => page.memory.len,
++    };
+     if (new_size >= old_size) return null;
+ 
+     // Create the new smaller page
+-    const new_node = try self.createPage(req_cap);
++    const new_node = try self.createPage(.{
++        .cap = req_cap,
++        .exact_size = true,
++    });
+     errdefer self.destroyNode(new_node);
+     const new_page: *Page = &new_node.data;
+     new_page.size = page.size;
+@@ -2868,7 +2895,7 @@ pub fn split(
+     defer self.assertIntegrity();
+ 
+     // Create a new node with the same capacity of managed memory.
+-    const target = try self.createPage(page.capacity);
++    const target = try self.createPage(.{ .cap = page.capacity });
+     errdefer self.destroyNode(target);
+ 
+     // Determine how many rows we're copying
+@@ -3164,10 +3191,17 @@ pub fn grow(self: *PageList) Allocator.Error!?*List.Node {
+         }
+         self.viewport_pin.garbage = false;
+ 
+-        // Non-standard pages can't be reused, just destroy them.
+-        if (first.data.memory.len > std_size) {
+-            self.destroyNode(first);
+-            break :prune;
++        switch (first.owned) {
++            // Pool-owned pages are reused below.
++            .pool => {},
++
++            // Heap-owned pages can't be reused because they may be
++            // any size (larger or smaller than a standard page), so
++            // just destroy them.
++            .heap => {
++                self.destroyNode(first);
++                break :prune;
++            },
+         }
+ 
+         // Reset our memory
+@@ -3197,7 +3231,7 @@ pub fn grow(self: *PageList) Allocator.Error!?*List.Node {
+     }
+ 
+     // We need to allocate a new memory buffer.
+-    const next_node = try self.createPage(cap);
++    const next_node = try self.createPage(.{ .cap = cap });
+     // we don't errdefer this because we've added it to the linked
+     // list and its fine to have dangling unused pages.
+     self.pages.append(next_node);
+@@ -3293,7 +3327,7 @@ pub fn increaseCapacity(
+     log.info("adjusting page capacity={}", .{cap});
+ 
+     // Create our new page and clone the old page into it.
+-    const new_node = try self.createPage(cap);
++    const new_node = try self.createPage(.{ .cap = cap });
+     errdefer self.destroyNode(new_node);
+     const new_page: *Page = &new_node.data;
+     assert(new_page.capacity.rows >= page.capacity.rows);
+@@ -3336,16 +3370,29 @@ pub fn increaseCapacity(
+     return new_node;
+ }
+ 
++/// Options for createPage and createPageExt.
++const CreatePage = struct {
++    /// The capacity to allocate the page with.
++    cap: Capacity,
++
++    /// Force the page backing memory to be an exact-size heap
++    /// allocation even if it would fit within a standard-size pool
++    /// item. This is used when compacting pages to their minimum
++    /// size, since a pool item always retains a full std_size buffer
++    /// regardless of the page layout.
++    exact_size: bool = false,
++};
++
+ /// Create a new page node. This does not add it to the list and this
+ /// does not do any memory size accounting with max_size/page_size.
+ inline fn createPage(
+     self: *PageList,
+-    cap: Capacity,
++    opts: CreatePage,
+ ) Allocator.Error!*List.Node {
+-    // log.debug("create page cap={}", .{cap});
++    // log.debug("create page cap={}", .{opts.cap});
+     return try createPageExt(
+         &self.pool,
+-        cap,
++        opts,
+         &self.page_serial,
+         &self.page_size,
+     );
+@@ -3353,15 +3400,15 @@ inline fn createPage(
+ 
+ inline fn createPageExt(
+     pool: *MemoryPool,
+-    cap: Capacity,
++    opts: CreatePage,
+     serial: *u64,
+     total_size: ?*usize,
+ ) Allocator.Error!*List.Node {
+     var page = try pool.nodes.create();
+     errdefer pool.nodes.destroy(page);
+ 
+-    const layout = Page.layout(cap);
+-    const pooled = layout.total_size <= std_size;
++    const layout = Page.layout(opts.cap);
++    const pooled = !opts.exact_size and layout.total_size <= std_size;
+     const page_alloc = pool.pages.arena.child_allocator;
+ 
+     // It would be better to encode this into the Zig error handling
+@@ -3392,6 +3439,7 @@ inline fn createPageExt(
+     page.* = .{
+         .data = .initBuf(.init(page_buf), layout),
+         .serial = serial.*,
++        .owned = if (pooled) .pool else .heap,
+     };
+     page.data.size.rows = 0;
+     serial.* += 1;
+@@ -3424,16 +3472,28 @@ fn destroyNodeExt(
+ ) void {
+     const page: *Page = &node.data;
+ 
+-    // Update our accounting for page size
+-    if (total_size) |v| v.* -= page.memory.len;
++    // Update our accounting for page size. This must mirror what was
++    // added at creation time: a pool-owned page always accounts for a
++    // full pool item even if its layout is smaller, while a heap-owned
++    // page accounts for its exact memory length.
++    if (total_size) |v| v.* -= switch (node.owned) {
++        .pool => PagePool.item_size,
++        .heap => page.memory.len,
++    };
+ 
+-    if (page.memory.len <= std_size) {
+-        // Reset the memory to zero so it can be reused
+-        @memset(page.memory, 0);
+-        pool.pages.destroy(@ptrCast(page.memory.ptr));
+-    } else {
+-        const page_alloc = pool.pages.arena.child_allocator;
+-        page_alloc.free(page.memory);
++    switch (node.owned) {
++        .pool => {
++            assert(page.memory.len <= std_size);
++
++            // Reset the memory to zero so it can be reused
++            @memset(page.memory, 0);
++            pool.pages.destroy(@ptrCast(page.memory.ptr));
++        },
++
++        .heap => {
++            const page_alloc = pool.pages.arena.child_allocator;
++            page_alloc.free(page.memory);
++        },
+     }
+ 
+     pool.nodes.destroy(node);
+@@ -13879,23 +13939,108 @@ test "PageList resize (no reflow) more cols remaps pins in backfill path" {
+     try testing.expectEqual(marker, cell.content.codepoint);
+ }
+ 
+-test "PageList compact std_size page returns null" {
++test "PageList compact pool page produces exact-size heap page" {
+     const testing = std.testing;
+     const alloc = testing.allocator;
+ 
+     var s = try init(alloc, 80, 24, 0);
+     defer s.deinit();
+ 
+-    // A freshly created page should be at std_size
++    // A freshly created page is pool-owned at std_size.
+     const node = s.pages.first.?;
++    try testing.expectEqual(.pool, node.owned);
+     try testing.expect(node.data.memory.len <= std_size);
++    const original_size = node.data.size;
++
++    // Compacting it should produce a much smaller exact-size heap page.
++    const new_node = (try s.compact(node)).?;
++    try testing.expectEqual(.heap, new_node.owned);
++    try testing.expect(new_node.data.memory.len < std_size);
++    try testing.expectEqual(original_size.rows, new_node.data.size.rows);
++    try testing.expectEqual(original_size.cols, new_node.data.size.cols);
++    try testing.expectEqual(new_node, s.pages.first.?);
+ 
+-    // compact should return null since there's nothing to compact
+-    const result = try s.compact(node);
+-    try testing.expectEqual(null, result);
++    // Our page size accounting should exactly match the compacted
++    // page since it is the only page in the list.
++    try testing.expectEqual(new_node.data.memory.len, s.page_size);
++
++    // Compacting again should be a no-op since it is already exact.
++    try testing.expectEqual(null, try s.compact(new_node));
++}
+ 
+-    // Page should still be the same
+-    try testing.expectEqual(node, s.pages.first.?);
++test "PageList compact then grow allocates new page" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var s = try init(alloc, 80, 24, null);
++    defer s.deinit();
++
++    // Compact the only page. It now has no spare row capacity.
++    const node = (try s.compact(s.pages.first.?)).?;
++    try testing.expectEqual(node.data.size.rows, node.data.capacity.rows);
++
++    // Growing must allocate a fresh standard page from the pool,
++    // exercising that a compacted page remains a valid live page.
++    _ = try s.grow();
++    try testing.expect(s.pages.first != s.pages.last);
++    try testing.expectEqual(.pool, s.pages.last.?.owned);
++    try testing.expectEqual(@as(usize, 25), s.totalRows());
++}
++
++test "PageList compact then reset frees heap pages" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var s = try init(alloc, 80, 24, 0);
++    defer s.deinit();
++
++    // Compact the only page so the list contains a sub-std_size
++    // heap-owned page.
++    const node = (try s.compact(s.pages.first.?)).?;
++    try testing.expectEqual(.heap, node.owned);
++    try testing.expect(node.data.memory.len < std_size);
++
++    // Reset must free the heap page (testing allocator catches leaks
++    // and invalid frees) and rebuild from the pool.
++    s.reset();
++    try testing.expectEqual(.pool, s.pages.first.?.owned);
++    try testing.expectEqual(@as(usize, s.rows), s.totalRows());
++}
++
++test "PageList compact then clone" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var s = try init(alloc, 80, 24, null);
++    defer s.deinit();
++
++    // Write a marker so we can verify contents survive.
++    {
++        const node = s.pages.first.?;
++        const rac = node.data.getRowAndCell(1, 2);
++        rac.cell.* = .{
++            .content_tag = .codepoint,
++            .content = .{ .codepoint = 'X' },
++        };
++    }
++
++    // Compact so the source list contains a sub-std_size heap page.
++    const node = (try s.compact(s.pages.first.?)).?;
++    try testing.expectEqual(.heap, node.owned);
++    try testing.expect(node.data.memory.len < std_size);
++
++    var s2 = try s.clone(alloc, .{
++        .top = .{ .screen = .{} },
++    });
++    defer s2.deinit();
++    try testing.expectEqual(@as(usize, s.rows), s2.totalRows());
++
++    // Verify the marker survived the clone.
++    {
++        const node2 = s2.pages.first.?;
++        const rac = node2.data.getRowAndCell(1, 2);
++        try testing.expectEqual(@as(u21, 'X'), rac.cell.content.codepoint);
++    }
+ }
+ 
+ test "PageList compact oversized page" {
+@@ -13985,7 +14130,7 @@ test "PageList compact oversized page" {
+     }
+ }
+ 
+-test "PageList compact insufficient savings returns null" {
++test "PageList compact after increaseCapacity" {
+     const testing = std.testing;
+     const alloc = testing.allocator;
+ 
+@@ -13994,23 +14139,15 @@ test "PageList compact insufficient savings returns null" {
+ 
+     var node = s.pages.first.?;
+ 
+-    // Make the page slightly oversized (just one increase)
+-    // This might not provide enough savings to justify compaction
++    // Grow the page capacity. The content is unchanged, so compaction
++    // should always shrink it back down to an exact-size heap page.
+     node = try s.increaseCapacity(node, .grapheme_bytes);
++    const grown_len = node.data.memory.len;
+ 
+-    // If the page is still at or below std_size, compact returns null
+-    if (node.data.memory.len <= std_size) {
+-        const result = try s.compact(node);
+-        try testing.expectEqual(null, result);
+-    } else {
+-        // If it did grow beyond std_size, verify that compaction
+-        // works or returns null based on savings calculation
+-        const result = try s.compact(node);
+-        // Either it compacted or determined insufficient savings
+-        if (result) |new_node| {
+-            try testing.expect(new_node.data.memory.len < node.data.memory.len);
+-        }
+-    }
++    const new_node = (try s.compact(node)).?;
++    try testing.expectEqual(.heap, new_node.owned);
++    try testing.expect(new_node.data.memory.len < grown_len);
++    try testing.expect(new_node.data.memory.len < std_size);
+ }
+ 
+ test "PageList split at middle row" {

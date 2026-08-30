@@ -15,11 +15,27 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 24
+GHOSTHUB_BOOTSTRAP_VERSION = 25
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 SOURCE_FETCH_ATTEMPTS = 3
 SOURCE_FETCH_RETRY_DELAY_SECONDS = 5.0
+
+GHOSTTY_BACKPORTS = (
+    (
+        "c4e16970a803b170e352432424f44192cb59f3ac",
+        "0001-renderer-release-GPU-resources-for-hidden-surfaces-m.patch",
+    ),
+    (
+        "16e4b5e98f10f255bdda934a61ff41e9b3a849c7",
+        "0003-terminal-track-page-ownership-explicitly-on-pagelist.patch",
+    ),
+    (
+        "896aca499001f42e132f456ebc9cdfed616cf1fb",
+        "0004-terminal-return-free-listed-page-memory-to-the-OS.patch",
+    ),
+)
+GHOSTTY_BACKPORT_COMMITS = [commit for commit, _ in GHOSTTY_BACKPORTS]
 
 
 class BootstrapError(RuntimeError):
@@ -807,6 +823,55 @@ def patch_termio_discarded_message_cleanup(
         description="upstream drained mailbox message cleanup",
     )
 
+
+def apply_ghostty_backports(paths: BootstrapPaths, *, git: str) -> None:
+    """Apply Ghostty memory fixes that landed after the pinned release."""
+    git_path = resolve_tool(git)
+    patch_root = paths.repo_root / "Vendor" / "ghostty-patches"
+
+    for commit, filename in GHOSTTY_BACKPORTS:
+        patch_path = patch_root / filename
+        if not patch_path.is_file():
+            raise BootstrapError(
+                f"Ghostty backport {commit} is missing its patch file: {patch_path}"
+            )
+
+        command = [
+            git_path,
+            "-C",
+            str(paths.source_checkout_root),
+            "apply",
+            "--whitespace=error-all",
+            str(patch_path),
+        ]
+        check = subprocess.run(
+            [*command[:4], "--check", *command[4:]],
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode == 0:
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as error:
+                raise BootstrapError(
+                    f"Failed to apply Ghostty memory backport {commit} from "
+                    f"{patch_path}.\n{describe_command_failure(error)}"
+                ) from error
+            continue
+
+        reverse = subprocess.run(
+            [*command[:4], "--reverse", "--check", *command[4:]],
+            capture_output=True,
+            text=True,
+        )
+        if reverse.returncode == 0:
+            continue
+
+        detail = check.stderr.strip() or check.stdout.strip() or "git apply failed"
+        raise BootstrapError(
+            f"Ghostty memory backport {commit} no longer applies to the pinned "
+            f"source checkout: {patch_path}\n{detail}"
+        )
 
 def patch_build_config_bundle_id(path: Path) -> None:
     original = 'pub const bundle_id = "com.mitchellh.ghostty";'
@@ -1865,6 +1930,11 @@ def artifact_state_message(
             "libghostty artifacts were built against a different Ghostty revision. "
             "Re-run `python3 tools/bootstrap_libghostty.py`."
         )
+    if manifest.get("ghosttyBackports") != GHOSTTY_BACKPORT_COMMITS:
+        return (
+            "libghostty artifacts were built without the current Ghostty memory backports. "
+            "Re-run `python3 tools/bootstrap_libghostty.py`."
+        )
     if manifest.get("ghosthubBootstrapVersion") != GHOSTHUB_BOOTSTRAP_VERSION:
         return (
             "libghostty artifacts were built against an older Ghosthub bootstrap schema. "
@@ -2147,6 +2217,7 @@ def write_manifest(
         "ghosttySource": metadata.source,
         "ghosttyTag": metadata.tag,
         "ghosttyCommit": metadata.commit,
+        "ghosttyBackports": GHOSTTY_BACKPORT_COMMITS,
         "ghosthubBootstrapVersion": GHOSTHUB_BOOTSTRAP_VERSION,
         "ghosttyBundleID": GHOSTHUB_GHOSTTY_BUNDLE_ID,
         "ghosttyConfigLoadExport": True,
@@ -2187,6 +2258,7 @@ def bootstrap(
     rebuilt_variant = False
     if artifact_state_message(paths.cached_artifacts, metadata, xcframework_target, optimize) is not None:
         ensure_source_checkout(paths, metadata, git=git)
+        apply_ghostty_backports(paths, git=git)
         apply_ghosthub_source_patches(paths)
         apply_upstream_lifetime_backports(paths.source_checkout_root)
 

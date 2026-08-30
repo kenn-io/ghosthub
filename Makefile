@@ -413,6 +413,8 @@ debug-app: ensure-kwt ensure-kwt-variants bootstrap-libghostty
 	cp -f "$(APP_ENTITLEMENTS_PATH)" "$$debug_entitlements"; \
 	plutil -insert 'com\.apple\.security\.cs\.disable-library-validation' \
 		-bool true "$$debug_entitlements"; \
+	plutil -insert 'com\.apple\.security\.get-task-allow' \
+		-bool true "$$debug_entitlements"; \
 	codesign --force --deep --options runtime \
 		--entitlements "$$debug_entitlements" \
 		--sign - "$(DEBUG_APP_PATH)" >/dev/null; \
