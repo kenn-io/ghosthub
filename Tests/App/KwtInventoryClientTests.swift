@@ -319,6 +319,59 @@ struct KwtInventoryClientTests {
         #expect(inventory.directoryWorkspaces.map(\.path) == ["/srv/hub"])
     }
 
+    @Test("remote project inventory is serialized")
+    func remoteProjectInventoryIsSerialized() async throws {
+        let ssh = SSHHostInfo(user: "tester", hostname: "builder", port: nil)
+        let concurrency = LockedValue((active: 0, maximum: 0))
+        let overlap = DispatchSemaphore(value: 0)
+        let client = KwtInventoryClient(
+            remoteRunner: { _, _, command in
+                if command.contains("projects --json") {
+                    return AccountCommandOutput(
+                        status: 0,
+                        stdout: "GHOSTHUB_KWT_JSON\n" +
+                            #"[{"repository":"one","name":"one","path":"/one","registration_fingerprint":"one-fingerprint"},{"repository":"two","name":"two","path":"/two","registration_fingerprint":"two-fingerprint"}]"#,
+                        stderr: ""
+                    )
+                }
+                if command.contains("workspace list --json") {
+                    return AccountCommandOutput(
+                        status: 0,
+                        stdout: "GHOSTHUB_KWT_JSON\n[]",
+                        stderr: ""
+                    )
+                }
+
+                var active = 0
+                concurrency.withLock { state in
+                    state.active += 1
+                    state.maximum = max(state.maximum, state.active)
+                    active = state.active
+                }
+                if active == 1 {
+                    _ = overlap.wait(timeout: .now() + 0.2)
+                } else {
+                    overlap.signal()
+                }
+                concurrency.withLock { $0.active -= 1 }
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "GHOSTHUB_KWT_JSON\n[]",
+                    stderr: ""
+                )
+            }
+        )
+
+        let inventory = try await client.load(
+            from: .ssh(ssh),
+            sshConnectionArguments: ["-S", "/tmp/kwt.sock"]
+        )
+
+        #expect(inventory.projects.count == 2)
+        #expect(inventory.projects.allSatisfy { $0.warning == nil })
+        #expect(concurrency.load().maximum == 1)
+    }
+
     @Test("remote inventory invalidates a lost daemon master")
     func invalidatesLostRemoteMaster() async {
         let invalidations = LockedValue(0)

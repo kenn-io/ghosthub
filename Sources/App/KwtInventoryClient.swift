@@ -388,54 +388,42 @@ struct KwtInventoryClient: Sendable {
             throw projectsError
         }
 
-        let indexed = await withTaskGroup(
-            of: (Int, KwtProjectInventory, Bool).self,
-            returning: [(Int, KwtProjectInventory, Bool)].self
-        ) { group in
-            for (index, project) in projects.enumerated() {
-                group.addTask {
-                    let result = run(
-                        host: host,
-                        sshConnectionArguments: sshConnectionArguments,
-                        command: Self.worktreesCommand(
-                            projectPath: project.path,
-                            platform: platform(for: host),
-                            binaryPrelude: binaryPrelude(for: host),
+        let indexed: [(Int, KwtProjectInventory, Bool)]
+        switch host {
+        case .local:
+            indexed = await withTaskGroup(
+                of: (Int, KwtProjectInventory, Bool).self,
+                returning: [(Int, KwtProjectInventory, Bool)].self
+            ) { group in
+                for (index, project) in projects.enumerated() {
+                    group.addTask {
+                        loadProject(
+                            index: index,
+                            project: project,
+                            host: host,
+                            sshConnectionArguments: sshConnectionArguments,
+                            hostLabel: hostLabel,
                             windowsKwtRelativePath: windowsKwtRelativePath
-                        )
-                    )
-                    do {
-                        let worktrees: [KwtWorktreeRecord] = try decode(
-                            result,
-                            hostLabel: hostLabel
-                        )
-                        return (
-                            index,
-                            KwtProjectInventory(
-                                project: project,
-                                worktrees: worktrees,
-                                warning: nil
-                            ),
-                            Self.indicatesUnusableConnection(result)
-                        )
-                    } catch {
-                        return (
-                            index,
-                            KwtProjectInventory(
-                                project: project,
-                                worktrees: [],
-                                warning: error.localizedDescription
-                            ),
-                            Self.indicatesUnusableConnection(result)
                         )
                     }
                 }
+                var values: [(Int, KwtProjectInventory, Bool)] = []
+                for await value in group {
+                    values.append(value)
+                }
+                return values
             }
-            var values: [(Int, KwtProjectInventory, Bool)] = []
-            for await value in group {
-                values.append(value)
+        case .ssh:
+            indexed = projects.enumerated().map { index, project in
+                loadProject(
+                    index: index,
+                    project: project,
+                    host: host,
+                    sshConnectionArguments: sshConnectionArguments,
+                    hostLabel: hostLabel,
+                    windowsKwtRelativePath: windowsKwtRelativePath
+                )
             }
-            return values
         }
         if topConnectionUnusable || indexed.contains(where: { $0.2 }) {
             await sshConnection?.invalidate()
@@ -446,6 +434,51 @@ struct KwtInventoryClient: Sendable {
             directoryWorkspaces: directoryWorkspaces,
             directoryWorkspaceWarning: directoryWorkspaceWarning
         )
+    }
+
+    private func loadProject(
+        index: Int,
+        project: KwtProjectRecord,
+        host: CommandHost,
+        sshConnectionArguments: [String]?,
+        hostLabel: String,
+        windowsKwtRelativePath: String?
+    ) -> (Int, KwtProjectInventory, Bool) {
+        let result = run(
+            host: host,
+            sshConnectionArguments: sshConnectionArguments,
+            command: Self.worktreesCommand(
+                projectPath: project.path,
+                platform: platform(for: host),
+                binaryPrelude: binaryPrelude(for: host),
+                windowsKwtRelativePath: windowsKwtRelativePath
+            )
+        )
+        do {
+            let worktrees: [KwtWorktreeRecord] = try decode(
+                result,
+                hostLabel: hostLabel
+            )
+            return (
+                index,
+                KwtProjectInventory(
+                    project: project,
+                    worktrees: worktrees,
+                    warning: nil
+                ),
+                Self.indicatesUnusableConnection(result)
+            )
+        } catch {
+            return (
+                index,
+                KwtProjectInventory(
+                    project: project,
+                    worktrees: [],
+                    warning: error.localizedDescription
+                ),
+                Self.indicatesUnusableConnection(result)
+            )
+        }
     }
 
     private func binaryPrelude(for host: CommandHost) -> String {
