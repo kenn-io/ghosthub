@@ -36,6 +36,29 @@ struct WorkspaceWindowChromeTests {
         #expect(blurredWindows.count == 1)
     }
 
+    @Test("transparent appearance uses configured titlebar opacity")
+    func transparentTitlebar() throws {
+        let window = makeWindow()
+        WorkspaceWindowChrome.apply(
+            to: window,
+            appearance: TerminalBackgroundAppearance(
+                opacity: 0.8, blurCValue: 0, increasedContrast: false
+            ),
+            applyBlur: { _ in }
+        )
+
+        let titlebar = try #require(
+            window.standardWindowButton(.closeButton)?.superview
+        )
+        let layerColor = try #require(titlebar.layer?.backgroundColor)
+        let alpha = try #require(
+            NSColor(cgColor: layerColor)?
+                .usingColorSpace(.sRGB)?
+                .alphaComponent
+        )
+        #expect(abs(alpha - 0.8) < 0.001)
+    }
+
     @Test("opaque appearance restores current chrome")
     func opaqueWindow() {
         let window = makeWindow()
