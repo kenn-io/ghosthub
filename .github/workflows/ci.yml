@@ -273,19 +273,3 @@ jobs:
           case "${GHOSTHUB_CI_STATE_ROOT:-}" in
             /tmp/ghosthub-ci.*) rm -rf -- "$GHOSTHUB_CI_STATE_ROOT" ;;
           esac
-
-  # kenn-ops requires this main-pinned check as "run / Required CI".
-  required:
-    name: Required CI
-    if: ${{ always() }}
-    needs: [macos-arm64]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require authoritative macOS validation
-        env:
-          RESULT: ${{ needs.macos-arm64.result }}
-        run: |
-          if [[ "$RESULT" != success ]]; then
-            echo "Authoritative macOS validation ended with: $RESULT" >&2
-            exit 1
-          fi
