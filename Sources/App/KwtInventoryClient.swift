@@ -323,6 +323,9 @@ struct KwtInventoryClient: Sendable {
         sshConnectionArguments: [String]?,
         sshConnection: KwtSSHConnection? = nil
     ) async throws -> KwtHostInventory {
+        if case .ssh = host {
+            try Task.checkCancellation()
+        }
         let hostLabel = switch host {
         case .local: "this Mac"
         case let .ssh(info): info.displayName
@@ -342,6 +345,9 @@ struct KwtInventoryClient: Sendable {
                 windowsKwtRelativePath: windowsKwtRelativePath
             )
         )
+        if case .ssh = host {
+            try Task.checkCancellation()
+        }
         let directoriesResult = run(
             host: host,
             sshConnectionArguments: sshConnectionArguments,
@@ -351,6 +357,9 @@ struct KwtInventoryClient: Sendable {
                 windowsKwtRelativePath: windowsKwtRelativePath
             )
         )
+        if case .ssh = host {
+            try Task.checkCancellation()
+        }
         let topConnectionUnusable = [projectsResult, directoriesResult]
             .contains(where: Self.indicatesUnusableConnection)
         let projects: [KwtProjectRecord]
@@ -414,8 +423,10 @@ struct KwtInventoryClient: Sendable {
                 return values
             }
         case .ssh:
-            indexed = projects.enumerated().map { index, project in
-                loadProject(
+            var values: [(Int, KwtProjectInventory, Bool)] = []
+            for (index, project) in projects.enumerated() {
+                try Task.checkCancellation()
+                let value = loadProject(
                     index: index,
                     project: project,
                     host: host,
@@ -423,7 +434,18 @@ struct KwtInventoryClient: Sendable {
                     hostLabel: hostLabel,
                     windowsKwtRelativePath: windowsKwtRelativePath
                 )
+                if value.2 {
+                    await sshConnection?.invalidate()
+                    try Task.checkCancellation()
+                    throw KwtInventoryError.commandFailed(
+                        host: hostLabel,
+                        status: 255
+                    )
+                }
+                try Task.checkCancellation()
+                values.append(value)
             }
+            indexed = values
         }
         if topConnectionUnusable || indexed.contains(where: { $0.2 }) {
             await sshConnection?.invalidate()

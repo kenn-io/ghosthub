@@ -372,6 +372,116 @@ struct KwtInventoryClientTests {
         #expect(concurrency.load().maximum == 1)
     }
 
+    @Test("cancelled remote inventory stops before the next project")
+    func cancelledRemoteInventoryStopsBeforeNextProject() async {
+        let ssh = SSHHostInfo(user: "tester", hostname: "builder", port: nil)
+        let projectRuns = LockedValue(0)
+        let firstProjectStarted = DispatchSemaphore(value: 0)
+        let firstProjectMayFinish = DispatchSemaphore(value: 0)
+        let client = KwtInventoryClient(
+            remoteRunner: { _, _, command in
+                if command.contains("projects --json") {
+                    return AccountCommandOutput(
+                        status: 0,
+                        stdout: "GHOSTHUB_KWT_JSON\n" +
+                            #"[{"repository":"one","name":"one","path":"/one","registration_fingerprint":"one-fingerprint"},{"repository":"two","name":"two","path":"/two","registration_fingerprint":"two-fingerprint"},{"repository":"three","name":"three","path":"/three","registration_fingerprint":"three-fingerprint"}]"#,
+                        stderr: ""
+                    )
+                }
+                if command.contains("workspace list --json") {
+                    return AccountCommandOutput(
+                        status: 0,
+                        stdout: "GHOSTHUB_KWT_JSON\n[]",
+                        stderr: ""
+                    )
+                }
+
+                var run = 0
+                projectRuns.withLock { count in
+                    count += 1
+                    run = count
+                }
+                if run == 1 {
+                    firstProjectStarted.signal()
+                    _ = firstProjectMayFinish.wait(timeout: .now() + 1)
+                }
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "GHOSTHUB_KWT_JSON\n[]",
+                    stderr: ""
+                )
+            }
+        )
+        let load = Task<KwtHostInventory, Error> {
+            try await client.load(
+                from: CommandHost.ssh(ssh),
+                sshConnectionArguments: ["-S", "/tmp/kwt.sock"]
+            )
+        }
+
+        let didStart = await BlockingTask.run {
+            firstProjectStarted.wait(timeout: .now() + 1) == .success
+        }
+        #expect(didStart)
+        load.cancel()
+        firstProjectMayFinish.signal()
+
+        await #expect(throws: CancellationError.self) {
+            try await load.value
+        }
+        #expect(projectRuns.load() == 1)
+    }
+
+    @Test("unusable remote connection stops remaining projects")
+    func unusableRemoteConnectionStopsRemainingProjects() async {
+        let ssh = SSHHostInfo(user: "tester", hostname: "builder", port: nil)
+        let projectRuns = LockedValue(0)
+        let invalidations = LockedValue(0)
+        let connection = KwtSSHConnection(
+            arguments: ["-S", "/tmp/kwt.sock"],
+            routeIdentity: "route-one",
+            generation: 1,
+            invalidate: { invalidations.withLock { $0 += 1 } }
+        )
+        let client = KwtInventoryClient(
+            remoteRunner: { _, _, command in
+                if command.contains("projects --json") {
+                    return AccountCommandOutput(
+                        status: 0,
+                        stdout: "GHOSTHUB_KWT_JSON\n" +
+                            #"[{"repository":"one","name":"one","path":"/one","registration_fingerprint":"one-fingerprint"},{"repository":"two","name":"two","path":"/two","registration_fingerprint":"two-fingerprint"}]"#,
+                        stderr: ""
+                    )
+                }
+                if command.contains("workspace list --json") {
+                    return AccountCommandOutput(
+                        status: 0,
+                        stdout: "GHOSTHUB_KWT_JSON\n[]",
+                        stderr: ""
+                    )
+                }
+                projectRuns.withLock { $0 += 1 }
+                return AccountCommandOutput(
+                    status: 255,
+                    stdout: "",
+                    stderr: "Control socket connect(/tmp/kwt.sock): Connection refused"
+                )
+            }
+        )
+
+        await #expect(throws: KwtInventoryError.commandFailed(
+            host: "tester@builder",
+            status: 255
+        )) {
+            try await client.load(
+                from: .ssh(ssh),
+                sshConnection: connection
+            )
+        }
+        #expect(projectRuns.load() == 1)
+        #expect(invalidations.load() == 1)
+    }
+
     @Test("remote inventory invalidates a lost daemon master")
     func invalidatesLostRemoteMaster() async {
         let invalidations = LockedValue(0)
