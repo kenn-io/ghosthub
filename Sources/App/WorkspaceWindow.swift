@@ -85,13 +85,10 @@ enum WorkspaceWindowChrome {
               let titlebar = closeButton.superview
         else { return }
         titlebar.wantsLayer = true
-        if transparent {
-            titlebar.layer?.backgroundColor = NSColor.clear.cgColor
-        } else {
-            titlebar.effectiveAppearance.performAsCurrentDrawingAppearance {
-                titlebar.layer?.backgroundColor =
-                    WorkspaceSurfaceColor.nsColor.cgColor
-            }
+        titlebar.effectiveAppearance.performAsCurrentDrawingAppearance {
+            titlebar.layer?.backgroundColor = WorkspaceSurfaceColor.nsColor(
+                opacity: transparent ? appearance.opacity : 1.0
+            ).cgColor
         }
     }
 }
