@@ -432,6 +432,82 @@ struct KwtInventoryClientTests {
         #expect(projectRuns.load() == 1)
     }
 
+    @Test("remote inventory loads sharing a route do not overlap")
+    func sharedRouteRemoteInventoryIsSerialized() async throws {
+        let ssh = SSHHostInfo(user: "tester", hostname: "builder", port: nil)
+        let commandRuns = LockedValue(0)
+        let activeCommands = LockedValue((active: 0, maximum: 0))
+        let firstCommandStarted = DispatchSemaphore(value: 0)
+        let firstCommandMayFinish = DispatchSemaphore(value: 0)
+        let laterCommandStarted = DispatchSemaphore(value: 0)
+        let client = KwtInventoryClient(
+            remoteRunner: { _, _, _ in
+                var run = 0
+                commandRuns.withLock { count in
+                    count += 1
+                    run = count
+                }
+                activeCommands.withLock { state in
+                    state.active += 1
+                    state.maximum = max(state.maximum, state.active)
+                }
+                if run == 1 {
+                    firstCommandStarted.signal()
+                    _ = firstCommandMayFinish.wait(timeout: .now() + 1)
+                } else {
+                    laterCommandStarted.signal()
+                }
+                activeCommands.withLock { $0.active -= 1 }
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "GHOSTHUB_KWT_JSON\n[]",
+                    stderr: ""
+                )
+            }
+        )
+        let firstConnection = KwtSSHConnection(
+            arguments: ["-S", "/tmp/kwt.sock"],
+            routeIdentity: "serialized-route",
+            generation: 1
+        )
+        let secondConnection = KwtSSHConnection(
+            arguments: ["-S", "/tmp/kwt.sock"],
+            routeIdentity: "serialized-route",
+            generation: 1
+        )
+        let firstLoad = Task<KwtHostInventory, Error> {
+            try await client.load(
+                from: .ssh(ssh),
+                sshConnection: firstConnection
+            )
+        }
+
+        let didStartFirst = await BlockingTask.run {
+            firstCommandStarted.wait(timeout: .now() + 1) == .success
+        }
+        #expect(didStartFirst)
+        firstLoad.cancel()
+        let secondLoad = Task<KwtHostInventory, Error> {
+            try await client.load(
+                from: .ssh(ssh),
+                sshConnection: secondConnection
+            )
+        }
+        let secondStartedBeforeFirstFinished = await BlockingTask.run {
+            laterCommandStarted.wait(timeout: .now() + 0.2) == .success
+        }
+        #expect(!secondStartedBeforeFirstFinished)
+
+        firstCommandMayFinish.signal()
+        await #expect(throws: CancellationError.self) {
+            try await firstLoad.value
+        }
+        let inventory = try await secondLoad.value
+
+        #expect(inventory.projects.isEmpty)
+        #expect(activeCommands.load().maximum == 1)
+    }
+
     @Test("unusable remote connection stops remaining projects")
     func unusableRemoteConnectionStopsRemainingProjects() async {
         let ssh = SSHHostInfo(user: "tester", hostname: "builder", port: nil)
