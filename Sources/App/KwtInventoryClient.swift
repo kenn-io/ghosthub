@@ -323,6 +323,9 @@ struct KwtInventoryClient: Sendable {
         sshConnectionArguments: [String]?,
         sshConnection: KwtSSHConnection? = nil
     ) async throws -> KwtHostInventory {
+        if case .ssh = host {
+            try Task.checkCancellation()
+        }
         let hostLabel = switch host {
         case .local: "this Mac"
         case let .ssh(info): info.displayName
@@ -342,6 +345,9 @@ struct KwtInventoryClient: Sendable {
                 windowsKwtRelativePath: windowsKwtRelativePath
             )
         )
+        if case .ssh = host {
+            try Task.checkCancellation()
+        }
         let directoriesResult = run(
             host: host,
             sshConnectionArguments: sshConnectionArguments,
@@ -351,6 +357,9 @@ struct KwtInventoryClient: Sendable {
                 windowsKwtRelativePath: windowsKwtRelativePath
             )
         )
+        if case .ssh = host {
+            try Task.checkCancellation()
+        }
         let topConnectionUnusable = [projectsResult, directoriesResult]
             .contains(where: Self.indicatesUnusableConnection)
         let projects: [KwtProjectRecord]
@@ -388,54 +397,55 @@ struct KwtInventoryClient: Sendable {
             throw projectsError
         }
 
-        let indexed = await withTaskGroup(
-            of: (Int, KwtProjectInventory, Bool).self,
-            returning: [(Int, KwtProjectInventory, Bool)].self
-        ) { group in
-            for (index, project) in projects.enumerated() {
-                group.addTask {
-                    let result = run(
-                        host: host,
-                        sshConnectionArguments: sshConnectionArguments,
-                        command: Self.worktreesCommand(
-                            projectPath: project.path,
-                            platform: platform(for: host),
-                            binaryPrelude: binaryPrelude(for: host),
+        let indexed: [(Int, KwtProjectInventory, Bool)]
+        switch host {
+        case .local:
+            indexed = await withTaskGroup(
+                of: (Int, KwtProjectInventory, Bool).self,
+                returning: [(Int, KwtProjectInventory, Bool)].self
+            ) { group in
+                for (index, project) in projects.enumerated() {
+                    group.addTask {
+                        loadProject(
+                            index: index,
+                            project: project,
+                            host: host,
+                            sshConnectionArguments: sshConnectionArguments,
+                            hostLabel: hostLabel,
                             windowsKwtRelativePath: windowsKwtRelativePath
-                        )
-                    )
-                    do {
-                        let worktrees: [KwtWorktreeRecord] = try decode(
-                            result,
-                            hostLabel: hostLabel
-                        )
-                        return (
-                            index,
-                            KwtProjectInventory(
-                                project: project,
-                                worktrees: worktrees,
-                                warning: nil
-                            ),
-                            Self.indicatesUnusableConnection(result)
-                        )
-                    } catch {
-                        return (
-                            index,
-                            KwtProjectInventory(
-                                project: project,
-                                worktrees: [],
-                                warning: error.localizedDescription
-                            ),
-                            Self.indicatesUnusableConnection(result)
                         )
                     }
                 }
+                var values: [(Int, KwtProjectInventory, Bool)] = []
+                for await value in group {
+                    values.append(value)
+                }
+                return values
             }
+        case .ssh:
             var values: [(Int, KwtProjectInventory, Bool)] = []
-            for await value in group {
+            for (index, project) in projects.enumerated() {
+                try Task.checkCancellation()
+                let value = loadProject(
+                    index: index,
+                    project: project,
+                    host: host,
+                    sshConnectionArguments: sshConnectionArguments,
+                    hostLabel: hostLabel,
+                    windowsKwtRelativePath: windowsKwtRelativePath
+                )
+                if value.2 {
+                    await sshConnection?.invalidate()
+                    try Task.checkCancellation()
+                    throw KwtInventoryError.commandFailed(
+                        host: hostLabel,
+                        status: 255
+                    )
+                }
+                try Task.checkCancellation()
                 values.append(value)
             }
-            return values
+            indexed = values
         }
         if topConnectionUnusable || indexed.contains(where: { $0.2 }) {
             await sshConnection?.invalidate()
@@ -446,6 +456,51 @@ struct KwtInventoryClient: Sendable {
             directoryWorkspaces: directoryWorkspaces,
             directoryWorkspaceWarning: directoryWorkspaceWarning
         )
+    }
+
+    private func loadProject(
+        index: Int,
+        project: KwtProjectRecord,
+        host: CommandHost,
+        sshConnectionArguments: [String]?,
+        hostLabel: String,
+        windowsKwtRelativePath: String?
+    ) -> (Int, KwtProjectInventory, Bool) {
+        let result = run(
+            host: host,
+            sshConnectionArguments: sshConnectionArguments,
+            command: Self.worktreesCommand(
+                projectPath: project.path,
+                platform: platform(for: host),
+                binaryPrelude: binaryPrelude(for: host),
+                windowsKwtRelativePath: windowsKwtRelativePath
+            )
+        )
+        do {
+            let worktrees: [KwtWorktreeRecord] = try decode(
+                result,
+                hostLabel: hostLabel
+            )
+            return (
+                index,
+                KwtProjectInventory(
+                    project: project,
+                    worktrees: worktrees,
+                    warning: nil
+                ),
+                Self.indicatesUnusableConnection(result)
+            )
+        } catch {
+            return (
+                index,
+                KwtProjectInventory(
+                    project: project,
+                    worktrees: [],
+                    warning: error.localizedDescription
+                ),
+                Self.indicatesUnusableConnection(result)
+            )
+        }
     }
 
     private func binaryPrelude(for host: CommandHost) -> String {

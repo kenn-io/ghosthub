@@ -301,6 +301,7 @@ extension WorkspaceTmuxDiscoveryTests {
     func launchedRemoteCreationReconcilesBeforeRemoval() async throws {
         let environment = try setupRemoteEnvironment()
         let attempts = Counter()
+        let retryMayFinish = AsyncGate()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
@@ -318,6 +319,7 @@ extension WorkspaceTmuxDiscoveryTests {
                         )
                     ))
                 }
+                await retryMayFinish.wait()
                 return .success([
                     DiscoveredTmuxSession(
                         name: "release-work",
@@ -341,13 +343,14 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         close(false, 1)
 
-        await waitUntilMainActor { attempts.count == 1 }
+        await retryMayFinish.waitUntilWaiting()
         #expect(model.pendingCreatedTmuxSessionCount == 1)
         #expect(
             model.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.map(\.name) == ["release-work"]
         )
 
+        retryMayFinish.open()
         await waitUntilMainActor {
             model.pendingCreatedTmuxSessionCount == 0
         }
