@@ -230,76 +230,6 @@ enum KwtInventoryError: Error, Equatable, LocalizedError {
     }
 }
 
-private actor KwtInventoryLoadCoordinator {
-    static let shared = KwtInventoryLoadCoordinator()
-
-    private struct Waiter {
-        let id: UUID
-        let continuation: CheckedContinuation<Void, Error>
-    }
-
-    private var activeRoutes: Set<String> = []
-    private var waitersByRoute: [String: [Waiter]] = [:]
-
-    func withExclusiveLoad<Value: Sendable>(
-        routeIdentity: String,
-        operation: @escaping @Sendable () async throws -> Value
-    ) async throws -> Value {
-        try await acquire(routeIdentity: routeIdentity)
-        defer { release(routeIdentity: routeIdentity) }
-        try Task.checkCancellation()
-        return try await operation()
-    }
-
-    private func acquire(routeIdentity: String) async throws {
-        try Task.checkCancellation()
-        if activeRoutes.insert(routeIdentity).inserted {
-            return
-        }
-
-        let waiterID = UUID()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                waitersByRoute[routeIdentity, default: []].append(Waiter(
-                    id: waiterID,
-                    continuation: continuation
-                ))
-            }
-        } onCancel: {
-            Task {
-                await self.cancelWaiter(
-                    waiterID,
-                    routeIdentity: routeIdentity
-                )
-            }
-        }
-    }
-
-    private func cancelWaiter(
-        _ waiterID: UUID,
-        routeIdentity: String
-    ) {
-        guard var waiters = waitersByRoute[routeIdentity],
-              let index = waiters.firstIndex(where: { $0.id == waiterID })
-        else { return }
-        let waiter = waiters.remove(at: index)
-        waitersByRoute[routeIdentity] = waiters.isEmpty ? nil : waiters
-        waiter.continuation.resume(throwing: CancellationError())
-    }
-
-    private func release(routeIdentity: String) {
-        guard var waiters = waitersByRoute[routeIdentity],
-              !waiters.isEmpty
-        else {
-            activeRoutes.remove(routeIdentity)
-            return
-        }
-        let waiter = waiters.removeFirst()
-        waitersByRoute[routeIdentity] = waiters.isEmpty ? nil : waiters
-        waiter.continuation.resume()
-    }
-}
-
 /// Reads kwt's supported machine-readable surfaces without interpreting its
 /// configuration files. Directory workspaces are independent of project
 /// inventory. Project order follows `kwt projects --json`; each project is
@@ -381,15 +311,11 @@ struct KwtInventoryClient: Sendable {
         from host: CommandHost,
         sshConnection: KwtSSHConnection
     ) async throws -> KwtHostInventory {
-        try await KwtInventoryLoadCoordinator.shared.withExclusiveLoad(
-            routeIdentity: sshConnection.routeIdentity
-        ) {
-            try await load(
-                from: host,
-                sshConnectionArguments: sshConnection.arguments,
-                sshConnection: sshConnection
-            )
-        }
+        try await load(
+            from: host,
+            sshConnectionArguments: sshConnection.arguments,
+            sshConnection: sshConnection
+        )
     }
 
     private func load(

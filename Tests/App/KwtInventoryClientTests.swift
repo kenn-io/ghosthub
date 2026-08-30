@@ -465,21 +465,16 @@ struct KwtInventoryClientTests {
                 )
             }
         )
-        let firstConnection = KwtSSHConnection(
-            arguments: ["-S", "/tmp/kwt.sock"],
-            routeIdentity: "serialized-route",
-            generation: 1
-        )
-        let secondConnection = KwtSSHConnection(
-            arguments: ["-S", "/tmp/kwt.sock"],
-            routeIdentity: "serialized-route",
-            generation: 1
-        )
-        let firstLoad = Task<KwtHostInventory, Error> {
-            try await client.load(
-                from: .ssh(ssh),
-                sshConnection: firstConnection
+        let lease = KwtSSHCommandLease { _ in
+            KwtSSHConnection(
+                arguments: ["-S", "/tmp/kwt.sock"],
+                routeIdentity: "serialized-route",
+                generation: 1
             )
+        }
+        let service = KwtInventoryService(client: client, lease: lease)
+        let firstLoad = Task<KwtHostInventory, Error> {
+            try await service.load(from: .ssh(ssh))
         }
 
         let didStartFirst = await BlockingTask.run {
@@ -488,10 +483,7 @@ struct KwtInventoryClientTests {
         #expect(didStartFirst)
         firstLoad.cancel()
         let secondLoad = Task<KwtHostInventory, Error> {
-            try await client.load(
-                from: .ssh(ssh),
-                sshConnection: secondConnection
-            )
+            try await service.load(from: .ssh(ssh))
         }
         let secondStartedBeforeFirstFinished = await BlockingTask.run {
             laterCommandStarted.wait(timeout: .now() + 0.2) == .success
@@ -506,6 +498,94 @@ struct KwtInventoryClientTests {
 
         #expect(inventory.projects.isEmpty)
         #expect(activeCommands.load().maximum == 1)
+    }
+
+    @Test("queued remote inventory reacquires after invalidation")
+    func queuedRemoteInventoryReacquiresAfterInvalidation() async throws {
+        let ssh = SSHHostInfo(user: "tester", hostname: "builder", port: nil)
+        let route = KwtSSHRouteSnapshot.fixture(
+            routeIdentity: "serialized-route"
+        )
+        let leaseGenerations = LockedValue(0)
+        let leaseBorrows = LockedValue(0)
+        let firstGenerationRuns = LockedValue(0)
+        let firstCommandStarted = DispatchSemaphore(value: 0)
+        let firstCommandMayFinish = DispatchSemaphore(value: 0)
+        let laterBorrowStarted = DispatchSemaphore(value: 0)
+        let pool = KwtSSHConnectionPool { route, _ in
+            var generation = 0
+            leaseGenerations.withLock {
+                $0 += 1
+                generation = $0
+            }
+            return KwtSSHTestLease(
+                routeIdentity: route.routeIdentity,
+                generation: UInt64(generation),
+                arguments: ["generation=\(generation)"]
+            )
+        }
+        let lease = KwtSSHCommandLease { _ in
+            var borrow = 0
+            leaseBorrows.withLock {
+                $0 += 1
+                borrow = $0
+            }
+            if borrow > 1 {
+                laterBorrowStarted.signal()
+            }
+            return try await pool.acquire(route: route, prompt: { _ in "" })
+        }
+        let client = KwtInventoryClient(
+            remoteRunner: { _, arguments, _ in
+                if arguments == ["generation=1"] {
+                    var run = 0
+                    firstGenerationRuns.withLock {
+                        $0 += 1
+                        run = $0
+                    }
+                    if run == 1 {
+                        firstCommandStarted.signal()
+                        _ = firstCommandMayFinish.wait(timeout: .now() + 1)
+                    }
+                    return AccountCommandOutput(
+                        status: 255,
+                        stdout: "",
+                        stderr: "Control socket connect: Connection refused"
+                    )
+                }
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: "GHOSTHUB_KWT_JSON\n[]",
+                    stderr: ""
+                )
+            }
+        )
+        let service = KwtInventoryService(client: client, lease: lease)
+        let firstLoad = Task<KwtHostInventory, Error> {
+            try await service.load(from: .ssh(ssh))
+        }
+
+        let didStartFirst = await BlockingTask.run {
+            firstCommandStarted.wait(timeout: .now() + 1) == .success
+        }
+        #expect(didStartFirst)
+        let secondLoad = Task<KwtHostInventory, Error> {
+            try await service.load(from: .ssh(ssh))
+        }
+        let borrowedBeforeInvalidation = await BlockingTask.run {
+            laterBorrowStarted.wait(timeout: .now() + 0.2) == .success
+        }
+        #expect(!borrowedBeforeInvalidation)
+        firstCommandMayFinish.signal()
+
+        await #expect(throws: KwtInventoryError.self) {
+            try await firstLoad.value
+        }
+        let inventory = try await secondLoad.value
+
+        #expect(inventory.projects.isEmpty)
+        #expect(leaseBorrows.load() == 2)
+        #expect(leaseGenerations.load() == 2)
     }
 
     @Test("unusable remote connection stops remaining projects")

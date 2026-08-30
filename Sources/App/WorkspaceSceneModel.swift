@@ -1035,32 +1035,15 @@ final class WorkspaceSceneModel: ObservableObject {
             DisplayAvailability.activeCount()
         },
         kwtInventoryLoader: @escaping KwtInventoryLoader = { host in
-            try await KwtSSHCommandLease().withConnection(on: host) {
-                connection in
-                if let connection {
-                    return try await KwtInventoryClient().load(
-                        from: host,
-                        sshConnection: connection
-                    )
-                }
-                return try await KwtInventoryClient().load(from: host)
-            }
+            try await KwtInventoryService().load(from: host)
         },
         kwtConditionalInventoryLoader:
         @escaping KwtConditionalInventoryLoader = {
             host, expectedRouteIdentity in
-            try await KwtSSHCommandLease().withConnection(on: host) {
-                connection in
-                guard connection?.routeIdentity == expectedRouteIdentity
-                else { throw KwtSSHLeaseError.routeChanged }
-                if let connection {
-                    return try await KwtInventoryClient().load(
-                        from: host,
-                        sshConnection: connection
-                    )
-                }
-                return try await KwtInventoryClient().load(from: host)
-            }
+            try await KwtInventoryService().load(
+                from: host,
+                expectedRouteIdentity: expectedRouteIdentity
+            )
         },
         kwtRemoteProvisioner: @escaping KwtRemoteProvisioner = { host in
             try await KwtRemoteProvisioningCoordinator.shared
