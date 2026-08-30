@@ -344,6 +344,210 @@ def test_clipboard_write_patch_marks_both_osc52_paths(tmp_path: Path) -> None:
     assert ".data = data" in patched
 
 
+def test_apply_upstream_lifetime_backports_releases_owned_resources(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    embedded = source / "src" / "apprt" / "embedded.zig"
+    surface = source / "src" / "Surface.zig"
+    apc = source / "src" / "terminal" / "apc.zig"
+    osc = source / "src" / "terminal" / "osc.zig"
+    metal_buffer = source / "src" / "renderer" / "metal" / "buffer.zig"
+    iosurface_layer = source / "src" / "renderer" / "metal" / "IOSurfaceLayer.zig"
+    message = source / "src" / "termio" / "message.zig"
+    mailbox = source / "src" / "termio" / "mailbox.zig"
+    thread = source / "src" / "termio" / "Thread.zig"
+
+    for path in (
+        embedded,
+        surface,
+        apc,
+        osc,
+        metal_buffer,
+        iosurface_layer,
+        message,
+        mailbox,
+        thread,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    embedded.write_text(
+        "    export fn ghostty_surface_free_text(ptr: *Text) void {\n"
+        "        ptr.deinit();\n"
+        "    }\n"
+    )
+    apc.write_text(
+        "            .kitty => |*p| if (comptime build_options.kitty_graphics) {\n"
+        "                p.feed(byte) catch |err| {\n"
+        '                    log.warn("kitty graphics protocol error: {}", .{err});\n'
+        "                    self.state = .{ .ignore = {} };\n"
+        "                };\n"
+        "            } else unreachable,\n"
+    )
+    osc.write_text(
+        "        switch (self.command) {\n"
+        "            .kitty_color_protocol => |*v| kitty_color_protocol: {\n"
+        "                v.deinit(self.alloc orelse break :kitty_color_protocol);\n"
+        "            },\n"
+        "            .change_window_icon,\n"
+        "            .change_window_title,\n"
+        "            .clipboard_contents,\n"
+        "            .color_operation,\n"
+    )
+    surface.write_text(
+        "/// Queue a message for the IO thread.\n"
+        "///\n"
+        "/// We centralize all our logic into this spot so we can intercept\n"
+        "/// messages for example in readonly mode.\n"
+        "fn queueIo(\n"
+        "    self: *Surface,\n"
+        "    msg: termio.Message,\n"
+        "    mutex: termio.Termio.MutexState,\n"
+        ") void {\n"
+        "    // In readonly mode, we don't allow any writes through to the pty.\n"
+        "    if (self.readonly) {\n"
+        "        switch (msg) {\n"
+        "            .write_small,\n"
+        "            .write_stable,\n"
+        "            .write_alloc,\n"
+        "            => return,\n"
+        "\n"
+        "            else => {},\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    self.io.queueMessage(msg, mutex);\n"
+        "}\n"
+        "\n"
+        "fn setSelection(self: *Surface, sel_: ?terminal.Selection) !void {\n"
+        "    const prev_ = self.io.terminal.screens.active.selection;\n"
+        "    try self.io.terminal.screens.active.select(sel_);\n"
+        "\n"
+        "    // If copy on select is false then exit early.\n"
+        "    if (self.config.copy_on_select == .false) return;\n"
+        "\n"
+        "    // Set our selection clipboard. If the selection is cleared we do not\n"
+        "    // clear the clipboard. If the selection is set, we only set the clipboard\n"
+        "    // again if it changed, since setting the clipboard can be an expensive\n"
+        "    // operation.\n"
+        "    const sel = sel_ orelse return;\n"
+        "    if (prev_) |prev| if (sel.eql(prev)) return;\n"
+        "\n"
+        "        if (self.child_exited) {\n"
+        "            self.close();\n"
+        "            return .closed;\n"
+        "        }\n"
+        "\n"
+        "        errdefer write_req.deinit();\n"
+        "        self.queueIo(switch (write_req) {\n"
+        "            .small => |v| .{ .write_small = v },\n"
+        "            .stable => |v| .{ .write_stable = v },\n"
+        "            .alloc => |v| .{ .write_alloc = v },\n"
+        "        }, .unlocked);\n"
+        "\n"
+        "        .leader => |set| {\n"
+        "            // Setup the next set we'll look at.\n"
+        "            self.keyboard.sequence_set = set;\n"
+        "\n"
+        "            // Store this event so that we can drain and encode on invalid.\n"
+        "            // We don't need to cap this because it is naturally capped by\n"
+        "            // the config validation.\n"
+        "            if (try self.encodeKey(event, insp_ev)) |req| {\n"
+        "                try self.keyboard.sequence_queued.append(self.alloc, req);\n"
+        "            }\n"
+        "\n"
+        "        if (self.mouse.over_link) {\n"
+        "            const pos = try self.rt_surface.getCursorPos();\n"
+        "            if (self.processLinks(pos)) |processed| {\n"
+        "                if (processed) return true;\n"
+        "            } else |err| {\n"
+        '                log.warn("error processing links err={}", .{err});\n'
+        "            }\n"
+        "        }\n"
+    )
+    metal_buffer.write_text(
+        "                // Allocate a new buffer with enough to hold double what we require.\n"
+        "                const size = req_bytes * 2;\n"
+        "                self.buffer = self.opts.device.msgSend(\n"
+        "                    objc.Object,\n"
+        '                    objc.sel("newBufferWithLength:options:"),\n'
+        "                    .{\n"
+        "                        @as(c_ulong, @intCast(size * @sizeOf(T))),\n"
+        "                        self.opts.resource_options,\n"
+        "                    },\n"
+        "                );\n"
+        "\n"
+        "                // Allocate a new buffer with enough to hold double what we require.\n"
+        "                const size = req_bytes * 2;\n"
+        "                self.buffer = self.opts.device.msgSend(\n"
+        "                    objc.Object,\n"
+        '                    objc.sel("newBufferWithLength:options:"),\n'
+        "                    .{\n"
+        "                        @as(c_ulong, @intCast(size * @sizeOf(T))),\n"
+        "                        self.opts.resource_options,\n"
+        "                    },\n"
+        "                );\n"
+    )
+    iosurface_layer.write_text(
+        "pub fn release(self: *IOSurfaceLayer) void {\n    self.layer.release();\n}\n"
+    )
+    message.write_text(
+        "    pub fn writeReq(alloc: Allocator, data: anytype) !Message {\n"
+        "        return switch (try WriteReq.init(alloc, data)) {\n"
+        "            .stable => unreachable,\n"
+        "            .small => |v| Message{ .write_small = v },\n"
+        "            .alloc => |v| Message{ .write_alloc = v },\n"
+        "        };\n"
+        "    }\n"
+        "\n"
+        "    /// The types of size reports that we support\n"
+    )
+    mailbox.write_text(
+        "            .spsc => |*v| {\n"
+        "                v.queue.destroy(alloc);\n"
+        "                v.wakeup.deinit();\n"
+        "            },\n"
+        "\n"
+        "                mb.wakeup.notify() catch |err| {\n"
+        '                    log.warn("failed to wake up writer, data will be dropped err={}", .{err});\n'
+        "                    return;\n"
+        "                };\n"
+        "\n"
+        "                _ = mb.queue.push(msg, .{ .forever = {} });\n"
+    )
+    thread.write_text(
+        "    if (self.flags.drain) {\n"
+        "        while (mailbox.pop()) |_| {}\n"
+        "        return;\n"
+        "    }\n"
+    )
+
+    bootstrap.apply_upstream_lifetime_backports(source)
+    bootstrap.apply_upstream_lifetime_backports(source)
+
+    assert "ghostty_surface_free_text(_: *Surface, ptr: *Text)" in embedded.read_text()
+    assert "p.deinit();" in apc.read_text()
+    assert "v.requests.deinit" in osc.read_text()
+    patched_surface = surface.read_text()
+    assert "msg.deinit();" in patched_surface
+    assert "const prev_" not in patched_surface
+    assert "            write_req.deinit();\n            self.close();" in patched_surface
+    assert (
+        "                    req.deinit();\n                    return err;"
+        in patched_surface
+    )
+    assert "self.renderer_state.mutex.lock();" in patched_surface
+    patched_buffer = metal_buffer.read_text()
+    assert "self.len = data.len * 2;" in patched_buffer
+    assert "self.len = total_len * 2;" in patched_buffer
+    assert "size * @sizeOf(T)" not in patched_buffer
+    assert "self.setDisplayCallback(null, null);" in iosurface_layer.read_text()
+    assert "pub fn deinit(self: *const Message) void" in message.read_text()
+    assert "while (v.queue.pop()) |msg| msg.deinit();" in mailbox.read_text()
+    assert mailbox.read_text().count("msg.deinit();") == 3
+    assert "while (mailbox.pop()) |msg| msg.deinit();" in thread.read_text()
+
+
 def test_apply_ghosthub_source_patches_exports_direct_config_loading(
     tmp_path: Path,
 ) -> None:
@@ -1140,6 +1344,7 @@ def test_bootstrap_wraps_build_failures_with_setup_guidance(repo: Repo) -> None:
     with (
         mock.patch.object(bootstrap, "ensure_source_checkout"),
         mock.patch.object(bootstrap, "apply_ghosthub_source_patches"),
+        mock.patch.object(bootstrap, "apply_upstream_lifetime_backports"),
         mock.patch.object(
             bootstrap, "resolve_tool", side_effect=lambda tool: f"/usr/bin/{tool}"
         ),

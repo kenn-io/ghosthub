@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 23
+GHOSTHUB_BOOTSTRAP_VERSION = 24
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 SOURCE_FETCH_ATTEMPTS = 3
@@ -395,6 +395,416 @@ def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
         paths.source_checkout_root / "src" / "build" / "xcframework.zig",
         paths.source_checkout_root / "src" / "build" / "GhosttyXCFramework.zig",
         paths.source_checkout_root / "src" / "build" / "GhosttyXcodebuild.zig",
+    )
+
+
+def apply_upstream_lifetime_backports(source_root: Path) -> None:
+    """Apply focused post-1.3.1 ownership and lifetime fixes from upstream.
+
+    Backports Ghostty commits 4803d58, 8302740, e9ca0f8, ab82b8a, 4a22eed,
+    4b4a5b2, 0060d89, 957ed21, and 2f7fbad, plus the OSC cleanup hunk from
+    3ff6d08. Keep this list aligned with the transformations below so the
+    pinned source's divergence from upstream remains auditable.
+    """
+    patch_surface_free_text_signature(source_root / "src" / "apprt" / "embedded.zig")
+    patch_terminal_parser_cleanup(
+        source_root / "src" / "terminal" / "apc.zig",
+        source_root / "src" / "terminal" / "osc.zig",
+    )
+    patch_surface_lifetime_cleanup(source_root / "src" / "Surface.zig")
+    patch_metal_buffer_allocation(
+        source_root / "src" / "renderer" / "metal" / "buffer.zig"
+    )
+    patch_iosurface_layer_release(
+        source_root / "src" / "renderer" / "metal" / "IOSurfaceLayer.zig"
+    )
+    patch_termio_discarded_message_cleanup(
+        source_root / "src" / "termio" / "message.zig",
+        source_root / "src" / "termio" / "mailbox.zig",
+        source_root / "src" / "termio" / "Thread.zig",
+    )
+
+
+def patch_surface_free_text_signature(path: Path) -> None:
+    original = """    export fn ghostty_surface_free_text(ptr: *Text) void {
+        ptr.deinit();
+    }
+"""
+    replacement = """    export fn ghostty_surface_free_text(_: *Surface, ptr: *Text) void {
+        ptr.deinit();
+    }
+"""
+    patch_source_file(
+        path,
+        original=original,
+        replacement=replacement,
+        already_applied=replacement,
+        description="upstream ghostty_surface_free_text parameter fix",
+    )
+
+
+def patch_terminal_parser_cleanup(apc_path: Path, osc_path: Path) -> None:
+    apc_original = """                p.feed(byte) catch |err| {
+                    log.warn("kitty graphics protocol error: {}", .{err});
+                    self.state = .{ .ignore = {} };
+                };
+"""
+    apc_replacement = """                p.feed(byte) catch |err| {
+                    log.warn("kitty graphics protocol error: {}", .{err});
+                    p.deinit();
+                    self.state = .{ .ignore = {} };
+                };
+"""
+    patch_source_file(
+        apc_path,
+        original=apc_original,
+        replacement=apc_replacement,
+        already_applied=apc_replacement,
+        description="upstream invalid Kitty APC cleanup",
+    )
+
+    osc_original = """            .kitty_color_protocol => |*v| kitty_color_protocol: {
+                v.deinit(self.alloc orelse break :kitty_color_protocol);
+            },
+            .change_window_icon,
+            .change_window_title,
+            .clipboard_contents,
+            .color_operation,
+"""
+    osc_replacement = """            .kitty_color_protocol => |*v| kitty_color_protocol: {
+                v.deinit(self.alloc orelse break :kitty_color_protocol);
+            },
+            .color_operation => |*v| color_operation: {
+                v.requests.deinit(self.alloc orelse break :color_operation);
+            },
+            .change_window_icon,
+            .change_window_title,
+            .clipboard_contents,
+"""
+    patch_source_file(
+        osc_path,
+        original=osc_original,
+        replacement=osc_replacement,
+        already_applied=osc_replacement,
+        description="upstream OSC color request cleanup",
+    )
+
+
+def patch_surface_lifetime_cleanup(path: Path) -> None:
+    queue_original = """/// Queue a message for the IO thread.
+///
+/// We centralize all our logic into this spot so we can intercept
+/// messages for example in readonly mode.
+"""
+    queue_replacement = """/// Queue a message for the IO thread, taking ownership of `msg`.
+///
+/// We centralize all our logic into this spot so we can intercept
+/// messages for example in readonly mode.
+"""
+    patch_source_file(
+        path,
+        original=queue_original,
+        replacement=queue_replacement,
+        already_applied=queue_replacement,
+        description="upstream Surface queue ownership contract",
+    )
+
+    readonly_original = """            .write_small,
+            .write_stable,
+            .write_alloc,
+            => return,
+"""
+    readonly_replacement = """            .write_small,
+            .write_stable,
+            .write_alloc,
+            => {
+                msg.deinit();
+                return;
+            },
+"""
+    patch_source_file(
+        path,
+        original=readonly_original,
+        replacement=readonly_replacement,
+        already_applied=readonly_replacement,
+        description="upstream read-only write cleanup",
+    )
+
+    selection_original = """    const prev_ = self.io.terminal.screens.active.selection;
+    try self.io.terminal.screens.active.select(sel_);
+
+    // If copy on select is false then exit early.
+    if (self.config.copy_on_select == .false) return;
+
+    // Set our selection clipboard. If the selection is cleared we do not
+    // clear the clipboard. If the selection is set, we only set the clipboard
+    // again if it changed, since setting the clipboard can be an expensive
+    // operation.
+    const sel = sel_ orelse return;
+    if (prev_) |prev| if (sel.eql(prev)) return;
+"""
+    selection_replacement = """    try self.io.terminal.screens.active.select(sel_);
+
+    // If copy on select is false then exit early.
+    if (self.config.copy_on_select == .false) return;
+
+    // Set our selection clipboard. If the selection is cleared we do not
+    // clear the clipboard.
+    const sel = sel_ orelse return;
+"""
+    patch_source_file(
+        path,
+        original=selection_original,
+        replacement=selection_replacement,
+        already_applied=selection_replacement,
+        description="upstream Surface selection lifetime fix",
+    )
+
+    key_original = """        if (self.child_exited) {
+            self.close();
+            return .closed;
+        }
+
+        errdefer write_req.deinit();
+        self.queueIo(switch (write_req) {
+"""
+    key_replacement = """        if (self.child_exited) {
+            write_req.deinit();
+            self.close();
+            return .closed;
+        }
+
+        self.queueIo(switch (write_req) {
+"""
+    patch_source_file(
+        path,
+        original=key_original,
+        replacement=key_replacement,
+        already_applied=key_replacement,
+        description="upstream encoded key request cleanup",
+    )
+
+    leader_original = """        .leader => |set| {
+            // Setup the next set we'll look at.
+            self.keyboard.sequence_set = set;
+
+            // Store this event so that we can drain and encode on invalid.
+            // We don't need to cap this because it is naturally capped by
+            // the config validation.
+            if (try self.encodeKey(event, insp_ev)) |req| {
+                try self.keyboard.sequence_queued.append(self.alloc, req);
+            }
+
+"""
+    leader_replacement = """        .leader => |set| {
+            // Store this event so that we can drain and encode on invalid.
+            // We don't need to cap this because it is naturally capped by
+            // the config validation.
+            if (try self.encodeKey(event, insp_ev)) |req| {
+                self.keyboard.sequence_queued.append(self.alloc, req) catch |err| {
+                    req.deinit();
+                    return err;
+                };
+            }
+
+            // Setup the next set we'll look at only after all fallible work.
+            self.keyboard.sequence_set = set;
+
+"""
+    patch_source_file(
+        path,
+        original=leader_original,
+        replacement=leader_replacement,
+        already_applied=leader_replacement,
+        description="upstream key sequence request cleanup",
+    )
+
+    links_original = """        if (self.mouse.over_link) {
+            const pos = try self.rt_surface.getCursorPos();
+            if (self.processLinks(pos)) |processed| {
+"""
+    links_replacement = """        if (self.mouse.over_link) {
+            const pos = try self.rt_surface.getCursorPos();
+            self.renderer_state.mutex.lock();
+            defer self.renderer_state.mutex.unlock();
+            if (self.processLinks(pos)) |processed| {
+"""
+    patch_source_file(
+        path,
+        original=links_original,
+        replacement=links_replacement,
+        already_applied=links_replacement,
+        description="upstream renderer link processing lock",
+    )
+
+
+def patch_metal_buffer_allocation(path: Path) -> None:
+    original = """                // Allocate a new buffer with enough to hold double what we require.
+                const size = req_bytes * 2;
+                self.buffer = self.opts.device.msgSend(
+                    objc.Object,
+                    objc.sel("newBufferWithLength:options:"),
+                    .{
+                        @as(c_ulong, @intCast(size * @sizeOf(T))),
+                        self.opts.resource_options,
+                    },
+                );
+"""
+    for item_count in ("data.len", "total_len"):
+        replacement = f"""                // Allocate a new buffer with enough to hold double what we require.
+                self.len = {item_count} * 2;
+                self.buffer = self.opts.device.msgSend(
+                    objc.Object,
+                    objc.sel("newBufferWithLength:options:"),
+                    .{{
+                        @as(c_ulong, @intCast(self.len * @sizeOf(T))),
+                        self.opts.resource_options,
+                    }},
+                );
+"""
+        patch_source_file(
+            path,
+            original=original,
+            replacement=replacement,
+            already_applied=replacement,
+            description=f"upstream Metal buffer allocation fix for {item_count}",
+        )
+
+
+def patch_iosurface_layer_release(path: Path) -> None:
+    original = """pub fn release(self: *IOSurfaceLayer) void {
+    self.layer.release();
+}
+"""
+    replacement = """pub fn release(self: *IOSurfaceLayer) void {
+    // The layer may be retained by the view after we release our reference.
+    // Clear the callback first so that a later display pass can't access the
+    // renderer that owned this wrapper after it has been freed.
+    self.setDisplayCallback(null, null);
+    self.layer.release();
+}
+"""
+    patch_source_file(
+        path,
+        original=original,
+        replacement=replacement,
+        already_applied=replacement,
+        description="upstream IOSurface display callback cleanup",
+    )
+
+
+def patch_termio_discarded_message_cleanup(
+    message_path: Path,
+    mailbox_path: Path,
+    thread_path: Path,
+) -> None:
+    message_original = """    pub fn writeReq(alloc: Allocator, data: anytype) !Message {
+        return switch (try WriteReq.init(alloc, data)) {
+            .stable => unreachable,
+            .small => |v| Message{ .write_small = v },
+            .alloc => |v| Message{ .write_alloc = v },
+        };
+    }
+
+    /// The types of size reports that we support
+"""
+    message_replacement = """    pub fn writeReq(alloc: Allocator, data: anytype) !Message {
+        return switch (try WriteReq.init(alloc, data)) {
+            .stable => unreachable,
+            .small => |v| Message{ .write_small = v },
+            .alloc => |v| Message{ .write_alloc = v },
+        };
+    }
+
+    /// Free resources owned by a message that will not be processed.
+    /// The message is invalid after this call.
+    pub fn deinit(self: *const Message) void {
+        switch (self.*) {
+            .change_config => |v| {
+                v.ptr.deinit();
+                v.alloc.destroy(v.ptr);
+            },
+            .write_alloc => |v| v.alloc.free(v.data),
+            else => {},
+        }
+    }
+
+    /// The types of size reports that we support
+"""
+    patch_source_file(
+        message_path,
+        original=message_original,
+        replacement=message_replacement,
+        already_applied=message_replacement,
+        description="upstream discarded termio message cleanup",
+    )
+
+    mailbox_deinit_original = """            .spsc => |*v| {
+                v.queue.destroy(alloc);
+                v.wakeup.deinit();
+            },
+"""
+    mailbox_deinit_replacement = """            .spsc => |*v| {
+                while (v.queue.pop()) |msg| msg.deinit();
+                v.queue.destroy(alloc);
+                v.wakeup.deinit();
+            },
+"""
+    patch_source_file(
+        mailbox_path,
+        original=mailbox_deinit_original,
+        replacement=mailbox_deinit_replacement,
+        already_applied=mailbox_deinit_replacement,
+        description="upstream mailbox teardown cleanup",
+    )
+
+    mailbox_wakeup_original = """                mb.wakeup.notify() catch |err| {
+                    log.warn("failed to wake up writer, data will be dropped err={}", .{err});
+                    return;
+                };
+"""
+    mailbox_wakeup_replacement = """                mb.wakeup.notify() catch |err| {
+                    log.warn("failed to wake up writer, data will be dropped err={}", .{err});
+                    msg.deinit();
+                    return;
+                };
+"""
+    patch_source_file(
+        mailbox_path,
+        original=mailbox_wakeup_original,
+        replacement=mailbox_wakeup_replacement,
+        already_applied=mailbox_wakeup_replacement,
+        description="upstream mailbox wakeup failure cleanup",
+    )
+
+    mailbox_push_original = """                _ = mb.queue.push(msg, .{ .forever = {} });
+"""
+    mailbox_push_replacement = """                if (mb.queue.push(msg, .{ .forever = {} }) == 0) msg.deinit();
+"""
+    patch_source_file(
+        mailbox_path,
+        original=mailbox_push_original,
+        replacement=mailbox_push_replacement,
+        already_applied=mailbox_push_replacement,
+        description="upstream mailbox push failure cleanup",
+    )
+
+    thread_original = """    if (self.flags.drain) {
+        while (mailbox.pop()) |_| {}
+        return;
+    }
+"""
+    thread_replacement = """    if (self.flags.drain) {
+        while (mailbox.pop()) |msg| msg.deinit();
+        return;
+    }
+"""
+    patch_source_file(
+        thread_path,
+        original=thread_original,
+        replacement=thread_replacement,
+        already_applied=thread_replacement,
+        description="upstream drained mailbox message cleanup",
     )
 
 
@@ -1778,6 +2188,7 @@ def bootstrap(
     if artifact_state_message(paths.cached_artifacts, metadata, xcframework_target, optimize) is not None:
         ensure_source_checkout(paths, metadata, git=git)
         apply_ghosthub_source_patches(paths)
+        apply_upstream_lifetime_backports(paths.source_checkout_root)
 
         zig_path = resolve_tool(zig)
         _ = resolve_tool(xcodebuild)
