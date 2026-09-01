@@ -202,6 +202,7 @@ final class WorkspaceInventoryStore: ObservableObject {
     func publishKwtInventory(
         _ inventory: KwtHostInventory,
         on host: CommandHost,
+        excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:],
         mutationHostID: UUID?
     ) {
         kwtGenerations[host, default: 0] &+= 1
@@ -210,7 +211,11 @@ final class WorkspaceInventoryStore: ObservableObject {
             satisfiedFenceGenerationsByHostID[mutationHostID] =
                 fenceGenerationsByHostID[mutationHostID, default: 0]
         }
-        recordKwtSuccess(inventory, host: host)
+        recordKwtSuccess(
+            inventory,
+            host: host,
+            excludingWorktrees: excludingWorktrees
+        )
     }
 
     func publishTmuxSessions(
@@ -359,11 +364,15 @@ final class WorkspaceInventoryStore: ObservableObject {
 
     private func recordKwtSuccess(
         _ inventory: KwtHostInventory,
-        host: CommandHost
+        host: CommandHost,
+        excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:]
     ) {
         revision &+= 1
         var entry = snapshot.kwtByHost[host] ?? .empty
-        entry.inventory = inventory
+        entry.inventory = inventory.retainingFailedProjectWorktrees(
+            from: entry.inventory,
+            excludingWorktrees: excludingWorktrees
+        )
         entry.inventoryRevision = revision
         entry.observationRevision = revision
         entry.state = .loaded
@@ -422,6 +431,11 @@ final class WorkspaceInventoryStore: ObservableObject {
         for host in hosts {
             kwtGenerations[host, default: 0] &+= 1
             kwtTasks.removeValue(forKey: host)?.cancel()
+            if var entry = snapshot.kwtByHost[host],
+               case .loading = entry.state {
+                entry.state = .idle
+                snapshot.kwtByHost[host] = entry
+            }
         }
     }
 
@@ -429,6 +443,11 @@ final class WorkspaceInventoryStore: ObservableObject {
         for host in hosts {
             tmuxGenerations[host, default: 0] &+= 1
             tmuxTasks.removeValue(forKey: host)?.cancel()
+            if var entry = snapshot.tmuxByHost[host],
+               case .loading = entry.state {
+                entry.state = .idle
+                snapshot.tmuxByHost[host] = entry
+            }
         }
     }
 

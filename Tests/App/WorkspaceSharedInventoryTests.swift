@@ -262,4 +262,64 @@ struct WorkspaceSharedInventoryTests {
         await second.shutdown()
         await third.shutdown()
     }
+
+    @Test("removed worktrees stay excluded for a later scene")
+    func removedWorktreeStaysExcludedForLaterScene() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let coordinator = WorktreeMutationCoordinator()
+        let sharedLoads = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                sharedLoads.withLock { $0 += 1 }
+                return fixture.beforeRemoval
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let first = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            workspaceInventoryStore: store,
+            kwtInventoryLoader: { _ in fixture.beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _, _ in },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let request = try await first.prepareWorktreeRemoval(
+            fixture.removable.id
+        )
+        try await first.removeWorktree(request)
+        #expect(first.snapshot.worktree(id: fixture.removable.id) == nil)
+
+        let second = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: environment.host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: fixture.snapshot.hosts,
+                projects: [],
+                worktrees: []
+            ),
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator
+        )
+        second.startKwtInventory()
+        await waitUntilMainActor {
+            !second.snapshot.projects.isEmpty
+        }
+
+        #expect(second.snapshot.worktrees.contains {
+            $0.path == fixture.removable.path
+        } == false)
+        #expect(sharedLoads.load() == 0)
+        await first.shutdown()
+        await second.shutdown()
+    }
 }

@@ -476,6 +476,140 @@ struct WorkspaceInventoryStoreTests {
         #expect(tmuxCount.load() == 1)
     }
 
+    @Test("a new subscriber restarts loads cancelled with the last subscriber")
+    func cancelledLastSubscriberLoadsRestart() async {
+        let kwtCount = LockedValue(0)
+        let tmuxCount = LockedValue(0)
+        let kwtGate = AsyncGate()
+        let tmuxGate = AsyncGate()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                kwtCount.withLock { $0 += 1 }
+                await kwtGate.wait()
+                return KwtHostInventory(projects: [])
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in
+                tmuxCount.withLock { $0 += 1 }
+                await tmuxGate.wait()
+                return .success([])
+            },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let registration = WorkspaceInventoryStore.HostRegistration(
+            hostID: UUID(),
+            commandHost: .local,
+            provisioningHost: nil
+        )
+        let firstSubscriberID = UUID()
+        store.updateSubscriber(
+            id: firstSubscriberID,
+            registrations: [registration],
+            wantsKwt: true,
+            wantsTmux: true
+        )
+        await waitUntil {
+            kwtCount.load() == 1 && tmuxCount.load() == 1
+        }
+
+        store.removeSubscriber(id: firstSubscriberID)
+        store.updateSubscriber(
+            id: UUID(),
+            registrations: [registration],
+            wantsKwt: true,
+            wantsTmux: true
+        )
+
+        await waitUntil(timeout: .seconds(1)) {
+            kwtCount.load() == 2 && tmuxCount.load() == 2
+        }
+        kwtGate.open()
+        tmuxGate.open()
+    }
+
+    @Test("partial project failure stays merged in the shared cache")
+    func partialProjectFailureRetainsSharedWorktrees() async {
+        let project = KwtProjectRecord(
+            repository: "example/repository",
+            name: "Repository",
+            path: "/test/repository",
+            lastTouched: nil,
+            registrationFingerprint: "test-registration"
+        )
+        let retained = KwtWorktreeRecord(
+            path: "/test/repository-retained",
+            branch: "feature/retained",
+            commitHash: "retained",
+            isMain: false,
+            createdAt: nil,
+            generation: "11111111111111111111111111111111",
+            repository: project.repository,
+            sessionName: "retained",
+            tmuxSocketName: nil
+        )
+        let refreshed = KwtWorktreeRecord(
+            path: "/test/repository-refreshed",
+            branch: "feature/refreshed",
+            commitHash: "refreshed",
+            isMain: false,
+            createdAt: nil,
+            generation: "22222222222222222222222222222222",
+            repository: project.repository,
+            sessionName: "refreshed",
+            tmuxSocketName: nil
+        )
+        let complete = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [retained, refreshed],
+                warning: nil
+            ),
+        ])
+        let partial = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [refreshed],
+                warning: "inventory unavailable"
+            ),
+        ])
+        let loadCount = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                let attempt = loadCount.load()
+                loadCount.withLock { $0 += 1 }
+                return attempt == 0 ? complete : partial
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let subscriberID = UUID()
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: UUID(),
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[.local]?.inventory == complete
+        }
+
+        store.refreshKwt(for: subscriberID)
+
+        await waitUntilMainActor {
+            loadCount.load() == 2
+                && store.snapshot.kwtByHost[.local]?.inventoryRevision != 1
+        }
+        #expect(Set(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects
+                .first?.worktrees.map(\.path) ?? []
+        ) == [retained.path, refreshed.path])
+    }
+
     @Test("a failed refresh retains cached rows and revokes freshness")
     func failureRetainsCache() async {
         enum RefreshFailure: Error {

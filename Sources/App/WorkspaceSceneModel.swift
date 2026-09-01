@@ -5064,6 +5064,7 @@ final class WorkspaceSceneModel: ObservableObject {
             workspaceInventoryStore.publishKwtInventory(
                 inventory,
                 on: commandHost,
+                excludingWorktrees: excludingWorktrees,
                 mutationHostID: mutationHostID
             )
             if let entry = workspaceInventoryStore.snapshot
