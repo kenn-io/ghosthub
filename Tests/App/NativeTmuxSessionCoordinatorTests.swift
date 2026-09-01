@@ -1670,6 +1670,57 @@ struct NativeTmuxSessionCoordinatorTests {
         ])
     }
 
+    @Test("a cancelled sizing transition does not run after its predecessor")
+    func cancelledSizingTransitionDoesNotRun() async {
+        let events = LockedValue<[String]>([])
+        let previewStarted = LockedValue(false)
+        let releasePreview = DispatchSemaphore(value: 0)
+        defer { releasePreview.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'!ignore-size'") {
+                    events.withLock { $0.append("interactive") }
+                } else if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("hidden-start") }
+                    previewStarted.store(true)
+                    _ = releasePreview.wait(timeout: .now() + 5)
+                    events.withLock { $0.append("hidden-end") }
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "cancelled-sizing",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let hide = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor { previewStarted.load() }
+        let reopen = Task { @MainActor in
+            await coordinator.enableInteractiveSizing(for: handle)
+        }
+        reopen.cancel()
+        releasePreview.signal()
+
+        #expect(await hide.value == .applied)
+        #expect(await reopen.value == .stale)
+        #expect(events.load() == ["hidden-start", "hidden-end"])
+    }
+
     @Test("interactive sizing refreshes geometry before clearing ignore-size")
     func interactiveSizingRefreshesGeometryBeforePromotion() async {
         let store = RecordingNativeSessionSurfaceStore()

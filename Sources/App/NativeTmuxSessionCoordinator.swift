@@ -790,11 +790,18 @@ final class NativeTmuxSessionCoordinator {
             if let predecessor {
                 await predecessor.value
             }
+            guard !Task.isCancelled else {
+                return TmuxClientSizingTransitionResult.stale
+            }
             return await operation()
         }
         let tail = Task { _ = await transition.value }
         sizingTransitionTails[handle.id] = tail
-        let result = await transition.value
+        let result = await withTaskCancellationHandler {
+            await transition.value
+        } onCancel: {
+            transition.cancel()
+        }
         if sizingTransitionTails[handle.id] == tail {
             sizingTransitionTails.removeValue(forKey: handle.id)
         }
