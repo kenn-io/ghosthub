@@ -237,6 +237,67 @@ struct KwtInventoryClientTests {
         #expect(inventory.directoryWorkspaceWarning != nil)
     }
 
+    @Test("retryable directory inventory failure recovers")
+    func retryableDirectoryFailureRecovers() async throws {
+        let directoryRuns = LockedValue(0)
+        let client = KwtInventoryClient(
+            localRunner: { _, command in
+                guard command.contains("workspace list --json") else {
+                    return (0, "GHOSTHUB_KWT_JSON\n[]")
+                }
+                var run = 0
+                directoryRuns.withLock { runs in
+                    runs += 1
+                    run = runs
+                }
+                if run == 1 {
+                    return (
+                        1,
+                        "GHOSTHUB_KWT_JSON\n" +
+                            #"{"error":{"code":"inventory_timeout","message":"inventory refresh timed out","retryable":true}}"#
+                    )
+                }
+                return (
+                    0,
+                    "GHOSTHUB_KWT_JSON\n" +
+                        #"[{"name":"hub","path":"/workspaces/hub","session_name":"kwt-workspace-dir-hub-abc","session_live":true,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#
+                )
+            },
+            retryDelays: [.zero]
+        )
+
+        let inventory = try await client.load(from: .local)
+
+        #expect(inventory.directoryWorkspaces.map(\.path) == ["/workspaces/hub"])
+        #expect(inventory.directoryWorkspaceWarning == nil)
+        #expect(directoryRuns.load() == 2)
+    }
+
+    @Test("nonretryable directory inventory failure is not repeated")
+    func nonretryableDirectoryFailureIsNotRepeated() async throws {
+        let directoryRuns = LockedValue(0)
+        let client = KwtInventoryClient(
+            localRunner: { _, command in
+                guard command.contains("workspace list --json") else {
+                    return (0, "GHOSTHUB_KWT_JSON\n[]")
+                }
+                directoryRuns.withLock { $0 += 1 }
+                return (
+                    1,
+                    "GHOSTHUB_KWT_JSON\n" +
+                        #"{"error":{"code":"invalid_request","message":"invalid inventory request","retryable":false}}"#
+                )
+            },
+            retryDelays: [.zero]
+        )
+
+        let inventory = try await client.load(from: .local)
+
+        #expect(inventory.directoryWorkspaces.isEmpty)
+        #expect(inventory.directoryWorkspaceWarning != nil)
+        #expect(directoryRuns.load() == 1)
+    }
+
     @Test("project inventory failure does not hide registered directories")
     func projectFailureIsPartial() async throws {
         let client = KwtInventoryClient(
