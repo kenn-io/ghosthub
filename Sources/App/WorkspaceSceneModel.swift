@@ -12571,6 +12571,8 @@ final class WorkspaceSceneModel: ObservableObject {
         let presentationKey = TmuxPresentationKey(selection)
         let isAlwaysLiveManaged = alwaysLiveManagedTmuxPresentationKeys
             .contains(presentationKey)
+        let reconnectsNonSizing = host.platform != .windows
+            && (isAlwaysLiveManaged || presentation.sizingIntent == .hidden)
         let previewGridSize = (tmuxSessionsByHost[selection.hostID]
             ?? host.tmuxSessions).first { $0.name == selection.name }?
             .previewClientSize
@@ -12586,9 +12588,8 @@ final class WorkspaceSceneModel: ObservableObject {
             openWorkspace: openWorkspace,
             sessionIdentity: presentation.reconnectExpectedIdentity,
             expectedRouteIdentity: routeIdentity,
-            ignoresClientSize: isAlwaysLiveManaged
-                && host.platform != .windows,
-            previewGridSize: isAlwaysLiveManaged ? previewGridSize : nil
+            ignoresClientSize: reconnectsNonSizing,
+            previewGridSize: reconnectsNonSizing ? previewGridSize : nil
         )
         if handle.id != previousHandle.id {
             retainedTmuxPresentationKeysByHandle.removeValue(

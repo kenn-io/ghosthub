@@ -936,6 +936,10 @@ extension WorkspaceTmuxDiscoveryTests {
         }
         #expect(model.activeBorrowedTmuxSelection == local)
         #expect(model.retainedBorrowedTmuxHandle(for: remote) == remoteHandle)
+        #expect(
+            try #require(surfaceStore.lastConfiguration?.command)
+                .contains("ignore-size")
+        )
 
         model.openBorrowedTmuxSession(remote)
         model.prepareActiveBorrowedTmuxSurface()
