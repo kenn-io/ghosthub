@@ -84,6 +84,124 @@ struct WorkspaceSharedInventoryTests {
         await model.shutdown()
     }
 
+    @Test("mutation publication updates every endpoint alias")
+    func mutationPublicationUpdatesEveryEndpointAlias() async throws {
+        let localID = UUID()
+        let firstRemoteID = UUID()
+        let secondRemoteID = UUID()
+        let projectRecord = KwtProjectRecord(
+            repository: "example/repository",
+            name: "Repository",
+            path: "/test/repository",
+            lastTouched: nil,
+            registrationFingerprint: "test-registration"
+        )
+        let initialInventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: projectRecord,
+                worktrees: [],
+                warning: nil
+            ),
+        ])
+        let refreshedInventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: projectRecord,
+                worktrees: [KwtWorktreeRecord(
+                    path: "/test/repository/created",
+                    branch: "feature/created",
+                    commitHash: "abc123",
+                    isMain: false,
+                    createdAt: nil,
+                    generation: "created-generation",
+                    repository: projectRecord.repository,
+                    sessionName: "kwt-feature-created"
+                )],
+                warning: nil
+            ),
+        ])
+        let snapshot = WorkspaceSnapshot(
+            hosts: [
+                HostSummary(
+                    id: localID,
+                    configKey: "local",
+                    name: "This Mac",
+                    kind: .selfHost,
+                    platform: .macOS,
+                    preferredTransport: .local,
+                    decodedConnectionState: .local
+                ),
+                HostSummary(
+                    id: firstRemoteID,
+                    configKey: "alias-a",
+                    name: "Alias A",
+                    kind: .remote,
+                    platform: .linux,
+                    sshDestination: "test@example.invalid"
+                ),
+                HostSummary(
+                    id: secondRemoteID,
+                    configKey: "alias-b",
+                    name: "Alias B",
+                    kind: .remote,
+                    platform: .linux,
+                    sshDestination: "test@example.invalid"
+                ),
+            ],
+            projects: [],
+            worktrees: []
+        )
+        let coordinator = WorktreeMutationCoordinator()
+        let remoteLoads = LockedValue(0)
+        let postMutationLoad = AsyncGate()
+        defer { postMutationLoad.open() }
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { host in
+                guard host.isRemote else {
+                    return KwtHostInventory(projects: [])
+                }
+                remoteLoads.withLock { $0 += 1 }
+                if remoteLoads.load() > 1 {
+                    await postMutationLoad.wait()
+                }
+                return initialInventory
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let model = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: localID,
+            snapshot: snapshot,
+            workspaceInventoryStore: store,
+            kwtInventoryLoader: { _ in refreshedInventory },
+            kwtWorktreeCreator: { _, _, _ in },
+            worktreeMutationCoordinator: coordinator
+        )
+
+        model.startKwtInventory()
+        await waitUntilMainActor {
+            model.snapshot.projects.filter {
+                $0.scopedKey == projectRecord.repository
+            }.count == 2
+        }
+        let firstProject = try #require(model.snapshot.projects.first {
+            $0.hostID == firstRemoteID
+        })
+
+        try await model.createWorktree(WorktreeCreateRequest(
+            projectID: firstProject.id,
+            branchName: "feature/created",
+            createsBranch: true
+        ))
+
+        #expect(Set(model.snapshot.worktrees.filter {
+            $0.branch == "feature/created"
+        }.map(\.hostID)) == [firstRemoteID, secondRemoteID])
+        postMutationLoad.open()
+        await model.shutdown()
+    }
+
     @Test("external additions and removals converge across scenes")
     func externalChangesConvergeAcrossScenes() async throws {
         let environment = try setupStandardEnvironment()

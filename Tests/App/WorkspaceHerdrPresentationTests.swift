@@ -1630,7 +1630,7 @@ struct WorkspaceHerdrPresentationTests {
         let close = try #require(store.surface.closeObservers.values.first)
         close(false, 255)
 
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             store.requestedConfigurations.count == 2
                 && model.activeBorrowedHerdrConnectionState == .connected
         }

@@ -412,6 +412,144 @@ struct WorkspaceInventoryStoreTests {
         #expect(store.snapshot.kwtByHost[.local]?.isFresh == true)
     }
 
+    @Test("removal exclusions survive stale refreshes until confirmed absent")
+    func removalExclusionsSurviveStaleRefreshes() async {
+        let repository = "example/repository"
+        let worktree = KwtWorktreeRecord(
+            path: "/test/repository/removed",
+            branch: "feature/removed",
+            commitHash: "abc123",
+            isMain: false,
+            createdAt: nil,
+            generation: "removed-generation",
+            repository: repository,
+            sessionName: "kwt-feature-removed"
+        )
+        let project = KwtProjectRecord(
+            repository: repository,
+            name: "Repository",
+            path: "/test/repository",
+            lastTouched: nil,
+            registrationFingerprint: "test-registration"
+        )
+        let containing = KwtHostInventory(projects: [KwtProjectInventory(
+            project: project,
+            worktrees: [worktree],
+            warning: nil
+        )])
+        let absent = KwtHostInventory(projects: [KwtProjectInventory(
+            project: project,
+            worktrees: [],
+            warning: nil
+        )])
+        let loadCount = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                let count = loadCount.load()
+                return count == 2 ? absent : containing
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let identity = KwtWorktreeIdentity(
+            path: worktree.path,
+            generation: worktree.generation ?? ""
+        )
+        store.publishKwtInventory(
+            containing,
+            on: .local,
+            excludingWorktrees: [repository: [identity]],
+            mutationHostID: nil
+        )
+        let subscriberID = UUID()
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: UUID(),
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+
+        store.refreshKwt(for: subscriberID)
+        await waitUntilMainActor {
+            loadCount.load() == 1
+                && store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.first?.worktrees.isEmpty == true
+        }
+
+        store.refreshKwt(for: subscriberID)
+        await waitUntilMainActor {
+            loadCount.load() == 2
+                && store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.first?.worktrees.isEmpty == true
+        }
+
+        store.refreshKwt(for: subscriberID)
+        await waitUntilMainActor {
+            loadCount.load() == 3
+                && store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.first?.worktrees.count == 1
+        }
+    }
+
+    @Test("concurrent mutations preserve one fence-end reconciliation load")
+    func concurrentMutationsPreserveFenceEndRefresh() async {
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return KwtHostInventory(projects: [])
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        #expect(coordinator.acquire(
+            hostID: hostID,
+            projectIdentity: "example/first"
+        ))
+        #expect(coordinator.acquire(
+            hostID: hostID,
+            projectIdentity: "example/second"
+        ))
+        store.updateSubscriber(
+            id: UUID(),
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        store.publishKwtInventory(
+            KwtHostInventory(projects: []),
+            on: .local,
+            mutationHostID: hostID
+        )
+
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: "example/first"
+        )
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: "example/second"
+        )
+
+        await waitUntilMainActor {
+            loadCount.load() == 1
+        }
+        #expect(loadCount.load() == 1)
+    }
+
     @Test("subscribers for one endpoint share one load per lane")
     func subscribersShareLoads() async throws {
         let kwtCount = LockedValue(0)

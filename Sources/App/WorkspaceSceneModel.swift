@@ -5067,18 +5067,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 excludingWorktrees: excludingWorktrees,
                 mutationHostID: mutationHostID
             )
-            if let entry = workspaceInventoryStore.snapshot
-                .kwtByHost[commandHost] {
-                let applicationKey = SharedInventoryApplicationKey(
-                    hostID: hostID,
-                    commandHost: commandHost
-                )
-                appliedKwtInventoryRevisions[applicationKey] =
-                    entry.inventoryRevision
-                appliedKwtObservationRevisions[applicationKey] =
-                    entry.observationRevision
-            }
             isConsumingSharedInventory = wasConsumingSharedInventory
+            if !wasConsumingSharedInventory {
+                consumeSharedInventory(workspaceInventoryStore.snapshot)
+            }
         }
     }
 

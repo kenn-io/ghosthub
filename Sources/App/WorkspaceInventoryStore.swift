@@ -99,6 +99,8 @@ final class WorkspaceInventoryStore: ObservableObject {
     private var tmuxGenerations: [CommandHost: UInt64] = [:]
     private var fenceGenerationsByHostID: [UUID: UInt64] = [:]
     private var satisfiedFenceGenerationsByHostID: [UUID: UInt64] = [:]
+    private var kwtRemovalTombstonesByHost:
+        [CommandHost: [String: Set<KwtWorktreeIdentity>]] = [:]
     private var revision: UInt64 = 0
     private var isApplicationActive = true
     private var cadenceTask: Task<Void, Never>?
@@ -207,7 +209,11 @@ final class WorkspaceInventoryStore: ObservableObject {
     ) {
         kwtGenerations[host, default: 0] &+= 1
         kwtTasks.removeValue(forKey: host)?.cancel()
-        if let mutationHostID {
+        if let mutationHostID,
+           isSoleActiveMutation(
+               hostID: mutationHostID,
+               on: host
+           ) {
             satisfiedFenceGenerationsByHostID[mutationHostID] =
                 fenceGenerationsByHostID[mutationHostID, default: 0]
         }
@@ -367,17 +373,71 @@ final class WorkspaceInventoryStore: ObservableObject {
         host: CommandHost,
         excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:]
     ) {
+        var tombstones = kwtRemovalTombstonesByHost[host] ?? [:]
+        for (repository, exclusions) in excludingWorktrees {
+            tombstones[repository, default: []].formUnion(exclusions)
+        }
+        tombstones = activeRemovalTombstones(
+            tombstones,
+            after: inventory
+        )
+        if tombstones.isEmpty {
+            kwtRemovalTombstonesByHost.removeValue(forKey: host)
+        } else {
+            kwtRemovalTombstonesByHost[host] = tombstones
+        }
         revision &+= 1
         var entry = snapshot.kwtByHost[host] ?? .empty
         entry.inventory = inventory.retainingFailedProjectWorktrees(
             from: entry.inventory,
-            excludingWorktrees: excludingWorktrees
+            excludingWorktrees: tombstones
         )
         entry.inventoryRevision = revision
         entry.observationRevision = revision
         entry.state = .loaded
         entry.isFresh = true
         snapshot.kwtByHost[host] = entry
+    }
+
+    private func activeRemovalTombstones(
+        _ tombstones: [String: Set<KwtWorktreeIdentity>],
+        after inventory: KwtHostInventory
+    ) -> [String: Set<KwtWorktreeIdentity>] {
+        guard inventory.projectsWarning == nil else { return tombstones }
+        return tombstones.reduce(into: [:]) { active, entry in
+            guard let project = inventory.projects.first(where: {
+                $0.project.repository == entry.key
+            }) else { return }
+            if project.warning != nil {
+                active[entry.key] = entry.value
+                return
+            }
+            let retained = entry.value.filter { tombstone in
+                project.worktrees.contains {
+                    tombstone.matches(
+                        path: $0.path,
+                        generation: $0.generation
+                    )
+                }
+            }
+            if !retained.isEmpty {
+                active[entry.key] = retained
+            }
+        }
+    }
+
+    private func isSoleActiveMutation(
+        hostID: UUID,
+        on commandHost: CommandHost
+    ) -> Bool {
+        let endpointHostIDs = Set(subscribers.values.flatMap(\.registrations)
+            .filter { $0.commandHost == commandHost }
+            .map(\.hostID))
+        let activeScopes = mutationCoordinator.scopes.filter {
+            endpointHostIDs.contains($0.hostID)
+        }
+        return activeScopes.count == 1
+            && activeScopes.first?.hostID == hostID
     }
 
     private func recordKwtFailure(
