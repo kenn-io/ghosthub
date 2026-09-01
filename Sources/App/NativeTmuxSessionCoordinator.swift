@@ -119,6 +119,11 @@ enum TmuxClientSizingTransitionResult: Equatable {
 /// only binary resolution and the disposable local libghostty presentation.
 @MainActor
 final class NativeTmuxSessionCoordinator {
+    private enum PendingTmuxClientSizing {
+        case interactive
+        case preview(TmuxGridSize?)
+    }
+
     private struct PaneSplitRequest {
         var shortcut: TerminalPaneSplitShortcut
         var target: TmuxPaneSplitTarget
@@ -178,7 +183,8 @@ final class NativeTmuxSessionCoordinator {
     private var previewIdentityRetryHandles: Set<UUID> = []
     private var unavailablePreviewIdentityHandles: Set<UUID> = []
     private var deferredPresentationStyleHandles: Set<UUID> = []
-    private var interactiveSizingHandles: Set<UUID> = []
+    private var pendingSizingByHandle: [UUID: PendingTmuxClientSizing] = [:]
+    private var sizingTransitionTails: [UUID: Task<Void, Never>] = [:]
     private var interactiveSizingTransitionHandles: Set<UUID> = []
     private var isShuttingDown = false
 
@@ -404,9 +410,22 @@ final class NativeTmuxSessionCoordinator {
         switch resolution {
         case let .success(resolved):
             let attachmentID = UUID()
-            let enablesInteractiveSizing = interactiveSizingHandles.remove(
-                handle.id
-            ) != nil
+            let pendingSizing = pendingSizingByHandle.removeValue(
+                forKey: handle.id
+            )
+            let effectiveIgnoresClientSize: Bool
+            let effectivePreviewGridSize: TmuxGridSize?
+            switch pendingSizing {
+            case .interactive:
+                effectiveIgnoresClientSize = false
+                effectivePreviewGridSize = nil
+            case let .preview(gridSize):
+                effectiveIgnoresClientSize = true
+                effectivePreviewGridSize = gridSize
+            case nil:
+                effectiveIgnoresClientSize = ignoresClientSize
+                effectivePreviewGridSize = previewGridSize
+            }
             let protectedWorkspacePath = tmuxAttachMode == .protected
                 ? workingDirectory
                 : nil
@@ -435,10 +454,8 @@ final class NativeTmuxSessionCoordinator {
                     .appendingPathComponent(
                         "tmux-clients", isDirectory: true
                     ).path,
-                ignoresClientSize: enablesInteractiveSizing
-                    ? false : ignoresClientSize,
-                previewGridSize: enablesInteractiveSizing
-                    ? nil : previewGridSize,
+                ignoresClientSize: effectiveIgnoresClientSize,
+                previewGridSize: effectivePreviewGridSize,
                 supportsPaneSplitting: TmuxPaneSplitter
                     .supportsPaneSplitting(
                         version: resolved.version,
@@ -464,7 +481,7 @@ final class NativeTmuxSessionCoordinator {
             default:
                 .launchFailed
             }
-            interactiveSizingHandles.remove(handle.id)
+            pendingSizingByHandle.removeValue(forKey: handle.id)
             onStateChanged?(
                 handle,
                 .disconnected(reason: error.localizedDescription)
@@ -483,7 +500,7 @@ final class NativeTmuxSessionCoordinator {
             SSHConnectionFailure.retryableTransportFailure(error) == nil
                 ? .launchFailed
                 : .retryableTransportFailure
-        interactiveSizingHandles.remove(handle.id)
+        pendingSizingByHandle.removeValue(forKey: handle.id)
         onStateChanged?(
             handle,
             .disconnected(reason: error.localizedDescription)
@@ -536,7 +553,8 @@ final class NativeTmuxSessionCoordinator {
         launchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
-        interactiveSizingHandles.remove(handle.id)
+        pendingSizingByHandle.removeValue(forKey: handle.id)
+        sizingTransitionTails.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
     }
 
@@ -611,9 +629,17 @@ final class NativeTmuxSessionCoordinator {
     func enableInteractiveSizing(
         for handle: BorrowedTmuxSessionHandle
     ) async -> TmuxClientSizingTransitionResult {
+        await serializeSizingTransition(for: handle) { [self] in
+            await performEnableInteractiveSizing(for: handle)
+        }
+    }
+
+    private func performEnableInteractiveSizing(
+        for handle: BorrowedTmuxSessionHandle
+    ) async -> TmuxClientSizingTransitionResult {
         guard var attachment = attachments[handle.id] else {
             if provisioningHandles.contains(handle.id) {
-                interactiveSizingHandles.insert(handle.id)
+                pendingSizingByHandle[handle.id] = .interactive
                 return .pending
             }
             return .failure(TmuxPaneSplitFailure(
@@ -684,10 +710,19 @@ final class NativeTmuxSessionCoordinator {
         _ gridSize: TmuxGridSize?,
         for handle: BorrowedTmuxSessionHandle
     ) async -> TmuxClientSizingTransitionResult {
+        await serializeSizingTransition(for: handle) { [self] in
+            await performRestorePreviewSizing(gridSize, for: handle)
+        }
+    }
+
+    private func performRestorePreviewSizing(
+        _ gridSize: TmuxGridSize?,
+        for handle: BorrowedTmuxSessionHandle
+    ) async -> TmuxClientSizingTransitionResult {
         guard var attachment = attachments[handle.id] else {
             if provisioningHandles.contains(handle.id) {
-                interactiveSizingHandles.remove(handle.id)
-                return .applied
+                pendingSizingByHandle[handle.id] = .preview(gridSize)
+                return .pending
             }
             return .failure(TmuxPaneSplitFailure(
                 host: targetHostsByHandle[handle.id]?.displayName
@@ -743,6 +778,27 @@ final class NativeTmuxSessionCoordinator {
             return .applied
         }
         return .failure(failure)
+    }
+
+    private func serializeSizingTransition(
+        for handle: BorrowedTmuxSessionHandle,
+        operation: @escaping @MainActor () async
+            -> TmuxClientSizingTransitionResult
+    ) async -> TmuxClientSizingTransitionResult {
+        let predecessor = sizingTransitionTails[handle.id]
+        let transition = Task { @MainActor in
+            if let predecessor {
+                await predecessor.value
+            }
+            return await operation()
+        }
+        let tail = Task { _ = await transition.value }
+        sizingTransitionTails[handle.id] = tail
+        let result = await transition.value
+        if sizingTransitionTails[handle.id] == tail {
+            sizingTransitionTails.removeValue(forKey: handle.id)
+        }
+        return result
     }
 
     private func applyPreviewGridSize(
@@ -1419,7 +1475,8 @@ final class NativeTmuxSessionCoordinator {
         launchedHandles.removeAll()
         reportedConnectedAttachmentIDs.removeAll()
         deferredPresentationStyleHandles.removeAll()
-        interactiveSizingHandles.removeAll()
+        pendingSizingByHandle.removeAll()
+        sizingTransitionTails.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
         }

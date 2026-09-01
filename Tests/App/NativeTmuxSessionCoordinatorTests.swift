@@ -1614,6 +1614,62 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(promotionMutations.load() == 1)
     }
 
+    @Test("interactive sizing waits for an in-flight preview sizing mutation")
+    func interactiveSizingWaitsForPreviewSizing() async {
+        let events = LockedValue<[String]>([])
+        let previewStarted = LockedValue(false)
+        let releasePreview = DispatchSemaphore(value: 0)
+        defer { releasePreview.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'!ignore-size'") {
+                    events.withLock { $0.append("interactive") }
+                } else if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("hidden-start") }
+                    previewStarted.store(true)
+                    _ = releasePreview.wait(timeout: .now() + 5)
+                    events.withLock { $0.append("hidden-end") }
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "sizing-order",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let hide = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor { previewStarted.load() }
+        let reopen = Task { @MainActor in
+            await coordinator.enableInteractiveSizing(for: handle)
+        }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(events.load() == ["hidden-start"])
+        releasePreview.signal()
+        #expect(await hide.value == .applied)
+        #expect(await reopen.value == .applied)
+        #expect(events.load() == [
+            "hidden-start", "hidden-end", "interactive",
+        ])
+    }
+
     @Test("interactive sizing refreshes geometry before clearing ignore-size")
     func interactiveSizingRefreshesGeometryBeforePromotion() async {
         let store = RecordingNativeSessionSurfaceStore()
@@ -1984,6 +2040,45 @@ struct NativeTmuxSessionCoordinatorTests {
         )
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: replacement)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("ignore-size"))
+    }
+
+    @Test("preview sizing requested during provisioning changes the attach")
+    func previewSizingDuringProvisioningChangesAttach() async throws {
+        let resolutionStarted = LockedValue(false)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                resolutionStarted.store(true)
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "provisioning-preview",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { resolutionStarted.load() }
+
+        let transition = await coordinator.restorePreviewSizing(
+            nil,
+            for: handle
+        )
+        #expect(transition == .pending)
+        releaseResolution.signal()
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
 
         let command = try #require(
             store.requestedConfigurations.last?.command
