@@ -555,7 +555,10 @@ remove their unique staged file. Neither local nor remote operations select an
 unrelated kwt from `PATH`. Ghosthub integrates only through kwt's CLI and does
 not manage its daemon directly. Kwt may auto-start or reuse its same-account
 daemon behind that boundary. Kwt's machine-readable CLI provides project
-identity, worktree metadata, and exact tmux session names.
+identity, worktree metadata, and exact tmux session names. Read failures that
+kwt marks retryable use cancellation-aware 1-, 4-, and 15-second backoff before
+Ghosthub publishes a warning. Non-retryable failures remain single-attempt,
+and each retry repeats only the failed idempotent read.
 On a macOS or Linux host with no existing kwt registry, the user adds one
 absolute repository path at a time through **Add Project**. Ghosthub delegates
 registration to `kwt projects add --json`, then refreshes ordinary kwt
