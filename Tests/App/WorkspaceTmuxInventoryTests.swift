@@ -543,12 +543,14 @@ extension WorkspaceTmuxDiscoveryTests {
         )
 
         await waitUntilMainActor {
-            model.workspaceInventoryState == .loaded
+            model.snapshot.hosts.first {
+                $0.configKey == remote.configKey
+            }?.connectionState == .online
         }
-
         let remoteHostID = try #require(
             model.snapshot.hosts.first { $0.configKey == remote.configKey }?.id
         )
+
         #expect(model.workspaceInventoryWarningsByHost[remoteHostID] == nil)
         let remoteSummary = try #require(
             model.snapshot.host(id: remoteHostID)

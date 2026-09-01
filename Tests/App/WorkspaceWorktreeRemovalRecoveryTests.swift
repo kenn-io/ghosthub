@@ -227,8 +227,9 @@ extension WorkspaceWorktreeRemovalTests {
         model.startKwtInventory()
         model.startTmuxSessionDiscovery()
         await waitUntilMainActor {
-            loads.load() >= 3 && model.isWorkspaceInventoryRefreshComplete
+            loads.load() == 2 && model.isWorkspaceInventoryRefreshComplete
         }
+        #expect(loads.load() == 2)
         #expect(model.snapshot.worktrees.contains {
             $0.path == removable.path
                 && $0.generation == stableWorktreeGeneration
@@ -917,10 +918,10 @@ extension WorkspaceWorktreeRemovalTests {
         model.startKwtInventory()
         model.startTmuxSessionDiscovery()
         await waitUntilMainActor {
-            loads.load() >= 3 && model.isWorkspaceInventoryRefreshComplete
+            loads.load() == 2 && model.isWorkspaceInventoryRefreshComplete
         }
 
-        #expect(loads.load() == 3)
+        #expect(loads.load() == 2)
         #expect(!model.snapshot.worktrees.contains {
             $0.hostID == removable.hostID && $0.path == removable.path
         })

@@ -1,0 +1,571 @@
+@preconcurrency import Combine
+import AppKit
+import Foundation
+import GhosthubSettings
+import GhosthubTransport
+
+@MainActor
+final class WorkspaceInventoryStore: ObservableObject {
+    static let shared = WorkspaceInventoryStore()
+
+    typealias KwtLoader = @Sendable (
+        CommandHost
+    ) async throws -> KwtHostInventory
+    typealias KwtProvisioner = @Sendable (SSHHost) async throws -> Void
+    typealias TmuxLoader = @Sendable (
+        CommandHost
+    ) async -> Result<[DiscoveredTmuxSession], TmuxBinaryError>
+    typealias Sleep = @Sendable (Duration) async throws -> Void
+
+    struct HostRegistration: Equatable, Sendable {
+        let hostID: UUID
+        let commandHost: CommandHost
+        let provisioningHost: SSHHost?
+    }
+
+    enum KwtLoadState {
+        case idle
+        case loading
+        case loaded
+        case failed(any Error)
+        case provisioningFailed
+    }
+
+    enum TmuxLoadState: Sendable {
+        case idle
+        case loading
+        case loaded
+        case failed(TmuxBinaryError)
+    }
+
+    struct KwtEntry {
+        var inventory: KwtHostInventory?
+        var inventoryRevision: UInt64
+        var observationRevision: UInt64
+        var state: KwtLoadState
+        var isFresh: Bool
+
+        static let empty = KwtEntry(
+            inventory: nil,
+            inventoryRevision: 0,
+            observationRevision: 0,
+            state: .idle,
+            isFresh: false
+        )
+    }
+
+    struct TmuxEntry: Sendable {
+        var sessions: [DiscoveredTmuxSession]?
+        var inventoryRevision: UInt64
+        var observationRevision: UInt64
+        var state: TmuxLoadState
+        var isFresh: Bool
+
+        static let empty = TmuxEntry(
+            sessions: nil,
+            inventoryRevision: 0,
+            observationRevision: 0,
+            state: .idle,
+            isFresh: false
+        )
+    }
+
+    struct Snapshot {
+        var kwtByHost: [CommandHost: KwtEntry] = [:]
+        var tmuxByHost: [CommandHost: TmuxEntry] = [:]
+    }
+
+    @Published private(set) var snapshot = Snapshot()
+
+    private struct Subscriber {
+        var registrations: [HostRegistration]
+        var wantsKwt: Bool
+        var wantsTmux: Bool
+    }
+
+    private let refreshInterval: Duration
+    private let kwtLoader: KwtLoader
+    private let kwtProvisioner: KwtProvisioner
+    private let tmuxLoader: TmuxLoader
+    private let sleep: Sleep
+    private let mutationCoordinator: WorktreeMutationCoordinator
+    private var mutationCancellable: AnyCancellable?
+    private var appDidBecomeActiveCancellable: AnyCancellable?
+    private var appDidResignActiveCancellable: AnyCancellable?
+    private var subscribers: [UUID: Subscriber] = [:]
+    private var kwtTasks: [CommandHost: Task<Void, Never>] = [:]
+    private var tmuxTasks: [CommandHost: Task<Void, Never>] = [:]
+    private var kwtGenerations: [CommandHost: UInt64] = [:]
+    private var tmuxGenerations: [CommandHost: UInt64] = [:]
+    private var fenceGenerationsByHostID: [UUID: UInt64] = [:]
+    private var satisfiedFenceGenerationsByHostID: [UUID: UInt64] = [:]
+    private var revision: UInt64 = 0
+    private var isApplicationActive = true
+    private var cadenceTask: Task<Void, Never>?
+
+    init(
+        refreshInterval: Duration = .seconds(30),
+        kwtLoader: @escaping KwtLoader = {
+            try await KwtInventoryService().load(from: $0)
+        },
+        kwtProvisioner: @escaping KwtProvisioner = {
+            try await KwtRemoteProvisioningCoordinator.shared
+                .ensureInstalled(on: $0)
+        },
+        tmuxLoader: @escaping TmuxLoader = {
+            await WorkspaceInventoryStore.discoverTmux(on: $0)
+        },
+        sleep: @escaping Sleep = {
+            try await Task.sleep(for: $0)
+        },
+        mutationCoordinator: WorktreeMutationCoordinator = .shared
+    ) {
+        self.refreshInterval = refreshInterval
+        self.kwtLoader = kwtLoader
+        self.kwtProvisioner = kwtProvisioner
+        self.tmuxLoader = tmuxLoader
+        self.sleep = sleep
+        self.mutationCoordinator = mutationCoordinator
+        mutationCancellable = mutationCoordinator.events.sink {
+            [weak self] event in
+            self?.mutationEvent(event)
+        }
+    }
+
+    func updateSubscriber(
+        id: UUID,
+        registrations: [HostRegistration],
+        wantsKwt: Bool,
+        wantsTmux: Bool
+    ) {
+        let previousKwtHosts = subscribedKwtHosts()
+        let previousTmuxHosts = subscribedTmuxHosts()
+        subscribers[id] = Subscriber(
+            registrations: registrations,
+            wantsKwt: wantsKwt,
+            wantsTmux: wantsTmux
+        )
+        let currentKwtHosts = subscribedKwtHosts()
+        let currentTmuxHosts = subscribedTmuxHosts()
+        invalidateKwtHosts(previousKwtHosts.subtracting(currentKwtHosts))
+        invalidateTmuxHosts(previousTmuxHosts.subtracting(currentTmuxHosts))
+
+        if isApplicationActive, wantsKwt {
+            for host in Set(registrations.map(\.commandHost))
+                where needsInitialKwtLoad(host) {
+                requestKwt(host)
+            }
+        }
+        if isApplicationActive, wantsTmux {
+            for host in Set(registrations.map(\.commandHost))
+                where needsInitialTmuxLoad(host) {
+                requestTmux(host)
+            }
+        }
+        reconcileCadence()
+    }
+
+    func removeSubscriber(id: UUID) {
+        let previousKwtHosts = subscribedKwtHosts()
+        let previousTmuxHosts = subscribedTmuxHosts()
+        subscribers.removeValue(forKey: id)
+        invalidateKwtHosts(
+            previousKwtHosts.subtracting(subscribedKwtHosts())
+        )
+        invalidateTmuxHosts(
+            previousTmuxHosts.subtracting(subscribedTmuxHosts())
+        )
+        reconcileCadence()
+    }
+
+    func refreshKwt(for subscriberID: UUID) {
+        guard let subscriber = subscribers[subscriberID],
+              subscriber.wantsKwt else { return }
+        for host in Set(subscriber.registrations.map(\.commandHost)) {
+            requestKwt(host)
+        }
+    }
+
+    func refreshTmux(for subscriberID: UUID) {
+        guard let subscriber = subscribers[subscriberID],
+              subscriber.wantsTmux else { return }
+        for host in Set(subscriber.registrations.map(\.commandHost)) {
+            requestTmux(host)
+        }
+    }
+
+    func refreshAll(for subscriberID: UUID) {
+        refreshKwt(for: subscriberID)
+        refreshTmux(for: subscriberID)
+    }
+
+    func publishKwtInventory(
+        _ inventory: KwtHostInventory,
+        on host: CommandHost,
+        mutationHostID: UUID?
+    ) {
+        kwtGenerations[host, default: 0] &+= 1
+        kwtTasks.removeValue(forKey: host)?.cancel()
+        if let mutationHostID {
+            satisfiedFenceGenerationsByHostID[mutationHostID] =
+                fenceGenerationsByHostID[mutationHostID, default: 0]
+        }
+        recordKwtSuccess(inventory, host: host)
+    }
+
+    func publishTmuxSessions(
+        _ sessions: [DiscoveredTmuxSession],
+        on host: CommandHost
+    ) {
+        tmuxGenerations[host, default: 0] &+= 1
+        tmuxTasks.removeValue(forKey: host)?.cancel()
+        recordTmuxSuccess(sessions, host: host)
+    }
+
+    func setApplicationActive(_ isActive: Bool) {
+        guard isApplicationActive != isActive else { return }
+        isApplicationActive = isActive
+        cadenceTask?.cancel()
+        cadenceTask = nil
+        guard isActive else { return }
+        requestSubscribedInventory()
+        reconcileCadence()
+    }
+
+    func startApplicationActivityMonitoring(
+        center: NotificationCenter = .default,
+        initialIsActive: Bool = NSApplication.shared.isActive
+    ) {
+        guard appDidBecomeActiveCancellable == nil,
+              appDidResignActiveCancellable == nil else { return }
+        setApplicationActive(initialIsActive)
+        appDidBecomeActiveCancellable = center.publisher(
+            for: NSApplication.didBecomeActiveNotification
+        ).sink { [weak self] _ in
+            self?.setApplicationActive(true)
+        }
+        appDidResignActiveCancellable = center.publisher(
+            for: NSApplication.didResignActiveNotification
+        ).sink { [weak self] _ in
+            self?.setApplicationActive(false)
+        }
+    }
+
+    private func subscribedKwtHosts() -> Set<CommandHost> {
+        Set(subscribers.values.filter(\.wantsKwt).flatMap {
+            $0.registrations.map(\.commandHost)
+        })
+    }
+
+    private func subscribedTmuxHosts() -> Set<CommandHost> {
+        Set(subscribers.values.filter(\.wantsTmux).flatMap {
+            $0.registrations.map(\.commandHost)
+        })
+    }
+
+    private func needsInitialKwtLoad(_ host: CommandHost) -> Bool {
+        let hostIDs = Set(registrations(for: host).map(\.hostID))
+        if mutationCoordinator.quarantinedProjectRemovals.keys.contains(
+            where: { hostIDs.contains($0.hostID) }
+        ) {
+            return true
+        }
+        guard let entry = snapshot.kwtByHost[host] else { return true }
+        if case .idle = entry.state {
+            return true
+        }
+        return false
+    }
+
+    private func needsInitialTmuxLoad(_ host: CommandHost) -> Bool {
+        guard let entry = snapshot.tmuxByHost[host] else { return true }
+        if case .idle = entry.state {
+            return true
+        }
+        return false
+    }
+
+    private func requestKwt(_ host: CommandHost) {
+        guard kwtTasks[host] == nil, !isKwtFenced(host) else { return }
+        let generation = kwtGenerations[host, default: 0]
+        let provisioningHost = provisioningHost(for: host)
+        var entry = snapshot.kwtByHost[host] ?? .empty
+        entry.state = .loading
+        snapshot.kwtByHost[host] = entry
+        let loader = kwtLoader
+        let provisioner = kwtProvisioner
+        kwtTasks[host] = Task { [weak self] in
+            if let provisioningHost {
+                do {
+                    try await Self.runDetached {
+                        try await provisioner(provisioningHost)
+                    }
+                } catch {
+                    guard let self, !Task.isCancelled,
+                          kwtGenerations[host, default: 0]
+                          == generation else { return }
+                    recordKwtProvisioningFailure(host: host)
+                    kwtTasks[host] = nil
+                    return
+                }
+            }
+            do {
+                let inventory = try await Self.runDetached {
+                    try await loader(host)
+                }
+                guard let self, !Task.isCancelled,
+                      kwtGenerations[host, default: 0] == generation
+                else { return }
+                recordKwtSuccess(inventory, host: host)
+                kwtTasks[host] = nil
+            } catch is CancellationError {
+                guard let self,
+                      kwtGenerations[host, default: 0] == generation
+                else { return }
+                kwtTasks[host] = nil
+            } catch {
+                guard let self, !Task.isCancelled,
+                      kwtGenerations[host, default: 0] == generation
+                else { return }
+                recordKwtFailure(error, host: host)
+                kwtTasks[host] = nil
+            }
+        }
+    }
+
+    private func requestTmux(_ host: CommandHost) {
+        guard tmuxTasks[host] == nil else { return }
+        let generation = tmuxGenerations[host, default: 0]
+        var entry = snapshot.tmuxByHost[host] ?? .empty
+        entry.state = .loading
+        snapshot.tmuxByHost[host] = entry
+        let loader = tmuxLoader
+        tmuxTasks[host] = Task { [weak self] in
+            let result = await Self.runDetached {
+                await loader(host)
+            }
+            guard let self, !Task.isCancelled,
+                  tmuxGenerations[host, default: 0] == generation
+            else { return }
+            switch result {
+            case let .success(sessions):
+                recordTmuxSuccess(sessions, host: host)
+            case let .failure(error):
+                recordTmuxFailure(error, host: host)
+            }
+            tmuxTasks[host] = nil
+        }
+    }
+
+    private func recordKwtSuccess(
+        _ inventory: KwtHostInventory,
+        host: CommandHost
+    ) {
+        revision &+= 1
+        var entry = snapshot.kwtByHost[host] ?? .empty
+        entry.inventory = inventory
+        entry.inventoryRevision = revision
+        entry.observationRevision = revision
+        entry.state = .loaded
+        entry.isFresh = true
+        snapshot.kwtByHost[host] = entry
+    }
+
+    private func recordKwtFailure(
+        _ error: any Error,
+        host: CommandHost
+    ) {
+        revision &+= 1
+        var entry = snapshot.kwtByHost[host] ?? .empty
+        entry.observationRevision = revision
+        entry.state = .failed(error)
+        entry.isFresh = false
+        snapshot.kwtByHost[host] = entry
+    }
+
+    private func recordKwtProvisioningFailure(host: CommandHost) {
+        revision &+= 1
+        var entry = snapshot.kwtByHost[host] ?? .empty
+        entry.observationRevision = revision
+        entry.state = .provisioningFailed
+        entry.isFresh = false
+        snapshot.kwtByHost[host] = entry
+    }
+
+    private func recordTmuxSuccess(
+        _ sessions: [DiscoveredTmuxSession],
+        host: CommandHost
+    ) {
+        revision &+= 1
+        var entry = snapshot.tmuxByHost[host] ?? .empty
+        entry.sessions = sessions
+        entry.inventoryRevision = revision
+        entry.observationRevision = revision
+        entry.state = .loaded
+        entry.isFresh = true
+        snapshot.tmuxByHost[host] = entry
+    }
+
+    private func recordTmuxFailure(
+        _ error: TmuxBinaryError,
+        host: CommandHost
+    ) {
+        revision &+= 1
+        var entry = snapshot.tmuxByHost[host] ?? .empty
+        entry.observationRevision = revision
+        entry.state = .failed(error)
+        entry.isFresh = false
+        snapshot.tmuxByHost[host] = entry
+    }
+
+    private func invalidateKwtHosts(_ hosts: Set<CommandHost>) {
+        for host in hosts {
+            kwtGenerations[host, default: 0] &+= 1
+            kwtTasks.removeValue(forKey: host)?.cancel()
+        }
+    }
+
+    private func invalidateTmuxHosts(_ hosts: Set<CommandHost>) {
+        for host in hosts {
+            tmuxGenerations[host, default: 0] &+= 1
+            tmuxTasks.removeValue(forKey: host)?.cancel()
+        }
+    }
+
+    private func registrations(
+        for host: CommandHost
+    ) -> [HostRegistration] {
+        subscribers.values.flatMap(\.registrations).filter {
+            $0.commandHost == host
+        }
+    }
+
+    private func provisioningHost(for host: CommandHost) -> SSHHost? {
+        registrations(for: host)
+            .compactMap(\.provisioningHost)
+            .filter { $0.platform == .macOS || $0.platform == .linux }
+            .sorted { $0.configKey < $1.configKey }
+            .first
+    }
+
+    private func isKwtFenced(_ host: CommandHost) -> Bool {
+        let hostIDs = Set(registrations(for: host).map(\.hostID))
+        let quarantinedScopes = Set(
+            mutationCoordinator.quarantinedProjectRemovals.keys
+        )
+        return mutationCoordinator.scopes
+            .subtracting(quarantinedScopes).contains {
+                hostIDs.contains($0.hostID)
+            }
+    }
+
+    private func mutationEvent(
+        _ event: WorktreeMutationCoordinator.Event
+    ) {
+        switch event.phase {
+        case .began:
+            fenceGenerationsByHostID[event.scope.hostID, default: 0] &+= 1
+            let hosts = Set(subscribers.values.flatMap(\.registrations)
+                .filter { $0.hostID == event.scope.hostID }
+                .map(\.commandHost))
+            invalidateKwtHosts(hosts)
+            for host in hosts {
+                guard var entry = snapshot.kwtByHost[host] else { continue }
+                entry.state = .idle
+                snapshot.kwtByHost[host] = entry
+            }
+        case .ended:
+            guard !mutationCoordinator.scopes.contains(where: {
+                $0.hostID == event.scope.hostID
+            }) else { return }
+            let generation = fenceGenerationsByHostID[
+                event.scope.hostID,
+                default: 0
+            ]
+            guard satisfiedFenceGenerationsByHostID[event.scope.hostID]
+                != generation else { return }
+            let hosts = Set(subscribers.values.flatMap(\.registrations)
+                .filter { $0.hostID == event.scope.hostID }
+                .map(\.commandHost))
+            for host in hosts where subscribedKwtHosts().contains(host) {
+                requestKwt(host)
+            }
+        case .quarantined:
+            let hosts = Set(subscribers.values.flatMap(\.registrations)
+                .filter { $0.hostID == event.scope.hostID }
+                .map(\.commandHost))
+            for host in hosts where subscribedKwtHosts().contains(host) {
+                requestKwt(host)
+            }
+        case .willRemove:
+            break
+        }
+    }
+
+    private func requestSubscribedInventory() {
+        for host in subscribedKwtHosts() {
+            requestKwt(host)
+        }
+        for host in subscribedTmuxHosts() {
+            requestTmux(host)
+        }
+    }
+
+    private func reconcileCadence() {
+        guard isApplicationActive, !subscribers.isEmpty else {
+            cadenceTask?.cancel()
+            cadenceTask = nil
+            return
+        }
+        guard cadenceTask == nil else { return }
+        let interval = refreshInterval
+        let sleep = sleep
+        cadenceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await sleep(interval)
+                } catch {
+                    return
+                }
+                guard let self, isApplicationActive else { return }
+                requestSubscribedInventory()
+            }
+        }
+    }
+
+    private nonisolated static func runDetached<Value: Sendable>(
+        _ operation: @escaping @Sendable () async -> Value
+    ) async -> Value {
+        let task = Task.detached(priority: .utility, operation: operation)
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private nonisolated static func runDetached<Value: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let task = Task.detached(priority: .utility, operation: operation)
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private static func discoverTmux(
+        on host: CommandHost
+    ) async -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
+        let resolver = TmuxBinaryResolver()
+        return switch host {
+        case .local:
+            await Task.detached(priority: .utility) {
+                resolver.discoverSessions()
+            }.value
+        case let .ssh(info):
+            await resolver.discoverSessions(on: info)
+        }
+    }
+}

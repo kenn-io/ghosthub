@@ -109,6 +109,7 @@ struct GhosthubApp: App {
             )
         }
         WorkspaceSceneBootstrap.ensureBootstrapped()
+        WorkspaceInventoryStore.shared.startApplicationActivityMonitoring()
     }
 
     var body: some Scene {
