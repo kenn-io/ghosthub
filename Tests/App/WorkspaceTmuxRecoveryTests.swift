@@ -862,12 +862,27 @@ extension WorkspaceTmuxDiscoveryTests {
             ),
         ]
         let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let hiddenSizingMutations = LockedValue(0)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.localHostID,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    hiddenSizingMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { host in
                 if host.isRemote {
@@ -875,7 +890,13 @@ extension WorkspaceTmuxDiscoveryTests {
                         DiscoveredTmuxSession(
                             name: "release-work",
                             windowCount: 1,
-                            createdAt: nil,
+                            serverPID: "101",
+                            sessionID: "$1",
+                            createdAt: "1000",
+                            previewClientSize: TmuxGridSize(
+                                columns: 120,
+                                rows: 37
+                            ),
                             managed: false
                         ),
                     ])
@@ -905,6 +926,7 @@ extension WorkspaceTmuxDiscoveryTests {
             model.prepareActiveBorrowedTmuxSurface()
             return surfaceStore.requestCount == 2
         }
+        await waitUntilMainActor { hiddenSizingMutations.load() == 1 }
 
         remoteClose(false, 255)
 
@@ -917,6 +939,9 @@ extension WorkspaceTmuxDiscoveryTests {
 
         model.openBorrowedTmuxSession(remote)
         model.prepareActiveBorrowedTmuxSurface()
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
         #expect(model.activeBorrowedTmuxSessionIsConnected)
         #expect(surfaceStore.requestCount == 3)
         await model.shutdown()

@@ -506,6 +506,10 @@ final class WorkspaceSceneModel: ObservableObject {
             ].joined(separator: ":")
         }
     }
+    private enum RetainedTmuxSizingIntent {
+        case interactive
+        case hidden
+    }
     private final class RetainedTmuxPresentation {
         var selection: WorkspaceTmuxSessionSelection
         var handle: BorrowedTmuxSessionHandle
@@ -522,6 +526,10 @@ final class WorkspaceSceneModel: ObservableObject {
         var previewPromotionTask: Task<Void, Never>?
         var previewPromotionNavigationRevision: UInt64?
         var pendingPreviewPromotionNavigationRevision: UInt64?
+        var sizingIntent: RetainedTmuxSizingIntent = .interactive
+        var sizingTransitionID: UUID?
+        var sizingTransitionTask: Task<Void, Never>?
+        var pendingSizingActivationNavigationRevision: UInt64?
 
         var previewPromotionIsPending: Bool {
             previewPromotionTask != nil
@@ -2473,6 +2481,10 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.previewPromotionNavigationRevision = nil
             presentation.previewPromotionTask?.cancel()
             presentation.previewPromotionTask = nil
+            presentation.sizingTransitionID = nil
+            presentation.pendingSizingActivationNavigationRevision = nil
+            presentation.sizingTransitionTask?.cancel()
+            presentation.sizingTransitionTask = nil
             tmuxSessionPreviewCoordinator.remove(
                 TmuxPresentationKey(presentation.selection).previewKey,
                 reason: .close
@@ -10005,6 +10017,11 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.reconnectContext?.routeIdentity = routeIdentity
         }
         let key = TmuxPresentationKey(presentation.selection)
+        if presentation.pendingSizingActivationNavigationRevision != nil {
+            guard presentation.sizingTransitionTask == nil else { return }
+            activateTmuxPresentation(presentation)
+            return
+        }
         // Resume a pending user promotion before the preview-support
         // filter: a session the user explicitly opened during provisioning
         // must become an ordinary interactive attachment even when the
@@ -10305,6 +10322,111 @@ final class WorkspaceSceneModel: ObservableObject {
         _ presentation: RetainedTmuxPresentation
     ) {
         let key = TmuxPresentationKey(presentation.selection)
+        let resumesPendingSizing = presentation
+            .pendingSizingActivationNavigationRevision != nil
+        guard presentation.sizingIntent == .hidden || resumesPendingSizing
+        else {
+            activateTmuxPresentationAfterSizing(presentation, key: key)
+            return
+        }
+        guard let host = snapshot.host(id: presentation.selection.hostID)
+        else {
+            invalidateBorrowedTmuxSession(presentation.selection)
+            return
+        }
+        guard host.platform != .windows else {
+            presentation.sizingIntent = .interactive
+            presentation.pendingSizingActivationNavigationRevision = nil
+            activateTmuxPresentationAfterSizing(presentation, key: key)
+            return
+        }
+        if nativeTmuxSessionCoordinator.hasClosedAttachment(
+            presentation.handle
+        ) {
+            presentation.sizingIntent = .interactive
+            presentation.pendingSizingActivationNavigationRevision = nil
+            activateTmuxPresentationAfterSizing(presentation, key: key)
+            return
+        }
+
+        stageTmuxPresentationActivation(presentation)
+        presentation.sizingIntent = .interactive
+        let navigationRevision = presentation
+            .pendingSizingActivationNavigationRevision ?? userNavigationRevision
+        presentation.pendingSizingActivationNavigationRevision =
+            navigationRevision
+        let predecessor = presentation.sizingTransitionTask
+        let transitionID = UUID()
+        presentation.sizingTransitionID = transitionID
+        presentation.sizingTransitionTask = Task { @MainActor [weak self, weak presentation] in
+            guard let self, let presentation else { return }
+            defer {
+                if presentation.sizingTransitionID == transitionID {
+                    presentation.sizingTransitionID = nil
+                    presentation.sizingTransitionTask = nil
+                    if presentation
+                        .pendingSizingActivationNavigationRevision != nil,
+                        !nativeTmuxSessionCoordinator.isProvisioning(
+                            presentation.handle
+                        ) {
+                        tmuxSurfaceBecameReady(presentation.handle)
+                    }
+                }
+            }
+            if let predecessor {
+                await predecessor.value
+            }
+            guard !Task.isCancelled,
+                  retainedTmuxPresentations[key] === presentation,
+                  presentation.sizingIntent == .interactive,
+                  presentation.pendingSizingActivationNavigationRevision
+                  == navigationRevision,
+                  userNavigationRevision == navigationRevision,
+                  tmuxPresentationActivationIsPending(presentation)
+            else { return }
+
+            var result: TmuxClientSizingTransitionResult
+            repeat {
+                result = await nativeTmuxSessionCoordinator
+                    .enableInteractiveSizing(for: presentation.handle)
+                guard !Task.isCancelled,
+                      retainedTmuxPresentations[key] === presentation,
+                      presentation.sizingIntent == .interactive,
+                      presentation.pendingSizingActivationNavigationRevision
+                      == navigationRevision,
+                      userNavigationRevision == navigationRevision,
+                      tmuxPresentationActivationIsPending(presentation)
+                else { return }
+            } while result == .stale
+
+            switch result {
+            case .applied:
+                presentation.pendingSizingActivationNavigationRevision = nil
+                activateTmuxPresentationAfterSizing(presentation, key: key)
+            case .pending, .stale:
+                return
+            case let .failure(failure):
+                presentation.pendingSizingActivationNavigationRevision = nil
+                let selection = presentation.selection
+                invalidateBorrowedTmuxSession(selection)
+                AppLogger.shared.error(
+                    "tmux interactive sizing: "
+                        + failure.localizedDescription,
+                    context: "tmux"
+                )
+                if userNavigationRevision == navigationRevision,
+                   activeBorrowedTmuxSelection == selection,
+                   activeBorrowedTmuxHandle == nil {
+                    openBorrowedTmuxSession(selection)
+                }
+            }
+        }
+    }
+
+    private func activateTmuxPresentationAfterSizing(
+        _ presentation: RetainedTmuxPresentation,
+        key: TmuxPresentationKey
+    ) {
         tmuxSessionPreviewCoordinator.prepareToActivate(
             key.previewKey,
             activate: { [weak self, weak presentation] in
@@ -10319,10 +10441,9 @@ final class WorkspaceSceneModel: ObservableObject {
     private func stageTmuxPresentationActivation(
         _ presentation: RetainedTmuxPresentation
     ) {
-        if let activeHandle = activeBorrowedTmuxHandle,
-           activeHandle != presentation.handle {
-            prepareActiveTmuxPreviewForDeactivation()
-        }
+        prepareActiveTmuxPresentationForDeactivation(
+            excluding: presentation.handle
+        )
         activeBorrowedTmuxSelection = presentation.selection
         activeBorrowedTmuxHandle = nil
         activeBorrowedTmuxLaunchMode = presentation.launchMode
@@ -10340,10 +10461,9 @@ final class WorkspaceSceneModel: ObservableObject {
     private func commitTmuxPresentationActivation(
         _ presentation: RetainedTmuxPresentation
     ) {
-        if let activeHandle = activeBorrowedTmuxHandle,
-           activeHandle != presentation.handle {
-            prepareActiveTmuxPreviewForDeactivation()
-        }
+        prepareActiveTmuxPresentationForDeactivation(
+            excluding: presentation.handle
+        )
         activeBorrowedTmuxSelection = presentation.selection
         activeBorrowedTmuxHandle = presentation.handle
         activeBorrowedTmuxLaunchMode = presentation.launchMode
@@ -10365,12 +10485,87 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceTmuxSessionSelection
     ) {
         guard activeBorrowedTmuxSelection == selection else { return }
-        prepareActiveTmuxPreviewForDeactivation()
+        prepareActiveTmuxPresentationForDeactivation(excluding: nil)
         activeBorrowedTmuxSelection = nil
         activeBorrowedTmuxHandle = nil
         activeBorrowedTmuxLaunchMode = nil
         activeBorrowedTmuxRecoveryState = nil
         sessionConnectionRecoveryRequest = nil
+    }
+
+    private func prepareActiveTmuxPresentationForDeactivation(
+        excluding retainedHandle: BorrowedTmuxSessionHandle?
+    ) {
+        guard let activeSelection = activeBorrowedTmuxSelection,
+              let presentation = retainedTmuxPresentation(
+                  for: activeSelection
+              ),
+              presentation.handle != retainedHandle
+        else { return }
+        prepareActiveTmuxPreviewForDeactivation()
+        hideTmuxPresentationSizing(presentation)
+    }
+
+    private func hideTmuxPresentationSizing(
+        _ presentation: RetainedTmuxPresentation
+    ) {
+        let key = TmuxPresentationKey(presentation.selection)
+        guard !alwaysLiveManagedTmuxPresentationKeys.contains(key) else {
+            return
+        }
+        guard let host = snapshot.host(id: presentation.selection.hostID)
+        else {
+            invalidateBorrowedTmuxSession(presentation.selection)
+            return
+        }
+        guard host.platform != .windows else { return }
+
+        presentation.sizingIntent = .hidden
+        presentation.pendingSizingActivationNavigationRevision = nil
+        guard !nativeTmuxSessionCoordinator.hasClosedAttachment(
+            presentation.handle
+        ) else { return }
+        let predecessor = presentation.sizingTransitionTask
+        let transitionID = UUID()
+        let gridSize = previewGridSize(for: presentation.selection)
+        presentation.sizingTransitionID = transitionID
+        presentation.sizingTransitionTask = Task { @MainActor [weak self, weak presentation] in
+            guard let self, let presentation else { return }
+            defer {
+                if presentation.sizingTransitionID == transitionID {
+                    presentation.sizingTransitionID = nil
+                    presentation.sizingTransitionTask = nil
+                }
+            }
+            if let predecessor {
+                await predecessor.value
+            }
+            guard !Task.isCancelled,
+                  retainedTmuxPresentations[key] === presentation,
+                  presentation.sizingIntent == .hidden
+            else { return }
+
+            var result: TmuxClientSizingTransitionResult
+            repeat {
+                result = await nativeTmuxSessionCoordinator
+                    .restorePreviewSizing(
+                        gridSize,
+                        for: presentation.handle
+                    )
+                guard !Task.isCancelled,
+                      retainedTmuxPresentations[key] === presentation,
+                      presentation.sizingIntent == .hidden
+                else { return }
+            } while result == .stale
+
+            if case let .failure(failure) = result {
+                invalidateBorrowedTmuxSession(presentation.selection)
+                AppLogger.shared.error(
+                    "tmux hidden sizing: " + failure.localizedDescription,
+                    context: "tmux"
+                )
+            }
+        }
     }
 
     var retainedBorrowedTmuxPresentationCount: Int {
@@ -10522,6 +10717,11 @@ final class WorkspaceSceneModel: ObservableObject {
             .previewPromotionNavigationRevision = nil
         retainedTmuxPresentations[key]?.previewPromotionTask?.cancel()
         retainedTmuxPresentations[key]?.previewPromotionTask = nil
+        retainedTmuxPresentations[key]?.sizingTransitionID = nil
+        retainedTmuxPresentations[key]?
+            .pendingSizingActivationNavigationRevision = nil
+        retainedTmuxPresentations[key]?.sizingTransitionTask?.cancel()
+        retainedTmuxPresentations[key]?.sizingTransitionTask = nil
         if activeBorrowedTmuxSelection == selection {
             prepareActiveTmuxPreviewForDeactivation()
         }
