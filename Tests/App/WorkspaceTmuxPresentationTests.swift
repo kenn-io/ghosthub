@@ -191,7 +191,7 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("reopening waits for the hidden sizing transition")
+    @Test("latest reopen wins while the hidden sizing transition is pending")
     func reopeningWaitsForHiddenSizingTransition() async throws {
         let environment = try setupHostEnvironment()
         var snapshot = environment.snapshot
@@ -261,6 +261,8 @@ extension WorkspaceTmuxDiscoveryTests {
         }
         #expect(!model.activeBorrowedTmuxSessionIsConnected)
         #expect(events.load() == ["hidden-start"])
+
+        model.openBorrowedTmuxSession(selection)
 
         releaseHide.signal()
         await waitUntilMainActor {
@@ -578,14 +580,6 @@ extension WorkspaceTmuxDiscoveryTests {
             lastKnownReachable: true
         )
         snapshot.hosts.append(secondHost)
-        let surfaceStore = SceneTmuxSurfaceStoreStub()
-        let model = try makeModel(
-            database: environment.database,
-            localHostID: environment.localHostID,
-            snapshot: snapshot,
-            nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
-        )
         let first = WorkspaceTmuxSessionSelection(
             hostID: environment.remoteHost.id,
             name: "release-work"
@@ -593,6 +587,22 @@ extension WorkspaceTmuxDiscoveryTests {
         let second = WorkspaceTmuxSessionSelection(
             hostID: secondHost.id,
             name: "deploy-work"
+        )
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport.previewPaneSplitter(
+                identity: identity
+            ),
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
         )
 
         model.openBorrowedTmuxSession(first)

@@ -10351,8 +10351,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
         stageTmuxPresentationActivation(presentation)
         presentation.sizingIntent = .interactive
-        let navigationRevision = presentation
-            .pendingSizingActivationNavigationRevision ?? userNavigationRevision
+        let navigationRevision = userNavigationRevision
         presentation.pendingSizingActivationNavigationRevision =
             navigationRevision
         let predecessor = presentation.sizingTransitionTask
@@ -10365,11 +10364,17 @@ final class WorkspaceSceneModel: ObservableObject {
                     presentation.sizingTransitionID = nil
                     presentation.sizingTransitionTask = nil
                     if presentation
-                        .pendingSizingActivationNavigationRevision != nil,
+                        .pendingSizingActivationNavigationRevision
+                        == userNavigationRevision,
+                        tmuxPresentationActivationIsPending(presentation),
                         !nativeTmuxSessionCoordinator.isProvisioning(
                             presentation.handle
                         ) {
                         tmuxSurfaceBecameReady(presentation.handle)
+                    } else if presentation
+                        .pendingSizingActivationNavigationRevision != nil {
+                        presentation
+                            .pendingSizingActivationNavigationRevision = nil
                     }
                 }
             }
