@@ -258,12 +258,7 @@ struct WorkspaceWorktreeCreationTests {
         )
 
         secondModel.startKwtInventory()
-        for _ in 0 ..< 1_000 {
-            if await inventoryRace.firstCallStarted {
-                break
-            }
-            await Task.yield()
-        }
+        await waitUntilMainActor { await inventoryRace.firstCallStarted }
         #expect(await inventoryRace.firstCallStarted)
 
         let mutation = Task { @MainActor in
@@ -275,25 +270,17 @@ struct WorkspaceWorktreeCreationTests {
                 )
             )
         }
-        for _ in 0 ..< 1_000 {
-            if await mutationHold.started {
-                break
-            }
-            await Task.yield()
-        }
+        await waitUntilMainActor { await mutationHold.started }
         #expect(await mutationHold.started)
         await inventoryRace.releaseFirstCall()
         await mutationHold.release()
         await mutation.value
 
-        for _ in 0 ..< 10_000 {
-            if await inventoryRace.calls >= 2,
-               secondModel.snapshot.worktrees.contains(where: {
-                   $0.branch == "feature/refreshed"
-               }) {
-                break
-            }
-            await Task.yield()
+        await waitUntilMainActor {
+            await inventoryRace.calls >= 2
+                && secondModel.snapshot.worktrees.contains(where: {
+                    $0.branch == "feature/refreshed"
+                })
         }
         #expect(await inventoryRace.calls >= 2)
         #expect(secondModel.snapshot.worktrees.contains {

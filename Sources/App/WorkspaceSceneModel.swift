@@ -4079,11 +4079,13 @@ final class WorkspaceSceneModel: ObservableObject {
                         publish: false,
                         publishToStore: false
                     )
-                    successfulKwtHosts.append((
-                        hostID,
-                        commandHost,
-                        inventory
-                    ))
+                    if entry.isFresh {
+                        successfulKwtHosts.append((
+                            hostID,
+                            commandHost,
+                            inventory
+                        ))
+                    }
                 }
                 if entry.observationRevision
                     > appliedKwtObservationRevisions[

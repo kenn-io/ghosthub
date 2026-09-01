@@ -101,6 +101,8 @@ final class WorkspaceInventoryStore: ObservableObject {
     private var satisfiedFenceGenerationsByHostID: [UUID: UInt64] = [:]
     private var kwtRemovalTombstonesByHost:
         [CommandHost: [String: Set<KwtWorktreeIdentity>]] = [:]
+    private var kwtProjectRemovalTombstonesByHost:
+        [CommandHost: Set<String>] = [:]
     private var revision: UInt64 = 0
     private var isApplicationActive = true
     private var cadenceTask: Task<Void, Never>?
@@ -386,12 +388,26 @@ final class WorkspaceInventoryStore: ObservableObject {
         } else {
             kwtRemovalTombstonesByHost[host] = tombstones
         }
+        var projectTombstones = kwtProjectRemovalTombstonesByHost[host] ?? []
+        projectTombstones = activeProjectRemovalTombstones(
+            projectTombstones,
+            after: inventory
+        )
+        if projectTombstones.isEmpty {
+            kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
+        } else {
+            kwtProjectRemovalTombstonesByHost[host] = projectTombstones
+        }
         revision &+= 1
         var entry = snapshot.kwtByHost[host] ?? .empty
-        entry.inventory = inventory.retainingFailedProjectWorktrees(
+        var reconciled = inventory.retainingFailedProjectWorktrees(
             from: entry.inventory,
             excludingWorktrees: tombstones
         )
+        reconciled.projects.removeAll {
+            projectTombstones.contains($0.project.repository)
+        }
+        entry.inventory = reconciled
         entry.inventoryRevision = revision
         entry.observationRevision = revision
         entry.state = .loaded
@@ -424,6 +440,15 @@ final class WorkspaceInventoryStore: ObservableObject {
                 active[entry.key] = retained
             }
         }
+    }
+
+    private func activeProjectRemovalTombstones(
+        _ tombstones: Set<String>,
+        after inventory: KwtHostInventory
+    ) -> Set<String> {
+        guard inventory.projectsWarning == nil else { return tombstones }
+        let repositories = Set(inventory.projects.map(\.project.repository))
+        return tombstones.intersection(repositories)
     }
 
     private func isSoleActiveMutation(
@@ -554,18 +579,34 @@ final class WorkspaceInventoryStore: ObservableObject {
                 snapshot.kwtByHost[host] = entry
             }
         case .ended:
-            guard !mutationCoordinator.scopes.contains(where: {
-                $0.hostID == event.scope.hostID
-            }) else { return }
+            let hosts = Set(subscribers.values.flatMap(\.registrations)
+                .filter { $0.hostID == event.scope.hostID }
+                .map(\.commandHost))
             let generation = fenceGenerationsByHostID[
                 event.scope.hostID,
                 default: 0
             ]
-            guard satisfiedFenceGenerationsByHostID[event.scope.hostID]
-                != generation else { return }
-            let hosts = Set(subscribers.values.flatMap(\.registrations)
-                .filter { $0.hostID == event.scope.hostID }
-                .map(\.commandHost))
+            let fenceIsSatisfied = satisfiedFenceGenerationsByHostID[
+                event.scope.hostID
+            ] == generation
+            if !fenceIsSatisfied {
+                for host in hosts {
+                    if !event.removalTombstones.isEmpty {
+                        kwtRemovalTombstonesByHost[host, default: [:]][
+                            event.scope.projectIdentity,
+                            default: []
+                        ].formUnion(event.removalTombstones)
+                    }
+                    if event.removesProject {
+                        kwtProjectRemovalTombstonesByHost[host, default: []]
+                            .insert(event.scope.projectIdentity)
+                    }
+                }
+            }
+            guard !mutationCoordinator.scopes.contains(where: {
+                $0.hostID == event.scope.hostID
+            }) else { return }
+            guard !fenceIsSatisfied else { return }
             for host in hosts where subscribedKwtHosts().contains(host) {
                 requestKwt(host)
             }
@@ -573,6 +614,13 @@ final class WorkspaceInventoryStore: ObservableObject {
             let hosts = Set(subscribers.values.flatMap(\.registrations)
                 .filter { $0.hostID == event.scope.hostID }
                 .map(\.commandHost))
+            invalidateKwtHosts(hosts)
+            for host in hosts {
+                guard var entry = snapshot.kwtByHost[host] else { continue }
+                entry.state = .idle
+                entry.isFresh = false
+                snapshot.kwtByHost[host] = entry
+            }
             for host in hosts where subscribedKwtHosts().contains(host) {
                 requestKwt(host)
             }

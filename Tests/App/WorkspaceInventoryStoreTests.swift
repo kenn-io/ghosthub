@@ -374,6 +374,18 @@ struct WorkspaceInventoryStoreTests {
         let loadCount = LockedValue(0)
         let hostID = UUID()
         let projectIdentity = "example/repository"
+        let project = KwtProjectRecord(
+            repository: projectIdentity,
+            name: "Repository",
+            path: "/test/repository",
+            lastTouched: nil,
+            registrationFingerprint: "test-registration"
+        )
+        let registered = KwtHostInventory(projects: [KwtProjectInventory(
+            project: project,
+            worktrees: [],
+            warning: nil
+        )])
         let store = WorkspaceInventoryStore(
             kwtLoader: { _ in
                 loadCount.withLock { $0 += 1 }
@@ -404,12 +416,23 @@ struct WorkspaceInventoryStoreTests {
         )
         coordinator.release(
             hostID: hostID,
-            projectIdentity: projectIdentity
+            projectIdentity: projectIdentity,
+            removesProject: true
         )
 
         try await Task.sleep(for: .milliseconds(20))
         #expect(loadCount.load() == 0)
         #expect(store.snapshot.kwtByHost[.local]?.isFresh == true)
+
+        store.publishKwtInventory(
+            registered,
+            on: .local,
+            mutationHostID: nil
+        )
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects
+                == registered.projects
+        )
     }
 
     @Test("removal exclusions survive stale refreshes until confirmed absent")
@@ -494,6 +517,175 @@ struct WorkspaceInventoryStoreTests {
             loadCount.load() == 3
                 && store.snapshot.kwtByHost[.local]?.inventory?
                 .projects.first?.worktrees.count == 1
+        }
+    }
+
+    @Test("mutation-end tombstones survive stale refreshes")
+    func mutationEndTombstonesSurviveStaleRefreshes() async {
+        let repository = "example/repository"
+        let worktree = KwtWorktreeRecord(
+            path: "/test/repository/removed",
+            branch: "feature/removed",
+            commitHash: "abc123",
+            isMain: false,
+            createdAt: nil,
+            generation: "removed-generation",
+            repository: repository,
+            sessionName: "kwt-feature-removed"
+        )
+        let project = KwtProjectRecord(
+            repository: repository,
+            name: "Repository",
+            path: "/test/repository",
+            lastTouched: nil,
+            registrationFingerprint: "test-registration"
+        )
+        let containing = KwtHostInventory(projects: [KwtProjectInventory(
+            project: project,
+            worktrees: [worktree],
+            warning: nil
+        )])
+        let absent = KwtHostInventory(projects: [KwtProjectInventory(
+            project: project,
+            worktrees: [],
+            warning: nil
+        )])
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return loadCount.load() == 2 ? absent : containing
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let identity = KwtWorktreeIdentity(
+            path: worktree.path,
+            generation: worktree.generation ?? ""
+        )
+        #expect(coordinator.acquire(
+            hostID: hostID,
+            projectIdentity: repository
+        ))
+        let subscriberID = UUID()
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: repository,
+            removalTombstones: [identity]
+        )
+        await waitUntilMainActor {
+            loadCount.load() == 1
+                && store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.first?.worktrees.isEmpty == true
+        }
+
+        store.refreshKwt(for: subscriberID)
+        await waitUntilMainActor {
+            loadCount.load() == 2
+                && store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.first?.worktrees.isEmpty == true
+        }
+
+        store.refreshKwt(for: subscriberID)
+        await waitUntilMainActor {
+            loadCount.load() == 3
+                && store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.first?.worktrees == [worktree]
+        }
+    }
+
+    @Test("project mutation-end tombstones survive stale refreshes")
+    func projectMutationEndTombstonesSurviveStaleRefreshes() async {
+        let repository = "example/repository"
+        let worktree = KwtWorktreeRecord(
+            path: "/test/repository/main",
+            branch: "main",
+            commitHash: "abc123",
+            isMain: true,
+            createdAt: nil,
+            generation: "main-generation",
+            repository: repository,
+            sessionName: "kwt-main"
+        )
+        let project = KwtProjectRecord(
+            repository: repository,
+            name: "Repository",
+            path: "/test/repository",
+            lastTouched: nil,
+            registrationFingerprint: "test-registration"
+        )
+        let containing = KwtHostInventory(projects: [KwtProjectInventory(
+            project: project,
+            worktrees: [worktree],
+            warning: nil
+        )])
+        let absent = KwtHostInventory(projects: [])
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return loadCount.load() == 2 ? absent : containing
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        #expect(coordinator.acquireProjectRemoval(
+            hostID: hostID,
+            projectIdentity: repository,
+            registryHost: .init(target: .local)
+        ))
+        let subscriberID = UUID()
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: repository,
+            removesProject: true
+        )
+        await waitUntilMainActor {
+            loadCount.load() == 1
+                && store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.isEmpty == true
+        }
+
+        store.refreshKwt(for: subscriberID)
+        await waitUntilMainActor {
+            loadCount.load() == 2
+                && store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.isEmpty == true
+        }
+
+        store.refreshKwt(for: subscriberID)
+        await waitUntilMainActor {
+            loadCount.load() == 3
+                && store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.first == containing.projects.first
         }
     }
 
