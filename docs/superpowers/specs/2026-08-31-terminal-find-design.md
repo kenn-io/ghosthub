@@ -2,7 +2,8 @@
 
 ## Status
 
-Approved design for GitHub issue #194, **Support find in terminal**.
+Revised design awaiting review for GitHub issue #194, **Support find in
+terminal**.
 
 ## Summary
 
@@ -66,15 +67,17 @@ default key sequence.
 - Adding or changing Herdr, Zellij, psmux, or tmux configuration.
 - Restoring a search after navigation, reconnect, application relaunch, or
   session replacement.
-- Displaying a tmux match count. tmux does not expose a reliable count through
-  the command surface used here.
+- Displaying a current-match index for tmux. The tmux controller publishes an
+  exact total when available but does not model the selected match's position
+  within that total.
 
 ## Support Matrix
 
 | Presentation | Find behavior |
 | --- | --- |
-| POSIX tmux 3.2 or newer | Available through native copy-mode search |
-| Older POSIX tmux | Unavailable |
+| POSIX tmux 3.5 or newer | Available through native copy-mode search, with an exact total when tmux completes its count |
+| POSIX tmux 3.4 | Available through native copy-mode search, without a match total |
+| POSIX tmux older than 3.4 | Unavailable |
 | psmux | Unavailable until its compatible command behavior is verified |
 | Herdr | Unavailable because the current CLI can read history but cannot search or scroll to a match |
 | Zellij | Unavailable because the current CLI cannot supply a search query without relying on configurable client keybindings |
@@ -82,7 +85,11 @@ default key sequence.
 
 The application derives availability from the active presentation and its
 observed backend capability. Inventory presence alone does not imply Find
-support.
+support. The tmux 3.4 floor intentionally matches the existing pane-split
+capability gate. Find reuses that implementation's tested client-specific hook
+guard instead of adding a second guard and a separate 3.2 compatibility path.
+tmux 3.5 added the `search_count` and `search_count_partial` formats, so only
+3.5 and newer can publish a match total.
 
 ## User Interaction
 
@@ -102,9 +109,11 @@ a new query. Ghosthub keeps the most recent query in memory for that surface
 until the surface closes; reopening Find restores and selects it.
 
 The bar uses the same terminal-aware colors and compact visual treatment as
-Ghostty.app. It omits the match counter for tmux. A missing count is better
-than a guessed or incomplete count. The standalone console may show the count
-reported by libghostty.
+Ghostty.app. For tmux 3.5 and newer, it shows a total such as **5 matches** only
+when `search_count_partial` is false. It hides the total when tmux reports a
+partial count and on tmux 3.4. It never presents a partial result as exact and
+does not invent a current-match index. The standalone console may show the
+selected and total counts reported by libghostty.
 
 ### Querying
 
@@ -177,7 +186,8 @@ Find state belongs to the visible terminal surface and contains:
 - whether the bar is open;
 - the current query;
 - field focus and selection state;
-- whether backend work is in flight; and
+- whether backend work is in flight;
+- an optional exact match total; and
 - an optional user-facing failure.
 
 The state does not outlive its terminal surface and is never persisted. A
@@ -187,7 +197,8 @@ Preview surfaces never expose Find.
 ### tmux Controller
 
 The tmux controller lives beside other application-owned tmux operations. It
-reuses the exact attached-client identity already established for pane splits:
+reuses the exact attached-client identity and guarded mutation mechanism already
+established for pane splits:
 
 - server process ID;
 - client process ID and creation time;
@@ -199,6 +210,13 @@ Opening Find freezes that identity. Every later command revalidates it at the
 tmux mutation boundary. A same-named replacement session, replacement client,
 or different active pane fails the guard and cannot receive the command.
 
+Each mutation installs a uniquely indexed `after-refresh-client` hook, invokes
+`refresh-client` against the frozen client TTY with a unique marker argument,
+and removes the hook. Inside that client-specific hook, tmux validates the
+server, client, session, pane, and `hook_argument_0` marker before executing the
+mutation. This is the existing tmux 3.4-and-newer pane-split guard, not a new
+3.2 guard assembled from client formats outside their meaningful hook context.
+
 The controller uses the resolved tmux executable, socket selection, host
 account, and retained SSH lease already associated with the presentation. It
 does not rediscover a route or follow a changed host configuration while Find
@@ -208,15 +226,32 @@ The tmux operations are:
 
 1. For a nonempty query, enter copy mode for the fenced pane when needed.
 2. Run `history-bottom` so query edits start from a stable position.
-3. Run `search-backward-text` with the query as a separately quoted argument.
+3. Run `search-backward-text` with the query as one tmux command argument.
 4. Run `search-again` for **Find Next**.
 5. Run `search-reverse` for **Find Previous**.
 6. Run `cancel` to end the Find-owned copy mode.
+7. On tmux 3.5 and newer, read `search_count`, `search_count_partial`, and
+   `search_present` after search and navigation mutations. The read is a
+   `display-message -p` in the same guarded tmux queue, not another SSH round
+   trip, and returns only numeric state rather than pane text.
 
 `search-backward-text` deliberately selects literal search rather than regular
-expression search. Query text is passed through the existing shell-argument
-quoting boundary and is never interpolated into a shell program or tmux format
-expression.
+expression search. The guarded mutation crosses one account-shell argv parse
+and two tmux command parses: the installed hook body and the nested `if-shell`
+success body. Its renderer builds commands from the inside out. It first
+encodes the query as one single-quoted tmux command argument for the innermost
+`send-keys -t <pane> -X search-backward-text -- <query>` command, then
+tmux-quotes each complete child command as data for its parent parser, and
+finally shell-quotes the top-level tmux argv once for the local or remote
+account shell. A dedicated tmux-command argument encoder implements tmux
+parsing rules; the shell argument helper alone is not treated as sufficient for
+the nested layers.
+
+The query is never concatenated into a command body without that layer's
+encoding and is never used as a tmux format. The search command does not request
+format expansion, so literal text such as semicolons, quotes, backslashes, and
+`#{...}` reaches `search-backward-text` as data. The Find field is single-line;
+Return and Shift-Return navigate instead of becoming query characters.
 
 The query necessarily crosses the trusted host account boundary as a tmux
 command argument. Ghosthub never includes the query or rendered command in
@@ -224,6 +259,26 @@ application logs, failure diagnostics, or the terminal error overlay. The
 query remains in Ghosthub memory only for the lifetime of its terminal
 surface. tmux may retain its native previous-search value after copy mode
 closes; Ghosthub neither duplicates nor persists that backend-owned state.
+
+### tmux Multi-Client Behavior
+
+tmux stores copy mode and its search state on the pane, not on an individual
+client. The client-specific identity guard chooses and validates the pane but
+does not make its copy-mode viewport private. Every attached client displaying
+that pane can therefore see Find enter copy mode, move the viewport, highlight
+matches, and return to the live pane. This includes a retained Ghosthub preview
+client in another scene and independently attached third-party clients. A
+preview reflects tmux's current rendering but never shows its own Find bar or
+accepts Find controls.
+
+This pane-wide effect is an accepted consequence of backend-owned search.
+Ghosthub does not create a shadow pane, copy pane history, or lock out other
+clients to hide it. Other clients remain free to change or exit copy mode, so
+their actions and Ghosthub's actions follow tmux's native last-writer-wins
+behavior. The identity fence prevents retargeting; it does not claim exclusive
+ownership of pane mode. If another client ends the mode, a navigation command
+fails soft and closes the initiating Find bar. Reopening the bar and submitting
+a query starts a fresh guarded search.
 
 ### Standalone Console Controller
 
@@ -244,13 +299,21 @@ If an active operation fails:
 - close the Find bar;
 - make no further backend mutation;
 - return focus to the terminal when the presentation still exists; and
-- show the existing compact terminal error overlay with a short diagnostic.
+- show the existing compact terminal error overlay with a short, Find-specific
+  diagnostic.
 
 An identity mismatch uses the same replacement-session language as other
 fenced tmux operations. SSH authentication and transport failures retain their
 existing classifications. Find never opens a blocking alert and never retries
 a query on a replacement connection. A later Command-F is a new operation and
 may use a newly validated presentation route.
+
+Find reuses the overlay component, not the pane-split diagnostic plumbing.
+Raw tmux stderr and rendered commands can contain the query, so the controller
+does not pass `TmuxPaneSplitFailure.normalizedDiagnostic` or any raw process
+output to the overlay or application logs. It maps status, identity markers,
+and transport classification to fixed query-free messages. Raw output may be
+examined transiently for classification but is never published or retained.
 
 ## Concurrency and Lifecycle
 
@@ -278,6 +341,8 @@ navigation lane.
   whenever a terminal has effective focus, including unsupported backends.
 - Opening an existing bar focuses and selects the remembered query.
 - Empty queries disable navigation and end Find-owned copy mode.
+- Exact tmux totals appear only when the count is not partial; partial and
+  unavailable totals remain hidden.
 - Query generations publish only the latest result.
 - Closing, navigation, parking, and teardown cancel Find state.
 
@@ -289,13 +354,23 @@ scrollback and verify observable copy-mode behavior:
 - the initial query selects the newest literal match;
 - **Find Next** selects an older match;
 - **Find Previous** returns to a newer match;
-- punctuation with regular-expression meaning is searched literally;
+- regular-expression punctuation is searched literally;
+- semicolons, single and double quotes, `#{...}`, and backslashes survive every
+  nested tmux and shell parsing boundary as literal query data;
 - no-match queries leave the search active without inventing a result;
+- tmux 3.5-and-newer searches return an exact total from the same guarded queue,
+  while tmux 3.4 searches do not request unavailable count formats;
 - clearing and closing exit copy mode;
 - entering Find from an existing copy mode still exits to the live pane when
   Find closes;
 - a changed server, client, session, or pane identity receives no command; and
 - local and rendered remote command paths quote the query as data.
+
+Multi-client integration coverage attaches two clients to the same pane and
+verifies the documented pane-wide behavior: search mode and viewport changes
+are shared, only the initiating surface owns a Find bar, and another client's
+exit from copy mode makes navigation fail soft rather than target a different
+pane.
 
 Failure tests also verify that query text never appears in logs or user-facing
 diagnostics.
