@@ -239,7 +239,7 @@ git commit -m "Add shared terminal Find state"
 - Produces: `TmuxAttachedClientIdentity`, `TmuxAttachedClientGuard.command(...)`, and `TmuxAttachedClientGuard.cleanupCommand(...)`.
 - Preserves: pane split, sizing, client lookup, marker checking, and all existing failure text.
 
-- [ ] **Step 1: Add failing version and guard-equivalence tests**
+- [x] **Step 1: Add failing version and guard-equivalence tests**
 
 Add parameterized cases that prove suffixes do not affect numeric comparison:
 
@@ -258,13 +258,13 @@ func parsesTmuxVersion(_ output: String, _ major: Int, _ minor: Int) {
 
 Move the existing command assertions for marker validation, exact TTY, client PID/creation, pane ID, and cleanup into assertions against the extracted guard. Retain one pane-split command test to prove its observable rendering is unchanged.
 
-- [ ] **Step 2: Run the focused tests and verify the new types are missing**
+- [x] **Step 2: Run the focused tests and verify the new types are missing**
 
 Run: `make swift-test SWIFT_TEST_FILTER='TmuxPaneSplitterTests|TmuxBinaryResolverTests'`
 
 Expected: FAIL because `TmuxVersion` and `TmuxAttachedClientGuard` do not exist.
 
-- [ ] **Step 3: Implement the numeric version value**
+- [x] **Step 3: Implement the numeric version value**
 
 ```swift
 struct TmuxVersion: Comparable, Equatable, Sendable {
@@ -299,7 +299,7 @@ struct TmuxVersion: Comparable, Equatable, Sendable {
 
 Change `TmuxPaneSplitter.supportsPaneSplitting` and `TmuxBinaryResolver.isSupported` to use this parser. Do not keep the old private parsers as fallbacks.
 
-- [ ] **Step 4: Extract the identity and guarded queue renderer**
+- [x] **Step 4: Extract the identity and guarded queue renderer**
 
 Rename `TmuxPaneSplitClientIdentity` to `TmuxAttachedClientIdentity`. Move the hook wrapper and cleanup rendering into `TmuxAttachedClientGuard` with this entry point:
 
@@ -316,17 +316,17 @@ static func command(
 
 `action` is a fully rendered child tmux command string. The guard must validate server/session identity, exact client PID/creation/TTY, pane ID, and `hook_argument_0`, run `action` only on success, print the mismatch marker otherwise, and remove the uniquely indexed hook both in the queue and in shell cleanup. Pass the complete child string through `shellQuotedCommandArgument` before placing it in its parent token, and repeat that rule at every enclosing tmux depth.
 
-- [ ] **Step 5: Point pane split and sizing at the extracted guard**
+- [x] **Step 5: Point pane split and sizing at the extracted guard**
 
 Replace their local hook construction with `TmuxAttachedClientGuard.command(...)`. Keep split-specific marker names and mutation bodies in `TmuxPaneSplitter`. Do not change runner, cancellation, retry, or error behavior.
 
-- [ ] **Step 6: Run the focused tests**
+- [x] **Step 6: Run the focused tests**
 
 Run: `make swift-test SWIFT_TEST_FILTER='TmuxPaneSplitterTests|TmuxBinaryResolverTests|NativeTmuxSessionCoordinatorTests'`
 
 Expected: PASS, including the existing real-tmux exact-client tests.
 
-- [ ] **Step 7: Commit the reusable tmux seam**
+- [x] **Step 7: Commit the reusable tmux seam**
 
 ```bash
 git add Sources/App/TmuxVersion.swift Sources/App/TmuxAttachedClientGuard.swift Sources/App/TmuxPaneSplitter.swift Sources/App/TmuxBinaryResolver.swift Sources/App/NativeTmuxSessionCoordinator.swift Tests/App/TmuxPaneSplitterTests.swift Tests/App/TmuxBinaryResolverTests.swift Tests/App/NativeTmuxSessionCoordinatorTests.swift

@@ -6,7 +6,7 @@ import GhosthubTransport
 import Testing
 @testable import GhosthubApp
 
-private let testSplitClient = TmuxPaneSplitClientIdentity(
+private let testSplitClient = TmuxAttachedClientIdentity(
     serverPID: "123",
     clientPID: "789",
     clientCreatedAt: "321",
@@ -1062,6 +1062,16 @@ struct TmuxPaneSplitterTests {
 
     @Test("validation and split share one exact-client tmux queue")
     func posixCommands() {
+        let guarded = TmuxAttachedClientGuard.command(
+            tmuxPath: "/opt/homebrew/bin/tmux",
+            socketName: "kwt-pr-0123456789abcdef",
+            expectedClient: testSplitClient,
+            marker: "TEST_MISMATCH",
+            hookIndex: 1_500_000_000,
+            action: ["display-message", "-p", "split-ready"]
+                .map(shellQuotedCommandArgument)
+                .joined(separator: " ")
+        )
         let right = TmuxPaneSplitter.command(
             tmuxPath: "/opt/homebrew/bin/tmux",
             socketName: "kwt-pr-0123456789abcdef",
@@ -1089,17 +1099,19 @@ struct TmuxPaneSplitterTests {
             timeout: 5
         )
 
+        #expect(!guarded.contains("'list-clients' '-F'"))
+        #expect(guarded.contains("'refresh-client' '-t' '/dev/ttys001'"))
+        #expect(guarded.contains("'after-refresh-client["))
+        #expect(guarded.contains("#{L:"))
+        #expect(guarded.contains("#{==:#{client_pid},789}"))
+        #expect(guarded.contains("#{==:#{client_created},321}"))
+        #expect(guarded.contains("#{==:#{pane_id},%9}"))
+        #expect(guarded.contains(shellQuotedCommandArgument("TEST_MISMATCH")))
+        #expect(guarded.contains("set-hook"))
+        #expect(guarded.contains("-gu"))
         #expect(rightSyntax.status == 0, Comment(rawValue: rightSyntax.stderr))
-        #expect(!right.contains("'list-clients' '-F'"))
-        #expect(right.contains("'refresh-client' '-t' '/dev/ttys001'"))
-        #expect(right.contains("'after-refresh-client["))
-        #expect(right.contains("#{L:"))
-        #expect(right.contains("#{==:#{client_pid},789}"))
-        #expect(right.contains("#{==:#{client_created},321}"))
-        #expect(right.contains("#{==:#{pane_id},%9}"))
         #expect(right.contains("split-window"))
         #expect(right.contains("-h"))
-        #expect(right.contains(shellQuotedCommandArgument("TEST_MISMATCH")))
         #expect(!right.contains("=review"))
         #expect(downSyntax.status == 0, Comment(rawValue: downSyntax.stderr))
         #expect(!down.contains("'list-clients' '-F'"))

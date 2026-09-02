@@ -8,6 +8,20 @@ import Testing
 
 @Suite("TmuxBinaryResolver")
 struct TmuxBinaryResolverTests {
+    @Test(arguments: [
+        ("tmux 3.4", 3, 4),
+        ("tmux 3.5a", 3, 5),
+        ("tmux 3.5b", 3, 5),
+        ("tmux 3.6", 3, 6),
+        ("tmux 4.0", 4, 0),
+    ])
+    func parsesTmuxVersion(_ output: String, _ major: Int, _ minor: Int) {
+        #expect(
+            TmuxVersion(output: output)
+                == TmuxVersion(major: major, minor: minor)
+        )
+    }
+
     @Test("parses the resolved path from shell output")
     func parsesPath() throws {
         let resolver = TmuxBinaryResolver(processRunner: { _, command in

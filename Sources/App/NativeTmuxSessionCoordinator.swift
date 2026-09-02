@@ -173,7 +173,7 @@ final class NativeTmuxSessionCoordinator {
     private var paneSplitRequests: [UUID: [PaneSplitRequest]] = [:]
     private var paneSplitWorkers: [UUID: PaneSplitWorker] = [:]
     private var paneSplitClientBindings: [UUID: PaneSplitClientBinding] = [:]
-    private var paneSplitClients: [UUID: TmuxPaneSplitClientIdentity] = [:]
+    private var paneSplitClients: [UUID: TmuxAttachedClientIdentity] = [:]
     private var paneSplitErrorDismissals: [UUID: PaneSplitErrorDismissal] = [:]
     private var previewIdentityRetryHandles: Set<UUID> = []
     private var unavailablePreviewIdentityHandles: Set<UUID> = []
