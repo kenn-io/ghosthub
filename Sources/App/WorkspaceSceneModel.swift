@@ -5109,6 +5109,17 @@ final class WorkspaceSceneModel: ObservableObject {
         mutation: WorkspaceInventoryStore.MutationPublication? = nil,
         recordsSuccessfulLoad: Bool = true
     ) {
+        // A result that predates a later mutation on the host still shows
+        // this scene its own mutation, but it is provisional: it is neither
+        // authoritative here nor shared, and the fence-end reload replaces it.
+        let isStaleMutation = mutation.map { mutation in
+            inventoryHosts[hostID].map {
+                workspaceInventoryStore.kwtMutationEpoch(on: $0)
+                    != mutation.epoch
+            } ?? false
+        } ?? false
+        let recordsSuccessfulLoad = recordsSuccessfulLoad && !isStaleMutation
+        let publishToStore = publishToStore && !isStaleMutation
         if recordsSuccessfulLoad {
             worktreeMutationCoordinator.reconcileRetiredProtectedEndpoints(
                 after: inventory,
@@ -13026,7 +13037,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard isCurrentTmuxDiscoveryObservation(
                     observationSequence,
                     hostID: pending.selection.hostID
-                ) else {
+                ),
+                    workspaceInventoryStore.tmuxRefreshEpoch(on: host) == epoch
+                else {
                     if index == delays.indices.last {
                         createdSessionDiscoveryTasks.removeValue(
                             forKey: handleID
