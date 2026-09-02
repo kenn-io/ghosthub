@@ -633,6 +633,68 @@ struct WorkspaceSharedInventoryTests {
         await second.shutdown()
     }
 
+    @Test("project removal completion reloads shared inventory once")
+    func projectRemovalReloadsSharedInventoryOnce() async throws {
+        let environment = try setupStandardEnvironment()
+        let project = try #require(environment.snapshot.projects.first)
+        let host = try #require(environment.snapshot.hosts.first)
+        let inventory = WorkspaceTmuxTestSupport.inventory(
+            project: project,
+            worktrees: environment.snapshot.worktrees
+        )
+        let coordinator = WorktreeMutationCoordinator()
+        let kwtLoads = LockedValue(0)
+        let tmuxLoads = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                kwtLoads.withLock { $0 += 1 }
+                return inventory
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in
+                tmuxLoads.withLock { $0 += 1 }
+                return .success([])
+            },
+            mutationCoordinator: coordinator
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            workspaceInventoryStore: store,
+            kwtInventoryLoader: { _ in inventory },
+            worktreeMutationCoordinator: coordinator,
+            kwtProjectRemoval: { path, _, _, _, _ in
+                KwtProjectRecord(
+                    repository: project.scopedKey,
+                    name: project.name,
+                    path: path,
+                    lastTouched: nil
+                )
+            }
+        )
+        model.startKwtInventory()
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+        #expect(kwtLoads.load() == 1)
+        #expect(tmuxLoads.load() == 1)
+
+        let result = await model.unregisterProject(
+            project,
+            confirmedHost: host
+        )
+        #expect(result == .success(project.name))
+        await waitUntilMainActor {
+            kwtLoads.load() >= 2 && tmuxLoads.load() >= 2
+                && model.isWorkspaceInventoryRefreshComplete
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(kwtLoads.load() == 2)
+        #expect(tmuxLoads.load() == 2)
+        #expect(model.snapshot.project(id: project.id) == nil)
+        await model.shutdown()
+    }
+
     @Test("cached tombstone filtering preserves a KWT refresh failure")
     func cachedTombstoneFilteringPreservesRefreshFailure() async throws {
         enum RefreshFailure: LocalizedError {

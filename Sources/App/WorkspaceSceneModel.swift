@@ -7101,7 +7101,6 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         invalidateKwtInventoryRefresh()
         let mutation = kwtMutationPublication(hostID: initial.project.hostID)
-        var shouldRefresh = false
         var removalTombstones:
             Set<WorktreeMutationCoordinator.RemovalTombstone> = []
         var removesProject = false
@@ -7125,9 +7124,6 @@ final class WorkspaceSceneModel: ObservableObject {
                     removesProject: removesProject,
                     allowsRemovalRestoration: allowsRemovalRestoration
                 )
-            }
-            if shouldRefresh {
-                refreshKwtInventory()
             }
         }
 
@@ -7184,7 +7180,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 confirmedHostID: confirmedHost.id,
                 capturedTarget: capturedTarget
             ) != nil else {
-                shouldRefresh = true
                 return .failure(projectRemovalTargetChangedError)
             }
             applyAuthoritativeKwtInventory(
@@ -7236,14 +7231,10 @@ final class WorkspaceSceneModel: ObservableObject {
                             removal.project,
                             on: removal.host
                         )
-                    if quarantinesProjectRemoval {
-                        shouldRefresh = true
-                    }
                     return .failure(projectRemovalTargetChangedError)
                 }
                 removalTombstones = preparedTombstones
                 removesProject = true
-                shouldRefresh = true
                 return .success(removed.name)
             } catch {
                 let removalError = error
@@ -7265,14 +7256,12 @@ final class WorkspaceSceneModel: ObservableObject {
                         capturedTarget: capturedTarget
                     ) != nil else {
                         allowsRemovalRestoration = false
-                        shouldRefresh = true
                         return .failure(projectRemovalTargetChangedError)
                     }
                     reconciledRestorationTargets = projectRestorationTargets(
                         hostID: removal.project.hostID,
                         projectIdentity: removal.project.scopedKey
                     )
-                    shouldRefresh = code == "registration_changed"
                     return .failure(.message(
                         removalError.localizedDescription
                     ))
@@ -7292,16 +7281,12 @@ final class WorkspaceSceneModel: ObservableObject {
                             removal.project,
                             on: removal.host
                         )
-                    if quarantinesProjectRemoval {
-                        shouldRefresh = true
-                    }
                     return .failure(projectRemovalTargetChangedError)
                 }
                 switch reconciliation {
                 case .removed:
                     removalTombstones = preparedTombstones
                     removesProject = true
-                    shouldRefresh = true
                     return .success(removal.project.name)
                 case let .present(restorationTargets):
                     reconciledRestorationTargets = restorationTargets
@@ -7317,7 +7302,6 @@ final class WorkspaceSceneModel: ObservableObject {
                         projectPath: removal.project.rootPath,
                         host: removal.host
                     )
-                    shouldRefresh = true
                     return .failure(.message(
                         removalError.localizedDescription
                     ))
