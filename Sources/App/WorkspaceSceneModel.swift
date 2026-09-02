@@ -367,6 +367,13 @@ final class WorkspaceSceneModel: ObservableObject {
         WorkspaceZellijSessionSelection?
     private var activeBorrowedZellijHandle: BorrowedZellijSessionHandle?
     var activeTerminalFindController: TerminalFindController? {
+        let entries = terminalCoordinator.surfaceEntries()
+        if isLogViewerPresented,
+           let logController = entries.first(where: {
+               $0.key.target == .logViewer
+           })?.view.terminalFindController {
+            return logController
+        }
         if activeBorrowedTmuxSelection != nil {
             guard let activeBorrowedTmuxHandle else { return nil }
             return nativeTmuxSessionCoordinator.findController(
@@ -385,17 +392,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 handle: activeBorrowedZellijHandle
             )?.terminalFindController
         }
-        let entries = terminalCoordinator.surfaceEntries()
         if let openController = entries.first(where: {
             $0.view.terminalFindController.isOpen
         })?.view.terminalFindController {
             return openController
-        }
-        if isLogViewerPresented,
-           let logController = entries.first(where: {
-               $0.key.target == .logViewer
-           })?.view.terminalFindController {
-            return logController
         }
         return entries.first {
             $0.view.hasEffectiveKeyboardFocus

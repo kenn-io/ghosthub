@@ -166,6 +166,44 @@ struct TerminalFindControllerTests {
         #expect(controller.result == .match(total: 2, selected: 2))
         #expect(!controller.isWorking)
     }
+
+    @Test("an external search replaces a callback-pending operation")
+    func externalSearchReplacesPendingCallback() async {
+        let recorder = FindSessionRecorder(responses: [
+            "internal": .awaitingCallback,
+        ])
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: { recorder.session }
+        )
+
+        controller.open()
+        controller.updateQuery("internal")
+        await expectEventually {
+            await recorder.searchTokens["internal"] != nil
+        }
+        let internalOperation = await recorder.searchTokens["internal"]!
+        let externalOperation = TerminalFindOperationToken()
+        controller.backendDidOpen(
+            query: "external",
+            operation: externalOperation
+        )
+        controller.publishBackendResult(
+            total: 4,
+            selected: 1,
+            operation: externalOperation
+        )
+        controller.publishBackendResult(
+            total: 1,
+            selected: 0,
+            operation: internalOperation
+        )
+
+        #expect(controller.query == "external")
+        #expect(controller.result == .match(total: 4, selected: 2))
+        #expect(!controller.isWorking)
+    }
 }
 
 private actor FindTestGate {

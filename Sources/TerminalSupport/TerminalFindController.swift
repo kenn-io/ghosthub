@@ -165,20 +165,29 @@ public final class TerminalFindController: ObservableObject {
     ) {
         guard isAvailable else { return }
         let opensBar = !isOpen
+        let replacesActiveOperation = activeCallbackOperation.map {
+            $0.token != operation
+        } ?? false
         if opensBar {
             findSessionID = UUID()
             activeSession = nil
             query = value
             queryGeneration &+= 1
+        } else if replacesActiveOperation {
+            query = value
+            queryGeneration &+= 1
+            pendingSearch = nil
+            pendingNavigations.removeAll()
+            debounceTask?.cancel()
+            debounceTask = nil
+            activeCallbackOperation = nil
+            resumeCallbackWaiter()
+            isWorking = false
         } else if query != value {
-            guard activeCallbackOperation == nil else { return }
             query = value
             queryGeneration &+= 1
             result = .idle
             failureMessage = nil
-        } else if let activeCallbackOperation,
-                  activeCallbackOperation.token != operation {
-            return
         }
         let callbackOperation = CallbackOperation(
             token: operation,
