@@ -87,15 +87,24 @@ struct CommandPaletteModelTests {
     func sceneDependentCommandsFollowAvailability() {
         let commands = makeCommandPaletteCommands(
             availableApplicationShortcuts: [
+                .find,
                 .nextSibling,
                 .splitDown,
             ]
         )
 
+        commands.expectCommandContains(
+            title: "Find in Terminal", shortcut: .find
+        )
         commands.expectCommandNotContains(title: "Previous Sibling")
         commands.expectCommandContains(title: "Next Sibling")
         commands.expectCommandNotContains(title: "Split Right")
         commands.expectCommandContains(title: "Split Down")
+
+        let unavailable = makeCommandPaletteCommands(
+            availableApplicationShortcuts: []
+        )
+        unavailable.expectCommandNotContains(title: "Find in Terminal")
     }
 
     @Test("worktree commands follow persisted sidebar order")

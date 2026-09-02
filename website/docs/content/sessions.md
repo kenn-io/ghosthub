@@ -55,11 +55,14 @@ Hold ++cmd++ while pointing at a highlighted terminal link, then click to open
 it in the default macOS application.
 
 Press ++cmd+f++ to search the complete active pane history in a standalone
-terminal or a POSIX tmux 3.4-or-newer session. Ghosthub shows the query and
-navigation controls, while libghostty or tmux owns matching, highlights, and
-viewport movement. Tmux copy mode is pane-wide, so other attached clients can
-observe or cancel it. Herdr, Zellij, Windows psmux, and older tmux versions do
-not offer partial client-buffer search.
+terminal or a POSIX tmux 3.4-or-newer session. You can also run **Find in
+Terminal** from the Command Palette. Ghosthub shows the query and navigation
+controls, while libghostty or tmux owns matching, highlights, and viewport
+movement. Tmux copy mode is pane-wide, so other attached clients can observe
+or cancel it. Herdr, Zellij, Windows psmux, and older tmux versions do not offer
+partial client-buffer search.
+
+![Ghosthub Find bar searching the complete history of an active tmux pane](assets/guide-find.png)
 
 Switching to another host, worktree, or session hides an opened tmux terminal
 without detaching it. Each workspace keeps every tmux session you explicitly

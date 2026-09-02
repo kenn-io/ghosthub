@@ -313,6 +313,48 @@ struct NativeTmuxSessionCoordinatorTests {
         )
     }
 
+    @Test("initial client binding retries while the attachment is live")
+    func initialClientBindingRetries() async {
+        let clientLookups = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                guard command.contains(
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                ) else { return (0, "") }
+                var attempt = 0
+                clientLookups.withLock {
+                    $0 += 1
+                    attempt = $0
+                }
+                return attempt == 1
+                    ? (1, "client token is not ready")
+                    : (0, coordinatorSplitClientOutput)
+            },
+            clientIdentityRetryDelays: [.zero]
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "appearing",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            clientLookups.load() == 2
+                && store.surface.terminalFindController.isAvailable
+        }
+
+        #expect(clientLookups.load() == 2)
+        #expect(store.surface.terminalFindController.isAvailable)
+    }
+
     @Test("new named sessions use tmux create-or-attach mode")
     func namedSessionUsesCreateMode() async throws {
         let store = RecordingNativeSessionSurfaceStore()
@@ -1035,7 +1077,7 @@ struct NativeTmuxSessionCoordinatorTests {
                         $0 += 1
                         attempt = $0
                     }
-                    if attempt == 1 {
+                    if attempt <= 2 {
                         return (1, "no clients yet")
                     }
                     return (0, coordinatorSplitClientOutput)
@@ -1056,7 +1098,8 @@ struct NativeTmuxSessionCoordinatorTests {
 
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: handle)
-        await waitUntilMainActor { clientLookups.load() == 1 }
+        await waitUntilMainActor { clientLookups.load() == 2 }
+        try await Task.sleep(for: .milliseconds(20))
         coordinator.requestAttachedSessionIdentity(handle)
         await waitUntilMainActor {
             coordinator.attachedSessionIdentity(handle)
@@ -1067,7 +1110,7 @@ struct NativeTmuxSessionCoordinatorTests {
         handler(.right)
         #expect(store.surface.terminalOperationErrorMessage == nil)
         await waitUntilMainActor { splitCommands.load() == 1 }
-        #expect(clientLookups.load() == 3)
+        #expect(clientLookups.load() == 4)
         #expect(store.surface.terminalOperationErrorMessage == nil)
     }
 

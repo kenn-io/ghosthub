@@ -17,6 +17,7 @@ mkdir -p src/assets
 assets=(
   hero.png
   guide-sessions.png
+  guide-find.png
   guide-session-previews.png
   guide-session-activity.png
   guide-hosts.png

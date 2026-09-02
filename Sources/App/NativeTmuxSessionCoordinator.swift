@@ -228,7 +228,7 @@ final class NativeTmuxSessionCoordinator {
         paneFinder: TmuxPaneFinder = TmuxPaneFinder(),
         terminalOperationErrorDuration: Duration = .seconds(4),
         clientIdentityRetryDelays: [Duration] = [
-            .milliseconds(250), .seconds(1),
+            .milliseconds(250), .seconds(1), .seconds(2),
         ],
         sleep: @escaping @Sendable (Duration) async throws -> Void = {
             try await Task.sleep(for: $0)
@@ -1158,9 +1158,7 @@ final class NativeTmuxSessionCoordinator {
                         handleID: handle.id
                     )
                 }
-                guard previewIdentityRetryHandles.contains(handle.id),
-                      retryIndex < clientIdentityRetryDelays.count
-                else {
+                guard retryIndex < clientIdentityRetryDelays.count else {
                     paneSplitClientBindings.removeValue(forKey: handle.id)
                     if previewIdentityRetryHandles.remove(handle.id) != nil {
                         unavailablePreviewIdentityHandles.insert(handle.id)
