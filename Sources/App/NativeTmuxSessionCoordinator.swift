@@ -147,6 +147,11 @@ final class NativeTmuxSessionCoordinator {
         var task: Task<Void, Never>
     }
 
+    private struct AttachmentCleanupTail {
+        var id: UUID
+        var task: Task<Void, Never>
+    }
+
     private typealias SizingTransitionTask =
         Task<TmuxClientSizingTransitionResult, Never>
 
@@ -191,7 +196,8 @@ final class NativeTmuxSessionCoordinator {
     private var sizingTransitionTails: [UUID: SizingTransitionTask] = [:]
     private var sizingTransitionTasks:
         [UUID: [UUID: SizingTransitionTask]] = [:]
-    private var sizingTransitionDrains: [UUID: Task<Void, Never>] = [:]
+    private var attachmentCleanupTails:
+        [NativeTmuxSessionKey: AttachmentCleanupTail] = [:]
     private var sizingTransitionCleanupTasks: [UUID: Task<Void, Never>] = [:]
     private var interactiveSizingTransitionHandles: Set<UUID> = []
     private var isShuttingDown = false
@@ -320,10 +326,10 @@ final class NativeTmuxSessionCoordinator {
         let tmuxPathProvider = tmuxPathProvider
         let remoteTmuxPathProvider = remoteTmuxPathProvider
         let remoteConnectionProvider = remoteConnectionProvider
-        let sizingTransitionDrain = sizingTransitionDrains[handle.id]
+        let attachmentCleanup = attachmentCleanupTails[key]?.task
         provisioningTasks[handle.id] = Task { [weak self] in
             do {
-                await sizingTransitionDrain?.value
+                await attachmentCleanup?.value
                 try Task.checkCancellation()
                 let sshConnection: KwtSSHConnection?
                 let sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
@@ -574,6 +580,7 @@ final class NativeTmuxSessionCoordinator {
         let attachment = attachments.removeValue(forKey: handle.id)
         cancelSizingTransitionsAndRelease(
             handleID: handle.id,
+            key: key,
             attachment: attachment,
             removesRemoteExitStatus: true
         )
@@ -862,25 +869,19 @@ final class NativeTmuxSessionCoordinator {
 
     private func cancelSizingTransitionsAndRelease(
         handleID: UUID,
+        key: NativeTmuxSessionKey,
         attachment: NativeTmuxAttachment?,
         invalidatesConnection: Bool = false,
         removesRemoteExitStatus: Bool = false
     ) {
         let sizingTransitions = cancelSizingTransitions(handleID: handleID)
-        let predecessor = sizingTransitionDrains[handleID]
-        let drain = Task {
-            await predecessor?.value
-            for transition in sizingTransitions {
-                _ = await transition.value
-            }
-        }
-        sizingTransitionDrains[handleID] = drain
+        let predecessor = attachmentCleanupTails[key]?.task
         let remoteExitStatusStore = remoteExitStatusStore
         let cleanupID = UUID()
         let cleanup = Task { [weak self] in
-            await drain.value
-            if self?.sizingTransitionDrains[handleID] == drain {
-                self?.sizingTransitionDrains.removeValue(forKey: handleID)
+            await predecessor?.value
+            for transition in sizingTransitions {
+                _ = await transition.value
             }
             if invalidatesConnection {
                 await attachment?.sshConnection?.invalidate()
@@ -889,8 +890,15 @@ final class NativeTmuxSessionCoordinator {
                 remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
             }
             try? await attachment?.sshConnection?.release()
+            if self?.attachmentCleanupTails[key]?.id == cleanupID {
+                self?.attachmentCleanupTails.removeValue(forKey: key)
+            }
             self?.sizingTransitionCleanupTasks.removeValue(forKey: cleanupID)
         }
+        attachmentCleanupTails[key] = AttachmentCleanupTail(
+            id: cleanupID,
+            task: cleanup
+        )
         sizingTransitionCleanupTasks[cleanupID] = cleanup
     }
 
@@ -1383,6 +1391,7 @@ final class NativeTmuxSessionCoordinator {
         let attachment = attachments.removeValue(forKey: handle.id)
         cancelSizingTransitionsAndRelease(
             handleID: handle.id,
+            key: sessionKey(handle),
             attachment: attachment,
             removesRemoteExitStatus: true
         )
@@ -1534,6 +1543,7 @@ final class NativeTmuxSessionCoordinator {
             )
         cancelSizingTransitionsAndRelease(
             handleID: handle.id,
+            key: key,
             attachment: attachment,
             invalidatesConnection: connectionUnusable
         )
@@ -1553,10 +1563,8 @@ final class NativeTmuxSessionCoordinator {
         let handles = Array(handlesByKey.values)
         let connections = attachments.values.compactMap(\.sshConnection)
         let sizingTransitions = sizingTransitionTasks.values.flatMap(\.values)
-        let sizingDrains = Array(sizingTransitionDrains.values)
         let sizingCleanups = Array(sizingTransitionCleanupTasks.values)
         sizingTransitions.forEach { $0.cancel() }
-        sizingDrains.forEach { $0.cancel() }
         sizingCleanups.forEach { $0.cancel() }
         sizingTransitionTasks.removeAll()
         sizingTransitionTails.removeAll()
@@ -1590,7 +1598,7 @@ final class NativeTmuxSessionCoordinator {
         for cleanup in sizingCleanups {
             await cleanup.value
         }
-        sizingTransitionDrains.removeAll()
+        attachmentCleanupTails.removeAll()
         sizingTransitionCleanupTasks.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))

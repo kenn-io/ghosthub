@@ -1875,6 +1875,104 @@ struct NativeTmuxSessionCoordinatorTests {
         _ = await sizing.value
     }
 
+    @Test("host replacement waits for prior sizing cleanup")
+    func hostReplacementWaitsForPriorSizingCleanup() async throws {
+        let events = LockedValue<[String]>([])
+        let connectionRequests = LockedValue(0)
+        let releaseSizingDrain = DispatchSemaphore(value: 0)
+        defer { releaseSizingDrain.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let hostID = UUID()
+        let originalHost = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let replacementHost = SSHHostInfo(
+            user: "operator",
+            hostname: "replacement.example.test",
+            port: nil
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                connectionRequests.withLock { $0 += 1 }
+                let label = connectionRequests.load() == 1
+                    ? "original" : "replacement"
+                events.withLock { $0.append("\(label)-acquire") }
+                return testKwtSSHAttachment(release: {
+                    events.withLock { $0.append("\(label)-release") }
+                })
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("sizing-start") }
+                    while !withUnsafeCurrentTask(body: {
+                        $0?.isCancelled == true
+                    }) {
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    events.withLock { $0.append("sizing-cancel") }
+                    releaseSizingDrain.wait()
+                    events.withLock { $0.append("sizing-drained") }
+                }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "replacement-sizing",
+            host: .ssh(originalHost),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        events.store([])
+
+        let sizing = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor {
+            events.load() == ["sizing-start"]
+        }
+        let unblockDrain = Task.detached {
+            try? await Task.sleep(for: .milliseconds(250))
+            releaseSizingDrain.signal()
+        }
+        let replacement = coordinator.attach(
+            hostID: hostID,
+            name: handle.name,
+            host: .ssh(replacementHost),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor {
+            events.load().contains("original-release")
+                && events.load().contains("replacement-acquire")
+        }
+        await unblockDrain.value
+        _ = await sizing.value
+        #expect(replacement.id != handle.id)
+        let completedEvents = events.load()
+        let release = try #require(
+            completedEvents.firstIndex(of: "original-release")
+        )
+        let replacementAcquire = try #require(
+            completedEvents.firstIndex(of: "replacement-acquire")
+        )
+        #expect(release < replacementAcquire)
+        await coordinator.shutdown()
+    }
+
     @Test("shutdown waits for a prior close sizing drain")
     func shutdownWaitsForPriorCloseSizingDrain() async throws {
         let events = LockedValue<[String]>([])
