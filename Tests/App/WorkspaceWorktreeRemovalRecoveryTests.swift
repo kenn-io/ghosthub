@@ -928,8 +928,8 @@ extension WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("failed removal restores an inactive retained presentation")
-    func failedRemovalRestoresInactivePresentation() async throws {
+    @Test("failed removal leaves suppressed establishment explicit")
+    func failedRemovalLeavesSuppressedEstablishmentExplicit() async throws {
         let fixture = try removalFixture()
         let environment = fixture.environment
         let removable = fixture.removable
@@ -1006,20 +1006,20 @@ extension WorkspaceWorktreeRemovalTests {
             try await removal.value
         }
         #expect(!model.suppressesSelectedWorktreeSessionOpen)
-        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
-        #expect(
-            model.retainedBorrowedTmuxHandle(for: selection) != removedHandle
-        )
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == nil)
         #expect(model.retainedBorrowedTmuxHandle(for: other) == activeHandle)
         #expect(model.activeBorrowedTmuxSelection == other)
+
+        model.openBorrowedTmuxSession(selection)
         await waitUntilMainActor {
             surfaces.requestedConfigurations.count == 3
         }
         let restoredCommand = try #require(surfaces.lastCommand)
-        #expect(restoredCommand.contains("attach-session"))
-        #expect(restoredCommand.contains("ignore-size"))
-        #expect(!restoredCommand.contains("/test/kwt"))
-        #expect(!restoredCommand.contains("'open'"))
+        #expect(restoredCommand.contains("/test/kwt"))
+        #expect(restoredCommand.contains("open"))
+        #expect(!restoredCommand.contains("attach-session"))
+        #expect(removedHandle != model.retainedBorrowedTmuxHandle(for: selection))
         await model.shutdown()
     }
 
@@ -1077,9 +1077,10 @@ extension WorkspaceWorktreeRemovalTests {
             try await removal.value
         }
 
-        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
         #expect(model.activeBorrowedTmuxSelection == newer)
         #expect(model.retainedBorrowedTmuxHandle(for: newer) == newerHandle)
+        #expect(model.retainedBorrowedTmuxHandle(for: removed) == nil)
         await model.shutdown()
     }
 
@@ -1150,7 +1151,7 @@ extension WorkspaceWorktreeRemovalTests {
 
     @MainActor
     @Test(
-        "dirty rejection preserves active and non-sizing hidden recovery",
+        "dirty rejection never establishes a hidden sizing client",
         arguments: [true, false]
     )
     func dirtyRejectionAfterSessionTerminationRestoresSession(
@@ -1211,8 +1212,10 @@ extension WorkspaceWorktreeRemovalTests {
             await model.shutdown()
             return
         }
-        await waitUntilMainActor {
-            surfaces.requestedConfigurations.count > initialRequestCount
+        if wasOpened {
+            await waitUntilMainActor {
+                surfaces.requestedConfigurations.count > initialRequestCount
+            }
         }
 
         #expect(updatedRequest.forceRemoval)
@@ -1221,24 +1224,28 @@ extension WorkspaceWorktreeRemovalTests {
             model.activeBorrowedTmuxSelection
                 == (wasOpened ? selection : nil)
         )
-        let restoredCommand = try #require(
-            surfaces.requestedConfigurations.last?.command
-        )
         if wasOpened {
+            let restoredCommand = try #require(
+                surfaces.requestedConfigurations.last?.command
+            )
             #expect(restoredCommand.contains("/test/kwt"))
             #expect(restoredCommand.contains("open"))
         } else {
-            #expect(restoredCommand.contains("attach-session"))
-            #expect(restoredCommand.contains("ignore-size"))
-            #expect(!restoredCommand.contains("/test/kwt"))
-            #expect(!restoredCommand.contains("'open'"))
+            #expect(surfaces.requestedConfigurations.isEmpty)
+            #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+            model.openBorrowedTmuxSession(selection)
+            await waitUntilMainActor {
+                surfaces.requestedConfigurations.count == 1
+            }
+            #expect(surfaces.lastCommand?.contains("/test/kwt") == true)
+            #expect(surfaces.lastCommand?.contains("open") == true)
         }
         await model.shutdown()
     }
 
     @MainActor
-    @Test("failed removal restores pending workspace without a sizing client")
-    func failedRemovalRestoresPendingWorkspaceWithoutSizing() async throws {
+    @Test("failed removal leaves inactive workspace establishment explicit")
+    func failedRemovalLeavesInactiveEstablishmentExplicit() async throws {
         let environment = try setupRemoteEnvironment()
         var removable = try #require(environment.snapshot.worktrees.first)
         removable.generation = stableWorktreeGeneration
@@ -1290,20 +1297,19 @@ extension WorkspaceWorktreeRemovalTests {
         await #expect(throws: KwtWorktreeError.self) {
             try await model.removeWorktree(request)
         }
+        #expect(surfaces.requestedConfigurations.count == initialRequestCount)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        model.openBorrowedTmuxSession(selection)
         await waitUntilMainActor {
-            surfaces.requestedConfigurations.count > initialRequestCount
+            surfaces.requestedConfigurations.count == initialRequestCount + 1
         }
-
-        let restoredCommand = try #require(surfaces.lastCommand)
-        #expect(restoredCommand.contains("attach-session"))
-        #expect(restoredCommand.contains("ignore-size"))
-        #expect(!restoredCommand.contains("'open'"))
+        #expect(surfaces.lastCommand?.contains("'open'") == true)
         await model.shutdown()
     }
 
     @MainActor
-    @Test("failed removal restores interrupted local workspace as non-sizing")
-    func failedRemovalRestoresInterruptedLocalAsNonSizing() async throws {
+    @Test("failed removal leaves interrupted local establishment explicit")
+    func failedRemovalLeavesInterruptedLocalExplicit() async throws {
         let fixture = try removalFixture()
         let environment = fixture.environment
         let removable = fixture.removable
@@ -1354,15 +1360,14 @@ extension WorkspaceWorktreeRemovalTests {
         await #expect(throws: KwtWorktreeError.self) {
             try await model.removeWorktree(request)
         }
+        #expect(surfaces.requestedConfigurations.count == initialRequestCount)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        model.openBorrowedTmuxSession(selection)
         await waitUntilMainActor {
-            surfaces.requestedConfigurations.count > initialRequestCount
+            surfaces.requestedConfigurations.count == initialRequestCount + 1
         }
-
-        let restoredCommand = try #require(surfaces.lastCommand)
-        #expect(restoredCommand.contains("attach-session"))
-        #expect(restoredCommand.contains("ignore-size"))
-        #expect(!restoredCommand.contains("/test/kwt"))
-        #expect(!restoredCommand.contains("'open'"))
+        #expect(surfaces.lastCommand?.contains("/test/kwt") == true)
+        #expect(surfaces.lastCommand?.contains("open") == true)
         await model.shutdown()
     }
 

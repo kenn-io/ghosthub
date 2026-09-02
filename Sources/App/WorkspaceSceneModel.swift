@@ -2833,8 +2833,6 @@ final class WorkspaceSceneModel: ObservableObject {
             Set<WorkspaceTmuxSessionSelection>?
         var requiresWorkspaceReestablishment = false
         var terminatedSession = false
-        var killedSessionReestablishmentTarget:
-            WorkspaceTmuxSessionSelection?
         invalidateKwtInventoryRefresh()
         defer {
             ownsWorktreeMutation = false
@@ -2846,15 +2844,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 requiresWorkspaceReestablishment:
                 requiresWorkspaceReestablishment
             )
-            if let killedSessionReestablishmentTarget {
-                _ = presentTmuxSession(
-                    killedSessionReestablishmentTarget,
-                    launchMode: .attach,
-                    intent: .userInitiated,
-                    activatesPresentation: false,
-                    startsHidden: true
-                )
-            }
         }
 
         let preflight: KwtHostInventory
@@ -3025,8 +3014,6 @@ final class WorkspaceSceneModel: ObservableObject {
                        removalHostEndpointMatches(request),
                        !terminatedSession || killedRestorationTarget != nil,
                        changes.hasUncommittedChanges {
-                        killedSessionReestablishmentTarget =
-                            killedRestorationTarget
                         throw KwtWorktreeError.removalChangesChanged
                     }
                     throw removalError
@@ -4835,6 +4822,12 @@ final class WorkspaceSceneModel: ObservableObject {
             let activatesPresentation = presentation.wasActive
                 && presentation.userNavigationRevision
                 == userNavigationRevision
+            // Kwt cannot establish a missing workspace with a non-sizing
+            // client. Leave inactive establishment for an explicit open,
+            // which can safely use an interactive kwt attachment.
+            guard activatesPresentation || !establishesWorkspace else {
+                continue
+            }
             _ = presentTmuxSession(
                 selection,
                 launchMode: establishesWorkspace
