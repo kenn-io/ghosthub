@@ -602,88 +602,22 @@ struct TmuxAttachmentInfoTests {
         #expect(tmuxCommands.contains("@2 window-active-style"))
     }
 
-    @Test(arguments: [true, false])
-    func kwtAttachmentSetsIgnoreSizeOnItsDetectedClient(
-        ignoresClientSize: Bool
-    ) throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let kwt = directory.appendingPathComponent("kwt")
-        let tmux = directory.appendingPathComponent("tmux")
-        let log = directory.appendingPathComponent("tmux.log")
-        let clientTTY = directory.appendingPathComponent("client.tty")
-        let refreshed = directory.appendingPathComponent("refreshed")
-        try """
-        #!/bin/sh
-        exec "$GHOSTHUB_TMUX" attach-session
-        """.write(to: kwt, atomically: true, encoding: .utf8)
-        try """
-        #!/bin/sh
-        case " $* " in
-          *" attach-session "*)
-            tty > "$GHOSTHUB_TMUX_CLIENT_TTY"
-            if [ "$GHOSTHUB_EXPECT_REFRESH" = 1 ]; then
-              ghosthub_attempts=0
-              while [ ! -f "$GHOSTHUB_TMUX_REFRESHED" ]; do
-                ghosthub_attempts=$((ghosthub_attempts + 1))
-                [ "$ghosthub_attempts" -ge 100 ] && break
-                sleep 0.01
-              done
-            fi
-            ;;
-          *" list-clients "*)
-            [ -f "$GHOSTHUB_TMUX_CLIENT_TTY" ] && cat "$GHOSTHUB_TMUX_CLIENT_TTY"
-            ;;
-          *" refresh-client "*)
-            printf '%s\\n' "$*" >> "$GHOSTHUB_TMUX_LOG"
-            : > "$GHOSTHUB_TMUX_REFRESHED"
-            ;;
-        esac
-        """.write(to: tmux, atomically: true, encoding: .utf8)
-        for executable in [kwt, tmux] {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755], ofItemAtPath: executable.path
-            )
-        }
-
+    @Test("non-sizing worktree attachments bypass kwt")
+    func nonSizingWorktreeAttachmentUsesDirectAttach() {
         let command = TmuxAttachmentInfo(
             sessionName: "kwt-widget-feature",
             host: .local,
             workspacePath: "/worktrees/widget",
-            ignoresClientSize: ignoresClientSize
-        ).attachCommand(tmuxPath: tmux.path, kwtPath: kwt.path)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
-        process.arguments = ["-q", "/dev/null", "/bin/sh", "-c", command]
-        process.environment = ProcessInfo.processInfo.environment.merging([
-            "GHOSTHUB_TMUX": tmux.path,
-            "GHOSTHUB_TMUX_CLIENT_TTY": clientTTY.path,
-            "GHOSTHUB_TMUX_LOG": log.path,
-            "GHOSTHUB_TMUX_REFRESHED": refreshed.path,
-            "GHOSTHUB_EXPECT_REFRESH": ignoresClientSize ? "1" : "0",
-            "TERM": "xterm-256color",
-        ]) { _, new in new }
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+            ignoresClientSize: true
+        ).attachCommand(
+            tmuxPath: "/usr/bin/tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
 
-        #expect(process.terminationStatus == 0)
-        let tmuxCommands = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
-        let attachedTTY = try String(
-            contentsOf: clientTTY, encoding: .utf8
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        if ignoresClientSize {
-            #expect(tmuxCommands.contains(
-                "refresh-client -t \(attachedTTY) -f ignore-size"
-            ))
-        } else {
-            #expect(tmuxCommands.isEmpty)
-        }
+        #expect(command.contains("attach-session"))
+        #expect(command.contains("ignore-size"))
+        #expect(!command.contains("/Contents/Helpers/kwt"))
+        #expect(!command.contains("refresh-client"))
     }
 
     @Test("worktree attachment survives destroy-unattached")

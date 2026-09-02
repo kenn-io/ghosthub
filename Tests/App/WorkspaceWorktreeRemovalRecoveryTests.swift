@@ -1015,7 +1015,11 @@ extension WorkspaceWorktreeRemovalTests {
         await waitUntilMainActor {
             surfaces.requestedConfigurations.count == 3
         }
-        #expect(surfaces.lastCommand?.contains("ignore-size") == true)
+        let restoredCommand = try #require(surfaces.lastCommand)
+        #expect(restoredCommand.contains("attach-session"))
+        #expect(restoredCommand.contains("ignore-size"))
+        #expect(!restoredCommand.contains("/test/kwt"))
+        #expect(!restoredCommand.contains("'open'"))
         await model.shutdown()
     }
 
@@ -1146,7 +1150,7 @@ extension WorkspaceWorktreeRemovalTests {
 
     @MainActor
     @Test(
-        "a dirty rejection after session termination restores the killed session",
+        "dirty rejection preserves active and non-sizing hidden recovery",
         arguments: [true, false]
     )
     func dirtyRejectionAfterSessionTerminationRestoresSession(
@@ -1220,14 +1224,21 @@ extension WorkspaceWorktreeRemovalTests {
         let restoredCommand = try #require(
             surfaces.requestedConfigurations.last?.command
         )
-        #expect(restoredCommand.contains("kwt"))
-        #expect(restoredCommand.contains("open"))
+        if wasOpened {
+            #expect(restoredCommand.contains("/test/kwt"))
+            #expect(restoredCommand.contains("open"))
+        } else {
+            #expect(restoredCommand.contains("attach-session"))
+            #expect(restoredCommand.contains("ignore-size"))
+            #expect(!restoredCommand.contains("/test/kwt"))
+            #expect(!restoredCommand.contains("'open'"))
+        }
         await model.shutdown()
     }
 
     @MainActor
-    @Test("failed removal preserves pending workspace establishment")
-    func failedRemovalPreservesPendingEstablishment() async throws {
+    @Test("failed removal restores pending workspace without a sizing client")
+    func failedRemovalRestoresPendingWorkspaceWithoutSizing() async throws {
         let environment = try setupRemoteEnvironment()
         var removable = try #require(environment.snapshot.worktrees.first)
         removable.generation = stableWorktreeGeneration
@@ -1283,13 +1294,16 @@ extension WorkspaceWorktreeRemovalTests {
             surfaces.requestedConfigurations.count > initialRequestCount
         }
 
-        #expect(surfaces.lastCommand?.contains("'open'") == true)
+        let restoredCommand = try #require(surfaces.lastCommand)
+        #expect(restoredCommand.contains("attach-session"))
+        #expect(restoredCommand.contains("ignore-size"))
+        #expect(!restoredCommand.contains("'open'"))
         await model.shutdown()
     }
 
     @MainActor
-    @Test("failed removal preserves interrupted local establishment")
-    func failedRemovalPreservesInterruptedLocalEstablishment() async throws {
+    @Test("failed removal restores interrupted local workspace as non-sizing")
+    func failedRemovalRestoresInterruptedLocalAsNonSizing() async throws {
         let fixture = try removalFixture()
         let environment = fixture.environment
         let removable = fixture.removable
@@ -1344,8 +1358,11 @@ extension WorkspaceWorktreeRemovalTests {
             surfaces.requestedConfigurations.count > initialRequestCount
         }
 
-        #expect(surfaces.lastCommand?.contains("kwt") == true)
-        #expect(surfaces.lastCommand?.contains("open") == true)
+        let restoredCommand = try #require(surfaces.lastCommand)
+        #expect(restoredCommand.contains("attach-session"))
+        #expect(restoredCommand.contains("ignore-size"))
+        #expect(!restoredCommand.contains("/test/kwt"))
+        #expect(!restoredCommand.contains("'open'"))
         await model.shutdown()
     }
 

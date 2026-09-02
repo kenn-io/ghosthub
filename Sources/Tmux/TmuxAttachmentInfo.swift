@@ -128,6 +128,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     )
                 }
             } else if launchMode != .attachOnly,
+                      !ignoresClientSize,
                       protectedWorkspacePath == nil,
                       workspacePath != nil {
                 command = remoteWorkspaceAttachCommand(
@@ -180,7 +181,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         }
         switch launchMode {
         case .attach:
-            if let protectedWorkspacePath {
+            // Kwt does not expose tmux attach client flags. A non-sizing
+            // client must therefore use the direct attach below so
+            // ignore-size is present when tmux creates the client.
+            if !ignoresClientSize, let protectedWorkspacePath {
                 guard let kwtPath, !kwtPath.isEmpty else {
                     commands.append(
                         "printf 'Ghosthub: bundled kwt is unavailable\\n' >&2"
@@ -209,7 +213,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     )
                 )
             } else {
-                if let workspacePath {
+                if !ignoresClientSize, let workspacePath {
                     guard let kwtPath, !kwtPath.isEmpty else {
                         commands.append(
                             "printf 'Ghosthub: bundled kwt is unavailable\\n' >&2"
@@ -333,11 +337,6 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 presentationCommand.bestEffortCommand(tmuxPath: tmuxPath)
             )
         }
-        if let clientSizeSetupCommand = clientSizeSetupCommand(
-            tmuxPath: tmuxPath
-        ) {
-            setupCommands.append(clientSizeSetupCommand)
-        }
         let sessionSetup = setupCommands.joined(separator: "; ")
         let listClientTTYs = tmuxArguments(
             tmuxPath,
@@ -366,17 +365,6 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         ].joined(separator: "; ")
     }
 
-    private func clientSizeSetupCommand(tmuxPath: String) -> String? {
-        guard ignoresClientSize else { return nil }
-        let beforeClientTTY = tmuxArguments(
-            tmuxPath, "refresh-client", "-t"
-        ).map(shellQuotedCommandArgument).joined(separator: " ")
-        let afterClientTTY = ["-f", "ignore-size"]
-            .map(shellQuotedCommandArgument)
-            .joined(separator: " ")
-        return beforeClientTTY + " \"$ghosthub_kwt_tty\" " + afterClientTTY
-    }
-
     private func remoteAttachCommand(
         info: SSHHostInfo,
         tmuxPath: String,
@@ -393,7 +381,9 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             )
         }
         let attach: String
-        if let protectedWorkspacePath, launchMode != .attachOnly {
+        if let protectedWorkspacePath,
+           launchMode != .attachOnly,
+           !ignoresClientSize {
             let protectedAttach: String
             if let remoteKwtCommandPrelude {
                 let kwtAttach = remoteKwtCommandPrelude
