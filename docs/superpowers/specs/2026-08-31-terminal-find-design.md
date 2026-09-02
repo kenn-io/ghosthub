@@ -80,7 +80,7 @@ default key sequence.
 | Presentation | Find behavior |
 | --- | --- |
 | POSIX tmux 3.6 or newer | Available through native copy-mode search with option-aware query rendering and an exact total when tmux completes its count |
-| POSIX tmux 3.5 through 3.5a | Available through native copy-mode search with legacy query rendering and an exact total when tmux completes its count |
+| POSIX tmux 3.5 or newer and older than 3.6 | Available through native copy-mode search with legacy query rendering and an exact total when tmux completes its count |
 | POSIX tmux 3.4 | Available through native copy-mode search with legacy query rendering and no match total |
 | POSIX tmux older than 3.4 | Unavailable |
 | psmux | Unavailable until its compatible command behavior is verified |
@@ -442,11 +442,11 @@ probe requests only `search_present`, `search_count`, and
 real-server integration test covers one current tmux rendering rather than
 trying to force tmux's timing-dependent partial-count path.
 
-Command-rendering tests verify both copy-mode parser tiers: tmux 3.4 through
-3.5a omit `--`, while tmux 3.6 and newer include it. Both renderings preserve a
-leading-hyphen query as one argument. The tests also pin that every nested tmux
-layer renders query-bearing data as a single-quoted token rather than a
-double-quoted or unquoted token.
+Command-rendering tests verify both copy-mode parser tiers: tmux 3.4 or newer
+and older than 3.6 omit `--`, while tmux 3.6 and newer include it. Both
+renderings preserve a leading-hyphen query as one argument. The tests also pin
+that every nested tmux layer renders query-bearing data as a single-quoted
+token rather than a double-quoted or unquoted token.
 
 Remote runner tests verify that one query command is in flight, intermediate
 queries coalesce, the final query executes, and close cancels pending work.
