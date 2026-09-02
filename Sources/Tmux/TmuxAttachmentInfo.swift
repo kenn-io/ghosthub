@@ -333,6 +333,11 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 presentationCommand.bestEffortCommand(tmuxPath: tmuxPath)
             )
         }
+        if let clientSizeSetupCommand = clientSizeSetupCommand(
+            tmuxPath: tmuxPath
+        ) {
+            setupCommands.append(clientSizeSetupCommand)
+        }
         let sessionSetup = setupCommands.joined(separator: "; ")
         let listClientTTYs = tmuxArguments(
             tmuxPath,
@@ -359,6 +364,17 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             "exec 3<&-",
             "exit \"$ghosthub_kwt_status\"",
         ].joined(separator: "; ")
+    }
+
+    private func clientSizeSetupCommand(tmuxPath: String) -> String? {
+        guard ignoresClientSize else { return nil }
+        let beforeClientTTY = tmuxArguments(
+            tmuxPath, "refresh-client", "-t"
+        ).map(shellQuotedCommandArgument).joined(separator: " ")
+        let afterClientTTY = ["-f", "ignore-size"]
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+        return beforeClientTTY + " \"$ghosthub_kwt_tty\" " + afterClientTTY
     }
 
     private func remoteAttachCommand(
