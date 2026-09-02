@@ -653,6 +653,14 @@ struct WorkspaceWorktreeCreationTests {
             isPrimary: true,
             tmuxSessionName: "kwt-workspace-kwt"
         ))
+        snapshot.directoryWorkspaces.append(DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            name: "scratch",
+            path: "/tmp/scratch",
+            tmuxSessionName: "kwt-directory-scratch",
+            sessionLive: false
+        ))
         let workspace = PullRequestWorkspace(
             id: "workspace-32",
             repository: "github.com/kenn-io/ghosthub",
@@ -734,6 +742,9 @@ struct WorkspaceWorktreeCreationTests {
         #expect(imported.pullRequestState == .open)
         #expect(model.snapshot.project(id: unrelatedProjectID) != nil)
         #expect(model.snapshot.worktree(id: unrelatedWorktreeID) != nil)
+        #expect(model.snapshot.directoryWorkspaces.contains {
+            $0.path == "/tmp/scratch"
+        })
 
         let second = try makeModel(
             database: WorkspaceDatabase.inMemory(),

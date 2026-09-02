@@ -231,10 +231,19 @@ final class WorkspaceInventoryStore: ObservableObject {
         )
     }
 
+    /// The current tmux refresh epoch for a host. A scene-local probe captures
+    /// it before discovery and passes it back to `publishTmuxSessions`, which
+    /// drops the publication when a newer shared refresh has started since.
+    func tmuxRefreshEpoch(on host: CommandHost) -> UInt64 {
+        tmuxGenerations[host, default: 0]
+    }
+
     func publishTmuxSessions(
         _ sessions: [DiscoveredTmuxSession],
-        on host: CommandHost
+        on host: CommandHost,
+        epoch: UInt64
     ) {
+        guard tmuxGenerations[host, default: 0] == epoch else { return }
         tmuxGenerations[host, default: 0] &+= 1
         tmuxTasks.removeValue(forKey: host)?.cancel()
         recordTmuxSuccess(sessions, host: host)
@@ -363,6 +372,7 @@ final class WorkspaceInventoryStore: ObservableObject {
 
     private func requestTmux(_ host: CommandHost) {
         guard tmuxTasks[host] == nil else { return }
+        tmuxGenerations[host, default: 0] &+= 1
         let generation = tmuxGenerations[host, default: 0]
         var entry = snapshot.tmuxByHost[host] ?? .empty
         entry.state = .loading
@@ -599,6 +609,11 @@ final class WorkspaceInventoryStore: ObservableObject {
             let hosts = Set(subscribers.values.flatMap(\.registrations)
                 .filter { $0.hostID == event.scope.hostID }
                 .map(\.commandHost))
+            let tmuxHosts = hosts.intersection(subscribedTmuxHosts())
+            invalidateTmuxHosts(tmuxHosts)
+            for host in tmuxHosts {
+                requestTmux(host)
+            }
             let generation = fenceGenerationsByHostID[
                 event.scope.hostID,
                 default: 0

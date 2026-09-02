@@ -152,17 +152,12 @@ struct WorkspaceSharedInventoryTests {
         )
         let coordinator = WorktreeMutationCoordinator()
         let remoteLoads = LockedValue(0)
-        let postMutationLoad = AsyncGate()
-        defer { postMutationLoad.open() }
         let store = WorkspaceInventoryStore(
             kwtLoader: { host in
                 guard host.isRemote else {
                     return KwtHostInventory(projects: [])
                 }
                 remoteLoads.withLock { $0 += 1 }
-                if remoteLoads.load() > 1 {
-                    await postMutationLoad.wait()
-                }
                 return initialInventory
             },
             kwtProvisioner: { _ in },
@@ -198,8 +193,117 @@ struct WorkspaceSharedInventoryTests {
         #expect(Set(model.snapshot.worktrees.filter {
             $0.branch == "feature/created"
         }.map(\.hostID)) == [firstRemoteID, secondRemoteID])
-        postMutationLoad.open()
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(remoteLoads.load() == 1)
         await model.shutdown()
+    }
+
+    @Test("mutation publication reaches a second scene without a reload")
+    func mutationPublicationReachesSecondSceneWithoutReload() async throws {
+        let localID = UUID()
+        let projectRecord = KwtProjectRecord(
+            repository: "example/repository",
+            name: "Repository",
+            path: "/test/repository",
+            lastTouched: nil,
+            registrationFingerprint: "test-registration"
+        )
+        let initialInventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: projectRecord,
+                worktrees: [],
+                warning: nil
+            ),
+        ])
+        let refreshedInventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: projectRecord,
+                worktrees: [KwtWorktreeRecord(
+                    path: "/test/repository/created",
+                    branch: "feature/created",
+                    commitHash: "abc123",
+                    isMain: false,
+                    createdAt: nil,
+                    generation: "created-generation",
+                    repository: projectRecord.repository,
+                    sessionName: "kwt-feature-created"
+                )],
+                warning: nil
+            ),
+        ])
+        let snapshot = WorkspaceSnapshot(
+            hosts: [HostSummary(
+                id: localID,
+                configKey: "local",
+                name: "This Mac",
+                kind: .selfHost,
+                platform: .macOS,
+                preferredTransport: .local,
+                decodedConnectionState: .local
+            )],
+            projects: [],
+            worktrees: []
+        )
+        let coordinator = WorktreeMutationCoordinator()
+        let loads = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return initialInventory
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let first = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: localID,
+            snapshot: snapshot,
+            workspaceInventoryStore: store,
+            kwtInventoryLoader: { _ in refreshedInventory },
+            kwtWorktreeCreator: { _, _, _ in },
+            worktreeMutationCoordinator: coordinator
+        )
+        let second = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: localID,
+            snapshot: snapshot,
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator
+        )
+
+        first.startKwtInventory()
+        second.startKwtInventory()
+        await waitUntilMainActor {
+            first.snapshot.projects.contains {
+                $0.scopedKey == projectRecord.repository
+            } && second.snapshot.projects.contains {
+                $0.scopedKey == projectRecord.repository
+            }
+        }
+        #expect(loads.load() == 1)
+        let project = try #require(first.snapshot.projects.first {
+            $0.scopedKey == projectRecord.repository
+        })
+
+        try await first.createWorktree(WorktreeCreateRequest(
+            projectID: project.id,
+            branchName: "feature/created",
+            createsBranch: true
+        ))
+
+        #expect(first.snapshot.worktrees.contains {
+            $0.branch == "feature/created"
+        })
+        await waitUntilMainActor {
+            second.snapshot.worktrees.contains {
+                $0.branch == "feature/created"
+            }
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(loads.load() == 1)
+        await first.shutdown()
+        await second.shutdown()
     }
 
     @Test("external additions and removals converge across scenes")

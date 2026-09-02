@@ -479,6 +479,7 @@ final class WorkspaceSceneModel: ObservableObject {
         var outcome: TmuxSessionProbeOutcome
         var discovery: (
             sequence: UInt64,
+            epoch: UInt64?,
             result: Result<[DiscoveredTmuxSession], TmuxBinaryError>
         )?
     }
@@ -2605,9 +2606,6 @@ final class WorkspaceSceneModel: ObservableObject {
             ownsWorktreeMutation = false
             throw KwtWorktreeError.creationInProgress
         }
-        // The scene-wide refresh is cancelled so it cannot race the mutation,
-        // and only the mutated host is reloaded inline. Every exit therefore
-        // owes the remaining hosts a fresh sweep.
         invalidateKwtInventoryRefresh()
         defer {
             ownsWorktreeMutation = false
@@ -2638,7 +2636,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostID: current.project.hostID,
                 mutationHostID: mutationHostID
             )
-            scheduleTmuxSessionDiscovery()
         } catch {
             recordKwtUnavailability(error, hostID: project.hostID)
             throw error
@@ -3048,7 +3045,6 @@ final class WorkspaceSceneModel: ObservableObject {
             worktree,
             hostID: project.hostID
         )
-        scheduleTmuxSessionDiscovery()
         guard !checkoutAlreadyAbsent else { return }
 
         do {
@@ -3597,8 +3593,6 @@ final class WorkspaceSceneModel: ObservableObject {
             ownsWorktreeMutation = false
             throw KwtPullRequestError.importInProgress
         }
-        // See `createWorktree`: cancelling the scene-wide refresh leaves every
-        // host but this one stale, including on the success path.
         invalidateKwtInventoryRefresh()
         defer {
             ownsWorktreeMutation = false
@@ -3669,7 +3663,6 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: operation.project.hostID
         )
         updateWorkspaceInventoryState()
-        scheduleTmuxSessionDiscovery()
 
         guard let importedWorktree = snapshot.worktrees.first(where: {
             $0.hostID == operation.project.hostID
@@ -3783,7 +3776,12 @@ final class WorkspaceSceneModel: ObservableObject {
                 warning: nil
             )
         }
-        return KwtHostInventory(projects: projects)
+        return KwtHostInventory(
+            projects: projects,
+            directoryWorkspaces: snapshot.directoryWorkspaces
+                .filter { $0.hostID == hostID }
+                .map(KwtDirectoryWorkspaceRecord.init)
+        )
     }
 
     private func annotateImportedPullRequest(
@@ -4145,8 +4143,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     applyTmuxDiscoveryResult(
                         .success(sessions),
                         hostID: hostID,
-                        publish: false,
-                        publishToStore: false
+                        publish: false
                     )
                     successfulTmuxHostIDs.insert(hostID)
                 }
@@ -4291,10 +4288,6 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         guard inventoryHosts[event.scope.hostID] != nil else { return }
         invalidateKwtInventoryRefresh()
-        scheduleKwtInventory()
-        if event.phase == .ended {
-            scheduleTmuxSessionDiscovery()
-        }
     }
 
     private func retryProtectedTmuxAttachments(
@@ -5317,6 +5310,12 @@ final class WorkspaceSceneModel: ObservableObject {
         latestTmuxDiscoveryObservationByHost[hostID] == sequence
     }
 
+    private func tmuxRefreshEpoch(hostID: UUID) -> UInt64? {
+        inventoryHosts[hostID].map {
+            workspaceInventoryStore.tmuxRefreshEpoch(on: $0)
+        }
+    }
+
     func startHerdrSessionDiscovery() {
         guard !isShutDown, !herdrDiscoveryEnabled else { return }
         herdrDiscoveryEnabled = true
@@ -5678,11 +5677,14 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    /// Applies a scene-local tmux discovery. Passing `publishingEpoch`, the
+    /// store epoch captured before the probe started, shares the result with
+    /// every window unless a newer shared refresh has begun since.
     private func applyTmuxDiscoveryResult(
         _ result: Result<[DiscoveredTmuxSession], TmuxBinaryError>,
         hostID: UUID,
         publish: Bool = true,
-        publishToStore: Bool = true
+        publishingEpoch: UInt64? = nil
     ) {
         guard let discovered = recordTmuxDiscoveryState(
             result,
@@ -5699,10 +5701,11 @@ final class WorkspaceSceneModel: ObservableObject {
             discovered,
             hostID: hostID
         )
-        if publishToStore, let commandHost = inventoryHosts[hostID] {
+        if let publishingEpoch, let commandHost = inventoryHosts[hostID] {
             workspaceInventoryStore.publishTmuxSessions(
                 discovered,
-                on: commandHost
+                on: commandHost,
+                epoch: publishingEpoch
             )
         }
         for presentation in retainedTmuxPresentations.values {
@@ -12063,7 +12066,8 @@ final class WorkspaceSceneModel: ObservableObject {
             ) {
                 applyTmuxDiscoveryResult(
                     discovery.result,
-                    hostID: context.selection.hostID
+                    hostID: context.selection.hostID,
+                    publishingEpoch: discovery.epoch
                 )
             } else {
                 scheduleTmuxSessionDiscovery()
@@ -12186,6 +12190,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let sequence = beginTmuxDiscoveryObservation(
             hostID: context.selection.hostID
         )
+        let epoch = tmuxRefreshEpoch(hostID: context.selection.hostID)
         let result = await tmuxSessionValidationDiscovery(
             context.host,
             connection.arguments
@@ -12200,7 +12205,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         return TmuxReconnectProbeResult(
             outcome: outcome,
-            discovery: (sequence, result)
+            discovery: (sequence, epoch, result)
         )
     }
 
@@ -12212,6 +12217,7 @@ final class WorkspaceSceneModel: ObservableObject {
             let observationSequence = beginTmuxDiscoveryObservation(
                 hostID: context.selection.hostID
             )
+            let epoch = tmuxRefreshEpoch(hostID: context.selection.hostID)
             var didReconcileObservation = false
             defer {
                 if !didReconcileObservation,
@@ -12255,7 +12261,8 @@ final class WorkspaceSceneModel: ObservableObject {
             didReconcileObservation = true
             applyTmuxDiscoveryResult(
                 result,
-                hostID: context.selection.hostID
+                hostID: context.selection.hostID,
+                publishingEpoch: epoch
             )
             switch result {
             case let .success(sessions):
@@ -12939,6 +12946,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 let observationSequence = beginTmuxDiscoveryObservation(
                     hostID: pending.selection.hostID
                 )
+                let epoch = workspaceInventoryStore.tmuxRefreshEpoch(on: host)
                 let probe = Task.detached(priority: .utility) {
                     await discovery(host)
                 }
@@ -12988,7 +12996,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     updateWorkspaceInventoryState()
                     workspaceInventoryStore.publishTmuxSessions(
                         discovered,
-                        on: host
+                        on: host,
+                        epoch: epoch
                     )
                     if found {
                         applyDeferredTmuxPresentationsIfReady()

@@ -102,6 +102,19 @@ struct KwtDirectoryWorkspaceRecord: Codable, Equatable, Sendable {
     }
 }
 
+extension KwtDirectoryWorkspaceRecord {
+    init(_ workspace: DirectoryWorkspaceSummary) {
+        self.init(
+            name: workspace.name,
+            path: workspace.path,
+            sessionName: workspace.tmuxSessionName,
+            sessionLive: workspace.sessionLive,
+            tmuxSocketName: workspace.tmuxSocketName,
+            tmuxAttachMode: workspace.tmuxAttachMode
+        )
+    }
+}
+
 struct KwtProjectInventory: Equatable, Sendable {
     var project: KwtProjectRecord
     var worktrees: [KwtWorktreeRecord]
@@ -751,16 +764,7 @@ enum KwtSnapshotMerger {
         )
         let directoryRecords = inventory.directoryWorkspaceWarning != nil
             && inventory.directoryWorkspaces.isEmpty
-            ? existingDirectoryWorkspaces.map {
-                KwtDirectoryWorkspaceRecord(
-                    name: $0.name,
-                    path: $0.path,
-                    sessionName: $0.tmuxSessionName,
-                    sessionLive: $0.sessionLive,
-                    tmuxSocketName: $0.tmuxSocketName,
-                    tmuxAttachMode: $0.tmuxAttachMode
-                )
-            }
+            ? existingDirectoryWorkspaces.map(KwtDirectoryWorkspaceRecord.init)
             : inventory.directoryWorkspaces
         let directoryWorkspaces = directoryRecords.map { record in
             let recordPath = normalizePath(record.path)

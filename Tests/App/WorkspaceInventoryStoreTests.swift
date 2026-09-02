@@ -1296,4 +1296,146 @@ struct WorkspaceInventoryStoreTests {
         #expect(entry.inventoryRevision == cachedRevision)
         #expect(entry.isFresh == false)
     }
+
+    @Test("stale scene probe publication yields to a newer shared refresh")
+    func staleProbePublicationYieldsToNewerRefresh() async throws {
+        let firstLoad = AsyncGate()
+        let secondLoad = AsyncGate()
+        let loadCount = LockedValue(0)
+        let fresh = DiscoveredTmuxSession(
+            name: "fresh",
+            windowCount: 1,
+            createdAt: nil,
+            managed: false
+        )
+        let probed = DiscoveredTmuxSession(
+            name: "probed",
+            windowCount: 1,
+            createdAt: nil,
+            managed: false
+        )
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in KwtHostInventory(projects: []) },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in
+                let attempt = loadCount.load()
+                loadCount.withLock { $0 += 1 }
+                if attempt == 0 {
+                    await firstLoad.wait()
+                } else {
+                    await secondLoad.wait()
+                }
+                return .success([fresh])
+            },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let subscriberID = UUID()
+        defer {
+            firstLoad.open()
+            secondLoad.open()
+            store.removeSubscriber(id: subscriberID)
+        }
+
+        let staleEpoch = store.tmuxRefreshEpoch(on: .local)
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: UUID(),
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: false,
+            wantsTmux: true
+        )
+        store.publishTmuxSessions([probed], on: .local, epoch: staleEpoch)
+        #expect(store.snapshot.tmuxByHost[.local]?.sessions == nil)
+
+        firstLoad.open()
+        await waitUntilMainActor {
+            store.snapshot.tmuxByHost[.local]?.sessions == [fresh]
+        }
+        #expect(store.snapshot.tmuxByHost[.local]?.isFresh == true)
+
+        store.refreshTmux(for: subscriberID)
+        let currentEpoch = store.tmuxRefreshEpoch(on: .local)
+        await secondLoad.waitUntilWaiting()
+        store.publishTmuxSessions([probed], on: .local, epoch: currentEpoch)
+        #expect(store.snapshot.tmuxByHost[.local]?.sessions == [probed])
+        #expect(store.snapshot.tmuxByHost[.local]?.isFresh == true)
+
+        secondLoad.open()
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(store.snapshot.tmuxByHost[.local]?.sessions == [probed])
+    }
+
+    @Test("mutation end replaces in-flight shared tmux inventory")
+    func mutationEndReplacesInFlightTmux() async throws {
+        let coordinator = WorktreeMutationCoordinator()
+        let firstLoad = AsyncGate()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let stale = DiscoveredTmuxSession(
+            name: "stale",
+            windowCount: 1,
+            createdAt: nil,
+            managed: false
+        )
+        let fresh = DiscoveredTmuxSession(
+            name: "fresh",
+            windowCount: 1,
+            createdAt: nil,
+            managed: false
+        )
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in KwtHostInventory(projects: []) },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in
+                let attempt = loadCount.load()
+                loadCount.withLock { $0 += 1 }
+                guard attempt == 0 else { return .success([fresh]) }
+                await firstLoad.wait()
+                return .success([stale])
+            },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer {
+            firstLoad.open()
+            store.removeSubscriber(id: subscriberID)
+        }
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: true
+        )
+        await firstLoad.waitUntilWaiting()
+
+        #expect(coordinator.acquire(
+            hostID: hostID,
+            projectIdentity: "example/repository"
+        ))
+        store.publishKwtInventory(
+            KwtHostInventory(projects: []),
+            on: .local,
+            mutationHostID: hostID
+        )
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: "example/repository"
+        )
+        firstLoad.open()
+
+        await waitUntilMainActor {
+            store.snapshot.tmuxByHost[.local]?.sessions == [fresh]
+        }
+        #expect(loadCount.load() == 2)
+        #expect(store.snapshot.tmuxByHost[.local]?.isFresh == true)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(store.snapshot.tmuxByHost[.local]?.sessions == [fresh])
+    }
 }
