@@ -18,6 +18,10 @@ public enum ApplicationShortcutAction: String, CaseIterable, Sendable {
     case importPullRequest = "import-pull-request"
     case newTmuxSession = "new-tmux-session"
     case newHerdrSession = "new-herdr-session"
+    case find
+    case findNext = "find-next"
+    case findPrevious = "find-previous"
+    case hideFindBar = "hide-find-bar"
     case splitRight = "split-right"
     case splitDown = "split-down"
     case reloadConfiguration = "reload-configuration"
@@ -407,6 +411,16 @@ public enum ApplicationShortcutCatalog {
         definition(.importPullRequest, "Import Pull Request", .application, "cmd+shift+i"),
         definition(.newTmuxSession, "New tmux Session", .application, nil),
         definition(.newHerdrSession, "New Herdr Session", .application, nil),
+        definition(.find, "Find…", .application, "cmd+f"),
+        definition(.findNext, "Find Next", .application, "cmd+g", repeats: true),
+        definition(
+            .findPrevious,
+            "Find Previous",
+            .application,
+            "cmd+shift+g",
+            repeats: true
+        ),
+        definition(.hideFindBar, "Hide Find Bar", .application, "cmd+shift+f"),
         definition(.splitRight, "Split Right", .multiplexer, "cmd+d"),
         definition(.splitDown, "Split Down", .multiplexer, "cmd+shift+d"),
         definition(.reloadConfiguration, "Reload Configuration", .application, "cmd+shift+,"),

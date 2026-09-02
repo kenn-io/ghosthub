@@ -72,7 +72,7 @@
 - Produces controller methods: `open()`, `updateQuery(_:)`, `findNext()`, `findPrevious()`, `close()`, `backendDidOpen(query:)`, `backendDidEnd()`, and `publishBackendResult(total:selected:)`.
 - Produces shortcut actions: `.find`, `.findNext`, `.findPrevious`, and `.hideFindBar`.
 
-- [ ] **Step 1: Add failing catalog tests for the four commands**
+- [x] **Step 1: Add failing catalog tests for the four commands**
 
 Extend the existing expected-default dictionary with:
 
@@ -85,13 +85,13 @@ Extend the existing expected-default dictionary with:
 
 Also assert the titles are `Find…`, `Find Next`, `Find Previous`, and `Hide Find Bar`, and that all four belong to the `.application` settings group.
 
-- [ ] **Step 2: Run the catalog tests and verify the new enum cases are missing**
+- [x] **Step 2: Run the catalog tests and verify the new enum cases are missing**
 
 Run: `make swift-test SWIFT_TEST_FILTER=ApplicationShortcutTests`
 
 Expected: FAIL because the four `ApplicationShortcutAction` cases do not exist.
 
-- [ ] **Step 3: Add the shortcut cases and catalog definitions**
+- [x] **Step 3: Add the shortcut cases and catalog definitions**
 
 Add these cases to `ApplicationShortcutAction`:
 
@@ -117,7 +117,7 @@ definition(
 definition(.hideFindBar, "Hide Find Bar", .application, "cmd+shift+f"),
 ```
 
-- [ ] **Step 4: Write controller tests before the controller**
+- [x] **Step 4: Write controller tests before the controller**
 
 Cover these owned state transitions with a recording `TerminalFindSession`:
 
@@ -130,13 +130,13 @@ Implement these four tests with a controllable `FindSessionRecorder` in the same
 
 Add a fifth callback-pending test: return `.awaitingCallback`, assert `isWorking` remains true, call `publishBackendResult(total:selected:)`, and assert the callback result clears `isWorking` and becomes visible. `FindSessionRecorder` records the maximum simultaneous call count so every test can also prove the lane never runs two backend operations concurrently.
 
-- [ ] **Step 5: Run the controller tests and verify the type is missing**
+- [x] **Step 5: Run the controller tests and verify the type is missing**
 
 Run: `make swift-test SWIFT_TEST_FILTER=TerminalFindControllerTests`
 
 Expected: FAIL because `TerminalFindController` and its backend types do not exist.
 
-- [ ] **Step 6: Implement the shared types and controller lane**
+- [x] **Step 6: Implement the shared types and controller lane**
 
 Use this public contract:
 
@@ -208,13 +208,13 @@ public final class TerminalFindController: ObservableObject {
 
 Import `Combine` for `ObservableObject` and `@Published`. Keep one `workerTask`, one optional debounced query, and one pending action queue. A new query removes queued navigation and replaces any queued query. Closing immediately hides the bar and invalidates publication, but enqueues exactly one backend close behind an already-running operation. Each operation captures a session UUID and query generation; publish only while both still match. A `.result` reply completes work synchronously. For `.awaitingCallback`, compare a private callback revision captured immediately before invoking the backend with the revision after it returns: keep `isWorking` true only when they still match; otherwise the synchronous callback already completed the request. Every accepted `backendDidOpen`, `backendDidEnd`, or `publishBackendResult` call increments that revision. Map a negative libghostty total to `.idle`, zero to `.noMatch`, and a positive total to `.match(total:selected:)` after converting the zero-based selected callback to a one-based value.
 
-- [ ] **Step 7: Run the focused tests**
+- [x] **Step 7: Run the focused tests**
 
 Run: `make swift-test SWIFT_TEST_FILTER='ApplicationShortcutTests|TerminalFindControllerTests|SettingsStoreTests'`
 
 Expected: PASS with the new actions round-tripping through compiled defaults and persisted overrides, and all controller operations reporting a maximum concurrency of one.
 
-- [ ] **Step 8: Commit the shared contract**
+- [x] **Step 8: Commit the shared contract**
 
 ```bash
 git add Sources/TerminalSupport/TerminalFindController.swift Sources/TerminalSupport/ApplicationShortcut.swift Tests/TerminalSupport/TerminalFindControllerTests.swift Tests/TerminalSupport/ApplicationShortcutTests.swift Tests/Settings/SettingsStoreTests.swift

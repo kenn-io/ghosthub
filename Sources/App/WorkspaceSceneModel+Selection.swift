@@ -94,6 +94,8 @@ extension WorkspaceSceneModel {
             guard snapshot.host(id: selection.selectedHostID)?
                 .herdrAvailable == true else { return false }
             return postShortcutRequest(action)
+        case .find, .findNext, .findPrevious, .hideFindBar:
+            return false
         case .splitRight:
             guard canSplitActivePane,
                   invocation == .menu || hasFocusedTerminalSurface

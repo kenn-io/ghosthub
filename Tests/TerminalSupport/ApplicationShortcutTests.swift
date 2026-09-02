@@ -65,6 +65,10 @@ struct ApplicationShortcutTests {
             .importPullRequest: "cmd+shift+i",
             .newTmuxSession: nil,
             .newHerdrSession: nil,
+            .find: "cmd+f",
+            .findNext: "cmd+g",
+            .findPrevious: "cmd+shift+g",
+            .hideFindBar: "cmd+shift+f",
             .splitRight: "cmd+d",
             .splitDown: "cmd+shift+d",
             .reloadConfiguration: "cmd+shift+,",
@@ -75,6 +79,19 @@ struct ApplicationShortcutTests {
         for action in ApplicationShortcutAction.allCases {
             #expect(resolved[action]?.configValue == expected[action]!)
         }
+
+        let findDefinitions = Dictionary(uniqueKeysWithValues:
+            ApplicationShortcutCatalog.definitions
+                .filter {
+                    [.find, .findNext, .findPrevious, .hideFindBar]
+                        .contains($0.action)
+                }
+                .map { ($0.action, ($0.title, $0.settingsGroup)) })
+        #expect(findDefinitions[.find]?.0 == "Find…")
+        #expect(findDefinitions[.findNext]?.0 == "Find Next")
+        #expect(findDefinitions[.findPrevious]?.0 == "Find Previous")
+        #expect(findDefinitions[.hideFindBar]?.0 == "Hide Find Bar")
+        #expect(findDefinitions.values.allSatisfy { $0.1 == .application })
     }
 
     @Test(
