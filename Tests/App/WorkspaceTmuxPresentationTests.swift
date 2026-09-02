@@ -416,6 +416,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let command = try #require(surfaceStore.lastConfiguration?.command)
         #expect(command.contains("/test/kwt"))
         #expect(command.contains("'open'"))
+        #expect(!command.contains("ignore-size"))
         await waitUntilMainActor(timeout: .seconds(1)) {
             hiddenSizingMutations.load() == 1
         }

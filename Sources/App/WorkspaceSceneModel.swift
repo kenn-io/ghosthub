@@ -10034,14 +10034,18 @@ final class WorkspaceSceneModel: ObservableObject {
             guard presentation.sizingTransitionTask == nil else { return }
             presentation.hiddenSizingReconnectPending = false
         }
+        if presentation.sizingIntent == .hidden,
+           !nativeTmuxSessionCoordinator.supportsClientSizing(handle) {
+            invalidateBorrowedTmuxSession(presentation.selection)
+            return
+        }
         if presentation.hiddenSizingProvisioningPending {
             guard presentation.sizingTransitionTask == nil else { return }
+            guard nativeTmuxSessionCoordinator.hasLaunched(handle) else {
+                finishTmuxSurfaceReadiness(handle)
+                return
+            }
             presentation.hiddenSizingProvisioningPending = false
-            finishTmuxSurfaceReadiness(handle)
-            guard retainedTmuxPresentations[key] === presentation,
-                  presentation.sizingIntent == .hidden,
-                  nativeTmuxSessionCoordinator.hasLaunched(handle)
-            else { return }
             hideTmuxPresentationSizing(presentation)
             return
         }
@@ -10066,11 +10070,6 @@ final class WorkspaceSceneModel: ObservableObject {
         if alwaysLiveManagedTmuxPresentationKeys.contains(key),
            !nativeTmuxSessionCoordinator.supportsPaneSplitting(handle) {
             excludeAlwaysLiveTmuxPresentation(presentation, key: key)
-            return
-        }
-        if presentation.sizingIntent == .hidden,
-           !nativeTmuxSessionCoordinator.supportsClientSizing(handle) {
-            invalidateBorrowedTmuxSession(presentation.selection)
             return
         }
         if alwaysLiveManagedTmuxPresentationKeys.contains(key),
@@ -12647,6 +12646,17 @@ final class WorkspaceSceneModel: ObservableObject {
             .contains(presentationKey)
         let reconnectsNonSizing = host.platform != .windows
             && (isAlwaysLiveManaged || presentation.sizingIntent == .hidden)
+        // Kwt creates the tmux client as part of workspace establishment and
+        // cannot apply client flags first. Keep that attach interactive long
+        // enough for kwt to establish the workspace, then restore preview
+        // sizing after the exact client is available.
+        let defersHiddenSizingForWorkspaceEstablishment = reconnectsNonSizing
+            && openWorkspace
+        if defersHiddenSizingForWorkspaceEstablishment {
+            presentation.hiddenSizingProvisioningPending = true
+        }
+        let startsNonSizing = reconnectsNonSizing
+            && !defersHiddenSizingForWorkspaceEstablishment
         let previewGridSize = previewGridSize(for: selection)
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
@@ -12660,8 +12670,8 @@ final class WorkspaceSceneModel: ObservableObject {
             openWorkspace: openWorkspace,
             sessionIdentity: presentation.reconnectExpectedIdentity,
             expectedRouteIdentity: routeIdentity,
-            ignoresClientSize: reconnectsNonSizing,
-            previewGridSize: reconnectsNonSizing ? previewGridSize : nil
+            ignoresClientSize: startsNonSizing,
+            previewGridSize: startsNonSizing ? previewGridSize : nil
         )
         if handle.id != previousHandle.id {
             retainedTmuxPresentationKeysByHandle.removeValue(
