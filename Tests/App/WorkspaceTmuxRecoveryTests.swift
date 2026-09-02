@@ -2990,4 +2990,95 @@ extension WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @MainActor
+    @Test("invalidating a closed created client reconciles instead of discarding")
+    func invalidatingClosedCreatedClientReconciles() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.tmuxSessionName = "created-work"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let emptyInventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: environment.project.scopedKey,
+                    name: environment.project.name,
+                    path: environment.project.rootPath,
+                    lastTouched: nil
+                ),
+                worktrees: [],
+                warning: nil
+            ),
+        ])
+        let inventories = LockedValue(inventory(environment, including: worktree))
+        let inventoryLoads = LockedValue(0)
+        let discoveryReleased = LockedValue(false)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in
+                inventoryLoads.withLock { $0 += 1 }
+                return inventories.load()
+            },
+            tmuxSessionDiscovery: { _ in
+                while !discoveryReleased.load() {
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "created-work",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: false
+                    ),
+                ])
+            },
+            createdSessionDiscoveryDelays: [.seconds(10)],
+            tmuxReconnectIntervals: [.seconds(10)]
+        )
+        defer { discoveryReleased.store(true) }
+        model.startKwtInventory()
+        await waitUntilMainActor { inventoryLoads.load() == 1 }
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        model.createTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+        let createCommand = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(createCommand.contains("new-session"))
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxRecoveryState?.isReconnecting == true
+        }
+
+        inventories.store(emptyInventory)
+        model.refreshKwtInventory()
+        await waitUntilMainActor { inventoryLoads.load() == 2 }
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: selection) == nil
+        }
+
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+        #expect(
+            model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.contains { $0.name == "created-work" } == true
+        )
+
+        discoveryReleased.store(true)
+        await waitUntilMainActor {
+            model.pendingCreatedTmuxSessionCount == 0
+        }
+        #expect(
+            model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.contains { $0.name == "created-work" } == true
+        )
+        await model.shutdown()
+    }
+
 }

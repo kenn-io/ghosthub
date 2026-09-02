@@ -5630,6 +5630,9 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.reconnectContext = context
             presentation.establishmentConfirmationTask?.cancel()
             presentation.establishmentConfirmationTask = nil
+            releaseProtectedTmuxAttachmentScope(
+                handleID: presentation.handle.id
+            )
         }
         if publish {
             applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
@@ -9537,6 +9540,14 @@ final class WorkspaceSceneModel: ObservableObject {
             return nil
         }
         let startsHiddenOnPOSIX = startsHidden && host.platform != .windows
+        // A protected worktree lives on its own tmux socket. Without that
+        // socket a direct attach would target the default server, which never
+        // owns a protected session, so leave restoration to an explicit open.
+        if startsHiddenOnPOSIX,
+           selection.tmuxAttachMode == .protected,
+           selection.socketName == nil {
+            return nil
+        }
         // Kwt owns workspace establishment, but its tmux attach cannot apply
         // client flags before joining the session. Hidden restoration never
         // establishes a workspace, so attach directly with ignore-size.
@@ -10838,7 +10849,9 @@ final class WorkspaceSceneModel: ObservableObject {
         confirmedEndedTmuxSessionHandles.remove(handle.id)
         borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
         if var pending = pendingCreatedTmuxSessions[handle.id] {
-            if nativeTmuxSessionCoordinator.hasLaunched(handle) {
+            if nativeTmuxSessionCoordinator.hasLaunched(handle)
+                || nativeTmuxSessionCoordinator
+                .closedAttachmentHadLaunched(handle) {
                 pending.commandReplayAuthorized = false
                 pendingCreatedTmuxSessions[handle.id] = pending
                 endedCreatedTmuxSessionHandles.insert(handle.id)

@@ -1571,4 +1571,207 @@ extension WorkspaceWorktreeRemovalTests {
         await model.shutdown()
     }
 
+    @MainActor
+    @Test("failed removal restores an inactive protected client on its socket")
+    func failedRemovalRestoresInactiveProtectedClientOnSocket() async throws {
+        let environment = try setupRemoteEnvironment()
+        let removable = protectedRemovableWorktree(
+            environment,
+            socketName: "kwt-pr-94"
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let mutations = WorktreeMutationCoordinator()
+        let model = try makeProtectedRemovalModel(
+            environment: environment,
+            removable: removable,
+            surfaceStore: surfaceStore,
+            mutations: mutations,
+            tmuxExactSessionProbe: { _ in .success(true) },
+            tmuxSessionDiscovery: { _ in .success([]) }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let other = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other"
+        )
+        try await openProtectedThenOther(
+            model,
+            store: surfaceStore,
+            mutations: mutations,
+            selection: selection,
+            other: other
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.self) {
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor { surfaceStore.requestCount == 3 }
+
+        let restored = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(restored.contains("attach-session"))
+        #expect(restored.contains("kwt-pr-94"))
+        #expect(!restored.contains("ghosthub_kwt_path"))
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) != nil)
+        #expect(model.activeBorrowedTmuxSelection == other)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal never restores a socketless protected client hidden")
+    func failedRemovalLeavesSocketlessProtectedClientExplicit() async throws {
+        let environment = try setupRemoteEnvironment()
+        let removable = protectedRemovableWorktree(
+            environment,
+            socketName: nil
+        )
+        let sessionName = try #require(removable.tmuxSessionName)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let mutations = WorktreeMutationCoordinator()
+        let model = try makeProtectedRemovalModel(
+            environment: environment,
+            removable: removable,
+            surfaceStore: surfaceStore,
+            mutations: mutations,
+            tmuxExactSessionProbe: { _ in .success(false) },
+            tmuxSessionDiscovery: { _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: sessionName,
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: true
+                    ),
+                ])
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        #expect(selection.socketName == nil)
+        let other = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other"
+        )
+        try await openProtectedThenOther(
+            model,
+            store: surfaceStore,
+            mutations: mutations,
+            selection: selection,
+            other: other
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.self) {
+            try await model.removeWorktree(request)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(surfaceStore.requestCount == 2)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == nil)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(model.activeBorrowedTmuxSelection == other)
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 3
+        }
+        let reopened = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(reopened.contains("ghosthub_kwt_path"))
+        #expect(!reopened.contains("attach-session"))
+        await model.shutdown()
+    }
+
+    private func protectedRemovableWorktree(
+        _ environment: RemoteEnvironment,
+        socketName: String?
+    ) -> WorktreeSummary {
+        var removable = environment.snapshot.worktrees[0]
+        removable.generation = stableWorktreeGeneration
+        removable.scopedKey = removable.path
+        removable.tmuxSessionName = "kwt-ghosthub-pr-94"
+        removable.tmuxSocketName = socketName
+        removable.tmuxAttachMode = .protected
+        return removable
+    }
+
+    @MainActor
+    private func makeProtectedRemovalModel(
+        environment: RemoteEnvironment,
+        removable: WorktreeSummary,
+        surfaceStore: SceneTmuxSurfaceStoreStub,
+        mutations: WorktreeMutationCoordinator,
+        tmuxExactSessionProbe: @escaping WorkspaceSceneModel.TmuxSessionExactProbe,
+        tmuxSessionDiscovery: @escaping WorkspaceSceneModel.TmuxSessionDiscovery
+    ) throws -> WorkspaceSceneModel {
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [removable]
+        let beforeRemoval = inventory(environment, including: removable)
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        return try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport.previewPaneSplitter(
+                identity: identity
+            ),
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Office Linux",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: mutations,
+            tmuxSessionDiscovery: tmuxSessionDiscovery,
+            tmuxExactSessionProbe: tmuxExactSessionProbe,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            createdSessionDiscoveryDelays: [.milliseconds(10)]
+        )
+    }
+
+    /// Opens the protected worktree, waits for kwt establishment to be
+    /// confirmed, then makes another session active so the protected client
+    /// is retained hidden.
+    @MainActor
+    private func openProtectedThenOther(
+        _ model: WorkspaceSceneModel,
+        store: SceneTmuxSurfaceStoreStub,
+        mutations: WorktreeMutationCoordinator,
+        selection: WorkspaceTmuxSessionSelection,
+        other: WorkspaceTmuxSessionSelection
+    ) async throws {
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: store)
+        await waitUntilMainActor {
+            model.connectedBorrowedTmuxSessionIDs.contains(selection.id)
+        }
+        let opened = try #require(store.lastConfiguration?.command)
+        #expect(opened.contains("ghosthub_kwt_path"))
+        #expect(!opened.contains("attach-session"))
+        await waitUntilMainActor { mutations.scopes.isEmpty }
+
+        model.openBorrowedTmuxSession(other)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return store.requestCount == 2
+                && model.retainedBorrowedTmuxSessionIsConnected(other)
+        }
+        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+    }
+
 }
