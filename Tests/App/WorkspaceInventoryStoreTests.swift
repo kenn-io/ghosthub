@@ -1524,4 +1524,55 @@ struct WorkspaceInventoryStoreTests {
         await waitUntilMainActor { loadCount.load() == 2 }
         #expect(loadCount.load() == 2)
     }
+
+    @Test("warning-bearing publication leaves the fence-end refresh pending")
+    func warningPublicationLeavesFenceEndRefreshPending() async {
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return KwtHostInventory(projects: [])
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        #expect(coordinator.acquire(
+            hostID: hostID,
+            projectIdentity: "example/repository"
+        ))
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        store.publishKwtInventory(
+            KwtHostInventory(
+                projects: [],
+                projectsWarning: "kwt list failed"
+            ),
+            on: .local,
+            mutation: .init(
+                hostID: hostID,
+                epoch: store.kwtMutationEpoch(on: .local)
+            )
+        )
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: "example/repository"
+        )
+
+        await waitUntilMainActor { loadCount.load() == 1 }
+        #expect(loadCount.load() == 1)
+    }
 }

@@ -232,6 +232,7 @@ final class WorkspaceInventoryStore: ObservableObject {
         kwtGenerations[host, default: 0] &+= 1
         kwtTasks.removeValue(forKey: host)?.cancel()
         if recordsSuccessfulLoad,
+           Self.isAuthoritative(inventory),
            let mutation,
            isSoleActiveMutation(
                hostID: mutation.hostID,
@@ -253,6 +254,18 @@ final class WorkspaceInventoryStore: ObservableObject {
     /// drops the publication when a newer shared refresh has started since.
     func tmuxRefreshEpoch(on host: CommandHost) -> UInt64 {
         tmuxGenerations[host, default: 0]
+    }
+
+    /// Forgets a project removal tombstone after the project is registered
+    /// again, so the next refresh can show it.
+    func clearProjectRemovalTombstone(
+        _ repository: String,
+        on host: CommandHost
+    ) {
+        kwtProjectRemovalTombstonesByHost[host]?.remove(repository)
+        if kwtProjectRemovalTombstonesByHost[host]?.isEmpty == true {
+            kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
+        }
     }
 
     func publishTmuxSessions(
@@ -498,6 +511,11 @@ final class WorkspaceInventoryStore: ObservableObject {
         guard inventory.projectsWarning == nil else { return tombstones }
         let repositories = Set(inventory.projects.map(\.project.repository))
         return tombstones.intersection(repositories)
+    }
+
+    private static func isAuthoritative(_ inventory: KwtHostInventory) -> Bool {
+        inventory.projectsWarning == nil
+            && inventory.projects.allSatisfy { $0.warning == nil }
     }
 
     private func isSoleActiveMutation(

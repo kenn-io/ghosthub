@@ -695,6 +695,67 @@ struct WorkspaceSharedInventoryTests {
         await model.shutdown()
     }
 
+    @Test("re-registering a removed project clears its tombstone")
+    func reregisteringRemovedProjectClearsTombstone() async throws {
+        let environment = try setupStandardEnvironment()
+        let project = try #require(environment.snapshot.projects.first)
+        let host = try #require(environment.snapshot.hosts.first)
+        let inventory = WorkspaceTmuxTestSupport.inventory(
+            project: project,
+            worktrees: environment.snapshot.worktrees
+        )
+        let coordinator = WorktreeMutationCoordinator()
+        let record = KwtProjectRecord(
+            repository: project.scopedKey,
+            name: project.name,
+            path: project.rootPath,
+            lastTouched: nil
+        )
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in inventory },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            workspaceInventoryStore: store,
+            kwtInventoryLoader: { _ in inventory },
+            worktreeMutationCoordinator: coordinator,
+            kwtProjectRegistration: { _, _ in record },
+            kwtProjectRemoval: { _, _, _, _, _ in record }
+        )
+        model.startKwtInventory()
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+
+        let removal = await model.unregisterProject(
+            project,
+            confirmedHost: host
+        )
+        #expect(removal == .success(project.name))
+        await waitUntilMainActor {
+            model.snapshot.project(id: project.id) == nil
+        }
+
+        let registration = await model.registerProject(
+            project.rootPath,
+            on: host
+        )
+        #expect(registration == .success(project.name))
+        await waitUntilMainActor {
+            model.snapshot.projects.contains {
+                $0.scopedKey == project.scopedKey
+            }
+        }
+        #expect(model.snapshot.projects.contains {
+            $0.scopedKey == project.scopedKey
+        })
+        await model.shutdown()
+    }
+
     @Test("cached tombstone filtering preserves a KWT refresh failure")
     func cachedTombstoneFilteringPreservesRefreshFailure() async throws {
         enum RefreshFailure: LocalizedError {

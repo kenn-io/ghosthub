@@ -6986,6 +6986,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 projectPath,
                 target
             )
+            workspaceInventoryStore.clearProjectRemovalTombstone(
+                project.repository,
+                on: target
+            )
             refreshKwtInventory()
             return .success(project.name)
         } catch {
@@ -12095,17 +12099,22 @@ final class WorkspaceSceneModel: ObservableObject {
             }
         }
         if let discovery = probe.discovery {
-            if isCurrentTmuxDiscoveryObservation(
-                discovery.sequence,
-                hostID: context.selection.hostID
-            ) {
+            let refreshStarted = discovery.epoch
+                != tmuxRefreshEpoch(hostID: context.selection.hostID)
+            if !refreshStarted,
+               isCurrentTmuxDiscoveryObservation(
+                   discovery.sequence,
+                   hostID: context.selection.hostID
+               ) {
                 applyTmuxDiscoveryResult(
                     discovery.result,
                     hostID: context.selection.hostID,
                     publishingEpoch: discovery.epoch
                 )
             } else {
-                scheduleTmuxSessionDiscovery()
+                if !refreshStarted {
+                    scheduleTmuxSessionDiscovery()
+                }
                 // A concurrent inventory pass superseded this observation.
                 // A route-fenced positive probe can still attach safely, but
                 // absence or failure must yield to the newer observation.
@@ -12260,7 +12269,8 @@ final class WorkspaceSceneModel: ObservableObject {
                    isCurrentTmuxDiscoveryObservation(
                        observationSequence,
                        hostID: context.selection.hostID
-                   ) {
+                   ),
+                   tmuxRefreshEpoch(hostID: context.selection.hostID) == epoch {
                     scheduleTmuxSessionDiscovery()
                 }
             }
@@ -12288,7 +12298,9 @@ final class WorkspaceSceneModel: ObservableObject {
             guard isCurrentTmuxDiscoveryObservation(
                 observationSequence,
                 hostID: context.selection.hostID
-            ) else {
+            ),
+                tmuxRefreshEpoch(hostID: context.selection.hostID) == epoch
+            else {
                 return .failure(.probeCancelled(
                     shell: context.host.displayName
                 ))
