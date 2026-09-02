@@ -10045,6 +10045,11 @@ final class WorkspaceSceneModel: ObservableObject {
             excludeAlwaysLiveTmuxPresentation(presentation, key: key)
             return
         }
+        if presentation.sizingIntent == .hidden,
+           !nativeTmuxSessionCoordinator.supportsClientSizing(handle) {
+            invalidateBorrowedTmuxSession(presentation.selection)
+            return
+        }
         if alwaysLiveManagedTmuxPresentationKeys.contains(key),
            activeBorrowedTmuxHandle != handle,
            !nativeTmuxSessionCoordinator.hasLaunched(handle) {
@@ -10532,6 +10537,14 @@ final class WorkspaceSceneModel: ObservableObject {
         guard !nativeTmuxSessionCoordinator.hasClosedAttachment(
             presentation.handle
         ) else { return }
+        if !nativeTmuxSessionCoordinator.isProvisioning(
+            presentation.handle
+        ), !nativeTmuxSessionCoordinator.supportsClientSizing(
+            presentation.handle
+        ) {
+            invalidateBorrowedTmuxSession(presentation.selection)
+            return
+        }
         let predecessor = presentation.sizingTransitionTask
         let transitionID = UUID()
         let gridSize = previewGridSize(for: presentation.selection)

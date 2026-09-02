@@ -277,6 +277,47 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("hiding unsupported tmux detaches without a sizing command")
+    func hidingUnsupportedTmuxSkipsSizingMutation() async throws {
+        let environment = try setupHostEnvironment()
+        let commands = LockedValue<[String]>([])
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution(
+                    "/usr/bin/tmux",
+                    version: "tmux 3.3"
+                )
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                commands.withLock { $0.append(command) }
+                return (1, "unsupported sizing command")
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "ordinary"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: selection) == nil
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(commands.load().isEmpty)
+        #expect(!surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("reopening during provisioning resumes activation when ready")
     func reopeningDuringProvisioningResumesActivation() async throws {
         let environment = try setupHostEnvironment()
