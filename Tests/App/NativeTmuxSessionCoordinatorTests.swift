@@ -392,6 +392,8 @@ struct NativeTmuxSessionCoordinatorTests {
 
         let close = try #require(store.surface.closeObservers[handle.id])
         close(false, 255)
+        #expect(!coordinator.hasLaunched(handle))
+        #expect(coordinator.closedAttachmentHadLaunched(handle))
         let reattached = coordinator.attach(
             hostID: hostID,
             name: "release-work",
@@ -1357,6 +1359,77 @@ struct NativeTmuxSessionCoordinatorTests {
         let requestCount = store.requestedKeys.count
         _ = coordinator.surface(handle: second)
         #expect(store.requestedKeys.count == requestCount)
+    }
+
+    @Test("host replacement waits for stale provisioning release")
+    func hostReplacementWaitsForStaleProvisioningRelease() async throws {
+        let events = LockedValue<[String]>([])
+        let originalResolutionStarted = LockedValue(false)
+        let releaseOriginalResolution = DispatchSemaphore(value: 0)
+        defer { releaseOriginalResolution.signal() }
+        let originalHost = SSHHostInfo(
+            user: "user",
+            hostname: "old.example.test",
+            port: nil
+        )
+        let replacementHost = SSHHostInfo(
+            user: "user",
+            hostname: "new.example.test",
+            port: nil
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: RecordingNativeSessionSurfaceStore(),
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { host, _ in
+                if host == originalHost {
+                    originalResolutionStarted.store(true)
+                    _ = releaseOriginalResolution.wait(timeout: .now() + 5)
+                }
+                return successfulTmuxResolution("/usr/bin/tmux")
+            },
+            remoteConnectionProvider: { _, host in
+                let label = host == originalHost ? "original" : "replacement"
+                events.withLock { $0.append("\(label)-acquire") }
+                return testKwtSSHAttachment(release: {
+                    events.withLock { $0.append("\(label)-release") }
+                })
+            }
+        )
+        let hostID = UUID()
+        let original = coordinator.attach(
+            hostID: hostID,
+            name: "stale-provisioning",
+            host: .ssh(originalHost),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { originalResolutionStarted.load() }
+        let unblockResolution = Task.detached {
+            try? await Task.sleep(for: .milliseconds(250))
+            releaseOriginalResolution.signal()
+        }
+
+        let replacement = coordinator.attach(
+            hostID: hostID,
+            name: original.name,
+            host: .ssh(replacementHost),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor {
+            events.load().contains("original-release")
+                && events.load().contains("replacement-acquire")
+        }
+        await unblockResolution.value
+
+        #expect(replacement.id != original.id)
+        let completedEvents = events.load()
+        let release = try #require(
+            completedEvents.firstIndex(of: "original-release")
+        )
+        let replacementAcquire = try #require(
+            completedEvents.firstIndex(of: "replacement-acquire")
+        )
+        #expect(release < replacementAcquire)
+        await coordinator.shutdown()
     }
 
     @Test("rejected terminal surfaces never report command launch")

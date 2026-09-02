@@ -179,7 +179,8 @@ final class NativeTmuxSessionCoordinator {
     private var targetHostsByHandle: [UUID: CommandHost] = [:]
     private var attachments: [UUID: NativeTmuxAttachment] = [:]
     private var attachmentClosures: [UUID: BorrowedTmuxAttachmentClosure] = [:]
-    private var launchedHandles: Set<UUID> = []
+    private var launchedAttachmentIDs: [UUID: UUID] = [:]
+    private var closedLaunchedHandles: Set<UUID> = []
     private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
     private let tmuxResolutionCache = NativeTmuxResolutionCache()
     private var provisioningHandles: Set<UUID> = []
@@ -314,6 +315,7 @@ final class NativeTmuxSessionCoordinator {
         handlesByKey[key] = handle
         targetHostsByHandle[handle.id] = host
         attachmentClosures.removeValue(forKey: handle.id)
+        closedLaunchedHandles.remove(handle.id)
 
         guard !isShuttingDown,
               attachments[handle.id] == nil,
@@ -374,7 +376,7 @@ final class NativeTmuxSessionCoordinator {
                 } onCancel: {
                     probe.cancel()
                 }
-                self?.finishAttach(
+                await self?.finishAttach(
                     handle: handle,
                     host: host,
                     socketName: socketName,
@@ -414,14 +416,17 @@ final class NativeTmuxSessionCoordinator {
         sshConnection: KwtSSHConnection?,
         tmuxPathCacheKey: NativeTmuxPathCacheKey,
         resolution: Result<ResolvedTmuxBinary, TmuxBinaryError>
-    ) {
-        provisioningTasks.removeValue(forKey: handle.id)
-        provisioningHandles.remove(handle.id)
+    ) async {
+        defer {
+            provisioningTasks.removeValue(forKey: handle.id)
+            provisioningHandles.remove(handle.id)
+        }
         let key = sessionKey(handle)
         guard handlesByKey[key] == handle,
               targetHostsByHandle[handle.id] == host,
               attachments[handle.id] == nil else {
-            Task { try? await sshConnection?.release() }
+            let release = Task { try? await sshConnection?.release() }
+            await release.value
             return
         }
         switch resolution {
@@ -498,13 +503,14 @@ final class NativeTmuxSessionCoordinator {
             )
             onSurfaceReady?(handle)
         case let .failure(error):
-            Task {
+            let release = Task {
                 if case let .sshConnectionFailed(_, classification) = error,
                    classification.connectionUnusable {
                     await sshConnection?.invalidate()
                 }
                 try? await sshConnection?.release()
             }
+            await release.value
             attachmentClosures[handle.id] = switch error {
             case let .sshConnectionFailed(_, classification)
                 where classification.kind == .transport:
@@ -573,7 +579,10 @@ final class NativeTmuxSessionCoordinator {
         if !keyAlreadyRemoved {
             handlesByKey.removeValue(forKey: key)
         }
-        provisioningTasks.removeValue(forKey: handle.id)?.cancel()
+        let provisioningTask = provisioningTasks.removeValue(
+            forKey: handle.id
+        )
+        provisioningTask?.cancel()
         cancelPaneSplits(handleID: handle.id)
         provisioningHandles.remove(handle.id)
         targetHostsByHandle.removeValue(forKey: handle.id)
@@ -582,10 +591,12 @@ final class NativeTmuxSessionCoordinator {
             handleID: handle.id,
             key: key,
             attachment: attachment,
+            provisioningTask: provisioningTask,
             removesRemoteExitStatus: true
         )
         attachmentClosures.removeValue(forKey: handle.id)
-        launchedHandles.remove(handle.id)
+        launchedAttachmentIDs.removeValue(forKey: handle.id)
+        closedLaunchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         pendingSizingByHandle.removeValue(forKey: handle.id)
@@ -593,7 +604,14 @@ final class NativeTmuxSessionCoordinator {
     }
 
     func hasLaunched(_ handle: BorrowedTmuxSessionHandle) -> Bool {
-        launchedHandles.contains(handle.id)
+        guard let attachment = attachments[handle.id] else { return false }
+        return launchedAttachmentIDs[handle.id] == attachment.id
+    }
+
+    func closedAttachmentHadLaunched(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> Bool {
+        closedLaunchedHandles.contains(handle.id)
     }
 
     func isProvisioning(_ handle: BorrowedTmuxSessionHandle) -> Bool {
@@ -685,7 +703,7 @@ final class NativeTmuxSessionCoordinator {
             ))
         }
         guard attachment.ignoresClientSize else { return .applied }
-        guard launchedHandles.contains(handle.id) else {
+        guard launchedAttachmentIDs[handle.id] == attachment.id else {
             attachment.ignoresClientSize = false
             attachment.previewGridSize = nil
             attachments[handle.id] = attachment
@@ -780,7 +798,7 @@ final class NativeTmuxSessionCoordinator {
             applyPreviewGridSize(gridSize, for: handle)
             return .applied
         }
-        guard launchedHandles.contains(handle.id) else {
+        guard launchedAttachmentIDs[handle.id] == attachment.id else {
             attachment.ignoresClientSize = true
             attachment.previewGridSize = gridSize
             attachments[handle.id] = attachment
@@ -871,6 +889,7 @@ final class NativeTmuxSessionCoordinator {
         handleID: UUID,
         key: NativeTmuxSessionKey,
         attachment: NativeTmuxAttachment?,
+        provisioningTask: Task<Void, Never>? = nil,
         invalidatesConnection: Bool = false,
         removesRemoteExitStatus: Bool = false
     ) {
@@ -880,6 +899,7 @@ final class NativeTmuxSessionCoordinator {
         let cleanupID = UUID()
         let cleanup = Task { [weak self] in
             await predecessor?.value
+            await provisioningTask?.value
             for transition in sizingTransitions {
                 _ = await transition.value
             }
@@ -927,7 +947,7 @@ final class NativeTmuxSessionCoordinator {
         let presentationStyle = appliesPresentationStyle
             ? presentationStyleProvider()
             : nil
-        let isFirstLaunch = !launchedHandles.contains(handle.id)
+        let isFirstLaunch = launchedAttachmentIDs[handle.id] != attachment.id
         let surfaceKey = surfaceKey(handle)
         let previousSurfaceIdentity = terminalCoordinator
             .paneSurfaceIfPresent(for: surfaceKey)
@@ -1034,7 +1054,7 @@ final class NativeTmuxSessionCoordinator {
                 )
             }
         )
-        launchedHandles.insert(handle.id)
+        launchedAttachmentIDs[handle.id] = attachment.id
         startPaneSplitClientBinding(
             target: splitTarget,
             handle: handle,
@@ -1133,7 +1153,7 @@ final class NativeTmuxSessionCoordinator {
             let request = requests.removeFirst()
             paneSplitRequests[handle.id] = requests
             guard attachments[handle.id]?.id == request.attachmentID,
-                  launchedHandles.contains(handle.id)
+                  launchedAttachmentIDs[handle.id] == request.attachmentID
             else { continue }
 
             clearPaneSplitError(
@@ -1244,7 +1264,7 @@ final class NativeTmuxSessionCoordinator {
         attachmentID: UUID
     ) {
         guard attachments[handle.id]?.id == attachmentID,
-              launchedHandles.contains(handle.id),
+              launchedAttachmentIDs[handle.id] == attachmentID,
               paneSplitClients[handle.id] == nil,
               paneSplitClientBindings[handle.id] == nil
         else { return }
@@ -1389,6 +1409,8 @@ final class NativeTmuxSessionCoordinator {
         cancelPaneSplits(handleID: handle.id)
         attachmentClosures[handle.id] = closure
         let attachment = attachments.removeValue(forKey: handle.id)
+        launchedAttachmentIDs.removeValue(forKey: handle.id)
+        closedLaunchedHandles.remove(handle.id)
         cancelSizingTransitionsAndRelease(
             handleID: handle.id,
             key: sessionKey(handle),
@@ -1420,7 +1442,7 @@ final class NativeTmuxSessionCoordinator {
         _ handle: BorrowedTmuxSessionHandle
     ) -> TmuxSessionIdentity? {
         guard attachments[handle.id] != nil,
-              launchedHandles.contains(handle.id)
+              hasLaunched(handle)
         else { return nil }
         return paneSplitClients[handle.id]?.sessionIdentity
     }
@@ -1429,7 +1451,7 @@ final class NativeTmuxSessionCoordinator {
         _ handle: BorrowedTmuxSessionHandle
     ) -> TmuxAttachedSessionIdentityResolution {
         guard attachments[handle.id] != nil,
-              launchedHandles.contains(handle.id)
+              hasLaunched(handle)
         else { return .pending }
         if let identity = paneSplitClients[handle.id]?.sessionIdentity {
             return .resolved(identity)
@@ -1445,7 +1467,7 @@ final class NativeTmuxSessionCoordinator {
         guard handlesByKey[sessionKey(handle)] == handle else { return }
         previewIdentityRetryHandles.insert(handle.id)
         guard let attachment = attachments[handle.id],
-              launchedHandles.contains(handle.id)
+              launchedAttachmentIDs[handle.id] == attachment.id
         else { return }
         startPaneSplitClientBinding(
             target: paneSplitTarget(
@@ -1463,7 +1485,7 @@ final class NativeTmuxSessionCoordinator {
     ) async -> TmuxSessionIdentity? {
         guard let attachment = attachments[handle.id],
               attachment.supportsPaneSplitting,
-              launchedHandles.contains(handle.id),
+              launchedAttachmentIDs[handle.id] == attachment.id,
               paneSplitClients[handle.id] != nil
         else { return nil }
         let attachmentID = attachment.id
@@ -1477,7 +1499,7 @@ final class NativeTmuxSessionCoordinator {
         )
         guard !Task.isCancelled,
               attachments[handle.id]?.id == attachmentID,
-              launchedHandles.contains(handle.id),
+              launchedAttachmentIDs[handle.id] == attachmentID,
               case let .success(client) = result
         else { return nil }
         return client.sessionIdentity
@@ -1507,7 +1529,8 @@ final class NativeTmuxSessionCoordinator {
             guard handlesByKey[key] == handle else { return }
             if let requiredAttachmentID {
                 guard attachments[handle.id]?.id == requiredAttachmentID,
-                      launchedHandles.contains(handle.id),
+                      launchedAttachmentIDs[handle.id]
+                      == requiredAttachmentID,
                       attachmentClosures[handle.id] == nil
                 else { return }
             }
@@ -1523,6 +1546,14 @@ final class NativeTmuxSessionCoordinator {
         let key = sessionKey(handle)
         guard handlesByKey[key] == handle else { return }
         let attachment = attachments.removeValue(forKey: handle.id)
+        let launchedAttachmentID = launchedAttachmentIDs.removeValue(
+            forKey: handle.id
+        )
+        if attachment?.id == launchedAttachmentID {
+            closedLaunchedHandles.insert(handle.id)
+        } else {
+            closedLaunchedHandles.remove(handle.id)
+        }
         cancelPaneSplits(handleID: handle.id)
         let recordedExitCode = remoteExitStatusStore.consume(
             attachment?.remoteExitStatusURL
@@ -1588,7 +1619,8 @@ final class NativeTmuxSessionCoordinator {
         }
         attachments.removeAll()
         attachmentClosures.removeAll()
-        launchedHandles.removeAll()
+        launchedAttachmentIDs.removeAll()
+        closedLaunchedHandles.removeAll()
         reportedConnectedAttachmentIDs.removeAll()
         deferredPresentationStyleHandles.removeAll()
         pendingSizingByHandle.removeAll()

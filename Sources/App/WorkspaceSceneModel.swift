@@ -11099,7 +11099,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let key = TmuxPresentationKey(presentation.selection)
         if case .disconnected = state,
            alwaysLiveManagedTmuxPresentationKeys.contains(key),
-           !nativeTmuxSessionCoordinator.hasLaunched(handle),
+           !nativeTmuxSessionCoordinator.closedAttachmentHadLaunched(handle),
            nativeTmuxSessionCoordinator.attachmentClosure(handle)
            != .surfaceUnavailable,
            nativeTmuxSessionCoordinator.attachmentClosure(handle)
@@ -11193,7 +11193,7 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         if case .disconnected = state,
-           nativeTmuxSessionCoordinator.hasLaunched(handle) {
+           nativeTmuxSessionCoordinator.closedAttachmentHadLaunched(handle) {
             cancelTmuxPresentationTasks(handleID: handle.id)
             if var context = presentation.reconnectContext,
                context.handleID == handle.id,
@@ -11222,7 +11222,8 @@ final class WorkspaceSceneModel: ObservableObject {
         case .connected:
             reconcileCreatedTmuxSession(handleID: handle.id)
         case .disconnected:
-            guard nativeTmuxSessionCoordinator.hasLaunched(handle) else {
+            guard nativeTmuxSessionCoordinator
+                .closedAttachmentHadLaunched(handle) else {
                 if pending.initialCommand != nil {
                     pending.commandReplayAuthorized = true
                     pendingCreatedTmuxSessions[handle.id] = pending
