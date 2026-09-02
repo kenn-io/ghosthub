@@ -9561,9 +9561,6 @@ final class WorkspaceSceneModel: ObservableObject {
             hostSummary: host
         )
         let startsHiddenOnPOSIX = startsHidden && host.platform != .windows
-        let hiddenPreviewGridSize = (tmuxSessionsByHost[selection.hostID]
-            ?? host.tmuxSessions).first { $0.name == selection.name }?
-            .previewClientSize
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -9579,7 +9576,7 @@ final class WorkspaceSceneModel: ObservableObject {
             sessionIdentity: discoveredIdentity,
             ignoresClientSize: startsHiddenOnPOSIX || ignoresClientSize,
             previewGridSize: startsHiddenOnPOSIX
-                ? hiddenPreviewGridSize : previewGridSize
+                ? self.previewGridSize(for: selection) : previewGridSize
         )
         let phase: RemoteTmuxEstablishmentPhase
         if openWorkspace || protectedSessionNeedsEstablishment {
@@ -9805,6 +9802,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func previewGridSize(
         for selection: WorkspaceTmuxSessionSelection
     ) -> TmuxGridSize? {
+        guard selection.socketName == nil else { return nil }
         let sessions = tmuxSessionsByHost[selection.hostID]
             ?? snapshot.host(id: selection.hostID)?.tmuxSessions
         return sessions?.first {
