@@ -198,6 +198,9 @@ final class NativeTmuxSessionCoordinator {
     private var targetHostsByHandle: [UUID: CommandHost] = [:]
     private var attachments: [UUID: NativeTmuxAttachment] = [:]
     private var attachmentClosures: [UUID: BorrowedTmuxAttachmentClosure] = [:]
+    /// Identifies the launch failure whose deferred report is still owed, so
+    /// a replacement attach on the same handle is not told it disconnected.
+    private var surfaceLaunchFailureIDs: [UUID: UUID] = [:]
     private var launchedAttachmentIDs: [UUID: UUID] = [:]
     private var closedLaunchedHandles: Set<UUID> = []
     private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
@@ -334,6 +337,7 @@ final class NativeTmuxSessionCoordinator {
         handlesByKey[key] = handle
         targetHostsByHandle[handle.id] = host
         attachmentClosures.removeValue(forKey: handle.id)
+        surfaceLaunchFailureIDs.removeValue(forKey: handle.id)
         closedLaunchedHandles.remove(handle.id)
 
         guard !isShuttingDown,
@@ -618,6 +622,7 @@ final class NativeTmuxSessionCoordinator {
             removesRemoteExitStatus: true
         )
         attachmentClosures.removeValue(forKey: handle.id)
+        surfaceLaunchFailureIDs.removeValue(forKey: handle.id)
         launchedAttachmentIDs.removeValue(forKey: handle.id)
         closedLaunchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
@@ -1434,6 +1439,8 @@ final class NativeTmuxSessionCoordinator {
         )
         cancelPaneSplits(handleID: handle.id)
         attachmentClosures[handle.id] = closure
+        let failureID = UUID()
+        surfaceLaunchFailureIDs[handle.id] = failureID
         let attachment = attachments.removeValue(forKey: handle.id)
         launchedAttachmentIDs.removeValue(forKey: handle.id)
         closedLaunchedHandles.remove(handle.id)
@@ -1448,7 +1455,8 @@ final class NativeTmuxSessionCoordinator {
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
         reportSurfaceStateLater(
             handle,
-            state: .disconnected(reason: reason)
+            state: .disconnected(reason: reason),
+            requiredLaunchFailureID: failureID
         )
     }
 
@@ -1547,7 +1555,8 @@ final class NativeTmuxSessionCoordinator {
     private func reportSurfaceStateLater(
         _ handle: BorrowedTmuxSessionHandle,
         state: ConnectionState,
-        requiredAttachmentID: UUID? = nil
+        requiredAttachmentID: UUID? = nil,
+        requiredLaunchFailureID: UUID? = nil
     ) {
         Task { [weak self] in
             guard let self, !isShuttingDown else { return }
@@ -1559,6 +1568,12 @@ final class NativeTmuxSessionCoordinator {
                       == requiredAttachmentID,
                       attachmentClosures[handle.id] == nil
                 else { return }
+            }
+            if let requiredLaunchFailureID {
+                guard surfaceLaunchFailureIDs[handle.id]
+                    == requiredLaunchFailureID
+                else { return }
+                surfaceLaunchFailureIDs.removeValue(forKey: handle.id)
             }
             onStateChanged?(handle, state)
         }
@@ -1645,6 +1660,7 @@ final class NativeTmuxSessionCoordinator {
         }
         attachments.removeAll()
         attachmentClosures.removeAll()
+        surfaceLaunchFailureIDs.removeAll()
         launchedAttachmentIDs.removeAll()
         closedLaunchedHandles.removeAll()
         reportedConnectedAttachmentIDs.removeAll()

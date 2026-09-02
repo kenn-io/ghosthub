@@ -1476,6 +1476,47 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(store.removedKeys.count == 1)
     }
 
+    @Test("a replacement attach outlives the failed launch's disconnect")
+    func replacementAttachIgnoresStaleLaunchFailure() async {
+        let store = RecordingNativeSessionSurfaceStore(
+            launchError: SurfaceLaunchTestError.rejected
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
+        )
+        var states: [ConnectionState] = []
+        var readyCount = 0
+        coordinator.onStateChanged = { _, state in states.append(state) }
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let hostID = UUID()
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "release-work",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        #expect(coordinator.attachmentClosure(handle) == .launchFailed)
+        let replacement = coordinator.attach(
+            hostID: hostID,
+            name: "release-work",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        #expect(replacement == handle)
+
+        await waitUntilMainActor { readyCount == 2 }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(states == [.connecting, .connecting])
+        #expect(coordinator.attachmentClosure(handle) == nil)
+        await coordinator.shutdown()
+    }
+
     @Test("a missing terminal surface is a launch failure")
     func missingSurfaceDoesNotLaunch() async {
         let store = MissingTmuxSurfaceStore()
