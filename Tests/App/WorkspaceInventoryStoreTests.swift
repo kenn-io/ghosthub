@@ -522,6 +522,9 @@ struct WorkspaceInventoryStoreTests {
 
     @Test("mutation-end tombstones survive stale refreshes")
     func mutationEndTombstonesSurviveStaleRefreshes() async {
+        enum RefreshFailure: Error {
+            case failed
+        }
         let repository = "example/repository"
         let worktree = KwtWorktreeRecord(
             path: "/test/repository/removed",
@@ -551,12 +554,21 @@ struct WorkspaceInventoryStoreTests {
             warning: nil
         )])
         let coordinator = WorktreeMutationCoordinator()
+        let firstLoad = AsyncGate()
         let loadCount = LockedValue(0)
         let hostID = UUID()
         let store = WorkspaceInventoryStore(
             kwtLoader: { _ in
                 loadCount.withLock { $0 += 1 }
-                return loadCount.load() == 2 ? absent : containing
+                switch loadCount.load() {
+                case 1:
+                    await firstLoad.wait()
+                    throw RefreshFailure.failed
+                case 2:
+                    return absent
+                default:
+                    return containing
+                }
             },
             kwtProvisioner: { _ in },
             tmuxLoader: { _ in .success([]) },
@@ -565,6 +577,11 @@ struct WorkspaceInventoryStoreTests {
         let identity = KwtWorktreeIdentity(
             path: worktree.path,
             generation: worktree.generation ?? ""
+        )
+        store.publishKwtInventory(
+            containing,
+            on: .local,
+            mutationHostID: nil
         )
         #expect(coordinator.acquire(
             hostID: hostID,
@@ -587,11 +604,24 @@ struct WorkspaceInventoryStoreTests {
             projectIdentity: repository,
             removalTombstones: [identity]
         )
-        await waitUntilMainActor {
-            loadCount.load() == 1
-                && store.snapshot.kwtByHost[.local]?.inventory?
+        await waitUntil { loadCount.load() == 1 }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?
                 .projects.first?.worktrees.isEmpty == true
+        )
+
+        firstLoad.open()
+        await waitUntilMainActor {
+            guard let entry = store.snapshot.kwtByHost[.local] else {
+                return false
+            }
+            guard case .failed = entry.state else { return false }
+            return true
         }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.first?.worktrees.isEmpty == true
+        )
 
         store.refreshKwt(for: subscriberID)
         await waitUntilMainActor {
@@ -635,16 +665,25 @@ struct WorkspaceInventoryStoreTests {
         )])
         let absent = KwtHostInventory(projects: [])
         let coordinator = WorktreeMutationCoordinator()
+        let firstLoad = AsyncGate()
         let loadCount = LockedValue(0)
         let hostID = UUID()
         let store = WorkspaceInventoryStore(
             kwtLoader: { _ in
                 loadCount.withLock { $0 += 1 }
+                if loadCount.load() == 1 {
+                    await firstLoad.wait()
+                }
                 return loadCount.load() == 2 ? absent : containing
             },
             kwtProvisioner: { _ in },
             tmuxLoader: { _ in .success([]) },
             mutationCoordinator: coordinator
+        )
+        store.publishKwtInventory(
+            containing,
+            on: .local,
+            mutationHostID: nil
         )
         #expect(coordinator.acquireProjectRemoval(
             hostID: hostID,
@@ -668,6 +707,12 @@ struct WorkspaceInventoryStoreTests {
             projectIdentity: repository,
             removesProject: true
         )
+        await waitUntil { loadCount.load() == 1 }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?
+                .projects.isEmpty == true
+        )
+        firstLoad.open()
         await waitUntilMainActor {
             loadCount.load() == 1
                 && store.snapshot.kwtByHost[.local]?.inventory?
@@ -740,6 +785,76 @@ struct WorkspaceInventoryStoreTests {
             loadCount.load() == 1
         }
         #expect(loadCount.load() == 1)
+    }
+
+    @Test("explicit refresh replaces in-flight loads")
+    func explicitRefreshReplacesInFlightLoads() async throws {
+        let staleKwt = KwtHostInventory(
+            projects: [],
+            projectsWarning: "stale"
+        )
+        let freshKwt = KwtHostInventory(projects: [])
+        let staleTmux = DiscoveredTmuxSession(
+            name: "stale",
+            windowCount: 1,
+            createdAt: nil,
+            managed: false
+        )
+        let kwtCount = LockedValue(0)
+        let tmuxCount = LockedValue(0)
+        let firstKwtLoad = AsyncGate()
+        let firstTmuxLoad = AsyncGate()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                let attempt = kwtCount.load()
+                kwtCount.withLock { $0 += 1 }
+                if attempt == 0 {
+                    await firstKwtLoad.wait()
+                    return staleKwt
+                }
+                return freshKwt
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in
+                let attempt = tmuxCount.load()
+                tmuxCount.withLock { $0 += 1 }
+                if attempt == 0 {
+                    await firstTmuxLoad.wait()
+                    return .success([staleTmux])
+                }
+                return .success([])
+            },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let subscriberID = UUID()
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: UUID(),
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: true
+        )
+        await waitUntil {
+            kwtCount.load() == 1 && tmuxCount.load() == 1
+        }
+
+        store.refreshAll(for: subscriberID)
+        await waitUntilMainActor {
+            kwtCount.load() == 2 && tmuxCount.load() == 2
+        }
+        firstKwtLoad.open()
+        firstTmuxLoad.open()
+
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[.local]?.inventory == freshKwt
+                && store.snapshot.tmuxByHost[.local]?.sessions == []
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(store.snapshot.kwtByHost[.local]?.inventory == freshKwt)
+        #expect(store.snapshot.tmuxByHost[.local]?.sessions == [])
     }
 
     @Test("subscribers for one endpoint share one load per lane")
@@ -855,6 +970,60 @@ struct WorkspaceInventoryStoreTests {
         }
         kwtGate.open()
         tmuxGate.open()
+    }
+
+    @Test("a new subscriber refreshes completed and failed cache entries")
+    func newSubscriberRefreshesInactiveCache() async {
+        let kwtCount = LockedValue(0)
+        let tmuxCount = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                kwtCount.withLock { $0 += 1 }
+                return KwtHostInventory(projects: [])
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in
+                let attempt = tmuxCount.load()
+                tmuxCount.withLock { $0 += 1 }
+                return attempt == 0
+                    ? .failure(.notFound(shell: "test"))
+                    : .success([])
+            },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let registration = WorkspaceInventoryStore.HostRegistration(
+            hostID: UUID(),
+            commandHost: .local,
+            provisioningHost: nil
+        )
+        let firstSubscriberID = UUID()
+        store.updateSubscriber(
+            id: firstSubscriberID,
+            registrations: [registration],
+            wantsKwt: true,
+            wantsTmux: true
+        )
+        await waitUntilMainActor {
+            guard store.snapshot.kwtByHost[.local]?.isFresh == true,
+                  let tmux = store.snapshot.tmuxByHost[.local]
+            else { return false }
+            guard case .failed = tmux.state else { return false }
+            return true
+        }
+
+        store.removeSubscriber(id: firstSubscriberID)
+        store.updateSubscriber(
+            id: UUID(),
+            registrations: [registration],
+            wantsKwt: true,
+            wantsTmux: true
+        )
+        await waitUntilMainActor {
+            kwtCount.load() == 2 && tmuxCount.load() == 2
+        }
+
+        #expect(kwtCount.load() == 2)
+        #expect(tmuxCount.load() == 2)
     }
 
     @Test("partial project failure stays merged in the shared cache")

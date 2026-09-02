@@ -186,6 +186,7 @@ final class WorkspaceInventoryStore: ObservableObject {
         guard let subscriber = subscribers[subscriberID],
               subscriber.wantsKwt else { return }
         for host in Set(subscriber.registrations.map(\.commandHost)) {
+            invalidateKwtHosts([host])
             requestKwt(host)
         }
     }
@@ -194,6 +195,7 @@ final class WorkspaceInventoryStore: ObservableObject {
         guard let subscriber = subscribers[subscriberID],
               subscriber.wantsTmux else { return }
         for host in Set(subscriber.registrations.map(\.commandHost)) {
+            invalidateTmuxHosts([host])
             requestTmux(host)
         }
     }
@@ -516,9 +518,9 @@ final class WorkspaceInventoryStore: ObservableObject {
         for host in hosts {
             kwtGenerations[host, default: 0] &+= 1
             kwtTasks.removeValue(forKey: host)?.cancel()
-            if var entry = snapshot.kwtByHost[host],
-               case .loading = entry.state {
+            if var entry = snapshot.kwtByHost[host] {
                 entry.state = .idle
+                entry.isFresh = false
                 snapshot.kwtByHost[host] = entry
             }
         }
@@ -528,9 +530,9 @@ final class WorkspaceInventoryStore: ObservableObject {
         for host in hosts {
             tmuxGenerations[host, default: 0] &+= 1
             tmuxTasks.removeValue(forKey: host)?.cancel()
-            if var entry = snapshot.tmuxByHost[host],
-               case .loading = entry.state {
+            if var entry = snapshot.tmuxByHost[host] {
                 entry.state = .idle
+                entry.isFresh = false
                 snapshot.tmuxByHost[host] = entry
             }
         }
@@ -573,11 +575,6 @@ final class WorkspaceInventoryStore: ObservableObject {
                 .filter { $0.hostID == event.scope.hostID }
                 .map(\.commandHost))
             invalidateKwtHosts(hosts)
-            for host in hosts {
-                guard var entry = snapshot.kwtByHost[host] else { continue }
-                entry.state = .idle
-                snapshot.kwtByHost[host] = entry
-            }
         case .ended:
             let hosts = Set(subscribers.values.flatMap(\.registrations)
                 .filter { $0.hostID == event.scope.hostID }
@@ -601,6 +598,7 @@ final class WorkspaceInventoryStore: ObservableObject {
                         kwtProjectRemovalTombstonesByHost[host, default: []]
                             .insert(event.scope.projectIdentity)
                     }
+                    applyRemovalTombstonesToCachedInventory(on: host)
                 }
             }
             guard !mutationCoordinator.scopes.contains(where: {
@@ -615,18 +613,33 @@ final class WorkspaceInventoryStore: ObservableObject {
                 .filter { $0.hostID == event.scope.hostID }
                 .map(\.commandHost))
             invalidateKwtHosts(hosts)
-            for host in hosts {
-                guard var entry = snapshot.kwtByHost[host] else { continue }
-                entry.state = .idle
-                entry.isFresh = false
-                snapshot.kwtByHost[host] = entry
-            }
             for host in hosts where subscribedKwtHosts().contains(host) {
                 requestKwt(host)
             }
         case .willRemove:
             break
         }
+    }
+
+    private func applyRemovalTombstonesToCachedInventory(
+        on host: CommandHost
+    ) {
+        guard var entry = snapshot.kwtByHost[host],
+              let inventory = entry.inventory
+        else { return }
+        var filtered = inventory.retainingFailedProjectWorktrees(
+            from: inventory,
+            excludingWorktrees: kwtRemovalTombstonesByHost[host] ?? [:]
+        )
+        let removedProjects = kwtProjectRemovalTombstonesByHost[host] ?? []
+        filtered.projects.removeAll {
+            removedProjects.contains($0.project.repository)
+        }
+        guard filtered != inventory else { return }
+        revision &+= 1
+        entry.inventory = filtered
+        entry.inventoryRevision = revision
+        snapshot.kwtByHost[host] = entry
     }
 
     private func requestSubscribedInventory() {
