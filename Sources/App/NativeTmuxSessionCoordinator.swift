@@ -100,6 +100,25 @@ private struct NativeTmuxAttachment {
     var supportsClientSizing: Bool
     var supportsPaneSplitting: Bool
     var remoteExitStatusURL: URL?
+
+    /// Kwt starts the tmux client itself while establishing or repairing a
+    /// workspace, so Ghosthub cannot pass client flags to that attach.
+    var usesKwtWorkspaceAttach: Bool {
+        Self.usesKwtWorkspaceAttach(
+            launchMode: launchMode,
+            openWorkspace: openWorkspace,
+            protectedWorkspacePath: protectedWorkspacePath
+        )
+    }
+
+    static func usesKwtWorkspaceAttach(
+        launchMode: TmuxAttachmentLaunchMode,
+        openWorkspace: Bool,
+        protectedWorkspacePath: String?
+    ) -> Bool {
+        launchMode == .attach
+            && (openWorkspace || protectedWorkspacePath != nil)
+    }
 }
 
 enum TmuxAttachedSessionIdentityResolution: Equatable {
@@ -443,8 +462,12 @@ final class NativeTmuxSessionCoordinator {
             let protectedWorkspacePath = tmuxAttachMode == .protected
                 ? workingDirectory
                 : nil
-            let usesKwtWorkspaceAttach = launchMode == .attach
-                && (openWorkspace || protectedWorkspacePath != nil)
+            let usesKwtWorkspaceAttach = NativeTmuxAttachment
+                .usesKwtWorkspaceAttach(
+                    launchMode: launchMode,
+                    openWorkspace: openWorkspace,
+                    protectedWorkspacePath: protectedWorkspacePath
+                )
             let effectiveIgnoresClientSize: Bool
             let effectivePreviewGridSize: TmuxGridSize?
             switch pendingSizing {
@@ -799,6 +822,9 @@ final class NativeTmuxSessionCoordinator {
             return .applied
         }
         guard launchedAttachmentIDs[handle.id] == attachment.id else {
+            // A local flag is only honored by a direct attach. Kwt's client
+            // must be hidden on the exact client after it launches.
+            guard !attachment.usesKwtWorkspaceAttach else { return .pending }
             attachment.ignoresClientSize = true
             attachment.previewGridSize = gridSize
             attachments[handle.id] = attachment

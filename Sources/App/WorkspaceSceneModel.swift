@@ -532,6 +532,11 @@ final class WorkspaceSceneModel: ObservableObject {
         var pendingSizingActivationNavigationRevision: UInt64?
         var hiddenSizingReconnectPending = false
         var hiddenSizingProvisioningPending = false
+        /// Fixed per attachment: kwt launches the client and cannot apply
+        /// hidden sizing first, so it must be applied after launch. The
+        /// reconnect phase is not a substitute because discovery can advance
+        /// it while the attachment is still provisioning.
+        var launchesThroughKwtWorkspace = false
 
         var previewPromotionIsPending: Bool {
             previewPromotionTask != nil
@@ -9625,6 +9630,8 @@ final class WorkspaceSceneModel: ObservableObject {
             verifiedPreviewIdentity: nil
         )
         presentation.sizingIntent = startsHiddenOnPOSIX ? .hidden : .interactive
+        presentation.launchesThroughKwtWorkspace =
+            openWorkspace || protectedSessionNeedsEstablishment
         presentation.reconnectExpectedIdentity = discoveredIdentity
         objectWillChange.send()
         retainedTmuxPresentations[key] = presentation
@@ -10634,8 +10641,7 @@ final class WorkspaceSceneModel: ObservableObject {
             } while result == .stale
 
             if result == .pending,
-               presentation.reconnectContext?.phase
-               == .establishingWorkspace {
+               presentation.launchesThroughKwtWorkspace {
                 presentation.hiddenSizingProvisioningPending = true
                 nativeTmuxSessionCoordinator.requestAttachedSessionIdentity(
                     presentation.handle
@@ -12687,6 +12693,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 && usesKwtWorkspaceEstablishment
         presentation.hiddenSizingProvisioningPending =
             defersHiddenSizingForWorkspaceEstablishment
+        presentation.launchesThroughKwtWorkspace = usesKwtWorkspaceEstablishment
         let startsNonSizing = reconnectsNonSizing
             && !defersHiddenSizingForWorkspaceEstablishment
         let previewGridSize = previewGridSize(for: selection)

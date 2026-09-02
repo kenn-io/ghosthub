@@ -2533,6 +2533,43 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(command.contains("ignore-size"))
     }
 
+    @Test("hidden sizing before a kwt launch stays pending")
+    func hiddenSizingBeforeKwtLaunchStaysPending() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            localKwtPathProvider: {
+                "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "kwt-widget-feature",
+            host: .local,
+            workingDirectory: "/worktrees/widget",
+            openWorkspace: true,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isReady }
+
+        let transition = await coordinator.restorePreviewSizing(
+            TmuxGridSize(columns: 120, rows: 37),
+            for: handle
+        )
+        #expect(transition == .pending)
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("'open'"))
+        #expect(!command.contains("ignore-size"))
+        #expect(!command.contains("stty"))
+    }
+
     @Test("unsupported tmux ignores non-sizing attachment requests")
     func unsupportedTmuxIgnoresNonSizingAttachRequest() async throws {
         let store = RecordingNativeSessionSurfaceStore()
