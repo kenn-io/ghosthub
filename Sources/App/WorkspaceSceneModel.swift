@@ -9927,6 +9927,12 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.reconnectContext?.routeIdentity = routeIdentity
         }
         let key = TmuxPresentationKey(presentation.selection)
+        if presentation.sizingIntent == .hidden,
+           presentation.hiddenSizingProvisioningPending {
+            presentation.hiddenSizingProvisioningPending = false
+            invalidateBorrowedTmuxSession(presentation.selection)
+            return
+        }
         if alwaysLiveManagedTmuxPresentationKeys.contains(key) {
             excludeAlwaysLiveTmuxPresentation(presentation, key: key)
             return

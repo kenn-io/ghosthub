@@ -427,6 +427,51 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("hidden workspace provisioning detaches without a client identity")
+    func hiddenWorkspaceProvisioningDetachesWithoutIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        let resolutionStarted = LockedValue(false)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                resolutionStarted.store(true)
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, _ in
+                (1, "client identity unavailable")
+            },
+            localKwtPathProvider: { "/test/kwt" },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { resolutionStarted.load() }
+        model.hideBorrowedTmuxSession(selection)
+        releaseResolution.signal()
+
+        await waitUntilMainActor(timeout: .seconds(3)) {
+            model.retainedBorrowedTmuxHandle(for: selection) == nil
+        }
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(!surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a failed hidden sizing transition detaches the client")
     func failedHiddenSizingTransitionDetachesClient() async throws {
         let environment = try setupHostEnvironment()
