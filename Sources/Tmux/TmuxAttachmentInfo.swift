@@ -128,7 +128,6 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     )
                 }
             } else if launchMode != .attachOnly,
-                      !ignoresClientSize,
                       protectedWorkspacePath == nil,
                       workspacePath != nil {
                 command = remoteWorkspaceAttachCommand(
@@ -181,10 +180,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         }
         switch launchMode {
         case .attach:
-            // Kwt does not expose tmux attach client flags. A non-sizing
-            // client must therefore use the direct attach below so
-            // ignore-size is present when tmux creates the client.
-            if !ignoresClientSize, let protectedWorkspacePath {
+            if let protectedWorkspacePath {
                 guard let kwtPath, !kwtPath.isEmpty else {
                     commands.append(
                         "printf 'Ghosthub: bundled kwt is unavailable\\n' >&2"
@@ -213,7 +209,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     )
                 )
             } else {
-                if !ignoresClientSize, let workspacePath {
+                if let workspacePath {
                     guard let kwtPath, !kwtPath.isEmpty else {
                         commands.append(
                             "printf 'Ghosthub: bundled kwt is unavailable\\n' >&2"
@@ -382,8 +378,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         }
         let attach: String
         if let protectedWorkspacePath,
-           launchMode != .attachOnly,
-           !ignoresClientSize {
+           launchMode != .attachOnly {
             let protectedAttach: String
             if let remoteKwtCommandPrelude {
                 let kwtAttach = remoteKwtCommandPrelude

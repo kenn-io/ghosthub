@@ -1159,6 +1159,134 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("local disconnect during hidden sizing resumes on reconnect")
+    func localDisconnectDuringHiddenSizingResumesOnReconnect() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        let previewGrid = TmuxGridSize(columns: 120, rows: 37)
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "kwt-ghosthub-main",
+                managed: true,
+                windows: [],
+                serverPID: "101",
+                sessionID: "$1",
+                createdAt: "1000",
+                previewClientSize: previewGrid
+            ),
+        ]
+        let hideStarted = LockedValue(false)
+        let hideFinished = LockedValue(false)
+        let releaseHide = DispatchSemaphore(value: 0)
+        let reconnectGate = BlockingGate()
+        let blocksDiscovery = LockedValue(false)
+        defer {
+            releaseHide.signal()
+            reconnectGate.release()
+        }
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    hideStarted.store(true)
+                    _ = releaseHide.wait(timeout: .now() + 5)
+                    hideFinished.store(true)
+                }
+                return (0, "")
+            },
+            localKwtPathProvider: { "/test/kwt" },
+            tmuxSessionDiscovery: { _ in
+                if blocksDiscovery.load() {
+                    reconnectGate.wait()
+                }
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "kwt-ghosthub-main",
+                        windowCount: 1,
+                        serverPID: "101",
+                        sessionID: "$1",
+                        createdAt: "1000",
+                        previewClientSize: previewGrid,
+                        managed: true
+                    ),
+                ])
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let worktree = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+        let other = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other"
+        )
+
+        model.openBorrowedTmuxSession(worktree)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let worktreeHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: worktree)
+        )
+        let worktreeClose = try #require(
+            surfaceStore.surface.closeObservers[worktreeHandle.id]
+        )
+        model.openBorrowedTmuxSession(other)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2 && hideStarted.load()
+        }
+
+        blocksDiscovery.store(true)
+        worktreeClose(false, 255)
+        await waitUntilMainActor(timeout: .seconds(2)) {
+            reconnectGate.didStart
+        }
+        releaseHide.signal()
+        await waitUntilMainActor { hideFinished.load() }
+        try await Task.sleep(for: .milliseconds(25))
+
+        let retainedHandle = model.retainedBorrowedTmuxHandle(for: worktree)
+        #expect(retainedHandle != nil)
+
+        reconnectGate.release()
+        if retainedHandle != nil {
+            await waitUntilMainActor {
+                surfaceStore.requestCount == 3
+                    && model.retainedBorrowedTmuxSessionIsConnected(worktree)
+            }
+            #expect(model.activeBorrowedTmuxSelection == other)
+            #expect(
+                model.retainedBorrowedTmuxHandle(for: worktree)
+                    == worktreeHandle
+            )
+            #expect(surfaceStore.surface.previewGridSizes == [previewGrid])
+            #expect(
+                try #require(surfaceStore.lastConfiguration?.command)
+                    .contains("ignore-size")
+            )
+        }
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("interrupted profile creation never replays its command automatically")
     func interruptedProfileCreationRequiresExplicitRetry() async throws {
         let environment = try setupRemoteTmuxEnvironment()

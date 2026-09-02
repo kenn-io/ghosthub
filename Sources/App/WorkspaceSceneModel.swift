@@ -531,6 +531,7 @@ final class WorkspaceSceneModel: ObservableObject {
         var sizingTransitionTask: Task<Void, Never>?
         var pendingSizingActivationNavigationRevision: UInt64?
         var hiddenSizingReconnectPending = false
+        var hiddenSizingProvisioningPending = false
 
         var previewPromotionIsPending: Bool {
             previewPromotionTask != nil
@@ -10033,6 +10034,17 @@ final class WorkspaceSceneModel: ObservableObject {
             guard presentation.sizingTransitionTask == nil else { return }
             presentation.hiddenSizingReconnectPending = false
         }
+        if presentation.hiddenSizingProvisioningPending {
+            guard presentation.sizingTransitionTask == nil else { return }
+            presentation.hiddenSizingProvisioningPending = false
+            finishTmuxSurfaceReadiness(handle)
+            guard retainedTmuxPresentations[key] === presentation,
+                  presentation.sizingIntent == .hidden,
+                  nativeTmuxSessionCoordinator.hasLaunched(handle)
+            else { return }
+            hideTmuxPresentationSizing(presentation)
+            return
+        }
         // Resume a pending user promotion before the preview-support
         // filter: a session the user explicitly opened during provisioning
         // must become an ordinary interactive attachment even when the
@@ -10368,6 +10380,7 @@ final class WorkspaceSceneModel: ObservableObject {
         stageTmuxPresentationActivation(presentation)
         presentation.sizingIntent = .interactive
         presentation.hiddenSizingReconnectPending = false
+        presentation.hiddenSizingProvisioningPending = false
         let navigationRevision = userNavigationRevision
         presentation.pendingSizingActivationNavigationRevision =
             navigationRevision
@@ -10567,13 +10580,14 @@ final class WorkspaceSceneModel: ObservableObject {
                 if presentation.sizingTransitionID == transitionID {
                     presentation.sizingTransitionID = nil
                     presentation.sizingTransitionTask = nil
-                    if presentation.hiddenSizingReconnectPending,
-                       !nativeTmuxSessionCoordinator.isProvisioning(
-                           presentation.handle
-                       ),
-                       !nativeTmuxSessionCoordinator.hasClosedAttachment(
-                           presentation.handle
-                       ) {
+                    if presentation.hiddenSizingReconnectPending
+                        || presentation.hiddenSizingProvisioningPending,
+                        !nativeTmuxSessionCoordinator.isProvisioning(
+                            presentation.handle
+                        ),
+                        !nativeTmuxSessionCoordinator.hasClosedAttachment(
+                            presentation.handle
+                        ) {
                         tmuxSurfaceBecameReady(presentation.handle)
                     }
                 }
@@ -10603,7 +10617,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             } while result == .stale
 
-            if case let .failure(failure) = result {
+            if result == .pending,
+               presentation.reconnectContext?.phase
+               == .establishingWorkspace {
+                presentation.hiddenSizingProvisioningPending = true
+            } else if case let .failure(failure) = result {
                 guard !presentation.hiddenSizingReconnectPending else {
                     return
                 }
@@ -11082,7 +11100,6 @@ final class WorkspaceSceneModel: ObservableObject {
             if presentation.sizingIntent == .hidden,
                presentation.sizingTransitionTask != nil,
                presentation.reconnectContext?.handleID == handle.id,
-               presentation.reconnectContext?.host.isRemote == true,
                case .some(.processExited) = nativeTmuxSessionCoordinator
                .attachmentClosure(handle) {
                 presentation.hiddenSizingReconnectPending = true
@@ -11165,12 +11182,13 @@ final class WorkspaceSceneModel: ObservableObject {
             cancelTmuxPresentationTasks(handleID: handle.id)
             if var context = presentation.reconnectContext,
                context.handleID == handle.id,
-               context.host.isRemote,
                case let .processExited(code) =
                nativeTmuxSessionCoordinator.attachmentClosure(handle) {
                 presentation.establishmentConfirmationTask?.cancel()
                 presentation.establishmentConfirmationTask = nil
-                if code == 127, context.usesKwtWorkspaceCommand {
+                if context.host.isRemote,
+                   code == 127,
+                   context.usesKwtWorkspaceCommand {
                     markRemoteKwtUnavailable(
                         hostID: context.selection.hostID
                     )
@@ -12497,7 +12515,7 @@ final class WorkspaceSceneModel: ObservableObject {
             else {
                 stopTmuxReconnectWithUnableToAttach(
                     presentation,
-                    "The remote tmux client exited before it could attach."
+                    "The tmux client exited before it could attach."
                 )
                 return .stop
             }
@@ -12522,7 +12540,7 @@ final class WorkspaceSceneModel: ObservableObject {
             else {
                 stopTmuxReconnectWithUnableToAttach(
                     presentation,
-                    "The remote workspace could not be established."
+                    "The workspace could not be established."
                 )
                 return .stop
             }

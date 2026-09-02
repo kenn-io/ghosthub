@@ -192,6 +192,7 @@ final class NativeTmuxSessionCoordinator {
     private var sizingTransitionTasks:
         [UUID: [UUID: SizingTransitionTask]] = [:]
     private var sizingTransitionDrains: [UUID: Task<Void, Never>] = [:]
+    private var sizingTransitionCleanupTasks: [UUID: Task<Void, Never>] = [:]
     private var interactiveSizingTransitionHandles: Set<UUID> = []
     private var isShuttingDown = false
 
@@ -428,13 +429,19 @@ final class NativeTmuxSessionCoordinator {
             let pendingSizing = pendingSizingByHandle.removeValue(
                 forKey: handle.id
             )
+            let protectedWorkspacePath = tmuxAttachMode == .protected
+                ? workingDirectory
+                : nil
+            let usesKwtWorkspaceAttach = launchMode == .attach
+                && (openWorkspace || protectedWorkspacePath != nil)
             let effectiveIgnoresClientSize: Bool
             let effectivePreviewGridSize: TmuxGridSize?
             switch pendingSizing {
             case .interactive:
                 effectiveIgnoresClientSize = false
                 effectivePreviewGridSize = nil
-            case let .preview(gridSize) where supportsClientSizing:
+            case let .preview(gridSize)
+                where supportsClientSizing && !usesKwtWorkspaceAttach:
                 effectiveIgnoresClientSize = true
                 effectivePreviewGridSize = gridSize
             case .preview:
@@ -446,9 +453,6 @@ final class NativeTmuxSessionCoordinator {
                 effectivePreviewGridSize = effectiveIgnoresClientSize
                     ? previewGridSize : nil
             }
-            let protectedWorkspacePath = tmuxAttachMode == .protected
-                ? workingDirectory
-                : nil
             attachments[handle.id] = NativeTmuxAttachment(
                 id: attachmentID,
                 host: host,
@@ -872,7 +876,8 @@ final class NativeTmuxSessionCoordinator {
         }
         sizingTransitionDrains[handleID] = drain
         let remoteExitStatusStore = remoteExitStatusStore
-        Task { [weak self] in
+        let cleanupID = UUID()
+        let cleanup = Task { [weak self] in
             await drain.value
             if self?.sizingTransitionDrains[handleID] == drain {
                 self?.sizingTransitionDrains.removeValue(forKey: handleID)
@@ -884,7 +889,9 @@ final class NativeTmuxSessionCoordinator {
                 remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
             }
             try? await attachment?.sshConnection?.release()
+            self?.sizingTransitionCleanupTasks.removeValue(forKey: cleanupID)
         }
+        sizingTransitionCleanupTasks[cleanupID] = cleanup
     }
 
     private func applyPreviewGridSize(
@@ -1545,7 +1552,11 @@ final class NativeTmuxSessionCoordinator {
         let handles = Array(handlesByKey.values)
         let connections = attachments.values.compactMap(\.sshConnection)
         let sizingTransitions = sizingTransitionTasks.values.flatMap(\.values)
+        let sizingDrains = Array(sizingTransitionDrains.values)
+        let sizingCleanups = Array(sizingTransitionCleanupTasks.values)
         sizingTransitions.forEach { $0.cancel() }
+        sizingDrains.forEach { $0.cancel() }
+        sizingCleanups.forEach { $0.cancel() }
         sizingTransitionTasks.removeAll()
         sizingTransitionTails.removeAll()
         provisioningTasks.values.forEach { $0.cancel() }
@@ -1575,6 +1586,11 @@ final class NativeTmuxSessionCoordinator {
         for transition in sizingTransitions {
             _ = await transition.value
         }
+        for cleanup in sizingCleanups {
+            await cleanup.value
+        }
+        sizingTransitionDrains.removeAll()
+        sizingTransitionCleanupTasks.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
         }

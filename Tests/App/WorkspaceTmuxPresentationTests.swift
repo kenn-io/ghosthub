@@ -363,6 +363,69 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("hiding workspace provisioning preserves kwt establishment")
+    func hidingWorkspaceProvisioningPreservesKwtEstablishment() async throws {
+        let environment = try setupStandardEnvironment()
+        let resolutionStarted = LockedValue(false)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let hiddenSizingMutations = LockedValue(0)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                resolutionStarted.store(true)
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    hiddenSizingMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
+            localKwtPathProvider: { "/test/kwt" },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { resolutionStarted.load() }
+        model.hideBorrowedTmuxSession(selection)
+        releaseResolution.signal()
+        await waitUntilMainActor(timeout: .seconds(2)) {
+            surfaceStore.requestCount == 1
+        }
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("/test/kwt"))
+        #expect(command.contains("'open'"))
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            hiddenSizingMutations.load() == 1
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a failed hidden sizing transition detaches the client")
     func failedHiddenSizingTransitionDetachesClient() async throws {
         let environment = try setupHostEnvironment()

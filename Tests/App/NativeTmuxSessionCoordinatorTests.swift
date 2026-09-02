@@ -1875,6 +1875,87 @@ struct NativeTmuxSessionCoordinatorTests {
         _ = await sizing.value
     }
 
+    @Test("shutdown waits for a prior close sizing drain")
+    func shutdownWaitsForPriorCloseSizingDrain() async throws {
+        let events = LockedValue<[String]>([])
+        let sizingCancelled = LockedValue(false)
+        let releaseSizingDrain = DispatchSemaphore(value: 0)
+        defer { releaseSizingDrain.signal() }
+        let shutdownFinished = LockedValue(false)
+        let store = RecordingNativeSessionSurfaceStore()
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(release: {
+                    events.withLock { $0.append("release") }
+                })
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("sizing-start") }
+                    while !withUnsafeCurrentTask(body: {
+                        $0?.isCancelled == true
+                    }) {
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    sizingCancelled.store(true)
+                    events.withLock { $0.append("sizing-cancel") }
+                    releaseSizingDrain.wait()
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "close-then-shutdown",
+            host: .ssh(host),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+        let sizing = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor {
+            events.load() == ["sizing-start"]
+        }
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(true, nil)
+        await waitUntilMainActor { sizingCancelled.load() }
+        let shutdown = Task { @MainActor in
+            await coordinator.shutdown()
+            events.withLock { $0.append("shutdown-finish") }
+            shutdownFinished.store(true)
+        }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(!shutdownFinished.load())
+
+        releaseSizingDrain.signal()
+        await shutdown.value
+        _ = await sizing.value
+        #expect(events.load() == [
+            "sizing-start", "sizing-cancel", "release", "shutdown-finish",
+        ])
+    }
+
     @Test("interactive sizing refreshes geometry before clearing ignore-size")
     func interactiveSizingRefreshesGeometryBeforePromotion() async {
         let store = RecordingNativeSessionSurfaceStore()
