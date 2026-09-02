@@ -146,6 +146,9 @@ final class NativeTmuxSessionCoordinator {
         var task: Task<Void, Never>
     }
 
+    private typealias SizingTransitionTask =
+        Task<TmuxClientSizingTransitionResult, Never>
+
     private let terminalCoordinator: any NativeSessionSurfaceStoring
     private let tmuxPathProvider:
         @Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>
@@ -184,7 +187,9 @@ final class NativeTmuxSessionCoordinator {
     private var unavailablePreviewIdentityHandles: Set<UUID> = []
     private var deferredPresentationStyleHandles: Set<UUID> = []
     private var pendingSizingByHandle: [UUID: PendingTmuxClientSizing] = [:]
-    private var sizingTransitionTails: [UUID: Task<Void, Never>] = [:]
+    private var sizingTransitionTails: [UUID: SizingTransitionTask] = [:]
+    private var sizingTransitionTasks:
+        [UUID: [UUID: SizingTransitionTask]] = [:]
     private var interactiveSizingTransitionHandles: Set<UUID> = []
     private var isShuttingDown = false
 
@@ -544,17 +549,25 @@ final class NativeTmuxSessionCoordinator {
         }
         provisioningTasks.removeValue(forKey: handle.id)?.cancel()
         cancelPaneSplits(handleID: handle.id)
+        let sizingTransitions = cancelSizingTransitions(
+            handleID: handle.id
+        )
         provisioningHandles.remove(handle.id)
         targetHostsByHandle.removeValue(forKey: handle.id)
         let attachment = attachments.removeValue(forKey: handle.id)
-        remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
-        Task { try? await attachment?.sshConnection?.release() }
+        let remoteExitStatusStore = remoteExitStatusStore
+        Task {
+            for transition in sizingTransitions {
+                _ = await transition.value
+            }
+            remoteExitStatusStore.remove(attachment?.remoteExitStatusURL)
+            try? await attachment?.sshConnection?.release()
+        }
         attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         pendingSizingByHandle.removeValue(forKey: handle.id)
-        sizingTransitionTails.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
     }
 
@@ -766,7 +779,6 @@ final class NativeTmuxSessionCoordinator {
                 return .failure(failure)
             }
         }
-        applyPreviewGridSize(gridSize, for: handle)
         let failure = await paneSplitter.disableSizing(target: target)
         guard !Task.isCancelled,
               attachments[handle.id]?.id == attachmentID
@@ -775,6 +787,7 @@ final class NativeTmuxSessionCoordinator {
             attachment.ignoresClientSize = true
             attachment.previewGridSize = gridSize
             attachments[handle.id] = attachment
+            applyPreviewGridSize(gridSize, for: handle)
             return .applied
         }
         return .failure(failure)
@@ -786,26 +799,43 @@ final class NativeTmuxSessionCoordinator {
             -> TmuxClientSizingTransitionResult
     ) async -> TmuxClientSizingTransitionResult {
         let predecessor = sizingTransitionTails[handle.id]
+        let transitionID = UUID()
         let transition = Task { @MainActor in
             if let predecessor {
-                await predecessor.value
+                _ = await predecessor.value
             }
             guard !Task.isCancelled else {
                 return TmuxClientSizingTransitionResult.stale
             }
             return await operation()
         }
-        let tail = Task { _ = await transition.value }
-        sizingTransitionTails[handle.id] = tail
+        sizingTransitionTails[handle.id] = transition
+        sizingTransitionTasks[handle.id, default: [:]][transitionID] =
+            transition
         let result = await withTaskCancellationHandler {
             await transition.value
         } onCancel: {
             transition.cancel()
         }
-        if sizingTransitionTails[handle.id] == tail {
+        sizingTransitionTasks[handle.id]?.removeValue(forKey: transitionID)
+        if sizingTransitionTasks[handle.id]?.isEmpty == true {
+            sizingTransitionTasks.removeValue(forKey: handle.id)
+        }
+        if sizingTransitionTails[handle.id] == transition {
             sizingTransitionTails.removeValue(forKey: handle.id)
         }
         return result
+    }
+
+    private func cancelSizingTransitions(
+        handleID: UUID
+    ) -> [SizingTransitionTask] {
+        sizingTransitionTails.removeValue(forKey: handleID)
+        let transitions = sizingTransitionTasks
+            .removeValue(forKey: handleID)
+            .map { Array($0.values) } ?? []
+        transitions.forEach { $0.cancel() }
+        return transitions
     }
 
     private func applyPreviewGridSize(
@@ -1459,6 +1489,10 @@ final class NativeTmuxSessionCoordinator {
         isShuttingDown = true
         let handles = Array(handlesByKey.values)
         let connections = attachments.values.compactMap(\.sshConnection)
+        let sizingTransitions = sizingTransitionTasks.values.flatMap(\.values)
+        sizingTransitions.forEach { $0.cancel() }
+        sizingTransitionTasks.removeAll()
+        sizingTransitionTails.removeAll()
         provisioningTasks.values.forEach { $0.cancel() }
         paneSplitClientBindings.values.forEach { $0.task.cancel() }
         paneSplitWorkers.values.forEach { $0.task.cancel() }
@@ -1483,7 +1517,9 @@ final class NativeTmuxSessionCoordinator {
         reportedConnectedAttachmentIDs.removeAll()
         deferredPresentationStyleHandles.removeAll()
         pendingSizingByHandle.removeAll()
-        sizingTransitionTails.removeAll()
+        for transition in sizingTransitions {
+            _ = await transition.value
+        }
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
         }

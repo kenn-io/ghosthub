@@ -16,6 +16,11 @@ private let coordinatorSplitClientOutput =
     "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t123\t789\t321"
         + "\t/dev/ttys001\t$7\t456\t%9\n"
 
+enum SizingTeardown: Sendable {
+    case detach
+    case shutdown
+}
+
 private func supportedPaneSplitter(
     _ runner: @escaping TmuxPaneSplitter.Runner
 ) -> TmuxPaneSplitter {
@@ -1721,6 +1726,96 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(events.load() == ["hidden-start", "hidden-end"])
     }
 
+    @Test(
+        "teardown cancels sizing before releasing its SSH attachment",
+        arguments: [SizingTeardown.detach, .shutdown]
+    )
+    func teardownCancelsSizingBeforeRelease(
+        _ teardown: SizingTeardown
+    ) async {
+        let events = LockedValue<[String]>([])
+        let allowSizingCompletion = DispatchSemaphore(value: 0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let hostID = UUID()
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(
+                    release: {
+                        events.withLock { $0.append("release") }
+                    }
+                )
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("sizing-start") }
+                    while !withUnsafeCurrentTask(body: {
+                        $0?.isCancelled == true
+                    }),
+                        allowSizingCompletion.wait(timeout: .now() + 0.005)
+                        == .timedOut {}
+                    let wasCancelled = withUnsafeCurrentTask(body: {
+                        $0?.isCancelled == true
+                    })
+                    events.withLock {
+                        $0.append(
+                            wasCancelled ? "sizing-cancel" : "sizing-finish"
+                        )
+                    }
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "teardown-sizing",
+            host: .ssh(host),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let sizing = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor {
+            events.load() == ["sizing-start"]
+        }
+
+        switch teardown {
+        case .detach:
+            coordinator.detach(
+                hostID: hostID,
+                name: handle.name
+            )
+        case .shutdown:
+            await coordinator.shutdown()
+        }
+        await waitUntilMainActor {
+            events.load().contains("release")
+        }
+
+        #expect(events.load() == [
+            "sizing-start", "sizing-cancel", "release",
+        ])
+        allowSizingCompletion.signal()
+        _ = await sizing.value
+    }
+
     @Test("interactive sizing refreshes geometry before clearing ignore-size")
     func interactiveSizingRefreshesGeometryBeforePromotion() async {
         let store = RecordingNativeSessionSurfaceStore()
@@ -1761,8 +1856,8 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(store.surface.clearPreviewGridCount == 2)
     }
 
-    @Test("stale promotion restore recovers the tmux window dimensions")
-    func stalePromotionRestoreRecoversTmuxWindowDimensions() async throws {
+    @Test("preview sizing sets ignore-size before changing the local grid")
+    func previewSizingSetsIgnoreSizeBeforeChangingGrid() async throws {
         guard case let .success(binary) = TmuxBinaryResolver()
             .resolveTmuxBinary(),
             TmuxPaneSplitter.supportsPaneSplitting(
@@ -1836,8 +1931,8 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(interactiveResize.status == 0)
 
         let store = RecordingNativeSessionSurfaceStore()
-        var previewResizeStatus: Int32?
-        store.surface.onPreviewGridSize = { gridSize in
+        var previewGridWasIgnored = false
+        store.surface.onPreviewGridSize = { _ in
             let clients = AccountCommandRunner.runProcess(
                 executable: binary.path,
                 arguments: server.connectionArguments + [
@@ -1849,18 +1944,8 @@ struct NativeTmuxSessionCoordinatorTests {
             let clientFlags = clients.stdout.split(whereSeparator: \.isNewline)
                 .map(String.init)
                 .first { $0.hasPrefix(clientIdentity.clientTTY + "\t") }
-            guard clientFlags?.contains("ignore-size") == false else {
-                return
-            }
-            previewResizeStatus = AccountCommandRunner.runProcess(
-                executable: binary.path,
-                arguments: server.connectionArguments + [
-                    "resize-window", "-t", "restored:",
-                    "-x", String(gridSize.columns),
-                    "-y", String(gridSize.rows),
-                ],
-                timeout: 5
-            ).status
+            previewGridWasIgnored =
+                clientFlags?.contains("ignore-size") == true
         }
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
@@ -1902,12 +1987,12 @@ struct NativeTmuxSessionCoordinatorTests {
             timeout: 5
         )
 
-        #expect(previewResizeStatus == 0)
+        #expect(previewGridWasIgnored)
         #expect(measured.status == 0)
         #expect(
             measured.stdout.trimmingCharacters(
                 in: CharacterSet.whitespacesAndNewlines
-            ) == "120x37"
+            ) == "80x24"
         )
     }
 
