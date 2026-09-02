@@ -58,6 +58,7 @@ public final class TerminalFindController: ObservableObject {
 
     private let debounce: Duration
     private let sessionProvider: @MainActor @Sendable () -> TerminalFindSession?
+    private let failureHandler: @MainActor @Sendable (String) -> Void
     private var findSessionID = UUID()
     private var queryGeneration: UInt64 = 0
     private var callbackRevision: UInt64 = 0
@@ -72,11 +73,13 @@ public final class TerminalFindController: ObservableObject {
     public init(
         isAvailable: Bool,
         debounce: Duration = .milliseconds(150),
+        failureHandler: @escaping @MainActor @Sendable (String) -> Void = { _ in },
         sessionProvider: @escaping @MainActor @Sendable ()
             -> TerminalFindSession?
     ) {
         self.isAvailable = isAvailable
         self.debounce = debounce
+        self.failureHandler = failureHandler
         self.sessionProvider = sessionProvider
     }
 
@@ -143,7 +146,8 @@ public final class TerminalFindController: ObservableObject {
         guard isAvailable else { return }
         callbackRevision &+= 1
         resumeCallbackWaiter()
-        if !isOpen {
+        let opensBar = !isOpen
+        if opensBar {
             findSessionID = UUID()
             activeSession = nil
         }
@@ -154,7 +158,9 @@ public final class TerminalFindController: ObservableObject {
         result = .idle
         failureMessage = nil
         isWorking = false
-        fieldSelectionRevision &+= 1
+        if opensBar {
+            fieldSelectionRevision &+= 1
+        }
     }
 
     public func backendDidEnd() {
@@ -329,6 +335,7 @@ public final class TerminalFindController: ObservableObject {
             )
         case let .failure(failure):
             failureMessage = failure.message
+            failureHandler(failure.message)
             close(notifyBackend: true, clearFailure: false)
         }
     }

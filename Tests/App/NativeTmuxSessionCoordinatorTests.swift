@@ -110,7 +110,7 @@ struct NativeTmuxSessionCoordinatorTests {
                     "Control socket connect(/tmp/dead): Connection refused\n"
                 )
             },
-            paneSplitErrorDuration: .seconds(5)
+            terminalOperationErrorDuration: .seconds(5)
         )
         var readyCount = 0
         coordinator.onSurfaceReady = { _ in readyCount += 1 }
@@ -128,7 +128,7 @@ struct NativeTmuxSessionCoordinatorTests {
         handler(.down)
 
         await waitUntilMainActor { invalidations.load() > 0 }
-        #expect(store.surface.paneSplitErrorMessage != nil)
+        #expect(store.surface.terminalOperationErrorMessage != nil)
     }
 
     @Test("attachment reuses the version from binary resolution")
@@ -243,6 +243,7 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: handle)
         await waitUntilMainActor { identityCommands.load().count == 1 }
+        #expect(!store.surface.terminalFindController.isAvailable)
 
         let bindingCommand = try #require(identityCommands.load().first)
         #expect(bindingCommand.contains("'list-clients' '-F'"))
@@ -250,12 +251,13 @@ struct NativeTmuxSessionCoordinatorTests {
         let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
         #expect(splitCommands.load() == 0)
-        #expect(store.surface.paneSplitErrorMessage?.contains(
+        #expect(store.surface.terminalOperationErrorMessage?.contains(
             "client identity is unavailable"
         ) == true)
 
         releaseBinding.signal()
         await waitUntilMainActor { readyCount == 2 }
+        #expect(store.surface.terminalFindController.isAvailable)
         #expect(
             coordinator.attachedSessionIdentity(handle)
                 == coordinatorSplitIdentity
@@ -303,6 +305,7 @@ struct NativeTmuxSessionCoordinatorTests {
         coordinator.requestAttachedSessionIdentity(handle)
 
         #expect(store.surface.paneSplitShortcutHandler == nil)
+        #expect(!store.surface.terminalFindController.isAvailable)
         #expect(!coordinator.supportsPaneSplitting(handle))
         #expect(
             coordinator.attachedSessionIdentityResolution(handle)
@@ -711,7 +714,7 @@ struct NativeTmuxSessionCoordinatorTests {
                 calls.withLock { $0.append((host, arguments, command)) }
                 return (1, "no space for new pane\n")
             },
-            paneSplitErrorDuration: .milliseconds(100)
+            terminalOperationErrorDuration: .milliseconds(100)
         )
         var readyCount = 0
         coordinator.onSurfaceReady = { _ in readyCount += 1 }
@@ -735,7 +738,7 @@ struct NativeTmuxSessionCoordinatorTests {
         handler(.down)
         await waitUntilMainActor { calls.load().count == 1 }
         await waitUntilMainActor {
-            store.surface.paneSplitErrorMessage != nil
+            store.surface.terminalOperationErrorMessage != nil
         }
 
         let call = try #require(calls.load().first)
@@ -752,14 +755,14 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(call.2.contains("split-window"))
         #expect(call.2.contains("-v"))
         #expect(!call.2.contains("=release-work:"))
-        #expect(store.surface.paneSplitErrorMessage?.contains(
+        #expect(store.surface.terminalOperationErrorMessage?.contains(
             "release-work"
         ) == true)
-        #expect(store.surface.paneSplitErrorMessage?.contains(
+        #expect(store.surface.terminalOperationErrorMessage?.contains(
             "no space for new pane"
         ) == true)
         await waitUntilMainActor {
-            store.surface.paneSplitErrorMessage == nil
+            store.surface.terminalOperationErrorMessage == nil
         }
     }
 
@@ -1062,10 +1065,10 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(coordinator.supportsPaneSplitting(handle))
         let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
-        #expect(store.surface.paneSplitErrorMessage == nil)
+        #expect(store.surface.terminalOperationErrorMessage == nil)
         await waitUntilMainActor { splitCommands.load() == 1 }
         #expect(clientLookups.load() == 3)
-        #expect(store.surface.paneSplitErrorMessage == nil)
+        #expect(store.surface.terminalOperationErrorMessage == nil)
     }
 
     @Test("capture revalidation observes a client session switch")
@@ -1167,13 +1170,13 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { splitCommands.load() == 1 }
         handler(.down)
         await waitUntilMainActor {
-            store.surface.paneSplitErrorMessage != nil
+            store.surface.terminalOperationErrorMessage != nil
                 || splitCommands.load() == 2
         }
 
         #expect(clientLookups.load() == 3)
         #expect(splitCommands.load() == 1)
-        #expect(store.surface.paneSplitErrorMessage?.contains(
+        #expect(store.surface.terminalOperationErrorMessage?.contains(
             "attached tmux session changed"
         ) == true)
     }
@@ -1223,14 +1226,14 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { splitCommands.load().count == 1 }
         handler(.down)
         await waitUntilMainActor {
-            store.surface.paneSplitErrorMessage != nil
+            store.surface.terminalOperationErrorMessage != nil
                 || splitCommands.load().count == 2
         }
 
         #expect(clientLookups.load() == 3)
         #expect(splitCommands.load().count == 2)
         #expect(splitCommands.load().last?.contains("'%10'") == true)
-        #expect(store.surface.paneSplitErrorMessage == nil)
+        #expect(store.surface.terminalOperationErrorMessage == nil)
     }
 
     @Test("an atomic pane movement rereads the client and retries once")
@@ -1287,7 +1290,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
         #expect(clientLookups.load() == 3)
         #expect(splitCommands.load().last?.contains("'%10'") == true)
-        #expect(store.surface.paneSplitErrorMessage == nil)
+        #expect(store.surface.terminalOperationErrorMessage == nil)
     }
 
     @Test("endpoint changes replace provisioning and active handles")

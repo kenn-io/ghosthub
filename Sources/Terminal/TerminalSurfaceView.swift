@@ -174,7 +174,10 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     public var onPrimaryInteraction: (() -> Void)?
     public var onCloseRequest: (() -> Void)?
     public var shouldConfirmClose: (() -> Bool)?
-    @Published public var paneSplitErrorMessage: String?
+    @Published public var terminalOperationErrorMessage: String?
+    @Published public var terminalFindController = TerminalFindController.unavailable
+    var libghosttyFindTotal = -1
+    var libghosttyFindSelected = -1
     /// Installed only for native session surfaces whose backend supports
     /// semantic pane splitting.
     public var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
@@ -377,6 +380,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// caller with a shorter process lifetime, such as an isolated XCTest
     /// worker, can use this method to finish libghostty cleanup before exit.
     package func shutdown() async {
+        terminalFindController.close()
         guard let surfaceHandle = surface else { return }
         surface = nil
         await Self.freeSurface(
@@ -611,6 +615,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     public func setParkedForPreview(_ parked: Bool) {
         guard isParkedForPreview != parked else { return }
         if parked {
+            terminalFindController.close()
             suppressAutoFocus = true
             mouseEventHandler.resetPointerStateForParking()
             isParkedForPreview = true

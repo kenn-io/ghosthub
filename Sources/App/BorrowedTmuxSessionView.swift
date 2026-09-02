@@ -253,8 +253,18 @@ private struct NativeTmuxTerminalView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TerminalSurfaceBackdrop.color(for: backgroundAppearance))
         .overlay(alignment: .top) {
-            if let message = surfaceView.paneSplitErrorMessage {
-                NativePaneSplitErrorOverlay(message: message)
+            if let message = surfaceView.terminalOperationErrorMessage {
+                NativeTerminalOperationErrorOverlay(message: message)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if surfaceView.terminalFindController.isOpen {
+                TerminalFindBar(
+                    controller: surfaceView.terminalFindController,
+                    restoreTerminalFocus: { [weak surfaceView] in
+                        surfaceView?.requestKeyboardFocus()
+                    }
+                )
             }
         }
         .onAppear {
@@ -275,5 +285,6 @@ private struct NativeTmuxTerminalView: View {
             \.terminalHasEffectiveKeyboardFocus,
             surfaceView.hasEffectiveKeyboardFocus
         )
+        .focusedSceneObject(surfaceView.terminalFindController)
     }
 }

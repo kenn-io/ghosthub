@@ -81,6 +81,7 @@ private struct NativeTmuxAttachment {
     var id: UUID
     var host: CommandHost
     var tmuxPath: String
+    var tmuxVersion: TmuxVersion
     var kwtPath: String?
     var remoteKwtCommandPrelude: String?
     var windowsKwtRelativePath: String?
@@ -136,7 +137,7 @@ final class NativeTmuxSessionCoordinator {
         var task: Task<Void, Never>
     }
 
-    private struct PaneSplitErrorDismissal {
+    private struct TerminalOperationErrorDismissal {
         var id: UUID
         var task: Task<Void, Never>
     }
@@ -157,7 +158,8 @@ final class NativeTmuxSessionCoordinator {
     private let appliesPresentationStyleToExistingSessionsProvider:
         () -> Bool
     private let paneSplitter: TmuxPaneSplitter
-    private let paneSplitErrorDuration: Duration
+    private let paneFinder: TmuxPaneFinder
+    private let terminalOperationErrorDuration: Duration
     private let clientIdentityRetryDelays: [Duration]
     private let sleep: @Sendable (Duration) async throws -> Void
     private let remoteExitStatusStore: RemoteExitStatusStore
@@ -174,7 +176,7 @@ final class NativeTmuxSessionCoordinator {
     private var paneSplitWorkers: [UUID: PaneSplitWorker] = [:]
     private var paneSplitClientBindings: [UUID: PaneSplitClientBinding] = [:]
     private var paneSplitClients: [UUID: TmuxAttachedClientIdentity] = [:]
-    private var paneSplitErrorDismissals: [UUID: PaneSplitErrorDismissal] = [:]
+    private var terminalOperationErrorDismissals: [UUID: TerminalOperationErrorDismissal] = [:]
     private var previewIdentityRetryHandles: Set<UUID> = []
     private var unavailablePreviewIdentityHandles: Set<UUID> = []
     private var deferredPresentationStyleHandles: Set<UUID> = []
@@ -223,7 +225,8 @@ final class NativeTmuxSessionCoordinator {
                 throw KwtSSHLeaseError.helperUnavailable
             },
         paneSplitter: TmuxPaneSplitter = TmuxPaneSplitter(),
-        paneSplitErrorDuration: Duration = .seconds(4),
+        paneFinder: TmuxPaneFinder = TmuxPaneFinder(),
+        terminalOperationErrorDuration: Duration = .seconds(4),
         clientIdentityRetryDelays: [Duration] = [
             .milliseconds(250), .seconds(1),
         ],
@@ -249,7 +252,8 @@ final class NativeTmuxSessionCoordinator {
         self.remoteTmuxPathProvider = remoteTmuxPathProvider
         self.remoteConnectionProvider = remoteConnectionProvider
         self.paneSplitter = paneSplitter
-        self.paneSplitErrorDuration = paneSplitErrorDuration
+        self.paneFinder = paneFinder
+        self.terminalOperationErrorDuration = terminalOperationErrorDuration
         self.clientIdentityRetryDelays = clientIdentityRetryDelays
         self.sleep = sleep
         remoteExitStatusStore = RemoteExitStatusStore(
@@ -414,6 +418,7 @@ final class NativeTmuxSessionCoordinator {
                 id: attachmentID,
                 host: host,
                 tmuxPath: resolved.path,
+                tmuxVersion: TmuxVersion(output: resolved.version)!,
                 kwtPath: host.isRemote ? nil : localKwtPathProvider(),
                 remoteKwtCommandPrelude: host.isRemote
                     ? remoteKwtCommandPreludeProvider()
@@ -830,6 +835,9 @@ final class NativeTmuxSessionCoordinator {
         }
         let didCreateSurface = previousSurfaceIdentity
             != ObjectIdentifier(surface)
+        if didCreateSurface {
+            surface.terminalFindController = .unavailable
+        }
         if isFirstLaunch, appliesPresentationStyle,
            presentationStyle == nil {
             deferredPresentationStyleHandles.insert(handle.id)
@@ -854,6 +862,15 @@ final class NativeTmuxSessionCoordinator {
             clientTTYDirectory: attachment.clientTTYDirectory,
             expectedClient: paneSplitClients[handle.id]
         )
+        if let client = paneSplitClients[handle.id],
+           !surface.terminalFindController.isAvailable {
+            installFindController(
+                on: surface,
+                handle: handle,
+                attachment: attachment,
+                client: client
+            )
+        }
         if attachment.supportsPaneSplitting {
             surface.paneSplitShortcutHandler = {
                 [weak self, weak surface] shortcut in
@@ -902,7 +919,7 @@ final class NativeTmuxSessionCoordinator {
         attachmentID: UUID
     ) {
         guard let client = paneSplitClients[handle.id] else {
-            presentPaneSplitError(TmuxPaneSplitFailure(
+            presentTerminalOperationError(TmuxPaneSplitFailure(
                 host: target.host.displayName,
                 sessionName: target.sessionName,
                 status: 75,
@@ -979,7 +996,7 @@ final class NativeTmuxSessionCoordinator {
                   launchedHandles.contains(handle.id)
             else { continue }
 
-            clearPaneSplitError(
+            clearTerminalOperationError(
                 on: request.surface,
                 handleID: handle.id
             )
@@ -999,7 +1016,7 @@ final class NativeTmuxSessionCoordinator {
                         status: 75,
                         diagnostic: "The attached tmux session changed."
                     )
-                    presentPaneSplitError(
+                    presentTerminalOperationError(
                         failure,
                         on: request.surface,
                         handle: handle,
@@ -1015,7 +1032,7 @@ final class NativeTmuxSessionCoordinator {
                       paneSplitWorkers[handle.id]?.id == workerID,
                       attachments[handle.id]?.id == request.attachmentID
                 else { return }
-                presentPaneSplitError(
+                presentTerminalOperationError(
                     failure,
                     on: request.surface,
                     handle: handle,
@@ -1063,7 +1080,7 @@ final class NativeTmuxSessionCoordinator {
                 }
             }
             if let failure {
-                presentPaneSplitError(
+                presentTerminalOperationError(
                     failure,
                     on: request.surface,
                     handle: handle,
@@ -1073,7 +1090,7 @@ final class NativeTmuxSessionCoordinator {
                     "tmux pane split: \(failure.localizedDescription)"
                 )
             } else {
-                clearPaneSplitError(
+                clearTerminalOperationError(
                     on: request.surface,
                     handleID: handle.id
                 )
@@ -1122,7 +1139,15 @@ final class NativeTmuxSessionCoordinator {
                     if let surface = terminalCoordinator.paneSurfaceIfPresent(
                         for: surfaceKey(handle)
                     ) {
-                        clearPaneSplitError(on: surface, handleID: handle.id)
+                        clearTerminalOperationError(on: surface, handleID: handle.id)
+                        if let attachment = attachments[handle.id] {
+                            installFindController(
+                                on: surface,
+                                handle: handle,
+                                attachment: attachment,
+                                client: client
+                            )
+                        }
                     }
                     onSurfaceReady?(handle)
                     return
@@ -1158,10 +1183,89 @@ final class NativeTmuxSessionCoordinator {
         )
     }
 
+    private func installFindController(
+        on surface: any NativeSessionPaneSurfacing,
+        handle: BorrowedTmuxSessionHandle,
+        attachment: NativeTmuxAttachment,
+        client: TmuxAttachedClientIdentity
+    ) {
+        surface.terminalFindController.close()
+        let isPOSIX = switch attachment.host {
+        case .local: true
+        case let .ssh(info): info.platform == .posix
+        }
+        guard attachment.tmuxVersion >= .minimumFind, isPOSIX else {
+            surface.terminalFindController = .unavailable
+            return
+        }
+        let finder = paneFinder
+        let target = TmuxFindTarget(
+            host: attachment.host,
+            tmuxPath: attachment.tmuxPath,
+            tmuxVersion: attachment.tmuxVersion,
+            sessionName: handle.name,
+            socketName: attachment.socketName,
+            sshConnectionArguments: attachment.sshConnectionSnapshot.arguments,
+            expectedClient: client
+        )
+        let concreteSurface = surface as? TerminalSurfaceView
+        surface.terminalFindController = TerminalFindController(
+            isAvailable: true,
+            failureHandler: { [weak self, weak concreteSurface] message in
+                guard let self, let concreteSurface else { return }
+                presentTerminalOperationError(
+                    message,
+                    on: concreteSurface,
+                    handle: handle,
+                    attachmentID: attachment.id
+                )
+            },
+            sessionProvider: {
+                TerminalFindSession(
+                    search: { query in
+                        await Self.findResponse(
+                            finder.perform(.search(query), target: target)
+                        )
+                    },
+                    navigate: { direction in
+                        let mutation: TmuxFindMutation = direction == .next
+                            ? .next : .previous
+                        return await Self.findResponse(
+                            finder.perform(mutation, target: target)
+                        )
+                    },
+                    close: {
+                        switch await finder.perform(.cancel, target: target) {
+                        case .success:
+                            return nil
+                        case let .failure(failure):
+                            return TerminalFindFailure(message: failure.message)
+                        }
+                    }
+                )
+            }
+        )
+    }
+
+    private nonisolated static func findResponse(
+        _ result: Result<TmuxFindState?, TmuxFindFailure>
+    ) -> Result<TerminalFindBackendResponse, TerminalFindFailure> {
+        switch result {
+        case let .success(.match(total)):
+            .success(.result(.match(total: total, selected: nil)))
+        case .success(.noMatch):
+            .success(.result(.noMatch))
+        case .success(nil):
+            .success(.result(.idle))
+        case let .failure(failure):
+            .failure(.init(message: failure.message))
+        }
+    }
+
     private func cancelPaneSplits(handleID: UUID) {
         paneSplitClientBindings.removeValue(forKey: handleID)?.task.cancel()
         paneSplitWorkers.removeValue(forKey: handleID)?.task.cancel()
-        paneSplitErrorDismissals.removeValue(forKey: handleID)?.task.cancel()
+        terminalOperationErrorDismissals.removeValue(forKey: handleID)?.task.cancel()
         paneSplitRequests.removeValue(forKey: handleID)
         paneSplitClients.removeValue(forKey: handleID)
         previewIdentityRetryHandles.remove(handleID)
@@ -1180,17 +1284,31 @@ final class NativeTmuxSessionCoordinator {
         Task { await connection.invalidate() }
     }
 
-    private func presentPaneSplitError(
+    private func presentTerminalOperationError(
         _ failure: TmuxPaneSplitFailure,
         on surface: any NativeSessionPaneSurfacing,
         handle: BorrowedTmuxSessionHandle,
         attachmentID: UUID
     ) {
         invalidateUnusableConnection(failure, handleID: handle.id)
-        paneSplitErrorDismissals.removeValue(forKey: handle.id)?.task.cancel()
-        surface.paneSplitErrorMessage = failure.localizedDescription
+        presentTerminalOperationError(
+            failure.localizedDescription,
+            on: surface,
+            handle: handle,
+            attachmentID: attachmentID
+        )
+    }
+
+    private func presentTerminalOperationError(
+        _ message: String,
+        on surface: any NativeSessionPaneSurfacing,
+        handle: BorrowedTmuxSessionHandle,
+        attachmentID: UUID
+    ) {
+        terminalOperationErrorDismissals.removeValue(forKey: handle.id)?.task.cancel()
+        surface.terminalOperationErrorMessage = message
         let dismissalID = UUID()
-        let duration = paneSplitErrorDuration
+        let duration = terminalOperationErrorDuration
         let task = Task { [weak self] in
             do {
                 try await Task.sleep(for: duration)
@@ -1198,24 +1316,24 @@ final class NativeTmuxSessionCoordinator {
                 return
             }
             guard let self,
-                  paneSplitErrorDismissals[handle.id]?.id == dismissalID,
+                  terminalOperationErrorDismissals[handle.id]?.id == dismissalID,
                   attachments[handle.id]?.id == attachmentID
             else { return }
-            paneSplitErrorDismissals.removeValue(forKey: handle.id)
-            surface.paneSplitErrorMessage = nil
+            terminalOperationErrorDismissals.removeValue(forKey: handle.id)
+            surface.terminalOperationErrorMessage = nil
         }
-        paneSplitErrorDismissals[handle.id] = PaneSplitErrorDismissal(
+        terminalOperationErrorDismissals[handle.id] = TerminalOperationErrorDismissal(
             id: dismissalID,
             task: task
         )
     }
 
-    private func clearPaneSplitError(
+    private func clearTerminalOperationError(
         on surface: any NativeSessionPaneSurfacing,
         handleID: UUID
     ) {
-        paneSplitErrorDismissals.removeValue(forKey: handleID)?.task.cancel()
-        surface.paneSplitErrorMessage = nil
+        terminalOperationErrorDismissals.removeValue(forKey: handleID)?.task.cancel()
+        surface.terminalOperationErrorMessage = nil
     }
 
     private func failSurfaceLaunch(
@@ -1245,6 +1363,17 @@ final class NativeTmuxSessionCoordinator {
 
     func surfaceIdentity(handle: BorrowedTmuxSessionHandle) -> UInt? {
         terminalCoordinator.surfaceIdentity(for: surfaceKey(handle))
+    }
+
+    func findController(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> TerminalFindController? {
+        guard attachments[handle.id] != nil,
+              launchedHandles.contains(handle.id)
+        else { return nil }
+        return terminalCoordinator.paneSurfaceIfPresent(
+            for: surfaceKey(handle)
+        )?.terminalFindController
     }
 
     func supportsPaneSplitting(_ handle: BorrowedTmuxSessionHandle) -> Bool {
@@ -1399,11 +1528,11 @@ final class NativeTmuxSessionCoordinator {
         provisioningTasks.values.forEach { $0.cancel() }
         paneSplitClientBindings.values.forEach { $0.task.cancel() }
         paneSplitWorkers.values.forEach { $0.task.cancel() }
-        paneSplitErrorDismissals.values.forEach { $0.task.cancel() }
+        terminalOperationErrorDismissals.values.forEach { $0.task.cancel() }
         provisioningTasks.removeAll()
         paneSplitClientBindings.removeAll()
         paneSplitWorkers.removeAll()
-        paneSplitErrorDismissals.removeAll()
+        terminalOperationErrorDismissals.removeAll()
         paneSplitRequests.removeAll()
         paneSplitClients.removeAll()
         previewIdentityRetryHandles.removeAll()

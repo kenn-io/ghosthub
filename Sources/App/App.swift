@@ -214,6 +214,7 @@ struct GhosthubApp: App {
             AppMenuCommands(updateController: updateController)
             CommandGroup(replacing: .toolbar) {}
             editMenuCommands
+            FindMenuCommands()
             FileMenuCommands(applicationDelegate: appDelegate)
             SessionMenuCommands()
             ViewMenuCommands()

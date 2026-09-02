@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubTerminal
+import GhosthubTerminalSupport
 import GhosthubTmux
 import GhosthubUI
 import GhosthubWorkspace
@@ -121,6 +122,8 @@ struct SceneModelRootHarness: View {
 @MainActor
 final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
     var blocksClipboardReads = false
+    var terminalOperationErrorMessage: String?
+    var terminalFindController = TerminalFindController.unavailable
     var launchError: Error?
     var launchFailureIsRetryable = false
     var childExitCode: UInt32?

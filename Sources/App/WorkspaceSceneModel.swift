@@ -366,6 +366,29 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var activeBorrowedZellijSelection:
         WorkspaceZellijSessionSelection?
     private var activeBorrowedZellijHandle: BorrowedZellijSessionHandle?
+    var activeTerminalFindController: TerminalFindController? {
+        if activeBorrowedTmuxSelection != nil {
+            guard let activeBorrowedTmuxHandle else { return nil }
+            return nativeTmuxSessionCoordinator.findController(
+                activeBorrowedTmuxHandle
+            )
+        }
+        if activeBorrowedHerdrSelection != nil {
+            guard let activeBorrowedHerdrHandle else { return nil }
+            return nativeHerdrSessionCoordinator.surface(
+                handle: activeBorrowedHerdrHandle
+            )?.terminalFindController
+        }
+        if activeBorrowedZellijSelection != nil {
+            guard let activeBorrowedZellijHandle else { return nil }
+            return nativeZellijSessionCoordinator.surface(
+                handle: activeBorrowedZellijHandle
+            )?.terminalFindController
+        }
+        return terminalCoordinator.surfaceEntries().first {
+            $0.view.hasEffectiveKeyboardFocus
+        }?.view.terminalFindController
+    }
     @Published private(set) var activeBorrowedZellijRecoveryState:
         NativeSessionRecoveryState?
     private var zellijPresentationTask: Task<Void, Never>?
@@ -5799,6 +5822,25 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         return AnyView(
             TerminalSurfaceSwiftUIView(surfaceView: surface)
+                .overlay(alignment: .top) {
+                    if let message = surface.terminalOperationErrorMessage {
+                        NativeTerminalOperationErrorOverlay(message: message)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if surface.terminalFindController.isOpen {
+                        TerminalFindBar(
+                            controller: surface.terminalFindController,
+                            restoreTerminalFocus: { [weak surface] in
+                                surface?.requestKeyboardFocus()
+                            }
+                        )
+                    }
+                }
+                .focusedSceneObject(surface.terminalFindController)
+                .onDisappear {
+                    surface.terminalFindController.close()
+                }
         )
     }
 
@@ -9976,6 +10018,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let handle = activeBorrowedTmuxHandle,
               let presentation = retainedTmuxPresentation(for: handle)
         else { return }
+        nativeTmuxSessionCoordinator.findController(handle)?.close()
         let key = TmuxPresentationKey(presentation.selection)
         tmuxSessionPreviewCoordinator.captureBeforeDeactivation(
             key.previewKey,

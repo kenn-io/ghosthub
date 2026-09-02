@@ -72,6 +72,27 @@ in-window pointer position because keyboard events do not carry a reliable
 mouse location. Libghostty removes the override before matching its Command
 link binding. Tmux therefore does not capture link highlighting or activation,
 and users do not need to hold Shift.
+
+### Active-pane Find
+
+Command-F searches the complete history of the active terminal pane without
+copying that history into Ghosthub. Standalone shells delegate search,
+highlighting, selection, and viewport movement to libghostty. POSIX tmux 3.4
+and newer delegates the same work to tmux copy mode after fencing the command
+to the attached server, session, client, and pane. Tmux 3.5 and newer can also
+return an exact total when `search_count_partial` is zero; tmux 3.4 reports
+only whether a match exists. Tmux 3.6 and newer receives the copy-mode `--`
+option terminator, while 3.4 through releases older than 3.6 use the legacy
+command shape.
+
+Tmux owns wrapping and the first step after a search direction changes. Copy
+mode and its viewport are pane-wide, so another client attached to the same
+pane can observe or cancel the search. Parking a preview, replacing an
+attachment, disconnecting, or closing the surface ends Ghosthub's Find
+session. Herdr, Zellij, Windows psmux, and tmux older than 3.4 do not expose
+Find because their command surfaces cannot accept a literal query with the
+same backend-owned history contract. Queries stay in memory, are not logged,
+and never appear in operation diagnostics.
 Each remote POSIX presentation obtains one multiplexed lease from kwt before
 its first probe and holds it through terminal exit. Tmux path discovery,
 attach, pane splitting, and identity revalidation use that same frozen route

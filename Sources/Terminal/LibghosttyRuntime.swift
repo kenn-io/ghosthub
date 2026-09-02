@@ -1003,6 +1003,39 @@ public final class LibghosttyRuntime: ObservableObject,
             }
             return true
 
+        case GHOSTTY_ACTION_START_SEARCH:
+            let query = action.action.start_search.needle.map {
+                String(cString: $0)
+            } ?? ""
+            DispatchQueue.main.async {
+                surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
+                    .beginLibghosttyFind(query)
+            }
+            return true
+
+        case GHOSTTY_ACTION_END_SEARCH:
+            DispatchQueue.main.async {
+                surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
+                    .terminalFindController.backendDidEnd()
+            }
+            return true
+
+        case GHOSTTY_ACTION_SEARCH_TOTAL:
+            let total = Int(action.action.search_total.total)
+            DispatchQueue.main.async {
+                surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
+                    .publishLibghosttyFindTotal(total)
+            }
+            return true
+
+        case GHOSTTY_ACTION_SEARCH_SELECTED:
+            let selected = Int(action.action.search_selected.selected)
+            DispatchQueue.main.async {
+                surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
+                    .publishLibghosttyFindSelected(selected)
+            }
+            return true
+
         default:
             DispatchQueue.main.async {
                 let state = runtime(from: userdataValue)

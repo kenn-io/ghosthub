@@ -54,6 +54,10 @@ numbered sibling navigation instead.
 | Split the active tmux or Herdr pane down | ++shift+cmd+d++ |
 | Reload configuration | ++shift+cmd+comma++ |
 | Open application log | ++option+cmd+l++ |
+| Find in the active terminal | ++cmd+f++ |
+| Find next, toward older history | ++cmd+g++ |
+| Find previous, toward newer history | ++shift+cmd+g++ |
+| Hide the Find bar | ++shift+cmd+f++ |
 
 New tmux Session, New Herdr Session, and New Zellij Session remain available
 in menus and the Command Palette but are unbound by default.
@@ -109,6 +113,18 @@ invalid file. Unknown action names are preserved for forward compatibility.
 Choose **Ghosthub → Reload Configuration** after editing the file manually.
 
 ## Multiplexer ownership
+
+Command-F opens a compact Find bar for standalone terminals and supported
+POSIX tmux sessions. Return and Command-G request the next match toward older
+history; Shift-Return and Shift-Command-G request the previous match toward
+newer history. Escape, Shift-Command-F, or the close button ends Find.
+
+Standalone libghostty search follows Ghostty.app's newest-to-oldest,
+non-wrapping behavior. Tmux owns wrapping and the first step after changing
+direction. Tmux also owns pane-wide copy mode and the viewport, so another
+client attached to the same pane can see or cancel the search. Find requires
+tmux 3.4 or newer. Herdr, Zellij, Windows psmux, and older tmux versions leave
+Find unavailable rather than searching only the visible client output.
 
 Choose **File → Split Right** or **File → Split Down** if you prefer menus.
 Ghosthub asks the active multiplexer to split its focused pane directly, so

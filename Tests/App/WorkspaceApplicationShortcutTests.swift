@@ -3,7 +3,10 @@ import Foundation
 import GhosthubPersistence
 import GhosthubTerminalSupport
 import GhosthubTestSupport
+import GhosthubTmux
+import GhosthubUI
 import GhosthubWorkspace
+import Synchronization
 import Testing
 @testable import GhosthubApp
 
@@ -16,6 +19,83 @@ private final class ShortcutFocusWindow: NSWindow {
 @Suite("Workspace application shortcuts", .serialized)
 @MainActor
 struct WorkspaceApplicationShortcutTests {
+    @Test("Find shortcuts route to the active terminal and follow its state")
+    func findShortcutRouting() async throws {
+        let environment = try setupHostEnvironment()
+        let store = SceneTmuxSurfaceStoreStub()
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "find-session"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: store)
+        await waitUntilMainActor {
+            store.surface.terminalFindController.isAvailable
+        }
+
+        let navigations = Mutex<[TerminalFindDirection]>([])
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: {
+                TerminalFindSession(
+                    search: { _ in
+                        .success(.result(.match(total: 3, selected: nil)))
+                    },
+                    navigate: { direction in
+                        navigations.withLock { $0.append(direction) }
+                        return .success(.result(.match(
+                            total: 3,
+                            selected: nil
+                        )))
+                    },
+                    close: { nil }
+                )
+            }
+        )
+        store.surface.terminalFindController = controller
+        model.isFocusedWindow = true
+
+        #expect(model.availablePaletteApplicationShortcuts.contains(.find))
+        #expect(model.performApplicationShortcut(.find))
+        #expect(controller.isOpen)
+        #expect(model.availablePaletteApplicationShortcuts.contains(
+            .hideFindBar
+        ))
+        controller.updateQuery("needle")
+        await waitUntilMainActor { controller.canNavigate }
+        #expect(model.availablePaletteApplicationShortcuts.isSuperset(
+            of: [.findNext, .findPrevious]
+        ))
+        #expect(model.performApplicationShortcut(.findNext))
+        #expect(model.performApplicationShortcut(.findPrevious))
+        await waitUntilMainActor { navigations.withLock { $0.count } == 2 }
+        #expect(navigations.withLock { $0 } == [.next, .previous])
+        #expect(model.performApplicationShortcut(.hideFindBar))
+        #expect(!controller.isOpen)
+
+        controller.open()
+        model.hideBorrowedTmuxSession(selection)
+        #expect(!controller.isOpen)
+        await model.shutdown()
+    }
+
     @Test("sibling availability requires a resolvable peer")
     func siblingAvailability() async throws {
         let host = HostSummary.fixture()

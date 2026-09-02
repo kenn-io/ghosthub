@@ -62,6 +62,15 @@ the session because psmux has no non-sizing preview-client mode.
 Preview rendering reuses that session's retained client rather than creating a
 second client or reconstructing tmux panes, layout, or history.
 
+Terminal Find is also backend-owned. Ordinary terminal surfaces use
+libghostty's search actions. POSIX tmux 3.4 and newer uses an exact-client and
+exact-pane guarded copy-mode command, with totals available from tmux 3.5 when
+the server reports a complete count. Herdr, Zellij, psmux, and older tmux
+versions remain unavailable instead of searching only the disposable client
+buffer. Swift owns the Find bar and request serialization, but it never reads
+pane history, match text, or highlighting state. Search queries are
+memory-only and excluded from logs and fixed user-facing failures.
+
 After an attachment reaches the connected state, Ghosthub keeps that exact
 session warm for the remainder of the app launch. One app-scoped, in-memory
 activity controller serves every workspace window. It samples only warm

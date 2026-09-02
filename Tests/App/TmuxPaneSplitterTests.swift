@@ -123,7 +123,7 @@ final class TestTmuxClient {
     }
 }
 
-private func makeTestTmuxServer(
+func makeTestTmuxServer(
     tmuxPath: String,
     purpose: String,
     sessions: [String],

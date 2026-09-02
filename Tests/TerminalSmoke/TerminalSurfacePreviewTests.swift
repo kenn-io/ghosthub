@@ -50,6 +50,59 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH)
     }
 
+    func testLibghosttyFindSearchesSurfaceOutput() async throws {
+        let view = try makeSurface()
+        view.installLibghosttyFindController()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        XCTAssertTrue(view.injectOutput(Data(
+            "needle one\r\nneedle two\r\nneedle three\r\n".utf8
+        )))
+
+        let controller = view.terminalFindController
+        controller.open()
+        controller.updateQuery("needle")
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if case .match(total: 3, selected: _) = controller.result {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        guard case let .match(total, selected) = controller.result else {
+            return XCTFail("expected libghostty to publish a Find match")
+        }
+        XCTAssertEqual(total, 3)
+        XCTAssertNil(selected)
+        controller.findNext()
+        let navigationDeadline = Date().addingTimeInterval(3)
+        while Date() < navigationDeadline {
+            if case .match(total: 3, selected: .some) = controller.result {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard case let .match(_, navigatedSelection) = controller.result else {
+            return XCTFail("expected libghostty to retain Find results")
+        }
+        XCTAssertNotNil(navigatedSelection)
+        controller.close()
+        XCTAssertFalse(controller.isOpen)
+        XCTAssertEqual(controller.result, .idle)
+    }
+
+    func testParkingClosesFindBeforeHidingTheSurface() throws {
+        let view = try makeSurface()
+        view.installLibghosttyFindController()
+        view.terminalFindController.open()
+
+        view.setParkedForPreview(true)
+
+        XCTAssertFalse(view.terminalFindController.isOpen)
+        XCTAssertTrue(view.isParkedForPreview)
+    }
+
     func testSnapshotProducesGPUFrameWithoutMutatingSurface() async throws {
         let view = try makeSurface()
         let window = hostInWindow(view)

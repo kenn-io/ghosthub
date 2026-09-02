@@ -108,6 +108,63 @@ struct AppMenuCommands: Commands {
     }
 }
 
+struct FindMenuCommands: Commands {
+    @FocusedValue(\.sceneModel) private var focusedSceneModel
+    @FocusedObject private var findController: TerminalFindController?
+    @ObservedObject private var settingsStore = SettingsStore.shared
+
+    private var context: MenuActionContext {
+        MenuActionContext(
+            sceneModel: focusedSceneModel,
+            terminalHasEffectiveKeyboardFocus: nil,
+            settingsStore: settingsStore
+        )
+    }
+
+    var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            if let findController {
+                Divider()
+                Button("Find…") {
+                    context.invoke(.find)
+                }
+                .keyboardShortcut(context.shortcut(
+                    .find,
+                    actionIsAvailable: findController.isAvailable
+                ))
+                .disabled(!findController.isAvailable)
+
+                Button("Find Next") {
+                    context.invoke(.findNext)
+                }
+                .keyboardShortcut(context.shortcut(
+                    .findNext,
+                    actionIsAvailable: findController.canNavigate
+                ))
+                .disabled(!findController.canNavigate)
+
+                Button("Find Previous") {
+                    context.invoke(.findPrevious)
+                }
+                .keyboardShortcut(context.shortcut(
+                    .findPrevious,
+                    actionIsAvailable: findController.canNavigate
+                ))
+                .disabled(!findController.canNavigate)
+
+                Button("Hide Find Bar") {
+                    context.invoke(.hideFindBar)
+                }
+                .keyboardShortcut(context.shortcut(
+                    .hideFindBar,
+                    actionIsAvailable: findController.isOpen
+                ))
+                .disabled(!findController.isOpen)
+            }
+        }
+    }
+}
+
 struct FileMenuCommands: Commands {
     let applicationDelegate: ApplicationDelegate
     @FocusedValue(\.sceneModel) private var focusedSceneModel
