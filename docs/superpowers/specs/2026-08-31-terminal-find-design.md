@@ -35,10 +35,11 @@ available:
 
 The default command names and shortcuts match Ghostty.app. Find commands are
 catalog actions, so Ghosthub's existing keybinding preferences may rebind them.
-For terminal history, **Find Next** moves upward toward older matches and
-**Find Previous** moves downward toward newer matches. This matches
-Ghostty.app's current terminal search direction and tmux's natural
-backward-search flow.
+For terminal history, **Find Next** requests the backward direction toward
+older matches and **Find Previous** requests the forward direction toward
+newer matches. These directions match Ghostty.app's current terminal search
+direction and tmux's natural backward-search flow. tmux remains authoritative
+for the exact cursor step when the direction changes.
 
 Unsupported backends disable these commands. Ghosthub does not silently fall
 back to visible-screen search, open an external editor, or inject a backend's
@@ -62,8 +63,9 @@ default key sequence.
 
 - Reconstructing or rendering multiplexer history in Swift.
 - Returning pane text or match snippets to Ghosthub.
-- Providing identical case-sensitivity, wrapping, or word-boundary semantics
-  across different multiplexers. Each backend owns those semantics.
+- Providing identical case-sensitivity, wrapping, direction-change stepping,
+  or word-boundary semantics across different multiplexers. Each backend owns
+  those semantics.
 - Searching all panes, windows, tabs, sessions, or hosts.
 - Searching stopped Herdr sessions or exited Zellij sessions.
 - Adding or changing Herdr, Zellij, psmux, or tmux configuration.
@@ -77,8 +79,9 @@ default key sequence.
 
 | Presentation | Find behavior |
 | --- | --- |
-| POSIX tmux 3.5 or newer | Available through native copy-mode search, with an exact total when tmux completes its count |
-| POSIX tmux 3.4 | Available through native copy-mode search, without a match total |
+| POSIX tmux 3.6 or newer | Available through native copy-mode search with option-aware query rendering and an exact total when tmux completes its count |
+| POSIX tmux 3.5 through 3.5a | Available through native copy-mode search with legacy query rendering and an exact total when tmux completes its count |
+| POSIX tmux 3.4 | Available through native copy-mode search with legacy query rendering and no match total |
 | POSIX tmux older than 3.4 | Unavailable |
 | psmux | Unavailable until its compatible command behavior is verified |
 | Herdr | Unavailable because the current CLI can read history but cannot search or scroll to a match |
@@ -91,7 +94,9 @@ support. The tmux 3.4 floor intentionally matches the existing pane-split
 capability gate. Find reuses that implementation's tested client-specific hook
 guard instead of adding a second guard and a separate 3.2 compatibility path.
 tmux 3.5 added the `search_count` and `search_count_partial` formats, so only
-3.5 and newer can publish a match total.
+3.5 and newer can publish a match total. tmux 3.6 added option parsing for
+copy-mode commands. The renderer therefore passes the query directly on tmux
+3.4 through 3.5a and adds the `--` option terminator only on tmux 3.6 and newer.
 
 ## User Interaction
 
@@ -141,10 +146,14 @@ not remain visible. Typing a new nonempty value enters copy mode again.
 Return, Command-G, and the upward button run **Find Next**. Shift-Return,
 Shift-Command-G, and the downward button run **Find Previous**.
 
-For tmux, **Find Next** repeats the backward search and moves toward older
-matches. **Find Previous** reverses the search and moves toward newer matches.
-Navigation does nothing while the query is empty or the current result is
-**No matches**.
+For tmux, **Find Next** sends `search-again`, the backward direction toward
+older matches. **Find Previous** sends `search-reverse`, the forward direction
+toward newer matches. Repeated requests in one direction progress through that
+direction. When the direction changes, tmux's configured copy-mode semantics
+decide whether the first request reselects the current match or immediately
+advances; default emacs and vi mode keys differ here. Ghosthub neither reads
+`mode-keys` nor synthesizes an extra navigation request. Navigation does
+nothing while the query is empty or the current result is **No matches**.
 
 ### Closing
 
@@ -226,10 +235,10 @@ and removes the hook. Inside that client-specific hook, tmux validates the
 server, client, session, pane, and `hook_argument_0` marker before executing the
 mutation. This is the existing tmux 3.4-and-newer pane-split guard, not a new
 3.2 guard assembled from client formats outside their meaningful hook context.
-`hook_argument_0` is not documented in the tmux 3.7c manual, but it is an
-inherited dependency already exercised by Ghosthub's real-tmux pane-split
-integration test. Find keeps that executable coverage rather than treating the
-manual omission as a separate fallback requirement.
+tmux records the hook argument formats, including `hook_argument_0`, in its 3.2
+release changes. The existing pane-split guard and real-tmux integration test
+already exercise that released behavior. Find reuses the same dependency and
+keeps its executable coverage.
 
 The controller uses the resolved tmux executable, socket selection, host
 account, and retained SSH lease already associated with the presentation. It
@@ -240,7 +249,10 @@ The tmux operations are:
 
 1. For a nonempty query, enter copy mode for the fenced pane when needed.
 2. Run `history-bottom` so query edits start from a stable position.
-3. Run `search-backward-text` with the query as one tmux command argument.
+3. Run `search-backward-text` with the query as one tmux command argument. On
+   tmux 3.4 through 3.5a, render
+   `send-keys -t <pane> -X search-backward-text <query>`. On tmux 3.6 and newer,
+   render `send-keys -t <pane> -X search-backward-text -- <query>`.
 4. Run `search-again` for **Find Next**.
 5. Run `search-reverse` for **Find Previous**.
 6. Run `cancel` to end the Find-owned copy mode.
@@ -260,27 +272,29 @@ expression search. The guarded mutation crosses one account-shell argv parse
 and three tmux command parses: tmux parses the installed hook body, the marker
 `if-shell` success body, and the identity `if-shell` success body that contains
 the mutation. Its renderer builds commands from the inside out. It first
-encodes the query as one single-quoted tmux command argument for the innermost
-`send-keys -t <pane> -X search-backward-text -- <query>` command. It then
-single-quotes that complete command as data at tmux depth two, single-quotes
-the resulting child command again at tmux depth one, and finally shell-quotes
-the top-level tmux argv once for the local or remote account shell.
+encodes the query as one single-quoted tmux command argument for the innermost,
+version-specific `send-keys` command. It then single-quotes that complete
+command as data at tmux depth two, single-quotes the resulting child command
+again at tmux depth one, and finally shell-quotes the top-level tmux argv once
+for the local or remote account shell.
 
-A dedicated tmux-command argument encoder implements tmux parsing rules. At
-every tmux nesting level, it emits the query and each child command only as a
-single-quoted tmux token and splices an embedded single quote with the tmux
-`'\''` form. It never emits query-bearing data in a double-quoted or unquoted
-tmux token, because tmux expands `$NAME` and `${NAME}` in those forms at every
-parse level. The shell argument helper alone is not sufficient for the nested
-layers.
+At every tmux nesting level, the renderer reuses
+`shellQuotedCommandArgument`. The existing helper emits each query or child
+command as one single-quoted token and splices an embedded single quote with the
+`'\''` form required by both the account shell and tmux's command parser. It
+never emits query-bearing data in a double-quoted or unquoted tmux token,
+because tmux expands `$NAME` and `${NAME}` in those forms at every parse level.
+Parser tests pin literal-data preservation across the shared quoting invariant;
+Find does not introduce a second encoder with identical output.
 
 The query is never concatenated into a command body without that layer's
 encoding and is never used as a tmux format. The search command does not request
 format expansion, so literal text such as semicolons, quotes, backslashes,
 `#{...}`, `$HOME`, `${x}`, and leading hyphens reaches `search-backward-text` as
-data. The `--` terminator prevents a leading hyphen from becoming an option. The
-Find field is single-line; Return and Shift-Return navigate instead of becoming
-query characters.
+data. tmux 3.4 through 3.5a do not parse copy-mode command options, so a leading
+hyphen is already data there; tmux 3.6 and newer use `--` to terminate the newly
+supported option parse. The Find field is single-line; Return and Shift-Return
+navigate instead of becoming query characters.
 
 The query necessarily crosses the trusted host account boundary as a tmux
 command argument. Ghosthub never includes the query or rendered command in
@@ -343,7 +357,7 @@ diagnostic plumbing. The implementation renames `paneSplitErrorMessage` to
 `NativeTerminalOperationErrorOverlay`; pane split and Find failures share those
 generic presentation names. Raw tmux stderr and rendered commands can contain
 the query, so the controller does not pass
-`TmuxPaneSplitFailure.normalizedDiagnostic` or any raw process output to the
+`TmuxPaneSplitter.normalizedDiagnostic` or any raw process output to the
 overlay or application logs. It maps status, identity markers, and transport
 classification to fixed query-free messages. Raw output may be examined
 transiently for classification but is never published or retained.
@@ -385,12 +399,17 @@ navigation lane.
 
 ### tmux integration
 
-Tests use `TestTmuxServer` and the normal Swift test harness. They create real
-scrollback and verify observable copy-mode behavior:
+Tests use `TestTmuxServer` and run through `tools/run_swift_tests.sh` via the
+repository's Swift test targets. They create real scrollback and verify
+observable copy-mode behavior:
 
 - the initial query selects the newest literal match;
-- **Find Next** selects an older match;
-- **Find Previous** returns to a newer match;
+- repeated **Find Next** requests progress toward older matches while the
+  backward direction is established;
+- repeated **Find Previous** requests progress toward newer matches after the
+  forward direction is established;
+- a direction change sends exactly one tmux navigation request without
+  asserting that it must immediately advance to a different match;
 - regular-expression punctuation is searched literally;
 - semicolons, single and double quotes, a leading single quote, `#{...}`,
   backslashes, `$HOME`, `${x}`, and a leading hyphen survive all three tmux
@@ -422,6 +441,12 @@ probe requests only `search_present`, `search_count`, and
 `search_count_partial`. These tests cover Ghosthub's owned protocol; the
 real-server integration test covers one current tmux rendering rather than
 trying to force tmux's timing-dependent partial-count path.
+
+Command-rendering tests verify both copy-mode parser tiers: tmux 3.4 through
+3.5a omit `--`, while tmux 3.6 and newer include it. Both renderings preserve a
+leading-hyphen query as one argument. The tests also pin that every nested tmux
+layer renders query-bearing data as a single-quoted token rather than a
+double-quoted or unquoted token.
 
 Remote runner tests verify that one query command is in flight, intermediate
 queries coalesce, the final query executes, and close cancels pending work.
@@ -456,6 +481,11 @@ operation but does not become a history authority. The maintained architecture
 and terminal-session documents must state that Find is the narrow exception
 that lets Ghosthub request backend navigation while the backend continues to
 own all pane text, match state, and rendering.
+
+The website Guide explains that Ghostty.app's standalone search walks newest to
+oldest without wrapping, while tmux owns wrapping and the first cursor step
+after a direction change. The shared command names and default shortcuts do not
+promise identical backend navigation semantics.
 
 This design document is a local planning artifact. Repository policy requires
 removing `docs/superpowers/specs/` from the task branch before any push or pull
