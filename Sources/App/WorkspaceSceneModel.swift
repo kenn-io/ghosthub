@@ -6943,6 +6943,24 @@ final class WorkspaceSceneModel: ObservableObject {
         )
     }
 
+    private func clearRemovalTombstones(
+        forRepository repository: String,
+        on target: CommandHost
+    ) {
+        workspaceInventoryStore.clearRemovalTombstones(
+            forRepository: repository,
+            on: target
+        )
+        for hostID in inventoryHosts.filter({ $0.value == target }).keys {
+            worktreeRemovalTombstones.removeValue(
+                forKey: WorktreeMutationCoordinator.Scope(
+                    hostID: hostID,
+                    projectIdentity: repository
+                )
+            )
+        }
+    }
+
     private func performProjectRegistration(
         _ projectPath: String,
         on target: CommandHost,
@@ -6986,8 +7004,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 projectPath,
                 target
             )
-            workspaceInventoryStore.clearProjectRemovalTombstone(
-                project.repository,
+            clearRemovalTombstones(
+                forRepository: project.repository,
                 on: target
             )
             refreshKwtInventory()

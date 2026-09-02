@@ -695,15 +695,12 @@ struct WorkspaceSharedInventoryTests {
         await model.shutdown()
     }
 
-    @Test("re-registering a removed project clears its tombstone")
-    func reregisteringRemovedProjectClearsTombstone() async throws {
-        let environment = try setupStandardEnvironment()
-        let project = try #require(environment.snapshot.projects.first)
-        let host = try #require(environment.snapshot.hosts.first)
-        let inventory = WorkspaceTmuxTestSupport.inventory(
-            project: project,
-            worktrees: environment.snapshot.worktrees
-        )
+    @Test("re-registering a removed project clears its tombstones")
+    func reregisteringRemovedProjectClearsTombstones() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let project = try #require(fixture.snapshot.projects.first)
+        let host = try #require(fixture.snapshot.hosts.first)
         let coordinator = WorktreeMutationCoordinator()
         let record = KwtProjectRecord(
             repository: project.scopedKey,
@@ -712,7 +709,7 @@ struct WorkspaceSharedInventoryTests {
             lastTouched: nil
         )
         let store = WorkspaceInventoryStore(
-            kwtLoader: { _ in inventory },
+            kwtLoader: { _ in fixture.beforeRemoval },
             kwtProvisioner: { _ in },
             tmuxLoader: { _ in .success([]) },
             mutationCoordinator: coordinator
@@ -720,16 +717,29 @@ struct WorkspaceSharedInventoryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: fixture.snapshot,
             workspaceInventoryStore: store,
-            kwtInventoryLoader: { _ in inventory },
+            kwtInventoryLoader: { _ in fixture.beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _, _ in },
             worktreeMutationCoordinator: coordinator,
             kwtProjectRegistration: { _, _ in record },
-            kwtProjectRemoval: { _, _, _, _, _ in record }
+            kwtProjectRemoval: { _, _, _, _, _ in record },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
         )
         model.startKwtInventory()
         model.startTmuxSessionDiscovery()
         await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+
+        let request = try await model.prepareWorktreeRemoval(
+            fixture.removable.id
+        )
+        try await model.removeWorktree(request)
+        #expect(model.snapshot.worktree(id: fixture.removable.id) == nil)
 
         let removal = await model.unregisterProject(
             project,
@@ -746,12 +756,15 @@ struct WorkspaceSharedInventoryTests {
         )
         #expect(registration == .success(project.name))
         await waitUntilMainActor {
-            model.snapshot.projects.contains {
-                $0.scopedKey == project.scopedKey
+            model.snapshot.worktrees.contains {
+                $0.path == fixture.removable.path
             }
         }
         #expect(model.snapshot.projects.contains {
             $0.scopedKey == project.scopedKey
+        })
+        #expect(model.snapshot.worktrees.contains {
+            $0.path == fixture.removable.path
         })
         await model.shutdown()
     }

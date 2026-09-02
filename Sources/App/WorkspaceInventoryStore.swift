@@ -256,15 +256,19 @@ final class WorkspaceInventoryStore: ObservableObject {
         tmuxGenerations[host, default: 0]
     }
 
-    /// Forgets a project removal tombstone after the project is registered
-    /// again, so the next refresh can show it.
-    func clearProjectRemovalTombstone(
-        _ repository: String,
+    /// Forgets a repository's project and worktree removal tombstones after
+    /// the project is registered again, so the next refresh can show it.
+    func clearRemovalTombstones(
+        forRepository repository: String,
         on host: CommandHost
     ) {
         kwtProjectRemovalTombstonesByHost[host]?.remove(repository)
         if kwtProjectRemovalTombstonesByHost[host]?.isEmpty == true {
             kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
+        }
+        kwtRemovalTombstonesByHost[host]?.removeValue(forKey: repository)
+        if kwtRemovalTombstonesByHost[host]?.isEmpty == true {
+            kwtRemovalTombstonesByHost.removeValue(forKey: host)
         }
     }
 
