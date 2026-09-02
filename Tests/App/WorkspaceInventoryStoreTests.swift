@@ -1315,6 +1315,7 @@ struct WorkspaceInventoryStoreTests {
             managed: false
         )
         let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
             kwtLoader: { _ in KwtHostInventory(projects: []) },
             kwtProvisioner: { _ in },
             tmuxLoader: { _ in
@@ -1387,6 +1388,7 @@ struct WorkspaceInventoryStoreTests {
             managed: false
         )
         let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
             kwtLoader: { _ in KwtHostInventory(projects: []) },
             kwtProvisioner: { _ in },
             tmuxLoader: { _ in
