@@ -4077,7 +4077,8 @@ final class WorkspaceSceneModel: ObservableObject {
                         hostID: hostID,
                         excludingWorktrees: tombstones,
                         publish: false,
-                        publishToStore: false
+                        publishToStore: false,
+                        recordsSuccessfulLoad: entry.isFresh
                     )
                     if entry.isFresh {
                         successfulKwtHosts.append((
@@ -5039,7 +5040,8 @@ final class WorkspaceSceneModel: ObservableObject {
         excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:],
         publish: Bool = true,
         publishToStore: Bool = true,
-        mutationHostID: UUID? = nil
+        mutationHostID: UUID? = nil,
+        recordsSuccessfulLoad: Bool = true
     ) {
         worktreeMutationCoordinator.reconcileRetiredProtectedEndpoints(
             after: inventory,
@@ -5051,8 +5053,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 from: previous,
                 excludingWorktrees: excludingWorktrees
             )
-        kwtAvailabilityByHost[hostID] = true
-        kwtInventoryFailuresByHost.removeValue(forKey: hostID)
+        if recordsSuccessfulLoad {
+            kwtAvailabilityByHost[hostID] = true
+            kwtInventoryFailuresByHost.removeValue(forKey: hostID)
+        }
         if publish {
             applyInventoryOverlayIfNeeded()
             reconcileRetainedTmuxPresentations(

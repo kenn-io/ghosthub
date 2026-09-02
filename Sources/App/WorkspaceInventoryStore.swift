@@ -243,7 +243,16 @@ final class WorkspaceInventoryStore: ObservableObject {
         cadenceTask?.cancel()
         cadenceTask = nil
         guard isActive else { return }
-        requestSubscribedInventory()
+        let kwtHosts = subscribedKwtHosts()
+        let tmuxHosts = subscribedTmuxHosts()
+        invalidateKwtHosts(kwtHosts)
+        invalidateTmuxHosts(tmuxHosts)
+        for host in kwtHosts {
+            requestKwt(host)
+        }
+        for host in tmuxHosts {
+            requestTmux(host)
+        }
         reconcileCadence()
     }
 

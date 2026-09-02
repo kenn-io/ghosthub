@@ -99,6 +99,73 @@ struct WorkspaceInventoryStoreTests {
         }
     }
 
+    @Test("reactivation replaces loads started before inactivity")
+    func reactivationReplacesInFlightLoads() async {
+        let staleKwt = KwtHostInventory(
+            projects: [],
+            projectsWarning: "stale"
+        )
+        let freshKwt = KwtHostInventory(projects: [])
+        let staleTmux = DiscoveredTmuxSession(
+            name: "stale",
+            windowCount: 1,
+            createdAt: nil,
+            managed: false
+        )
+        let kwtCount = LockedValue(0)
+        let tmuxCount = LockedValue(0)
+        let firstKwtLoad = AsyncGate()
+        let firstTmuxLoad = AsyncGate()
+        defer {
+            firstKwtLoad.open()
+            firstTmuxLoad.open()
+        }
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                let attempt = kwtCount.load()
+                kwtCount.withLock { $0 += 1 }
+                if attempt == 0 {
+                    await firstKwtLoad.wait()
+                    return staleKwt
+                }
+                return freshKwt
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in
+                let attempt = tmuxCount.load()
+                tmuxCount.withLock { $0 += 1 }
+                if attempt == 0 {
+                    await firstTmuxLoad.wait()
+                    return .success([staleTmux])
+                }
+                return .success([])
+            },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        store.updateSubscriber(
+            id: UUID(),
+            registrations: [.init(
+                hostID: UUID(),
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: true
+        )
+        await waitUntil {
+            kwtCount.load() == 1 && tmuxCount.load() == 1
+        }
+
+        store.setApplicationActive(false)
+        store.setApplicationActive(true)
+
+        await waitUntil {
+            kwtCount.load() == 2 && tmuxCount.load() == 2
+        }
+        #expect(store.snapshot.kwtByHost[.local]?.inventory == freshKwt)
+        #expect(store.snapshot.tmuxByHost[.local]?.sessions == [])
+    }
+
     @Test("remote KWT loads provision the configured host once")
     func remoteLoadsProvisionOnce() async {
         let events = LockedValue<[String]>([])

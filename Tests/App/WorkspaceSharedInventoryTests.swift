@@ -440,4 +440,74 @@ struct WorkspaceSharedInventoryTests {
         await first.shutdown()
         await second.shutdown()
     }
+
+    @Test("cached tombstone filtering preserves a KWT refresh failure")
+    func cachedTombstoneFilteringPreservesRefreshFailure() async throws {
+        enum RefreshFailure: LocalizedError {
+            case failed
+
+            var errorDescription: String? { "Inventory refresh failed" }
+        }
+
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let coordinator = WorktreeMutationCoordinator()
+        let postMutationLoad = AsyncGate()
+        let loadCount = LockedValue(0)
+        defer { postMutationLoad.open() }
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                let attempt = loadCount.load()
+                loadCount.withLock { $0 += 1 }
+                if attempt == 0 {
+                    throw RefreshFailure.failed
+                }
+                await postMutationLoad.wait()
+                return fixture.beforeRemoval
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        store.publishKwtInventory(
+            fixture.beforeRemoval,
+            on: .local,
+            mutationHostID: nil
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator
+        )
+        model.startKwtInventory()
+        model.refreshKwtInventory()
+        await waitUntilMainActor {
+            model.workspaceInventoryWarningsByHost[environment.host.id]
+                == "Inventory refresh failed"
+        }
+
+        #expect(coordinator.acquire(
+            hostID: environment.host.id,
+            projectIdentity: environment.project.scopedKey
+        ))
+        coordinator.release(
+            hostID: environment.host.id,
+            projectIdentity: environment.project.scopedKey,
+            removalTombstones: [.init(
+                path: fixture.removable.path,
+                generation: fixture.removable.generation ?? ""
+            )]
+        )
+        await waitUntilMainActor {
+            model.snapshot.worktree(id: fixture.removable.id) == nil
+        }
+
+        #expect(
+            model.workspaceInventoryWarningsByHost[environment.host.id]
+                == "Inventory refresh failed"
+        )
+        await model.shutdown()
+    }
 }
