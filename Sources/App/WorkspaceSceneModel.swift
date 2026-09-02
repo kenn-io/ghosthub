@@ -12650,11 +12650,13 @@ final class WorkspaceSceneModel: ObservableObject {
         // cannot apply client flags first. Keep that attach interactive long
         // enough for kwt to establish the workspace, then restore preview
         // sizing after the exact client is available.
-        let defersHiddenSizingForWorkspaceEstablishment = reconnectsNonSizing
-            && openWorkspace
-        if defersHiddenSizingForWorkspaceEstablishment {
-            presentation.hiddenSizingProvisioningPending = true
-        }
+        let usesKwtWorkspaceEstablishment = launchMode == .attach
+            && (openWorkspace || protectedSessionNeedsEstablishment)
+        let defersHiddenSizingForWorkspaceEstablishment =
+            presentation.sizingIntent == .hidden
+                && usesKwtWorkspaceEstablishment
+        presentation.hiddenSizingProvisioningPending =
+            defersHiddenSizingForWorkspaceEstablishment
         let startsNonSizing = reconnectsNonSizing
             && !defersHiddenSizingForWorkspaceEstablishment
         let previewGridSize = previewGridSize(for: selection)
