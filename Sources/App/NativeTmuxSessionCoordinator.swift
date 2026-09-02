@@ -1196,16 +1196,7 @@ final class NativeTmuxSessionCoordinator {
             surface.terminalFindController = .unavailable
             return
         }
-        let finder = paneFinder
-        let target = TmuxFindTarget(
-            host: attachment.host,
-            tmuxPath: attachment.tmuxPath,
-            tmuxVersion: attachment.tmuxVersion,
-            sessionName: handle.name,
-            socketName: attachment.socketName,
-            sshConnectionArguments: attachment.sshConnectionSnapshot.arguments,
-            expectedClient: client
-        )
+        paneSplitClients[handle.id] = client
         let concreteSurface = surface as? TerminalSurfaceView
         surface.terminalFindController = TerminalFindController(
             isAvailable: true,
@@ -1218,31 +1209,132 @@ final class NativeTmuxSessionCoordinator {
                     attachmentID: attachment.id
                 )
             },
-            sessionProvider: {
-                TerminalFindSession(
-                    search: { query, _ in
-                        await Self.findResponse(
-                            finder.perform(.search(query), target: target)
+            sessionProvider: { [weak self] in
+                guard let self else { return nil }
+                return TerminalFindSession(
+                    search: { [weak self] query, _ in
+                        guard let self else {
+                            return .failure(Self.findTargetChangedFailure())
+                        }
+                        return await performFind(
+                            .search(query),
+                            handle: handle,
+                            attachmentID: attachment.id
                         )
                     },
-                    navigate: { direction, _ in
+                    navigate: { [weak self] direction, _ in
+                        guard let self else {
+                            return .failure(Self.findTargetChangedFailure())
+                        }
                         let mutation: TmuxFindMutation = direction == .next
                             ? .next : .previous
-                        return await Self.findResponse(
-                            finder.perform(mutation, target: target)
+                        return await performFind(
+                            mutation,
+                            handle: handle,
+                            attachmentID: attachment.id
                         )
                     },
-                    close: {
-                        switch await finder.perform(.cancel, target: target) {
-                        case .success:
-                            return nil
-                        case let .failure(failure):
-                            return TerminalFindFailure(message: failure.message)
+                    close: { [weak self] in
+                        guard let self else {
+                            return Self.findTargetChangedFailure()
+                        }
+                        switch await performFind(
+                            .cancel,
+                            handle: handle,
+                            attachmentID: attachment.id
+                        ) {
+                        case .success: return nil
+                        case let .failure(failure): return failure
                         }
                     }
                 )
             }
         )
+    }
+
+    private func performFind(
+        _ mutation: TmuxFindMutation,
+        handle: BorrowedTmuxSessionHandle,
+        attachmentID: UUID
+    ) async -> Result<TerminalFindBackendResponse, TerminalFindFailure> {
+        switch await currentFindTarget(
+            handle: handle,
+            attachmentID: attachmentID
+        ) {
+        case let .success(target):
+            return await Self.findResponse(
+                paneFinder.perform(mutation, target: target)
+            )
+        case let .failure(failure):
+            return .failure(failure)
+        }
+    }
+
+    private func currentFindTarget(
+        handle: BorrowedTmuxSessionHandle,
+        attachmentID: UUID
+    ) async -> Result<TmuxFindTarget, TerminalFindFailure> {
+        guard let attachment = attachments[handle.id],
+              attachment.id == attachmentID,
+              launchedHandles.contains(handle.id),
+              let expectedClient = paneSplitClients[handle.id]
+        else { return .failure(Self.findTargetChangedFailure()) }
+
+        var identityTarget = paneSplitTarget(
+            handle: handle,
+            attachment: attachment,
+            expectedIdentity: attachment.sessionIdentity
+        )
+        identityTarget.expectedClient = expectedClient
+        let identity = await paneSplitter.clientIdentity(target: identityTarget)
+        guard let currentAttachment = attachments[handle.id],
+              currentAttachment.id == attachmentID,
+              launchedHandles.contains(handle.id)
+        else { return .failure(Self.findTargetChangedFailure()) }
+
+        switch identity {
+        case let .success(client):
+            guard client.matchesClient(expectedClient) else {
+                return .failure(Self.findTargetChangedFailure())
+            }
+            paneSplitClients[handle.id] = client
+            return .success(TmuxFindTarget(
+                host: currentAttachment.host,
+                tmuxPath: currentAttachment.tmuxPath,
+                tmuxVersion: currentAttachment.tmuxVersion,
+                sessionName: handle.name,
+                socketName: currentAttachment.socketName,
+                sshConnectionArguments: currentAttachment
+                    .sshConnectionSnapshot.arguments,
+                expectedClient: client
+            ))
+        case let .failure(failure):
+            return .failure(Self.findFailure(
+                status: failure.status,
+                host: currentAttachment.host
+            ))
+        }
+    }
+
+    private nonisolated static func findTargetChangedFailure()
+        -> TerminalFindFailure {
+        TerminalFindFailure(message: "The attached tmux session changed.")
+    }
+
+    private nonisolated static func findFailure(
+        status: Int32,
+        host: CommandHost
+    ) -> TerminalFindFailure {
+        if status == 75 {
+            return findTargetChangedFailure()
+        }
+        if status == AccountCommandRunner.timedOutStatus
+            || (status == 255 && host.isRemote) {
+            return TerminalFindFailure(
+                message: "Find lost its connection to tmux."
+            )
+        }
+        return TerminalFindFailure(message: "tmux could not search this pane.")
     }
 
     private nonisolated static func findResponse(

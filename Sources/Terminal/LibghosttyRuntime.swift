@@ -1008,6 +1008,10 @@ public final class LibghosttyRuntime: ObservableObject,
                 String(cString: $0)
             } ?? ""
             guard let sourceSurfaceIdentity else { return true }
+            // `search:<query>` updates libghostty's search thread directly;
+            // it does not emit START_SEARCH. This action therefore represents
+            // a new upstream-owned search, such as start_search or
+            // search_selection, and supersedes the registered operation.
             let operation = LibghosttyFindOperationRegistry.shared
                 .beginExternalOperation(for: sourceSurfaceIdentity)
             DispatchQueue.main.async {

@@ -266,6 +266,75 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { splitCommands.load() == 1 }
     }
 
+    @Test("Find refreshes the active pane before every operation")
+    func findRefreshesActivePane() async throws {
+        let identityLookups = LockedValue(0)
+        let findCommands = LockedValue<[String]>([])
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                guard command.contains(
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                ) else { return (0, "") }
+                identityLookups.withLock { $0 += 1 }
+                let lookup = identityLookups.load()
+                return (
+                    0,
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t123\t789\t321"
+                        + "\t/dev/ttys001\t$7\t456\t%\(lookup + 8)\n"
+                )
+            },
+            paneFinder: TmuxPaneFinder(runner: { _, _, command in
+                findCommands.withLock { $0.append(command) }
+                guard let start = command.range(
+                    of: "GHOSTHUB_TMUX_FIND_STATE_"
+                )?.lowerBound else { return (0, "") }
+                let markerEnd = command.index(start, offsetBy: 61)
+                let marker = String(command[start ..< markerEnd])
+                return (0, "\(marker)\t1\n")
+            })
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "changing-pane",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            identityLookups.load() == 1
+                && store.surface.terminalFindController.isAvailable
+        }
+        let controller = store.surface.terminalFindController
+
+        controller.open()
+        controller.updateQuery("needle")
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            findCommands.load().count == 1
+        }
+        controller.findNext()
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            findCommands.load().count == 2
+        }
+        controller.close()
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            findCommands.load().count == 3
+        }
+
+        #expect(identityLookups.load() == 4)
+        let commands = findCommands.load()
+        try #require(commands.count == 3)
+        #expect(commands[0].contains("%10"))
+        #expect(commands[1].contains("%11"))
+        #expect(commands[2].contains("%12"))
+    }
+
     @Test("tmux older than 3.4 does not install pane split shortcuts")
     func oldTmuxDoesNotInstallSplitHandler() async {
         let store = RecordingNativeSessionSurfaceStore()
