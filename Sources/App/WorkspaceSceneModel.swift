@@ -3289,7 +3289,11 @@ final class WorkspaceSceneModel: ObservableObject {
         if let repositoryItem,
            let pathItem,
            repositoryItem.project.repository != pathItem.project.repository {
-            applyAuthoritativeKwtInventory(inventory, hostID: hostID)
+            applyAuthoritativeKwtInventory(
+                inventory,
+                hostID: hostID,
+                publishToStore: false
+            )
             throw KwtWorktreeError.removalTargetChanged
         }
         guard let item = repositoryItem else {
@@ -3301,11 +3305,19 @@ final class WorkspaceSceneModel: ObservableObject {
                     message: warning
                 )
             }
-            applyAuthoritativeKwtInventory(inventory, hostID: hostID)
+            applyAuthoritativeKwtInventory(
+                inventory,
+                hostID: hostID,
+                publishToStore: false
+            )
             throw KwtWorktreeError.removalTargetChanged
         }
         guard item.project.path == request.project.rootPath else {
-            applyAuthoritativeKwtInventory(inventory, hostID: hostID)
+            applyAuthoritativeKwtInventory(
+                inventory,
+                hostID: hostID,
+                publishToStore: false
+            )
             throw KwtWorktreeError.removalTargetChanged
         }
         guard let record = item.worktrees.first(where: {
@@ -3316,13 +3328,21 @@ final class WorkspaceSceneModel: ObservableObject {
                hostWorktrees.contains(where: {
                    $0.generation == confirmedGeneration
                }) {
-                applyAuthoritativeKwtInventory(inventory, hostID: hostID)
+                applyAuthoritativeKwtInventory(
+                    inventory,
+                    hostID: hostID,
+                    publishToStore: false
+                )
                 throw KwtWorktreeError.removalTargetChanged
             }
             if hostWorktrees.contains(where: {
                 removalTmuxEndpoint(request.worktree, matches: $0)
             }) {
-                applyAuthoritativeKwtInventory(inventory, hostID: hostID)
+                applyAuthoritativeKwtInventory(
+                    inventory,
+                    hostID: hostID,
+                    publishToStore: false
+                )
                 throw KwtWorktreeError.removalTargetChanged
             }
             if let warning = inventory.projects.compactMap(\.warning).first {
@@ -3333,7 +3353,11 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             return nil
         }
-        applyAuthoritativeKwtInventory(inventory, hostID: hostID)
+        applyAuthoritativeKwtInventory(
+            inventory,
+            hostID: hostID,
+            publishToStore: false
+        )
         guard let worktree = snapshot.worktree(id: request.worktree.id),
               let project = snapshot.project(id: request.project.id),
               record.repository == request.project.scopedKey,
@@ -7165,7 +7189,8 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             applyAuthoritativeKwtInventory(
                 refreshed,
-                hostID: initial.project.hostID
+                hostID: initial.project.hostID,
+                publishToStore: false
             )
             guard let removal = validatedProjectRemovalTarget(
                 project,

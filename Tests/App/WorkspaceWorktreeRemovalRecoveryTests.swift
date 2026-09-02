@@ -227,9 +227,9 @@ extension WorkspaceWorktreeRemovalTests {
         model.startKwtInventory()
         model.startTmuxSessionDiscovery()
         await waitUntilMainActor {
-            loads.load() == 2 && model.isWorkspaceInventoryRefreshComplete
+            loads.load() == 3 && model.isWorkspaceInventoryRefreshComplete
         }
-        #expect(loads.load() == 2)
+        #expect(loads.load() == 3)
         #expect(model.snapshot.worktrees.contains {
             $0.path == removable.path
                 && $0.generation == stableWorktreeGeneration

@@ -547,6 +547,92 @@ struct WorkspaceSharedInventoryTests {
         await second.shutdown()
     }
 
+    @Test("removal preflight keeps its inventory out of the shared cache")
+    func removalPreflightStaysSceneLocal() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let coordinator = WorktreeMutationCoordinator()
+        let newer: KwtHostInventory = {
+            var inventory = fixture.beforeRemoval
+            inventory.projects[0].worktrees.append(KwtWorktreeRecord(
+                path: "/tmp/ghosthub-extra",
+                branch: "feature/extra",
+                commitHash: "abc123",
+                isMain: false,
+                createdAt: nil,
+                generation: "extra-generation",
+                repository: environment.project.scopedKey,
+                sessionName: "kwt-ghosthub-extra"
+            ))
+            return inventory
+        }()
+        let removalGate = AsyncGate()
+        defer { removalGate.open() }
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in newer },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let first = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            workspaceInventoryStore: store,
+            kwtInventoryLoader: { _ in fixture.beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _, _ in
+                await removalGate.wait()
+            },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let second = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: environment.host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: fixture.snapshot.hosts,
+                projects: [],
+                worktrees: []
+            ),
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator
+        )
+        first.startKwtInventory()
+        second.startKwtInventory()
+        await waitUntilMainActor {
+            first.snapshot.worktrees.contains { $0.path == "/tmp/ghosthub-extra" }
+                && second.snapshot.worktrees.contains {
+                    $0.path == "/tmp/ghosthub-extra"
+                }
+        }
+
+        let request = try await first.prepareWorktreeRemoval(
+            fixture.removable.id
+        )
+        let removal = Task { try await first.removeWorktree(request) }
+        await removalGate.waitUntilWaiting()
+
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects[0]
+                .worktrees.contains { $0.path == "/tmp/ghosthub-extra" }
+                == true
+        )
+        #expect(second.snapshot.worktrees.contains {
+            $0.path == "/tmp/ghosthub-extra"
+        })
+
+        removalGate.open()
+        try await removal.value
+        #expect(first.snapshot.worktree(id: fixture.removable.id) == nil)
+        await first.shutdown()
+        await second.shutdown()
+    }
+
     @Test("cached tombstone filtering preserves a KWT refresh failure")
     func cachedTombstoneFilteringPreservesRefreshFailure() async throws {
         enum RefreshFailure: LocalizedError {
