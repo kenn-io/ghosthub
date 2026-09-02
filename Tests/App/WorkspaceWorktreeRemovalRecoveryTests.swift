@@ -936,11 +936,14 @@ extension WorkspaceWorktreeRemovalTests {
         let snapshot = fixture.snapshot
         let beforeRemoval = fixture.beforeRemoval
         let removerHold = RemovalPreflightHold()
+        let surfaces = RecordingNativeSessionSurfaceStore()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            localKwtPathProvider: { "/test/kwt" },
             kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _, _, _ in
                 _ = await removerHold.load(beforeRemoval)
@@ -975,6 +978,9 @@ extension WorkspaceWorktreeRemovalTests {
         let activeHandle = try #require(
             model.retainedBorrowedTmuxHandle(for: other)
         )
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
         #expect(model.retainedBorrowedTmuxPresentationCount == 2)
         #expect(model.activeBorrowedTmuxSelection == other)
 
@@ -1006,6 +1012,10 @@ extension WorkspaceWorktreeRemovalTests {
         )
         #expect(model.retainedBorrowedTmuxHandle(for: other) == activeHandle)
         #expect(model.activeBorrowedTmuxSelection == other)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 3
+        }
+        #expect(surfaces.lastCommand?.contains("ignore-size") == true)
         await model.shutdown()
     }
 

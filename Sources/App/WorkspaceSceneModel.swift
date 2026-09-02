@@ -2850,7 +2850,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     killedSessionReestablishmentTarget,
                     launchMode: .attach,
                     intent: .userInitiated,
-                    activatesPresentation: false
+                    activatesPresentation: false,
+                    startsHidden: true
                 )
             }
         }
@@ -4830,15 +4831,17 @@ final class WorkspaceSceneModel: ObservableObject {
             ) else { continue }
             let establishesWorkspace = requiresWorkspaceReestablishment
                 || presentation.requiresWorkspaceEstablishment
+            let activatesPresentation = presentation.wasActive
+                && presentation.userNavigationRevision
+                == userNavigationRevision
             _ = presentTmuxSession(
                 selection,
                 launchMode: establishesWorkspace
                     ? .attach : presentation.launchMode,
                 intent: establishesWorkspace
                     ? .userInitiated : .restoreOnly,
-                activatesPresentation: presentation.wasActive
-                    && presentation.userNavigationRevision
-                    == userNavigationRevision
+                activatesPresentation: activatesPresentation,
+                startsHidden: !activatesPresentation
             )
         }
     }
@@ -9416,6 +9419,7 @@ final class WorkspaceSceneModel: ObservableObject {
         commandReplayAuthorized: Bool = false,
         intent: TmuxPresentationIntent = .userInitiated,
         activatesPresentation: Bool = true,
+        startsHidden: Bool = false,
         ignoresClientSize: Bool = false,
         previewGridSize: TmuxGridSize? = nil
     ) -> BorrowedTmuxSessionHandle? {
@@ -9556,6 +9560,10 @@ final class WorkspaceSceneModel: ObservableObject {
             selection,
             hostSummary: host
         )
+        let startsHiddenOnPOSIX = startsHidden && host.platform != .windows
+        let hiddenPreviewGridSize = (tmuxSessionsByHost[selection.hostID]
+            ?? host.tmuxSessions).first { $0.name == selection.name }?
+            .previewClientSize
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -9569,8 +9577,9 @@ final class WorkspaceSceneModel: ObservableObject {
             workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace,
             sessionIdentity: discoveredIdentity,
-            ignoresClientSize: ignoresClientSize,
-            previewGridSize: previewGridSize
+            ignoresClientSize: startsHiddenOnPOSIX || ignoresClientSize,
+            previewGridSize: startsHiddenOnPOSIX
+                ? hiddenPreviewGridSize : previewGridSize
         )
         let phase: RemoteTmuxEstablishmentPhase
         if openWorkspace || protectedSessionNeedsEstablishment {
@@ -9607,6 +9616,7 @@ final class WorkspaceSceneModel: ObservableObject {
             ),
             verifiedPreviewIdentity: nil
         )
+        presentation.sizingIntent = startsHiddenOnPOSIX ? .hidden : .interactive
         presentation.reconnectExpectedIdentity = discoveredIdentity
         objectWillChange.send()
         retainedTmuxPresentations[key] = presentation
