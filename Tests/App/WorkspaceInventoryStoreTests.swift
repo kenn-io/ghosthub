@@ -8,6 +8,73 @@ import Testing
 @Suite("Workspace inventory store", .serialized)
 @MainActor
 struct WorkspaceInventoryStoreTests {
+    @Test("starting a KWT refresh revokes cached freshness")
+    func startingKwtRefreshRevokesFreshness() async {
+        let loadGate = AsyncGate()
+        let cadenceGate = AsyncGate()
+        let sleepCount = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                await loadGate.wait()
+                return KwtHostInventory(projects: [])
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            sleep: { _ in
+                let attempt = sleepCount.load()
+                sleepCount.withLock { $0 += 1 }
+                if attempt == 0 {
+                    await cadenceGate.wait()
+                } else {
+                    try await Task.sleep(for: .seconds(3_600))
+                }
+            },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let subscriberID = UUID()
+        defer {
+            loadGate.open()
+            store.removeSubscriber(id: subscriberID)
+        }
+        store.publishKwtInventory(
+            KwtHostInventory(projects: []),
+            on: .local,
+            mutationHostID: nil
+        )
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: UUID(),
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+
+        await cadenceGate.waitUntilWaiting()
+        cadenceGate.open()
+        await waitUntilMainActor {
+            guard let entry = store.snapshot.kwtByHost[.local] else {
+                return false
+            }
+            if case .loading = entry.state {
+                return true
+            }
+            return false
+        }
+
+        guard let entry = store.snapshot.kwtByHost[.local] else {
+            Issue.record("Expected cached KWT inventory")
+            return
+        }
+        guard case .loading = entry.state else {
+            Issue.record("Expected a loading KWT entry")
+            return
+        }
+        #expect(entry.isFresh == false)
+    }
+
     @Test("application activity monitoring refreshes once on reactivation")
     func applicationActivityMonitoringIsProcessWide() async throws {
         let center = NotificationCenter()

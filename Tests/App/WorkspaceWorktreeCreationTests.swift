@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import GhosthubPersistence
 import GhosthubSettings
 import GhosthubTransport
 import GhosthubUI
@@ -675,16 +676,30 @@ struct WorkspaceWorktreeCreationTests {
             isImported: true,
             workspace: workspace
         )
+        let coordinator = WorktreeMutationCoordinator()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                throw KwtInventoryError.commandFailed(
+                    host: "this Mac",
+                    status: 1
+                )
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
+            workspaceInventoryStore: store,
             kwtInventoryLoader: { _ in
                 throw KwtInventoryError.commandFailed(
                     host: "this Mac",
                     status: 1
                 )
             },
+            worktreeMutationCoordinator: coordinator,
             kwtPullRequestImporter: { id, identity, _ in
                 #expect(id == candidate.id)
                 #expect(identity == "github.com/kenn-io/ghosthub")
@@ -719,7 +734,29 @@ struct WorkspaceWorktreeCreationTests {
         #expect(imported.pullRequestState == .open)
         #expect(model.snapshot.project(id: unrelatedProjectID) != nil)
         #expect(model.snapshot.worktree(id: unrelatedWorktreeID) != nil)
+
+        let second = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: environment.host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: snapshot.hosts,
+                projects: [],
+                worktrees: []
+            ),
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator
+        )
+        second.startKwtInventory()
+        await waitUntilMainActor {
+            second.snapshot.worktrees.contains {
+                $0.path == workspace.path
+            }
+        }
+        #expect(second.snapshot.worktrees.contains {
+            $0.path == workspace.path
+        })
         await model.shutdown()
+        await second.shutdown()
     }
 
     private func inventory(

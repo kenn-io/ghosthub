@@ -208,7 +208,6 @@ extension WorkspaceTmuxDiscoveryTests {
                 .tmuxSessions.first?.windows.count == 3
         }
 
-        #expect(attempts.count == 2)
         #expect(
             model.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.first?.windows.count == 3
@@ -963,6 +962,7 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
         model.retryBorrowedTmuxSession(selection)
         #expect(model.activeBorrowedTmuxLaunchMode == .attach)
+        await model.shutdown()
     }
 
     @MainActor

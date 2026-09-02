@@ -209,11 +209,13 @@ final class WorkspaceInventoryStore: ObservableObject {
         _ inventory: KwtHostInventory,
         on host: CommandHost,
         excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:],
-        mutationHostID: UUID?
+        mutationHostID: UUID?,
+        recordsSuccessfulLoad: Bool = true
     ) {
         kwtGenerations[host, default: 0] &+= 1
         kwtTasks.removeValue(forKey: host)?.cancel()
-        if let mutationHostID,
+        if recordsSuccessfulLoad,
+           let mutationHostID,
            isSoleActiveMutation(
                hostID: mutationHostID,
                on: host
@@ -224,7 +226,8 @@ final class WorkspaceInventoryStore: ObservableObject {
         recordKwtSuccess(
             inventory,
             host: host,
-            excludingWorktrees: excludingWorktrees
+            excludingWorktrees: excludingWorktrees,
+            recordsSuccessfulLoad: recordsSuccessfulLoad
         )
     }
 
@@ -315,6 +318,7 @@ final class WorkspaceInventoryStore: ObservableObject {
         let provisioningHost = provisioningHost(for: host)
         var entry = snapshot.kwtByHost[host] ?? .empty
         entry.state = .loading
+        entry.isFresh = false
         snapshot.kwtByHost[host] = entry
         let loader = kwtLoader
         let provisioner = kwtProvisioner
@@ -384,26 +388,31 @@ final class WorkspaceInventoryStore: ObservableObject {
     private func recordKwtSuccess(
         _ inventory: KwtHostInventory,
         host: CommandHost,
-        excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:]
+        excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:],
+        recordsSuccessfulLoad: Bool = true
     ) {
         var tombstones = kwtRemovalTombstonesByHost[host] ?? [:]
         for (repository, exclusions) in excludingWorktrees {
             tombstones[repository, default: []].formUnion(exclusions)
         }
-        tombstones = activeRemovalTombstones(
-            tombstones,
-            after: inventory
-        )
+        if recordsSuccessfulLoad {
+            tombstones = activeRemovalTombstones(
+                tombstones,
+                after: inventory
+            )
+        }
         if tombstones.isEmpty {
             kwtRemovalTombstonesByHost.removeValue(forKey: host)
         } else {
             kwtRemovalTombstonesByHost[host] = tombstones
         }
         var projectTombstones = kwtProjectRemovalTombstonesByHost[host] ?? []
-        projectTombstones = activeProjectRemovalTombstones(
-            projectTombstones,
-            after: inventory
-        )
+        if recordsSuccessfulLoad {
+            projectTombstones = activeProjectRemovalTombstones(
+                projectTombstones,
+                after: inventory
+            )
+        }
         if projectTombstones.isEmpty {
             kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
         } else {
@@ -420,9 +429,11 @@ final class WorkspaceInventoryStore: ObservableObject {
         }
         entry.inventory = reconciled
         entry.inventoryRevision = revision
-        entry.observationRevision = revision
-        entry.state = .loaded
-        entry.isFresh = true
+        if recordsSuccessfulLoad {
+            entry.observationRevision = revision
+            entry.state = .loaded
+            entry.isFresh = true
+        }
         snapshot.kwtByHost[host] = entry
     }
 

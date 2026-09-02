@@ -3634,13 +3634,16 @@ final class WorkspaceSceneModel: ObservableObject {
         }
 
         kwtAvailabilityByHost[operation.project.hostID] = true
+        var refreshedSuccessfully = false
         do {
             let refreshed = try await kwtInventoryLoader(operation.host)
             applyAuthoritativeKwtInventory(
                 refreshed,
                 hostID: operation.project.hostID,
-                mutationHostID: mutationHostID
+                publish: false,
+                publishToStore: false
             )
+            refreshedSuccessfully = true
         } catch {
             recordKwtUnavailability(
                 error,
@@ -3650,11 +3653,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 error.localizedDescription
         }
 
-        mergeImportedWorkspace(
+        let mergedInventory = mergeImportedWorkspace(
             operation.result.workspace,
             project: operation.project
         )
-        applyInventoryOverlayIfNeeded()
+        applyAuthoritativeKwtInventory(
+            mergedInventory,
+            hostID: operation.project.hostID,
+            mutationHostID: mutationHostID,
+            recordsSuccessfulLoad: refreshedSuccessfully
+        )
         annotateImportedPullRequest(
             operation.result.pullRequest,
             workspace: operation.result.workspace,
@@ -3684,14 +3692,12 @@ final class WorkspaceSceneModel: ObservableObject {
     private func mergeImportedWorkspace(
         _ workspace: PullRequestWorkspace,
         project: ProjectSummary
-    ) {
-        guard var inventory = kwtInventoriesByHost[project.hostID] else {
-            mergeImportedWorkspaceIntoSnapshot(
-                workspace,
-                project: project
-            )
-            return
-        }
+    ) -> KwtHostInventory {
+        var inventory = kwtInventoriesByHost[project.hostID]
+            ?? inventoryHosts[project.hostID].flatMap {
+                workspaceInventoryStore.snapshot.kwtByHost[$0]?.inventory
+            }
+            ?? kwtInventoryFromSnapshot(hostID: project.hostID)
         let projectIndex = inventory.projects.firstIndex {
             $0.project.repository == project.scopedKey
                 || normalizedWorkspacePath($0.project.path)
@@ -3742,42 +3748,42 @@ final class WorkspaceSceneModel: ObservableObject {
             ))
         }
         kwtInventoriesByHost[project.hostID] = inventory
+        return inventory
     }
 
-    private func mergeImportedWorkspaceIntoSnapshot(
-        _ workspace: PullRequestWorkspace,
-        project: ProjectSummary
-    ) {
-        if let index = snapshot.worktrees.firstIndex(where: {
-            $0.hostID == project.hostID
-                && normalizedWorkspacePath($0.path)
-                == normalizedWorkspacePath(workspace.path)
-        }) {
-            snapshot.worktrees[index].branch = workspace.branch
-            snapshot.worktrees[index].tmuxSessionName =
-                workspace.sessionName
-            snapshot.worktrees[index].tmuxSocketName =
-                workspace.tmuxSocketName
-            snapshot.worktrees[index].tmuxAttachMode =
-                workspace.tmuxAttachMode
-            return
+    private func kwtInventoryFromSnapshot(hostID: UUID) -> KwtHostInventory {
+        let projects = snapshot.projects.filter {
+            $0.hostID == hostID && !$0.isSynthesized
+        }.map { project in
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: project.scopedKey,
+                    name: project.name,
+                    path: project.rootPath,
+                    lastTouched: nil,
+                    registrationFingerprint:
+                    project.registrationFingerprint
+                ),
+                worktrees: snapshot.worktrees.filter {
+                    $0.hostID == hostID && $0.projectID == project.id
+                }.map { worktree in
+                    KwtWorktreeRecord(
+                        path: worktree.path,
+                        branch: worktree.branch,
+                        commitHash: "",
+                        isMain: worktree.isPrimary,
+                        createdAt: worktree.createdAt,
+                        generation: worktree.generation,
+                        repository: project.scopedKey,
+                        sessionName: worktree.tmuxSessionName ?? "",
+                        tmuxSocketName: worktree.tmuxSocketName,
+                        tmuxAttachMode: worktree.tmuxAttachMode
+                    )
+                },
+                warning: nil
+            )
         }
-        snapshot.worktrees.append(WorktreeSummary(
-            id: UUID(),
-            hostID: project.hostID,
-            projectID: project.id,
-            scopedKey: workspace.path,
-            name: workspace.branch,
-            path: workspace.path,
-            branch: workspace.branch,
-            tmuxSessionName: workspace.sessionName,
-            tmuxSocketName: workspace.tmuxSocketName,
-            tmuxAttachMode: workspace.tmuxAttachMode,
-            sessionBackend:
-            snapshot.host(id: project.hostID)?.kind == .remote
-                ? .remoteTmux
-                : .localTmux
-        ))
+        return KwtHostInventory(projects: projects)
     }
 
     private func annotateImportedPullRequest(
@@ -4068,19 +4074,28 @@ final class WorkspaceSceneModel: ObservableObject {
                     let inventory = entry.inventory {
                     appliedKwtInventoryRevisions[applicationKey] =
                         entry.inventoryRevision
-                    let tombstones = activeRemovalTombstones(
-                        after: inventory,
-                        hostID: hostID
-                    )
+                    let recordsSuccessfulLoad = entry.isFresh
+                        && {
+                            if case .loaded = entry.state {
+                                return true
+                            }
+                            return false
+                        }()
+                    let tombstones = recordsSuccessfulLoad
+                        ? activeRemovalTombstones(
+                            after: inventory,
+                            hostID: hostID
+                        )
+                        : removalTombstones(hostID: hostID)
                     applyAuthoritativeKwtInventory(
                         inventory,
                         hostID: hostID,
                         excludingWorktrees: tombstones,
                         publish: false,
                         publishToStore: false,
-                        recordsSuccessfulLoad: entry.isFresh
+                        recordsSuccessfulLoad: recordsSuccessfulLoad
                     )
-                    if entry.isFresh {
+                    if recordsSuccessfulLoad {
                         successfulKwtHosts.append((
                             hostID,
                             commandHost,
@@ -4130,7 +4145,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     applyTmuxDiscoveryResult(
                         .success(sessions),
                         hostID: hostID,
-                        publish: false
+                        publish: false,
+                        publishToStore: false
                     )
                     successfulTmuxHostIDs.insert(hostID)
                 }
@@ -5034,6 +5050,16 @@ final class WorkspaceSceneModel: ObservableObject {
         return activeTombstones
     }
 
+    private func removalTombstones(
+        hostID: UUID
+    ) -> [String: Set<KwtWorktreeIdentity>] {
+        worktreeRemovalTombstones.reduce(into: [:]) { active, entry in
+            guard entry.key.hostID == hostID else { return }
+            active[entry.key.projectIdentity, default: []]
+                .formUnion(entry.value)
+        }
+    }
+
     private func applyAuthoritativeKwtInventory(
         _ inventory: KwtHostInventory,
         hostID: UUID,
@@ -5043,10 +5069,12 @@ final class WorkspaceSceneModel: ObservableObject {
         mutationHostID: UUID? = nil,
         recordsSuccessfulLoad: Bool = true
     ) {
-        worktreeMutationCoordinator.reconcileRetiredProtectedEndpoints(
-            after: inventory,
-            hostID: hostID
-        )
+        if recordsSuccessfulLoad {
+            worktreeMutationCoordinator.reconcileRetiredProtectedEndpoints(
+                after: inventory,
+                hostID: hostID
+            )
+        }
         let previous = kwtInventoriesByHost[hostID]
         kwtInventoriesByHost[hostID] =
             inventory.retainingFailedProjectWorktrees(
@@ -5071,7 +5099,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 inventory,
                 on: commandHost,
                 excludingWorktrees: excludingWorktrees,
-                mutationHostID: mutationHostID
+                mutationHostID: mutationHostID,
+                recordsSuccessfulLoad: recordsSuccessfulLoad
             )
             isConsumingSharedInventory = wasConsumingSharedInventory
             if !wasConsumingSharedInventory {
@@ -5652,7 +5681,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private func applyTmuxDiscoveryResult(
         _ result: Result<[DiscoveredTmuxSession], TmuxBinaryError>,
         hostID: UUID,
-        publish: Bool = true
+        publish: Bool = true,
+        publishToStore: Bool = true
     ) {
         guard let discovered = recordTmuxDiscoveryState(
             result,
@@ -5669,6 +5699,12 @@ final class WorkspaceSceneModel: ObservableObject {
             discovered,
             hostID: hostID
         )
+        if publishToStore, let commandHost = inventoryHosts[hostID] {
+            workspaceInventoryStore.publishTmuxSessions(
+                discovered,
+                on: commandHost
+            )
+        }
         for presentation in retainedTmuxPresentations.values {
             guard var context = presentation.reconnectContext,
                   context.phase == .establishingWorkspace,
