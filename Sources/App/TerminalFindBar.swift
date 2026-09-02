@@ -2,6 +2,20 @@ import AppKit
 import GhosthubTerminalSupport
 import SwiftUI
 
+struct TerminalFindOverlay: View {
+    @ObservedObject var controller: TerminalFindController
+    var restoreTerminalFocus: @MainActor @Sendable () -> Void
+
+    var body: some View {
+        if controller.isOpen {
+            TerminalFindBar(
+                controller: controller,
+                restoreTerminalFocus: restoreTerminalFocus
+            )
+        }
+    }
+}
+
 struct TerminalFindBar: View {
     enum FieldCommand: Equatable {
         case next

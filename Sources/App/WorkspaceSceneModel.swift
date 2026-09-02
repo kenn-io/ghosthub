@@ -5840,14 +5840,12 @@ final class WorkspaceSceneModel: ObservableObject {
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    if surface.terminalFindController.isOpen {
-                        TerminalFindBar(
-                            controller: surface.terminalFindController,
-                            restoreTerminalFocus: { [weak surface] in
-                                surface?.requestKeyboardFocus()
-                            }
-                        )
-                    }
+                    TerminalFindOverlay(
+                        controller: surface.terminalFindController,
+                        restoreTerminalFocus: { [weak surface] in
+                            surface?.requestKeyboardFocus()
+                        }
+                    )
                 }
                 .focusedSceneObject(surface.terminalFindController)
                 .onDisappear {

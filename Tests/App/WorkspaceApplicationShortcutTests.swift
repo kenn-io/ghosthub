@@ -7,6 +7,7 @@ import GhosthubTmux
 import GhosthubUI
 import GhosthubWorkspace
 import Synchronization
+import SwiftUI
 import Testing
 @testable import GhosthubApp
 
@@ -67,10 +68,31 @@ struct WorkspaceApplicationShortcutTests {
             sessionProvider: { nil }
         )
         logSurface.terminalFindController = logController
+        let logView = try #require(model.logViewerTerminalView())
+        let hostingView = NSHostingView(rootView: logView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        var containsSearchField: ((NSView) -> Bool)!
+        containsSearchField = { view in
+            view is NSSearchField
+                || view.subviews.contains { containsSearchField($0) }
+        }
 
         #expect(model.performApplicationShortcut(.find))
         #expect(logController.isOpen)
         #expect(!borrowedController.isOpen)
+        await waitUntilMainActor {
+            containsSearchField(hostingView)
+        }
+        #expect(containsSearchField(hostingView))
 
         await model.shutdown()
     }

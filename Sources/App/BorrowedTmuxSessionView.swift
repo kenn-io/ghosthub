@@ -259,7 +259,7 @@ private struct NativeTmuxTerminalView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            NativeTmuxFindOverlay(
+            TerminalFindOverlay(
                 controller: surfaceView.terminalFindController,
                 restoreTerminalFocus: { [weak surfaceView] in
                     surfaceView?.requestKeyboardFocus()
@@ -285,19 +285,5 @@ private struct NativeTmuxTerminalView: View {
             surfaceView.hasEffectiveKeyboardFocus
         )
         .focusedSceneObject(surfaceView.terminalFindController)
-    }
-}
-
-private struct NativeTmuxFindOverlay: View {
-    @ObservedObject var controller: TerminalFindController
-    var restoreTerminalFocus: @MainActor @Sendable () -> Void
-
-    var body: some View {
-        if controller.isOpen {
-            TerminalFindBar(
-                controller: controller,
-                restoreTerminalFocus: restoreTerminalFocus
-            )
-        }
     }
 }
