@@ -250,6 +250,7 @@ struct KwtInventoryClient: Sendable {
     private let loginShellProvider: @Sendable () -> String
     private let localBinaryPath: String?
     private let remoteBinaryRevision: String?
+    private let retryDelays: [Duration]
 
     init(
         localRunner: LocalRunner? = nil,
@@ -258,6 +259,9 @@ struct KwtInventoryClient: Sendable {
         localBinaryPath: String? = KwtBinaryLocator.bundledPath(),
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),
+        retryDelays: [Duration] = [
+            .seconds(1), .seconds(4), .seconds(15),
+        ],
         loginShellProvider: @escaping @Sendable () -> String =
             AccountCommandRunner.loginShell
     ) {
@@ -280,6 +284,7 @@ struct KwtInventoryClient: Sendable {
         self.loginShellProvider = loginShellProvider
         self.localBinaryPath = localBinaryPath
         self.remoteBinaryRevision = remoteBinaryRevision
+        self.retryDelays = retryDelays
     }
 
     func load(from host: CommandHost) async throws -> KwtHostInventory {
@@ -336,7 +341,7 @@ struct KwtInventoryClient: Sendable {
             )
         let hostPlatform = platform(for: host)
         let prelude = binaryPrelude(for: host)
-        let projectsResult = run(
+        let projectsResult = try await run(
             host: host,
             sshConnectionArguments: sshConnectionArguments,
             command: Self.projectsCommand(
@@ -348,7 +353,7 @@ struct KwtInventoryClient: Sendable {
         if case .ssh = host {
             try Task.checkCancellation()
         }
-        let directoriesResult = run(
+        let directoriesResult = try await run(
             host: host,
             sshConnectionArguments: sshConnectionArguments,
             command: Self.directoryWorkspacesCommand(
@@ -400,13 +405,13 @@ struct KwtInventoryClient: Sendable {
         let indexed: [(Int, KwtProjectInventory, Bool)]
         switch host {
         case .local:
-            indexed = await withTaskGroup(
+            indexed = try await withThrowingTaskGroup(
                 of: (Int, KwtProjectInventory, Bool).self,
                 returning: [(Int, KwtProjectInventory, Bool)].self
             ) { group in
                 for (index, project) in projects.enumerated() {
                     group.addTask {
-                        loadProject(
+                        try await loadProject(
                             index: index,
                             project: project,
                             host: host,
@@ -417,7 +422,7 @@ struct KwtInventoryClient: Sendable {
                     }
                 }
                 var values: [(Int, KwtProjectInventory, Bool)] = []
-                for await value in group {
+                for try await value in group {
                     values.append(value)
                 }
                 return values
@@ -426,7 +431,7 @@ struct KwtInventoryClient: Sendable {
             var values: [(Int, KwtProjectInventory, Bool)] = []
             for (index, project) in projects.enumerated() {
                 try Task.checkCancellation()
-                let value = loadProject(
+                let value = try await loadProject(
                     index: index,
                     project: project,
                     host: host,
@@ -465,8 +470,8 @@ struct KwtInventoryClient: Sendable {
         sshConnectionArguments: [String]?,
         hostLabel: String,
         windowsKwtRelativePath: String?
-    ) -> (Int, KwtProjectInventory, Bool) {
-        let result = run(
+    ) async throws -> (Int, KwtProjectInventory, Bool) {
+        let result = try await run(
             host: host,
             sshConnectionArguments: sshConnectionArguments,
             command: Self.worktreesCommand(
@@ -527,6 +532,29 @@ struct KwtInventoryClient: Sendable {
         host: CommandHost,
         sshConnectionArguments: [String]?,
         command: String
+    ) async throws -> AccountCommandOutput {
+        var result = runOnce(
+            host: host,
+            sshConnectionArguments: sshConnectionArguments,
+            command: command
+        )
+        for delay in retryDelays {
+            guard Self.isRetryableFailure(result) else { break }
+            try await Task.sleep(for: delay)
+            try Task.checkCancellation()
+            result = runOnce(
+                host: host,
+                sshConnectionArguments: sshConnectionArguments,
+                command: command
+            )
+        }
+        return result
+    }
+
+    private func runOnce(
+        host: CommandHost,
+        sshConnectionArguments: [String]?,
+        command: String
     ) -> AccountCommandOutput {
         switch host {
         case .local:
@@ -554,17 +582,9 @@ struct KwtInventoryClient: Sendable {
                 status: result.status
             )
         }
-        let normalizedOutput = result.stdout.replacingOccurrences(
-            of: "\r\n",
-            with: "\n"
-        )
-        guard let markerRange = normalizedOutput.range(
-            of: Self.jsonMarker,
-            options: .backwards
-        ) else {
+        guard let json = Self.markedJSON(in: result.stdout) else {
             throw KwtInventoryError.malformedOutput(host: hostLabel)
         }
-        let json = normalizedOutput[markerRange.upperBound...]
         do {
             return try JSONDecoder().decode(
                 Value.self,
@@ -573,6 +593,28 @@ struct KwtInventoryClient: Sendable {
         } catch {
             throw KwtInventoryError.malformedOutput(host: hostLabel)
         }
+    }
+
+    private static func isRetryableFailure(
+        _ result: AccountCommandOutput
+    ) -> Bool {
+        guard result.status != 0,
+              let json = markedJSON(in: result.stdout),
+              let envelope = try? JSONDecoder().decode(
+                  KwtCommandErrorEnvelope.self,
+                  from: Data(json.utf8)
+              )
+        else { return false }
+        return envelope.error.retryable
+    }
+
+    private static func markedJSON(in output: String) -> Substring? {
+        let normalized = output.replacingOccurrences(of: "\r\n", with: "\n")
+        guard let markerRange = normalized.range(
+            of: jsonMarker,
+            options: .backwards
+        ) else { return nil }
+        return normalized[markerRange.upperBound...]
     }
 
     private static func indicatesUnusableConnection(
@@ -637,6 +679,14 @@ struct KwtInventoryClient: Sendable {
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" workspace list --json"
     }
+}
+
+private struct KwtCommandErrorEnvelope: Decodable {
+    struct CommandError: Decodable {
+        let retryable: Bool
+    }
+
+    let error: CommandError
 }
 
 enum KwtSnapshotMerger {

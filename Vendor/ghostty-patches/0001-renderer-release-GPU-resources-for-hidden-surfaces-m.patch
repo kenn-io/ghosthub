@@ -1,0 +1,322 @@
+From e7075e965f98c96e0da3328ab82c37fadec45728 Mon Sep 17 00:00:00 2001
+From: Mitchell Hashimoto <m@mitchellh.com>
+Date: Tue, 25 Aug 2026 10:40:06 -0700
+Subject: [PATCH 1/4] renderer: release GPU resources for hidden surfaces
+ (macOS)
+
+Ref #12034
+
+This commit releases many GPU resources when a surface becomes invisible and
+rebuilds it on the next draw. I don't say "all" because there are still
+some things we can improve on (Kitty images).
+
+We previously held onto all GPU resources for the lifetime of the surface
+regardless of its visibility state. This is 3x (for triple-buffering):
+screen render targets, uniform/cell/custom shader buffers, font textures,
+and more.
+
+Measured on macOS (Metal):
+
+| Measurement (1 visible + 20 hidden tabs)    | Before    | After   |
+|---------------------------------------------|-----------|---------|
+| Tracked GPU allocations (steady state)      | 384.6 MiB | 18.3 MiB |
+| `MTLDevice.currentAllocatedSize`            | 393.3 MiB | 19.7 MiB |
+| `footprint` IOSurface (dirty)               | 309 MB    | 15 MB   |
+| Swap chain rebuild on unhide (42 switches)  | n/a       | avg 0.43 ms, max 0.55 ms |
+
+As you can see, importantly, swap chain rebuild is fast: 0.43ms average.
+That means that the rebuild is imperceptible and happens well within
+a frame draw time.
+
+This is macOS only, but most of the work was in the generic renderer.
+GTK only needs to call `releaseGpuResources` when it becomes invisible
+to get the same benefits. I didn't have my VM handy to test this yet so
+I didn't include it.
+---
+ src/apprt.zig            |   9 ++++
+ src/renderer/OpenGL.zig  |   6 +++
+ src/renderer/Thread.zig  |  10 +---
+ src/renderer/generic.zig | 111 +++++++++++++++++++++++++++------------
+ 4 files changed, 93 insertions(+), 43 deletions(-)
+
+diff --git a/src/apprt.zig b/src/apprt.zig
+index c467f1801..ffc3af287 100644
+--- a/src/apprt.zig
++++ b/src/apprt.zig
+@@ -51,6 +51,15 @@ pub const runtime = switch (build_config.artifact) {
+ pub const App = runtime.App;
+ pub const Surface = runtime.Surface;
+ 
++/// True if all GPU operations (drawing, resource creation and
++/// destruction) must happen on the app thread. This is the case
++/// when the graphics context is owned by the app thread (GTK's
++/// GLArea). When false, the render thread performs GPU operations
++/// itself.
++pub const must_draw_from_app_thread =
++    @hasDecl(App, "must_draw_from_app_thread") and
++    App.must_draw_from_app_thread;
++
+ test {
+     _ = Runtime;
+     _ = runtime;
+diff --git a/src/renderer/OpenGL.zig b/src/renderer/OpenGL.zig
+index 4b01da0c5..40c11f606 100644
+--- a/src/renderer/OpenGL.zig
++++ b/src/renderer/OpenGL.zig
+@@ -335,6 +335,12 @@ pub fn presentLastTarget(self: *OpenGL) !void {
+     if (self.last_target) |target| try self.present(target);
+ }
+ 
++/// Called when the renderer released its GPU resources; the last
++/// presented target is deinited with them so we must drop our copy.
++pub fn gpuResourcesReleased(self: *OpenGL) void {
++    self.last_target = null;
++}
++
+ /// Returns the options to use when constructing buffers.
+ pub inline fn bufferOptions(self: OpenGL) bufferpkg.Options {
+     _ = self;
+diff --git a/src/renderer/Thread.zig b/src/renderer/Thread.zig
+index 508721379..995a70d0a 100644
+--- a/src/renderer/Thread.zig
++++ b/src/renderer/Thread.zig
+@@ -21,14 +21,6 @@ const CURSOR_BLINK_INTERVAL = 600;
+ 
+ /// Whether calls to `drawFrame` must be done from the app thread.
+ ///
+-/// If this is `true` then we send a `redraw_surface` message to the apprt
+-/// whenever we need to draw instead of calling `drawFrame` directly.
+-const must_draw_from_app_thread =
+-    if (@hasDecl(apprt.App, "must_draw_from_app_thread"))
+-        apprt.App.must_draw_from_app_thread
+-    else
+-        false;
+-
+ /// The type used for sending messages to the IO thread. For now this is
+ /// hardcoded with a capacity. We can make this a comptime parameter in
+ /// the future if we want it configurable.
+@@ -499,7 +491,7 @@ fn drawFrame(self: *Thread, now: bool) void {
+     // when we're forced to via `now`.
+     if (!now and self.renderer.hasVsync()) return;
+ 
+-    if (must_draw_from_app_thread) {
++    if (apprt.must_draw_from_app_thread) {
+         _ = self.app_mailbox.push(
+             .{ .redraw_surface = self.surface },
+             .{ .instant = {} },
+diff --git a/src/renderer/generic.zig b/src/renderer/generic.zig
+index ff632f64a..a17e24aa5 100644
+--- a/src/renderer/generic.zig
++++ b/src/renderer/generic.zig
+@@ -202,8 +202,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+         /// Health of the most recently completed frame.
+         health: std.atomic.Value(Health) = .{ .raw = .healthy },
+ 
+-        /// Our swap chain (multiple buffering)
+-        swap_chain: SwapChain,
++        /// True when we have a graphics context that can create GPU
++        /// resources. Creating any GPU resource while this is false is invalid.
++        display_realized: bool = true,
++
++        /// Our swap chain (multiple buffering). Null when it has
++        /// been released, either because the surface is hidden
++        /// (`releaseGpuResources`) or because the display is
++        /// unrealized. Rebuilt on the next `drawFrame`.
++        swap_chain: ?SwapChain,
+ 
+         /// This value is used to force-update swap chain targets in the
+         /// event of a config change that requires it (such as blending mode).
+@@ -254,14 +261,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             /// frame state struct so we can start working on a new frame.
+             frame_sema: std.Thread.Semaphore = .{ .permits = buf_count },
+ 
+-            /// Set to true when deinited, if you try to deinit a defunct
+-            /// swap chain it will just be ignored, to prevent double-free.
+-            ///
+-            /// This is required because of `displayUnrealized`, since it
+-            /// `deinits` the swapchain, which leads to a double-free if
+-            /// the renderer is deinited after that.
+-            defunct: bool = false,
+-
+             pub fn init(api: GraphicsAPI, custom_shaders: bool) !SwapChain {
+                 var result: SwapChain = .{ .frames = undefined };
+ 
+@@ -274,9 +273,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             }
+ 
+             pub fn deinit(self: *SwapChain) void {
+-                if (self.defunct) return;
+-                self.defunct = true;
+-
+                 // Wait for all of our inflight draws to complete
+                 // so that we can cleanly deinit our GPU state.
+                 for (0..buf_count) |_| self.frame_sema.wait();
+@@ -286,11 +282,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             /// Get the next frame state to draw to. This will wait on the
+             /// semaphore to ensure that the frame is available. This must
+             /// always be paired with a call to releaseFrame.
+-            pub fn nextFrame(self: *SwapChain) error{Defunct}!*FrameState {
+-                if (self.defunct) return error.Defunct;
+-
++            pub fn nextFrame(self: *SwapChain) *FrameState {
+                 self.frame_sema.wait();
+-                errdefer self.frame_sema.post();
+                 self.frame_index = (self.frame_index + 1) % buf_count;
+                 return &self.frames[self.frame_index];
+             }
+@@ -802,7 +795,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             self.terminal_state.deinit(self.alloc);
+             if (self.search_selected_match) |*m| m.arena.deinit();
+             if (self.search_matches) |*m| m.arena.deinit();
+-            self.swap_chain.deinit();
++            if (self.swap_chain) |*sc| sc.deinit();
+ 
+             if (DisplayLink != void) {
+                 if (self.display_link) |display_link| {
+@@ -947,9 +940,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             defer self.draw_mutex.unlock();
+ 
+             // We assume that the swap chain was deinited in
+-            // `displayUnrealized`, in which case it should be
+-            // marked defunct. If not, we have a problem.
+-            assert(self.swap_chain.defunct);
++            // `displayUnrealized`. If not, we have a problem.
++            assert(self.swap_chain == null);
++            assert(!self.display_realized);
+ 
+             // We reinitialize our shaders and our swap chain.
+             try self.initShaders();
+@@ -957,6 +950,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                 self.api,
+                 self.has_custom_shaders,
+             );
++            self.display_realized = true;
+             self.reinitialize_shaders = false;
+             self.target_config_modified = 1;
+         }
+@@ -975,11 +969,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             self.draw_mutex.lock();
+             defer self.draw_mutex.unlock();
+ 
+-            // We deinit our swap chain and shaders.
+-            //
+-            // This will mark them as defunct so that they
+-            // can't be double-freed or used in draw calls.
+-            self.swap_chain.deinit();
++            // We deinit our swap chain and shaders. Clearing
++            // `display_realized` ensures drawFrame doesn't attempt
++            // to rebuild the swap chain (we have no GPU context);
++            // displayRealized will.
++            if (self.swap_chain) |*sc| sc.deinit();
++            self.swap_chain = null;
++            self.display_realized = false;
+             self.shaders.deinit(self.alloc);
+         }
+ 
+@@ -1062,6 +1058,29 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                     display_link.stop() catch {};
+                 }
+             }
++
++            // When hidden, release GPU resources on runtimes whose renderer
++            // thread owns the graphics context. The swap chain is rebuilt on
++            // the next draw after the surface becomes visible again.
++            if (comptime !apprt.must_draw_from_app_thread) {
++                if (!visible) self.releaseGpuResources();
++            }
++        }
++
++        /// Release the GPU resources held by a hidden surface. This is safe to
++        /// call repeatedly; a released swap chain is rebuilt by drawFrame.
++        pub fn releaseGpuResources(self: *Self) void {
++            self.draw_mutex.lock();
++            defer self.draw_mutex.unlock();
++
++            if (self.swap_chain) |*sc| {
++                sc.deinit();
++                self.swap_chain = null;
++
++                if (comptime @hasDecl(GraphicsAPI, "gpuResourcesReleased")) {
++                    self.api.gpuResourcesReleased();
++                }
++            }
+         }
+ 
+         /// Set the new font grid.
+@@ -1076,11 +1095,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
+             // Update all our textures so that they sync on the next frame.
+             // We can modify this without a lock because the GPU does not
+-            // touch this data.
+-            for (&self.swap_chain.frames) |*frame| {
++            // touch this data. A released swap chain is rebuilt with
++            // fresh frames that sync all textures on first use.
++            if (self.swap_chain) |*sc| for (&sc.frames) |*frame| {
+                 frame.grayscale_modified = 0;
+                 frame.color_modified = 0;
+-            }
++            };
+ 
+             // Get our metrics from the grid. This doesn't require a lock because
+             // the metrics are never recalculated.
+@@ -1468,6 +1488,25 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             // then drawing is absurd, so we just return.
+             if (surface_size.width == 0 or surface_size.height == 0) return;
+ 
++            // If we have no graphics context we can't draw. This is
++            // only the case while unrealized (GTK); displayRealized
++            // rebuilds the swap chain.
++            if (!self.display_realized) return;
++
++            // Get our swap chain, rebuilding it if it was released
++            // while we were hidden. Rebuilding is deferred to draw
++            // time because resource creation must happen somewhere
++            // our graphics API allows it (OpenGL requires a current
++            // context, which drawFrame guarantees).
++            const swap_chain: *SwapChain, const swap_chain_rebuilt: bool =
++                if (self.swap_chain) |*sc| .{ sc, false } else rebuild: {
++                    self.swap_chain = try SwapChain.init(
++                        self.api,
++                        self.has_custom_shaders,
++                    );
++                    break :rebuild .{ &self.swap_chain.?, true };
++                };
++
+             const size_changed =
+                 self.size.screen.width != surface_size.width or
+                 self.size.screen.height != surface_size.height;
+@@ -1476,6 +1515,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             // don't need to since the previous frame should be identical.
+             const needs_redraw =
+                 size_changed or
++                swap_chain_rebuilt or
+                 self.cells_rebuilt or
+                 self.hasAnimations() or
+                 sync;
+@@ -1490,9 +1530,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             self.cells_rebuilt = false;
+ 
+             // Wait for a frame to be available.
+-            const frame = try self.swap_chain.nextFrame();
+-            errdefer self.swap_chain.releaseFrame();
+-            // log.debug("drawing frame index={}", .{self.swap_chain.frame_index});
++            const frame = swap_chain.nextFrame();
++            errdefer swap_chain.releaseFrame();
++            // log.debug("drawing frame index={}", .{swap_chain.frame_index});
+ 
+             // If we need to reinitialize our shaders, do so.
+             if (self.reinitialize_shaders) {
+@@ -1737,8 +1777,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                 }, .{ .forever = {} });
+             }
+ 
+-            // Always release our semaphore
+-            self.swap_chain.releaseFrame();
++            // Always release our semaphore. The swap chain is
++            // guaranteed to exist here: it is only torn down after
++            // waiting for all in-flight frames to complete, and this
++            // callback is what signals that completion.
++            self.swap_chain.?.releaseFrame();
+         }
+ 
+         /// Call this any time the background image path changes.

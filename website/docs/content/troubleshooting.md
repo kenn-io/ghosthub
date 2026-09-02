@@ -103,6 +103,11 @@ potentially stale or misidentified frame.
 
 ## A project does not appear
 
+Ghosthub automatically retries a project or directory inventory read when kwt
+reports that the failure is retryable. The retries wait progressively longer
+and keep successful inventory from the other reads. A warning that remains
+after those retries needs manual attention.
+
 For a remote macOS or Linux host, Ghosthub installs its managed kwt helper
 automatically. Select the **+** beside that host's **Projects** group and provide
 the absolute path to an existing checkout on that host. Ghosthub repairs the

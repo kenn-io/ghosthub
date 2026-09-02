@@ -151,6 +151,37 @@ void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
     )
 
 
+def test_apply_ghostty_backports_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    source = paths.source_checkout_root
+    source.mkdir(parents=True)
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    target = source / "memory.txt"
+    target.write_text("retained\n")
+
+    patch_root = tmp_path / "Vendor" / "ghostty-patches"
+    patch_root.mkdir(parents=True)
+    patch_name = "memory.patch"
+    patch_root.joinpath(patch_name).write_text(
+        """diff --git a/memory.txt b/memory.txt
+--- a/memory.txt
++++ b/memory.txt
+@@ -1 +1 @@
+-retained
++released
+"""
+    )
+    monkeypatch.setattr(bootstrap, "GHOSTTY_BACKPORTS", (("memory-fix", patch_name),))
+
+    bootstrap.apply_ghostty_backports(paths, git="git")
+    bootstrap.apply_ghostty_backports(paths, git="git")
+
+    assert target.read_text() == "released\n"
+
+
 def _make_archive(
     workdir: Path,
     name: str,
@@ -274,6 +305,7 @@ def test_artifact_state_flags_archive_missing_ghostty_api(tmp_path: Path) -> Non
         json.dumps(
             {
                 "ghosttyCommit": "abc123",
+                "ghosttyBackports": bootstrap.GHOSTTY_BACKPORT_COMMITS,
                 "ghosthubBootstrapVersion": bootstrap.GHOSTHUB_BOOTSTRAP_VERSION,
                 "xcframeworkTarget": "native",
                 "optimize": "Debug",
@@ -1343,6 +1375,7 @@ def test_universal_build_requires_both_sdk_targets(
 def test_bootstrap_wraps_build_failures_with_setup_guidance(repo: Repo) -> None:
     with (
         mock.patch.object(bootstrap, "ensure_source_checkout"),
+        mock.patch.object(bootstrap, "apply_ghostty_backports"),
         mock.patch.object(bootstrap, "apply_ghosthub_source_patches"),
         mock.patch.object(bootstrap, "apply_upstream_lifetime_backports"),
         mock.patch.object(
@@ -1513,6 +1546,11 @@ def test_artifact_state_reports_missing_bootstrap_outputs(repo: Repo) -> None:
             {"ghosttyCommit": "different"},
             "against a different Ghostty revision",
             id="commit",
+        ),
+        pytest.param(
+            {"ghosttyBackports": []},
+            "without the current Ghostty memory backports",
+            id="memory-backports",
         ),
         pytest.param(
             {"ghosthubBootstrapVersion": bootstrap.GHOSTHUB_BOOTSTRAP_VERSION - 1},
@@ -2082,6 +2120,7 @@ def _write_artifacts(
     manifest: dict[str, object] = {
         "ghosthubBootstrapVersion": bootstrap.GHOSTHUB_BOOTSTRAP_VERSION,
         "ghosttyBundleID": bootstrap.GHOSTHUB_GHOSTTY_BUNDLE_ID,
+        "ghosttyBackports": bootstrap.GHOSTTY_BACKPORT_COMMITS,
         "embeddedEnvIsolation": True,
         "macosLoginQuiet": True,
         "ghosttyConfigLoadExport": True,
