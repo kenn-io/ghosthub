@@ -277,6 +277,51 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("reopening during provisioning resumes activation when ready")
+    func reopeningDuringProvisioningResumesActivation() async throws {
+        let environment = try setupHostEnvironment()
+        let resolutionStarted = LockedValue(false)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                resolutionStarted.store(true)
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "ordinary"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { resolutionStarted.load() }
+
+        model.hideBorrowedTmuxSession(selection)
+        model.openBorrowedTmuxSession(selection)
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+
+        releaseResolution.signal()
+        await waitUntilMainActor(timeout: .seconds(2)) {
+            model.prepareActiveBorrowedTmuxSurface()
+            return model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a failed hidden sizing transition detaches the client")
     func failedHiddenSizingTransitionDetachesClient() async throws {
         let environment = try setupHostEnvironment()

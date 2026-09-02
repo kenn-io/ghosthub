@@ -10363,14 +10363,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 if presentation.sizingTransitionID == transitionID {
                     presentation.sizingTransitionID = nil
                     presentation.sizingTransitionTask = nil
-                    if presentation
+                    let resumesCurrentActivation = presentation
                         .pendingSizingActivationNavigationRevision
-                        == userNavigationRevision,
-                        tmuxPresentationActivationIsPending(presentation),
-                        !nativeTmuxSessionCoordinator.isProvisioning(
+                        == userNavigationRevision
+                        && tmuxPresentationActivationIsPending(presentation)
+                    if resumesCurrentActivation {
+                        if !nativeTmuxSessionCoordinator.isProvisioning(
                             presentation.handle
                         ) {
-                        tmuxSurfaceBecameReady(presentation.handle)
+                            tmuxSurfaceBecameReady(presentation.handle)
+                        }
                     } else if presentation
                         .pendingSizingActivationNavigationRevision != nil {
                         presentation
