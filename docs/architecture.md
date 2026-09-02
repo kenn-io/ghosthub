@@ -1095,8 +1095,12 @@ stable host identities and apply cached results through their scene-local
 reconciliation guards. The first subscriber refreshes both lanes, one cadence
 refreshes them every 30 seconds while the app is active, and reactivation
 refreshes them immediately. Failed refreshes retain the last successful rows
-while revoking freshness and publishing host-scoped warnings. Herdr and Zellij
-inventories remain scene-owned. Session-only publication uses the runtime
+while revoking freshness and publishing host-scoped warnings. The cache also
+owns the refresh that follows a worktree mutation: an authoritative
+post-mutation KWT publication satisfies it, and tmux is reloaded once for the
+mutated host. Scene-local tmux probes capture the cache's refresh epoch before
+they run and publish to it only when no newer shared refresh has started since.
+Herdr and Zellij inventories remain scene-owned. Session-only publication uses the runtime
 overlay, which cannot reconcile KWT projects or worktrees and cannot normalize
 their paths. The full overlay remains reserved for authoritative KWT changes.
 Application activation still does not start process sampling.
