@@ -39,7 +39,7 @@ struct WorkspaceInventoryStoreTests {
         store.publishKwtInventory(
             KwtHostInventory(projects: []),
             on: .local,
-            mutationHostID: nil
+            mutation: nil
         )
         store.updateSubscriber(
             id: subscriberID,
@@ -546,7 +546,10 @@ struct WorkspaceInventoryStoreTests {
         store.publishKwtInventory(
             KwtHostInventory(projects: []),
             on: .local,
-            mutationHostID: hostID
+            mutation: .init(
+                hostID: hostID,
+                epoch: store.kwtMutationEpoch(on: .local)
+            )
         )
         coordinator.release(
             hostID: hostID,
@@ -561,7 +564,7 @@ struct WorkspaceInventoryStoreTests {
         store.publishKwtInventory(
             registered,
             on: .local,
-            mutationHostID: nil
+            mutation: nil
         )
         #expect(
             store.snapshot.kwtByHost[.local]?.inventory?.projects
@@ -618,7 +621,7 @@ struct WorkspaceInventoryStoreTests {
             containing,
             on: .local,
             excludingWorktrees: [repository: [identity]],
-            mutationHostID: nil
+            mutation: nil
         )
         let subscriberID = UUID()
         store.updateSubscriber(
@@ -715,7 +718,7 @@ struct WorkspaceInventoryStoreTests {
         store.publishKwtInventory(
             containing,
             on: .local,
-            mutationHostID: nil
+            mutation: nil
         )
         #expect(coordinator.acquire(
             hostID: hostID,
@@ -817,7 +820,7 @@ struct WorkspaceInventoryStoreTests {
         store.publishKwtInventory(
             containing,
             on: .local,
-            mutationHostID: nil
+            mutation: nil
         )
         #expect(coordinator.acquireProjectRemoval(
             hostID: hostID,
@@ -903,7 +906,10 @@ struct WorkspaceInventoryStoreTests {
         store.publishKwtInventory(
             KwtHostInventory(projects: []),
             on: .local,
-            mutationHostID: hostID
+            mutation: .init(
+                hostID: hostID,
+                epoch: store.kwtMutationEpoch(on: .local)
+            )
         )
 
         coordinator.release(
@@ -1424,7 +1430,10 @@ struct WorkspaceInventoryStoreTests {
         store.publishKwtInventory(
             KwtHostInventory(projects: []),
             on: .local,
-            mutationHostID: hostID
+            mutation: .init(
+                hostID: hostID,
+                epoch: store.kwtMutationEpoch(on: .local)
+            )
         )
         coordinator.release(
             hostID: hostID,
@@ -1439,5 +1448,80 @@ struct WorkspaceInventoryStoreTests {
         #expect(store.snapshot.tmuxByHost[.local]?.isFresh == true)
         try await Task.sleep(for: .milliseconds(20))
         #expect(store.snapshot.tmuxByHost[.local]?.sessions == [fresh])
+    }
+
+    @Test("stale mutation publication yields to a newer mutation")
+    func staleMutationPublicationYieldsToNewerMutation() async {
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let project = KwtProjectRecord(
+            repository: "example/repository",
+            name: "Repository",
+            path: "/test/repository",
+            lastTouched: nil,
+            registrationFingerprint: "test-registration"
+        )
+        let registered = KwtHostInventory(projects: [KwtProjectInventory(
+            project: project,
+            worktrees: [],
+            warning: nil
+        )])
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return KwtHostInventory(projects: [])
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        #expect(loadCount.load() == 1)
+
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: "x"))
+        let staleEpoch = store.kwtMutationEpoch(on: .local)
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: "y"))
+        let currentEpoch = store.kwtMutationEpoch(on: .local)
+        #expect(staleEpoch != currentEpoch)
+
+        store.publishKwtInventory(
+            registered,
+            on: .local,
+            mutation: .init(hostID: hostID, epoch: currentEpoch)
+        )
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects
+                == registered.projects
+        )
+        store.publishKwtInventory(
+            KwtHostInventory(projects: []),
+            on: .local,
+            mutation: .init(hostID: hostID, epoch: staleEpoch)
+        )
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects
+                == registered.projects
+        )
+
+        coordinator.release(hostID: hostID, projectIdentity: "y")
+        coordinator.release(hostID: hostID, projectIdentity: "x")
+        await waitUntilMainActor { loadCount.load() == 2 }
+        #expect(loadCount.load() == 2)
     }
 }

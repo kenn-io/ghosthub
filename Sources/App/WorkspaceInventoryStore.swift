@@ -75,6 +75,14 @@ final class WorkspaceInventoryStore: ObservableObject {
         var tmuxByHost: [CommandHost: TmuxEntry] = [:]
     }
 
+    /// Identifies the mutation behind an authoritative KWT publication. The
+    /// epoch is captured right after the mutation scope is acquired, so a
+    /// result that predates a later mutation on the same host is rejected.
+    struct MutationPublication: Equatable, Sendable {
+        let hostID: UUID
+        let epoch: UInt64
+    }
+
     @Published private(set) var snapshot = Snapshot()
 
     private struct Subscriber {
@@ -98,6 +106,7 @@ final class WorkspaceInventoryStore: ObservableObject {
     private var kwtGenerations: [CommandHost: UInt64] = [:]
     private var tmuxGenerations: [CommandHost: UInt64] = [:]
     private var fenceGenerationsByHostID: [UUID: UInt64] = [:]
+    private var kwtMutationEpochsByHost: [CommandHost: UInt64] = [:]
     private var satisfiedFenceGenerationsByHostID: [UUID: UInt64] = [:]
     private var kwtRemovalTombstonesByHost:
         [CommandHost: [String: Set<KwtWorktreeIdentity>]] = [:]
@@ -205,23 +214,31 @@ final class WorkspaceInventoryStore: ObservableObject {
         refreshTmux(for: subscriberID)
     }
 
+    func kwtMutationEpoch(on host: CommandHost) -> UInt64 {
+        kwtMutationEpochsByHost[host, default: 0]
+    }
+
     func publishKwtInventory(
         _ inventory: KwtHostInventory,
         on host: CommandHost,
         excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:],
-        mutationHostID: UUID?,
+        mutation: MutationPublication?,
         recordsSuccessfulLoad: Bool = true
     ) {
+        if let mutation,
+           kwtMutationEpochsByHost[host, default: 0] != mutation.epoch {
+            return
+        }
         kwtGenerations[host, default: 0] &+= 1
         kwtTasks.removeValue(forKey: host)?.cancel()
         if recordsSuccessfulLoad,
-           let mutationHostID,
+           let mutation,
            isSoleActiveMutation(
-               hostID: mutationHostID,
+               hostID: mutation.hostID,
                on: host
            ) {
-            satisfiedFenceGenerationsByHostID[mutationHostID] =
-                fenceGenerationsByHostID[mutationHostID, default: 0]
+            satisfiedFenceGenerationsByHostID[mutation.hostID] =
+                fenceGenerationsByHostID[mutation.hostID, default: 0]
         }
         recordKwtSuccess(
             inventory,
@@ -604,6 +621,9 @@ final class WorkspaceInventoryStore: ObservableObject {
             let hosts = Set(subscribers.values.flatMap(\.registrations)
                 .filter { $0.hostID == event.scope.hostID }
                 .map(\.commandHost))
+            for host in hosts {
+                kwtMutationEpochsByHost[host, default: 0] &+= 1
+            }
             invalidateKwtHosts(hosts)
         case .ended:
             let hosts = Set(subscribers.values.flatMap(\.registrations)

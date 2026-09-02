@@ -302,6 +302,8 @@ struct WorkspaceSharedInventoryTests {
         }
         try await Task.sleep(for: .milliseconds(20))
         #expect(loads.load() == 1)
+        #expect(first.inventoryRefreshProgress.kwtCompleted)
+        #expect(second.inventoryRefreshProgress.kwtCompleted)
         await first.shutdown()
         await second.shutdown()
     }
@@ -576,7 +578,7 @@ struct WorkspaceSharedInventoryTests {
         store.publishKwtInventory(
             fixture.beforeRemoval,
             on: .local,
-            mutationHostID: nil
+            mutation: nil
         )
         let model = try makeModel(
             database: environment.database,
