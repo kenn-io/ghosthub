@@ -335,6 +335,83 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(commands[2].contains("%12"))
     }
 
+    @Test(
+        "Find invalidates remote failures while refreshing or searching",
+        arguments: [false, true]
+    )
+    func findInvalidatesFailedRemoteConnection(
+        identityRefreshFails: Bool
+    ) async {
+        let invalidations = LockedValue(0)
+        let identityCalls = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let host = CommandHost.ssh(SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        ))
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/local/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(invalidate: {
+                    invalidations.withLock { $0 += 1 }
+                })
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                guard command.contains(
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                ) else { return (0, "") }
+                identityCalls.withLock { $0 += 1 }
+                if identityRefreshFails, identityCalls.load() > 1 {
+                    return (
+                        255,
+                        "Control socket connect(/tmp/dead): Connection refused\n"
+                    )
+                }
+                return (0, coordinatorSplitClientOutput)
+            },
+            paneFinder: TmuxPaneFinder(runner: { _, _, _ in
+                if identityRefreshFails {
+                    return (1, "Find should not run after identity failure")
+                }
+                return (
+                    255,
+                    "Control socket connect(/tmp/dead): Connection refused\n"
+                )
+            }),
+            terminalOperationErrorDuration: .seconds(10)
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "failed-find",
+            host: host,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            store.surface.terminalFindController.isAvailable
+        }
+        #expect(
+            coordinator.attachmentRouteIdentity(handle)
+                == "sha256:test-route"
+        )
+        let controller = store.surface.terminalFindController
+        controller.open()
+        controller.updateQuery("needle")
+
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            invalidations.load() >= 1
+        }
+    }
+
     @Test("tmux older than 3.4 does not install pane split shortcuts")
     func oldTmuxDoesNotInstallSplitHandler() async {
         let store = RecordingNativeSessionSurfaceStore()

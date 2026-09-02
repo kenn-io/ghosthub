@@ -1262,9 +1262,13 @@ final class NativeTmuxSessionCoordinator {
             attachmentID: attachmentID
         ) {
         case let .success(target):
-            return await Self.findResponse(
-                paneFinder.perform(mutation, target: target)
-            )
+            let result = await paneFinder.perform(mutation, target: target)
+            if case let .failure(failure) = result,
+               failure.kind == .transport,
+               mutation != .cancel {
+                await invalidateFindConnection(handleID: handle.id)
+            }
+            return Self.findResponse(result)
         case let .failure(failure):
             return .failure(failure)
         }
@@ -1309,6 +1313,11 @@ final class NativeTmuxSessionCoordinator {
                 expectedClient: client
             ))
         case let .failure(failure):
+            await invalidateUnusableFindConnection(
+                status: failure.status,
+                output: failure.diagnostic,
+                handleID: handle.id
+            )
             return .failure(Self.findFailure(
                 status: failure.status,
                 host: currentAttachment.host
@@ -1372,6 +1381,26 @@ final class NativeTmuxSessionCoordinator {
         ), let connection = attachments[handleID]?.sshConnection
         else { return }
         Task { await connection.invalidate() }
+    }
+
+    private func invalidateUnusableFindConnection(
+        status: Int32,
+        output: String,
+        handleID: UUID
+    ) async {
+        guard SSHConnectionFailure.indicatesUnusableConnection(
+            status: status,
+            output: output
+        ), let connection = attachments[handleID]?.sshConnection
+        else { return }
+        await connection.invalidate()
+    }
+
+    private func invalidateFindConnection(handleID: UUID) async {
+        guard let connection = attachments[handleID]?.sshConnection else {
+            return
+        }
+        await connection.invalidate()
     }
 
     private func presentTerminalOperationError(

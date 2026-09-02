@@ -1,5 +1,6 @@
 import GhosthubTransport
 import GhosthubTerminal
+import GhosthubTerminalSupport
 import GhosthubTmux
 import GhosthubUI
 import SwiftUI
@@ -258,14 +259,12 @@ private struct NativeTmuxTerminalView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if surfaceView.terminalFindController.isOpen {
-                TerminalFindBar(
-                    controller: surfaceView.terminalFindController,
-                    restoreTerminalFocus: { [weak surfaceView] in
-                        surfaceView?.requestKeyboardFocus()
-                    }
-                )
-            }
+            NativeTmuxFindOverlay(
+                controller: surfaceView.terminalFindController,
+                restoreTerminalFocus: { [weak surfaceView] in
+                    surfaceView?.requestKeyboardFocus()
+                }
+            )
         }
         .onAppear {
             surfaceView.registerPaneCloseRequestObserver(
@@ -286,5 +285,19 @@ private struct NativeTmuxTerminalView: View {
             surfaceView.hasEffectiveKeyboardFocus
         )
         .focusedSceneObject(surfaceView.terminalFindController)
+    }
+}
+
+private struct NativeTmuxFindOverlay: View {
+    @ObservedObject var controller: TerminalFindController
+    var restoreTerminalFocus: @MainActor @Sendable () -> Void
+
+    var body: some View {
+        if controller.isOpen {
+            TerminalFindBar(
+                controller: controller,
+                restoreTerminalFocus: restoreTerminalFocus
+            )
+        }
     }
 }

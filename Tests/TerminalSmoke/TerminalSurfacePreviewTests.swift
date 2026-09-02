@@ -122,6 +122,49 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(controller.result, .idle)
     }
 
+    func testBorrowedTmuxFindBarAppearsWhenControllerOpens() throws {
+        let surface = try makeSurface()
+        let controller = TerminalFindController(
+            isAvailable: true,
+            sessionProvider: { nil }
+        )
+        surface.terminalFindController = controller
+        let presented = BorrowedTmuxSessionView(
+            handle: BorrowedTmuxSessionHandle(
+                id: UUID(),
+                hostID: UUID(),
+                name: "find-rendering",
+                surfaceID: UUID()
+            ),
+            hostName: "This Mac",
+            isRemoteHost: false,
+            connectionState: .connected,
+            surface: { surface },
+            onCloseRequest: {},
+            onRetryRequest: {},
+            onHostSettingsRequest: {}
+        )
+        let hostingView = NSHostingView(rootView: presented)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 960, height: 640)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        controller.open()
+        let deadline = Date().addingTimeInterval(1)
+        while !containsSearchField(in: hostingView), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+
+        XCTAssertTrue(containsSearchField(in: hostingView))
+    }
+
     func testParkingClosesFindBeforeHidingTheSurface() throws {
         let view = try makeSurface()
         view.installLibghosttyFindController()
@@ -1561,6 +1604,11 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         view.focusDidChange(true)
         view.sizeDidChange(size)
         return window
+    }
+
+    private func containsSearchField(in view: NSView) -> Bool {
+        view is NSSearchField
+            || view.subviews.contains { containsSearchField(in: $0) }
     }
 
     private func waitForIOSurface(

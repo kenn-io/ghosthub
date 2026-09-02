@@ -1013,7 +1013,9 @@ public final class LibghosttyRuntime: ObservableObject,
             // a new upstream-owned search, such as start_search or
             // search_selection, and supersedes the registered operation.
             let operation = LibghosttyFindOperationRegistry.shared
-                .beginExternalOperation(for: sourceSurfaceIdentity)
+                .beginExternalOperation(
+                    for: sourceSurfaceIdentity
+                )
             DispatchQueue.main.async {
                 surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
                     .beginLibghosttyFind(query, operation: operation)
@@ -1040,7 +1042,10 @@ public final class LibghosttyRuntime: ObservableObject,
             let total = Int(action.action.search_total.total)
             guard let sourceSurfaceIdentity,
                   let operation = LibghosttyFindOperationRegistry.shared
-                  .operation(for: sourceSurfaceIdentity)
+                  .operation(
+                      for: sourceSurfaceIdentity,
+                      callback: .total(total)
+                  )
             else { return true }
             DispatchQueue.main.async {
                 surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
@@ -1055,7 +1060,10 @@ public final class LibghosttyRuntime: ObservableObject,
             let selected = Int(action.action.search_selected.selected)
             guard let sourceSurfaceIdentity,
                   let operation = LibghosttyFindOperationRegistry.shared
-                  .operation(for: sourceSurfaceIdentity)
+                  .operation(
+                      for: sourceSurfaceIdentity,
+                      callback: .selected(selected)
+                  )
             else { return true }
             DispatchQueue.main.async {
                 surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?

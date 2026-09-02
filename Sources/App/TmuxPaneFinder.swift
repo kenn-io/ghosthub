@@ -34,6 +34,7 @@ struct TmuxFindFailure: Error, Equatable, Sendable {
     let kind: Kind
     let status: Int32
     let message: String
+    let diagnostic: String
 }
 
 struct TmuxPaneFinder: Sendable {
@@ -98,7 +99,8 @@ struct TmuxPaneFinder: Sendable {
             return .failure(.init(
                 kind: .targetChanged,
                 status: 75,
-                message: "The attached tmux session changed."
+                message: "The attached tmux session changed.",
+                diagnostic: result.diagnostic
             ))
         }
         guard result.status == 0 else {
@@ -109,13 +111,15 @@ struct TmuxPaneFinder: Sendable {
                 return .failure(.init(
                     kind: .transport,
                     status: result.status,
-                    message: "Find lost its connection to tmux."
+                    message: "Find lost its connection to tmux.",
+                    diagnostic: result.diagnostic
                 ))
             }
             return .failure(.init(
                 kind: .command,
                 status: result.status,
-                message: "tmux could not search this pane."
+                message: "tmux could not search this pane.",
+                diagnostic: result.diagnostic
             ))
         }
         guard mutation != .cancel else { return .success(nil) }
@@ -127,7 +131,8 @@ struct TmuxPaneFinder: Sendable {
             return .failure(.init(
                 kind: .malformedState,
                 status: result.status,
-                message: "tmux returned an invalid Find result."
+                message: "tmux returned an invalid Find result.",
+                diagnostic: result.diagnostic
             ))
         }
         return .success(state)
