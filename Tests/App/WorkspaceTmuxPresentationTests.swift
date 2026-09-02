@@ -461,6 +461,9 @@ extension WorkspaceTmuxDiscoveryTests {
         model.openBorrowedTmuxSession(selection)
         await waitUntilMainActor { resolutionStarted.load() }
         model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxSessionHasPendingHiddenSizing(selection)
+        }
         releaseResolution.signal()
 
         await waitUntilMainActor(timeout: .seconds(3)) {

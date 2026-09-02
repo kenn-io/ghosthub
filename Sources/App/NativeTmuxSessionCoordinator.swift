@@ -1433,10 +1433,11 @@ final class NativeTmuxSessionCoordinator {
     func requestAttachedSessionIdentity(
         _ handle: BorrowedTmuxSessionHandle
     ) {
+        guard handlesByKey[sessionKey(handle)] == handle else { return }
+        previewIdentityRetryHandles.insert(handle.id)
         guard let attachment = attachments[handle.id],
               launchedHandles.contains(handle.id)
         else { return }
-        previewIdentityRetryHandles.insert(handle.id)
         startPaneSplitClientBinding(
             target: paneSplitTarget(
                 handle: handle,

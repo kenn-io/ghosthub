@@ -10626,6 +10626,9 @@ final class WorkspaceSceneModel: ObservableObject {
                presentation.reconnectContext?.phase
                == .establishingWorkspace {
                 presentation.hiddenSizingProvisioningPending = true
+                nativeTmuxSessionCoordinator.requestAttachedSessionIdentity(
+                    presentation.handle
+                )
             } else if case let .failure(failure) = result {
                 guard !presentation.hiddenSizingReconnectPending else {
                     return
@@ -10670,6 +10673,13 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let handle = retainedTmuxPresentation(for: selection)?.handle
         else { return false }
         return borrowedTmuxConnectionStates[handle.id] == .connected
+    }
+
+    func retainedBorrowedTmuxSessionHasPendingHiddenSizing(
+        _ selection: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        retainedTmuxPresentation(for: selection)?
+            .hiddenSizingProvisioningPending == true
     }
 
     private static func sameTmuxSession(
@@ -12681,6 +12691,9 @@ final class WorkspaceSceneModel: ObservableObject {
             ignoresClientSize: startsNonSizing,
             previewGridSize: startsNonSizing ? previewGridSize : nil
         )
+        if defersHiddenSizingForWorkspaceEstablishment {
+            nativeTmuxSessionCoordinator.requestAttachedSessionIdentity(handle)
+        }
         if handle.id != previousHandle.id {
             retainedTmuxPresentationKeysByHandle.removeValue(
                 forKey: previousHandle.id
