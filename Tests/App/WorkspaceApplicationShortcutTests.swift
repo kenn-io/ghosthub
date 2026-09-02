@@ -19,6 +19,58 @@ private final class ShortcutFocusWindow: NSWindow {
 @Suite("Workspace application shortcuts", .serialized)
 @MainActor
 struct WorkspaceApplicationShortcutTests {
+    @Test("standalone Find routing survives responder changes")
+    func standaloneFindRoutingSurvivesResponderChanges() async throws {
+        let environment = try setupHostEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot
+        )
+        model.isFocusedWindow = true
+        model.isLogViewerPresented = true
+        _ = try #require(model.logViewerTerminalView())
+        let surface = try #require(
+            model.terminalCoordinator.surfaceEntries().first {
+                $0.key.target == .logViewer
+            }?.view
+        )
+        let navigations = Mutex<[TerminalFindDirection]>([])
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: {
+                TerminalFindSession(
+                    search: { _, _ in
+                        .success(.result(.match(total: 2, selected: nil)))
+                    },
+                    navigate: { direction, _ in
+                        navigations.withLock { $0.append(direction) }
+                        return .success(.result(.match(
+                            total: 2,
+                            selected: nil
+                        )))
+                    },
+                    close: { nil }
+                )
+            }
+        )
+        surface.terminalFindController = controller
+
+        try #require(model.performApplicationShortcut(.find))
+        controller.updateQuery("needle")
+        await waitUntilMainActor { controller.canNavigate }
+        model.isLogViewerPresented = false
+
+        #expect(model.performApplicationShortcut(.findNext))
+        await waitUntilMainActor { navigations.withLock { $0.count } == 1 }
+        #expect(navigations.withLock { $0 } == [.next])
+        #expect(model.performApplicationShortcut(.hideFindBar))
+        #expect(!controller.isOpen)
+
+        await model.shutdown()
+    }
+
     @Test("Find shortcuts route to the active terminal and follow its state")
     func findShortcutRouting() async throws {
         let environment = try setupHostEnvironment()
@@ -55,10 +107,10 @@ struct WorkspaceApplicationShortcutTests {
             debounce: .zero,
             sessionProvider: {
                 TerminalFindSession(
-                    search: { _ in
+                    search: { _, _ in
                         .success(.result(.match(total: 3, selected: nil)))
                     },
-                    navigate: { direction in
+                    navigate: { direction, _ in
                         navigations.withLock { $0.append(direction) }
                         return .success(.result(.match(
                             total: 3,

@@ -385,7 +385,19 @@ final class WorkspaceSceneModel: ObservableObject {
                 handle: activeBorrowedZellijHandle
             )?.terminalFindController
         }
-        return terminalCoordinator.surfaceEntries().first {
+        let entries = terminalCoordinator.surfaceEntries()
+        if let openController = entries.first(where: {
+            $0.view.terminalFindController.isOpen
+        })?.view.terminalFindController {
+            return openController
+        }
+        if isLogViewerPresented,
+           let logController = entries.first(where: {
+               $0.key.target == .logViewer
+           })?.view.terminalFindController {
+            return logController
+        }
+        return entries.first {
             $0.view.hasEffectiveKeyboardFocus
         }?.view.terminalFindController
     }

@@ -1220,12 +1220,12 @@ final class NativeTmuxSessionCoordinator {
             },
             sessionProvider: {
                 TerminalFindSession(
-                    search: { query in
+                    search: { query, _ in
                         await Self.findResponse(
                             finder.perform(.search(query), target: target)
                         )
                     },
-                    navigate: { direction in
+                    navigate: { direction, _ in
                         let mutation: TmuxFindMutation = direction == .next
                             ? .next : .previous
                         return await Self.findResponse(

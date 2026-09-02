@@ -112,10 +112,58 @@ struct TerminalFindControllerTests {
 
         controller.open()
         controller.updateQuery("needle")
-        await expectEventually { controller.isWorking }
-        controller.publishBackendResult(total: 3, selected: 0)
+        await expectEventually {
+            await recorder.searchTokens["needle"] != nil
+        }
+        let operation = await recorder.searchTokens["needle"]!
+        controller.publishBackendResult(
+            total: 3,
+            selected: 0,
+            operation: operation
+        )
 
         #expect(controller.result == .match(total: 3, selected: 1))
+        #expect(!controller.isWorking)
+    }
+
+    @Test("a delayed callback from an earlier query is ignored")
+    func delayedEarlierQueryCallbackIsIgnored() async {
+        let recorder = FindSessionRecorder(responses: [
+            "first": .awaitingCallback,
+            "second": .awaitingCallback,
+        ])
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: { recorder.session }
+        )
+
+        controller.open()
+        controller.updateQuery("first")
+        await expectEventually {
+            await recorder.searchTokens["first"] != nil
+        }
+        let firstOperation = await recorder.searchTokens["first"]!
+        controller.updateQuery("second")
+        controller.publishBackendResult(
+            total: 1,
+            selected: 0,
+            operation: firstOperation
+        )
+
+        #expect(controller.query == "second")
+        #expect(controller.result == .idle)
+        await expectEventually {
+            await recorder.searchTokens["second"] != nil
+        }
+        let secondOperation = await recorder.searchTokens["second"]!
+        controller.publishBackendResult(
+            total: 2,
+            selected: 1,
+            operation: secondOperation
+        )
+
+        #expect(controller.result == .match(total: 2, selected: 2))
         #expect(!controller.isWorking)
     }
 }
@@ -146,6 +194,7 @@ private actor FindSessionRecorder {
     private let results: [String: TerminalFindResult]
     private let responses: [String: TerminalFindBackendResponse]
     private(set) var searches: [String] = []
+    private(set) var searchTokens: [String: TerminalFindOperationToken] = [:]
     private(set) var navigations: [TerminalFindDirection] = []
     private(set) var closeCount = 0
     private var activeCalls = 0
@@ -163,17 +212,21 @@ private actor FindSessionRecorder {
 
     nonisolated var session: TerminalFindSession {
         TerminalFindSession(
-            search: { [self] query in await search(query) },
-            navigate: { [self] direction in await navigate(direction) },
+            search: { [self] query, operation in
+                await search(query, operation: operation)
+            },
+            navigate: { [self] direction, _ in await navigate(direction) },
             close: { [self] in await close() }
         )
     }
 
     private func search(
-        _ query: String
+        _ query: String,
+        operation: TerminalFindOperationToken
     ) async -> Result<TerminalFindBackendResponse, TerminalFindFailure> {
         beginCall()
         searches.append(query)
+        searchTokens[query] = operation
         if searches.count == 1, let firstSearchGate {
             await firstSearchGate.wait()
         }

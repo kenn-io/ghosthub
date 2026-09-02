@@ -407,6 +407,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             }
         }
         viewsBySurfaceIdentity.removeValue(forKey: identity)
+        LibghosttyFindOperationRegistry.shared.removeOperation(
+            for: identity
+        )
         onSurfaceDestroyed?(identity)
         callbackToken.view = nil
         ghostty_surface_free(surfaceHandle)

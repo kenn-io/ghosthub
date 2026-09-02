@@ -58,6 +58,36 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertTrue(view.injectOutput(Data(
             "needle one\r\nneedle two\r\nneedle three\r\n".utf8
         )))
+        let viewportText = { () -> String in
+            guard let surface = view.surfaceHandle else { return "" }
+            var text = ghostty_text_s()
+            let selection = ghostty_selection_s(
+                top_left: ghostty_point_s(
+                    tag: GHOSTTY_POINT_VIEWPORT,
+                    coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+                    x: 0,
+                    y: 0
+                ),
+                bottom_right: ghostty_point_s(
+                    tag: GHOSTTY_POINT_VIEWPORT,
+                    coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+                    x: 0,
+                    y: 0
+                ),
+                rectangle: false
+            )
+            guard ghostty_surface_read_text(surface, selection, &text) else {
+                return ""
+            }
+            defer { ghostty_surface_free_text(surface, &text) }
+            return String(cString: text.text)
+        }
+        let outputDeadline = Date().addingTimeInterval(5)
+        while !viewportText().contains("needle three"),
+              Date() < outputDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(viewportText().contains("needle three"))
 
         let controller = view.terminalFindController
         controller.open()
