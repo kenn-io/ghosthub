@@ -80,6 +80,7 @@ final class WorkspaceInventoryStore: ObservableObject {
     /// result that predates a later mutation on the same host is rejected.
     struct MutationPublication: Equatable, Sendable {
         let hostID: UUID
+        let host: CommandHost
         let epoch: UInt64
     }
 
@@ -218,6 +219,15 @@ final class WorkspaceInventoryStore: ObservableObject {
         kwtMutationEpochsByHost[host, default: 0]
     }
 
+    /// Worktree removal tombstones still active for a host. Cached inventory
+    /// is already filtered by them, so scenes keep their own matching
+    /// tombstones until the cache confirms the rows are gone.
+    func removalTombstones(
+        on host: CommandHost
+    ) -> [String: Set<KwtWorktreeIdentity>] {
+        kwtRemovalTombstonesByHost[host] ?? [:]
+    }
+
     func publishKwtInventory(
         _ inventory: KwtHostInventory,
         on host: CommandHost,
@@ -226,7 +236,8 @@ final class WorkspaceInventoryStore: ObservableObject {
         recordsSuccessfulLoad: Bool = true
     ) {
         if let mutation,
-           kwtMutationEpochsByHost[host, default: 0] != mutation.epoch {
+           mutation.host != host
+           || kwtMutationEpochsByHost[host, default: 0] != mutation.epoch {
             return
         }
         kwtGenerations[host, default: 0] &+= 1

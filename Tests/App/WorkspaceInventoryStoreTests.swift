@@ -548,6 +548,7 @@ struct WorkspaceInventoryStoreTests {
             on: .local,
             mutation: .init(
                 hostID: hostID,
+                host: .local,
                 epoch: store.kwtMutationEpoch(on: .local)
             )
         )
@@ -908,6 +909,7 @@ struct WorkspaceInventoryStoreTests {
             on: .local,
             mutation: .init(
                 hostID: hostID,
+                host: .local,
                 epoch: store.kwtMutationEpoch(on: .local)
             )
         )
@@ -1432,6 +1434,7 @@ struct WorkspaceInventoryStoreTests {
             on: .local,
             mutation: .init(
                 hostID: hostID,
+                host: .local,
                 epoch: store.kwtMutationEpoch(on: .local)
             )
         )
@@ -1503,7 +1506,7 @@ struct WorkspaceInventoryStoreTests {
         store.publishKwtInventory(
             registered,
             on: .local,
-            mutation: .init(hostID: hostID, epoch: currentEpoch)
+            mutation: .init(hostID: hostID, host: .local, epoch: currentEpoch)
         )
         #expect(
             store.snapshot.kwtByHost[.local]?.inventory?.projects
@@ -1512,7 +1515,7 @@ struct WorkspaceInventoryStoreTests {
         store.publishKwtInventory(
             KwtHostInventory(projects: []),
             on: .local,
-            mutation: .init(hostID: hostID, epoch: staleEpoch)
+            mutation: .init(hostID: hostID, host: .local, epoch: staleEpoch)
         )
         #expect(
             store.snapshot.kwtByHost[.local]?.inventory?.projects
@@ -1564,6 +1567,7 @@ struct WorkspaceInventoryStoreTests {
             on: .local,
             mutation: .init(
                 hostID: hostID,
+                host: .local,
                 epoch: store.kwtMutationEpoch(on: .local)
             )
         )
@@ -1692,6 +1696,7 @@ struct WorkspaceInventoryStoreTests {
         )
         let mutation = WorkspaceInventoryStore.MutationPublication(
             hostID: hostID,
+            host: .local,
             epoch: store.kwtMutationEpoch(on: .local)
         )
         let publish = {
@@ -1715,5 +1720,58 @@ struct WorkspaceInventoryStoreTests {
 
         await waitUntilMainActor { loadCount.load() == 1 }
         #expect(loadCount.load() == 1)
+    }
+
+    @Test("mutation publication for another endpoint is rejected")
+    func mutationPublicationForAnotherEndpointIsRejected() {
+        let coordinator = WorktreeMutationCoordinator()
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in KwtHostInventory(projects: []) },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: "x"))
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        let registered = KwtHostInventory(projects: [KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: "example/repository",
+                name: "Repository",
+                path: "/test/repository",
+                lastTouched: nil,
+                registrationFingerprint: "test-registration"
+            ),
+            worktrees: [],
+            warning: nil
+        )])
+        store.publishKwtInventory(
+            registered,
+            on: .local,
+            mutation: .init(
+                hostID: hostID,
+                host: .ssh(SSHHostInfo(
+                    user: "test",
+                    hostname: "example.invalid",
+                    port: nil,
+                    platform: .posix
+                )),
+                epoch: store.kwtMutationEpoch(on: .local)
+            )
+        )
+        #expect(store.snapshot.kwtByHost[.local]?.inventory == nil)
+        coordinator.release(hostID: hostID, projectIdentity: "x")
     }
 }

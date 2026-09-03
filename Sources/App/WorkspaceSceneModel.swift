@@ -4112,7 +4112,9 @@ final class WorkspaceSceneModel: ObservableObject {
                     let tombstones = recordsSuccessfulLoad
                         ? activeRemovalTombstones(
                             after: inventory,
-                            hostID: hostID
+                            hostID: hostID,
+                            retaining: workspaceInventoryStore
+                                .removalTombstones(on: commandHost)
                         )
                         : removalTombstones(hostID: hostID)
                     applyAuthoritativeKwtInventory(
@@ -4259,6 +4261,7 @@ final class WorkspaceSceneModel: ObservableObject {
         inventoryHosts[hostID].map {
             .init(
                 hostID: hostID,
+                host: $0,
                 epoch: workspaceInventoryStore.kwtMutationEpoch(on: $0)
             )
         }
@@ -5054,9 +5057,13 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    /// Prunes scene tombstones the inventory no longer lists. `retaining`
+    /// names tombstones the shared cache still applies; the cached inventory
+    /// omits those rows without proving them gone, so they stay active.
     private func activeRemovalTombstones(
         after inventory: KwtHostInventory,
-        hostID: UUID
+        hostID: UUID,
+        retaining: [String: Set<KwtWorktreeIdentity>] = [:]
     ) -> [String: Set<KwtWorktreeIdentity>] {
         var activeTombstones: [String: Set<KwtWorktreeIdentity>] = [:]
         let scopes = worktreeRemovalTombstones.keys.filter {
@@ -5072,8 +5079,9 @@ final class WorkspaceSceneModel: ObservableObject {
                     scope: scope
                 )
             }
+            let retained = retaining[scope.projectIdentity] ?? []
             let active = tombstones.filter { tombstone in
-                projects.contains { project in
+                retained.contains(tombstone) || projects.contains { project in
                     project.warning != nil
                         || project.worktrees.contains {
                             Self.removalTombstones(
@@ -5119,9 +5127,10 @@ final class WorkspaceSceneModel: ObservableObject {
         // authoritative here nor shared, and the fence-end reload replaces it.
         let isStaleMutation = mutation.map { mutation in
             inventoryHosts[hostID].map {
-                workspaceInventoryStore.kwtMutationEpoch(on: $0)
+                $0 != mutation.host
+                    || workspaceInventoryStore.kwtMutationEpoch(on: $0)
                     != mutation.epoch
-            } ?? false
+            } ?? true
         } ?? false
         let recordsSuccessfulLoad = recordsSuccessfulLoad && !isStaleMutation
         let publishToStore = publishToStore && !isStaleMutation

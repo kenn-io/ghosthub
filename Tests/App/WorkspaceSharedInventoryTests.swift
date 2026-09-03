@@ -800,6 +800,86 @@ struct WorkspaceSharedInventoryTests {
         await second.shutdown()
     }
 
+    @Test("scene tombstones outlive filtered shared inventory")
+    func sceneTombstonesOutliveFilteredSharedInventory() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        var other = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-other",
+            name: "feature/other",
+            path: "/tmp/ghosthub-other",
+            branch: "feature/other",
+            generation: "fedcba9876543210fedcba9876543210"
+        )
+        other.tmuxSessionName = "kwt-ghosthub-other"
+        var snapshot = fixture.snapshot
+        snapshot.worktrees.append(other)
+        var inventory = fixture.beforeRemoval
+        inventory.projects[0].worktrees.append(KwtWorktreeRecord(
+            path: other.path,
+            branch: other.branch,
+            commitHash: "abc123",
+            isMain: false,
+            createdAt: nil,
+            generation: other.generation,
+            repository: environment.project.scopedKey,
+            sessionName: "kwt-ghosthub-other"
+        ))
+        let listing = inventory
+        let otherPath = other.path
+        let coordinator = WorktreeMutationCoordinator()
+        let removalGate = AsyncGate()
+        defer { removalGate.open() }
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in listing },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            workspaceInventoryStore: store,
+            kwtInventoryLoader: { _ in listing },
+            kwtWorktreeRemover: { path, _, _, _, _ in
+                if path == otherPath {
+                    await removalGate.wait()
+                }
+            },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        model.startKwtInventory()
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+
+        let first = try await model.prepareWorktreeRemoval(
+            fixture.removable.id
+        )
+        try await model.removeWorktree(first)
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+                && model.snapshot.worktree(id: fixture.removable.id) == nil
+        }
+
+        let second = try await model.prepareWorktreeRemoval(other.id)
+        let removal = Task { try await model.removeWorktree(second) }
+        await removalGate.waitUntilWaiting()
+        #expect(model.snapshot.worktree(id: fixture.removable.id) == nil)
+        removalGate.open()
+        try await removal.value
+        #expect(model.snapshot.worktree(id: fixture.removable.id) == nil)
+        await model.shutdown()
+    }
+
     @Test("cached tombstone filtering preserves a KWT refresh failure")
     func cachedTombstoneFilteringPreservesRefreshFailure() async throws {
         enum RefreshFailure: LocalizedError {
