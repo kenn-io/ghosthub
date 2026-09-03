@@ -7691,7 +7691,8 @@ pub(crate) fn capture_kwt_worktree_request(
                     tmux_socket_name: worktree.tmux_socket_name.clone(),
                 },
             },
-            exact_worktree_attach: false,
+            exact_worktree_attach: worktree.tmux_attach_mode == host::KwtTmuxAttachMode::Direct
+                && worktree.tmux_socket_name.is_some(),
             name: worktree.session_name.clone(),
             inventory_generation,
         })

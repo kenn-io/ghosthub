@@ -71,6 +71,12 @@ final class HerdrSessionProbeBroker {
         await .exact(name: name, discovery: sessions(on: host))
     }
 
+    func sessionConsumerCount(on host: CommandHost) -> Int {
+        guard let entry = entries[host] else { return 0 }
+        return entry.consumers.count
+            + entry.consumersWaitingForCancellation.count
+    }
+
     func invalidateSessions(on host: CommandHost) {
         guard var entry = entries[host] else { return }
         let result = cancellation(on: host)

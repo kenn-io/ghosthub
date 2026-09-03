@@ -6039,7 +6039,12 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
     )
     .expect("a direct named endpoint grants ordinary KWT open authority");
     assert!(matches!(direct_named.target, AttachTarget::Worktree { .. }));
-    assert!(!direct_named.exact_worktree_attach);
+    assert!(direct_named.exact_worktree_attach);
+    assert_eq!(
+        fresh_worktree_exact_kwt_endpoint(&workspace.scene.runtime, &direct_named),
+        None,
+        "a KWT-ready direct endpoint retains repair-or-open authority"
+    );
     let direct_named_selection = direct_named.selection();
     assert_eq!(direct_named_selection.tmux_socket_name(), Some("kwt"));
     assert_eq!(
@@ -6067,6 +6072,11 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         .first_mut()
         .expect("WSL host")
         .kwt_state = KwtState::Unavailable;
+    assert_eq!(
+        fresh_worktree_exact_kwt_endpoint(&workspace.scene.runtime, &direct_named),
+        Some(("project-named", "kwt")),
+        "the captured direct endpoint becomes the KWT-unavailable fallback"
+    );
     let attached_default = capture_attach_request(&workspace.scene, &request.selection())
         .expect("a live default-server worktree captures its tmux identity");
     assert!(matches!(
@@ -6116,6 +6126,7 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         host::KwtTmuxAttachMode::Protected,
     )
     .expect("KWT identity grants protected attach authority");
+    assert!(!protected.exact_worktree_attach);
     assert!(matches!(
         protected.target,
         AttachTarget::ProtectedWorktree { ref tmux_socket_name, .. }
