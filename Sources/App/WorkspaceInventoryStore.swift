@@ -684,10 +684,17 @@ final class WorkspaceInventoryStore: ObservableObject {
                 requestKwt(host)
             }
         case .registered:
+            // Registration is not fenced, so a concurrent mutation's result
+            // may predate it. Advancing the epoch rejects such a result, and
+            // dropping the satisfied fence makes the mutation end reload.
             let hosts = Set(subscribers.values.flatMap(\.registrations)
                 .filter { $0.hostID == event.scope.hostID }
                 .map(\.commandHost))
+            satisfiedFenceGenerationsByHostID.removeValue(
+                forKey: event.scope.hostID
+            )
             for host in hosts {
+                kwtMutationEpochsByHost[host, default: 0] &+= 1
                 clearRemovalTombstones(
                     forRepository: event.scope.projectIdentity,
                     on: host
