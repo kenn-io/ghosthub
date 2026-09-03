@@ -88,4 +88,29 @@ struct LibghosttyFindTests {
             callback: .total(2)
         ) == replacement)
     }
+
+    @Test("an external search supersedes a queued internal search")
+    func externalSearchSupersedesQueuedSearch() {
+        let registry = LibghosttyFindOperationRegistry()
+        let surfaceIdentity: UInt = 44
+        let internalOperation = TerminalFindOperationToken()
+
+        registry.prepareSearch(internalOperation, for: surfaceIdentity)
+        let externalOperation = registry.beginExternalOperation(
+            for: surfaceIdentity
+        )
+
+        #expect(registry.operation(
+            for: surfaceIdentity,
+            callback: .total(0)
+        ) == internalOperation)
+        #expect(registry.operation(
+            for: surfaceIdentity,
+            callback: .selected(-1)
+        ) == internalOperation)
+        #expect(registry.operation(
+            for: surfaceIdentity,
+            callback: .total(4)
+        ) == externalOperation)
+    }
 }
