@@ -5147,8 +5147,8 @@ final class WorkspaceSceneModel: ObservableObject {
         if let commandHost = inventoryHosts[hostID] {
             let removedProjects = workspaceInventoryStore
                 .projectRemovalTombstones(on: commandHost)
-            reconciled.projects.removeAll {
-                removedProjects.contains($0.project.repository)
+            reconciled.projects.removeAll { item in
+                removedProjects.contains { $0.matches(item.project) }
             }
         }
         kwtInventoriesByHost[hostID] = reconciled
