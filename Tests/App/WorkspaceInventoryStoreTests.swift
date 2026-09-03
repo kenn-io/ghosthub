@@ -1711,7 +1711,8 @@ struct WorkspaceInventoryStoreTests {
         }
         coordinator.noteProjectRegistration(
             hostID: hostID,
-            projectIdentity: "y"
+            projectIdentity: "y",
+            projectPath: "/test/y"
         )
         if !publishesBeforeRegistration {
             publish()
@@ -1857,7 +1858,8 @@ struct WorkspaceInventoryStoreTests {
 
         coordinator.noteProjectRegistration(
             hostID: hostID,
-            projectIdentity: repository
+            projectIdentity: repository,
+            projectPath: path
         )
         store.refreshKwt(for: subscriberID)
         await waitUntilMainActor {
@@ -1865,5 +1867,141 @@ struct WorkspaceInventoryStoreTests {
                 && store.snapshot.kwtByHost[.local]?.inventory?.projects
                 == legacy.projects
         }
+    }
+
+    private func legacyProject(
+        name: String,
+        path: String,
+        repository: String = ""
+    ) -> KwtProjectInventory {
+        KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: repository,
+                name: name,
+                path: path,
+                lastTouched: nil,
+                registrationFingerprint: "test-registration"
+            ),
+            worktrees: [],
+            warning: nil
+        )
+    }
+
+    @Test("an empty-identity project tombstone hides only its own path")
+    func emptyIdentityTombstoneHidesOnlyItsOwnPath() async {
+        let removed = legacyProject(name: "Removed", path: "/test/removed")
+        let kept = legacyProject(name: "Kept", path: "/test/kept")
+        let inventory = KwtHostInventory(projects: [removed, kept])
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return inventory
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: ""))
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: "",
+            removesProject: true,
+            projectPath: removed.project.path
+        )
+        await waitUntilMainActor {
+            loadCount.load() == 1
+                && store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects == [kept]
+        )
+    }
+
+    @Test("re-registration clears a project tombstone by path")
+    func reregistrationClearsProjectTombstoneByPath() async {
+        let path = "/test/repository"
+        let legacy = KwtHostInventory(projects: [
+            legacyProject(name: "Repository", path: path),
+        ])
+        let canonical = KwtHostInventory(projects: [
+            legacyProject(
+                name: "Repository",
+                path: path,
+                repository: "example/repository"
+            ),
+        ])
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return canonical
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        store.publishKwtInventory(legacy, on: .local, mutation: nil)
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: ""))
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: "",
+            removesProject: true,
+            projectPath: path
+        )
+        await waitUntilMainActor {
+            loadCount.load() == 1
+                && store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects.isEmpty
+                == true
+        )
+
+        coordinator.noteProjectRegistration(
+            hostID: hostID,
+            projectIdentity: "example/repository",
+            projectPath: path
+        )
+        store.refreshKwt(for: subscriberID)
+        await waitUntilMainActor {
+            loadCount.load() == 2
+                && store.snapshot.kwtByHost[.local]?.inventory?.projects
+                == canonical.projects
+        }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects
+                == canonical.projects
+        )
     }
 }

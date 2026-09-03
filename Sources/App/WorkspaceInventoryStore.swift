@@ -75,17 +75,19 @@ final class WorkspaceInventoryStore: ObservableObject {
         var tmuxByHost: [CommandHost: TmuxEntry] = [:]
     }
 
-    /// A removed project. KWT may report the same project under a
-    /// legacy-empty repository identity, so the path recorded at removal
-    /// time also identifies it.
+    /// A removed project. Two non-empty repository identities compare by
+    /// identity; when either side is legacy-empty, only the path recorded
+    /// at removal time identifies the project.
     struct ProjectRemovalTombstone: Hashable, Sendable {
         let repository: String
         let path: String?
 
         func matches(_ record: KwtProjectRecord) -> Bool {
-            record.repository == repository
-                || (record.repository.isEmpty && path != nil
-                    && record.path == path)
+            if !repository.isEmpty, !record.repository.isEmpty {
+                return record.repository == repository
+            }
+            guard let path else { return false }
+            return record.path == path
         }
     }
 
@@ -694,11 +696,11 @@ final class WorkspaceInventoryStore: ObservableObject {
                         ].formUnion(event.removalTombstones)
                     }
                     if event.removesProject {
-                        let path = snapshot.kwtByHost[host]?.inventory?
-                            .projects.first {
-                                $0.project.repository
-                                    == event.scope.projectIdentity
-                            }?.project.path
+                        let path = event.projectPath
+                            ?? cachedProjectPath(
+                                repository: event.scope.projectIdentity,
+                                on: host
+                            )
                         kwtProjectRemovalTombstonesByHost[host, default: []]
                             .insert(ProjectRemovalTombstone(
                                 repository: event.scope.projectIdentity,
@@ -737,6 +739,7 @@ final class WorkspaceInventoryStore: ObservableObject {
                 kwtMutationEpochsByHost[host, default: 0] &+= 1
                 clearRemovalTombstones(
                     forRepository: event.scope.projectIdentity,
+                    path: event.projectPath,
                     on: host
                 )
             }
@@ -745,18 +748,33 @@ final class WorkspaceInventoryStore: ObservableObject {
         }
     }
 
+    private func cachedProjectPath(
+        repository: String,
+        on host: CommandHost
+    ) -> String? {
+        guard !repository.isEmpty else { return nil }
+        return snapshot.kwtByHost[host]?.inventory?.projects.first {
+            $0.project.repository == repository
+        }?.project.path
+    }
+
     private func clearRemovalTombstones(
         forRepository repository: String,
+        path: String?,
         on host: CommandHost
     ) {
-        kwtProjectRemovalTombstonesByHost[host] =
-            kwtProjectRemovalTombstonesByHost[host]?.filter {
-                $0.repository != repository
+        let cleared = (kwtProjectRemovalTombstonesByHost[host] ?? [])
+            .filter { tombstone in
+                (!repository.isEmpty && tombstone.repository == repository)
+                    || (path != nil && tombstone.path == path)
             }
+        kwtProjectRemovalTombstonesByHost[host]?.subtract(cleared)
         if kwtProjectRemovalTombstonesByHost[host]?.isEmpty == true {
             kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
         }
-        kwtRemovalTombstonesByHost[host]?.removeValue(forKey: repository)
+        for repository in Set(cleared.map(\.repository) + [repository]) {
+            kwtRemovalTombstonesByHost[host]?.removeValue(forKey: repository)
+        }
         if kwtRemovalTombstonesByHost[host]?.isEmpty == true {
             kwtRemovalTombstonesByHost.removeValue(forKey: host)
         }

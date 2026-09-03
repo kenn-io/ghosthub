@@ -43,6 +43,9 @@ final class WorktreeMutationCoordinator {
         let requiresWorkspaceReestablishment: Bool
         let removesProject: Bool
         let allowsRemovalRestoration: Bool
+        /// The project's root path for project removal and registration,
+        /// which identifies it even under a legacy-empty repository identity.
+        var projectPath: String?
     }
 
     struct QuarantinedProjectRemoval: Equatable, Sendable {
@@ -273,7 +276,8 @@ final class WorktreeMutationCoordinator {
         Set<WorkspaceTmuxSessionSelection>? = nil,
         requiresWorkspaceReestablishment: Bool = false,
         removesProject: Bool = false,
-        allowsRemovalRestoration: Bool = true
+        allowsRemovalRestoration: Bool = true,
+        projectPath: String? = nil
     ) {
         let scope = Scope(
             hostID: hostID,
@@ -297,7 +301,8 @@ final class WorktreeMutationCoordinator {
                     requiresWorkspaceReestablishment:
                     requiresWorkspaceReestablishment,
                     removesProject: removesProject,
-                    allowsRemovalRestoration: allowsRemovalRestoration
+                    allowsRemovalRestoration: allowsRemovalRestoration,
+                    projectPath: projectPath
                 )
             )
         }
@@ -331,7 +336,11 @@ final class WorktreeMutationCoordinator {
 
     /// Announces that a project was registered so every scene and the shared
     /// inventory cache forget the removal tombstones for that repository.
-    func noteProjectRegistration(hostID: UUID, projectIdentity: String) {
+    func noteProjectRegistration(
+        hostID: UUID,
+        projectIdentity: String,
+        projectPath: String
+    ) {
         eventSubject.send(
             Event(
                 phase: .registered,
@@ -344,7 +353,8 @@ final class WorktreeMutationCoordinator {
                 reconciledRestorationTargets: nil,
                 requiresWorkspaceReestablishment: false,
                 removesProject: false,
-                allowsRemovalRestoration: true
+                allowsRemovalRestoration: true,
+                projectPath: projectPath
             )
         )
     }

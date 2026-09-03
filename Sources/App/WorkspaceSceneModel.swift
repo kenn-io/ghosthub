@@ -6975,13 +6975,14 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func noteProjectRegistration(
-        _ repository: String,
+        _ project: KwtProjectRecord,
         on target: CommandHost
     ) {
         for hostID in inventoryHosts.filter({ $0.value == target }).keys {
             worktreeMutationCoordinator.noteProjectRegistration(
                 hostID: hostID,
-                projectIdentity: repository
+                projectIdentity: project.repository,
+                projectPath: project.path
             )
         }
     }
@@ -7029,7 +7030,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 projectPath,
                 target
             )
-            noteProjectRegistration(project.repository, on: target)
+            noteProjectRegistration(project, on: target)
             refreshKwtInventory()
             return .success(project.name)
         } catch {
@@ -7166,7 +7167,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     reconciledRestorationTargets:
                     reconciledRestorationTargets,
                     removesProject: removesProject,
-                    allowsRemovalRestoration: allowsRemovalRestoration
+                    allowsRemovalRestoration: allowsRemovalRestoration,
+                    projectPath: initial.project.rootPath
                 )
             }
         }
