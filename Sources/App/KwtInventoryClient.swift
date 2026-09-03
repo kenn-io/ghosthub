@@ -179,13 +179,22 @@ struct KwtHostInventory: Equatable, Sendable {
                             }
                         })
                 }
-                // A legacy-empty identity cannot name its repository, so
-                // every removed identity applies to it.
-                let exclusions = item.project.repository.isEmpty
-                    ? excludingWorktrees.values.reduce(into: Set()) {
-                        $0.formUnion($1)
+                // Removals from a legacy-empty project are keyed by its path.
+                // A legacy-empty record cannot name its repository, so every
+                // repository-keyed removal applies to it as well.
+                var exclusions = excludingWorktrees[
+                    KwtSnapshotMerger.normalizedPath(item.project.path)
+                ] ?? []
+                if item.project.repository.isEmpty {
+                    for (key, identities) in excludingWorktrees
+                        where !KwtSnapshotMerger.isRemovalPathKey(key) {
+                        exclusions.formUnion(identities)
                     }
-                    : excludingWorktrees[item.project.repository] ?? []
+                } else {
+                    exclusions.formUnion(
+                        excludingWorktrees[item.project.repository] ?? []
+                    )
+                }
                 retained.worktrees.removeAll { worktree in
                     exclusions.contains {
                         $0.matches(
@@ -922,6 +931,21 @@ enum KwtSnapshotMerger {
                 && $0.worktreeID.map(removedWorktreeIDs.contains) == true
         }
         return updated
+    }
+
+    /// The key worktree removal tombstones live under: the repository
+    /// identity, or the normalized project path when that identity is
+    /// legacy-empty. Repository identities never begin with a separator.
+    static func removalTombstoneKey(
+        repository: String,
+        path: String?
+    ) -> String {
+        guard repository.isEmpty, let path else { return repository }
+        return normalizedPath(path)
+    }
+
+    static func isRemovalPathKey(_ key: String) -> Bool {
+        key.hasPrefix("/")
     }
 
     /// Lexically normalizes a host path so equivalent spellings compare

@@ -2851,7 +2851,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 removalTombstones: removalTombstones,
                 reconciledRestorationTargets: reconciledRestorationTargets,
                 requiresWorkspaceReestablishment:
-                requiresWorkspaceReestablishment
+                requiresWorkspaceReestablishment,
+                projectPath: requestedProject.rootPath
             )
             if let killedSessionReestablishmentTarget {
                 _ = presentTmuxSession(

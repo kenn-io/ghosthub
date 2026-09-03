@@ -528,11 +528,16 @@ final class WorkspaceInventoryStore {
     ) -> [String: Set<KwtWorktreeIdentity>] {
         guard inventory.projectsWarning == nil else { return tombstones }
         return tombstones.reduce(into: [:]) { active, entry in
-            // A legacy-empty repository identity may still be this project,
-            // so its rows keep the tombstone alive as the scene does.
-            let projects = inventory.projects.filter {
-                $0.project.repository == entry.key
-                    || $0.project.repository.isEmpty
+            // A path key names a legacy-empty project by its path. A
+            // repository key also matches legacy-empty rows, which may still
+            // be this project, as the scene does.
+            let projects = inventory.projects.filter { item in
+                if KwtSnapshotMerger.isRemovalPathKey(entry.key) {
+                    return KwtSnapshotMerger.normalizedPath(item.project.path)
+                        == entry.key
+                }
+                return item.project.repository == entry.key
+                    || item.project.repository.isEmpty
             }
             guard !projects.isEmpty else { return }
             if projects.contains(where: { $0.warning != nil }) {
@@ -715,7 +720,10 @@ final class WorkspaceInventoryStore {
                 for host in hosts {
                     if !event.removalTombstones.isEmpty {
                         kwtRemovalTombstonesByHost[host, default: [:]][
-                            event.scope.projectIdentity,
+                            KwtSnapshotMerger.removalTombstoneKey(
+                                repository: event.scope.projectIdentity,
+                                path: event.projectPath
+                            ),
                             default: []
                         ].formUnion(event.removalTombstones)
                     }
@@ -802,11 +810,12 @@ final class WorkspaceInventoryStore {
         if kwtProjectRemovalTombstonesByHost[host]?.isEmpty == true {
             kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
         }
-        // Legacy-empty worktree tombstones cannot name their project, so a
-        // registration releases them too; the reload that follows restores
-        // any removal kwt still reports.
-        for repository in Set(cleared.map(\.repository) + [repository, ""]) {
-            kwtRemovalTombstonesByHost[host]?.removeValue(forKey: repository)
+        let keys = Set(
+            cleared.map(\.repository) + cleared.compactMap(\.path)
+                + [repository] + (path.map { [$0] } ?? [])
+        )
+        for key in keys {
+            kwtRemovalTombstonesByHost[host]?.removeValue(forKey: key)
         }
         if kwtRemovalTombstonesByHost[host]?.isEmpty == true {
             kwtRemovalTombstonesByHost.removeValue(forKey: host)

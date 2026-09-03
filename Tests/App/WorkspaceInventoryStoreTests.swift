@@ -2323,4 +2323,88 @@ struct WorkspaceInventoryStoreTests {
                 == legacy.projects
         )
     }
+
+    @Test("registration releases only the registered legacy project's tombstones")
+    func registrationReleasesOnlyItsLegacyTombstones() async {
+        func worktree(_ path: String) -> KwtWorktreeRecord {
+            KwtWorktreeRecord(
+                path: path,
+                branch: "feature",
+                commitHash: "abc123",
+                isMain: false,
+                createdAt: nil,
+                generation: nil,
+                repository: "",
+                sessionName: "kwt-feature"
+            )
+        }
+        var first = legacyProject(name: "First", path: "/test/first")
+        first.worktrees = [worktree("/test/first/feature")]
+        var second = legacyProject(name: "Second", path: "/test/second")
+        second.worktrees = [worktree("/test/second/feature")]
+        let inventory = KwtHostInventory(projects: [first, second])
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return inventory
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        for project in [first, second] {
+            #expect(coordinator.acquire(hostID: hostID, projectIdentity: ""))
+            let loads = loadCount.load()
+            coordinator.release(
+                hostID: hostID,
+                projectIdentity: "",
+                removalTombstones: [KwtWorktreeIdentity(
+                    path: project.worktrees[0].path,
+                    generation: ""
+                )],
+                projectPath: project.project.path
+            )
+            await waitUntilMainActor {
+                loadCount.load() == loads + 1
+                    && store.snapshot.kwtByHost[.local]?.isFresh == true
+            }
+        }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects
+                .allSatisfy { $0.worktrees.isEmpty } == true
+        )
+
+        let loads = loadCount.load()
+        coordinator.noteProjectRegistration(
+            hostID: hostID,
+            projectIdentity: "",
+            projectPath: first.project.path
+        )
+        await waitUntilMainActor {
+            loadCount.load() == loads + 1
+                && store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        let projects = store.snapshot.kwtByHost[.local]?.inventory?.projects
+        #expect(projects?.first?.worktrees == first.worktrees)
+        #expect(projects?.last?.worktrees.isEmpty == true)
+    }
 }
