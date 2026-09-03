@@ -48,7 +48,6 @@ final class LibghosttyFindOperationRegistry: @unchecked Sendable {
             pending: []
         )
         state.pending.append(PendingOperation(token: operation))
-        state.receivedResetTotal = false
         operations[surfaceIdentity] = state
     }
 
@@ -88,7 +87,6 @@ final class LibghosttyFindOperationRegistry: @unchecked Sendable {
         // the upstream search replace every operation still waiting behind it.
         state.token = state.token ?? state.pending.first?.token
         state.pending = [PendingOperation(token: operation)]
-        state.receivedResetTotal = false
         operations[surfaceIdentity] = state
         lock.unlock()
         return operation

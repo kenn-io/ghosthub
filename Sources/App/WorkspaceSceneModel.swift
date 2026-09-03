@@ -366,17 +366,18 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var activeBorrowedZellijSelection:
         WorkspaceZellijSessionSelection?
     private var activeBorrowedZellijHandle: BorrowedZellijSessionHandle?
-    var activeTerminalFindController: TerminalFindController? {
+    var activeTerminalFindSurface:
+        (any NativeSessionPaneSurfacing)? {
         let entries = terminalCoordinator.surfaceEntries()
         if isLogViewerPresented,
-           let logController = entries.first(where: {
+           let logSurface = entries.first(where: {
                $0.key.target == .logViewer
-           })?.view.terminalFindController {
-            return logController
+           })?.view {
+            return logSurface
         }
         if activeBorrowedTmuxSelection != nil {
             guard let activeBorrowedTmuxHandle else { return nil }
-            return nativeTmuxSessionCoordinator.findController(
+            return nativeTmuxSessionCoordinator.findSurface(
                 activeBorrowedTmuxHandle
             )
         }
@@ -384,22 +385,25 @@ final class WorkspaceSceneModel: ObservableObject {
             guard let activeBorrowedHerdrHandle else { return nil }
             return nativeHerdrSessionCoordinator.surface(
                 handle: activeBorrowedHerdrHandle
-            )?.terminalFindController
+            )
         }
         if activeBorrowedZellijSelection != nil {
             guard let activeBorrowedZellijHandle else { return nil }
             return nativeZellijSessionCoordinator.surface(
                 handle: activeBorrowedZellijHandle
-            )?.terminalFindController
+            )
         }
         if let openController = entries.first(where: {
             $0.view.terminalFindController.isOpen
-        })?.view.terminalFindController {
+        })?.view {
             return openController
         }
         return entries.first {
             $0.view.hasEffectiveKeyboardFocus
-        }?.view.terminalFindController
+        }?.view
+    }
+    var activeTerminalFindController: TerminalFindController? {
+        activeTerminalFindSurface?.terminalFindController
     }
     @Published private(set) var activeBorrowedZellijRecoveryState:
         NativeSessionRecoveryState?

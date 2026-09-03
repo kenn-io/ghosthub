@@ -173,6 +173,7 @@ public final class TerminalSurfaceView: ObservableObject {
     public func installLibghosttyFindController() {
         terminalFindController = .unavailable
     }
+    public func useExternalFindBackend() {}
     public func setPreviewRenderingSuspended(_ suspended: Bool) {
         _ = suspended
     }

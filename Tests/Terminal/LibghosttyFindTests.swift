@@ -66,6 +66,42 @@ struct LibghosttyFindTests {
         ) == replacement)
     }
 
+    @Test("a replacement preserves an incomplete reset boundary")
+    func replacementPreservesIncompleteResetBoundary() {
+        let registry = LibghosttyFindOperationRegistry()
+        let surfaceIdentity: UInt = 45
+        let first = TerminalFindOperationToken()
+        let replacement = TerminalFindOperationToken()
+
+        registry.prepareSearch(first, for: surfaceIdentity)
+        #expect(registry.operation(
+            for: surfaceIdentity,
+            callback: .total(0)
+        ) == first)
+        registry.prepareSearch(replacement, for: surfaceIdentity)
+        #expect(registry.operation(
+            for: surfaceIdentity,
+            callback: .selected(-1)
+        ) == first)
+        #expect(registry.operation(
+            for: surfaceIdentity,
+            callback: .total(3)
+        ) == first)
+
+        #expect(registry.operation(
+            for: surfaceIdentity,
+            callback: .total(0)
+        ) == first)
+        #expect(registry.operation(
+            for: surfaceIdentity,
+            callback: .selected(-1)
+        ) == first)
+        #expect(registry.operation(
+            for: surfaceIdentity,
+            callback: .total(2)
+        ) == replacement)
+    }
+
     @Test("queries queued before the first reset keep distinct operations")
     func queuedQueriesUseDistinctResetBoundaries() {
         let registry = LibghosttyFindOperationRegistry()

@@ -219,6 +219,9 @@ struct WorkspaceApplicationShortcutTests {
         #expect(navigations.withLock { $0 } == [.next, .previous])
         #expect(model.performApplicationShortcut(.hideFindBar))
         #expect(!controller.isOpen)
+        await waitUntilMainActor {
+            store.surface.keyboardFocusRequestCount == 1
+        }
 
         controller.open()
         model.hideBorrowedTmuxSession(selection)

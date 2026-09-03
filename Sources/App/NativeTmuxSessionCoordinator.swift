@@ -1497,12 +1497,18 @@ final class NativeTmuxSessionCoordinator {
     func findController(
         _ handle: BorrowedTmuxSessionHandle
     ) -> TerminalFindController? {
+        findSurface(handle)?.terminalFindController
+    }
+
+    func findSurface(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> (any NativeSessionPaneSurfacing)? {
         guard attachments[handle.id] != nil,
               launchedHandles.contains(handle.id)
         else { return nil }
         return terminalCoordinator.paneSurfaceIfPresent(
             for: surfaceKey(handle)
-        )?.terminalFindController
+        )
     }
 
     func supportsPaneSplitting(_ handle: BorrowedTmuxSessionHandle) -> Bool {

@@ -130,9 +130,14 @@ final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
     private(set) var lastObserverID: UUID?
     private(set) var clearPreviewGridCount = 0
+    private(set) var keyboardFocusRequestCount = 0
 
     func clearPreviewGridSize() {
         clearPreviewGridCount += 1
+    }
+
+    func requestKeyboardFocus() {
+        keyboardFocusRequestCount += 1
     }
 
     func registerSurfaceCloseObserver(

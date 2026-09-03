@@ -110,9 +110,13 @@ extension WorkspaceSceneModel {
             controller.findPrevious()
             return true
         case .hideFindBar:
-            guard let controller = activeTerminalFindController,
-                  controller.isOpen else { return false }
+            guard let surface = activeTerminalFindSurface,
+                  surface.terminalFindController.isOpen else { return false }
+            let controller = surface.terminalFindController
             controller.close()
+            DispatchQueue.main.async { [weak surface] in
+                surface?.requestKeyboardFocus()
+            }
             return true
         case .splitRight:
             guard canSplitActivePane,
