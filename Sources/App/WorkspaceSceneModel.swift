@@ -4289,6 +4289,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 .formUnion(event.removalTombstones)
             retainPresentationsForFailedRemoval(event)
             return
+        case .registered:
+            worktreeRemovalTombstones.removeValue(forKey: event.scope)
+            return
         case .quarantined:
             fencedWorktreeMutationScopes.remove(event.scope)
         case .ended:
@@ -5063,20 +5066,22 @@ final class WorkspaceSceneModel: ObservableObject {
             guard let tombstones = worktreeRemovalTombstones[scope] else {
                 continue
             }
-            let project = inventory.projects.first {
-                $0.project.repository == scope.projectIdentity
+            let projects = inventory.projects.filter {
+                Self.removalScopeIncludesRepository(
+                    $0.project.repository,
+                    scope: scope
+                )
             }
             let active = tombstones.filter { tombstone in
-                guard let project else { return false }
-                if project.warning != nil {
-                    return true
-                }
-                return project.worktrees.contains {
-                    Self.removalTombstones(
-                        [tombstone],
-                        matchPath: $0.path,
-                        generation: $0.generation
-                    )
+                projects.contains { project in
+                    project.warning != nil
+                        || project.worktrees.contains {
+                            Self.removalTombstones(
+                                [tombstone],
+                                matchPath: $0.path,
+                                generation: $0.generation
+                            )
+                        }
                 }
             }
             if active.isEmpty {
@@ -6954,20 +6959,14 @@ final class WorkspaceSceneModel: ObservableObject {
         )
     }
 
-    private func clearRemovalTombstones(
-        forRepository repository: String,
+    private func noteProjectRegistration(
+        _ repository: String,
         on target: CommandHost
     ) {
-        workspaceInventoryStore.clearRemovalTombstones(
-            forRepository: repository,
-            on: target
-        )
         for hostID in inventoryHosts.filter({ $0.value == target }).keys {
-            worktreeRemovalTombstones.removeValue(
-                forKey: WorktreeMutationCoordinator.Scope(
-                    hostID: hostID,
-                    projectIdentity: repository
-                )
+            worktreeMutationCoordinator.noteProjectRegistration(
+                hostID: hostID,
+                projectIdentity: repository
             )
         }
     }
@@ -7015,10 +7014,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 projectPath,
                 target
             )
-            clearRemovalTombstones(
-                forRepository: project.repository,
-                on: target
-            )
+            noteProjectRegistration(project.repository, on: target)
             refreshKwtInventory()
             return .success(project.name)
         } catch {

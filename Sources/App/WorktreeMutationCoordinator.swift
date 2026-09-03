@@ -28,6 +28,7 @@ final class WorktreeMutationCoordinator {
         case willRemove
         case quarantined
         case ended
+        case registered
     }
 
     struct Event: Sendable {
@@ -320,6 +321,26 @@ final class WorktreeMutationCoordinator {
                 scope: scope,
                 removalTombstones: worktrees,
                 removalPresentationTargets: presentationTargets,
+                reconciledRestorationTargets: nil,
+                requiresWorkspaceReestablishment: false,
+                removesProject: false,
+                allowsRemovalRestoration: true
+            )
+        )
+    }
+
+    /// Announces that a project was registered so every scene and the shared
+    /// inventory cache forget the removal tombstones for that repository.
+    func noteProjectRegistration(hostID: UUID, projectIdentity: String) {
+        eventSubject.send(
+            Event(
+                phase: .registered,
+                scope: Scope(
+                    hostID: hostID,
+                    projectIdentity: projectIdentity
+                ),
+                removalTombstones: [],
+                removalPresentationTargets: [],
                 reconciledRestorationTargets: nil,
                 requiresWorkspaceReestablishment: false,
                 removesProject: false,

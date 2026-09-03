@@ -731,15 +731,37 @@ struct WorkspaceSharedInventoryTests {
                 )
             }
         )
+        let second = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: environment.host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: fixture.snapshot.hosts,
+                projects: [],
+                worktrees: []
+            ),
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator
+        )
         model.startKwtInventory()
         model.startTmuxSessionDiscovery()
-        await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+        second.startKwtInventory()
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+                && second.snapshot.worktrees.contains {
+                    $0.path == fixture.removable.path
+                }
+        }
 
         let request = try await model.prepareWorktreeRemoval(
             fixture.removable.id
         )
         try await model.removeWorktree(request)
         #expect(model.snapshot.worktree(id: fixture.removable.id) == nil)
+        await waitUntilMainActor {
+            !second.snapshot.worktrees.contains {
+                $0.path == fixture.removable.path
+            }
+        }
 
         let removal = await model.unregisterProject(
             project,
@@ -766,7 +788,16 @@ struct WorkspaceSharedInventoryTests {
         #expect(model.snapshot.worktrees.contains {
             $0.path == fixture.removable.path
         })
+        await waitUntilMainActor {
+            second.snapshot.worktrees.contains {
+                $0.path == fixture.removable.path
+            }
+        }
+        #expect(second.snapshot.worktrees.contains {
+            $0.path == fixture.removable.path
+        })
         await model.shutdown()
+        await second.shutdown()
     }
 
     @Test("cached tombstone filtering preserves a KWT refresh failure")

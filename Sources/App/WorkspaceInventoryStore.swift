@@ -256,22 +256,6 @@ final class WorkspaceInventoryStore: ObservableObject {
         tmuxGenerations[host, default: 0]
     }
 
-    /// Forgets a repository's project and worktree removal tombstones after
-    /// the project is registered again, so the next refresh can show it.
-    func clearRemovalTombstones(
-        forRepository repository: String,
-        on host: CommandHost
-    ) {
-        kwtProjectRemovalTombstonesByHost[host]?.remove(repository)
-        if kwtProjectRemovalTombstonesByHost[host]?.isEmpty == true {
-            kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
-        }
-        kwtRemovalTombstonesByHost[host]?.removeValue(forKey: repository)
-        if kwtRemovalTombstonesByHost[host]?.isEmpty == true {
-            kwtRemovalTombstonesByHost.removeValue(forKey: host)
-        }
-    }
-
     func publishTmuxSessions(
         _ sessions: [DiscoveredTmuxSession],
         on host: CommandHost,
@@ -487,19 +471,25 @@ final class WorkspaceInventoryStore: ObservableObject {
     ) -> [String: Set<KwtWorktreeIdentity>] {
         guard inventory.projectsWarning == nil else { return tombstones }
         return tombstones.reduce(into: [:]) { active, entry in
-            guard let project = inventory.projects.first(where: {
+            // A legacy-empty repository identity may still be this project,
+            // so its rows keep the tombstone alive as the scene does.
+            let projects = inventory.projects.filter {
                 $0.project.repository == entry.key
-            }) else { return }
-            if project.warning != nil {
+                    || $0.project.repository.isEmpty
+            }
+            guard !projects.isEmpty else { return }
+            if projects.contains(where: { $0.warning != nil }) {
                 active[entry.key] = entry.value
                 return
             }
             let retained = entry.value.filter { tombstone in
-                project.worktrees.contains {
-                    tombstone.matches(
-                        path: $0.path,
-                        generation: $0.generation
-                    )
+                projects.contains { project in
+                    project.worktrees.contains {
+                        tombstone.matches(
+                            path: $0.path,
+                            generation: $0.generation
+                        )
+                    }
                 }
             }
             if !retained.isEmpty {
@@ -693,8 +683,32 @@ final class WorkspaceInventoryStore: ObservableObject {
             for host in hosts where subscribedKwtHosts().contains(host) {
                 requestKwt(host)
             }
+        case .registered:
+            let hosts = Set(subscribers.values.flatMap(\.registrations)
+                .filter { $0.hostID == event.scope.hostID }
+                .map(\.commandHost))
+            for host in hosts {
+                clearRemovalTombstones(
+                    forRepository: event.scope.projectIdentity,
+                    on: host
+                )
+            }
         case .willRemove:
             break
+        }
+    }
+
+    private func clearRemovalTombstones(
+        forRepository repository: String,
+        on host: CommandHost
+    ) {
+        kwtProjectRemovalTombstonesByHost[host]?.remove(repository)
+        if kwtProjectRemovalTombstonesByHost[host]?.isEmpty == true {
+            kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
+        }
+        kwtRemovalTombstonesByHost[host]?.removeValue(forKey: repository)
+        if kwtRemovalTombstonesByHost[host]?.isEmpty == true {
+            kwtRemovalTombstonesByHost.removeValue(forKey: host)
         }
     }
 

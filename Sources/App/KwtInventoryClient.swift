@@ -179,8 +179,13 @@ struct KwtHostInventory: Equatable, Sendable {
                             }
                         })
                 }
-                let exclusions =
-                    excludingWorktrees[item.project.repository] ?? []
+                // A legacy-empty identity cannot name its repository, so
+                // every removed identity applies to it.
+                let exclusions = item.project.repository.isEmpty
+                    ? excludingWorktrees.values.reduce(into: Set()) {
+                        $0.formUnion($1)
+                    }
+                    : excludingWorktrees[item.project.repository] ?? []
                 retained.worktrees.removeAll { worktree in
                     exclusions.contains {
                         $0.matches(
