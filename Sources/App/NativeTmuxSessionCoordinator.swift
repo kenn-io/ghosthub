@@ -538,6 +538,7 @@ final class NativeTmuxSessionCoordinator {
                 try? await sshConnection?.release()
             }
             await release.value
+            guard handlesByKey[key] == handle else { return }
             attachmentClosures[handle.id] = switch error {
             case let .sshConnectionFailed(_, classification)
                 where classification.kind == .transport:

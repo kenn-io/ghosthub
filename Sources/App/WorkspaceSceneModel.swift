@@ -9536,7 +9536,7 @@ final class WorkspaceSceneModel: ObservableObject {
               let attachmentHost = CommandHostResolver.resolve(host)
         else {
             if activatesPresentation {
-                prepareActiveTmuxPreviewForDeactivation()
+                prepareActiveTmuxPresentationForDeactivation(excluding: nil)
                 activeBorrowedTmuxSelection = selection
                 activeBorrowedTmuxHandle = nil
                 activeBorrowedTmuxLaunchMode = effectiveLaunchMode
@@ -9548,11 +9548,10 @@ final class WorkspaceSceneModel: ObservableObject {
         // Psmux has no equivalent to tmux's exact-client ignore-size flag.
         // An inactive Windows attachment must wait for an explicit open.
         guard !startsHidden || host.platform != .windows else { return nil }
-        let startsHiddenOnPOSIX = startsHidden && host.platform != .windows
         // A protected worktree lives on its own tmux socket. Without that
         // socket a direct attach would target the default server, which never
         // owns a protected session, so leave restoration to an explicit open.
-        if startsHiddenOnPOSIX,
+        if startsHidden,
            selection.tmuxAttachMode == .protected,
            selection.socketName == nil {
             return nil
@@ -9561,7 +9560,7 @@ final class WorkspaceSceneModel: ObservableObject {
         // client flags before joining the session. Hidden restoration never
         // establishes a workspace, so attach directly with ignore-size.
         let attachmentLaunchMode: TmuxAttachmentLaunchMode =
-            startsHiddenOnPOSIX ? .attachOnly : effectiveLaunchMode
+            startsHidden ? .attachOnly : effectiveLaunchMode
         let knownSessions = tmuxSessionsByHost[selection.hostID]
             ?? host.tmuxSessions
         let sessionIsDiscovered = selection.socketName == nil
@@ -9594,8 +9593,8 @@ final class WorkspaceSceneModel: ObservableObject {
             workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace,
             sessionIdentity: discoveredIdentity,
-            ignoresClientSize: startsHiddenOnPOSIX || ignoresClientSize,
-            previewGridSize: startsHiddenOnPOSIX
+            ignoresClientSize: startsHidden || ignoresClientSize,
+            previewGridSize: startsHidden
                 ? self.previewGridSize(for: selection) : previewGridSize
         )
         let phase: RemoteTmuxEstablishmentPhase
@@ -9633,7 +9632,7 @@ final class WorkspaceSceneModel: ObservableObject {
             ),
             verifiedPreviewIdentity: nil
         )
-        presentation.sizingIntent = startsHiddenOnPOSIX ? .hidden : .interactive
+        presentation.sizingIntent = startsHidden ? .hidden : .interactive
         presentation.launchesThroughKwtWorkspace =
             openWorkspace || protectedSessionNeedsEstablishment
         presentation.reconnectExpectedIdentity = discoveredIdentity

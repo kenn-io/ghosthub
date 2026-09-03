@@ -1763,3 +1763,72 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
 }
+
+extension WorkspaceTmuxDiscoveryTests {
+    @MainActor
+    @Test("activating an unresolvable host hides the previous client")
+    func unresolvableHostActivationHidesPreviousClient() async throws {
+        let environment = try setupHostEnvironment()
+        var snapshot = environment.snapshot
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: "ordinary",
+            managed: false,
+            windows: [],
+            serverPID: identity.serverPID,
+            sessionID: identity.sessionID,
+            createdAt: identity.createdAt,
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37)
+        )]
+        let hideMutations = LockedValue(0)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    hideMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "ordinary"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let handle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+        let unknownHost = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "elsewhere"
+        )
+        model.openBorrowedTmuxSession(unknownHost)
+        await waitUntilMainActor { hideMutations.load() == 1 }
+
+        #expect(model.activeBorrowedTmuxSelection == unknownHost)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == handle)
+        await model.shutdown()
+    }
+}
