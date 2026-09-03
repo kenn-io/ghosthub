@@ -9554,14 +9554,18 @@ final class WorkspaceSceneModel: ObservableObject {
     ) -> KwtWorktreeOpenIdentity? {
         guard selection.tmuxAttachMode == .direct,
               let worktreeID = selection.worktreeID,
+              let path = selection.workspacePath,
               let generation = WorktreeGeneration.canonical(
                   selection.worktreeGeneration
               ),
               let worktree = snapshot.worktree(id: worktreeID),
               !worktree.isStale,
               worktree.hostID == selection.hostID,
-              WorktreeGeneration.canonical(worktree.generation)
-              .map({ $0 == generation }) ?? true,
+              worktree.path == path,
+              WorktreeGeneration.canonical(worktree.generation) == generation,
+              worktree.tmuxSessionName == selection.name,
+              worktree.tmuxSocketName == selection.socketName,
+              worktree.tmuxAttachMode == selection.tmuxAttachMode,
               let project = snapshot.project(id: worktree.projectID),
               !project.isStale,
               project.hostID == selection.hostID

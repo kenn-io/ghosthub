@@ -2038,6 +2038,62 @@ extension WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @MainActor
+    @Test(
+        "stale direct worktree endpoint does not launch kwt open",
+        arguments: ["path", "session", "socket", "attach mode", "generation"]
+    )
+    func staleDirectWorktreeEndpointDoesNotOpen(
+        changedField: String
+    ) async throws {
+        let environment = try setupStandardEnvironment()
+        var selectedSnapshot = environment.snapshot
+        selectedSnapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        selectedSnapshot.worktrees[0].tmuxSocketName = "kwt-main"
+        selectedSnapshot.worktrees[0].tmuxAttachMode = .direct
+        selectedSnapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let stale = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: selectedSnapshot.worktrees[0]
+            )
+        )
+        var currentSnapshot = selectedSnapshot
+        switch changedField {
+        case "path":
+            currentSnapshot.worktrees[0].path = "/worktrees/replacement"
+        case "session":
+            currentSnapshot.worktrees[0].tmuxSessionName =
+                "kwt-ghosthub-replacement"
+        case "socket":
+            currentSnapshot.worktrees[0].tmuxSocketName = "kwt-replacement"
+        case "attach mode":
+            currentSnapshot.worktrees[0].tmuxAttachMode = .protected
+        case "generation":
+            currentSnapshot.worktrees[0].generation = nil
+        default:
+            Issue.record("Unknown changed field: \(changedField)")
+            return
+        }
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: currentSnapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+
+        model.openBorrowedTmuxSession(stale)
+        await Task.yield()
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(surfaceStore.requestCount == 0)
+        await model.shutdown()
+    }
+
 }
 
 extension WorkspaceTmuxDiscoveryTests {
