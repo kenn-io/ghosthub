@@ -12,35 +12,7 @@ struct TmuxPaneSplitTarget: Sendable {
     var expectedIdentity: TmuxSessionIdentity?
     var clientToken: String?
     var clientTTYDirectory: String?
-    var expectedClient: TmuxPaneSplitClientIdentity?
-}
-
-struct TmuxPaneSplitClientIdentity: Hashable, Sendable {
-    var serverPID: String
-    var clientPID: String
-    var clientCreatedAt: String
-    var clientTTY: String
-    var sessionID: String
-    var sessionCreatedAt: String
-    var paneID: String
-
-    var sessionIdentity: TmuxSessionIdentity {
-        TmuxSessionIdentity(
-            serverPID: serverPID,
-            sessionID: sessionID,
-            createdAt: sessionCreatedAt
-        )
-    }
-
-    func matchesClient(_ other: Self) -> Bool {
-        serverPID == other.serverPID
-            && clientPID == other.clientPID
-            && clientCreatedAt == other.clientCreatedAt
-            && clientTTY == other.clientTTY
-            && sessionID == other.sessionID
-            && sessionCreatedAt == other.sessionCreatedAt
-    }
-
+    var expectedClient: TmuxAttachedClientIdentity?
 }
 
 struct TmuxPaneSplitFailure: Error, Equatable, LocalizedError, Sendable {
@@ -104,14 +76,8 @@ struct TmuxPaneSplitter: Sendable {
         host: CommandHost
     ) -> Bool {
         guard platform(for: host) == .posix else { return false }
-        let fields = version.split(whereSeparator: \.isWhitespace)
-        guard fields.count == 2, fields[0] == "tmux" else { return false }
-        let components = fields[1].split(separator: ".", maxSplits: 1)
-        guard components.count == 2,
-              let major = Int(components[0]),
-              let minor = Int(components[1].prefix(while: \.isNumber))
-        else { return false }
-        return major > 3 || (major == 3 && minor >= 4)
+        guard let version = TmuxVersion(output: version) else { return false }
+        return version >= .minimumFind
     }
 
     func split(
@@ -156,7 +122,7 @@ struct TmuxPaneSplitter: Sendable {
             task.cancel()
         }
         if Task.isCancelled {
-            let cleanupCommand = Self.cleanupCommand(
+            let cleanupCommand = TmuxAttachedClientGuard.cleanupCommand(
                 tmuxPath: target.tmuxPath,
                 socketName: target.socketName,
                 hookIndex: hookIndex
@@ -239,7 +205,7 @@ struct TmuxPaneSplitter: Sendable {
         )
         let result = await run(command: command, target: target)
         if Task.isCancelled {
-            let cleanup = Self.cleanupCommand(
+            let cleanup = TmuxAttachedClientGuard.cleanupCommand(
                 tmuxPath: target.tmuxPath,
                 socketName: target.socketName,
                 hookIndex: hookIndex
@@ -278,79 +244,29 @@ struct TmuxPaneSplitter: Sendable {
         tmuxPath: String,
         socketName: String?,
         shortcut: TerminalPaneSplitShortcut,
-        expectedClient: TmuxPaneSplitClientIdentity,
+        expectedClient: TmuxAttachedClientIdentity,
         mismatchMarker: String,
         hookIndex: Int
     ) -> String {
-        var arguments = [tmuxPath]
-        if let socketName, !socketName.isEmpty {
-            arguments += ["-L", socketName]
-        }
-        let tmux = arguments.map(shellQuotedCommandArgument)
-            .joined(separator: " ")
-        let hookName = "after-refresh-client[\(hookIndex)]"
         let mutation = [
             "split-window",
             shortcut == .right ? "-h" : "-v",
             "-t", expectedClient.paneID,
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let clientIdentity = "#{&&:"
-            + "#{==:#{client_pid},\(expectedClient.clientPID)},"
-            + "#{&&:"
-            + "#{==:#{client_created},\(expectedClient.clientCreatedAt)},"
-            + "#{==:#{client_tty},\(expectedClient.clientTTY)}}}"
-        let exactClient = "#{==:#{L:#{?\(clientIdentity),1,}},1}"
-        let condition = "#{&&:"
-            + expectedClient.sessionIdentity.formatCondition
-            + ",#{&&:\(exactClient),"
-            + "#{&&:#{==:#{pane_id},\(expectedClient.paneID)},"
-            + "#{==:#{hook_argument_0},\(mismatchMarker)}}}}"
-        let split = [
-            "if-shell", "-F", condition,
-            mutation,
-            "display-message -p "
-                + shellQuotedCommandArgument(mismatchMarker),
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let guardedMutation = guardedHookBody(
-            hookName: hookName,
-            marker: mismatchMarker,
-            action: split
-        )
-        let queue = tmux + " " + [
-            "set-hook", "-g", hookName, guardedMutation, ";",
-            "refresh-client", "-t", expectedClient.clientTTY,
-            mismatchMarker, ";",
-            "set-hook", "-gu", hookName,
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let cleanup = cleanupCommand(
+        return TmuxAttachedClientGuard.command(
             tmuxPath: tmuxPath,
             socketName: socketName,
-            hookIndex: hookIndex
+            expectedClient: expectedClient,
+            marker: mismatchMarker,
+            hookIndex: hookIndex,
+            action: mutation
         )
-        return queue + "; ghosthub_status=$?; "
-            + cleanup + " >/dev/null 2>&1; exit \"$ghosthub_status\""
-    }
-
-    static func cleanupCommand(
-        tmuxPath: String,
-        socketName: String?,
-        hookIndex: Int
-    ) -> String {
-        var arguments = [tmuxPath]
-        if let socketName, !socketName.isEmpty {
-            arguments += ["-L", socketName]
-        }
-        arguments += [
-            "set-hook", "-gu", "after-refresh-client[\(hookIndex)]",
-        ]
-        return arguments.map(shellQuotedCommandArgument)
-            .joined(separator: " ")
     }
 
     static func enableSizingCommand(
         tmuxPath: String,
         socketName: String?,
-        expectedClient: TmuxPaneSplitClientIdentity,
+        expectedClient: TmuxAttachedClientIdentity,
         mismatchMarker: String,
         hookIndex: Int
     ) -> String {
@@ -367,76 +283,30 @@ struct TmuxPaneSplitter: Sendable {
     static func sizingCommand(
         tmuxPath: String,
         socketName: String?,
-        expectedClient: TmuxPaneSplitClientIdentity,
+        expectedClient: TmuxAttachedClientIdentity,
         ignoresClientSize: Bool,
         mismatchMarker: String,
         hookIndex: Int
     ) -> String {
-        var arguments = [tmuxPath]
-        if let socketName, !socketName.isEmpty {
-            arguments += ["-L", socketName]
-        }
-        let tmux = arguments.map(shellQuotedCommandArgument)
-            .joined(separator: " ")
-        let hookName = "after-refresh-client[\(hookIndex)]"
-        let clientIdentity = "#{&&:"
-            + "#{==:#{client_pid},\(expectedClient.clientPID)},"
-            + "#{&&:"
-            + "#{==:#{client_created},\(expectedClient.clientCreatedAt)},"
-            + "#{==:#{client_tty},\(expectedClient.clientTTY)}}}"
-        let exactClient = "#{==:#{L:#{?\(clientIdentity),1,}},1}"
-        let condition = "#{&&:"
-            + expectedClient.sessionIdentity.formatCondition
-            + ",\(exactClient)}"
         let updateSizing = [
-            "if-shell", "-F", condition,
-            [
-                "refresh-client", "-t", expectedClient.clientTTY,
-                "-f", ignoresClientSize ? "ignore-size" : "!ignore-size",
-            ].map(shellQuotedCommandArgument).joined(separator: " "),
-            "display-message -p "
-                + shellQuotedCommandArgument(mismatchMarker),
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let guardedMutation = guardedHookBody(
-            hookName: hookName,
-            marker: mismatchMarker,
-            action: updateSizing
-        )
-        let queue = tmux + " " + [
-            "set-hook", "-g", hookName, guardedMutation, ";",
             "refresh-client", "-t", expectedClient.clientTTY,
-            mismatchMarker, ";",
-            "set-hook", "-gu", hookName,
+            "-f", ignoresClientSize ? "ignore-size" : "!ignore-size",
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let cleanup = cleanupCommand(
+        return TmuxAttachedClientGuard.command(
             tmuxPath: tmuxPath,
             socketName: socketName,
-            hookIndex: hookIndex
+            expectedClient: expectedClient,
+            marker: mismatchMarker,
+            hookIndex: hookIndex,
+            action: updateSizing,
+            scope: .client
         )
-        return queue + "; ghosthub_status=$?; "
-            + cleanup + " >/dev/null 2>&1; exit \"$ghosthub_status\""
-    }
-
-    static func guardedHookBody(
-        hookName: String,
-        marker: String,
-        action: String
-    ) -> String {
-        let markerCondition = "#{==:#{hook_argument_0},\(marker)}"
-        let removeHook = [
-            "set-hook", "-gu", hookName,
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
-        return [
-            "if-shell", "-F", markerCondition,
-            removeHook + " ; " + action,
-            "",
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
     }
 
     func clientIdentity(
         target: TmuxPaneSplitTarget,
         priority: TaskPriority = .userInitiated
-    ) async -> Result<TmuxPaneSplitClientIdentity, TmuxPaneSplitFailure> {
+    ) async -> Result<TmuxAttachedClientIdentity, TmuxPaneSplitFailure> {
         guard let clientToken = target.clientToken else {
             return .failure(clientIdentityUnavailable(target: target))
         }
@@ -566,7 +436,7 @@ struct TmuxPaneSplitter: Sendable {
 
     private static func parseClientIdentity(
         _ output: String
-    ) -> TmuxPaneSplitClientIdentity? {
+    ) -> TmuxAttachedClientIdentity? {
         guard let line = output.split(whereSeparator: \.isNewline)
             .map(String.init)
             .last(where: { $0.hasPrefix(clientIdentityMarker) })
@@ -586,7 +456,7 @@ struct TmuxPaneSplitter: Sendable {
               fields[6].first == "%",
               isNumeric(fields[6].dropFirst())
         else { return nil }
-        return TmuxPaneSplitClientIdentity(
+        return TmuxAttachedClientIdentity(
             serverPID: String(fields[0]),
             clientPID: String(fields[1]),
             clientCreatedAt: String(fields[2]),

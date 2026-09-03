@@ -196,6 +196,18 @@ static NSView *DemoFindViewWithIdentifier(
   return nil;
 }
 
+static NSSearchField *DemoFindSearchField(NSView *view) {
+  if ([view isKindOfClass:NSSearchField.class]) {
+    NSSearchField *field = (NSSearchField *)view;
+    if ([field.placeholderString isEqualToString:@"Find"]) return field;
+  }
+  for (NSView *subview in view.subviews) {
+    NSSearchField *match = DemoFindSearchField(subview);
+    if (match != nil) return match;
+  }
+  return nil;
+}
+
 static NSView *DemoTitlebarView(
     NSWindow *window, NSString *identifier) {
   NSView *titlebar =
@@ -659,6 +671,36 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                       });
                 });
           });
+    } else if ([action isEqualToString:@"find"]) {
+      NSWindow *window = DemoRootWindow();
+      if (window == nil) {
+        [self acknowledge:requestID
+                  success:NO
+                  message:@"Find has no active workspace window"];
+        return;
+      }
+      dispatch_after(
+          dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+          dispatch_get_main_queue(), ^{
+        if (!DemoInsertText(text)) {
+          [self acknowledge:requestID
+                    success:NO
+                    message:@"Find field did not accept text"];
+          return;
+        }
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC),
+            dispatch_get_main_queue(), ^{
+              NSSearchField *field = DemoFindSearchField(window.contentView);
+              BOOL matched = field != nil &&
+                  [field.stringValue isEqualToString:expectKind];
+              [self acknowledge:requestID
+                        success:matched
+                        message:matched
+                            ? @"Find matched the requested state"
+                            : @"Find result did not match the requested state"];
+            });
+      });
     } else if ([action isEqualToString:@"text"]) {
       BOOL inserted = DemoInsertText(text);
       [self acknowledge:requestID

@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubTerminal
+import GhosthubTerminalSupport
 import GhosthubTmux
 import GhosthubUI
 import GhosthubWorkspace
@@ -121,6 +122,8 @@ struct SceneModelRootHarness: View {
 @MainActor
 final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
     var blocksClipboardReads = false
+    var terminalOperationErrorMessage: String?
+    var terminalFindController = TerminalFindController.unavailable
     var launchError: Error?
     var launchFailureIsRetryable = false
     var childExitCode: UInt32?
@@ -128,6 +131,7 @@ final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
     private(set) var lastObserverID: UUID?
     private(set) var previewGridSizes: [TmuxGridSize] = []
     private(set) var clearPreviewGridCount = 0
+    private(set) var keyboardFocusRequestCount = 0
 
     @discardableResult
     func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool {
@@ -137,6 +141,10 @@ final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
 
     func clearPreviewGridSize() {
         clearPreviewGridCount += 1
+    }
+
+    func requestKeyboardFocus() {
+        keyboardFocusRequestCount += 1
     }
 
     func registerSurfaceCloseObserver(

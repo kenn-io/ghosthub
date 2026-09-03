@@ -425,6 +425,7 @@ final class NativeHerdrSessionCoordinator {
             )
             return nil
         }
+        surface.terminalFindController = .unavailable
         if let error = surface.launchError {
             failSurfaceLaunch(
                 handle,
@@ -653,7 +654,7 @@ final class NativeHerdrSessionCoordinator {
             guard attachments[handle.id]?.id == request.attachmentID,
                   launchedHandles.contains(handle.id)
             else { continue }
-            request.surface.paneSplitErrorMessage = nil
+            request.surface.terminalOperationErrorMessage = nil
             let failure = await paneSplitter.split(
                 request.shortcut,
                 target: request.target
@@ -662,7 +663,7 @@ final class NativeHerdrSessionCoordinator {
                   paneSplitWorkers[handle.id]?.id == workerID,
                   attachments[handle.id]?.id == request.attachmentID
             else { return }
-            request.surface.paneSplitErrorMessage = failure?.localizedDescription
+            request.surface.terminalOperationErrorMessage = failure?.localizedDescription
             if let failure {
                 invalidateUnusableConnection(
                     status: failure.status,

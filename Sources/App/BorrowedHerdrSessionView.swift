@@ -186,8 +186,8 @@ private struct NativeHerdrTerminalView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TerminalSurfaceBackdrop.color(for: backgroundAppearance))
         .overlay(alignment: .top) {
-            if let message = surfaceView.paneSplitErrorMessage {
-                NativePaneSplitErrorOverlay(message: message)
+            if let message = surfaceView.terminalOperationErrorMessage {
+                NativeTerminalOperationErrorOverlay(message: message)
             }
         }
         .onAppear {
@@ -207,5 +207,6 @@ private struct NativeHerdrTerminalView: View {
             \.terminalHasEffectiveKeyboardFocus,
             surfaceView.hasEffectiveKeyboardFocus
         )
+        .focusedSceneObject(surfaceView.terminalFindController)
     }
 }

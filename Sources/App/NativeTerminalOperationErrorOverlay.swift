@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct NativePaneSplitErrorOverlay: View {
+struct NativeTerminalOperationErrorOverlay: View {
     let message: String
 
     var body: some View {

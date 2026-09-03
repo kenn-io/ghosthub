@@ -653,7 +653,7 @@ struct NativeHerdrSessionCoordinatorTests {
         await waitUntilMainActor { firstFinished.withLock { $0 } }
 
         #expect(starts.withLock { $0 } == 1)
-        #expect(store.surface.paneSplitErrorMessage == nil)
+        #expect(store.surface.terminalOperationErrorMessage == nil)
     }
 
     @Test("a fail-closed pane split invalidates the pooled connection")
@@ -690,7 +690,7 @@ struct NativeHerdrSessionCoordinatorTests {
         handler(.right)
 
         await waitUntilMainActor { invalidations.withLock { $0 } > 0 }
-        #expect(store.surface.paneSplitErrorMessage != nil)
+        #expect(store.surface.terminalOperationErrorMessage != nil)
     }
 
     private var remoteHost: CommandHost {

@@ -130,6 +130,28 @@ struct ApplicationShortcutMenuTests {
         ) == nil)
     }
 
+    @Test("the Application Log sheet keeps only the Find bindings")
+    func logViewerSheetKeepsFindBindings() {
+        #expect(!ApplicationShortcutMenuModel.sheetSuppressesBinding(
+            for: .find,
+            settingsPresented: false,
+            commandPalettePresented: false,
+            logViewerPresented: true
+        ))
+        #expect(ApplicationShortcutMenuModel.sheetSuppressesBinding(
+            for: .newWorktree,
+            settingsPresented: false,
+            commandPalettePresented: false,
+            logViewerPresented: true
+        ))
+        #expect(ApplicationShortcutMenuModel.sheetSuppressesBinding(
+            for: .find,
+            settingsPresented: true,
+            commandPalettePresented: false,
+            logViewerPresented: false
+        ))
+    }
+
     @Test("menu-owned bindings remain registered across live eligibility changes")
     func menuOwnedBindingsRemainRegistered() throws {
         let binding = try ApplicationKeyBinding(parsing: "cmd+b")

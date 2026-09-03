@@ -1,4 +1,5 @@
 import Combine
+import AppKit
 import Foundation
 import GhosthubTerminalSupport
 import GhosthubWorkspace
@@ -27,6 +28,8 @@ public final class LibghosttyRuntime: ObservableObject,
         LibghosttyConfigReloadNotice?
     @Published public private(set) var resolvedTerminalColorsBySurface:
         [UInt: TerminalResolvedColors]
+    @Published public private(set) var backgroundAppearance:
+        TerminalBackgroundAppearance = .opaque
 
     public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
@@ -48,6 +51,8 @@ public final class LibghosttyRuntime: ObservableObject,
     }
 
     public var needsConfirmQuit: Bool { false }
+
+    public func applyWindowBackgroundBlur(to _: NSWindow) {}
 
     public var resolvedTerminalColors: TerminalResolvedColors? { nil }
 

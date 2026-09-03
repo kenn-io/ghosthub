@@ -24,6 +24,7 @@ DEMO = ROOT / "website" / "demo"
 WEBSITE_ASSET_NAMES = (
     "hero.png",
     "guide-sessions.png",
+    "guide-find.png",
     "guide-session-previews.png",
     "guide-session-activity.png",
     "guide-hosts.png",
@@ -1332,6 +1333,9 @@ def test_offline_asset_reuse_requires_synced_provenance(
     assert result.returncode == expected_code
     if not trusted:
         assert "is missing or stale" in result.stderr
+    else:
+        published = script.parents[1] / "docs" / "content" / "assets"
+        assert all((published / name).is_file() for name in WEBSITE_ASSET_NAMES)
 
 
 def test_fetched_asset_ref_is_authoritative_and_atomic(tmp_path: Path) -> None:

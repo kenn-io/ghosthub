@@ -173,6 +173,27 @@ capture_state() {
   sips -g pixelWidth -g pixelHeight "$out_dir/$name" | tail -2
 }
 
+capture_find() {
+  demo_input click "80,820"
+  sleep 10
+  demo_input expect-window-title "agentsview--add-session-filters"
+  demo_input click "600,600"
+  sleep 0.5
+  palette "find in terminal"
+  demo_input find "filters" false "filters"
+  sleep 1
+  capture_state guide-find.png
+  demo_input escape
+  sleep 1
+}
+
+if [[ "${GHOSTHUB_DEMO_FIND_ONLY:-}" == "1" ]]; then
+  echo "==> guide: active-pane Find"
+  capture_find
+  echo "captured active-pane Find website asset -> $out_dir"
+  exit 0
+fi
+
 if [[ "${GHOSTHUB_DEMO_ALWAYS_LIVE_PREVIEW_ONLY:-}" == "1" ]]; then
   echo "==> guide: Always Live tmux session previews"
   sleep 1
@@ -372,6 +393,9 @@ demo_input escape
 # Restore the compact disclosure state used by the later fixed-size captures.
 demo_input click "32,489"
 sleep 0.5
+
+echo "==> guide: active-pane Find"
+capture_find
 
 if [[ "${GHOSTHUB_DEMO_SKIP_SESSION_PREVIEWS:-}" != "1" ]]; then
   echo "==> guide: opened tmux session previews"

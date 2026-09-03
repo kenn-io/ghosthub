@@ -3,7 +3,11 @@ import Foundation
 import GhosthubPersistence
 import GhosthubTerminalSupport
 import GhosthubTestSupport
+import GhosthubTmux
+import GhosthubUI
 import GhosthubWorkspace
+import Synchronization
+import SwiftUI
 import Testing
 @testable import GhosthubApp
 
@@ -16,6 +20,215 @@ private final class ShortcutFocusWindow: NSWindow {
 @Suite("Workspace application shortcuts", .serialized)
 @MainActor
 struct WorkspaceApplicationShortcutTests {
+    @Test("a presented log viewer takes Find priority over a borrowed session")
+    func presentedLogViewerTakesFindPriority() async throws {
+        let environment = try setupHostEnvironment()
+        let store = SceneTmuxSurfaceStoreStub()
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "find-session"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: store)
+        await waitUntilMainActor {
+            store.surface.terminalFindController.isAvailable
+        }
+        let borrowedController = TerminalFindController(
+            isAvailable: true,
+            sessionProvider: { nil }
+        )
+        store.surface.terminalFindController = borrowedController
+
+        model.isFocusedWindow = true
+        model.isLogViewerPresented = true
+        _ = try #require(model.logViewerTerminalView())
+        let logSurface = try #require(
+            model.terminalCoordinator.surfaceEntries().first {
+                $0.key.target == .logViewer
+            }?.view
+        )
+        let logController = TerminalFindController(
+            isAvailable: true,
+            sessionProvider: { nil }
+        )
+        logSurface.terminalFindController = logController
+        let logView = try #require(model.logViewerTerminalView())
+        let hostingView = NSHostingView(rootView: logView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        var containsSearchField: ((NSView) -> Bool)!
+        containsSearchField = { view in
+            view is NSSearchField
+                || view.subviews.contains { containsSearchField($0) }
+        }
+
+        #expect(model.performApplicationShortcut(.find))
+        #expect(logController.isOpen)
+        #expect(!borrowedController.isOpen)
+        await waitUntilMainActor {
+            containsSearchField(hostingView)
+        }
+        #expect(containsSearchField(hostingView))
+
+        await model.shutdown()
+    }
+
+    @Test("standalone Find routing survives responder changes")
+    func standaloneFindRoutingSurvivesResponderChanges() async throws {
+        let environment = try setupHostEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot
+        )
+        model.isFocusedWindow = true
+        model.isLogViewerPresented = true
+        _ = try #require(model.logViewerTerminalView())
+        let surface = try #require(
+            model.terminalCoordinator.surfaceEntries().first {
+                $0.key.target == .logViewer
+            }?.view
+        )
+        let navigations = Mutex<[TerminalFindDirection]>([])
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: {
+                TerminalFindSession(
+                    search: { _, _ in
+                        .success(.result(.match(total: 2, selected: nil)))
+                    },
+                    navigate: { direction, _ in
+                        navigations.withLock { $0.append(direction) }
+                        return .success(.result(.match(
+                            total: 2,
+                            selected: nil
+                        )))
+                    },
+                    close: { nil }
+                )
+            }
+        )
+        surface.terminalFindController = controller
+
+        try #require(model.performApplicationShortcut(.find))
+        controller.updateQuery("needle")
+        await waitUntilMainActor { controller.canNavigate }
+        model.isLogViewerPresented = false
+
+        #expect(model.performApplicationShortcut(.findNext))
+        await waitUntilMainActor { navigations.withLock { $0.count } == 1 }
+        #expect(navigations.withLock { $0 } == [.next])
+        #expect(model.performApplicationShortcut(.hideFindBar))
+        #expect(!controller.isOpen)
+
+        await model.shutdown()
+    }
+
+    @Test("Find shortcuts route to the active terminal and follow its state")
+    func findShortcutRouting() async throws {
+        let environment = try setupHostEnvironment()
+        let store = SceneTmuxSurfaceStoreStub()
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "find-session"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: store)
+        await waitUntilMainActor {
+            store.surface.terminalFindController.isAvailable
+        }
+
+        let navigations = Mutex<[TerminalFindDirection]>([])
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: {
+                TerminalFindSession(
+                    search: { _, _ in
+                        .success(.result(.match(total: 3, selected: nil)))
+                    },
+                    navigate: { direction, _ in
+                        navigations.withLock { $0.append(direction) }
+                        return .success(.result(.match(
+                            total: 3,
+                            selected: nil
+                        )))
+                    },
+                    close: { nil }
+                )
+            }
+        )
+        store.surface.terminalFindController = controller
+        model.isFocusedWindow = true
+
+        #expect(model.availablePaletteApplicationShortcuts.contains(.find))
+        #expect(model.performApplicationShortcut(.find))
+        #expect(controller.isOpen)
+        #expect(model.availablePaletteApplicationShortcuts.contains(
+            .hideFindBar
+        ))
+        controller.updateQuery("needle")
+        await waitUntilMainActor { controller.canNavigate }
+        #expect(model.availablePaletteApplicationShortcuts.isSuperset(
+            of: [.findNext, .findPrevious]
+        ))
+        #expect(model.performApplicationShortcut(.findNext))
+        #expect(model.performApplicationShortcut(.findPrevious))
+        await waitUntilMainActor { navigations.withLock { $0.count } == 2 }
+        #expect(navigations.withLock { $0 } == [.next, .previous])
+        #expect(model.performApplicationShortcut(.hideFindBar))
+        #expect(!controller.isOpen)
+        await waitUntilMainActor {
+            store.surface.keyboardFocusRequestCount == 1
+        }
+
+        controller.open()
+        model.hideBorrowedTmuxSession(selection)
+        #expect(!controller.isOpen)
+        await model.shutdown()
+    }
+
     @Test("sibling availability requires a resolvable peer")
     func siblingAvailability() async throws {
         let host = HostSummary.fixture()

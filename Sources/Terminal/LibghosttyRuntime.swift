@@ -1003,6 +1003,76 @@ public final class LibghosttyRuntime: ObservableObject,
             }
             return true
 
+        case GHOSTTY_ACTION_START_SEARCH:
+            let query = action.action.start_search.needle.map {
+                String(cString: $0)
+            } ?? ""
+            guard let sourceSurfaceIdentity else { return true }
+            // `search:<query>` updates libghostty's search thread directly;
+            // it does not emit START_SEARCH. This action therefore represents
+            // a new upstream-owned search, such as start_search or
+            // search_selection, and supersedes the registered operation.
+            guard let operation = LibghosttyFindOperationRegistry.shared
+                .beginExternalOperation(for: sourceSurfaceIdentity)
+            else { return true }
+            DispatchQueue.main.async {
+                surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
+                    .beginLibghosttyFind(query, operation: operation)
+            }
+            return true
+
+        case GHOSTTY_ACTION_END_SEARCH:
+            guard let sourceSurfaceIdentity,
+                  let operation = LibghosttyFindOperationRegistry.shared
+                  .operation(for: sourceSurfaceIdentity)
+            else { return true }
+            LibghosttyFindOperationRegistry.shared.removeOperation(
+                for: sourceSurfaceIdentity
+            )
+            DispatchQueue.main.async {
+                surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
+                    .terminalFindController.backendDidEnd(
+                        operation: operation
+                    )
+            }
+            return true
+
+        case GHOSTTY_ACTION_SEARCH_TOTAL:
+            let total = Int(action.action.search_total.total)
+            guard let sourceSurfaceIdentity,
+                  let operation = LibghosttyFindOperationRegistry.shared
+                  .operation(
+                      for: sourceSurfaceIdentity,
+                      callback: .total(total)
+                  )
+            else { return true }
+            DispatchQueue.main.async {
+                surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
+                    .publishLibghosttyFindTotal(
+                        total,
+                        operation: operation
+                    )
+            }
+            return true
+
+        case GHOSTTY_ACTION_SEARCH_SELECTED:
+            let selected = Int(action.action.search_selected.selected)
+            guard let sourceSurfaceIdentity,
+                  let operation = LibghosttyFindOperationRegistry.shared
+                  .operation(
+                      for: sourceSurfaceIdentity,
+                      callback: .selected(selected)
+                  )
+            else { return true }
+            DispatchQueue.main.async {
+                surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
+                    .publishLibghosttyFindSelected(
+                        selected,
+                        operation: operation
+                    )
+            }
+            return true
+
         default:
             DispatchQueue.main.async {
                 let state = runtime(from: userdataValue)

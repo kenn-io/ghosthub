@@ -28,7 +28,7 @@ struct MenuActionContext {
             for: action,
             sceneIsFocused:
             sceneModel?.acceptsApplicationShortcutKeyEvents == true,
-            hasAttachedSheet: sceneHasAttachedSheet,
+            hasAttachedSheet: sheetSuppressesBinding(for: action),
             actionIsAvailable: actionIsAvailable
         )?.swiftUI
     }
@@ -46,16 +46,21 @@ struct MenuActionContext {
             for: action,
             sceneIsFocused:
             sceneModel?.acceptsApplicationShortcutKeyEvents == true,
-            hasAttachedSheet: sceneHasAttachedSheet,
+            hasAttachedSheet: sheetSuppressesBinding(for: action),
             actionIsAvailable: sceneModel?.canSplitActivePane == true
         )?.swiftUI
     }
 
-    var sceneHasAttachedSheet: Bool {
+    private func sheetSuppressesBinding(
+        for action: ApplicationShortcutAction
+    ) -> Bool {
         guard let sceneModel else { return false }
-        return sceneModel.isSettingsPresented
-            || sceneModel.isCommandPalettePresented
-            || sceneModel.isLogViewerPresented
+        return ApplicationShortcutMenuModel.sheetSuppressesBinding(
+            for: action,
+            settingsPresented: sceneModel.isSettingsPresented,
+            commandPalettePresented: sceneModel.isCommandPalettePresented,
+            logViewerPresented: sceneModel.isLogViewerPresented
+        )
     }
 
     func invoke(_ action: ApplicationShortcutAction) {
@@ -104,6 +109,63 @@ struct AppMenuCommands: Commands {
                 context.invoke(.openApplicationLog)
             }
             .keyboardShortcut(context.shortcut(.openApplicationLog))
+        }
+    }
+}
+
+struct FindMenuCommands: Commands {
+    @FocusedValue(\.sceneModel) private var focusedSceneModel
+    @FocusedObject private var findController: TerminalFindController?
+    @ObservedObject private var settingsStore = SettingsStore.shared
+
+    private var context: MenuActionContext {
+        MenuActionContext(
+            sceneModel: focusedSceneModel,
+            terminalHasEffectiveKeyboardFocus: nil,
+            settingsStore: settingsStore
+        )
+    }
+
+    var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            if let findController {
+                Divider()
+                Button("Find…") {
+                    context.invoke(.find)
+                }
+                .keyboardShortcut(context.shortcut(
+                    .find,
+                    actionIsAvailable: findController.isAvailable
+                ))
+                .disabled(!findController.isAvailable)
+
+                Button("Find Next") {
+                    context.invoke(.findNext)
+                }
+                .keyboardShortcut(context.shortcut(
+                    .findNext,
+                    actionIsAvailable: findController.canNavigate
+                ))
+                .disabled(!findController.canNavigate)
+
+                Button("Find Previous") {
+                    context.invoke(.findPrevious)
+                }
+                .keyboardShortcut(context.shortcut(
+                    .findPrevious,
+                    actionIsAvailable: findController.canNavigate
+                ))
+                .disabled(!findController.canNavigate)
+
+                Button("Hide Find Bar") {
+                    context.invoke(.hideFindBar)
+                }
+                .keyboardShortcut(context.shortcut(
+                    .hideFindBar,
+                    actionIsAvailable: findController.isOpen
+                ))
+                .disabled(!findController.isOpen)
+            }
         }
     }
 }

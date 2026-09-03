@@ -620,15 +620,8 @@ struct TmuxBinaryResolver: Sendable {
         _ output: String,
         platform: SSHHostInfo.Platform
     ) -> Bool {
-        let fields = output.split(whereSeparator: \.isWhitespace)
-        guard fields.count >= 2, fields[0] == "tmux" else { return false }
-        let components = fields[1].split(separator: ".", maxSplits: 1)
-        guard components.count == 2,
-              let major = Int(components[0]) else { return false }
-        let minorDigits = components[1].prefix(while: \.isNumber)
-        guard let minor = Int(minorDigits) else { return false }
-        let minimumMinor = 2
-        return major > 3 || (major == 3 && minor >= minimumMinor)
+        guard let version = TmuxVersion(output: output) else { return false }
+        return version >= .minimumSupported
     }
 
     private static func minimumVersion(

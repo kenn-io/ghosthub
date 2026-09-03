@@ -94,6 +94,30 @@ extension WorkspaceSceneModel {
             guard snapshot.host(id: selection.selectedHostID)?
                 .herdrAvailable == true else { return false }
             return postShortcutRequest(action)
+        case .find:
+            guard let controller = activeTerminalFindController,
+                  controller.isAvailable else { return false }
+            controller.open()
+            return true
+        case .findNext:
+            guard let controller = activeTerminalFindController,
+                  controller.canNavigate else { return false }
+            controller.findNext()
+            return true
+        case .findPrevious:
+            guard let controller = activeTerminalFindController,
+                  controller.canNavigate else { return false }
+            controller.findPrevious()
+            return true
+        case .hideFindBar:
+            guard let surface = activeTerminalFindSurface,
+                  surface.terminalFindController.isOpen else { return false }
+            let controller = surface.terminalFindController
+            controller.close()
+            DispatchQueue.main.async { [weak surface] in
+                surface?.requestKeyboardFocus()
+            }
+            return true
         case .splitRight:
             guard canSplitActivePane,
                   invocation == .menu || hasFocusedTerminalSurface
@@ -225,6 +249,16 @@ extension WorkspaceSceneModel {
         var actions = availableSiblingShortcuts
         if canSplitActivePane {
             actions.formUnion([.splitRight, .splitDown])
+        }
+        if let controller = activeTerminalFindController,
+           controller.isAvailable {
+            actions.insert(.find)
+            if controller.canNavigate {
+                actions.formUnion([.findNext, .findPrevious])
+            }
+            if controller.isOpen {
+                actions.insert(.hideFindBar)
+            }
         }
         return actions
     }

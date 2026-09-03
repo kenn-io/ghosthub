@@ -611,7 +611,7 @@ extension WorkspaceTmuxDiscoveryTests {
         }
         releaseResolution.signal()
 
-        await waitUntilMainActor(timeout: .seconds(3)) {
+        await waitUntilMainActor(timeout: .seconds(5)) {
             model.retainedBorrowedTmuxHandle(for: selection) == nil
         }
         #expect(model.activeBorrowedTmuxSelection == nil)

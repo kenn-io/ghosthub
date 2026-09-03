@@ -91,7 +91,8 @@ public final class TerminalSurfaceView: ObservableObject {
     public var onPrimaryInteraction: (() -> Void)?
     public var onCloseRequest: (() -> Void)?
     public var shouldConfirmClose: (() -> Bool)?
-    @Published public var paneSplitErrorMessage: String?
+    @Published public var terminalOperationErrorMessage: String?
+    @Published public var terminalFindController = TerminalFindController.unavailable
     public var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     public var applicationShortcutsProvider:
         (() -> ResolvedApplicationShortcuts)?
@@ -163,8 +164,16 @@ public final class TerminalSurfaceView: ObservableObject {
         _ = size
     }
     public func setParkedForPreview(_ parked: Bool) {
+        if parked {
+            terminalFindController.close()
+        }
         _ = parked
     }
+
+    public func installLibghosttyFindController() {
+        terminalFindController = .unavailable
+    }
+    public func useExternalFindBackend() {}
     public func setPreviewRenderingSuspended(_ suspended: Bool) {
         _ = suspended
     }
@@ -279,17 +288,24 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
     }
 
     public func removeSurface(for key: SurfaceKey) {
+        surfaces.first { $0.key == key }?.view.terminalFindController.close()
         surfaces.removeAll { $0.key == key }
     }
     public func removeWorktreeSurfaces(worktreeID: UUID) {
+        surfaces.filter { $0.key.worktreeID == worktreeID }
+            .forEach { $0.view.terminalFindController.close() }
         surfaces.removeAll { $0.key.worktreeID == worktreeID }
     }
     public func removeConsoleSurfaces(hostID: UUID) {
+        surfaces.filter {
+            $0.key.hostID == hostID && $0.key.target == .console
+        }.forEach { $0.view.terminalFindController.close() }
         surfaces.removeAll {
             $0.key.hostID == hostID && $0.key.target == .console
         }
     }
     public func removeAll() {
+        surfaces.forEach { $0.view.terminalFindController.close() }
         surfaces.removeAll()
     }
 

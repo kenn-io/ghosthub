@@ -50,6 +50,132 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH)
     }
 
+    func testLibghosttyFindSearchesSurfaceOutput() async throws {
+        let view = try makeSurface()
+        view.installLibghosttyFindController()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        XCTAssertTrue(view.injectOutput(Data(
+            "needle one\r\nneedle two\r\nneedle three\r\n".utf8
+        )))
+        let viewportText = { () -> String in
+            guard let surface = view.surfaceHandle else { return "" }
+            var text = ghostty_text_s()
+            let selection = ghostty_selection_s(
+                top_left: ghostty_point_s(
+                    tag: GHOSTTY_POINT_VIEWPORT,
+                    coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+                    x: 0,
+                    y: 0
+                ),
+                bottom_right: ghostty_point_s(
+                    tag: GHOSTTY_POINT_VIEWPORT,
+                    coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+                    x: 0,
+                    y: 0
+                ),
+                rectangle: false
+            )
+            guard ghostty_surface_read_text(surface, selection, &text) else {
+                return ""
+            }
+            defer { ghostty_surface_free_text(surface, &text) }
+            return String(cString: text.text)
+        }
+        let outputDeadline = Date().addingTimeInterval(5)
+        while !viewportText().contains("needle three"),
+              Date() < outputDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(viewportText().contains("needle three"))
+
+        let controller = view.terminalFindController
+        controller.open()
+        controller.updateQuery("needle")
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if case .match(total: 3, selected: _) = controller.result {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        guard case let .match(total, selected) = controller.result else {
+            return XCTFail("expected libghostty to publish a Find match")
+        }
+        XCTAssertEqual(total, 3)
+        XCTAssertNil(selected)
+        controller.findNext()
+        let navigationDeadline = Date().addingTimeInterval(3)
+        while Date() < navigationDeadline {
+            if case .match(total: 3, selected: .some) = controller.result {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard case let .match(_, navigatedSelection) = controller.result else {
+            return XCTFail("expected libghostty to retain Find results")
+        }
+        XCTAssertNotNil(navigatedSelection)
+        controller.close()
+        XCTAssertFalse(controller.isOpen)
+        XCTAssertEqual(controller.result, .idle)
+    }
+
+    func testBorrowedTmuxFindBarAppearsWhenControllerOpens() throws {
+        let surface = try makeSurface()
+        let controller = TerminalFindController(
+            isAvailable: true,
+            sessionProvider: { nil }
+        )
+        surface.terminalFindController = controller
+        let presented = BorrowedTmuxSessionView(
+            handle: BorrowedTmuxSessionHandle(
+                id: UUID(),
+                hostID: UUID(),
+                name: "find-rendering",
+                surfaceID: UUID()
+            ),
+            hostName: "This Mac",
+            isRemoteHost: false,
+            connectionState: .connected,
+            surface: { surface },
+            onCloseRequest: {},
+            onRetryRequest: {},
+            onHostSettingsRequest: {}
+        )
+        let hostingView = NSHostingView(rootView: presented)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 960, height: 640)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        controller.open()
+        let deadline = Date().addingTimeInterval(1)
+        while !containsSearchField(in: hostingView), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+
+        XCTAssertTrue(containsSearchField(in: hostingView))
+    }
+
+    func testParkingClosesFindBeforeHidingTheSurface() throws {
+        let view = try makeSurface()
+        view.installLibghosttyFindController()
+        view.terminalFindController.open()
+
+        view.setParkedForPreview(true)
+
+        XCTAssertFalse(view.terminalFindController.isOpen)
+        XCTAssertTrue(view.isParkedForPreview)
+    }
+
     func testSnapshotProducesGPUFrameWithoutMutatingSurface() async throws {
         let view = try makeSurface()
         let window = hostInWindow(view)
@@ -1478,6 +1604,11 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         view.focusDidChange(true)
         view.sizeDidChange(size)
         return window
+    }
+
+    private func containsSearchField(in view: NSView) -> Bool {
+        view is NSSearchField
+            || view.subviews.contains { containsSearchField(in: $0) }
     }
 
     private func waitForIOSurface(

@@ -197,5 +197,6 @@ private struct NativeZellijTerminalView: View {
             \.terminalHasEffectiveKeyboardFocus,
             surfaceView.hasEffectiveKeyboardFocus
         )
+        .focusedSceneObject(surfaceView.terminalFindController)
     }
 }

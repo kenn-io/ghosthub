@@ -712,7 +712,8 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
 @MainActor
 final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var blocksClipboardReads = false
-    var paneSplitErrorMessage: String?
+    var terminalOperationErrorMessage: String?
+    var terminalFindController = TerminalFindController.unavailable
     var hasEffectiveKeyboardFocus = false
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     /// Mutable so a test can fail one attach and let the next succeed, which is

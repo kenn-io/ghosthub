@@ -44,6 +44,7 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
             app: appHandle,
             configuration: configuration
         )
+        view.installLibghosttyFindController()
         view.applicationShortcutsProvider = applicationShortcutsProvider
         view.onSurfaceDestroyed = { [weak runtime] identity in
             runtime?.unregisterSurfaceForResolvedColors(identity)
@@ -99,6 +100,7 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
 
     public func removeSurface(for key: SurfaceKey) {
         if let view = surfaces[key] {
+            view.terminalFindController.close()
             removeMappings(for: view)
         }
         surfaces.removeValue(forKey: key)
@@ -110,6 +112,7 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
         }
         for key in keysToRemove {
             if let view = surfaces[key] {
+                view.terminalFindController.close()
                 removeMappings(for: view)
             }
             surfaces.removeValue(forKey: key)
@@ -122,6 +125,7 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
         }
         for key in keysToRemove {
             if let view = surfaces[key] {
+                view.terminalFindController.close()
                 removeMappings(for: view)
             }
             surfaces.removeValue(forKey: key)

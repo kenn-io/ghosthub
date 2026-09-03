@@ -158,6 +158,15 @@ public enum CommandPaletteModel {
                 action: .showLogViewer
             ),
             WorkspaceCommandItem(
+                id: "find-in-terminal",
+                title: "Find in Terminal",
+                subtitle: "Search the active terminal pane's history.",
+                keywords: ["find", "search", "terminal", "history"],
+                shortcutAction: .find,
+                shortcut: shortcuts[.find],
+                action: .applicationShortcut(.find)
+            ),
+            WorkspaceCommandItem(
                 id: "previous-sibling",
                 title: "Previous Sibling",
                 subtitle: "Cycle backward within the current session group.",

@@ -350,6 +350,7 @@ final class NativeZellijSessionCoordinator {
             )
             return nil
         }
+        surface.terminalFindController = .unavailable
         if let error = surface.launchError {
             failSurfaceLaunch(
                 handle,

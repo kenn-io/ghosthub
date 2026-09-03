@@ -9,13 +9,15 @@ protocol NativeSessionPaneSurfacing: AnyObject {
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)? {
         get set
     }
-    var paneSplitErrorMessage: String? { get set }
+    var terminalOperationErrorMessage: String? { get set }
+    var terminalFindController: TerminalFindController { get set }
     var hasEffectiveKeyboardFocus: Bool { get }
     var launchError: Error? { get }
     /// True when `launchError` describes a transient condition that a later
     /// attach can recover from, rather than a rejected launch.
     var launchFailureIsRetryable: Bool { get }
     var childExitCode: UInt32? { get }
+    func requestKeyboardFocus()
     @discardableResult
     func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool
     func clearPreviewGridSize()
@@ -31,14 +33,21 @@ extension NativeSessionPaneSurfacing {
         set {}
     }
 
-    var paneSplitErrorMessage: String? {
+    var terminalOperationErrorMessage: String? {
         get { nil }
+        set {}
+    }
+
+    var terminalFindController: TerminalFindController {
+        get { .unavailable }
         set {}
     }
 
     var hasEffectiveKeyboardFocus: Bool { false }
 
     var launchFailureIsRetryable: Bool { false }
+
+    func requestKeyboardFocus() {}
 
     @discardableResult
     func sizeForPreviewGrid(columns _: Int, rows _: Int) -> Bool {

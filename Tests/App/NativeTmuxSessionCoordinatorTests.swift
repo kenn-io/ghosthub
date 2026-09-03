@@ -117,7 +117,7 @@ struct NativeTmuxSessionCoordinatorTests {
                     "Control socket connect(/tmp/dead): Connection refused\n"
                 )
             },
-            paneSplitErrorDuration: .seconds(5)
+            terminalOperationErrorDuration: .seconds(5)
         )
         var readyCount = 0
         coordinator.onSurfaceReady = { _ in readyCount += 1 }
@@ -135,7 +135,7 @@ struct NativeTmuxSessionCoordinatorTests {
         handler(.down)
 
         await waitUntilMainActor { invalidations.load() > 0 }
-        #expect(store.surface.paneSplitErrorMessage != nil)
+        #expect(store.surface.terminalOperationErrorMessage != nil)
     }
 
     @Test("attachment reuses the version from binary resolution")
@@ -250,6 +250,7 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: handle)
         await waitUntilMainActor { identityCommands.load().count == 1 }
+        #expect(!store.surface.terminalFindController.isAvailable)
 
         let bindingCommand = try #require(identityCommands.load().first)
         #expect(bindingCommand.contains("'list-clients' '-F'"))
@@ -257,18 +258,250 @@ struct NativeTmuxSessionCoordinatorTests {
         let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
         #expect(splitCommands.load() == 0)
-        #expect(store.surface.paneSplitErrorMessage?.contains(
+        #expect(store.surface.terminalOperationErrorMessage?.contains(
             "client identity is unavailable"
         ) == true)
 
         releaseBinding.signal()
         await waitUntilMainActor { readyCount == 2 }
+        #expect(store.surface.terminalFindController.isAvailable)
         #expect(
             coordinator.attachedSessionIdentity(handle)
                 == coordinatorSplitIdentity
         )
         handler(.right)
         await waitUntilMainActor { splitCommands.load() == 1 }
+    }
+
+    @Test("Find refreshes the active pane before every operation")
+    func findRefreshesActivePane() async throws {
+        let identityLookups = LockedValue(0)
+        let findCommands = LockedValue<[String]>([])
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                guard command.contains(
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                ) else { return (0, "") }
+                identityLookups.withLock { $0 += 1 }
+                let lookup = identityLookups.load()
+                return (
+                    0,
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t123\t789\t321"
+                        + "\t/dev/ttys001\t$7\t456\t%\(lookup + 8)\n"
+                )
+            },
+            paneFinder: TmuxPaneFinder(runner: { _, _, command in
+                findCommands.withLock { $0.append(command) }
+                guard let start = command.range(
+                    of: "GHOSTHUB_TMUX_FIND_STATE_"
+                )?.lowerBound else { return (0, "") }
+                let markerEnd = command.index(start, offsetBy: 61)
+                let marker = String(command[start ..< markerEnd])
+                return (0, "\(marker)\t1\n")
+            })
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "changing-pane",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            identityLookups.load() == 1
+                && store.surface.terminalFindController.isAvailable
+        }
+        let controller = store.surface.terminalFindController
+
+        controller.open()
+        controller.updateQuery("needle")
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            findCommands.load().count == 1
+        }
+        controller.findNext()
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            findCommands.load().count == 2
+        }
+        controller.close()
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            findCommands.load().count == 3
+        }
+
+        #expect(identityLookups.load() == 4)
+        let commands = findCommands.load()
+        try #require(commands.count == 3)
+        #expect(commands[0].contains("%10"))
+        #expect(commands[1].contains("%11"))
+        #expect(commands[2].contains("%12"))
+    }
+
+    @Test(
+        "Find invalidates remote failures while refreshing or searching",
+        arguments: [false, true]
+    )
+    func findInvalidatesFailedRemoteConnection(
+        identityRefreshFails: Bool
+    ) async {
+        let invalidations = LockedValue(0)
+        let identityCalls = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let host = CommandHost.ssh(SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        ))
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/local/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(invalidate: {
+                    invalidations.withLock { $0 += 1 }
+                })
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                guard command.contains(
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                ) else { return (0, "") }
+                identityCalls.withLock { $0 += 1 }
+                if identityRefreshFails, identityCalls.load() > 1 {
+                    return (
+                        255,
+                        "Control socket connect(/tmp/dead): Connection refused\n"
+                    )
+                }
+                return (0, coordinatorSplitClientOutput)
+            },
+            paneFinder: TmuxPaneFinder(runner: { _, _, _ in
+                if identityRefreshFails {
+                    return (1, "Find should not run after identity failure")
+                }
+                return (
+                    255,
+                    "Control socket connect(/tmp/dead): Connection refused\n"
+                )
+            }),
+            terminalOperationErrorDuration: .seconds(10)
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "failed-find",
+            host: host,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            store.surface.terminalFindController.isAvailable
+        }
+        #expect(
+            coordinator.attachmentRouteIdentity(handle)
+                == "sha256:test-route"
+        )
+        let controller = store.surface.terminalFindController
+        controller.open()
+        controller.updateQuery("needle")
+
+        await waitUntilMainActor(timeout: .seconds(5)) {
+            invalidations.load() >= 1
+        }
+    }
+
+    @Test("a stale Find failure does not invalidate a replacement attachment")
+    func staleFindFailureKeepsReplacementConnection() async throws {
+        let connectionCount = LockedValue(0)
+        let invalidations = LockedValue<[Int]>([])
+        let findGate = BlockingGate()
+        defer { findGate.open() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let hostID = UUID()
+        let host = CommandHost.ssh(SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        ))
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/local/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                var index = 0
+                connectionCount.withLock {
+                    $0 += 1
+                    index = $0
+                }
+                let connectionIndex = index
+                return testKwtSSHAttachment(
+                    routeIdentity: "sha256:route-\(connectionIndex)",
+                    generation: UInt64(connectionIndex),
+                    invalidate: {
+                        invalidations.withLock { $0.append(connectionIndex) }
+                    }
+                )
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                guard command.contains(
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                ) else { return (0, "") }
+                return (0, coordinatorSplitClientOutput)
+            },
+            paneFinder: TmuxPaneFinder(runner: { _, _, _ in
+                findGate.block()
+                return (
+                    255,
+                    "Control socket connect(/tmp/dead): Connection refused\n"
+                )
+            })
+        )
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "replaced-find",
+            host: host,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor {
+            coordinator.attachmentRouteIdentity(handle) == "sha256:route-1"
+        }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            store.surface.terminalFindController.isAvailable
+        }
+        let controller = store.surface.terminalFindController
+        controller.open()
+        controller.updateQuery("needle")
+        await findGate.waitUntilBlocked()
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(true, nil)
+        let replacement = coordinator.attach(
+            hostID: hostID,
+            name: handle.name,
+            host: host,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        #expect(replacement == handle)
+        await waitUntilMainActor {
+            coordinator.attachmentRouteIdentity(handle) == "sha256:route-2"
+        }
+        findGate.open()
+        await waitUntilMainActor { controller.failureMessage != nil }
+
+        #expect(invalidations.load().isEmpty)
     }
 
     @Test("tmux older than 3.4 does not install pane split shortcuts")
@@ -310,11 +543,54 @@ struct NativeTmuxSessionCoordinatorTests {
         coordinator.requestAttachedSessionIdentity(handle)
 
         #expect(store.surface.paneSplitShortcutHandler == nil)
+        #expect(!store.surface.terminalFindController.isAvailable)
         #expect(!coordinator.supportsPaneSplitting(handle))
         #expect(
             coordinator.attachedSessionIdentityResolution(handle)
                 == .unavailable
         )
+    }
+
+    @Test("initial client binding retries while the attachment is live")
+    func initialClientBindingRetries() async {
+        let clientLookups = LockedValue(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                guard command.contains(
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                ) else { return (0, "") }
+                var attempt = 0
+                clientLookups.withLock {
+                    $0 += 1
+                    attempt = $0
+                }
+                return attempt == 1
+                    ? (1, "client token is not ready")
+                    : (0, coordinatorSplitClientOutput)
+            },
+            clientIdentityRetryDelays: [.zero]
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "appearing",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            clientLookups.load() == 2
+                && store.surface.terminalFindController.isAvailable
+        }
+
+        #expect(clientLookups.load() == 2)
+        #expect(store.surface.terminalFindController.isAvailable)
     }
 
     @Test("new named sessions use tmux create-or-attach mode")
@@ -720,7 +996,7 @@ struct NativeTmuxSessionCoordinatorTests {
                 calls.withLock { $0.append((host, arguments, command)) }
                 return (1, "no space for new pane\n")
             },
-            paneSplitErrorDuration: .milliseconds(100)
+            terminalOperationErrorDuration: .milliseconds(100)
         )
         var readyCount = 0
         coordinator.onSurfaceReady = { _ in readyCount += 1 }
@@ -744,7 +1020,7 @@ struct NativeTmuxSessionCoordinatorTests {
         handler(.down)
         await waitUntilMainActor { calls.load().count == 1 }
         await waitUntilMainActor {
-            store.surface.paneSplitErrorMessage != nil
+            store.surface.terminalOperationErrorMessage != nil
         }
 
         let call = try #require(calls.load().first)
@@ -761,14 +1037,14 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(call.2.contains("split-window"))
         #expect(call.2.contains("-v"))
         #expect(!call.2.contains("=release-work:"))
-        #expect(store.surface.paneSplitErrorMessage?.contains(
+        #expect(store.surface.terminalOperationErrorMessage?.contains(
             "release-work"
         ) == true)
-        #expect(store.surface.paneSplitErrorMessage?.contains(
+        #expect(store.surface.terminalOperationErrorMessage?.contains(
             "no space for new pane"
         ) == true)
         await waitUntilMainActor {
-            store.surface.paneSplitErrorMessage == nil
+            store.surface.terminalOperationErrorMessage == nil
         }
     }
 
@@ -1041,7 +1317,7 @@ struct NativeTmuxSessionCoordinatorTests {
                         $0 += 1
                         attempt = $0
                     }
-                    if attempt == 1 {
+                    if attempt <= 2 {
                         return (1, "no clients yet")
                     }
                     return (0, coordinatorSplitClientOutput)
@@ -1062,7 +1338,8 @@ struct NativeTmuxSessionCoordinatorTests {
 
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: handle)
-        await waitUntilMainActor { clientLookups.load() == 1 }
+        await waitUntilMainActor { clientLookups.load() == 2 }
+        try await Task.sleep(for: .milliseconds(20))
         coordinator.requestAttachedSessionIdentity(handle)
         await waitUntilMainActor {
             coordinator.attachedSessionIdentity(handle)
@@ -1071,10 +1348,10 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(coordinator.supportsPaneSplitting(handle))
         let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
-        #expect(store.surface.paneSplitErrorMessage == nil)
+        #expect(store.surface.terminalOperationErrorMessage == nil)
         await waitUntilMainActor { splitCommands.load() == 1 }
-        #expect(clientLookups.load() == 3)
-        #expect(store.surface.paneSplitErrorMessage == nil)
+        #expect(clientLookups.load() == 4)
+        #expect(store.surface.terminalOperationErrorMessage == nil)
     }
 
     @Test("capture revalidation observes a client session switch")
@@ -1176,13 +1453,13 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { splitCommands.load() == 1 }
         handler(.down)
         await waitUntilMainActor {
-            store.surface.paneSplitErrorMessage != nil
+            store.surface.terminalOperationErrorMessage != nil
                 || splitCommands.load() == 2
         }
 
         #expect(clientLookups.load() == 3)
         #expect(splitCommands.load() == 1)
-        #expect(store.surface.paneSplitErrorMessage?.contains(
+        #expect(store.surface.terminalOperationErrorMessage?.contains(
             "attached tmux session changed"
         ) == true)
     }
@@ -1232,14 +1509,14 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { splitCommands.load().count == 1 }
         handler(.down)
         await waitUntilMainActor {
-            store.surface.paneSplitErrorMessage != nil
+            store.surface.terminalOperationErrorMessage != nil
                 || splitCommands.load().count == 2
         }
 
         #expect(clientLookups.load() == 3)
         #expect(splitCommands.load().count == 2)
         #expect(splitCommands.load().last?.contains("'%10'") == true)
-        #expect(store.surface.paneSplitErrorMessage == nil)
+        #expect(store.surface.terminalOperationErrorMessage == nil)
     }
 
     @Test("an atomic pane movement rereads the client and retries once")
@@ -1296,7 +1573,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
         #expect(clientLookups.load() == 3)
         #expect(splitCommands.load().last?.contains("'%10'") == true)
-        #expect(store.surface.paneSplitErrorMessage == nil)
+        #expect(store.surface.terminalOperationErrorMessage == nil)
     }
 
     @Test("endpoint changes replace provisioning and active handles")

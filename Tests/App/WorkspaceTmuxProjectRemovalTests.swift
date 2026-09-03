@@ -815,6 +815,10 @@ extension WorkspaceTmuxDiscoveryTests {
         if attached {
             model.openBorrowedTmuxSession(selection)
             await launchActiveTmuxSurface(model, store: surfaceStore)
+            await waitUntilMainActor {
+                model.retainedBorrowedTmuxSessionIsConnected(selection)
+                    && coordinator.scopes.isEmpty
+            }
             #expect(model.retainedBorrowedTmuxSessionIsConnected(selection))
         }
 
