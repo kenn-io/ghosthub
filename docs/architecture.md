@@ -1102,7 +1102,7 @@ mutated host. A mutation captures the cache's mutation epoch for its host when
 it acquires its scope; a publication whose epoch predates a later mutation on
 that host is rejected, and the fence-end reload reconciles instead. Inventory
 loaded for removal preflight or failed-removal classification stays local to
-the mutating scene. Scene-local tmux probes capture the cache's refresh epoch before
+the mutating scene and still excludes the cache's active removal tombstones. Scene-local tmux probes capture the cache's refresh epoch before
 they run and publish to it only when no newer shared refresh has started since.
 Herdr and Zellij inventories remain scene-owned. Session-only publication uses the runtime
 overlay, which cannot reconcile KWT projects or worktrees and cannot normalize
