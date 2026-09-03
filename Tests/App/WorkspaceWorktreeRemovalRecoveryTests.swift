@@ -1572,6 +1572,92 @@ extension WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("failed removal restores a presentation whose activation is pending")
+    func failedRemovalRestoresPendingActivation() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let removerHold = RemovalPreflightHold()
+        let hiddenSizingMutations = LockedValue(0)
+        let interactiveSizingStarted = LockedValue(false)
+        let releaseInteractiveSizing = DispatchSemaphore(value: 0)
+        defer { releaseInteractiveSizing.signal() }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'!ignore-size'") {
+                    interactiveSizingStarted.store(true)
+                    _ = releaseInteractiveSizing.wait(timeout: .now() + 5)
+                } else if command.contains("'ignore-size'") {
+                    hiddenSizingMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
+            localKwtPathProvider: { "/test/kwt" },
+            kwtInventoryLoader: { _ in fixture.beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _, _ in
+                _ = await removerHold.load(fixture.beforeRemoval)
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { model.activeBorrowedTmuxSessionIsConnected }
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor { hiddenSizingMutations.load() == 1 }
+
+        // Reactivating a hidden client stages the selection while the
+        // interactive sizing change is still in flight.
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { interactiveSizingStarted.load() }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let removal = Task { @MainActor in
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor { await removerHold.started }
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        releaseInteractiveSizing.signal()
+        await removerHold.release()
+        await #expect(throws: KwtWorktreeError.self) {
+            try await removal.value
+        }
+
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: selection) != nil
+        }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("failed removal restores an inactive protected client on its socket")
     func failedRemovalRestoresInactiveProtectedClientOnSocket() async throws {
         let environment = try setupRemoteEnvironment()

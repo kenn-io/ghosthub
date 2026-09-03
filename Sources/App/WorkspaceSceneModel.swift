@@ -4794,7 +4794,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 requiresWorkspaceEstablishment:
                 presentation.reconnectContext?.phase
                     == .establishingWorkspace,
-                wasActive: activeBorrowedTmuxHandle == presentation.handle,
+                wasActive: activeBorrowedTmuxHandle == presentation.handle
+                    || tmuxPresentationActivationIsPending(presentation),
                 userNavigationRevision: userNavigationRevision
             )
             invalidateBorrowedTmuxSession(presentation.selection)
