@@ -76,18 +76,23 @@ final class WorkspaceInventoryStore {
     }
 
     /// A removed project. Two non-empty repository identities compare by
-    /// identity; when either side is legacy-empty, only the path recorded
-    /// at removal time identifies the project.
+    /// identity; when either side is legacy-empty, only the normalized path
+    /// recorded at removal time identifies the project.
     struct ProjectRemovalTombstone: Hashable, Sendable {
         let repository: String
         let path: String?
+
+        init(repository: String, path: String?) {
+            self.repository = repository
+            self.path = path.map(KwtSnapshotMerger.normalizedPath)
+        }
 
         func matches(_ record: KwtProjectRecord) -> Bool {
             if !repository.isEmpty, !record.repository.isEmpty {
                 return record.repository == repository
             }
             guard let path else { return false }
-            return record.path == path
+            return KwtSnapshotMerger.normalizedPath(record.path) == path
         }
     }
 
@@ -787,6 +792,7 @@ final class WorkspaceInventoryStore {
         path: String?,
         on host: CommandHost
     ) {
+        let path = path.map(KwtSnapshotMerger.normalizedPath)
         let cleared = (kwtProjectRemovalTombstonesByHost[host] ?? [])
             .filter { tombstone in
                 (!repository.isEmpty && tombstone.repository == repository)

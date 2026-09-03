@@ -924,7 +924,9 @@ enum KwtSnapshotMerger {
         return updated
     }
 
-    private static func normalizedPath(_ path: String) -> String {
+    /// Lexically normalizes a host path so equivalent spellings compare
+    /// equal without touching any filesystem.
+    static func normalizedPath(_ path: String) -> String {
         guard path.contains("/") else { return path }
         let isAbsolute = path.hasPrefix("/")
         var components: [Substring] = []
