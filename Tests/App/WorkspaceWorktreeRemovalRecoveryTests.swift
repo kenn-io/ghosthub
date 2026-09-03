@@ -1746,7 +1746,8 @@ extension WorkspaceWorktreeRemovalTests {
             store: surfaceStore,
             mutations: mutations,
             selection: selection,
-            other: other
+            other: other,
+            expectedPresentationCount: 1
         )
 
         let request = try await model.prepareWorktreeRemoval(removable.id)
@@ -1771,6 +1772,62 @@ extension WorkspaceWorktreeRemovalTests {
         await model.shutdown()
     }
 
+    @MainActor
+    @Test("failed removal leaves an inactive Windows client explicit")
+    func failedRemovalLeavesInactiveWindowsClientExplicit() async throws {
+        let environment = try setupRemoteEnvironment()
+        let removable = protectedRemovableWorktree(
+            environment,
+            socketName: nil
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let mutations = WorktreeMutationCoordinator()
+        let model = try makeProtectedRemovalModel(
+            environment: environment,
+            removable: removable,
+            surfaceStore: surfaceStore,
+            mutations: mutations,
+            platform: .windows,
+            tmuxExactSessionProbe: { _ in .success(true) },
+            tmuxSessionDiscovery: { _ in .success([]) }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let inactiveSelection = WorkspaceTmuxSessionSelection(
+            hostID: selection.hostID,
+            name: selection.name,
+            tmuxAttachMode: .protected
+        )
+        let other = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other"
+        )
+        model.openBorrowedTmuxSession(inactiveSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxSessionIsConnected(inactiveSelection)
+        }
+        model.openBorrowedTmuxSession(other)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+                && model.retainedBorrowedTmuxSessionIsConnected(other)
+        }
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.self) {
+            try await model.removeWorktree(request)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(surfaceStore.requestCount == 2)
+        #expect(model.retainedBorrowedTmuxHandle(for: inactiveSelection) == nil)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(model.activeBorrowedTmuxSelection == other)
+        await model.shutdown()
+    }
+
     private func protectedRemovableWorktree(
         _ environment: RemoteEnvironment,
         socketName: String?
@@ -1790,10 +1847,12 @@ extension WorkspaceWorktreeRemovalTests {
         removable: WorktreeSummary,
         surfaceStore: SceneTmuxSurfaceStoreStub,
         mutations: WorktreeMutationCoordinator,
+        platform: HostPlatform = .linux,
         tmuxExactSessionProbe: @escaping WorkspaceSceneModel.TmuxSessionExactProbe,
         tmuxSessionDiscovery: @escaping WorkspaceSceneModel.TmuxSessionDiscovery
     ) throws -> WorkspaceSceneModel {
         var snapshot = environment.snapshot
+        snapshot.hosts[0].platform = platform
         snapshot.worktrees = [removable]
         let beforeRemoval = inventory(environment, including: removable)
         let identity = TmuxSessionIdentity(
@@ -1839,7 +1898,8 @@ extension WorkspaceWorktreeRemovalTests {
         store: SceneTmuxSurfaceStoreStub,
         mutations: WorktreeMutationCoordinator,
         selection: WorkspaceTmuxSessionSelection,
-        other: WorkspaceTmuxSessionSelection
+        other: WorkspaceTmuxSessionSelection,
+        expectedPresentationCount: Int = 2
     ) async throws {
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: store)
@@ -1857,7 +1917,10 @@ extension WorkspaceWorktreeRemovalTests {
             return store.requestCount == 2
                 && model.retainedBorrowedTmuxSessionIsConnected(other)
         }
-        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+        #expect(
+            model.retainedBorrowedTmuxPresentationCount
+                == expectedPresentationCount
+        )
     }
 
 }

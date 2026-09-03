@@ -9545,6 +9545,9 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             return nil
         }
+        // Psmux has no equivalent to tmux's exact-client ignore-size flag.
+        // An inactive Windows attachment must wait for an explicit open.
+        guard !startsHidden || host.platform != .windows else { return nil }
         let startsHiddenOnPOSIX = startsHidden && host.platform != .windows
         // A protected worktree lives on its own tmux socket. Without that
         // socket a direct attach would target the default server, which never
@@ -10582,6 +10585,14 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         guard host.platform != .windows else { return }
+        // Protected sessions can live on a nondefault server selected by
+        // kwt. Without its socket, an exact-client command would target the
+        // default server and could mutate an unrelated client.
+        if presentation.selection.tmuxAttachMode == .protected,
+           presentation.selection.socketName == nil {
+            invalidateBorrowedTmuxSession(presentation.selection)
+            return
+        }
 
         presentation.sizingIntent = .hidden
         presentation.pendingSizingActivationNavigationRevision = nil
