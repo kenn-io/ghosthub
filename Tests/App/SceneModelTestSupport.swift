@@ -712,6 +712,7 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
 @MainActor
 final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var blocksClipboardReads = false
+    var remoteImagePasteHandler: ((TerminalClipboardImage) -> Void)?
     var terminalOperationErrorMessage: String?
     var terminalFindController = TerminalFindController.unavailable
     var hasEffectiveKeyboardFocus = false
@@ -727,6 +728,7 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     private(set) var clearPreviewGridCount = 0
     var onPreviewGridSize: ((TmuxGridSize) -> Void)?
     var onClearPreviewGrid: (() -> Void)?
+    private(set) var programmaticPastes: [String] = []
 
     init(
         launchError: Error? = nil,
@@ -749,6 +751,12 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     func clearPreviewGridSize() {
         clearPreviewGridCount += 1
         onClearPreviewGrid?()
+    }
+
+    @discardableResult
+    func pasteProgrammaticInput(_ string: String) -> Bool {
+        programmaticPastes.append(string)
+        return true
     }
 
     func registerSurfaceCloseObserver(

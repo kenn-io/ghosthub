@@ -1105,13 +1105,7 @@ public final class LibghosttyRuntime: ObservableObject,
             // libghostty's semantic request is the authorization boundary.
             // User-configured paste bindings may read the clipboard, while
             // OSC 52 reads remain empty regardless of `clipboard-read`.
-            let contents = clipboardReadContents(
-                blocked: surfaceView.blocksClipboardReads,
-                request: request,
-                contents: TerminalPasteboardAccess.current.string(
-                    forType: .string
-                )
-            )
+            let contents = surfaceView.clipboardContents(for: request)
             contents.withCString { ptr in
                 ghostty_surface_complete_clipboard_request(
                     surfaceHandle, ptr, requestState, false

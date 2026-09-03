@@ -157,6 +157,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     private nonisolated(unsafe) var eventMonitor: Any?
     var lastPerformKeyEvent: TimeInterval?
     private var consumedCommandKeyCodes: Set<UInt16> = []
+    private var consumedImagePasteKeyCodes: Set<UInt16> = []
     private var consumedPaneSplitKeyCodes: Set<UInt16> = []
     private var surfaceResizeState = SurfaceResizeState()
     private var previewGridSize: (columns: Int, rows: Int)?
@@ -199,12 +200,18 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Routes clipboard paste through tmux's paste buffer so tmux can honor
     /// the pane application's bracketed-paste mode.
     public var tmuxPanePasteSink: ((Data) -> Void)?
+    /// Installed by remote session coordinators that can copy a Mac clipboard
+    /// image to the session host. The uploaded image is returned to the
+    /// terminal as an ordinary path paste, preserving the application's
+    /// bracketed-paste and image-path handling.
+    public var remoteImagePasteHandler: ((TerminalClipboardImage) -> Void)?
     /// Remote tmux surfaces must not read from or write to the local Mac
     /// clipboard through terminal escape sequences. Explicit user paste
     /// remains available because libghostty labels semantic paste requests
     /// before the runtime reads the pasteboard.
     public var blocksClipboardReads = false
     private var isClipboardConfirmationPending = false
+    private var programmaticPasteContents: String?
     private var tmuxTerminalModeTracker = AttachedTmuxTerminalModeTracker()
     /// The surface's grid dimensions (columns, rows) changed. Task-8 addition:
     /// control mode uses this to feed pane resizes back to tmux (per-pane
@@ -801,6 +808,22 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         chars.withCString { ptr in
             ghostty_surface_text(surface, ptr, UInt(len - 1))
         }
+    }
+
+    /// Pastes generated text through libghostty's normal paste path rather
+    /// than injecting raw terminal bytes. This preserves bracketed paste and
+    /// lets terminal applications distinguish a pasted image path from typing.
+    @discardableResult
+    public func pasteProgrammaticInput(_ string: String) -> Bool {
+        guard !string.isEmpty, programmaticPasteContents == nil else {
+            return false
+        }
+        programmaticPasteContents = string
+        guard performBindingAction("paste_from_clipboard") else {
+            programmaticPasteContents = nil
+            return false
+        }
+        return true
     }
 
     public func sendProgrammaticReturn() {
@@ -1580,6 +1603,10 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     ) -> Bool {
         guard let surface else { return false }
 
+        if handleRemoteImagePaste(action: action, event: event) {
+            return true
+        }
+
         // Diverges from fantastty: fantastty's keyAction builds the C key
         // event first and threads pane routing through the `withCString`
         // closure that supplies `key_ev.text` (its dual with-text/without-text
@@ -1801,6 +1828,52 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             && !flags.contains(.option)
             && !flags.contains(.control)
             && event.charactersIgnoringModifiers?.lowercased() == "v"
+    }
+
+    private func handleRemoteImagePaste(
+        action: ghostty_input_action_e,
+        event: NSEvent
+    ) -> Bool {
+        if action == GHOSTTY_ACTION_RELEASE {
+            return consumedImagePasteKeyCodes.remove(event.keyCode) != nil
+        }
+        if consumedImagePasteKeyCodes.contains(event.keyCode) {
+            return true
+        }
+        guard action == GHOSTTY_ACTION_PRESS,
+              let handler = remoteImagePasteHandler,
+              isImagePasteShortcut(event),
+              let image = TerminalClipboardImage.read(
+                  from: TerminalPasteboardAccess.current
+              )
+        else { return false }
+        consumedImagePasteKeyCodes.insert(event.keyCode)
+        handler(image)
+        return true
+    }
+
+    private func isImagePasteShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return flags.contains(.control)
+            && !flags.contains(.shift)
+            && !flags.contains(.option)
+            && !flags.contains(.command)
+            && event.charactersIgnoringModifiers?.lowercased() == "v"
+    }
+
+    func clipboardContents(
+        for request: ghostty_clipboard_request_e?
+    ) -> String {
+        if request == GHOSTTY_CLIPBOARD_REQUEST_PASTE,
+           let contents = programmaticPasteContents {
+            programmaticPasteContents = nil
+            return contents
+        }
+        return LibghosttyRuntime.clipboardReadContents(
+            blocked: blocksClipboardReads,
+            request: request,
+            contents: TerminalPasteboardAccess.current.string(forType: .string)
+        )
     }
 
     func requestClipboardConfirmation(

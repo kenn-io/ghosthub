@@ -3,6 +3,7 @@ import AppKit
 @MainActor
 protocol TerminalPasteboard: AnyObject {
     func string(forType dataType: NSPasteboard.PasteboardType) -> String?
+    func data(forType dataType: NSPasteboard.PasteboardType) -> Data?
 
     @discardableResult
     func clearContents() -> Int

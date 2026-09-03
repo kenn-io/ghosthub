@@ -167,6 +167,11 @@ final class NativeTmuxSessionCoordinator {
         var task: Task<Void, Never>
     }
 
+    private struct ImagePasteTask {
+        var id: UUID
+        var task: Task<Void, Never>
+    }
+
     private struct AttachmentCleanupTail {
         var id: UUID
         var task: Task<Void, Never>
@@ -192,6 +197,7 @@ final class NativeTmuxSessionCoordinator {
         () -> Bool
     private let paneSplitter: TmuxPaneSplitter
     private let paneFinder: TmuxPaneFinder
+    private let imagePaster: TmuxImagePaster
     private let terminalOperationErrorDuration: Duration
     private let clientIdentityRetryDelays: [Duration]
     private let sleep: @Sendable (Duration) async throws -> Void
@@ -214,6 +220,7 @@ final class NativeTmuxSessionCoordinator {
     private var paneSplitClientBindings: [UUID: PaneSplitClientBinding] = [:]
     private var paneSplitClients: [UUID: TmuxAttachedClientIdentity] = [:]
     private var terminalOperationErrorDismissals: [UUID: TerminalOperationErrorDismissal] = [:]
+    private var imagePasteTasks: [UUID: ImagePasteTask] = [:]
     private var previewIdentityRetryHandles: Set<UUID> = []
     private var unavailablePreviewIdentityHandles: Set<UUID> = []
     private var deferredPresentationStyleHandles: Set<UUID> = []
@@ -269,6 +276,7 @@ final class NativeTmuxSessionCoordinator {
             },
         paneSplitter: TmuxPaneSplitter = TmuxPaneSplitter(),
         paneFinder: TmuxPaneFinder = TmuxPaneFinder(),
+        imagePaster: TmuxImagePaster = TmuxImagePaster(),
         terminalOperationErrorDuration: Duration = .seconds(4),
         clientIdentityRetryDelays: [Duration] = [
             .milliseconds(250), .seconds(1), .seconds(2),
@@ -296,6 +304,7 @@ final class NativeTmuxSessionCoordinator {
         self.remoteConnectionProvider = remoteConnectionProvider
         self.paneSplitter = paneSplitter
         self.paneFinder = paneFinder
+        self.imagePaster = imagePaster
         self.terminalOperationErrorDuration = terminalOperationErrorDuration
         self.clientIdentityRetryDelays = clientIdentityRetryDelays
         self.sleep = sleep
@@ -1053,6 +1062,11 @@ final class NativeTmuxSessionCoordinator {
             deferredPresentationStyleHandles.insert(handle.id)
         }
         surface.blocksClipboardReads = attachment.host.isRemote
+        installImagePasteHandler(
+            on: surface,
+            handle: handle,
+            attachment: attachment
+        )
         if didCreateSurface,
            attachment.ignoresClientSize,
            let previewGridSize = attachment.previewGridSize {
@@ -1164,6 +1178,83 @@ final class NativeTmuxSessionCoordinator {
             id: workerID,
             task: task
         )
+    }
+
+    private func installImagePasteHandler(
+        on surface: any NativeSessionPaneSurfacing,
+        handle: BorrowedTmuxSessionHandle,
+        attachment: NativeTmuxAttachment
+    ) {
+        surface.remoteImagePasteHandler = nil
+        guard case let .ssh(host) = attachment.host,
+              host.platform == .posix
+        else { return }
+        let connectionArguments = attachment.sshConnectionSnapshot.arguments
+        let attachmentID = attachment.id
+        surface.remoteImagePasteHandler = { [weak self, weak surface] image in
+            guard let self, let surface else { return }
+            startImagePaste(
+                image,
+                host: host,
+                connectionArguments: connectionArguments,
+                surface: surface,
+                handle: handle,
+                attachmentID: attachmentID
+            )
+        }
+    }
+
+    private func startImagePaste(
+        _ image: TerminalClipboardImage,
+        host: SSHHostInfo,
+        connectionArguments: [String],
+        surface: any NativeSessionPaneSurfacing,
+        handle: BorrowedTmuxSessionHandle,
+        attachmentID: UUID
+    ) {
+        imagePasteTasks.removeValue(forKey: handle.id)?.task.cancel()
+        let taskID = UUID()
+        let task = Task { [weak self, weak surface] in
+            guard let self, let surface else { return }
+            let result = await imagePaster.paste(
+                image,
+                on: host,
+                connectionArguments: connectionArguments
+            )
+            guard !Task.isCancelled,
+                  imagePasteTasks[handle.id]?.id == taskID,
+                  attachments[handle.id]?.id == attachmentID,
+                  launchedAttachmentIDs[handle.id] == attachmentID
+            else { return }
+            imagePasteTasks.removeValue(forKey: handle.id)
+            switch result {
+            case let .success(path):
+                guard surface.pasteProgrammaticInput(path) else {
+                    presentTerminalOperationError(
+                        "Ghosthub could not deliver the uploaded image path to the terminal.",
+                        on: surface,
+                        handle: handle,
+                        attachmentID: attachmentID
+                    )
+                    return
+                }
+                clearTerminalOperationError(on: surface, handleID: handle.id)
+            case let .failure(failure):
+                if SSHConnectionFailure.indicatesUnusableConnection(
+                    status: failure.status,
+                    output: failure.diagnostic
+                ), let connection = attachments[handle.id]?.sshConnection {
+                    Task { await connection.invalidate() }
+                }
+                presentTerminalOperationError(
+                    failure.localizedDescription,
+                    on: surface,
+                    handle: handle,
+                    attachmentID: attachmentID
+                )
+            }
+        }
+        imagePasteTasks[handle.id] = ImagePasteTask(id: taskID, task: task)
     }
 
     private func paneSplitTarget(
@@ -1575,6 +1666,7 @@ final class NativeTmuxSessionCoordinator {
     }
 
     private func cancelPaneSplits(handleID: UUID) {
+        imagePasteTasks.removeValue(forKey: handleID)?.task.cancel()
         paneSplitClientBindings.removeValue(forKey: handleID)?.task.cancel()
         paneSplitWorkers.removeValue(forKey: handleID)?.task.cancel()
         terminalOperationErrorDismissals.removeValue(forKey: handleID)?.task.cancel()
@@ -1908,10 +2000,12 @@ final class NativeTmuxSessionCoordinator {
         provisioningTasks.values.forEach { $0.cancel() }
         paneSplitClientBindings.values.forEach { $0.task.cancel() }
         paneSplitWorkers.values.forEach { $0.task.cancel() }
+        imagePasteTasks.values.forEach { $0.task.cancel() }
         terminalOperationErrorDismissals.values.forEach { $0.task.cancel() }
         provisioningTasks.removeAll()
         paneSplitClientBindings.removeAll()
         paneSplitWorkers.removeAll()
+        imagePasteTasks.removeAll()
         terminalOperationErrorDismissals.removeAll()
         paneSplitRequests.removeAll()
         paneSplitClients.removeAll()

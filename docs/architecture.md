@@ -484,6 +484,14 @@ continue borrowing connections until their route-identity and grouped-command
 contracts move behind the same higher-level boundary. Every remaining borrower
 is async: the pool is awaited, and only the blocking OpenSSH invocation itself
 runs off the cooperative thread pool.
+An explicit Ctrl-V image paste on a remote POSIX tmux surface reuses that
+presentation's frozen connection arguments while its lease remains owned.
+Ghosthub converts the Mac pasteboard image to PNG, streams it to the remote
+account's `~/.ghosthub/paste-images/` directory, and routes the returned
+absolute path through libghostty's normal paste action. Image bytes never
+travel through tmux input, and the remote process never receives authority to
+read the Mac clipboard. The upload result is attachment-generation checked,
+so a late transfer cannot paste into a replacement presentation.
 Confirmation requests retain only the selected host and reviewed route key;
 they release the preparation lease, then reacquire and require the same route
 before the confirmed mutation begins.

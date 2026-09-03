@@ -2529,6 +2529,99 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertTrue(sunkData.isEmpty, "Paste must not use raw send-keys input.")
     }
 
+    func testRemoteImagePasteConsumesCtrlVBeforeItReachesThePTY() throws {
+        let appHandle = try requireAppHandle()
+        let scriptURL = makeRawInputProbeScript(readBytes: 1)
+        let view = makeSurface(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        var receivedImage: TerminalClipboardImage?
+        view.remoteImagePasteHandler = { receivedImage = $0 }
+        let window = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+        pasteboard.setData(png, forType: .png)
+
+        dispatch(
+            makeKeyEvent(
+                characters: "\u{16}",
+                charactersIgnoringModifiers: "v",
+                modifiers: [.control],
+                keyCode: 9,
+                windowNumber: window.windowNumber
+            ),
+            to: window,
+            route: .window
+        )
+        typeText("x", into: view, window: window)
+
+        waitForViewportText("<RAW:78>", in: view)
+        XCTAssertEqual(receivedImage?.pngData, png)
+    }
+
+    func testRemoteCtrlVWithoutImageReachesThePTY() throws {
+        let appHandle = try requireAppHandle()
+        let scriptURL = makeRawInputProbeScript(readBytes: 1)
+        let view = makeSurface(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        var receivedImage: TerminalClipboardImage?
+        view.remoteImagePasteHandler = { receivedImage = $0 }
+        let window = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+        pasteboard.clearContents()
+        pasteboard.setString("ordinary text", forType: .string)
+
+        dispatch(
+            makeKeyEvent(
+                characters: "\u{16}",
+                charactersIgnoringModifiers: "v",
+                modifiers: [.control],
+                keyCode: 9,
+                windowNumber: window.windowNumber
+            ),
+            to: window,
+            route: .window
+        )
+
+        waitForViewportText("<RAW:16>", in: view)
+        XCTAssertNil(receivedImage)
+    }
+
+    func testProgrammaticImagePathUsesBracketedPaste() throws {
+        let appHandle = try requireAppHandle()
+        let path = "/home/dev/.ghosthub/paste-images/paste-test.png"
+        let expectedData = Data("\u{1b}[200~\(path)\u{1b}[201~".utf8)
+        let expectedRaw = expectedData
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let scriptURL = makeBracketedPasteProbeScript(
+            readBytes: expectedData.count
+        )
+        let view = makeSurface(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardReads = true
+        _ = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+
+        XCTAssertTrue(view.pasteProgrammaticInput(path))
+
+        waitForViewportText("<RAW:\(expectedRaw)>", in: view)
+    }
+
     /// Regression coverage for roborev finding 1332: `isPasteShortcut`
     /// previously required device-independent flags to equal exactly
     /// `.command`, so Caps Lock being active (which contributes
