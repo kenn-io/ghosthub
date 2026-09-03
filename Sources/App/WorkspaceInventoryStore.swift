@@ -219,15 +219,6 @@ final class WorkspaceInventoryStore: ObservableObject {
         kwtMutationEpochsByHost[host, default: 0]
     }
 
-    /// Worktree removal tombstones still active for a host. Cached inventory
-    /// is already filtered by them, so scenes keep their own matching
-    /// tombstones until the cache confirms the rows are gone.
-    func removalTombstones(
-        on host: CommandHost
-    ) -> [String: Set<KwtWorktreeIdentity>] {
-        kwtRemovalTombstonesByHost[host] ?? [:]
-    }
-
     func publishKwtInventory(
         _ inventory: KwtHostInventory,
         on host: CommandHost,

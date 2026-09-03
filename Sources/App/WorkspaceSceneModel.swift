@@ -4112,9 +4112,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     let tombstones = recordsSuccessfulLoad
                         ? activeRemovalTombstones(
                             after: inventory,
-                            hostID: hostID,
-                            retaining: workspaceInventoryStore
-                                .removalTombstones(on: commandHost)
+                            hostID: hostID
                         )
                         : removalTombstones(hostID: hostID)
                     applyAuthoritativeKwtInventory(
@@ -5057,13 +5055,9 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
-    /// Prunes scene tombstones the inventory no longer lists. `retaining`
-    /// names tombstones the shared cache still applies; the cached inventory
-    /// omits those rows without proving them gone, so they stay active.
     private func activeRemovalTombstones(
         after inventory: KwtHostInventory,
-        hostID: UUID,
-        retaining: [String: Set<KwtWorktreeIdentity>] = [:]
+        hostID: UUID
     ) -> [String: Set<KwtWorktreeIdentity>] {
         var activeTombstones: [String: Set<KwtWorktreeIdentity>] = [:]
         let scopes = worktreeRemovalTombstones.keys.filter {
@@ -5079,9 +5073,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     scope: scope
                 )
             }
-            let retained = retaining[scope.projectIdentity] ?? []
             let active = tombstones.filter { tombstone in
-                retained.contains(tombstone) || projects.contains { project in
+                projects.contains { project in
                     project.warning != nil
                         || project.worktrees.contains {
                             Self.removalTombstones(
