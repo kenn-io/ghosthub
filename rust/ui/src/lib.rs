@@ -1406,10 +1406,22 @@ const fn can_open_directory_workspace(
     session_available: bool,
     kwt_open_available: bool,
 ) -> bool {
-    is_presented
-        || (matches!(attach_mode, KwtTmuxAttachMode::Direct)
-            && ((matches!(socket, WorktreeSocket::Default) && session_available)
-                || kwt_open_available))
+    matches!(attach_mode, KwtTmuxAttachMode::Direct)
+        && (is_presented
+            || (matches!(socket, WorktreeSocket::Default) && session_available)
+            || kwt_open_available)
+}
+
+const fn can_kill_directory_workspace(
+    host_can_attach: bool,
+    attach_mode: KwtTmuxAttachMode,
+    socket: WorktreeSocket,
+    session_available: bool,
+) -> bool {
+    host_can_attach
+        && session_available
+        && (matches!(attach_mode, KwtTmuxAttachMode::Direct)
+            || matches!(socket, WorktreeSocket::Custom))
 }
 
 fn owns_created_worktree_navigation(
@@ -7608,18 +7620,25 @@ impl RootView {
             let is_retained = retained
                 .iter()
                 .any(|retained| kwt_selection_matches_presentation(&selection, retained));
+            let socket = if workspace.tmux_socket_name().is_some() {
+                WorktreeSocket::Custom
+            } else {
+                WorktreeSocket::Default
+            };
+            let host_can_attach = host.accepts_session_actions();
             let can_open = can_open_directory_workspace(
                 is_active || is_retained,
                 workspace.tmux_attach_mode(),
-                if workspace.tmux_socket_name().is_some() {
-                    WorktreeSocket::Custom
-                } else {
-                    WorktreeSocket::Default
-                },
-                workspace.session_available() && host.accepts_session_actions(),
-                host.kwt_available() && host.accepts_session_actions(),
+                socket,
+                workspace.session_available() && host_can_attach,
+                host.kwt_available() && host_can_attach,
             );
-            let can_kill = workspace.session_available() && host.accepts_session_actions();
+            let can_kill = can_kill_directory_workspace(
+                host_can_attach,
+                workspace.tmux_attach_mode(),
+                socket,
+                workspace.session_available(),
+            );
             rows.push(Self::worktree_row(
                 host_index,
                 usize::MAX,
@@ -9550,8 +9569,8 @@ mod tests {
         activate_settings_sidebar_pane, active_session_selection, adjacent_appearance_field,
         advance_settings_focus, appearance_draft_is_persistable, appearance_preview_color,
         application_navigation_width, apply_new_worktree_failure, apply_worktree_removal_failure,
-        available_herdr_row_actions, can_create_worktree, can_kill_worktree,
-        can_open_directory_workspace, canonical_terminal_key_with,
+        available_herdr_row_actions, can_create_worktree, can_kill_directory_workspace,
+        can_kill_worktree, can_open_directory_workspace, canonical_terminal_key_with,
         chrome_palette_for_terminal_theme, clear_terminal_input_state, clears_after_input_delivery,
         clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
         focused_settings_detail, has_ambiguous_worktree_source, herdr_row_actions,
@@ -9910,7 +9929,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_workspace_open_requires_a_live_default_session_or_kwt() {
+    fn directory_workspace_capabilities_follow_attachment_contract() {
         assert!(can_open_directory_workspace(
             false,
             KwtTmuxAttachMode::Direct,
@@ -9952,6 +9971,31 @@ mod tests {
             WorktreeSocket::Custom,
             false,
             false,
+        ));
+        assert!(!can_open_directory_workspace(
+            true,
+            KwtTmuxAttachMode::Protected,
+            WorktreeSocket::Default,
+            true,
+            true,
+        ));
+        assert!(can_kill_directory_workspace(
+            true,
+            KwtTmuxAttachMode::Direct,
+            WorktreeSocket::Default,
+            true,
+        ));
+        assert!(can_kill_directory_workspace(
+            true,
+            KwtTmuxAttachMode::Protected,
+            WorktreeSocket::Custom,
+            true,
+        ));
+        assert!(!can_kill_directory_workspace(
+            true,
+            KwtTmuxAttachMode::Protected,
+            WorktreeSocket::Default,
+            true,
         ));
     }
 
