@@ -2045,6 +2045,52 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("Removing a legacy-identity project keeps other legacy projects")
+    func removingLegacyProjectKeepsOtherLegacyProjects() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        let removed = ProjectSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            scopedKey: "",
+            name: "Removed",
+            rootPath: "/tmp/legacy-removed"
+        )
+        let kept = ProjectSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            scopedKey: "",
+            name: "Kept",
+            rootPath: "/tmp/legacy-kept"
+        )
+        snapshot.projects.append(contentsOf: [removed, kept])
+        let coordinator = WorktreeMutationCoordinator()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            worktreeMutationCoordinator: coordinator
+        )
+        #expect(coordinator.acquire(
+            hostID: environment.host.id,
+            projectIdentity: ""
+        ))
+
+        coordinator.release(
+            hostID: environment.host.id,
+            projectIdentity: "",
+            removesProject: true,
+            allowsRemovalRestoration: false,
+            projectPath: removed.rootPath
+        )
+
+        #expect(model.snapshot.project(id: removed.id) == nil)
+        #expect(model.snapshot.project(id: kept.id) != nil)
+        #expect(model.snapshot.project(id: environment.project.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("Replacement endpoint cannot classify an old quarantine as removed")
     func replacementEndpointDoesNotResolveOldQuarantine() async throws {
         let environment = try setupRemoteEnvironment()

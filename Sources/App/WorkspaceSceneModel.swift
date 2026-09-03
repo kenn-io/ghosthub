@@ -4309,7 +4309,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 dismissSelectedWorktreePresentation(in: event.scope)
             }
             if event.removesProject {
-                applyProjectRemoval(scope: event.scope)
+                applyProjectRemoval(
+                    scope: event.scope,
+                    projectPath: event.projectPath
+                )
             } else if !event.removalTombstones.isEmpty {
                 worktreeRemovalTombstones[event.scope, default: []]
                     .formUnion(event.removalTombstones)
@@ -4362,18 +4365,29 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    /// Removes the project a completed removal named. A legacy-empty identity
+    /// names nothing by itself, so only the removed project's path applies.
     private func applyProjectRemoval(
-        scope: WorktreeMutationCoordinator.Scope
+        scope: WorktreeMutationCoordinator.Scope,
+        projectPath: String?
     ) {
+        let removedPath = projectPath.map(normalizedWorkspacePath)
+        func removes(repository: String, path: String) -> Bool {
+            guard scope.projectIdentity.isEmpty else {
+                return repository == scope.projectIdentity
+            }
+            guard let removedPath else { return false }
+            return normalizedWorkspacePath(path) == removedPath
+        }
         if var inventory = kwtInventoriesByHost[scope.hostID] {
             inventory.projects.removeAll {
-                $0.project.repository == scope.projectIdentity
+                removes(repository: $0.project.repository, path: $0.project.path)
             }
             kwtInventoriesByHost[scope.hostID] = inventory
         }
         let projectIDs = Set(snapshot.projects.compactMap { project in
             project.hostID == scope.hostID
-                && project.scopedKey == scope.projectIdentity
+                && removes(repository: project.scopedKey, path: project.rootPath)
                 ? project.id : nil
         })
         let worktreeIDs = Set(snapshot.worktrees.compactMap { worktree in
@@ -7033,7 +7047,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 target
             )
             noteProjectRegistration(project, on: target)
-            refreshKwtInventory()
             return .success(project.name)
         } catch {
             if let hostID {

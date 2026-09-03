@@ -1862,7 +1862,6 @@ struct WorkspaceInventoryStoreTests {
             projectIdentity: repository,
             projectPath: path
         )
-        store.refreshKwt(for: subscriberID)
         await waitUntilMainActor {
             loadCount.load() == 3
                 && store.snapshot.kwtByHost[.local]?.inventory?.projects
@@ -1994,7 +1993,6 @@ struct WorkspaceInventoryStoreTests {
             projectIdentity: "example/repository",
             projectPath: path
         )
-        store.refreshKwt(for: subscriberID)
         await waitUntilMainActor {
             loadCount.load() == 2
                 && store.snapshot.kwtByHost[.local]?.inventory?.projects
@@ -2088,5 +2086,92 @@ struct WorkspaceInventoryStoreTests {
             store.snapshot.kwtByHost[.local]?.inventory?.projects.isEmpty
                 == true
         )
+    }
+
+    @Test("a provisional publication revokes cached freshness")
+    func provisionalPublicationRevokesFreshness() {
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in KwtHostInventory(projects: []) },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        store.publishKwtInventory(
+            KwtHostInventory(projects: []),
+            on: .local,
+            mutation: nil
+        )
+        #expect(store.snapshot.kwtByHost[.local]?.isFresh == true)
+
+        let provisional = KwtHostInventory(projects: [
+            legacyProject(name: "X", path: "/test/x", repository: "x"),
+        ])
+        store.publishKwtInventory(
+            provisional,
+            on: .local,
+            mutation: nil,
+            recordsSuccessfulLoad: false
+        )
+        #expect(store.snapshot.kwtByHost[.local]?.isFresh == false)
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects
+                == provisional.projects
+        )
+    }
+
+    @Test("registration discards a load that started before it")
+    func registrationDiscardsEarlierLoad() async {
+        let firstLoad = AsyncGate()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let registered = KwtHostInventory(projects: [
+            legacyProject(name: "Y", path: "/test/y", repository: "y"),
+        ])
+        let coordinator = WorktreeMutationCoordinator()
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                if loadCount.load() == 1 {
+                    await firstLoad.wait()
+                    return KwtHostInventory(projects: [])
+                }
+                return registered
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer {
+            firstLoad.open()
+            store.removeSubscriber(id: subscriberID)
+        }
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        await firstLoad.waitUntilWaiting()
+
+        coordinator.noteProjectRegistration(
+            hostID: hostID,
+            projectIdentity: "y",
+            projectPath: "/test/y"
+        )
+        firstLoad.open()
+
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[.local]?.isFresh == true
+                && store.snapshot.kwtByHost[.local]?.inventory?.projects
+                == registered.projects
+        }
+        #expect(loadCount.load() == 2)
     }
 }

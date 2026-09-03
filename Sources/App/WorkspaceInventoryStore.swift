@@ -510,6 +510,9 @@ final class WorkspaceInventoryStore {
             entry.observationRevision = revision
             entry.state = .loaded
             entry.isFresh = true
+        } else {
+            // Provisional rows must not read as an authoritative load.
+            entry.isFresh = false
         }
         snapshot.kwtByHost[host] = entry
     }
@@ -743,7 +746,8 @@ final class WorkspaceInventoryStore {
             }
         case .registered:
             // Registration is not fenced, so a concurrent mutation's result
-            // may predate it. Advancing the epoch rejects such a result, and
+            // or an in-flight load may predate it. Advancing the epoch
+            // rejects such a result, invalidation discards such a load, and
             // dropping the satisfied fence makes the mutation end reload.
             let hosts = Set(subscribers.values.flatMap(\.registrations)
                 .filter { $0.hostID == event.scope.hostID }
@@ -758,6 +762,10 @@ final class WorkspaceInventoryStore {
                     path: event.projectPath,
                     on: host
                 )
+            }
+            invalidateKwtHosts(hosts)
+            for host in hosts where subscribedKwtHosts().contains(host) {
+                requestKwt(host)
             }
         case .willRemove:
             break
