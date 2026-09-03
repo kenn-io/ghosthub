@@ -4293,6 +4293,12 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         case .registered:
             worktreeRemovalTombstones.removeValue(forKey: event.scope)
+            worktreeRemovalTombstones.removeValue(
+                forKey: WorktreeMutationCoordinator.Scope(
+                    hostID: event.scope.hostID,
+                    projectIdentity: ""
+                )
+            )
             return
         case .quarantined:
             fencedWorktreeMutationScopes.remove(event.scope)
@@ -4365,15 +4371,16 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
-    /// Removes the project a completed removal named. A legacy-empty identity
-    /// names nothing by itself, so only the removed project's path applies.
+    /// Removes the project a completed removal named, using the shared
+    /// cache's rule: two non-empty identities compare by identity, and when
+    /// either side is legacy-empty only the removed project's path applies.
     private func applyProjectRemoval(
         scope: WorktreeMutationCoordinator.Scope,
         projectPath: String?
     ) {
         let removedPath = projectPath.map(normalizedWorkspacePath)
         func removes(repository: String, path: String) -> Bool {
-            guard scope.projectIdentity.isEmpty else {
+            if !scope.projectIdentity.isEmpty, !repository.isEmpty {
                 return repository == scope.projectIdentity
             }
             guard let removedPath else { return false }

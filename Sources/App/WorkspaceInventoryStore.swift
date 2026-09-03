@@ -796,7 +796,10 @@ final class WorkspaceInventoryStore {
         if kwtProjectRemovalTombstonesByHost[host]?.isEmpty == true {
             kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
         }
-        for repository in Set(cleared.map(\.repository) + [repository]) {
+        // Legacy-empty worktree tombstones cannot name their project, so a
+        // registration releases them too; the reload that follows restores
+        // any removal kwt still reports.
+        for repository in Set(cleared.map(\.repository) + [repository, ""]) {
             kwtRemovalTombstonesByHost[host]?.removeValue(forKey: repository)
         }
         if kwtRemovalTombstonesByHost[host]?.isEmpty == true {
