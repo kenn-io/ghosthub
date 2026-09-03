@@ -269,7 +269,29 @@ private struct WindowFocusTracker: NSViewRepresentable {
 @MainActor
 private final class DraggableTitlebarHostingView:
     NSHostingView<AnyView> {
+    var onClick: () -> Void = {}
+
+    private lazy var clickRecognizer = NSClickGestureRecognizer(
+        target: self,
+        action: #selector(handleClick(_:))
+    )
+
+    required init(rootView: AnyView) {
+        super.init(rootView: rootView)
+        addGestureRecognizer(clickRecognizer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
     override var mouseDownCanMoveWindow: Bool { true }
+
+    @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        onClick()
+    }
 }
 
 @MainActor
@@ -521,6 +543,7 @@ final class CompactWorkspaceTitlebarController {
         self.onSettings = onSettings
         self.onNewWorktree = onNewWorktree
         self.onRenameWindow = onRenameWindow
+        titleHost.onClick = { [weak self] in self?.onRenameWindow() }
         guard renderedPresentation != presentation else { return false }
 
         renderedPresentation = presentation
@@ -614,21 +637,21 @@ private struct EditableWindowTitleView: View {
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: onRename) {
-            HStack(spacing: 5) {
-                title
-                if isHovered {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 10, weight: .medium))
-                        .frame(width: 16, height: 16)
-                        .transition(.opacity)
-                }
+        HStack(spacing: 5) {
+            title
+            if isHovered {
+                Image(systemName: "pencil")
+                    .font(.system(size: 10, weight: .medium))
+                    .frame(width: 16, height: 16)
+                    .transition(.opacity)
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
         .help("Rename Window")
+        .accessibilityElement(children: .combine)
         .accessibilityLabel("Rename Window")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onRename() }
         .onHover { isHovered = $0 }
     }
 
