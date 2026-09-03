@@ -193,7 +193,8 @@ clients ignore tmux window sizing and render at the dimensions discovery
 reported for the session's active window; selecting one promotes that retained
 client in place by clearing `ignore-size` before interaction. Windows/psmux
 sessions are not attached automatically because psmux has no non-sizing client
-mode.
+mode. A POSIX tmux version without safe exact-client targeting remains usable
+interactively, but Ghosthub detaches it instead of retaining it while hidden.
 Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
 client. Ghosthub never reconstructs or otherwise controls Herdr themes,
 workspaces, tabs, panes, agents, plugins, installation, updates, configuration,

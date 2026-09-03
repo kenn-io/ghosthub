@@ -857,6 +857,14 @@ client. Ghosthub never projects tmux windows or panes into a Swift split tree.
 Changing selection only hides the previous retained client. Pressing Cmd-W
 closes the active client, while closing its workspace window or the app closes
 every client retained by that scene; none of these paths runs `kill-session`.
+On POSIX hosts, every hidden retained tmux client uses tmux's client-local
+`ignore-size` flag, including after reconnect. Ghosthub clears that flag on the
+exact client before making its surface interactive. If the exact-client
+transition fails while hiding, Ghosthub detaches the client instead of leaving
+an invisible sizing client attached. A resolved tmux version without safe
+exact-client targeting remains available for interactive use, but Ghosthub
+detaches it instead of retaining it while hidden. Ghosthub never changes the
+tmux session's global `window-size` policy.
 Optional sidebar previews are GPU-native. Libghostty renders each retained
 client into its Metal-backed IOSurface; Ghosthub uses a Metal-backed Core Image
 context to scale a changed frame into a width-bounded preview IOSurface, then

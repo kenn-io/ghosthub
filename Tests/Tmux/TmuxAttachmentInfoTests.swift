@@ -602,6 +602,25 @@ struct TmuxAttachmentInfoTests {
         #expect(tmuxCommands.contains("@2 window-active-style"))
     }
 
+    @Test("non-sizing workspace attach still establishes through kwt")
+    func nonSizingWorkspaceAttachUsesKwt() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "kwt-widget-feature",
+            host: .local,
+            workspacePath: "/worktrees/widget",
+            ignoresClientSize: true
+        ).attachCommand(
+            tmuxPath: "/usr/bin/tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+
+        #expect(command.contains("/Contents/Helpers/kwt"))
+        #expect(command.contains("'open'"))
+        #expect(!command.contains("attach-session"))
+        #expect(!command.contains("ignore-size"))
+        #expect(!command.contains("refresh-client"))
+    }
+
     @Test("worktree attachment survives destroy-unattached")
     func localWorktreeSurvivesDestroyUnattached() throws {
         let tmuxPath = ProcessInfo.processInfo.environment["PATH"]?

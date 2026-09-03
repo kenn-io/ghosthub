@@ -61,6 +61,20 @@ struct TmuxPaneSplitter: Sendable {
         version: String,
         host: CommandHost
     ) -> Bool {
+        supportsExactClientTargeting(version: version, host: host)
+    }
+
+    static func supportsClientSizing(
+        version: String,
+        host: CommandHost
+    ) -> Bool {
+        supportsExactClientTargeting(version: version, host: host)
+    }
+
+    private static func supportsExactClientTargeting(
+        version: String,
+        host: CommandHost
+    ) -> Bool {
         guard platform(for: host) == .posix else { return false }
         guard let version = TmuxVersion(output: version) else { return false }
         return version >= .minimumFind

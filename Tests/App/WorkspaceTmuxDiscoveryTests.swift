@@ -13,6 +13,61 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
+    @Test("hiding a named socket does not use a default-socket preview grid")
+    @MainActor
+    func namedSocketHidingDoesNotUseDefaultSocketPreviewGrid() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "build",
+                managed: false,
+                windows: [],
+                previewClientSize: TmuxGridSize(columns: 132, rows: 41)
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let hiddenSizingApplied = LockedValue(false)
+        let splitter = TmuxPaneSplitter { _, _, command in
+            if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                return (
+                    0,
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                        + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                )
+            }
+            if command.contains("ignore-size"),
+               !command.contains("!ignore-size") {
+                hiddenSizingApplied.withLock { $0 = true }
+            }
+            return (0, "")
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: splitter,
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "build",
+            socketName: "private-build"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor { hiddenSizingApplied.load() }
+
+        #expect(surfaceStore.surface.previewGridSizes.isEmpty)
+        await model.shutdown()
+    }
+
     @Test("Always Live activation waits for exact-client verification")
     @MainActor
     func alwaysLiveActivationWaitsForExactClientVerification() async throws {
@@ -2172,6 +2227,12 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$1",
+                    createdAt: "1000"
+                )),
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },

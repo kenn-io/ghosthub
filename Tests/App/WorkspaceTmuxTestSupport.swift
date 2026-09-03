@@ -129,8 +129,15 @@ final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
     private(set) var lastObserverID: UUID?
+    private(set) var previewGridSizes: [TmuxGridSize] = []
     private(set) var clearPreviewGridCount = 0
     private(set) var keyboardFocusRequestCount = 0
+
+    @discardableResult
+    func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool {
+        previewGridSizes.append(TmuxGridSize(columns: columns, rows: rows))
+        return true
+    }
 
     func clearPreviewGridSize() {
         clearPreviewGridCount += 1

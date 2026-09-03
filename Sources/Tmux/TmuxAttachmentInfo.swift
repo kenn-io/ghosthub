@@ -377,7 +377,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             )
         }
         let attach: String
-        if let protectedWorkspacePath, launchMode != .attachOnly {
+        if let protectedWorkspacePath,
+           launchMode != .attachOnly {
             let protectedAttach: String
             if let remoteKwtCommandPrelude {
                 let kwtAttach = remoteKwtCommandPrelude

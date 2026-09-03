@@ -16,6 +16,13 @@ private let coordinatorSplitClientOutput =
     "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t123\t789\t321"
         + "\t/dev/ttys001\t$7\t456\t%9\n"
 
+enum SizingTeardown: Sendable {
+    case detach
+    case launchFailure
+    case shutdown
+    case surfaceClose
+}
+
 private func supportedPaneSplitter(
     _ runner: @escaping TmuxPaneSplitter.Runner
 ) -> TmuxPaneSplitter {
@@ -661,6 +668,8 @@ struct NativeTmuxSessionCoordinatorTests {
 
         let close = try #require(store.surface.closeObservers[handle.id])
         close(false, 255)
+        #expect(!coordinator.hasLaunched(handle))
+        #expect(coordinator.closedAttachmentHadLaunched(handle))
         let reattached = coordinator.attach(
             hostID: hostID,
             name: "release-work",
@@ -1629,6 +1638,77 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(store.requestedKeys.count == requestCount)
     }
 
+    @Test("host replacement waits for stale provisioning release")
+    func hostReplacementWaitsForStaleProvisioningRelease() async throws {
+        let events = LockedValue<[String]>([])
+        let originalResolutionStarted = LockedValue(false)
+        let releaseOriginalResolution = DispatchSemaphore(value: 0)
+        defer { releaseOriginalResolution.signal() }
+        let originalHost = SSHHostInfo(
+            user: "user",
+            hostname: "old.example.test",
+            port: nil
+        )
+        let replacementHost = SSHHostInfo(
+            user: "user",
+            hostname: "new.example.test",
+            port: nil
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: RecordingNativeSessionSurfaceStore(),
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { host, _ in
+                if host == originalHost {
+                    originalResolutionStarted.store(true)
+                    _ = releaseOriginalResolution.wait(timeout: .now() + 5)
+                }
+                return successfulTmuxResolution("/usr/bin/tmux")
+            },
+            remoteConnectionProvider: { _, host in
+                let label = host == originalHost ? "original" : "replacement"
+                events.withLock { $0.append("\(label)-acquire") }
+                return testKwtSSHAttachment(release: {
+                    events.withLock { $0.append("\(label)-release") }
+                })
+            }
+        )
+        let hostID = UUID()
+        let original = coordinator.attach(
+            hostID: hostID,
+            name: "stale-provisioning",
+            host: .ssh(originalHost),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { originalResolutionStarted.load() }
+        let unblockResolution = Task.detached {
+            try? await Task.sleep(for: .milliseconds(250))
+            releaseOriginalResolution.signal()
+        }
+
+        let replacement = coordinator.attach(
+            hostID: hostID,
+            name: original.name,
+            host: .ssh(replacementHost),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor {
+            events.load().contains("original-release")
+                && events.load().contains("replacement-acquire")
+        }
+        await unblockResolution.value
+
+        #expect(replacement.id != original.id)
+        let completedEvents = events.load()
+        let release = try #require(
+            completedEvents.firstIndex(of: "original-release")
+        )
+        let replacementAcquire = try #require(
+            completedEvents.firstIndex(of: "replacement-acquire")
+        )
+        #expect(release < replacementAcquire)
+        await coordinator.shutdown()
+    }
+
     @Test("rejected terminal surfaces never report command launch")
     func rejectedSurfaceDoesNotLaunch() async {
         let store = RecordingNativeSessionSurfaceStore(
@@ -1671,6 +1751,47 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!coordinator.hasLaunched(handle))
         #expect(coordinator.attachmentClosure(handle) == .launchFailed)
         #expect(store.removedKeys.count == 1)
+    }
+
+    @Test("a replacement attach outlives the failed launch's disconnect")
+    func replacementAttachIgnoresStaleLaunchFailure() async {
+        let store = RecordingNativeSessionSurfaceStore(
+            launchError: SurfaceLaunchTestError.rejected
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
+        )
+        var states: [ConnectionState] = []
+        var readyCount = 0
+        coordinator.onStateChanged = { _, state in states.append(state) }
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let hostID = UUID()
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "release-work",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        #expect(coordinator.attachmentClosure(handle) == .launchFailed)
+        let replacement = coordinator.attach(
+            hostID: hostID,
+            name: "release-work",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        #expect(replacement == handle)
+
+        await waitUntilMainActor { readyCount == 2 }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(states == [.connecting, .connecting])
+        #expect(coordinator.attachmentClosure(handle) == nil)
+        await coordinator.shutdown()
     }
 
     @Test("a missing terminal surface is a launch failure")
@@ -1835,7 +1956,11 @@ struct NativeTmuxSessionCoordinatorTests {
                     let lookup = identityLookups.load()
                     if lookup == 2 {
                         promotionStarted.withLock { $0 = true }
-                        releasePromotion.wait()
+                        while !withUnsafeCurrentTask(body: {
+                            $0?.isCancelled == true
+                        }),
+                            releasePromotion.wait(timeout: .now() + 0.005)
+                            == .timedOut {}
                     }
                     return (0, coordinatorSplitClientOutput)
                 }
@@ -1891,6 +2016,435 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(promotionMutations.load() == 1)
     }
 
+    @Test("interactive sizing waits for an in-flight preview sizing mutation")
+    func interactiveSizingWaitsForPreviewSizing() async {
+        let events = LockedValue<[String]>([])
+        let previewStarted = LockedValue(false)
+        let releasePreview = DispatchSemaphore(value: 0)
+        defer { releasePreview.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'!ignore-size'") {
+                    events.withLock { $0.append("interactive") }
+                } else if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("hidden-start") }
+                    previewStarted.store(true)
+                    _ = releasePreview.wait(timeout: .now() + 5)
+                    events.withLock { $0.append("hidden-end") }
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "sizing-order",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let hide = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor { previewStarted.load() }
+        let reopen = Task { @MainActor in
+            await coordinator.enableInteractiveSizing(for: handle)
+        }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(events.load() == ["hidden-start"])
+        releasePreview.signal()
+        #expect(await hide.value == .applied)
+        #expect(await reopen.value == .applied)
+        #expect(events.load() == [
+            "hidden-start", "hidden-end", "interactive",
+        ])
+    }
+
+    @Test("a cancelled sizing transition does not run after its predecessor")
+    func cancelledSizingTransitionDoesNotRun() async {
+        let events = LockedValue<[String]>([])
+        let previewStarted = LockedValue(false)
+        let releasePreview = DispatchSemaphore(value: 0)
+        defer { releasePreview.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'!ignore-size'") {
+                    events.withLock { $0.append("interactive") }
+                } else if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("hidden-start") }
+                    previewStarted.store(true)
+                    _ = releasePreview.wait(timeout: .now() + 5)
+                    events.withLock { $0.append("hidden-end") }
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "cancelled-sizing",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let hide = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor { previewStarted.load() }
+        let reopen = Task { @MainActor in
+            await coordinator.enableInteractiveSizing(for: handle)
+        }
+        reopen.cancel()
+        releasePreview.signal()
+
+        #expect(await hide.value == .applied)
+        #expect(await reopen.value == .stale)
+        #expect(events.load() == ["hidden-start", "hidden-end"])
+    }
+
+    @Test(
+        "teardown cancels sizing before releasing its SSH attachment",
+        arguments: [
+            SizingTeardown.detach,
+            .launchFailure,
+            .shutdown,
+            .surfaceClose,
+        ]
+    )
+    func teardownCancelsSizingBeforeRelease(
+        _ teardown: SizingTeardown
+    ) async throws {
+        let events = LockedValue<[String]>([])
+        let allowSizingCompletion = DispatchSemaphore(value: 0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let hostID = UUID()
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let connectionRequests = LockedValue(0)
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                connectionRequests.withLock { $0 += 1 }
+                if connectionRequests.load() > 1 {
+                    events.withLock { $0.append("replacement-acquire") }
+                }
+                return testKwtSSHAttachment(
+                    release: {
+                        events.withLock { $0.append("release") }
+                    }
+                )
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("sizing-start") }
+                    while !withUnsafeCurrentTask(body: {
+                        $0?.isCancelled == true
+                    }),
+                        allowSizingCompletion.wait(timeout: .now() + 0.005)
+                        == .timedOut {}
+                    let wasCancelled = withUnsafeCurrentTask(body: {
+                        $0?.isCancelled == true
+                    })
+                    events.withLock {
+                        $0.append(
+                            wasCancelled ? "sizing-cancel" : "sizing-finish"
+                        )
+                    }
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        coordinator.onStateChanged = { _, state in
+            if case .disconnected = state {
+                events.withLock { $0.append("disconnected") }
+            }
+        }
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "teardown-sizing",
+            host: .ssh(host),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let sizing = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor {
+            events.load() == ["sizing-start"]
+        }
+        let expectsDisconnected = switch teardown {
+        case .detach, .shutdown: false
+        case .launchFailure, .surfaceClose: true
+        }
+
+        switch teardown {
+        case .detach:
+            coordinator.detach(
+                hostID: hostID,
+                name: handle.name
+            )
+        case .launchFailure:
+            store.surface.launchError = SurfaceLaunchTestError.rejected
+            _ = coordinator.surface(handle: handle)
+        case .shutdown:
+            await coordinator.shutdown()
+        case .surfaceClose:
+            let close = try #require(
+                store.surface.closeObservers[handle.id]
+            )
+            close(true, nil)
+        }
+        if expectsDisconnected {
+            _ = coordinator.attach(
+                hostID: hostID,
+                name: handle.name,
+                host: .ssh(host),
+                sessionIdentity: coordinatorSplitIdentity
+            )
+        }
+        await waitUntilMainActor {
+            events.load().contains("release")
+                && (!expectsDisconnected
+                    || events.load().contains("replacement-acquire"))
+        }
+
+        switch teardown {
+        case .detach, .shutdown:
+            #expect(events.load() == [
+                "sizing-start", "sizing-cancel", "release",
+            ])
+        case .launchFailure, .surfaceClose:
+            let completedEvents = events.load()
+            let cancellation = try #require(
+                completedEvents.firstIndex(of: "sizing-cancel")
+            )
+            let release = try #require(
+                completedEvents.firstIndex(of: "release")
+            )
+            let replacement = try #require(
+                completedEvents.firstIndex(of: "replacement-acquire")
+            )
+            #expect(cancellation < release)
+            #expect(cancellation < replacement)
+        }
+        allowSizingCompletion.signal()
+        _ = await sizing.value
+    }
+
+    @Test("host replacement waits for prior sizing cleanup")
+    func hostReplacementWaitsForPriorSizingCleanup() async throws {
+        let events = LockedValue<[String]>([])
+        let connectionRequests = LockedValue(0)
+        let releaseSizingDrain = DispatchSemaphore(value: 0)
+        defer { releaseSizingDrain.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let hostID = UUID()
+        let originalHost = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let replacementHost = SSHHostInfo(
+            user: "operator",
+            hostname: "replacement.example.test",
+            port: nil
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                connectionRequests.withLock { $0 += 1 }
+                let label = connectionRequests.load() == 1
+                    ? "original" : "replacement"
+                events.withLock { $0.append("\(label)-acquire") }
+                return testKwtSSHAttachment(release: {
+                    events.withLock { $0.append("\(label)-release") }
+                })
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("sizing-start") }
+                    while !withUnsafeCurrentTask(body: {
+                        $0?.isCancelled == true
+                    }) {
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    events.withLock { $0.append("sizing-cancel") }
+                    releaseSizingDrain.wait()
+                    events.withLock { $0.append("sizing-drained") }
+                }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "replacement-sizing",
+            host: .ssh(originalHost),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        events.store([])
+
+        let sizing = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor {
+            events.load() == ["sizing-start"]
+        }
+        let unblockDrain = Task.detached {
+            try? await Task.sleep(for: .milliseconds(250))
+            releaseSizingDrain.signal()
+        }
+        let replacement = coordinator.attach(
+            hostID: hostID,
+            name: handle.name,
+            host: .ssh(replacementHost),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor {
+            events.load().contains("original-release")
+                && events.load().contains("replacement-acquire")
+        }
+        await unblockDrain.value
+        _ = await sizing.value
+        #expect(replacement.id != handle.id)
+        let completedEvents = events.load()
+        let release = try #require(
+            completedEvents.firstIndex(of: "original-release")
+        )
+        let replacementAcquire = try #require(
+            completedEvents.firstIndex(of: "replacement-acquire")
+        )
+        #expect(release < replacementAcquire)
+        await coordinator.shutdown()
+    }
+
+    @Test("shutdown waits for a prior close sizing drain")
+    func shutdownWaitsForPriorCloseSizingDrain() async throws {
+        let events = LockedValue<[String]>([])
+        let sizingCancelled = LockedValue(false)
+        let releaseSizingDrain = DispatchSemaphore(value: 0)
+        defer { releaseSizingDrain.signal() }
+        let shutdownFinished = LockedValue(false)
+        let store = RecordingNativeSessionSurfaceStore()
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(release: {
+                    events.withLock { $0.append("release") }
+                })
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("sizing-start") }
+                    while !withUnsafeCurrentTask(body: {
+                        $0?.isCancelled == true
+                    }) {
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    sizingCancelled.store(true)
+                    events.withLock { $0.append("sizing-cancel") }
+                    releaseSizingDrain.wait()
+                }
+                return (0, "")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "close-then-shutdown",
+            host: .ssh(host),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+        let sizing = Task { @MainActor in
+            await coordinator.restorePreviewSizing(nil, for: handle)
+        }
+        await waitUntilMainActor {
+            events.load() == ["sizing-start"]
+        }
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(true, nil)
+        await waitUntilMainActor { sizingCancelled.load() }
+        let shutdown = Task { @MainActor in
+            await coordinator.shutdown()
+            events.withLock { $0.append("shutdown-finish") }
+            shutdownFinished.store(true)
+        }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(!shutdownFinished.load())
+
+        releaseSizingDrain.signal()
+        await shutdown.value
+        _ = await sizing.value
+        #expect(events.load() == [
+            "sizing-start", "sizing-cancel", "release", "shutdown-finish",
+        ])
+    }
+
     @Test("interactive sizing refreshes geometry before clearing ignore-size")
     func interactiveSizingRefreshesGeometryBeforePromotion() async {
         let store = RecordingNativeSessionSurfaceStore()
@@ -1931,8 +2485,8 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(store.surface.clearPreviewGridCount == 2)
     }
 
-    @Test("stale promotion restore recovers the tmux window dimensions")
-    func stalePromotionRestoreRecoversTmuxWindowDimensions() async throws {
+    @Test("preview sizing sets ignore-size before changing the local grid")
+    func previewSizingSetsIgnoreSizeBeforeChangingGrid() async throws {
         guard case let .success(binary) = TmuxBinaryResolver()
             .resolveTmuxBinary(),
             TmuxPaneSplitter.supportsPaneSplitting(
@@ -2006,31 +2560,21 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(interactiveResize.status == 0)
 
         let store = RecordingNativeSessionSurfaceStore()
-        var previewResizeStatus: Int32?
-        store.surface.onPreviewGridSize = { gridSize in
+        var previewGridWasIgnored = false
+        store.surface.onPreviewGridSize = { _ in
             let clients = AccountCommandRunner.runProcess(
                 executable: binary.path,
                 arguments: server.connectionArguments + [
                     "list-clients", "-F",
-                    "#{client_tty}\t#{client_flags}",
+                    "#{client_tty}|#{client_flags}",
                 ],
                 timeout: 5
             )
             let clientFlags = clients.stdout.split(whereSeparator: \.isNewline)
                 .map(String.init)
-                .first { $0.hasPrefix(clientIdentity.clientTTY + "\t") }
-            guard clientFlags?.contains("ignore-size") == false else {
-                return
-            }
-            previewResizeStatus = AccountCommandRunner.runProcess(
-                executable: binary.path,
-                arguments: server.connectionArguments + [
-                    "resize-window", "-t", "restored:",
-                    "-x", String(gridSize.columns),
-                    "-y", String(gridSize.rows),
-                ],
-                timeout: 5
-            ).status
+                .first { $0.hasPrefix(clientIdentity.clientTTY + "|") }
+            previewGridWasIgnored =
+                clientFlags?.contains("ignore-size") == true
         }
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
@@ -2072,12 +2616,12 @@ struct NativeTmuxSessionCoordinatorTests {
             timeout: 5
         )
 
-        #expect(previewResizeStatus == 0)
+        #expect(previewGridWasIgnored)
         #expect(measured.status == 0)
         #expect(
             measured.stdout.trimmingCharacters(
                 in: CharacterSet.whitespacesAndNewlines
-            ) == "120x37"
+            ) == "80x24"
         )
     }
 
@@ -2266,6 +2810,114 @@ struct NativeTmuxSessionCoordinatorTests {
             store.requestedConfigurations.last?.command
         )
         #expect(command.contains("ignore-size"))
+    }
+
+    @Test("preview sizing requested during provisioning changes the attach")
+    func previewSizingDuringProvisioningChangesAttach() async throws {
+        let resolutionStarted = LockedValue(false)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                resolutionStarted.store(true)
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "provisioning-preview",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { resolutionStarted.load() }
+
+        let transition = await coordinator.restorePreviewSizing(
+            nil,
+            for: handle
+        )
+        #expect(transition == .pending)
+        releaseResolution.signal()
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("ignore-size"))
+    }
+
+    @Test("hidden sizing before a kwt launch stays pending")
+    func hiddenSizingBeforeKwtLaunchStaysPending() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            localKwtPathProvider: {
+                "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "kwt-widget-feature",
+            host: .local,
+            workingDirectory: "/worktrees/widget",
+            openWorkspace: true,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { isReady }
+
+        let transition = await coordinator.restorePreviewSizing(
+            TmuxGridSize(columns: 120, rows: 37),
+            for: handle
+        )
+        #expect(transition == .pending)
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("'open'"))
+        #expect(!command.contains("ignore-size"))
+        #expect(!command.contains("stty"))
+    }
+
+    @Test("unsupported tmux ignores non-sizing attachment requests")
+    func unsupportedTmuxIgnoresNonSizingAttachRequest() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                successfulTmuxResolution(
+                    "/usr/bin/tmux",
+                    version: "tmux 3.3"
+                )
+            }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "unsupported-sizing",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity,
+            ignoresClientSize: true,
+            previewGridSize: TmuxGridSize(columns: 120, rows: 37)
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(!command.contains("ignore-size"))
+        #expect(store.surface.previewGridSizes.isEmpty)
     }
 }
 
