@@ -5237,7 +5237,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 removalTombstones: worktreeMutationCoordinator
                     .pendingRemovals[scope] ?? [],
                 removesProject: true,
-                allowsRemovalRestoration: false
+                allowsRemovalRestoration: false,
+                projectPath: projectPath
             )
         }
     }
