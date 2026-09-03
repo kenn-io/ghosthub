@@ -10424,6 +10424,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     if resumesCurrentActivation {
                         if !nativeTmuxSessionCoordinator.isProvisioning(
                             presentation.handle
+                        ), !nativeTmuxSessionCoordinator.hasClosedAttachment(
+                            presentation.handle
                         ) {
                             tmuxSurfaceBecameReady(presentation.handle)
                         }
@@ -11117,6 +11119,11 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         let key = TmuxPresentationKey(presentation.selection)
+        if case .disconnected = state,
+           presentation.sizingIntent == .interactive,
+           presentation.pendingSizingActivationNavigationRevision != nil {
+            presentation.sizingTransitionTask?.cancel()
+        }
         if case .disconnected = state,
            alwaysLiveManagedTmuxPresentationKeys.contains(key),
            !nativeTmuxSessionCoordinator.closedAttachmentHadLaunched(handle),

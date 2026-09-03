@@ -1159,6 +1159,118 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("disconnect during interactive sizing resumes pending activation")
+    func disconnectDuringInteractiveSizingResumesActivation() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        var snapshot = environment.snapshot
+        let remoteIndex = try #require(snapshot.hosts.firstIndex {
+            $0.id == environment.remoteHost.id
+        })
+        let previewGrid = TmuxGridSize(columns: 120, rows: 37)
+        snapshot.hosts[remoteIndex].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "release-work",
+                managed: false,
+                windows: [],
+                serverPID: "101",
+                sessionID: "$1",
+                createdAt: "1000",
+                previewClientSize: previewGrid
+            ),
+        ]
+        let hiddenSizingMutations = LockedValue(0)
+        let interactiveSizingStarted = LockedValue(false)
+        let interactiveSizingFinished = LockedValue(false)
+        let releaseInteractiveSizing = DispatchSemaphore(value: 0)
+        let reconnectGate = BlockingGate()
+        defer {
+            releaseInteractiveSizing.signal()
+            reconnectGate.release()
+        }
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'!ignore-size'") {
+                    interactiveSizingStarted.store(true)
+                    _ = releaseInteractiveSizing.wait(timeout: .now() + 5)
+                    interactiveSizingFinished.store(true)
+                } else if command.contains("'ignore-size'") {
+                    hiddenSizingMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionValidationDiscovery: { _, _ in
+                reconnectGate.wait()
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        serverPID: "101",
+                        sessionID: "$1",
+                        createdAt: "1000",
+                        previewClientSize: previewGrid,
+                        managed: false
+                    ),
+                ])
+            },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let handle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+        let close = try #require(
+            surfaceStore.surface.closeObservers[handle.id]
+        )
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor { hiddenSizingMutations.load() == 1 }
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { interactiveSizingStarted.load() }
+        close(false, 255)
+        await waitUntilMainActor { reconnectGate.didStart }
+        releaseInteractiveSizing.signal()
+        await waitUntilMainActor { interactiveSizingFinished.load() }
+        try await Task.sleep(for: .milliseconds(25))
+
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == handle)
+        #expect(model.activeBorrowedTmuxSelection == selection)
+
+        reconnectGate.release()
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == handle)
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("local disconnect during hidden sizing resumes on reconnect")
     func localDisconnectDuringHiddenSizingResumesOnReconnect() async throws {
         let environment = try setupStandardEnvironment()
