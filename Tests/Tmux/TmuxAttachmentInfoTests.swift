@@ -7,6 +7,25 @@ import Testing
 
 @Suite("Native tmux attachment")
 struct TmuxAttachmentInfoTests {
+    private static func protectedIdentity(
+        path: String = "/worktrees/pr-32",
+        socketName: String = "kwt-pr-0123456789abcdef"
+    ) -> KwtProtectedWorktreeOpenIdentity {
+        guard let identity = KwtProtectedWorktreeOpenIdentity(
+            path: path,
+            projectPath: "/repos/ghosthub",
+            repository: "github.com/kenn-io/ghosthub",
+            registrationFingerprint: "registration-123",
+            generation: "0123456789abcdef0123456789abcdef",
+            sessionName: "pr-32",
+            socketName: socketName,
+            tmuxAttachMode: "protected"
+        ) else {
+            fatalError("valid protected KWT identity fixture")
+        }
+        return identity
+    }
+
     @Test("preview attachments do not participate in tmux window sizing")
     func previewAttachmentsIgnoreClientSize() {
         let command = TmuxAttachmentInfo(
@@ -338,6 +357,7 @@ struct TmuxAttachmentInfoTests {
             sessionName: "pr-32",
             host: .local,
             socketName: "kwt-pr-0123456789abcdef",
+            kwtProtectedWorktreeIdentity: Self.protectedIdentity(),
             protectedWorkspacePath: "/worktrees/pr-32",
             presentationStyle: TmuxPresentationStyle(
                 foreground: "#3B4851",
@@ -360,6 +380,11 @@ struct TmuxAttachmentInfoTests {
         if let kwtPosition, let stylePosition {
             #expect(kwtPosition < stylePosition)
         }
+        #expect(command.contains("--expected-repository"))
+        #expect(command.contains("--expected-registration"))
+        #expect(command.contains("--expected-generation"))
+        #expect(command.contains("--expected-session"))
+        #expect(command.contains("--expected-socket"))
     }
 
     @Test("an unresolved tmux name contributes no PATH entry")
@@ -368,6 +393,7 @@ struct TmuxAttachmentInfoTests {
             sessionName: "pr-32",
             host: .local,
             socketName: "kwt-pr-0123456789abcdef",
+            kwtProtectedWorktreeIdentity: Self.protectedIdentity(),
             protectedWorkspacePath: "/worktrees/pr-32"
         ).attachCommand(
             tmuxPath: "tmux",
@@ -388,11 +414,19 @@ struct TmuxAttachmentInfoTests {
     }
 
     @Test("ordinary local worktree attaches through kwt without a handoff")
-    func localWorktreeAttachesThroughKwt() {
+    func localWorktreeAttachesThroughKwt() throws {
+        let identity = try #require(KwtWorktreeOpenIdentity(
+            repository: "github.com/example/widget",
+            registrationFingerprint: "registration-fingerprint",
+            generation: "0123456789abcdef0123456789abcdef",
+            sessionName: "kwt-widget-feature",
+            tmuxAttachMode: "direct"
+        ))
         let command = TmuxAttachmentInfo(
             sessionName: "kwt-widget-feature",
             host: .local,
-            workspacePath: "/worktrees/widget's feature"
+            workspacePath: "/worktrees/widget's feature",
+            kwtWorktreeIdentity: identity
         ).attachCommand(
             tmuxPath: "/opt/homebrew/bin/tmux",
             kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
@@ -403,9 +437,28 @@ struct TmuxAttachmentInfoTests {
         ))
         #expect(command.contains("open"))
         #expect(command.contains("/worktrees/widget"))
+        #expect(command.contains("--expected-repository"))
+        #expect(command.contains("github.com/example/widget"))
+        #expect(command.contains("--expected-registration"))
+        #expect(command.contains("registration-fingerprint"))
+        #expect(command.contains("--expected-generation"))
+        #expect(command.contains("0123456789abcdef0123456789abcdef"))
+        #expect(command.contains("--expected-session"))
+        #expect(command.contains("kwt-widget-feature"))
         #expect(command.contains("exec"))
         #expect(!command.contains("--start-session"))
         #expect(!command.contains("attach-session"))
+    }
+
+    @Test("guarded worktree open accepts only direct attachment mode")
+    func guardedWorktreeOpenRequiresDirectMode() {
+        #expect(KwtWorktreeOpenIdentity(
+            repository: "github.com/example/widget",
+            registrationFingerprint: "registration-fingerprint",
+            generation: "0123456789abcdef0123456789abcdef",
+            sessionName: "kwt-widget-feature",
+            tmuxAttachMode: "protected"
+        ) == nil)
     }
 
     @Test("existing local worktrees receive built-in theme defaults")
@@ -704,6 +757,7 @@ struct TmuxAttachmentInfoTests {
             sessionName: "pr-32",
             host: .local,
             socketName: "kwt-pr-0123456789abcdef",
+            kwtProtectedWorktreeIdentity: Self.protectedIdentity(),
             protectedWorkspacePath: "/worktrees/pr-32",
             presentationStyle: TmuxPresentationStyle(
                 foreground: "#3B4851",
@@ -837,17 +891,19 @@ struct TmuxAttachmentInfoTests {
         #expect(!script.contains("‘"))
     }
 
-    @Test("Windows worktrees run one kwt establishment attempt")
-    func windowsRemoteWorkspaceAttachCommand() throws {
+    @Test("Windows named-server directories run one KWT establishment attempt")
+    func windowsNamedServerDirectoryAttachCommand() throws {
         let command = TmuxAttachmentInfo(
             sessionName: "release work",
             host: .ssh(SSHHostInfo(
-                user: "wesm",
-                hostname: "arm-builder",
+                user: "user-a",
+                hostname: "builder.example.test",
                 port: nil,
                 platform: .windows
             )),
-            workspacePath: #"C:\code\release work"#
+            socketName: "kwt",
+            workspacePath: #"C:\code\release work"#,
+            kwtExpectedSessionName: "release work"
         ).attachCommand(
             tmuxPath: #"C:\Program Files\psmux\tmux.exe"#,
             windowsKwtRelativePath:
@@ -865,12 +921,66 @@ struct TmuxAttachmentInfoTests {
         ))
         #expect(!script.contains("Get-Command kwt.exe"))
         #expect(script.contains(
-            "& $ghosthubKwt 'open' "
+            "& $ghosthubKwt "
+                + powerShellEncodedArgument("open") + " "
                 + powerShellEncodedArgument(#"C:\code\release work"#)
         ))
-        #expect(!script.contains("has-session"))
-        #expect(!script.contains("attach-session"))
+        #expect(script.contains("'--start-session' '--json'"))
+        #expect(script.contains(powerShellEncodedArgument(
+            "--expected-session"
+        )))
+        #expect(script.contains("ConvertFrom-Json"))
+        #expect(script.contains(
+            powerShellEncodedArgument("release work")
+        ))
+        #expect(script.contains(powerShellEncodedArgument("kwt")))
+        for argument in [
+            "-L",
+            "kwt",
+            "attach-session",
+            "-E",
+            "-t",
+            "=release work",
+        ] {
+            #expect(script.contains(powerShellEncodedArgument(argument)))
+        }
         #expect(!script.contains("exec /bin/sh"))
+    }
+
+    @Test("Windows default-server directories validate the KWT endpoint")
+    func windowsDefaultServerDirectoryValidatesEndpoint() throws {
+        let command = TmuxAttachmentInfo(
+            sessionName: "release work",
+            host: .ssh(SSHHostInfo(
+                user: "user-a",
+                hostname: "builder.example.test",
+                port: nil,
+                platform: .windows
+            )),
+            workspacePath: #"C:\code\release work"#,
+            kwtExpectedSessionName: "release work"
+        ).attachCommand(
+            tmuxPath: #"C:\Program Files\psmux\tmux.exe"#,
+            windowsKwtRelativePath:
+            #".ghosthub\helpers\kwt\0123456789012345678901234567890123456789\kwt.exe"#
+        )
+
+        let script = try Self.decodedPowerShellScript(from: command)
+        #expect(script.contains(powerShellEncodedArgument(
+            "--expected-session"
+        )))
+        #expect(script.contains("'--start-session' '--json'"))
+        #expect(script.contains("ConvertFrom-Json"))
+        #expect(script.contains("tmux_socket_name"))
+        for argument in [
+            "attach-session",
+            "-E",
+            "-t",
+            "=release work",
+        ] {
+            #expect(script.contains(powerShellEncodedArgument(argument)))
+        }
+        #expect(!script.contains(powerShellEncodedArgument("-L")))
     }
 
     @Test("isolated remote attachment targets the returned tmux socket")
@@ -881,6 +991,7 @@ struct TmuxAttachmentInfoTests {
                 user: "wesm", hostname: "build-box", port: nil
             )),
             socketName: "kwt-pr-0123456789abcdef",
+            kwtProtectedWorktreeIdentity: Self.protectedIdentity(),
             protectedWorkspacePath: "/worktrees/pr-32",
             presentationStyle: TmuxPresentationStyle(
                 foreground: "#3B4851",
@@ -934,6 +1045,19 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("=pr-32"))
         #expect(!command.contains("ghosthub_kwt_path"))
         #expect(!command.contains("/worktrees/pr-32"))
+    }
+
+    @Test("unresolved protected attachment never uses the default server")
+    func unresolvedProtectedAttachOnlyCommand() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "pr-32",
+            host: .local,
+            protectedWorkspacePath: "/worktrees/pr-32",
+            launchMode: .attachOnly
+        ).attachCommand(tmuxPath: "/usr/bin/tmux")
+
+        #expect(command.contains("protected tmux endpoint is unavailable"))
+        #expect(!command.contains("attach-session"))
     }
 
     @Test("confirmed protected Windows session reattaches through psmux only")

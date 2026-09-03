@@ -1583,6 +1583,11 @@ extension WorkspaceWorktreeRemovalTests {
         let interactiveSizingStarted = LockedValue(false)
         let releaseInteractiveSizing = DispatchSemaphore(value: 0)
         defer { releaseInteractiveSizing.signal() }
+        let sessionIdentity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -1614,12 +1619,20 @@ extension WorkspaceWorktreeRemovalTests {
                     status: 1
                 )
             },
-            tmuxSessionIdentityReader: { selection, host in
-                throw TmuxSessionKillError.sessionNotRunning(
-                    host: host.displayName,
-                    session: selection.name
-                )
+            tmuxSessionDiscovery: { _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "kwt-ghosthub-feature",
+                        windowCount: 1,
+                        serverPID: sessionIdentity.serverPID,
+                        sessionID: sessionIdentity.sessionID,
+                        createdAt: sessionIdentity.createdAt,
+                        managed: true
+                    ),
+                ])
             },
+            tmuxSessionKiller: { _, _, _ in },
+            tmuxSessionIdentityReader: { _, _ in sessionIdentity },
             sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
         )
         let selection = try #require(
@@ -1706,14 +1719,13 @@ extension WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("failed removal never restores a socketless protected client hidden")
-    func failedRemovalLeavesSocketlessProtectedClientExplicit() async throws {
+    @Test("a socketless protected client cannot start")
+    func socketlessProtectedClientCannotStart() async throws {
         let environment = try setupRemoteEnvironment()
         let removable = protectedRemovableWorktree(
             environment,
             socketName: nil
         )
-        let sessionName = try #require(removable.tmuxSessionName)
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let mutations = WorktreeMutationCoordinator()
         let model = try makeProtectedRemovalModel(
@@ -1722,53 +1734,19 @@ extension WorkspaceWorktreeRemovalTests {
             surfaceStore: surfaceStore,
             mutations: mutations,
             tmuxExactSessionProbe: { _ in .success(false) },
-            tmuxSessionDiscovery: { _ in
-                .success([
-                    DiscoveredTmuxSession(
-                        name: sessionName,
-                        windowCount: 1,
-                        createdAt: nil,
-                        managed: true
-                    ),
-                ])
-            }
+            tmuxSessionDiscovery: { _ in .success([]) }
         )
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
         )
         #expect(selection.socketName == nil)
-        let other = WorkspaceTmuxSessionSelection(
-            hostID: environment.host.id,
-            name: "other"
-        )
-        try await openProtectedThenOther(
-            model,
-            store: surfaceStore,
-            mutations: mutations,
-            selection: selection,
-            other: other,
-            expectedPresentationCount: 1
-        )
-
-        let request = try await model.prepareWorktreeRemoval(removable.id)
-        await #expect(throws: KwtWorktreeError.self) {
-            try await model.removeWorktree(request)
-        }
+        model.openBorrowedTmuxSession(selection)
         try await Task.sleep(for: .milliseconds(100))
 
-        #expect(surfaceStore.requestCount == 2)
+        #expect(surfaceStore.requestCount == 0)
         #expect(model.retainedBorrowedTmuxHandle(for: selection) == nil)
-        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
-        #expect(model.activeBorrowedTmuxSelection == other)
-
-        model.openBorrowedTmuxSession(selection)
-        await waitUntilMainActor {
-            model.prepareActiveBorrowedTmuxSurface()
-            return surfaceStore.requestCount == 3
-        }
-        let reopened = try #require(surfaceStore.lastConfiguration?.command)
-        #expect(reopened.contains("ghosthub_kwt_path"))
-        #expect(!reopened.contains("attach-session"))
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(model.activeBorrowedTmuxSelection == nil)
         await model.shutdown()
     }
 
@@ -1778,7 +1756,7 @@ extension WorkspaceWorktreeRemovalTests {
         let environment = try setupRemoteEnvironment()
         let removable = protectedRemovableWorktree(
             environment,
-            socketName: nil
+            socketName: "kwt-pr-94"
         )
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let mutations = WorktreeMutationCoordinator()
@@ -1797,6 +1775,7 @@ extension WorkspaceWorktreeRemovalTests {
         let inactiveSelection = WorkspaceTmuxSessionSelection(
             hostID: selection.hostID,
             name: selection.name,
+            socketName: selection.socketName,
             tmuxAttachMode: .protected
         )
         let other = WorkspaceTmuxSessionSelection(

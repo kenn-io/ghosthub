@@ -279,7 +279,7 @@ extension WorkspaceWorktreeRemovalTests {
             }
         )
         inventoryAfterMove.projects[0]
-            .worktrees[recordIndex].tmuxSocketName = nil
+            .worktrees[recordIndex].tmuxSocketName = "moved-protected"
         let movedInventory = inventoryAfterMove
         let probes = LockedValue<[String?]>([])
         let removals = LockedValue(0)
@@ -309,20 +309,15 @@ extension WorkspaceWorktreeRemovalTests {
         }
 
         #expect(updatedRequest.worktree.path == moved.path)
-        #expect(updatedRequest.worktree.tmuxSocketName == nil)
-        #expect(probes.load() == ["protected", nil])
+        #expect(updatedRequest.worktree.tmuxSocketName == "moved-protected")
+        #expect(probes.load() == ["protected", "moved-protected"])
         #expect(removals.load() == 0)
         await model.shutdown()
     }
 
     @MainActor
-    @Test(
-        "a replacement claiming the confirmed tmux endpoint requires confirmation",
-        arguments: ["protected", nil] as [String?]
-    )
-    func replacementClaimingTmuxEndpointRequiresConfirmation(
-        replacementSocket: String?
-    ) async throws {
+    @Test("a replacement claiming the confirmed tmux endpoint requires confirmation")
+    func replacementClaimingTmuxEndpointRequiresConfirmation() async throws {
         let fixture = try removalFixture(
             path: "/tmp/project-a-feature",
             sessionName: "kwt-project-a-feature",
@@ -342,7 +337,7 @@ extension WorkspaceWorktreeRemovalTests {
             generation: "fedcba9876543210fedcba9876543210"
         )
         replacement.tmuxSessionName = removable.tmuxSessionName
-        replacement.tmuxSocketName = replacementSocket
+        replacement.tmuxSocketName = "protected"
         replacement.tmuxAttachMode = .protected
         let replacementInventory = inventory(
             environment,
@@ -380,7 +375,67 @@ extension WorkspaceWorktreeRemovalTests {
 
         #expect(updatedRequest.worktree.path == replacement.path)
         #expect(updatedRequest.worktree.generation == replacement.generation)
-        #expect(updatedRequest.worktree.tmuxSocketName == replacementSocket)
+        #expect(updatedRequest.worktree.tmuxSocketName == "protected")
+        #expect(kills.load() == 0)
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a replacement without a protected endpoint is rejected")
+    func replacementWithoutProtectedEndpointIsRejected() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature",
+            socketName: "protected",
+            tmuxAttachMode: .protected
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var replacement = WorktreeSummary.fixture(
+            hostID: removable.hostID,
+            projectID: removable.projectID,
+            scopedKey: "/tmp/project-a-replacement",
+            name: removable.name,
+            path: "/tmp/project-a-replacement",
+            branch: removable.branch,
+            generation: "fedcba9876543210fedcba9876543210"
+        )
+        replacement.tmuxSessionName = removable.tmuxSessionName
+        replacement.tmuxSocketName = nil
+        replacement.tmuxAttachMode = .protected
+        let replacementInventory = inventory(
+            environment,
+            including: replacement,
+            generation: replacement.generation
+        )
+        let removals = LockedValue(0)
+        let kills = LockedValue(0)
+        let identity = TmuxSessionIdentity(
+            serverPID: "31415",
+            sessionID: "$8",
+            createdAt: "1721552400"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in replacementInventory },
+            kwtWorktreeRemover: { _, _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { _, _ in identity }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.removalIdentityUnavailable) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
         #expect(kills.load() == 0)
         #expect(removals.load() == 0)
         await model.shutdown()
@@ -692,8 +747,8 @@ extension WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("an omitted preflight socket requires renewed confirmation")
-    func omittedPreflightSocketRequiresConfirmation() async throws {
+    @Test("an omitted protected preflight socket is rejected")
+    func omittedProtectedPreflightSocketIsRejected() async throws {
         let fixture = try removalFixture(
             path: "/tmp/project-a-feature",
             sessionName: "kwt-project-a-feature",
@@ -712,6 +767,7 @@ extension WorkspaceWorktreeRemovalTests {
         preflight.projects[0].worktrees[recordIndex].tmuxSocketName = nil
         let omissionPreflight = preflight
         let removals = LockedValue(0)
+        let probes = LockedValue<[String?]>([])
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -721,6 +777,7 @@ extension WorkspaceWorktreeRemovalTests {
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
+                probes.withLock { $0.append(selection.socketName) }
                 throw TmuxSessionKillError.sessionNotRunning(
                     host: host.displayName,
                     session: selection.name
@@ -729,15 +786,11 @@ extension WorkspaceWorktreeRemovalTests {
         )
 
         let request = try await model.prepareWorktreeRemoval(removable.id)
-        let result = try await model.resolveWorktreeRemoval(request)
-
-        guard case let .confirmationRequired(updatedRequest) = result else {
-            Issue.record("Unresolved endpoint should require confirmation")
-            await model.shutdown()
-            return
+        await #expect(throws: KwtWorktreeError.removalIdentityUnavailable) {
+            try await model.resolveWorktreeRemoval(request)
         }
-        #expect(updatedRequest.worktree.tmuxAttachMode == .protected)
-        #expect(updatedRequest.worktree.tmuxSocketName == nil)
+
+        #expect(probes.load() == ["protected"])
         #expect(removals.load() == 0)
         await model.shutdown()
     }

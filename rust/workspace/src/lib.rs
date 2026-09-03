@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use config::{ApplicationConfig, Roots, SshHostSettings, TerminalAppearance};
 pub use config::{CursorStyle, TerminalTheme};
+pub use host::KwtTmuxAttachMode;
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
     HostSnapshot, KwtInventory, KwtPullRequestImportRequest, KwtSshExecutable, LiveSessionTarget,
@@ -54,12 +55,11 @@ use runtime::{
     reconcile_herdr_lifecycle_fences, refresh_is_in_flight, register_remote_attachment,
     register_remote_constructive, register_scene, release_zellij_kill,
     remember_pending_kwt_creation, remote_constructive_is_current, remote_host_for_connection,
-    remove_killed_zellij_session, require_current_protected_selection,
-    require_host_session_actions, reserve_constructive_inventory, reserve_refresh,
-    reserve_zellij_kill, scene_by_id, set_herdr_inventory, set_remote_herdr_launch_pending,
-    set_remote_host_snapshot, set_remote_host_state, set_zellij_inventory,
-    settle_remote_constructive_task, unregister_scene, with_current_remote_constructive,
-    zellij_kill_is_current,
+    remove_killed_zellij_session, require_current_kwt_selection, require_host_session_actions,
+    reserve_constructive_inventory, reserve_refresh, reserve_zellij_kill, scene_by_id,
+    set_herdr_inventory, set_remote_herdr_launch_pending, set_remote_host_snapshot,
+    set_remote_host_state, set_zellij_inventory, settle_remote_constructive_task, unregister_scene,
+    with_current_remote_constructive, zellij_kill_is_current,
 };
 use scene::{
     NavigationFence, Scene, activate_retained_presentation, attach_scene, begin_refresh,
@@ -293,6 +293,7 @@ pub struct SessionSelection {
     session: String,
     kind: SessionKind,
     tmux_socket_name: Option<String>,
+    tmux_attach_mode: Option<host::KwtTmuxAttachMode>,
     worktree_path: Option<String>,
     worktree_generation: Option<String>,
 }
@@ -330,28 +331,31 @@ impl SessionSelection {
             session: session.into(),
             kind: SessionKind::Tmux,
             tmux_socket_name: None,
+            tmux_attach_mode: None,
             worktree_path: None,
             worktree_generation: None,
         }
     }
 
     #[must_use]
-    pub fn protected_worktree(
+    pub fn kwt_workspace(
         host_id: impl Into<String>,
         endpoint: impl Into<String>,
         session: impl Into<String>,
-        socket_name: impl Into<String>,
+        tmux_attach_mode: host::KwtTmuxAttachMode,
+        socket_name: Option<String>,
         path: impl Into<String>,
-        generation: impl Into<String>,
+        generation: Option<String>,
     ) -> Self {
         Self {
             host_id: host_id.into(),
             endpoint: endpoint.into(),
             session: session.into(),
             kind: SessionKind::Tmux,
-            tmux_socket_name: Some(socket_name.into()),
+            tmux_socket_name: socket_name,
+            tmux_attach_mode: Some(tmux_attach_mode),
             worktree_path: Some(path.into()),
-            worktree_generation: Some(generation.into()),
+            worktree_generation: generation,
         }
     }
 
@@ -367,6 +371,7 @@ impl SessionSelection {
             session: session.into(),
             kind: SessionKind::Herdr,
             tmux_socket_name: None,
+            tmux_attach_mode: None,
             worktree_path: None,
             worktree_generation: None,
         }
@@ -384,6 +389,7 @@ impl SessionSelection {
             session: session.into(),
             kind: SessionKind::Zellij,
             tmux_socket_name: None,
+            tmux_attach_mode: None,
             worktree_path: None,
             worktree_generation: None,
         }
@@ -412,6 +418,11 @@ impl SessionSelection {
     #[must_use]
     pub fn tmux_socket_name(&self) -> Option<&str> {
         self.tmux_socket_name.as_deref()
+    }
+
+    #[must_use]
+    pub const fn tmux_attach_mode(&self) -> Option<host::KwtTmuxAttachMode> {
+        self.tmux_attach_mode
     }
 
     #[must_use]
@@ -558,6 +569,7 @@ pub struct WorktreeItem {
     generation: Option<String>,
     session_name: String,
     tmux_socket_name: Option<String>,
+    tmux_attach_mode: host::KwtTmuxAttachMode,
     session_available: bool,
 }
 
@@ -569,9 +581,10 @@ impl WorktreeItem {
         is_main: bool,
         generation: Option<String>,
         session_name: impl Into<String>,
-        tmux_socket_name: Option<String>,
+        tmux_endpoint: (Option<String>, host::KwtTmuxAttachMode),
         session_available: bool,
     ) -> Self {
+        let (tmux_socket_name, tmux_attach_mode) = tmux_endpoint;
         Self {
             path: path.into(),
             branch: branch.into(),
@@ -579,6 +592,7 @@ impl WorktreeItem {
             generation,
             session_name: session_name.into(),
             tmux_socket_name,
+            tmux_attach_mode,
             session_available,
         }
     }
@@ -614,6 +628,11 @@ impl WorktreeItem {
     }
 
     #[must_use]
+    pub const fn tmux_attach_mode(&self) -> host::KwtTmuxAttachMode {
+        self.tmux_attach_mode
+    }
+
+    #[must_use]
     pub const fn session_available(&self) -> bool {
         self.session_available
     }
@@ -624,6 +643,8 @@ pub struct DirectoryWorkspaceItem {
     name: String,
     path: String,
     session_name: String,
+    tmux_socket_name: Option<String>,
+    tmux_attach_mode: host::KwtTmuxAttachMode,
     session_available: bool,
 }
 
@@ -633,12 +654,16 @@ impl DirectoryWorkspaceItem {
         name: impl Into<String>,
         path: impl Into<String>,
         session_name: impl Into<String>,
+        tmux_endpoint: (Option<String>, host::KwtTmuxAttachMode),
         session_available: bool,
     ) -> Self {
+        let (tmux_socket_name, tmux_attach_mode) = tmux_endpoint;
         Self {
             name: name.into(),
             path: path.into(),
             session_name: session_name.into(),
+            tmux_socket_name,
+            tmux_attach_mode,
             session_available,
         }
     }
@@ -656,6 +681,16 @@ impl DirectoryWorkspaceItem {
     #[must_use]
     pub fn session_name(&self) -> &str {
         &self.session_name
+    }
+
+    #[must_use]
+    pub fn tmux_socket_name(&self) -> Option<&str> {
+        self.tmux_socket_name.as_deref()
+    }
+
+    #[must_use]
+    pub const fn tmux_attach_mode(&self) -> host::KwtTmuxAttachMode {
+        self.tmux_attach_mode
     }
 
     #[must_use]
@@ -974,34 +1009,42 @@ impl HostItem {
     pub fn kwt_owns_default_tmux_session(&self, name: &str) -> bool {
         self.projects.iter().any(|project| {
             project.worktrees.iter().any(|worktree| {
-                worktree.tmux_socket_name.is_none() && worktree.session_name == name
+                worktree.tmux_attach_mode == host::KwtTmuxAttachMode::Direct
+                    && worktree.tmux_socket_name.is_none()
+                    && worktree.session_name == name
             })
-        }) || self
-            .directory_workspaces
-            .iter()
-            .any(|workspace| workspace.session_name == name)
+        }) || self.directory_workspaces.iter().any(|workspace| {
+            workspace.tmux_attach_mode == host::KwtTmuxAttachMode::Direct
+                && workspace.tmux_socket_name.is_none()
+                && workspace.session_name == name
+        })
     }
 
     #[must_use]
-    pub fn kwt_owns_protected_presentation(&self, selection: &SessionSelection) -> bool {
-        let (Some(socket_name), Some(worktree_path), Some(generation)) = (
-            selection.tmux_socket_name(),
-            selection.worktree_path(),
-            selection.worktree_generation(),
-        ) else {
+    pub fn kwt_owns_workspace_presentation(&self, selection: &SessionSelection) -> bool {
+        let (Some(mode), Some(worktree_path)) =
+            (selection.tmux_attach_mode(), selection.worktree_path())
+        else {
             return false;
         };
         selection.kind() == SessionKind::Tmux
             && selection.host_id() == self.id
             && selection.endpoint() == self.endpoint
-            && self.projects.iter().any(|project| {
+            && (self.projects.iter().any(|project| {
                 project.worktrees.iter().any(|worktree| {
                     worktree.session_name == selection.session()
-                        && worktree.tmux_socket_name.as_deref() == Some(socket_name)
+                        && worktree.tmux_socket_name.as_deref() == selection.tmux_socket_name()
+                        && worktree.tmux_attach_mode == mode
                         && worktree.path == worktree_path
-                        && worktree.generation.as_deref() == Some(generation)
+                        && worktree.generation.as_deref() == selection.worktree_generation()
                 })
-            })
+            }) || self.directory_workspaces.iter().any(|workspace| {
+                workspace.session_name == selection.session()
+                    && workspace.tmux_socket_name.as_deref() == selection.tmux_socket_name()
+                    && workspace.tmux_attach_mode == mode
+                    && workspace.path == worktree_path
+                    && selection.worktree_generation().is_none()
+            }))
     }
 }
 
@@ -1444,6 +1487,7 @@ pub struct KwtWorktreeTarget {
     generation: Option<String>,
     session_name: String,
     tmux_socket_name: Option<String>,
+    tmux_attach_mode: host::KwtTmuxAttachMode,
 }
 
 impl KwtWorktreeTarget {
@@ -1482,6 +1526,10 @@ impl KwtWorktreeTarget {
     #[must_use]
     pub fn tmux_socket_name(&self) -> Option<&str> {
         self.tmux_socket_name.as_deref()
+    }
+    #[must_use]
+    pub const fn tmux_attach_mode(&self) -> host::KwtTmuxAttachMode {
+        self.tmux_attach_mode
     }
 }
 
@@ -2586,6 +2634,7 @@ struct AttachRequest {
     endpoint: host::WslEndpoint,
     runtime: host::WslRuntimeIdentity,
     target: AttachTarget,
+    exact_worktree_attach: bool,
     name: String,
     inventory_generation: u64,
 }
@@ -2600,12 +2649,21 @@ impl AttachRequest {
     }
 }
 
-fn normalize_attached_worktree_target(
+fn normalize_attached_kwt_target(
     active: &mut ActiveAttachment<AttachRequest>,
     snapshot: &HostSnapshot,
     attached_name: &str,
 ) -> bool {
-    if !matches!(active.request.target, AttachTarget::Worktree { .. }) {
+    if !matches!(
+        active.request.target,
+        AttachTarget::Worktree {
+            tmux_socket_name: None,
+            ..
+        } | AttachTarget::DirectoryWorkspace {
+            tmux_socket_name: None,
+            ..
+        }
+    ) {
         return false;
     }
     let Some(identity) = snapshot
@@ -2626,19 +2684,24 @@ fn normalize_attached_worktree_target(
     true
 }
 
-fn worktree_tmux_presentation_key(
+fn kwt_tmux_presentation_key(
     request: &AttachRequest,
     snapshot: &HostSnapshot,
 ) -> Option<PresentationKey> {
-    let AttachTarget::Worktree { session_name, .. } = &request.target else {
-        return None;
+    let identity = match &request.target {
+        AttachTarget::Worktree {
+            session_name,
+            tmux_socket_name: None,
+            ..
+        } => snapshot
+            .sessions()
+            .iter()
+            .find(|session| session.name() == session_name)?
+            .identity()
+            .clone(),
+        AttachTarget::DiscoveredWorktree { identity, .. } => identity.clone(),
+        _ => return None,
     };
-    let identity = snapshot
-        .sessions()
-        .iter()
-        .find(|session| session.name() == session_name)?
-        .identity()
-        .clone();
     Some(PresentationKey {
         host_id: request.host_id.clone(),
         endpoint: request.endpoint.distro().to_owned(),
@@ -2655,9 +2718,26 @@ fn attach_target_matches_killed_tmux(
     socket_name: Option<&str>,
 ) -> bool {
     match target {
-        AttachTarget::Tmux(target_identity) => target_identity == identity,
-        AttachTarget::Worktree { session_name, .. } => {
-            socket_name.is_none() && name.is_some_and(|name| session_name == name)
+        AttachTarget::Tmux(target_identity)
+        | AttachTarget::DiscoveredWorktree {
+            identity: target_identity,
+            ..
+        } => target_identity == identity,
+        AttachTarget::Worktree {
+            session_name,
+            tmux_socket_name,
+            ..
+        } => {
+            tmux_socket_name.as_deref() == socket_name
+                && name.is_some_and(|name| session_name == name)
+        }
+        AttachTarget::DirectoryWorkspace {
+            session_name,
+            tmux_socket_name,
+            ..
+        } => {
+            tmux_socket_name.as_deref() == socket_name
+                && name.is_some_and(|name| session_name == name)
         }
         AttachTarget::ProtectedWorktree {
             session_name,
@@ -2704,8 +2784,22 @@ enum AttachTarget {
         repository: String,
         registration_fingerprint: String,
         path: String,
+        generation: String,
+        session_name: String,
+        tmux_socket_name: Option<String>,
+    },
+    DiscoveredWorktree {
+        repository: String,
+        registration_fingerprint: String,
+        path: String,
         generation: Option<String>,
         session_name: String,
+        identity: session::SessionIdentity,
+    },
+    DirectoryWorkspace {
+        path: String,
+        session_name: String,
+        tmux_socket_name: Option<String>,
     },
     ProtectedWorktree {
         repository: String,
@@ -2745,9 +2839,11 @@ impl AttachTarget {
 
     const fn kind(&self) -> SessionKind {
         match self {
-            Self::Tmux(_) | Self::Worktree { .. } | Self::ProtectedWorktree { .. } => {
-                SessionKind::Tmux
-            }
+            Self::Tmux(_)
+            | Self::Worktree { .. }
+            | Self::DiscoveredWorktree { .. }
+            | Self::DirectoryWorkspace { .. }
+            | Self::ProtectedWorktree { .. } => SessionKind::Tmux,
             Self::Herdr { .. } => SessionKind::Herdr,
             Self::Zellij { .. } => SessionKind::Zellij,
         }
@@ -2962,13 +3058,64 @@ impl AttachRequest {
             ..
         } = &self.target
         {
-            return SessionSelection::protected_worktree(
+            return SessionSelection::kwt_workspace(
                 &self.host_id,
                 self.endpoint.distro(),
                 &self.name,
-                tmux_socket_name,
+                host::KwtTmuxAttachMode::Protected,
+                Some(tmux_socket_name.clone()),
                 path,
-                generation,
+                Some(generation.clone()),
+            );
+        }
+        if let AttachTarget::Worktree {
+            path,
+            generation,
+            tmux_socket_name,
+            ..
+        } = &self.target
+        {
+            return SessionSelection::kwt_workspace(
+                &self.host_id,
+                self.endpoint.distro(),
+                &self.name,
+                host::KwtTmuxAttachMode::Direct,
+                tmux_socket_name.clone(),
+                path,
+                Some(generation.clone()),
+            );
+        }
+        if let AttachTarget::DiscoveredWorktree {
+            path,
+            generation,
+            session_name,
+            ..
+        } = &self.target
+        {
+            return SessionSelection::kwt_workspace(
+                &self.host_id,
+                self.endpoint.distro(),
+                session_name,
+                host::KwtTmuxAttachMode::Direct,
+                None,
+                path,
+                generation.clone(),
+            );
+        }
+        if let AttachTarget::DirectoryWorkspace {
+            path,
+            tmux_socket_name,
+            ..
+        } = &self.target
+        {
+            return SessionSelection::kwt_workspace(
+                &self.host_id,
+                self.endpoint.distro(),
+                &self.name,
+                host::KwtTmuxAttachMode::Direct,
+                tmux_socket_name.clone(),
+                path,
+                None,
             );
         }
         match self.target.kind() {
@@ -3417,12 +3564,15 @@ fn refreshed_session_name(
         && key.socket_directory.as_deref() == socket_directory
         && key.runtime == *snapshot.runtime())
     .then(|| match &key.target {
-        AttachTarget::Tmux(identity) => snapshot
-            .sessions()
-            .iter()
-            .find(|session| session.identity() == identity)
-            .map(|session| session.name().to_owned()),
+        AttachTarget::Tmux(identity) | AttachTarget::DiscoveredWorktree { identity, .. } => {
+            snapshot
+                .sessions()
+                .iter()
+                .find(|session| session.identity() == identity)
+                .map(|session| session.name().to_owned())
+        }
         AttachTarget::Worktree { session_name, .. }
+        | AttachTarget::DirectoryWorkspace { session_name, .. }
         | AttachTarget::ProtectedWorktree { session_name, .. } => Some(session_name.clone()),
         AttachTarget::Herdr {
             executable,
@@ -5084,6 +5234,7 @@ impl Workspace {
         generation: &str,
         session_name: &str,
         tmux_socket_name: Option<&str>,
+        tmux_attach_mode: host::KwtTmuxAttachMode,
     ) -> Result<u64, WorkspaceError> {
         // Same closed-scene fence as the other destructive confirmations,
         // held from authority creation through the identity-query
@@ -5094,18 +5245,20 @@ impl Workspace {
                 "Refresh KWT inventory before removing this worktree.",
             ));
         }
-        let (host, resolved_endpoint, runtime, socket_name) = capture_kwt_worktree_removal_context(
-            &self.scene.runtime,
-            host_id,
-            endpoint,
-            repository,
-            project_path,
-            registration_fingerprint,
-            worktree_path,
-            generation,
-            session_name,
-            tmux_socket_name,
-        )?;
+        let (host, resolved_endpoint, runtime, socket_name, resolved_attach_mode) =
+            capture_kwt_worktree_removal_context(
+                &self.scene.runtime,
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+                worktree_path,
+                generation,
+                session_name,
+                tmux_socket_name,
+                tmux_attach_mode,
+            )?;
         let mut pending = self
             .scene
             .pending_kwt_removal
@@ -5148,6 +5301,7 @@ impl Workspace {
             generation: generation.to_owned(),
             session_name: session_name.to_owned(),
             socket_name,
+            tmux_attach_mode: resolved_attach_mode,
         };
         let scene = Arc::clone(&self.scene);
         self.scene
@@ -5263,6 +5417,7 @@ impl Workspace {
                 generation: generation.to_owned(),
                 session_name: session_name.to_owned(),
                 socket_name: pending.socket_name.clone(),
+                tmux_attach_mode: pending.tmux_attach_mode,
                 live_target: pending.live_target.clone(),
                 operation_id: authority,
             },
@@ -6048,6 +6203,7 @@ impl Workspace {
         generation: Option<&str>,
         session_name: &str,
         tmux_socket_name: Option<&str>,
+        tmux_attach_mode: host::KwtTmuxAttachMode,
     ) -> Result<(), WorkspaceError> {
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
         let _navigation = lock_live_navigation(&self.scene)?;
@@ -6062,6 +6218,7 @@ impl Workspace {
             generation,
             session_name,
             tmux_socket_name,
+            tmux_attach_mode,
         )?;
         let worktree_key = request.presentation_key();
         let equivalent_tmux_key = equivalent_tmux_presentation_key(&self.scene.runtime, &request);
@@ -6749,7 +6906,13 @@ impl Workspace {
         selection: &SessionSelection,
     ) -> Result<(PresentationKey, Option<AttachRequest>), WorkspaceError> {
         let retained = self.retained_key_for_selection(selection);
-        choose_navigation_target(retained, capture_attach_request(&self.scene, selection))
+        let current = capture_attach_request(&self.scene, selection);
+        let equivalent = current
+            .as_ref()
+            .ok()
+            .and_then(|request| equivalent_tmux_presentation_key(&self.scene.runtime, request))
+            .filter(|key| presentation_is_open(&self.scene, key));
+        choose_navigation_target(retained, equivalent, current)
     }
 
     fn supersede_inflight_attachment(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
@@ -7020,8 +7183,9 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// Returns an error when the selection is not part of the current WSL
-    /// inventory or the background query cannot be started.
+    /// Returns an error when the selection is neither current inventory nor a
+    /// retained exact-socket presentation, or the background query cannot be
+    /// started.
     pub fn request_session_kill(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
         // Destructive confirmations are constructive entries: a retained
         // handle of a closed scene must not re-arm a kill after the close
@@ -8331,8 +8495,12 @@ fn current_remote_context(entry: &RemoteEntry) -> Option<&RemoteHostContext> {
 
 fn choose_navigation_target(
     retained: Option<PresentationKey>,
+    equivalent: Option<PresentationKey>,
     current: Result<AttachRequest, WorkspaceError>,
 ) -> Result<(PresentationKey, Option<AttachRequest>), WorkspaceError> {
+    if let Some(key) = equivalent {
+        return Ok((key, None));
+    }
     match current {
         Ok(request) => {
             let key = request.presentation_key();
@@ -8403,6 +8571,7 @@ enum KwtWorktreeOperation {
         generation: String,
         session_name: String,
         socket_name: Option<String>,
+        tmux_attach_mode: host::KwtTmuxAttachMode,
         live_target: Option<Arc<host::LiveSessionTarget>>,
         operation_id: u64,
     },
@@ -8450,6 +8619,7 @@ struct PendingKwtRemoval {
     generation: String,
     session_name: String,
     socket_name: Option<String>,
+    tmux_attach_mode: host::KwtTmuxAttachMode,
     live_target: Option<Arc<host::LiveSessionTarget>>,
 }
 
@@ -8465,6 +8635,7 @@ struct KwtRemovalCapture {
     generation: String,
     session_name: String,
     socket_name: Option<String>,
+    tmux_attach_mode: host::KwtTmuxAttachMode,
 }
 
 #[derive(Clone)]
@@ -8504,6 +8675,7 @@ fn validate_kwt_worktree_operation(
         generation,
         session_name,
         socket_name,
+        tmux_attach_mode,
         ..
     } = operation
     else {
@@ -8517,6 +8689,7 @@ fn validate_kwt_worktree_operation(
                 && worktree.generation.as_deref() == Some(generation)
                 && worktree.session_name == *session_name
                 && worktree.tmux_socket_name.as_ref() == socket_name.as_ref()
+                && worktree.tmux_attach_mode == *tmux_attach_mode
         })
         .ok_or_else(|| {
             WorkspaceError::new("the selected worktree changed; refresh and choose it again")
@@ -8574,7 +8747,14 @@ fn preflight_kwt_worktree_remove(
     generation: &str,
     session_name: &str,
     socket_name: Option<&str>,
+    tmux_attach_mode: host::KwtTmuxAttachMode,
 ) -> Result<(), String> {
+    if tmux_attach_mode == host::KwtTmuxAttachMode::Protected && socket_name.is_none() {
+        return Err(
+            "the protected worktree endpoint is unresolved; refresh and review the removal again"
+                .to_owned(),
+        );
+    }
     let inventory = task
         .host
         .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation)
@@ -8590,6 +8770,7 @@ fn preflight_kwt_worktree_remove(
                     && worktree.generation() == Some(generation)
                     && worktree.session_name() == session_name
                     && worktree.tmux_socket_name() == socket_name
+                    && worktree.tmux_attach_mode() == tmux_attach_mode
                     && !worktree.is_main()
             })
         })?
@@ -8694,6 +8875,7 @@ fn pending_kwt_creation_target(
         generation: worktree.generation().map(str::to_owned),
         session_name: worktree.session_name().to_owned(),
         tmux_socket_name: worktree.tmux_socket_name().map(str::to_owned),
+        tmux_attach_mode: worktree.tmux_attach_mode(),
     })
 }
 
@@ -9195,6 +9377,7 @@ fn validate_protected_worktree_inventory(
                     && worktree.generation() == Some(generation)
                     && worktree.session_name() == session_name
                     && worktree.tmux_socket_name() == Some(tmux_socket_name)
+                    && worktree.tmux_attach_mode() == host::KwtTmuxAttachMode::Protected
             })
     });
     if exact {
@@ -9525,12 +9708,18 @@ fn reconcile_kwt_session_availability(host: &mut HostItem) {
         .collect::<std::collections::HashSet<_>>();
     for project in &mut host.projects {
         for worktree in &mut project.worktrees {
-            worktree.session_available = worktree.tmux_socket_name.is_none()
+            worktree.session_available = worktree.tmux_attach_mode
+                == host::KwtTmuxAttachMode::Direct
+                && worktree.tmux_socket_name.is_none()
                 && session_names.contains(worktree.session_name.as_str());
         }
     }
     for workspace in &mut host.directory_workspaces {
-        workspace.session_available = session_names.contains(workspace.session_name.as_str());
+        if workspace.tmux_attach_mode == host::KwtTmuxAttachMode::Direct
+            && workspace.tmux_socket_name.is_none()
+        {
+            workspace.session_available = session_names.contains(workspace.session_name.as_str());
+        }
     }
 }
 

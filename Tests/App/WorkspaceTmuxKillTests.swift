@@ -13,6 +13,63 @@ import Testing
 
 extension WorkspaceTmuxDiscoveryTests {
     @MainActor
+    @Test("direct named directory kill uses exact endpoint review")
+    func directNamedDirectoryKillUsesExactEndpointReview() async throws {
+        let environment = try setupStandardEnvironment()
+        let workspace = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            name: "jibot",
+            path: "/workspaces/jibot",
+            tmuxSessionName: "kwt-workspace-dir-jibot-abc",
+            tmuxSocketName: "kwt",
+            tmuxAttachMode: .direct,
+            sessionLive: true
+        )
+        var snapshot = environment.snapshot
+        snapshot.directoryWorkspaces = [workspace]
+        let reviews = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            tmuxSessionIdentityReviewer: { selection, identity, _ in
+                _ = reviews.increment()
+                #expect(selection.socketName == "kwt")
+                #expect(identity == nil)
+                return ReviewedTmuxSessionIdentity(
+                    identity: TmuxSessionIdentity(
+                        serverPID: "31415",
+                        sessionID: "$8",
+                        createdAt: "1721552400"
+                    ),
+                    routeIdentity: nil
+                )
+            }
+        )
+        let selection = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: workspace
+        )
+
+        let request = try await model.prepareTmuxSessionKill(selection)
+
+        #expect(reviews.count == 1)
+        #expect(request.serverPID == "31415")
+
+        var staleSelection = selection
+        staleSelection.workspacePath = "/workspaces/replacement"
+        await #expect {
+            try await model.prepareTmuxSessionKill(staleSelection)
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionNotRunning(
+                host: "localhost",
+                session: workspace.tmuxSessionName
+            )
+        }
+        #expect(reviews.count == 1)
+    }
+
+    @MainActor
     @Test("kill carries reviewed identity and route through confirmation")
     func killUsesConfirmedSessionIdentity() async throws {
         let environment = try setupStandardEnvironment()
@@ -90,6 +147,8 @@ extension WorkspaceTmuxDiscoveryTests {
         ])
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
@@ -155,6 +214,8 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.hosts[0].tmuxSessions = [
             TmuxSessionSummary(
                 name: sessionName,
@@ -370,14 +431,21 @@ extension WorkspaceTmuxDiscoveryTests {
     @Test("connected attachment supplies protected-session identity")
     func connectedAttachmentSuppliesIdentity() async throws {
         let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "protected"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let identityReads = Counter()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            localKwtPathProvider: { "/usr/bin/kwt" },
             tmuxSessionIdentityReader: { _, _ in
                 _ = identityReads.increment()
                 return TmuxSessionIdentity(
@@ -387,13 +455,10 @@ extension WorkspaceTmuxDiscoveryTests {
                 )
             }
         )
-        let selection = WorkspaceTmuxSessionSelection(
-            hostID: environment.host.id,
-            name: "kwt-ghosthub-main",
-            worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path,
-            socketName: "protected",
-            tmuxAttachMode: .protected
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
@@ -782,14 +847,21 @@ extension WorkspaceTmuxDiscoveryTests {
     @Test("protected kill availability survives a generation change")
     func protectedKillSurvivesGenerationChange() async throws {
         let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "protected"
+        snapshot.worktrees[0].tmuxAttachMode = .protected
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let identityReads = Counter()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            localKwtPathProvider: { "/usr/bin/kwt" },
             tmuxSessionIdentityReader: { _, _ in
                 _ = identityReads.increment()
                 return TmuxSessionIdentity(
@@ -799,14 +871,10 @@ extension WorkspaceTmuxDiscoveryTests {
                 )
             }
         )
-        var selection = WorkspaceTmuxSessionSelection(
-            hostID: environment.host.id,
-            name: "kwt-ghosthub-main",
-            worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path,
-            worktreeGeneration: "0123456789abcdef0123456789abcdef",
-            socketName: "protected",
-            tmuxAttachMode: .protected
+        var selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)

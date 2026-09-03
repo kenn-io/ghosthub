@@ -475,6 +475,15 @@ func makeModel(
     WorkspaceSceneModel.TmuxSessionIdentityReading = { selection, host in
         try await TmuxSessionKiller().sessionIdentity(selection, on: host)
     },
+    tmuxRoutedSessionIdentityReader: @escaping
+    WorkspaceSceneModel.TmuxRoutedSessionIdentityReading = {
+        selection, host, arguments in
+        try await TmuxSessionKiller().sessionIdentity(
+            selection,
+            on: host,
+            sshConnectionArguments: arguments
+        )
+    },
     tmuxSessionIdentityReviewer:
     WorkspaceSceneModel.TmuxSessionIdentityReviewReading? = nil,
     tmuxSessionStyler: @escaping
@@ -621,6 +630,7 @@ func makeModel(
             try await tmuxSessionKiller(selection, identity, host)
         },
         tmuxSessionIdentityReader: tmuxSessionIdentityReader,
+        tmuxRoutedSessionIdentityReader: tmuxRoutedSessionIdentityReader,
         tmuxSessionIdentityReviewer: tmuxSessionIdentityReviewer ?? {
             selection, knownIdentity, host in
             let identity: TmuxSessionIdentity

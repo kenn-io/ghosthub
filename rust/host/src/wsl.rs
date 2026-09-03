@@ -23,9 +23,9 @@ use crate::kwt::{
 use crate::zellij;
 use crate::{
     CancellationToken, CommandOutput, CommandPrefix, CommandRunner, KwtBranchCandidate, KwtBundle,
-    KwtInventory, KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport,
-    KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen, RemoteTmuxConfig,
-    RemoteTmuxHost,
+    KwtDirectoryWorkspaceOpen, KwtInventory, KwtProject, KwtProtectedWorktreeOpen, KwtPullRequest,
+    KwtPullRequestImport, KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen,
+    RemoteTmuxConfig, RemoteTmuxHost,
 };
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
@@ -360,11 +360,11 @@ impl HerdrInventory {
     }
 }
 
-/// Fresh, non-persistable authority to kill one exact live tmux session.
+/// Fresh, non-persistable identity for one exact live tmux session.
 ///
-/// The constructor is private so cached inventory cannot be promoted into
-/// destructive authority. Callers can obtain this value only from a live
-/// tmux query immediately before presenting confirmation.
+/// The constructor is private so attachment and destructive operations must
+/// first confirm the current endpoint. Callers can obtain this value only from
+/// a live tmux query.
 #[derive(Debug)]
 pub struct LiveSessionTarget {
     endpoint: WslEndpoint,
@@ -1241,6 +1241,64 @@ impl<R: CommandRunner> WslHost<R> {
         term: AttachTerm,
         cancellation: &CancellationToken,
     ) -> Result<RepairOrOpenPlan, HostError> {
+        self.kwt_open_plan(
+            endpoint,
+            runtime,
+            request.path(),
+            request.session_name(),
+            &[
+                ("--expected-repository", request.repository()),
+                (
+                    "--expected-registration",
+                    request.registration_fingerprint(),
+                ),
+                ("--expected-generation", request.generation()),
+                ("--expected-session", request.session_name()),
+            ],
+            term,
+            cancellation,
+        )
+    }
+
+    /// Build a re-runnable KWT client for one exact registered directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the helper cannot be verified for the captured
+    /// WSL runtime.
+    pub fn kwt_directory_workspace_open_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        request: &KwtDirectoryWorkspaceOpen,
+        term: AttachTerm,
+        cancellation: &CancellationToken,
+    ) -> Result<RepairOrOpenPlan, HostError> {
+        self.kwt_open_plan(
+            endpoint,
+            runtime,
+            request.path(),
+            request.session_name(),
+            &[("--expected-session", request.session_name())],
+            term,
+            cancellation,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the shared plan builder keeps captured runtime and KWT endpoint authority explicit"
+    )]
+    fn kwt_open_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        path: &str,
+        session_name: &str,
+        expected: &[(&str, &str)],
+        term: AttachTerm,
+        cancellation: &CancellationToken,
+    ) -> Result<RepairOrOpenPlan, HostError> {
         self.require_runtime(endpoint, runtime, cancellation)?;
         let bundle = self.config.kwt_bundle().ok_or_else(|| {
             HostError::new(
@@ -1275,23 +1333,19 @@ impl<R: CommandRunner> WslHost<R> {
                 readiness_path.as_str(),
                 helper.as_str(),
                 "open",
-                request.path(),
-                "--expected-repository",
-                request.repository(),
-                "--expected-registration",
-                request.registration_fingerprint(),
-                "--expected-generation",
-                request.generation(),
-                "--expected-session",
-                request.session_name(),
+                path,
             ]
             .into_iter()
             .map(OsString::from),
         );
+        for (flag, value) in expected {
+            args.push(OsString::from(flag));
+            args.push(OsString::from(value));
+        }
         Ok(RepairOrOpenPlan::worktree(
             self.wsl_executable.as_os_str(),
             args,
-            request.session_name(),
+            session_name,
             &readiness_path,
         ))
     }
@@ -1444,13 +1498,13 @@ impl<R: CommandRunner> WslHost<R> {
         Ok(matched)
     }
 
-    /// Query the exact client on a KWT-owned protected tmux socket.
+    /// Query the exact client on a KWT-owned named tmux socket.
     ///
     /// # Errors
     ///
     /// Returns an error for invalid socket names, runtime changes, malformed
     /// receipts, or unsafe tmux output.
-    pub fn kwt_protected_client_session_identity(
+    pub fn kwt_named_client_session_identity(
         &self,
         endpoint: &WslEndpoint,
         runtime: &WslRuntimeIdentity,
@@ -1476,7 +1530,7 @@ impl<R: CommandRunner> WslHost<R> {
             return Err(classify_command_failure(
                 receipt.status,
                 &receipt.stderr,
-                "read protected KWT client readiness",
+                "read named KWT client readiness",
             ));
         }
         if receipt.stdout.is_empty() {
@@ -1504,7 +1558,7 @@ impl<R: CommandRunner> WslHost<R> {
             return Err(classify_command_failure(
                 output.status,
                 &output.stderr,
-                "query protected KWT tmux client readiness",
+                "query named KWT tmux client readiness",
             ));
         }
         let matched = parse_kwt_client_identity(&output.stdout, client_pid)?;
@@ -1996,6 +2050,39 @@ impl<R: CommandRunner> WslHost<R> {
         session: &DiscoveredSession,
         term: AttachTerm,
     ) -> AttachPlan {
+        self.attach_identity_plan_with_term(
+            endpoint,
+            session.name(),
+            session.identity(),
+            None,
+            term,
+        )
+    }
+
+    /// Build an attach-only plan for a freshly captured tmux endpoint.
+    #[must_use]
+    pub fn attach_live_session_plan_with_term(
+        &self,
+        target: &LiveSessionTarget,
+        term: AttachTerm,
+    ) -> AttachPlan {
+        self.attach_identity_plan_with_term(
+            target.endpoint(),
+            target.name(),
+            target.identity(),
+            target.socket_name(),
+            term,
+        )
+    }
+
+    fn attach_identity_plan_with_term(
+        &self,
+        endpoint: &WslEndpoint,
+        name: &str,
+        identity: &SessionIdentity,
+        socket_name: Option<&str>,
+        term: AttachTerm,
+    ) -> AttachPlan {
         let mut args = pinned_prefix(endpoint);
         append_tmux_environment(
             &mut args,
@@ -2004,7 +2091,9 @@ impl<R: CommandRunner> WslHost<R> {
             &[],
         );
         args.push(OsString::from(&self.config.tmux_binary));
-        let identity = session.identity();
+        if let Some(socket_name) = socket_name {
+            args.extend([OsString::from("-L"), OsString::from(socket_name)]);
+        }
         let target = format!("={}:", identity.session_id());
         let mut condition = String::from("#{&&:");
         condition.push_str(&tmux_identity_equals(
@@ -2033,8 +2122,8 @@ impl<R: CommandRunner> WslHost<R> {
         AttachPlan::attach_only(
             self.wsl_executable.as_os_str(),
             args,
-            session.name(),
-            session.identity().clone(),
+            name,
+            identity.clone(),
         )
     }
 
@@ -5249,7 +5338,7 @@ mod tests {
             } else if args.windows(2).any(|pair| pair == ["pr", "list"]) {
                 br#"{"pull_requests":[{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":false}]}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["pr", "import"]) {
-                br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2"}}"#.to_vec()
+                br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2","tmux_attach_mode":"protected"}}"#.to_vec()
             } else if (args.iter().any(|argument| argument == "add")
                 && args.iter().any(|argument| argument == "--no-launch"))
                 || (args.iter().any(|argument| argument == "remove")
@@ -5799,6 +5888,64 @@ mod tests {
             .expect("plan uses a private canonical readiness path");
         assert_eq!(plan.target_name(), "widget-topic");
         assert_eq!(plan.clone(), plan);
+    }
+
+    #[test]
+    fn captured_named_session_attach_plan_uses_the_exact_socket_and_identity() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let identity = SessionIdentity::new(42, "$7", 99);
+        let target = LiveSessionTarget {
+            endpoint,
+            runtime,
+            name: "widget-topic".to_owned(),
+            socket_name: Some("kwt".to_owned()),
+            identity: identity.clone(),
+        };
+
+        let plan = host.attach_live_session_plan_with_term(&target, AttachTerm::Xterm256Color);
+        let args = plan
+            .args()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>();
+
+        assert!(args.windows(2).any(|args| args == ["-L", "kwt"]));
+        assert!(args.iter().any(|argument| argument == "=$7:"));
+        assert!(
+            args.iter()
+                .any(|argument| argument == "attach-session -E -t =$7")
+        );
+        assert_eq!(plan.target_name(), "widget-topic");
+        assert_eq!(plan.identity(), &identity);
+    }
+
+    #[test]
+    fn kwt_directory_workspace_open_plan_uses_exact_path_and_session() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let plan = host
+            .kwt_directory_workspace_open_plan(
+                &endpoint,
+                &runtime,
+                &KwtDirectoryWorkspaceOpen::new("/work/scratch", "scratch"),
+                AttachTerm::Xterm256Color,
+                &CancellationToken::new(),
+            )
+            .expect("build directory workspace open plan");
+        let args = plan
+            .args()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>();
+
+        assert!(
+            args.windows(3)
+                .any(|args| { args == [&test_kwt_helper_path(), "open", "/work/scratch"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--expected-session", "scratch"])
+        );
+        assert_eq!(plan.target_name(), "scratch");
     }
 
     #[test]

@@ -663,7 +663,7 @@ fn wait_for_exact_protected_client(
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         if let Some(identity) = host
-            .kwt_protected_client_session_identity(
+            .kwt_named_client_session_identity(
                 endpoint,
                 runtime,
                 readiness_path,

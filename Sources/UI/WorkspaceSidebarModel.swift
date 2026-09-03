@@ -444,6 +444,31 @@ public enum WorkspaceSidebarModel {
         guard selection.tmuxAttachMode != .protected else {
             return false
         }
+        if selection.tmuxAttachMode == .direct,
+           selection.socketName != nil {
+            if let worktreeID = selection.worktreeID,
+               let worktree = snapshot.worktree(id: worktreeID) {
+                return !worktree.isStale
+                    && worktree.hostID == selection.hostID
+                    && worktree.tmuxSessionName == selection.name
+                    && worktree.tmuxSocketName == selection.socketName
+                    && worktree.tmuxAttachMode == selection.tmuxAttachMode
+                    && worktree.path == selection.workspacePath
+                    && worktree.generation == selection.worktreeGeneration
+            }
+            if let directoryWorkspaceID = selection.directoryWorkspaceID,
+               let workspace = snapshot.directoryWorkspace(
+                   id: directoryWorkspaceID
+               ) {
+                return workspace.hostID == selection.hostID
+                    && workspace.path == selection.workspacePath
+                    && workspace.tmuxSessionName == selection.name
+                    && workspace.tmuxSocketName == selection.socketName
+                    && workspace.tmuxAttachMode == selection.tmuxAttachMode
+                    && workspace.sessionLive
+            }
+            return false
+        }
         return snapshot.host(id: selection.hostID)?.tmuxSessions.contains {
             $0.name == selection.name && $0.hasStableIdentity
         } == true
@@ -610,16 +635,14 @@ public enum WorkspaceSidebarModel {
 
     private static func directoryWorkspaceRow(
         _ workspace: DirectoryWorkspaceSummary,
-        host: HostSummary
+        host _: HostSummary
     ) -> WorkspaceSidebarRow {
         WorkspaceSidebarRow(
             target: .directoryWorkspace(workspace.id),
             icon: .directoryWorkspace,
             title: workspace.name,
             subtitle: workspace.path,
-            sessionIsRunning: host.tmuxSessions.contains {
-                $0.name == workspace.tmuxSessionName
-            }
+            sessionIsRunning: workspace.sessionLive
         )
     }
 

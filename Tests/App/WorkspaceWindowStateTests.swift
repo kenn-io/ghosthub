@@ -326,6 +326,47 @@ struct WorkspaceWindowStateTests {
         ) == state)
     }
 
+    @Test("legacy KWT descriptors adopt the current owner attachment mode")
+    func legacyKwtDescriptorAdoptsCurrentOwnerAttachmentMode() throws {
+        let fixture = RestorationFixture.local(
+            sessionName: "editor",
+            socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .protected
+        )
+        let state = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: fixture.selection,
+            activeTmux: fixture.tmuxSelection,
+            snapshot: fixture.snapshot
+        )
+        let encoded = try JSONEncoder().encode(state)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded)
+                as? [String: Any]
+        )
+        var tmux = try #require(object["tmux"] as? [String: Any])
+        tmux.removeValue(forKey: "tmuxAttachMode")
+        object["tmux"] = tmux
+
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(
+            WorkspaceWindowState.self,
+            from: legacy
+        )
+
+        guard case let .needsExactTmuxProbe(_, selection) =
+            WorkspaceWindowRestorationResolver.resolve(
+                decoded,
+                in: fixture.snapshot
+            )
+        else {
+            Issue.record("legacy restoration must use the current KWT owner")
+            return
+        }
+        #expect(selection.socketName == "kwt-pr-0123456789abcdef")
+        #expect(selection.tmuxAttachMode == .protected)
+    }
+
     @Test("Herdr descriptor round-trips through scene state")
     func herdrDescriptorRoundTrips() throws {
         let state = WorkspaceWindowState(
@@ -737,6 +778,7 @@ struct WorkspaceWindowStateTests {
         )
         #expect(state.tmux?.sessionName == "kwt-ghosthub-main")
         #expect(state.tmux?.socketName == "kwt-pr-0123456789abcdef")
+        #expect(state.tmux?.tmuxAttachMode == .protected)
         #expect(
             state.tmux?.owner == .worktree(
                 generation: RestorationFixture.worktreeGeneration
@@ -1166,6 +1208,56 @@ struct WorkspaceWindowStateTests {
             Issue.record("named-socket restoration must stay pending")
             return
         }
+    }
+
+    @Test("a direct named endpoint requires an exact restoration probe")
+    func directNamedEndpointRequiresExactProbe() {
+        let fixture = RestorationFixture.local(
+            sessionName: "editor",
+            socketName: "kwt",
+            tmuxAttachMode: .direct
+        )
+        let state = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: fixture.selection,
+            activeTmux: fixture.tmuxSelection,
+            snapshot: fixture.snapshot
+        )
+        var changed = fixture.snapshot
+        changed.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(name: "editor", managed: false, windows: []),
+        ]
+
+        guard case let .needsExactTmuxProbe(_, selection) =
+            WorkspaceWindowRestorationResolver.resolve(state, in: changed)
+        else {
+            Issue.record("direct named restoration must probe its exact socket")
+            return
+        }
+        #expect(selection.socketName == "kwt")
+        #expect(selection.tmuxAttachMode == .direct)
+    }
+
+    @Test("restoration rejects a changed tmux attachment mode")
+    func changedTmuxAttachmentModeStaysPending() {
+        let fixture = RestorationFixture.local(
+            sessionName: "editor",
+            socketName: "kwt-pr-0123456789abcdef",
+            tmuxAttachMode: .direct
+        )
+        let state = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: fixture.selection,
+            activeTmux: fixture.tmuxSelection,
+            snapshot: fixture.snapshot
+        )
+        var changed = fixture.snapshot
+        changed.worktrees[0].tmuxAttachMode = .protected
+
+        #expect(
+            WorkspaceWindowRestorationResolver.resolve(state, in: changed)
+                == .pending(selection: fixture.selection)
+        )
     }
 
     @Test(

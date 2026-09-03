@@ -228,6 +228,7 @@ final class KwtSSHLease: KwtSSHLeaseHolding, @unchecked Sendable {
                 while process.isRunning, clock.now < deadline {
                     try await Task.sleep(for: .milliseconds(10))
                 }
+                try Task.checkCancellation()
             } onCancel: { [self] in
                 terminateForCleanup()
             }

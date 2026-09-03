@@ -433,6 +433,44 @@ extension WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test(
+        "an unresolved protected endpoint blocks removal before tmux review"
+    )
+    func unresolvedProtectedEndpointAbortsPreparation() async throws {
+        let fixture = try removalFixture(
+            socketName: nil,
+            tmuxAttachMode: .protected,
+            sessionBackend: .localTmux,
+            runningSession: true
+        )
+        let reviews = LockedValue(0)
+        let model = try makeModel(
+            database: fixture.environment.database,
+            localHostID: fixture.environment.host.id,
+            snapshot: fixture.snapshot,
+            tmuxSessionIdentityReviewer: { _, _, _ in
+                reviews.withLock { $0 += 1 }
+                return ReviewedTmuxSessionIdentity(
+                    identity: TmuxSessionIdentity(
+                        serverPID: "31415",
+                        sessionID: "$8",
+                        createdAt: "1721552400"
+                    ),
+                    routeIdentity: nil
+                )
+            }
+        )
+
+        await #expect(
+            throws: KwtWorktreeError.removalIdentityUnavailable
+        ) {
+            try await model.prepareWorktreeRemoval(fixture.removable.id)
+        }
+        #expect(reviews.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("kwt availability is checked before terminating a session")
     func unavailableKwtDoesNotKillSession() async throws {
         let environment = try setupRemoteEnvironment()

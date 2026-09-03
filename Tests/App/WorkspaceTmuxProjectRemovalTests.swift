@@ -769,6 +769,8 @@ extension WorkspaceTmuxDiscoveryTests {
     ) async throws {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -931,6 +933,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func removeProjectProbesEndpointReplacedByActiveScene() async throws {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-current"
         snapshot.worktrees[0].tmuxSocketName = "kwt-current"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -1014,6 +1018,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func removeProjectAllowsAbsentProtectedSession() async throws {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -1068,6 +1074,8 @@ extension WorkspaceTmuxDiscoveryTests {
                 isDirectory: true
             )
         snapshot.projects[0].rootPath = missingCheckout.path
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-visible"
         snapshot.worktrees[0].tmuxSocketName = "kwt-visible"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -1429,6 +1437,8 @@ extension WorkspaceTmuxDiscoveryTests {
     ) async throws {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -1558,6 +1568,8 @@ extension WorkspaceTmuxDiscoveryTests {
                 isDirectory: true
             )
         snapshot.projects[0].rootPath = missingCheckout.path
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -1716,6 +1728,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func unverifiedProjectRemovalSuppressesRootOpen() async throws {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -1843,6 +1857,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func sceneOpenedDuringQuarantineResolvesInventory() async throws {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -2242,6 +2258,8 @@ extension WorkspaceTmuxDiscoveryTests {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
         snapshot.projects[0].scopedKey = "github.com/kenn-io/ghosthub"
+        snapshot.worktrees[0].generation =
+            "fedcba9876543210fedcba9876543210"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -2379,6 +2397,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func protectedAttachmentFencesBeforeRendering() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -2419,6 +2439,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func protectedAttachmentRetriesAfterMutation() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -2477,6 +2499,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func disconnectedProtectedAttachmentWaitsForReconnect() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -2536,6 +2560,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func protectedReconnectFencesEstablishment() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -2635,6 +2661,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func removeProjectWaitsForProtectedEstablishment() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -2714,6 +2742,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func protectedEstablishmentKeepsProbing() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -2752,16 +2782,91 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("Default-socket establishment keeps a finite probe schedule")
-    func defaultSocketEstablishmentStopsProbing() async throws {
+    @Test("Direct workspace publishes only its captured endpoint")
+    func directWorkspacePublishesCapturedEndpoint() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt-main"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
         let worktree = try #require(snapshot.worktrees.first)
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
         )
-        let probes = Counter()
+        let endpointIdentity = TmuxSessionIdentity(
+            serverPID: "123",
+            sessionID: "$1",
+            createdAt: "456"
+        )
+        let leaseArguments = ["-F", "/tmp/attachment-config"]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: endpointIdentity),
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution(
+                    "/usr/bin/tmux",
+                    version: "tmux 3.3"
+                )
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: leaseArguments)
+            },
+            tmuxExactSessionProbe: { _ in
+                Issue.record("KWT confirmation must use its launched client")
+                return .success(false)
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                Issue.record("KWT confirmation must keep the attachment route")
+                return endpointIdentity
+            },
+            tmuxRoutedSessionIdentityReader: { captured, _, arguments in
+                #expect(captured == selection)
+                #expect(arguments == leaseArguments)
+                return endpointIdentity
+            },
+            createdSessionDiscoveryDelays: [.milliseconds(1)]
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(surfaceStore.removedKeys.isEmpty)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Windows direct workspace confirms its captured endpoint")
+    func windowsDirectWorkspacePublishesCapturedEndpoint() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].platform = .windows
+        snapshot.hosts[0].sshDestination = "operator@windows.example.test"
+        snapshot.worktrees[0].path = #"C:\code\ghosthub"#
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let endpointIdentity = TmuxSessionIdentity(
+            serverPID: "123",
+            sessionID: "$1",
+            createdAt: "456"
+        )
+        let leaseArguments = ["-F", "NUL"]
+        let capturedEndpointReads = Counter()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
@@ -2769,21 +2874,116 @@ extension WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _, _ in
-                successfulTmuxResolution("/usr/bin/tmux")
+                successfulTmuxResolution(#"C:\Tools\psmux\tmux.exe"#)
             },
-            tmuxSessionDiscovery: { _ in
-                _ = probes.increment()
-                return .success([])
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: leaseArguments)
+            },
+            tmuxExactSessionProbe: { _ in
+                Issue.record("KWT confirmation must keep the attachment route")
+                return .success(false)
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                Issue.record("KWT confirmation must keep the attachment route")
+                return endpointIdentity
+            },
+            tmuxRoutedSessionIdentityReader: { captured, host, arguments in
+                #expect(captured == selection)
+                #expect(arguments == leaseArguments)
+                guard case let .ssh(info) = host else {
+                    Issue.record("Expected a Windows SSH host")
+                    return endpointIdentity
+                }
+                #expect(info.platform == .windows)
+                _ = capturedEndpointReads.increment()
+                return endpointIdentity
             },
             createdSessionDiscoveryDelays: [.milliseconds(1)]
         )
 
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
-        await waitUntilMainActor { probes.count >= 2 }
+        await waitUntilMainActor {
+            capturedEndpointReads.count >= 1
+        }
         try await Task.sleep(for: .milliseconds(20))
 
-        #expect(probes.count == 2)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        #expect(surfaceStore.removedKeys.isEmpty)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Direct workspace rejects a client attached to another endpoint")
+    func directWorkspaceRejectsUnconfirmedEndpoint() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt-main"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let capturedIdentity = TmuxSessionIdentity(
+            serverPID: "123",
+            sessionID: "$1",
+            createdAt: "456"
+        )
+        let attachedIdentity = TmuxSessionIdentity(
+            serverPID: "999",
+            sessionID: "$8",
+            createdAt: "654"
+        )
+        let capturedEndpointReads = Counter()
+        let leaseArguments = ["-F", "/tmp/attachment-config"]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: attachedIdentity),
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: leaseArguments)
+            },
+            tmuxExactSessionProbe: { _ in
+                Issue.record("KWT confirmation must use its launched client")
+                return .success(false)
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                Issue.record("KWT confirmation must keep the attachment route")
+                return capturedIdentity
+            },
+            tmuxRoutedSessionIdentityReader: { captured, _, arguments in
+                #expect(captured == selection)
+                #expect(arguments == leaseArguments)
+                _ = capturedEndpointReads.increment()
+                return capturedIdentity
+            },
+            createdSessionDiscoveryDelays: [.milliseconds(1)]
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        await waitUntilMainActor {
+            capturedEndpointReads.count >= 1
+                && surfaceStore.removedKeys.count == 1
+        }
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(capturedEndpointReads.count == 1)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
         await model.shutdown()
     }
 
@@ -2792,6 +2992,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func pathlessRebindReleasesProtectedEstablishmentFence() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected
@@ -2841,6 +3043,8 @@ extension WorkspaceTmuxDiscoveryTests {
         var refreshedWorktree = try #require(
             environment.snapshot.worktrees.first
         )
+        refreshedWorktree.generation =
+            "0123456789abcdef0123456789abcdef"
         refreshedWorktree.tmuxSessionName = "kwt-ghosthub-pr-94"
         refreshedWorktree.tmuxSocketName = "kwt-pr-94"
         refreshedWorktree.tmuxAttachMode = .protected
@@ -2893,6 +3097,8 @@ extension WorkspaceTmuxDiscoveryTests {
     func removeProjectRevalidatesHostAfterProtectedProbe() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-pr-94"
         snapshot.worktrees[0].tmuxSocketName = "kwt-pr-94"
         snapshot.worktrees[0].tmuxAttachMode = .protected

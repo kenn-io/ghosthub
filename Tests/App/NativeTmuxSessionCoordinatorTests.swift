@@ -504,9 +504,10 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(invalidations.load().isEmpty)
     }
 
-    @Test("tmux older than 3.4 does not install pane split shortcuts")
-    func oldTmuxDoesNotInstallSplitHandler() async {
+    @Test("tmux older than 3.4 captures identity without split shortcuts")
+    func oldTmuxCapturesIdentityWithoutSplitHandler() async {
         let store = RecordingNativeSessionSurfaceStore()
+        let identityReads = LockedValue(0)
         let host = CommandHost.ssh(SSHHostInfo(
             user: "operator",
             hostname: "legacy.example.test",
@@ -527,6 +528,12 @@ struct NativeTmuxSessionCoordinatorTests {
             },
             remoteConnectionProvider: { _, _ in
                 testKwtSSHAttachment(arguments: sshArguments)
+            },
+            paneSplitter: TmuxPaneSplitter { _, arguments, command in
+                #expect(arguments == sshArguments)
+                #expect(command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"))
+                identityReads.withLock { $0 += 1 }
+                return (0, coordinatorSplitClientOutput)
             }
         )
         var isReady = false
@@ -540,15 +547,15 @@ struct NativeTmuxSessionCoordinatorTests {
 
         await waitUntilMainActor { isReady }
         _ = coordinator.surface(handle: handle)
-        coordinator.requestAttachedSessionIdentity(handle)
+        await waitUntilMainActor {
+            coordinator.attachedSessionIdentityResolution(handle)
+                == .resolved(coordinatorSplitIdentity)
+        }
 
         #expect(store.surface.paneSplitShortcutHandler == nil)
         #expect(!store.surface.terminalFindController.isAvailable)
         #expect(!coordinator.supportsPaneSplitting(handle))
-        #expect(
-            coordinator.attachedSessionIdentityResolution(handle)
-                == .unavailable
-        )
+        #expect(identityReads.load() == 1)
     }
 
     @Test("initial client binding retries while the attachment is live")
@@ -814,6 +821,18 @@ struct NativeTmuxSessionCoordinatorTests {
         )
         var isReady = false
         coordinator.onSurfaceReady = { _ in isReady = true }
+        let protectedIdentity = try #require(
+            KwtProtectedWorktreeOpenIdentity(
+                path: "/worktrees/pr-32",
+                projectPath: "/repos/ghosthub",
+                repository: "github.com/kenn-io/ghosthub",
+                registrationFingerprint: "registration-123",
+                generation: "0123456789abcdef0123456789abcdef",
+                sessionName: "pr-32",
+                socketName: "kwt-pr-0123456789abcdef",
+                tmuxAttachMode: "protected"
+            )
+        )
         let handle = coordinator.attach(
             hostID: UUID(),
             name: "pr-32",
@@ -821,6 +840,7 @@ struct NativeTmuxSessionCoordinatorTests {
             socketName: "kwt-pr-0123456789abcdef",
             tmuxAttachMode: .protected,
             workingDirectory: "/worktrees/pr-32",
+            kwtProtectedWorktreeIdentity: protectedIdentity,
             sessionIdentity: coordinatorSplitIdentity
         )
 
@@ -835,6 +855,7 @@ struct NativeTmuxSessionCoordinatorTests {
         ))
         #expect(command.contains("/worktrees/pr-32"))
         #expect(command.contains("kwt-pr-0123456789abcdef"))
+        #expect(command.contains("--expected-generation"))
         #expect(!command.contains("'open'"))
     }
 

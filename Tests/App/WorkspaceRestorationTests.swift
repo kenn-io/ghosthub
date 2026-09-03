@@ -310,27 +310,35 @@ private final class ControlledProtectedProbe: @unchecked Sendable {
 }
 
 @MainActor
-private struct ProtectedRestorationHarness {
+private struct ExactTmuxRestorationHarness {
     let model: WorkspaceSceneModel
     let probe: ProtectedProbeSpy
+    let surfaceStore: RecordingNativeSessionSurfaceStore
     let savedState: WorkspaceWindowState
 
-    static func make(outcome: ProtectedProbeSpy.Outcome) throws -> Self {
+    static func make(
+        outcome: ProtectedProbeSpy.Outcome,
+        socketName: String = "kwt-pr-0123456789abcdef",
+        attachMode: TmuxAttachMode = .protected
+    ) throws -> Self {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "pr-42"
-        snapshot.worktrees[0].tmuxSocketName = "kwt-pr-0123456789abcdef"
-        snapshot.worktrees[0].tmuxAttachMode = .protected
+        snapshot.worktrees[0].tmuxSocketName = socketName
+        snapshot.worktrees[0].tmuxAttachMode = attachMode
         snapshot.worktrees[0].generation = restorationWorktreeGeneration
         snapshot.hosts[0].tmuxSessions = [
             TmuxSessionSummary(name: "pr-42", managed: false, windows: []),
         ]
         let probe = ProtectedProbeSpy(outcome: outcome)
+        let surfaceStore = RecordingNativeSessionSurfaceStore()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            localKwtPathProvider: { "/usr/bin/kwt" },
             tmuxSessionIdentityReader: probe.read
         )
         let savedState = WorkspaceWindowState(
@@ -343,13 +351,19 @@ private struct ProtectedRestorationHarness {
             tmux: .init(
                 hostKey: environment.host.configKey,
                 sessionName: "pr-42",
-                socketName: "kwt-pr-0123456789abcdef",
+                socketName: socketName,
+                tmuxAttachMode: attachMode,
                 owner: .worktree(
                     generation: restorationWorktreeGeneration
                 )
             )
         )
-        return Self(model: model, probe: probe, savedState: savedState)
+        return Self(
+            model: model,
+            probe: probe,
+            surfaceStore: surfaceStore,
+            savedState: savedState
+        )
     }
 }
 
@@ -1643,9 +1657,76 @@ struct WorkspaceRestorationTests {
         #expect(!command.contains("new-session"))
     }
 
+    @Test("remote exact restoration keeps its identity fence on reconnect")
+    func remoteExactRestorationReconnectKeepsIdentityFence() async throws {
+        let environment = try setupRemoteEnvironment()
+        let identity = TmuxSessionIdentity(
+            serverPID: "123",
+            sessionID: "$7",
+            createdAt: "1721552400"
+        )
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "pr-42"
+        snapshot.worktrees[0].tmuxSocketName = "kwt"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation = restorationWorktreeGeneration
+        let surfaceStore = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionValidationExactProbe: { _, _ in .success(true) },
+            tmuxSessionIdentityReader: { _, _ in identity },
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: .init(
+                hostKey: environment.host.configKey,
+                projectKey: environment.project.scopedKey,
+                worktreeGeneration: restorationWorktreeGeneration
+            ),
+            tmux: .init(
+                hostKey: environment.host.configKey,
+                sessionName: "pr-42",
+                socketName: "kwt",
+                tmuxAttachMode: .direct,
+                owner: .worktree(
+                    generation: restorationWorktreeGeneration
+                )
+            )
+        )
+
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSelection != nil
+        }
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.lastCommand != nil
+        }
+        let initialRequestCount = surfaceStore.requestedConfigurations.count
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            surfaceStore.requestedConfigurations.count > initialRequestCount
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        let command = try #require(surfaceStore.lastCommand)
+        #expect(command.contains("if-shell"))
+        #expect(command.contains("#{pid},123"))
+        #expect(command.contains("#{session_created},1721552400"))
+        #expect(command.contains("Ghosthub: tmux session identity changed"))
+        await model.shutdown()
+    }
+
     @Test("protected restoration probes exact socket before kwt attach")
     func protectedRestorationProbesBeforeAttach() async throws {
-        let harness = try ProtectedRestorationHarness.make(outcome: .present)
+        let harness = try ExactTmuxRestorationHarness.make(outcome: .present)
 
         harness.model.beginRestoration(harness.savedState)
         await waitUntil { harness.probe.selections.count == 1 }
@@ -1663,12 +1744,53 @@ struct WorkspaceRestorationTests {
             harness.model.activeBorrowedTmuxSelection?.socketName
                 == "kwt-pr-0123456789abcdef"
         )
+        await waitUntilMainActor {
+            harness.model.prepareActiveBorrowedTmuxSurface()
+            return harness.surfaceStore.lastCommand != nil
+        }
+        let command = try #require(harness.surfaceStore.lastCommand)
+        #expect(command.contains("--project"))
+        #expect(command.contains("--expected-repository"))
+        #expect(command.contains("--expected-registration"))
+        #expect(command.contains("--expected-generation"))
+        #expect(command.contains("--expected-session"))
+        #expect(command.contains("--expected-socket"))
         #expect(!harness.model.suppressesAutomaticWorktreeSessionOpen)
+        await harness.model.shutdown()
+    }
+
+    @Test("direct named restoration probes its exact endpoint")
+    func directNamedRestorationProbesBeforeAttach() async throws {
+        let harness = try ExactTmuxRestorationHarness.make(
+            outcome: .present,
+            socketName: "kwt",
+            attachMode: .direct
+        )
+
+        harness.model.beginRestoration(harness.savedState)
+        await waitUntil { harness.probe.selections.count == 1 }
+
+        let selection = try #require(harness.probe.selections.first)
+        #expect(selection.socketName == "kwt")
+        #expect(selection.tmuxAttachMode == .direct)
+        await waitUntilMainActor {
+            harness.model.activeBorrowedTmuxSelection != nil
+        }
+        #expect(harness.model.activeBorrowedTmuxSelection == selection)
+        await waitUntilMainActor {
+            harness.model.prepareActiveBorrowedTmuxSurface()
+            return harness.surfaceStore.lastCommand != nil
+        }
+        let command = try #require(harness.surfaceStore.lastCommand)
+        #expect(command.contains("if-shell"))
+        #expect(command.contains("#{pid},123"))
+        #expect(command.contains("#{session_id},$7"))
+        #expect(command.contains("#{session_created},1721552400"))
     }
 
     @Test("absent protected session remains pending without fallback")
     func protectedAbsenceStaysPending() async throws {
-        let harness = try ProtectedRestorationHarness.make(outcome: .absent)
+        let harness = try ExactTmuxRestorationHarness.make(outcome: .absent)
 
         harness.model.beginRestoration(harness.savedState)
         await waitUntil { harness.probe.completionCount >= 1 }
@@ -1683,7 +1805,7 @@ struct WorkspaceRestorationTests {
 
     @Test("failed protected probe retries only after inventory refresh")
     func protectedFailureRetriesOnRefresh() async throws {
-        let harness = try ProtectedRestorationHarness.make(outcome: .failed)
+        let harness = try ExactTmuxRestorationHarness.make(outcome: .failed)
 
         harness.model.beginRestoration(harness.savedState)
         await waitUntil { harness.probe.completionCount >= 1 }
@@ -1947,6 +2069,7 @@ struct WorkspaceRestorationTests {
                 hostKey: environment.host.configKey,
                 sessionName: "pr-42",
                 socketName: "kwt-pr-0123456789abcdef",
+                tmuxAttachMode: .protected,
                 owner: .worktree(
                     generation: restorationWorktreeGeneration
                 )
@@ -1958,7 +2081,7 @@ struct WorkspaceRestorationTests {
         var updatedSnapshot = model.snapshot
         updatedSnapshot.worktrees[0].path = "/tmp/ghosthub-refreshed"
         model.snapshot = updatedSnapshot
-        guard case .needsProtectedProbe = WorkspaceWindowRestorationResolver
+        guard case .needsExactTmuxProbe = WorkspaceWindowRestorationResolver
             .resolve(state, in: model.snapshot) else {
             Issue.record("updated target should still require a probe")
             return
@@ -2012,6 +2135,7 @@ struct WorkspaceRestorationTests {
                 hostKey: environment.host.configKey,
                 sessionName: "pr-42",
                 socketName: "kwt-pr-0123456789abcdef",
+                tmuxAttachMode: .protected,
                 owner: .worktree(
                     generation: restorationWorktreeGeneration
                 )
@@ -2068,6 +2192,7 @@ struct WorkspaceRestorationTests {
                 hostKey: environment.host.configKey,
                 sessionName: "pr-42",
                 socketName: "kwt-pr-0123456789abcdef",
+                tmuxAttachMode: .protected,
                 owner: .worktree(
                     generation: restorationWorktreeGeneration
                 )
@@ -2112,6 +2237,7 @@ struct WorkspaceRestorationTests {
                 hostKey: environment.host.configKey,
                 sessionName: "pr-42",
                 socketName: "kwt-pr-0123456789abcdef",
+                tmuxAttachMode: .protected,
                 owner: .worktree(
                     generation: restorationWorktreeGeneration
                 )

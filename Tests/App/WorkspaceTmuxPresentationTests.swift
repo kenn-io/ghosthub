@@ -13,6 +13,32 @@ import Testing
 
 extension WorkspaceTmuxDiscoveryTests {
     @MainActor
+    @Test("unresolved protected worktree stays pending")
+    func unresolvedProtectedWorktreeStaysPending() throws {
+        let environment = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/opt/homebrew/bin/tmux")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .protected
+        )
+
+        model.openBorrowedTmuxSession(selection)
+
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == nil)
+        #expect(model.activeBorrowedTmuxSelection == nil)
+    }
+
+    @MainActor
     @Test("created sessions publish into host inventory immediately")
     func createdSessionPublishesImmediately() throws {
         let environment = try setupStandardEnvironment()
@@ -312,14 +338,14 @@ extension WorkspaceTmuxDiscoveryTests {
         }
 
         #expect(model.activeBorrowedTmuxSelection == nil)
-        #expect(commands.load().isEmpty)
+        #expect(commands.load().allSatisfy { !$0.contains("ignore-size") })
         #expect(!surfaceStore.removedKeys.isEmpty)
         await model.shutdown()
     }
 
     @MainActor
-    @Test("hiding a socketless protected session never sizes the default server")
-    func hidingSocketlessProtectedSessionDetachesWithoutSizing() async throws {
+    @Test("a socketless protected session never reaches default-server sizing")
+    func socketlessProtectedSessionDoesNotReachSizing() async throws {
         let environment = try setupStandardEnvironment()
         let hiddenSizingMutations = LockedValue(0)
         let surfaceStore = SceneTmuxSurfaceStoreStub()
@@ -357,20 +383,12 @@ extension WorkspaceTmuxDiscoveryTests {
         )
 
         model.openBorrowedTmuxSession(selection)
-        await launchActiveTmuxSurface(model, store: surfaceStore)
-        await waitUntilMainActor {
-            model.retainedBorrowedTmuxSessionIsConnected(selection)
-        }
-        model.hideBorrowedTmuxSession(selection)
-        await waitUntilMainActor {
-            hiddenSizingMutations.load() > 0
-                || model.retainedBorrowedTmuxHandle(for: selection) == nil
-        }
+        try await Task.sleep(for: .milliseconds(100))
 
         #expect(hiddenSizingMutations.load() == 0)
         #expect(model.activeBorrowedTmuxSelection == nil)
         #expect(model.retainedBorrowedTmuxHandle(for: selection) == nil)
-        #expect(!surfaceStore.removedKeys.isEmpty)
+        #expect(surfaceStore.requestCount == 0)
         await model.shutdown()
     }
 
@@ -423,6 +441,9 @@ extension WorkspaceTmuxDiscoveryTests {
     @Test("hiding workspace provisioning preserves kwt establishment")
     func hidingWorkspaceProvisioningPreservesKwtEstablishment() async throws {
         let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         let resolutionStarted = LockedValue(false)
         let releaseResolution = DispatchSemaphore(value: 0)
         defer { releaseResolution.signal() }
@@ -431,7 +452,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: {
                 resolutionStarted.store(true)
@@ -460,6 +481,7 @@ extension WorkspaceTmuxDiscoveryTests {
             name: "kwt-ghosthub-main",
             worktreeID: environment.worktree.id,
             worktreePath: environment.worktree.path,
+            worktreeGeneration: "0123456789abcdef0123456789abcdef",
             tmuxAttachMode: .direct
         )
 
@@ -491,6 +513,9 @@ extension WorkspaceTmuxDiscoveryTests {
     @Test("hiding kwt provisioning survives discovery advancing the phase")
     func hidingKwtProvisioningSurvivesDiscoveryAdvancingPhase() async throws {
         let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         let resolutionStarted = LockedValue(false)
         let releaseResolution = DispatchSemaphore(value: 0)
         defer { releaseResolution.signal() }
@@ -499,7 +524,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: {
                 resolutionStarted.store(true)
@@ -538,6 +563,7 @@ extension WorkspaceTmuxDiscoveryTests {
             name: "kwt-ghosthub-main",
             worktreeID: environment.worktree.id,
             worktreePath: environment.worktree.path,
+            worktreeGeneration: "0123456789abcdef0123456789abcdef",
             tmuxAttachMode: .direct
         )
 
@@ -575,6 +601,9 @@ extension WorkspaceTmuxDiscoveryTests {
     @Test("hidden workspace provisioning detaches without a client identity")
     func hiddenWorkspaceProvisioningDetachesWithoutIdentity() async throws {
         let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         let resolutionStarted = LockedValue(false)
         let releaseResolution = DispatchSemaphore(value: 0)
         defer { releaseResolution.signal() }
@@ -582,7 +611,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: {
                 resolutionStarted.store(true)
@@ -600,6 +629,7 @@ extension WorkspaceTmuxDiscoveryTests {
             name: "kwt-ghosthub-main",
             worktreeID: environment.worktree.id,
             worktreePath: environment.worktree.path,
+            worktreeGeneration: "0123456789abcdef0123456789abcdef",
             tmuxAttachMode: .direct
         )
 
@@ -836,6 +866,55 @@ extension WorkspaceTmuxDiscoveryTests {
         model.openBorrowedTmuxSession(canonical)
         #expect(model.activeBorrowedTmuxSelection == canonical)
         #expect(model.retainedBorrowedTmuxHandle(for: canonical) == handle)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a direct worktree reuses its unbound default-server presentation")
+    func directWorktreeReusesUnboundPresentation() async throws {
+        let environment = try setupStandardEnvironment()
+        let sessionName = "kwt-ghosthub-main"
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: sessionName,
+            managed: false,
+            windows: []
+        )]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        let unbound = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName
+        )
+        let worktree = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
+        )
+
+        model.openBorrowedTmuxSession(unbound)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let handle = try #require(
+            model.retainedBorrowedTmuxHandle(for: unbound)
+        )
+        model.openBorrowedTmuxSession(worktree)
+
+        #expect(model.retainedBorrowedTmuxHandle(for: worktree) == handle)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(surfaceStore.requestCount == 1)
+        #expect(model.activeBorrowedTmuxSelection == worktree)
         await model.shutdown()
     }
 
@@ -1109,6 +1188,84 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("directory workspace open guards the selected KWT session")
+    func directoryWorkspaceOpenGuardsSelectedSession() async throws {
+        let environment = try setupStandardEnvironment()
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            name: "hub",
+            path: "/srv/hub",
+            tmuxSessionName: "kwt-workspace-dir-hub",
+            sessionLive: false
+        )
+        var snapshot = environment.snapshot
+        snapshot.directoryWorkspaces = [directory]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            localKwtPathProvider: { "/test/kwt" }
+        )
+        let selection = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: directory
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'--expected-session'"))
+        #expect(command.contains("'kwt-workspace-dir-hub'"))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("directory session drift does not launch KWT open")
+    func directorySessionDriftDoesNotOpen() async throws {
+        let environment = try setupStandardEnvironment()
+        let directoryID = UUID()
+        var snapshot = environment.snapshot
+        snapshot.directoryWorkspaces = [.init(
+            id: directoryID,
+            hostID: environment.host.id,
+            name: "hub",
+            path: "/srv/hub",
+            tmuxSessionName: "kwt-workspace-dir-renamed-hub",
+            sessionLive: false
+        )]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        let staleSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-workspace-dir-hub",
+            directoryWorkspaceID: directoryID,
+            workspacePath: "/srv/hub",
+            tmuxAttachMode: .direct
+        )
+
+        model.openBorrowedTmuxSession(staleSelection)
+        await Task.yield()
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(surfaceStore.requestCount == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("explicit close dismisses an unresolved-host presentation")
     func explicitCloseDismissesUnresolvedHostPresentation() throws {
         let environment = try setupStandardEnvironment()
@@ -1275,10 +1432,11 @@ extension WorkspaceTmuxDiscoveryTests {
     @Test("explicit reselection attaches a replaced worktree's session")
     func explicitReselectionAttachesReplacedSession() throws {
         let environment = try setupStandardEnvironment()
+        let originalGeneration = "0123456789abcdef0123456789abcdef"
+        let replacementGeneration = "fedcba9876543210fedcba9876543210"
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "editor"
-        snapshot.worktrees[0].generation =
-            "fedcba9876543210fedcba9876543210"
+        snapshot.worktrees[0].generation = originalGeneration
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -1290,15 +1448,18 @@ extension WorkspaceTmuxDiscoveryTests {
             name: "editor",
             worktreeID: environment.worktree.id,
             worktreePath: environment.worktree.path,
-            worktreeGeneration: "0123456789abcdef0123456789abcdef",
+            worktreeGeneration: originalGeneration,
             tmuxAttachMode: .direct
         )
         model.openBorrowedTmuxSession(observed)
         #expect(
             model.activeBorrowedTmuxSelection?.worktreeGeneration
-                == "0123456789abcdef0123456789abcdef"
+                == originalGeneration
         )
 
+        var replacementSnapshot = model.snapshot
+        replacementSnapshot.worktrees[0].generation = replacementGeneration
+        model.snapshot = replacementSnapshot
         var reselection = model.selection
         reselection.select(
             .worktree(environment.worktree.id),
@@ -1308,7 +1469,7 @@ extension WorkspaceTmuxDiscoveryTests {
 
         #expect(
             model.activeBorrowedTmuxSelection?.worktreeGeneration
-                == "fedcba9876543210fedcba9876543210"
+                == replacementGeneration
         )
         #expect(model.activeBorrowedTmuxLaunchMode == .attach)
     }
@@ -1335,11 +1496,15 @@ extension WorkspaceTmuxDiscoveryTests {
         replacementGeneration: String
     ) async throws {
         let environment = try setupStandardEnvironment()
+        let originalGeneration = "0123456789abcdef0123456789abcdef"
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].generation = originalGeneration
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
@@ -1348,7 +1513,7 @@ extension WorkspaceTmuxDiscoveryTests {
             name: "kwt-ghosthub-main",
             worktreeID: environment.worktree.id,
             worktreePath: environment.worktree.path,
-            worktreeGeneration: "0123456789abcdef0123456789abcdef",
+            worktreeGeneration: originalGeneration,
             tmuxAttachMode: .direct
         )
         let other = WorkspaceTmuxSessionSelection(
@@ -1370,6 +1535,11 @@ extension WorkspaceTmuxDiscoveryTests {
         replacement.name = replacementName
         replacement.socketName = replacementSocket
         replacement.worktreeGeneration = replacementGeneration
+        var replacementSnapshot = model.snapshot
+        replacementSnapshot.worktrees[0].tmuxSessionName = replacementName
+        replacementSnapshot.worktrees[0].tmuxSocketName = replacementSocket
+        replacementSnapshot.worktrees[0].generation = replacementGeneration
+        model.snapshot = replacementSnapshot
         model.openBorrowedTmuxSession(replacement)
         await waitUntilMainActor {
             model.prepareActiveBorrowedTmuxSurface()
@@ -1450,6 +1620,8 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         let sessionName = "kwt-ghosthub-main"
         snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.hosts[0].tmuxSessions = [
             TmuxSessionSummary(
                 name: sessionName,
@@ -1492,12 +1664,10 @@ extension WorkspaceTmuxDiscoveryTests {
             configuredHosts.eraseToAnyPublisher(),
             startServices: true
         )
-        let selection = WorkspaceTmuxSessionSelection(
-            hostID: environment.host.id,
-            name: sessionName,
-            worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path,
-            tmuxAttachMode: .direct
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
         )
 
         await waitUntilMainActor {
@@ -1521,6 +1691,8 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         let sessionName = "kwt-ghosthub-main"
         snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.hosts[0].tmuxSessions = [
             TmuxSessionSummary(
                 name: sessionName,
@@ -1557,12 +1729,10 @@ extension WorkspaceTmuxDiscoveryTests {
             configuredHosts.eraseToAnyPublisher(),
             startServices: true
         )
-        let selection = WorkspaceTmuxSessionSelection(
-            hostID: environment.host.id,
-            name: sessionName,
-            worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path,
-            tmuxAttachMode: .direct
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
         )
 
         await waitUntilMainActor {
@@ -1586,6 +1756,8 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         let sessionName = "kwt-ghosthub-main"
         snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.hosts[0].tmuxSessions = [
             TmuxSessionSummary(
                 name: sessionName,
@@ -1604,12 +1776,10 @@ extension WorkspaceTmuxDiscoveryTests {
             },
             kwtRemoteProvisioner: { _ in throw CancellationError() }
         )
-        let selection = WorkspaceTmuxSessionSelection(
-            hostID: environment.host.id,
-            name: sessionName,
-            worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path,
-            tmuxAttachMode: .direct
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
         )
 
         await #expect(throws: CancellationError.self) {
@@ -1625,23 +1795,30 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("a missing helper during branch listing restores direct attach")
-    func branchStatus127FallsBackToDirectAttach() async throws {
+    @Test("a missing helper uses the captured named tmux endpoint")
+    func missingHelperUsesCapturedNamedEndpoint() async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
         let sessionName = "kwt-ghosthub-main"
         snapshot.worktrees[0].tmuxSessionName = sessionName
-        snapshot.hosts[0].tmuxSessions = [
-            TmuxSessionSummary(
-                name: sessionName,
-                managed: true,
-                windows: []
-            ),
-        ]
+        snapshot.worktrees[0].tmuxSocketName = "kwt-main"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let identity = TmuxSessionIdentity(
+            serverPID: "123",
+            sessionID: "$7",
+            createdAt: "1721552400"
+        )
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let failure = KwtWorktreeError.commandFailed(
             host: environment.host.name,
             status: 127
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
         )
         let model = try makeModel(
             database: environment.database,
@@ -1651,14 +1828,14 @@ extension WorkspaceTmuxDiscoveryTests {
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            kwtBranchLister: { _, _ in throw failure }
-        )
-        let selection = WorkspaceTmuxSessionSelection(
-            hostID: environment.host.id,
-            name: sessionName,
-            worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path,
-            tmuxAttachMode: .direct
+            kwtBranchLister: { _, _ in throw failure },
+            tmuxSessionIdentityReviewer: { reviewed, _, _ in
+                #expect(reviewed == selection)
+                return ReviewedTmuxSessionIdentity(
+                    identity: identity,
+                    routeIdentity: nil
+                )
+            }
         )
 
         await #expect(throws: failure) {
@@ -1669,7 +1846,62 @@ extension WorkspaceTmuxDiscoveryTests {
 
         let command = try #require(surfaceStore.lastConfiguration?.command)
         #expect(command.contains("'attach-session'"))
+        #expect(command.contains("-L"))
+        #expect(command.contains("kwt-main"))
         #expect(!command.contains("'open'"))
+        #expect(command.contains("if-shell"))
+        #expect(command.contains("#{pid},123"))
+        #expect(command.contains("#{session_id}"))
+        #expect(command.contains("$7"))
+        #expect(command.contains("#{session_created},1721552400"))
+        #expect(command.contains("Ghosthub: tmux session identity changed"))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a missing helper fails closed without named endpoint identity")
+    func missingHelperRequiresCapturedNamedEndpointIdentity() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt-main"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let reviews = Mutex(0)
+        let failure = KwtWorktreeError.commandFailed(
+            host: environment.host.name,
+            status: 127
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            kwtBranchLister: { _, _ in throw failure },
+            tmuxSessionIdentityReviewer: { _, _, _ in
+                reviews.withLock { $0 += 1 }
+                throw TmuxSessionKillError.identityUnavailable(
+                    host: environment.host.name,
+                    session: "kwt-ghosthub-main"
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
+        )
+
+        await #expect(throws: failure) {
+            try await model.branches(for: environment.project.id)
+        }
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { reviews.withLock { $0 } == 1 }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(surfaceStore.requestCount == 0)
         await model.shutdown()
     }
 
@@ -1731,6 +1963,8 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         let sessionName = "kwt-ghosthub-main"
         snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         snapshot.hosts[0].tmuxSessions = [
             TmuxSessionSummary(
                 name: sessionName,
@@ -1746,12 +1980,10 @@ extension WorkspaceTmuxDiscoveryTests {
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
         )
-        let selection = WorkspaceTmuxSessionSelection(
-            hostID: environment.host.id,
-            name: sessionName,
-            worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path,
-            tmuxAttachMode: .direct
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
         )
 
         model.openBorrowedTmuxSession(selection)
@@ -1760,6 +1992,50 @@ extension WorkspaceTmuxDiscoveryTests {
         let command = try #require(surfaceStore.lastConfiguration?.command)
         #expect(command.contains("'open'"))
         #expect(command.contains(environment.worktree.path))
+        #expect(command.contains("'--expected-repository'"))
+        #expect(command.contains(environment.project.scopedKey))
+        #expect(command.contains("'--expected-registration'"))
+        #expect(command.contains("remote-registration"))
+        #expect(command.contains("'--expected-generation'"))
+        #expect(command.contains("0123456789abcdef0123456789abcdef"))
+        #expect(command.contains("'--expected-session'"))
+        #expect(command.contains(sessionName))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("replaced worktree at the same path does not launch kwt open")
+    func replacedWorktreeAtSamePathDoesNotOpen() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].generation =
+            "fedcba9876543210fedcba9876543210"
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        let stale = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            workspacePath: environment.worktree.path,
+            worktreeGeneration: "0123456789abcdef0123456789abcdef",
+            tmuxAttachMode: .direct
+        )
+
+        model.openBorrowedTmuxSession(stale)
+        await Task.yield()
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(surfaceStore.requestCount == 0)
+        await model.shutdown()
     }
 
 }
