@@ -622,6 +622,13 @@ final class NativeTmuxSessionCoordinator {
         removeHandle(handle, for: key, keyAlreadyRemoved: true)
     }
 
+    func detach(_ handle: BorrowedTmuxSessionHandle) {
+        let key = sessionKey(handle)
+        guard handlesByKey[key] == handle else { return }
+        handlesByKey.removeValue(forKey: key)
+        removeHandle(handle, for: key, keyAlreadyRemoved: true)
+    }
+
     @discardableResult
     func detachAll(hostID: UUID) -> [BorrowedTmuxSessionHandle] {
         let entries = handlesByKey.filter { $0.key.hostID == hostID }

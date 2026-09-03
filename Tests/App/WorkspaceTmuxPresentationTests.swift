@@ -870,8 +870,8 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("a direct worktree reuses its unbound default-server presentation")
-    func directWorktreeReusesUnboundPresentation() async throws {
+    @Test("a direct worktree reuses and closes its unbound presentation")
+    func directWorktreeReusesAndClosesUnboundPresentation() async throws {
         let environment = try setupStandardEnvironment()
         let sessionName = "kwt-ghosthub-main"
         var snapshot = environment.snapshot
@@ -915,6 +915,25 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(model.retainedBorrowedTmuxPresentationCount == 1)
         #expect(surfaceStore.requestCount == 1)
         #expect(model.activeBorrowedTmuxSelection == worktree)
+
+        model.closeBorrowedTmuxSession(worktree)
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(surfaceStore.removedKeys.count == 1)
+
+        model.openBorrowedTmuxSession(worktree)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+        let reopenedHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: worktree)
+        )
+
+        #expect(reopenedHandle != handle)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(surfaceStore.requestCount == 2)
+        #expect(surfaceStore.removedKeys.count == 1)
         await model.shutdown()
     }
 

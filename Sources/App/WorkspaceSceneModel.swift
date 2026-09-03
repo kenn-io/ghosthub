@@ -11162,12 +11162,7 @@ final class WorkspaceSceneModel: ObservableObject {
             activeBorrowedTmuxRecoveryState = nil
             sessionConnectionRecoveryRequest = nil
         }
-        nativeTmuxSessionCoordinator.detach(
-            hostID: presentation.selection.hostID,
-            name: presentation.selection.name,
-            socketName: presentation.selection.socketName,
-            tmuxAttachMode: presentation.selection.tmuxAttachMode
-        )
+        nativeTmuxSessionCoordinator.detach(handle)
     }
 
     func prepareTmuxSessionKill(
