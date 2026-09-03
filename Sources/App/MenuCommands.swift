@@ -28,7 +28,7 @@ struct MenuActionContext {
             for: action,
             sceneIsFocused:
             sceneModel?.acceptsApplicationShortcutKeyEvents == true,
-            hasAttachedSheet: sceneHasAttachedSheet,
+            hasAttachedSheet: sheetSuppressesBinding(for: action),
             actionIsAvailable: actionIsAvailable
         )?.swiftUI
     }
@@ -46,16 +46,21 @@ struct MenuActionContext {
             for: action,
             sceneIsFocused:
             sceneModel?.acceptsApplicationShortcutKeyEvents == true,
-            hasAttachedSheet: sceneHasAttachedSheet,
+            hasAttachedSheet: sheetSuppressesBinding(for: action),
             actionIsAvailable: sceneModel?.canSplitActivePane == true
         )?.swiftUI
     }
 
-    var sceneHasAttachedSheet: Bool {
+    private func sheetSuppressesBinding(
+        for action: ApplicationShortcutAction
+    ) -> Bool {
         guard let sceneModel else { return false }
-        return sceneModel.isSettingsPresented
-            || sceneModel.isCommandPalettePresented
-            || sceneModel.isLogViewerPresented
+        return ApplicationShortcutMenuModel.sheetSuppressesBinding(
+            for: action,
+            settingsPresented: sceneModel.isSettingsPresented,
+            commandPalettePresented: sceneModel.isCommandPalettePresented,
+            logViewerPresented: sceneModel.isLogViewerPresented
+        )
     }
 
     func invoke(_ action: ApplicationShortcutAction) {

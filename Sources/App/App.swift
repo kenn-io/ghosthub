@@ -28,6 +28,27 @@ enum ApplicationShortcutMenuModel {
         .toggleSidebar,
     ]
 
+    /// Find targets the Application Log sheet's own terminal, so that sheet
+    /// must not take the Find bindings away from the menu.
+    static let logViewerActions: Set<ApplicationShortcutAction> = [
+        .find,
+        .findNext,
+        .findPrevious,
+        .hideFindBar,
+    ]
+
+    static func sheetSuppressesBinding(
+        for action: ApplicationShortcutAction,
+        settingsPresented: Bool,
+        commandPalettePresented: Bool,
+        logViewerPresented: Bool
+    ) -> Bool {
+        if settingsPresented || commandPalettePresented {
+            return true
+        }
+        return logViewerPresented && !logViewerActions.contains(action)
+    }
+
     static func items(
         _ actions: [ApplicationShortcutAction],
         shortcuts: ResolvedApplicationShortcuts
