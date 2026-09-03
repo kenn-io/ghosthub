@@ -28,6 +28,29 @@ struct TerminalFindControllerTests {
         #expect(await recorder.maximumActiveCalls == 1)
     }
 
+    @Test("a replacement query cancels the active backend request")
+    func replacementQueryCancelsActiveRequest() async {
+        let recorder = FindSessionRecorder(
+            firstSearchDelay: .milliseconds(250)
+        )
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: { recorder.session }
+        )
+
+        controller.open()
+        controller.updateQuery("first")
+        await expectEventually { await recorder.searches == ["first"] }
+        controller.updateQuery("second")
+        await expectEventually {
+            await recorder.searches == ["first", "second"]
+        }
+
+        #expect(await recorder.cancelledSearches == ["first"])
+        #expect(controller.query == "second")
+    }
+
     @Test("stale completion cannot overwrite the current result")
     func staleCompletionIsIgnored() async {
         let gate = FindTestGate()
@@ -99,6 +122,27 @@ struct TerminalFindControllerTests {
         #expect(await recorder.closeCount == 1)
     }
 
+    @Test("closing Find cancels the active backend request")
+    func closeCancelsActiveRequest() async {
+        let recorder = FindSessionRecorder(
+            firstSearchDelay: .milliseconds(250)
+        )
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: { recorder.session }
+        )
+
+        controller.open()
+        controller.updateQuery("needle")
+        await expectEventually { await recorder.searches == ["needle"] }
+        controller.close()
+        await expectEventually { await recorder.closeCount == 1 }
+
+        #expect(await recorder.cancelledSearches == ["needle"])
+        #expect(!controller.isOpen)
+    }
+
     @Test("callback-pending work completes from the backend callback")
     func callbackCompletesPendingWork() async {
         let recorder = FindSessionRecorder(
@@ -116,13 +160,69 @@ struct TerminalFindControllerTests {
             await recorder.searchTokens["needle"] != nil
         }
         let operation = await recorder.searchTokens["needle"]!
-        controller.publishBackendResult(
-            total: 3,
-            selected: 0,
-            operation: operation
-        )
+        controller.publishBackendSelected(0, operation: operation)
+        controller.publishBackendTotal(3, operation: operation)
 
         #expect(controller.result == .match(total: 3, selected: 1))
+        #expect(!controller.isWorking)
+    }
+
+    @Test("a search waits for its total callback")
+    func searchWaitsForTotalCallback() async {
+        let recorder = FindSessionRecorder(
+            responses: ["needle": .awaitingCallback]
+        )
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: { recorder.session }
+        )
+
+        controller.open()
+        controller.updateQuery("needle")
+        await expectEventually {
+            await recorder.searchTokens["needle"] != nil
+        }
+        let operation = await recorder.searchTokens["needle"]!
+        controller.publishBackendSelected(-1, operation: operation)
+
+        #expect(controller.isWorking)
+        #expect(controller.result == .idle)
+
+        controller.publishBackendTotal(3, operation: operation)
+
+        #expect(controller.result == .match(total: 3, selected: nil))
+        #expect(!controller.isWorking)
+    }
+
+    @Test("navigation waits for its selected callback")
+    func navigationWaitsForSelectedCallback() async {
+        let recorder = FindSessionRecorder(
+            results: ["needle": .match(total: 3, selected: nil)],
+            navigationResponse: .awaitingCallback
+        )
+        let controller = TerminalFindController(
+            isAvailable: true,
+            debounce: .zero,
+            sessionProvider: { recorder.session }
+        )
+
+        controller.open()
+        controller.updateQuery("needle")
+        await expectEventually {
+            controller.result == .match(total: 3, selected: nil)
+        }
+        controller.findNext()
+        await expectEventually { await recorder.navigationTokens.count == 1 }
+        let operation = await recorder.navigationTokens[0]
+        controller.publishBackendTotal(4, operation: operation)
+
+        #expect(controller.isWorking)
+        #expect(controller.result == .match(total: 4, selected: nil))
+
+        controller.publishBackendSelected(1, operation: operation)
+
+        #expect(controller.result == .match(total: 4, selected: 2))
         #expect(!controller.isWorking)
     }
 
@@ -145,11 +245,7 @@ struct TerminalFindControllerTests {
         }
         let firstOperation = await recorder.searchTokens["first"]!
         controller.updateQuery("second")
-        controller.publishBackendResult(
-            total: 1,
-            selected: 0,
-            operation: firstOperation
-        )
+        controller.publishBackendTotal(1, operation: firstOperation)
 
         #expect(controller.query == "second")
         #expect(controller.result == .idle)
@@ -157,11 +253,8 @@ struct TerminalFindControllerTests {
             await recorder.searchTokens["second"] != nil
         }
         let secondOperation = await recorder.searchTokens["second"]!
-        controller.publishBackendResult(
-            total: 2,
-            selected: 1,
-            operation: secondOperation
-        )
+        controller.publishBackendSelected(1, operation: secondOperation)
+        controller.publishBackendTotal(2, operation: secondOperation)
 
         #expect(controller.result == .match(total: 2, selected: 2))
         #expect(!controller.isWorking)
@@ -189,16 +282,13 @@ struct TerminalFindControllerTests {
             query: "external",
             operation: externalOperation
         )
-        controller.publishBackendResult(
-            total: 4,
-            selected: 1,
-            operation: externalOperation
-        )
-        controller.publishBackendResult(
-            total: 1,
-            selected: 0,
-            operation: internalOperation
-        )
+        controller.publishBackendTotal(99, operation: internalOperation)
+        controller.publishBackendSelected(1, operation: externalOperation)
+
+        #expect(controller.result == .idle)
+
+        controller.publishBackendTotal(4, operation: externalOperation)
+        controller.publishBackendSelected(0, operation: internalOperation)
 
         #expect(controller.query == "external")
         #expect(controller.result == .match(total: 4, selected: 2))
@@ -229,23 +319,33 @@ private actor FindTestGate {
 
 private actor FindSessionRecorder {
     private let firstSearchGate: FindTestGate?
+    private let firstSearchDelay: Duration?
     private let results: [String: TerminalFindResult]
     private let responses: [String: TerminalFindBackendResponse]
+    private let navigationResponse: TerminalFindBackendResponse
     private(set) var searches: [String] = []
     private(set) var searchTokens: [String: TerminalFindOperationToken] = [:]
+    private(set) var cancelledSearches: [String] = []
     private(set) var navigations: [TerminalFindDirection] = []
+    private(set) var navigationTokens: [TerminalFindOperationToken] = []
     private(set) var closeCount = 0
     private var activeCalls = 0
     private(set) var maximumActiveCalls = 0
 
     init(
         firstSearchGate: FindTestGate? = nil,
+        firstSearchDelay: Duration? = nil,
         results: [String: TerminalFindResult] = [:],
-        responses: [String: TerminalFindBackendResponse] = [:]
+        responses: [String: TerminalFindBackendResponse] = [:],
+        navigationResponse: TerminalFindBackendResponse = .result(
+            .match(total: 1, selected: nil)
+        )
     ) {
         self.firstSearchGate = firstSearchGate
+        self.firstSearchDelay = firstSearchDelay
         self.results = results
         self.responses = responses
+        self.navigationResponse = navigationResponse
     }
 
     nonisolated var session: TerminalFindSession {
@@ -253,7 +353,9 @@ private actor FindSessionRecorder {
             search: { [self] query, operation in
                 await search(query, operation: operation)
             },
-            navigate: { [self] direction, _ in await navigate(direction) },
+            navigate: { [self] direction, operation in
+                await navigate(direction, operation: operation)
+            },
             close: { [self] in await close() }
         )
     }
@@ -263,12 +365,19 @@ private actor FindSessionRecorder {
         operation: TerminalFindOperationToken
     ) async -> Result<TerminalFindBackendResponse, TerminalFindFailure> {
         beginCall()
+        defer { endCall() }
         searches.append(query)
         searchTokens[query] = operation
         if searches.count == 1, let firstSearchGate {
             await firstSearchGate.wait()
         }
-        endCall()
+        if searches.count == 1, let firstSearchDelay {
+            do {
+                try await Task.sleep(for: firstSearchDelay)
+            } catch {
+                cancelledSearches.append(query)
+            }
+        }
         return .success(
             responses[query]
                 ?? .result(results[query] ?? .match(total: 1, selected: nil))
@@ -276,12 +385,14 @@ private actor FindSessionRecorder {
     }
 
     private func navigate(
-        _ direction: TerminalFindDirection
+        _ direction: TerminalFindDirection,
+        operation: TerminalFindOperationToken
     ) -> Result<TerminalFindBackendResponse, TerminalFindFailure> {
         beginCall()
         navigations.append(direction)
+        navigationTokens.append(operation)
         endCall()
-        return .success(.result(.match(total: 1, selected: nil)))
+        return .success(navigationResponse)
     }
 
     private func close() -> TerminalFindFailure? {

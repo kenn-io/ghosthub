@@ -1012,10 +1012,9 @@ public final class LibghosttyRuntime: ObservableObject,
             // it does not emit START_SEARCH. This action therefore represents
             // a new upstream-owned search, such as start_search or
             // search_selection, and supersedes the registered operation.
-            let operation = LibghosttyFindOperationRegistry.shared
-                .beginExternalOperation(
-                    for: sourceSurfaceIdentity
-                )
+            guard let operation = LibghosttyFindOperationRegistry.shared
+                .beginExternalOperation(for: sourceSurfaceIdentity)
+            else { return true }
             DispatchQueue.main.async {
                 surfaceView(fromSurfaceIdentity: sourceSurfaceIdentity)?
                     .beginLibghosttyFind(query, operation: operation)

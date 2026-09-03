@@ -4,6 +4,22 @@ import Testing
 
 @Suite("libghostty Find callback routing")
 struct LibghosttyFindTests {
+    @Test("an external backend rejects libghostty search actions")
+    func externalBackendRejectsLibghosttySearch() {
+        let registry = LibghosttyFindOperationRegistry()
+        let surfaceIdentity: UInt = 41
+
+        registry.setBackend(.external, for: surfaceIdentity)
+        #expect(registry.beginExternalOperation(
+            for: surfaceIdentity
+        ) == nil)
+
+        registry.setBackend(.libghostty, for: surfaceIdentity)
+        #expect(registry.beginExternalOperation(
+            for: surfaceIdentity
+        ) != nil)
+    }
+
     @Test("a replacement query does not claim delayed callbacks")
     func replacementWaitsForUpstreamReset() {
         let registry = LibghosttyFindOperationRegistry()

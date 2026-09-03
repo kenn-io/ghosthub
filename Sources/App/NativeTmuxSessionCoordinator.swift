@@ -824,6 +824,7 @@ final class NativeTmuxSessionCoordinator {
             )
             return nil
         }
+        (surface as? TerminalSurfaceView)?.useExternalFindBackend()
         if let error = surface.launchError {
             failSurfaceLaunch(
                 handle,
@@ -1266,7 +1267,10 @@ final class NativeTmuxSessionCoordinator {
             if case let .failure(failure) = result,
                failure.kind == .transport,
                mutation != .cancel {
-                await invalidateFindConnection(handleID: handle.id)
+                await invalidateFindConnection(
+                    handleID: handle.id,
+                    attachmentID: attachmentID
+                )
             }
             return Self.findResponse(result)
         case let .failure(failure):
@@ -1396,8 +1400,14 @@ final class NativeTmuxSessionCoordinator {
         await connection.invalidate()
     }
 
-    private func invalidateFindConnection(handleID: UUID) async {
-        guard let connection = attachments[handleID]?.sshConnection else {
+    private func invalidateFindConnection(
+        handleID: UUID,
+        attachmentID: UUID
+    ) async {
+        guard let attachment = attachments[handleID],
+              attachment.id == attachmentID,
+              let connection = attachment.sshConnection
+        else {
             return
         }
         await connection.invalidate()

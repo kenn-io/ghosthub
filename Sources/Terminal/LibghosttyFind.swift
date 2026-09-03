@@ -4,6 +4,11 @@ import GhosthubTerminalSupport
 final class LibghosttyFindOperationRegistry: @unchecked Sendable {
     static let shared = LibghosttyFindOperationRegistry()
 
+    enum Backend: Equatable {
+        case libghostty
+        case external
+    }
+
     enum Callback: Equatable {
         case total(Int)
         case selected(Int)
@@ -21,6 +26,16 @@ final class LibghosttyFindOperationRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var operations: [UInt: OperationState] = [:]
+    private var backends: [UInt: Backend] = [:]
+
+    func setBackend(_ backend: Backend, for surfaceIdentity: UInt) {
+        lock.lock()
+        backends[surfaceIdentity] = backend
+        if backend == .external {
+            operations.removeValue(forKey: surfaceIdentity)
+        }
+        lock.unlock()
+    }
 
     func prepareSearch(
         _ operation: TerminalFindOperationToken,
@@ -58,9 +73,13 @@ final class LibghosttyFindOperationRegistry: @unchecked Sendable {
 
     func beginExternalOperation(
         for surfaceIdentity: UInt
-    ) -> TerminalFindOperationToken {
+    ) -> TerminalFindOperationToken? {
         let operation = TerminalFindOperationToken()
         lock.lock()
+        guard backends[surfaceIdentity] != .external else {
+            lock.unlock()
+            return nil
+        }
         var state = operations[surfaceIdentity] ?? OperationState(
             token: nil,
             pending: []
@@ -115,10 +134,23 @@ final class LibghosttyFindOperationRegistry: @unchecked Sendable {
         operations.removeValue(forKey: surfaceIdentity)
         lock.unlock()
     }
+
+    func removeSurface(for surfaceIdentity: UInt) {
+        lock.lock()
+        operations.removeValue(forKey: surfaceIdentity)
+        backends.removeValue(forKey: surfaceIdentity)
+        lock.unlock()
+    }
 }
 
 extension TerminalSurfaceView {
     public func installLibghosttyFindController() {
+        if let surfaceIdentity {
+            LibghosttyFindOperationRegistry.shared.setBackend(
+                .libghostty,
+                for: surfaceIdentity
+            )
+        }
         terminalFindController = TerminalFindController(
             isAvailable: true,
             failureHandler: { [weak self] message in
@@ -186,14 +218,20 @@ extension TerminalSurfaceView {
         )
     }
 
+    public func useExternalFindBackend() {
+        guard let surfaceIdentity else { return }
+        LibghosttyFindOperationRegistry.shared.setBackend(
+            .external,
+            for: surfaceIdentity
+        )
+    }
+
     func publishLibghosttyFindTotal(
         _ total: Int,
         operation: TerminalFindOperationToken
     ) {
-        libghosttyFindTotal = total
-        terminalFindController.publishBackendResult(
-            total: total,
-            selected: libghosttyFindSelected,
+        terminalFindController.publishBackendTotal(
+            total,
             operation: operation
         )
     }
@@ -202,8 +240,6 @@ extension TerminalSurfaceView {
         _ query: String,
         operation: TerminalFindOperationToken
     ) {
-        libghosttyFindTotal = -1
-        libghosttyFindSelected = -1
         terminalFindController.backendDidOpen(
             query: query,
             operation: operation
@@ -214,10 +250,8 @@ extension TerminalSurfaceView {
         _ selected: Int,
         operation: TerminalFindOperationToken
     ) {
-        libghosttyFindSelected = selected
-        terminalFindController.publishBackendResult(
-            total: libghosttyFindTotal,
-            selected: selected,
+        terminalFindController.publishBackendSelected(
+            selected,
             operation: operation
         )
     }

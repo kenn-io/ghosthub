@@ -412,6 +412,91 @@ struct NativeTmuxSessionCoordinatorTests {
         }
     }
 
+    @Test("a stale Find failure does not invalidate a replacement attachment")
+    func staleFindFailureKeepsReplacementConnection() async throws {
+        let connectionCount = LockedValue(0)
+        let invalidations = LockedValue<[Int]>([])
+        let findGate = BlockingGate()
+        defer { findGate.open() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let hostID = UUID()
+        let host = CommandHost.ssh(SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        ))
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/local/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                var index = 0
+                connectionCount.withLock {
+                    $0 += 1
+                    index = $0
+                }
+                let connectionIndex = index
+                return testKwtSSHAttachment(
+                    routeIdentity: "sha256:route-\(connectionIndex)",
+                    generation: UInt64(connectionIndex),
+                    invalidate: {
+                        invalidations.withLock { $0.append(connectionIndex) }
+                    }
+                )
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                guard command.contains(
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                ) else { return (0, "") }
+                return (0, coordinatorSplitClientOutput)
+            },
+            paneFinder: TmuxPaneFinder(runner: { _, _, _ in
+                findGate.block()
+                return (
+                    255,
+                    "Control socket connect(/tmp/dead): Connection refused\n"
+                )
+            })
+        )
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "replaced-find",
+            host: host,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor {
+            coordinator.attachmentRouteIdentity(handle) == "sha256:route-1"
+        }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            store.surface.terminalFindController.isAvailable
+        }
+        let controller = store.surface.terminalFindController
+        controller.open()
+        controller.updateQuery("needle")
+        await findGate.waitUntilBlocked()
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(true, nil)
+        let replacement = coordinator.attach(
+            hostID: hostID,
+            name: handle.name,
+            host: host,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        #expect(replacement == handle)
+        await waitUntilMainActor {
+            coordinator.attachmentRouteIdentity(handle) == "sha256:route-2"
+        }
+        findGate.open()
+        await waitUntilMainActor { controller.failureMessage != nil }
+
+        #expect(invalidations.load().isEmpty)
+    }
+
     @Test("tmux older than 3.4 does not install pane split shortcuts")
     func oldTmuxDoesNotInstallSplitHandler() async {
         let store = RecordingNativeSessionSurfaceStore()

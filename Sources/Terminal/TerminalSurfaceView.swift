@@ -176,8 +176,6 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     public var shouldConfirmClose: (() -> Bool)?
     @Published public var terminalOperationErrorMessage: String?
     @Published public var terminalFindController = TerminalFindController.unavailable
-    var libghosttyFindTotal = -1
-    var libghosttyFindSelected = -1
     /// Installed only for native session surfaces whose backend supports
     /// semantic pane splitting.
     public var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
@@ -407,7 +405,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             }
         }
         viewsBySurfaceIdentity.removeValue(forKey: identity)
-        LibghosttyFindOperationRegistry.shared.removeOperation(
+        LibghosttyFindOperationRegistry.shared.removeSurface(
             for: identity
         )
         onSurfaceDestroyed?(identity)

@@ -74,12 +74,15 @@ public final class TerminalFindController: ObservableObject {
     private var findSessionID = UUID()
     private var queryGeneration: UInt64 = 0
     private var callbackRevision: UInt64 = 0
+    private var backendTotal = -1
+    private var backendSelected = -1
     private var activeSession: TerminalFindSession?
     private var pendingSearch: Operation?
     private var pendingNavigations: [Operation] = []
     private var pendingEnds: [Operation] = []
     private var debounceTask: Task<Void, Never>?
     private var workerTask: Task<Void, Never>?
+    private var activeBackendTask: BackendTask?
     private var callbackWaiter: CallbackWaiter?
     private var activeCallbackOperation: CallbackOperation?
 
@@ -120,6 +123,7 @@ public final class TerminalFindController: ObservableObject {
         activeCallbackOperation = nil
         isOpen = true
         failureMessage = nil
+        resetBackendResult()
         result = .idle
         fieldSelectionRevision &+= 1
         if !query.isEmpty {
@@ -133,9 +137,11 @@ public final class TerminalFindController: ObservableObject {
         queryGeneration &+= 1
         result = .idle
         failureMessage = nil
+        resetBackendResult()
         pendingSearch = nil
         pendingNavigations.removeAll()
         debounceTask?.cancel()
+        cancelActiveBackendTask()
         activeCallbackOperation = nil
         resumeCallbackWaiter()
         isWorking = false
@@ -180,6 +186,7 @@ public final class TerminalFindController: ObservableObject {
             pendingNavigations.removeAll()
             debounceTask?.cancel()
             debounceTask = nil
+            cancelActiveBackendTask()
             activeCallbackOperation = nil
             resumeCallbackWaiter()
             isWorking = false
@@ -192,13 +199,15 @@ public final class TerminalFindController: ObservableObject {
         let callbackOperation = CallbackOperation(
             token: operation,
             sessionID: findSessionID,
-            generation: queryGeneration
+            generation: queryGeneration,
+            expectedCallback: .total
         )
         activeCallbackOperation = callbackOperation
         callbackRevision &+= 1
         resumeCallbackWaiter(matching: operation)
         activeSession = activeSession ?? sessionProvider()
         isOpen = true
+        resetBackendResult()
         result = .idle
         failureMessage = nil
         isWorking = false
@@ -214,9 +223,31 @@ public final class TerminalFindController: ObservableObject {
         close(notifyBackend: false, clearFailure: true)
     }
 
-    public func publishBackendResult(
-        total: Int,
-        selected: Int?,
+    public func publishBackendTotal(
+        _ total: Int,
+        operation: TerminalFindOperationToken
+    ) {
+        publishBackendCallback(
+            .total,
+            value: total,
+            operation: operation
+        )
+    }
+
+    public func publishBackendSelected(
+        _ selected: Int,
+        operation: TerminalFindOperationToken
+    ) {
+        publishBackendCallback(
+            .selected,
+            value: selected,
+            operation: operation
+        )
+    }
+
+    private func publishBackendCallback(
+        _ callback: CallbackKind,
+        value: Int,
         operation: TerminalFindOperationToken
     ) {
         guard isOpen,
@@ -227,11 +258,20 @@ public final class TerminalFindController: ObservableObject {
                   generation: callbackOperation.generation
               )
         else { return }
-        callbackRevision &+= 1
-        resumeCallbackWaiter(matching: operation)
 
-        result = Self.result(total: total, selected: selected)
-        isWorking = false
+        switch callback {
+        case .total:
+            backendTotal = value
+        case .selected:
+            backendSelected = value
+        }
+        result = Self.result(total: backendTotal, selected: backendSelected)
+
+        if callbackOperation.expectedCallback == callback {
+            callbackRevision &+= 1
+            resumeCallbackWaiter(matching: operation)
+            isWorking = false
+        }
     }
 
     private func scheduleSearch(_ value: String) {
@@ -288,9 +328,11 @@ public final class TerminalFindController: ObservableObject {
         pendingSearch = nil
         pendingNavigations.removeAll()
         queryGeneration &+= 1
+        cancelActiveBackendTask()
         resumeCallbackWaiter()
         isOpen = false
         result = .idle
+        resetBackendResult()
         isWorking = false
         activeCallbackOperation = nil
         if clearFailure {
@@ -322,14 +364,18 @@ public final class TerminalFindController: ObservableObject {
                 let callbackOperation = CallbackOperation(
                     token: TerminalFindOperationToken(),
                     sessionID: sessionID,
-                    generation: generation
+                    generation: generation,
+                    expectedCallback: .total
                 )
+                resetBackendResult()
                 activeCallbackOperation = callbackOperation
                 let revision = callbackRevision
-                let response = await session.search(
-                    value,
-                    callbackOperation.token
-                )
+                let response = await performBackendOperation {
+                    await session.search(
+                        value,
+                        callbackOperation.token
+                    )
+                }
                 await handle(
                     response,
                     callbackOperation: callbackOperation,
@@ -344,14 +390,17 @@ public final class TerminalFindController: ObservableObject {
                 let callbackOperation = CallbackOperation(
                     token: TerminalFindOperationToken(),
                     sessionID: sessionID,
-                    generation: generation
+                    generation: generation,
+                    expectedCallback: .selected
                 )
                 activeCallbackOperation = callbackOperation
                 let revision = callbackRevision
-                let response = await session.navigate(
-                    direction,
-                    callbackOperation.token
-                )
+                let response = await performBackendOperation {
+                    await session.navigate(
+                        direction,
+                        callbackOperation.token
+                    )
+                }
                 await handle(
                     response,
                     callbackOperation: callbackOperation,
@@ -363,6 +412,29 @@ public final class TerminalFindController: ObservableObject {
             }
         }
         workerTask = nil
+    }
+
+    private func performBackendOperation(
+        _ operation: @escaping @Sendable () async
+            -> Result<TerminalFindBackendResponse, TerminalFindFailure>
+    ) async -> Result<TerminalFindBackendResponse, TerminalFindFailure> {
+        let id = UUID()
+        let task = Task { await operation() }
+        activeBackendTask = BackendTask(id: id, task: task)
+        let response = await task.value
+        if activeBackendTask?.id == id {
+            activeBackendTask = nil
+        }
+        return response
+    }
+
+    private func cancelActiveBackendTask() {
+        activeBackendTask?.task.cancel()
+    }
+
+    private func resetBackendResult() {
+        backendTotal = -1
+        backendSelected = -1
     }
 
     private func nextOperation() -> Operation? {
@@ -463,9 +535,23 @@ public final class TerminalFindController: ObservableObject {
         let continuation: CheckedContinuation<Void, Never>
     }
 
+    private struct BackendTask {
+        let id: UUID
+        let task: Task<
+            Result<TerminalFindBackendResponse, TerminalFindFailure>,
+            Never
+        >
+    }
+
     private struct CallbackOperation: Equatable {
         let token: TerminalFindOperationToken
         let sessionID: UUID
         let generation: UInt64
+        let expectedCallback: CallbackKind
+    }
+
+    private enum CallbackKind: Equatable {
+        case total
+        case selected
     }
 }
