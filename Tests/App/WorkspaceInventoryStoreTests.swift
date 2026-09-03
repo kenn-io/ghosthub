@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import GhosthubSettings
 import GhosthubTransport
@@ -2002,6 +2003,90 @@ struct WorkspaceInventoryStoreTests {
         #expect(
             store.snapshot.kwtByHost[.local]?.inventory?.projects
                 == canonical.projects
+        )
+    }
+
+    @Test("a mutation ended while publishing still reloads at fence end")
+    func mutationEndedDuringPublicationStillReloads() async {
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let secondLoad = AsyncGate()
+        let hostID = UUID()
+        let removed = KwtHostInventory(projects: [
+            legacyProject(name: "X", path: "/test/x", repository: "x"),
+        ])
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                if loadCount.load() > 1 {
+                    await secondLoad.wait()
+                }
+                return removed
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer {
+            secondLoad.open()
+            store.removeSubscriber(id: subscriberID)
+        }
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: "x"))
+        coordinator.prepareRemoval(
+            hostID: hostID,
+            projectIdentity: "x",
+            worktrees: [],
+            presentationTargets: []
+        )
+        coordinator.quarantineProjectRemoval(
+            hostID: hostID,
+            projectIdentity: "x",
+            projectPath: "/test/x",
+            host: .local
+        )
+        let released = LockedValue(false)
+        let cancellable = store.snapshotPublisher.sink { snapshot in
+            guard !released.load(),
+                  snapshot.kwtByHost[.local]?.isFresh == true else { return }
+            released.store(true)
+            coordinator.release(
+                hostID: hostID,
+                projectIdentity: "x",
+                removesProject: true,
+                allowsRemovalRestoration: false,
+                projectPath: "/test/x"
+            )
+        }
+        defer { cancellable.cancel() }
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+
+        await waitUntilMainActor { loadCount.load() == 2 }
+        #expect(coordinator.scopes.isEmpty)
+        // The tombstone applied inside the publication must survive it.
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects.isEmpty
+                == true
+        )
+        secondLoad.open()
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[.local]?.isFresh == true
+                && store.snapshot.kwtByHost[.local]?.inventory?.projects
+                .isEmpty == true
+        }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects.isEmpty
+                == true
         )
     }
 }

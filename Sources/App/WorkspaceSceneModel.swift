@@ -1796,7 +1796,8 @@ final class WorkspaceSceneModel: ObservableObject {
             [weak self] event in
             self?.worktreeMutationEvent(event)
         }
-        workspaceInventoryCancellable = workspaceInventoryStore.$snapshot
+        workspaceInventoryCancellable = workspaceInventoryStore
+            .snapshotPublisher
             .sink { [weak self] snapshot in
                 self?.consumeSharedInventory(snapshot)
             }

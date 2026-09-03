@@ -2014,10 +2014,18 @@ extension WorkspaceTmuxDiscoveryTests {
                 warning: nil
             ),
         ])
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in legacy },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
+            workspaceInventoryStore: store,
             kwtInventoryLoader: { _ in legacy },
             worktreeMutationCoordinator: coordinator
         )

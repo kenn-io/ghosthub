@@ -5,7 +5,7 @@ import GhosthubSettings
 import GhosthubTransport
 
 @MainActor
-final class WorkspaceInventoryStore: ObservableObject {
+final class WorkspaceInventoryStore {
     static let shared = WorkspaceInventoryStore()
 
     typealias KwtLoader = @Sendable (
@@ -100,7 +100,20 @@ final class WorkspaceInventoryStore: ObservableObject {
         let epoch: UInt64
     }
 
-    @Published private(set) var snapshot = Snapshot()
+    /// Publishes after each change, so a subscriber that mutates the store
+    /// while reacting sees its own change persist rather than be overwritten
+    /// by the assignment that triggered the publication.
+    private(set) var snapshot = Snapshot() {
+        didSet { snapshotSubject.send(snapshot) }
+    }
+
+    private let snapshotSubject = CurrentValueSubject<Snapshot, Never>(
+        Snapshot()
+    )
+
+    var snapshotPublisher: AnyPublisher<Snapshot, Never> {
+        snapshotSubject.eraseToAnyPublisher()
+    }
 
     private struct Subscriber {
         var registrations: [HostRegistration]
@@ -392,8 +405,8 @@ final class WorkspaceInventoryStore: ObservableObject {
                     guard let self, !Task.isCancelled,
                           kwtGenerations[host, default: 0]
                           == generation else { return }
-                    recordKwtProvisioningFailure(host: host)
                     kwtTasks[host] = nil
+                    recordKwtProvisioningFailure(host: host)
                     return
                 }
             }
@@ -404,8 +417,11 @@ final class WorkspaceInventoryStore: ObservableObject {
                 guard let self, !Task.isCancelled,
                       kwtGenerations[host, default: 0] == generation
                 else { return }
-                recordKwtSuccess(inventory, host: host)
+                // Recording publishes synchronously, and a subscriber may
+                // end a mutation in response; clear the task first so that
+                // fence-end reload can start.
                 kwtTasks[host] = nil
+                recordKwtSuccess(inventory, host: host)
             } catch is CancellationError {
                 guard let self,
                       kwtGenerations[host, default: 0] == generation
@@ -415,8 +431,8 @@ final class WorkspaceInventoryStore: ObservableObject {
                 guard let self, !Task.isCancelled,
                       kwtGenerations[host, default: 0] == generation
                 else { return }
-                recordKwtFailure(error, host: host)
                 kwtTasks[host] = nil
+                recordKwtFailure(error, host: host)
             }
         }
     }
@@ -436,13 +452,13 @@ final class WorkspaceInventoryStore: ObservableObject {
             guard let self, !Task.isCancelled,
                   tmuxGenerations[host, default: 0] == generation
             else { return }
+            tmuxTasks[host] = nil
             switch result {
             case let .success(sessions):
                 recordTmuxSuccess(sessions, host: host)
             case let .failure(error):
                 recordTmuxFailure(error, host: host)
             }
-            tmuxTasks[host] = nil
         }
     }
 
