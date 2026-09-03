@@ -2289,13 +2289,13 @@ struct NativeTmuxSessionCoordinatorTests {
                 executable: binary.path,
                 arguments: server.connectionArguments + [
                     "list-clients", "-F",
-                    "#{client_tty}\t#{client_flags}",
+                    "#{client_tty}|#{client_flags}",
                 ],
                 timeout: 5
             )
             let clientFlags = clients.stdout.split(whereSeparator: \.isNewline)
                 .map(String.init)
-                .first { $0.hasPrefix(clientIdentity.clientTTY + "\t") }
+                .first { $0.hasPrefix(clientIdentity.clientTTY + "|") }
             previewGridWasIgnored =
                 clientFlags?.contains("ignore-size") == true
         }
