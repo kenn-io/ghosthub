@@ -5134,11 +5134,24 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         }
         let previous = kwtInventoriesByHost[hostID]
-        kwtInventoriesByHost[hostID] =
-            inventory.retainingFailedProjectWorktrees(
-                from: previous,
-                excludingWorktrees: excludingWorktrees
-            )
+        var exclusions = inventoryHosts[hostID].map {
+            workspaceInventoryStore.removalTombstones(on: $0)
+        } ?? [:]
+        for (repository, identities) in excludingWorktrees {
+            exclusions[repository, default: []].formUnion(identities)
+        }
+        var reconciled = inventory.retainingFailedProjectWorktrees(
+            from: previous,
+            excludingWorktrees: exclusions
+        )
+        if let commandHost = inventoryHosts[hostID] {
+            let removedProjects = workspaceInventoryStore
+                .projectRemovalTombstones(on: commandHost)
+            reconciled.projects.removeAll {
+                removedProjects.contains($0.project.repository)
+            }
+        }
+        kwtInventoriesByHost[hostID] = reconciled
         if recordsSuccessfulLoad {
             kwtAvailabilityByHost[hostID] = true
             kwtInventoryFailuresByHost.removeValue(forKey: hostID)

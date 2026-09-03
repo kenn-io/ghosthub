@@ -800,8 +800,8 @@ struct WorkspaceSharedInventoryTests {
         await second.shutdown()
     }
 
-    @Test("scene tombstones outlive filtered shared inventory")
-    func sceneTombstonesOutliveFilteredSharedInventory() async throws {
+    @Test("scene-local loads honor shared removal tombstones")
+    func sceneLocalLoadsHonorSharedRemovalTombstones() async throws {
         let fixture = try removalFixture()
         let environment = fixture.environment
         var other = WorktreeSummary.fixture(
@@ -873,10 +873,14 @@ struct WorkspaceSharedInventoryTests {
         let second = try await model.prepareWorktreeRemoval(other.id)
         let removal = Task { try await model.removeWorktree(second) }
         await removalGate.waitUntilWaiting()
-        #expect(model.snapshot.worktree(id: fixture.removable.id) == nil)
+        #expect(!model.snapshot.worktrees.contains {
+            $0.path == fixture.removable.path
+        })
         removalGate.open()
         try await removal.value
-        #expect(model.snapshot.worktree(id: fixture.removable.id) == nil)
+        #expect(!model.snapshot.worktrees.contains {
+            $0.path == fixture.removable.path
+        })
         await model.shutdown()
     }
 

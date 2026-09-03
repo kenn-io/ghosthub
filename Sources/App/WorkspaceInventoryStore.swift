@@ -219,6 +219,19 @@ final class WorkspaceInventoryStore: ObservableObject {
         kwtMutationEpochsByHost[host, default: 0]
     }
 
+    /// Removal tombstones still active for a host. Scenes apply them to
+    /// inventory they load themselves so a raw result cannot bring back a
+    /// removed row before a fresh shared load confirms it is gone.
+    func removalTombstones(
+        on host: CommandHost
+    ) -> [String: Set<KwtWorktreeIdentity>] {
+        kwtRemovalTombstonesByHost[host] ?? [:]
+    }
+
+    func projectRemovalTombstones(on host: CommandHost) -> Set<String> {
+        kwtProjectRemovalTombstonesByHost[host] ?? []
+    }
+
     func publishKwtInventory(
         _ inventory: KwtHostInventory,
         on host: CommandHost,
