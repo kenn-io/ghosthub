@@ -126,6 +126,561 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("hiding an ordinary tmux presentation disables client sizing")
+    func hiddenTmuxPresentationDisablesClientSizing() async throws {
+        let environment = try setupHostEnvironment()
+        var snapshot = environment.snapshot
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let previewGrid = TmuxGridSize(columns: 120, rows: 37)
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: "ordinary",
+            managed: false,
+            windows: [],
+            serverPID: identity.serverPID,
+            sessionID: identity.sessionID,
+            createdAt: identity.createdAt,
+            previewClientSize: previewGrid
+        )]
+        let hideMutations = LockedValue(0)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    hideMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "ordinary"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let handle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor { hideMutations.load() == 1 }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == handle)
+        #expect(surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("latest reopen wins while the hidden sizing transition is pending")
+    func reopeningWaitsForHiddenSizingTransition() async throws {
+        let environment = try setupHostEnvironment()
+        var snapshot = environment.snapshot
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: "ordinary",
+            managed: false,
+            windows: [],
+            serverPID: identity.serverPID,
+            sessionID: identity.sessionID,
+            createdAt: identity.createdAt,
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37)
+        )]
+        let events = LockedValue<[String]>([])
+        let hideStarted = LockedValue(false)
+        let releaseHide = DispatchSemaphore(value: 0)
+        defer { releaseHide.signal() }
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'!ignore-size'") {
+                    events.withLock { $0.append("interactive") }
+                } else if command.contains("'ignore-size'") {
+                    events.withLock { $0.append("hidden-start") }
+                    hideStarted.store(true)
+                    _ = releaseHide.wait(timeout: .now() + 5)
+                    events.withLock { $0.append("hidden-end") }
+                }
+                return (0, "")
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "ordinary"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let handle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor { hideStarted.load() }
+
+        model.openBorrowedTmuxSession(selection)
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        #expect(events.load() == ["hidden-start"])
+
+        model.openBorrowedTmuxSession(selection)
+
+        releaseHide.signal()
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(events.load() == [
+            "hidden-start", "hidden-end", "interactive",
+        ])
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == handle)
+        #expect(surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("hiding unsupported tmux detaches without a sizing command")
+    func hidingUnsupportedTmuxSkipsSizingMutation() async throws {
+        let environment = try setupHostEnvironment()
+        let commands = LockedValue<[String]>([])
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution(
+                    "/usr/bin/tmux",
+                    version: "tmux 3.3"
+                )
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                commands.withLock { $0.append(command) }
+                return (1, "unsupported sizing command")
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "ordinary"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: selection) == nil
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(commands.load().isEmpty)
+        #expect(!surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("hiding a socketless protected session never sizes the default server")
+    func hidingSocketlessProtectedSessionDetachesWithoutSizing() async throws {
+        let environment = try setupStandardEnvironment()
+        let hiddenSizingMutations = LockedValue(0)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    hiddenSizingMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
+            localKwtPathProvider: { "/test/kwt" },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .protected
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxSessionIsConnected(selection)
+        }
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            hiddenSizingMutations.load() > 0
+                || model.retainedBorrowedTmuxHandle(for: selection) == nil
+        }
+
+        #expect(hiddenSizingMutations.load() == 0)
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == nil)
+        #expect(!surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("reopening during provisioning resumes activation when ready")
+    func reopeningDuringProvisioningResumesActivation() async throws {
+        let environment = try setupHostEnvironment()
+        let resolutionStarted = LockedValue(false)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                resolutionStarted.store(true)
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "ordinary"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { resolutionStarted.load() }
+
+        model.hideBorrowedTmuxSession(selection)
+        model.openBorrowedTmuxSession(selection)
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+
+        releaseResolution.signal()
+        await waitUntilMainActor(timeout: .seconds(2)) {
+            model.prepareActiveBorrowedTmuxSurface()
+            return model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("hiding workspace provisioning preserves kwt establishment")
+    func hidingWorkspaceProvisioningPreservesKwtEstablishment() async throws {
+        let environment = try setupStandardEnvironment()
+        let resolutionStarted = LockedValue(false)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let hiddenSizingMutations = LockedValue(0)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                resolutionStarted.store(true)
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    hiddenSizingMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
+            localKwtPathProvider: { "/test/kwt" },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { resolutionStarted.load() }
+        model.hideBorrowedTmuxSession(selection)
+        // Let the hide request record itself before kwt can launch.
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        releaseResolution.signal()
+        await waitUntilMainActor(timeout: .seconds(2)) {
+            surfaceStore.requestCount == 1
+        }
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("/test/kwt"))
+        #expect(command.contains("'open'"))
+        #expect(!command.contains("ignore-size"))
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            hiddenSizingMutations.load() == 1
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("hiding kwt provisioning survives discovery advancing the phase")
+    func hidingKwtProvisioningSurvivesDiscoveryAdvancingPhase() async throws {
+        let environment = try setupStandardEnvironment()
+        let resolutionStarted = LockedValue(false)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let hiddenSizingMutations = LockedValue(0)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                resolutionStarted.store(true)
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    hiddenSizingMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
+            localKwtPathProvider: { "/test/kwt" },
+            tmuxSessionDiscovery: { _ in
+                .success([
+                    DiscoveredTmuxSession(
+                        name: "kwt-ghosthub-main",
+                        windowCount: 1,
+                        createdAt: nil,
+                        managed: true
+                    ),
+                ])
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { resolutionStarted.load() }
+        // Discovery sees the session while kwt is still provisioning, which
+        // completes workspace establishment before the client launches.
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.contains { $0.name == selection.name } == true
+        }
+        model.hideBorrowedTmuxSession(selection)
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        releaseResolution.signal()
+        await waitUntilMainActor(timeout: .seconds(2)) {
+            surfaceStore.requestCount == 1
+        }
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("/test/kwt"))
+        #expect(command.contains("'open'"))
+        #expect(!command.contains("ignore-size"))
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            hiddenSizingMutations.load() == 1
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("hidden workspace provisioning detaches without a client identity")
+    func hiddenWorkspaceProvisioningDetachesWithoutIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        let resolutionStarted = LockedValue(false)
+        let releaseResolution = DispatchSemaphore(value: 0)
+        defer { releaseResolution.signal() }
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                resolutionStarted.store(true)
+                _ = releaseResolution.wait(timeout: .now() + 5)
+                return successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, _ in
+                (1, "client identity unavailable")
+            },
+            localKwtPathProvider: { "/test/kwt" },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            tmuxAttachMode: .direct
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { resolutionStarted.load() }
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxSessionHasPendingHiddenSizing(selection)
+        }
+        releaseResolution.signal()
+
+        await waitUntilMainActor(timeout: .seconds(3)) {
+            model.retainedBorrowedTmuxHandle(for: selection) == nil
+        }
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(!surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a failed hidden sizing transition detaches the client")
+    func failedHiddenSizingTransitionDetachesClient() async throws {
+        let environment = try setupHostEnvironment()
+        var snapshot = environment.snapshot
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: "ordinary",
+            managed: false,
+            windows: [],
+            serverPID: identity.serverPID,
+            sessionID: identity.sessionID,
+            createdAt: identity.createdAt,
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37)
+        )]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    return (1, "tmux rejected the sizing change")
+                }
+                return (0, "")
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "ordinary"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        model.hideBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: selection) == nil
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(!surfaceStore.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("retained tmux activation unparks before publishing the active handle")
     func retainedTmuxActivationUnparksBeforePublishingHandle() async throws {
         let environment = try setupHostEnvironment()
@@ -159,6 +714,7 @@ extension WorkspaceTmuxDiscoveryTests {
             unpark: { _ in
                 events.append(
                     "unpark:\(weakModel?.activeBorrowedTmuxSelection?.name ?? "none")"
+                        + ":\(weakModel?.activeBorrowedTmuxSessionIsConnected ?? false)"
                 )
             },
             isKeyWindow: { true }
@@ -210,7 +766,11 @@ extension WorkspaceTmuxDiscoveryTests {
 
         model.openBorrowedTmuxSession(first)
 
-        #expect(events == ["park:second", "unpark:second"])
+        await waitUntilMainActor {
+            events == ["park:second", "unpark:first:false"]
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(events == ["park:second", "unpark:first:false"])
         #expect(model.activeBorrowedTmuxSelection == first)
         #expect(!budget.granted.contains(LivePreviewRequestID(
             sceneID: previewCoordinator.sceneID,
@@ -363,14 +923,6 @@ extension WorkspaceTmuxDiscoveryTests {
             lastKnownReachable: true
         )
         snapshot.hosts.append(secondHost)
-        let surfaceStore = SceneTmuxSurfaceStoreStub()
-        let model = try makeModel(
-            database: environment.database,
-            localHostID: environment.localHostID,
-            snapshot: snapshot,
-            nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
-        )
         let first = WorkspaceTmuxSessionSelection(
             hostID: environment.remoteHost.id,
             name: "release-work"
@@ -378,6 +930,22 @@ extension WorkspaceTmuxDiscoveryTests {
         let second = WorkspaceTmuxSessionSelection(
             hostID: secondHost.id,
             name: "deploy-work"
+        )
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport.previewPaneSplitter(
+                identity: identity
+            ),
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
         )
 
         model.openBorrowedTmuxSession(first)
@@ -1194,4 +1762,73 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(command.contains(environment.worktree.path))
     }
 
+}
+
+extension WorkspaceTmuxDiscoveryTests {
+    @MainActor
+    @Test("activating an unresolvable host hides the previous client")
+    func unresolvableHostActivationHidesPreviousClient() async throws {
+        let environment = try setupHostEnvironment()
+        var snapshot = environment.snapshot
+        let identity = TmuxSessionIdentity(
+            serverPID: "101",
+            sessionID: "$1",
+            createdAt: "1000"
+        )
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: "ordinary",
+            managed: false,
+            windows: [],
+            serverPID: identity.serverPID,
+            sessionID: identity.sessionID,
+            createdAt: identity.createdAt,
+            previewClientSize: TmuxGridSize(columns: 120, rows: 37)
+        )]
+        let hideMutations = LockedValue(0)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                            + "\t101\t789\t321\t/dev/ttys001\t$1\t1000\t%9\n"
+                    )
+                }
+                if command.contains("'ignore-size'"),
+                   !command.contains("'!ignore-size'") {
+                    hideMutations.withLock { $0 += 1 }
+                }
+                return (0, "")
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "ordinary"
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let handle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+        let unknownHost = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "elsewhere"
+        )
+        model.openBorrowedTmuxSession(unknownHost)
+        await waitUntilMainActor { hideMutations.load() == 1 }
+
+        #expect(model.activeBorrowedTmuxSelection == unknownHost)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == handle)
+        await model.shutdown()
+    }
 }

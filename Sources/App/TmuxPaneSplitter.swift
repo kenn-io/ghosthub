@@ -89,6 +89,20 @@ struct TmuxPaneSplitter: Sendable {
         version: String,
         host: CommandHost
     ) -> Bool {
+        supportsExactClientTargeting(version: version, host: host)
+    }
+
+    static func supportsClientSizing(
+        version: String,
+        host: CommandHost
+    ) -> Bool {
+        supportsExactClientTargeting(version: version, host: host)
+    }
+
+    private static func supportsExactClientTargeting(
+        version: String,
+        host: CommandHost
+    ) -> Bool {
         guard platform(for: host) == .posix else { return false }
         let fields = version.split(whereSeparator: \.isWhitespace)
         guard fields.count == 2, fields[0] == "tmux" else { return false }
