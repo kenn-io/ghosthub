@@ -74,11 +74,11 @@ use scene::{
     invalidate_pending_kill_with_intent, join_runtime, lock_live_navigation, presentation_is_open,
     publish_discovered_host, publish_herdr_lifecycle_response, publish_pending_kill,
     publish_remote_connection, publish_remote_worker, publish_restored_retained_presentation,
-    publish_terminfo_retry_boundary, reconcile_herdr_lifecycle_inventory,
-    reconcile_presentation_session_names, reconcile_remote_presentations,
-    reinsert_retained_presentation, release_scene, reopen_closed_retained_presentation,
-    request_ssh_prompt, reserve_kwt_project_mutation, reserve_kwt_worktree_operation,
-    restore_attach_fallback, restore_attach_fallback_locked,
+    publish_terminfo_retry_boundary, purge_queued_clipboard_writes,
+    reconcile_herdr_lifecycle_inventory, reconcile_presentation_session_names,
+    reconcile_remote_presentations, reinsert_retained_presentation, release_scene,
+    reopen_closed_retained_presentation, request_ssh_prompt, reserve_kwt_project_mutation,
+    reserve_kwt_worktree_operation, restore_attach_fallback, restore_attach_fallback_locked,
     restore_inventory_after_creation_failure, restore_pending_kwt_removal,
     restore_scene_inventory_state, retire_clipboard_writes, run_attach, run_attach_over_remote,
     run_create, run_herdr_create, run_kwt_project_mutation, run_kwt_worktree_operation,
@@ -135,6 +135,7 @@ pub struct Appearance {
     cursor_style: CursorStyle,
     allow_shell_integration_cursor: bool,
     hide_mouse_while_typing: bool,
+    allow_remote_clipboard_write: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,6 +143,7 @@ pub struct TerminalSettingsDraft {
     pub cursor_style: CursorStyle,
     pub allow_shell_integration_cursor: bool,
     pub hide_mouse_while_typing: bool,
+    pub allow_remote_clipboard_write: bool,
 }
 
 impl From<&TerminalAppearance> for TerminalSettingsDraft {
@@ -150,6 +152,7 @@ impl From<&TerminalAppearance> for TerminalSettingsDraft {
             cursor_style: value.cursor_style(),
             allow_shell_integration_cursor: value.allow_shell_integration_cursor(),
             hide_mouse_while_typing: value.hide_mouse_while_typing(),
+            allow_remote_clipboard_write: value.allow_remote_clipboard_write(),
         }
     }
 }
@@ -160,6 +163,7 @@ impl From<&Appearance> for TerminalSettingsDraft {
             cursor_style: value.cursor_style(),
             allow_shell_integration_cursor: value.allow_shell_integration_cursor(),
             hide_mouse_while_typing: value.hide_mouse_while_typing(),
+            allow_remote_clipboard_write: value.allow_remote_clipboard_write(),
         }
     }
 }
@@ -237,6 +241,11 @@ impl Appearance {
     pub const fn hide_mouse_while_typing(&self) -> bool {
         self.hide_mouse_while_typing
     }
+
+    #[must_use]
+    pub const fn allow_remote_clipboard_write(&self) -> bool {
+        self.allow_remote_clipboard_write
+    }
 }
 
 impl From<TerminalAppearance> for Appearance {
@@ -250,6 +259,7 @@ impl From<TerminalAppearance> for Appearance {
             cursor_style: value.cursor_style(),
             allow_shell_integration_cursor: value.allow_shell_integration_cursor(),
             hide_mouse_while_typing: value.hide_mouse_while_typing(),
+            allow_remote_clipboard_write: value.allow_remote_clipboard_write(),
         }
     }
 }
@@ -3900,7 +3910,6 @@ impl Workspace {
                     herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                     session_operations: Mutex::new(()),
                     remote_constructive_in_flight: AtomicBool::new(false),
-                    allow_remote_clipboard_write: true,
                     refresh_generation: AtomicU64::new(0),
                     refresh_finished: AtomicU64::new(0),
                     refresh_publication: Mutex::new(()),
@@ -4043,7 +4052,6 @@ impl Workspace {
         discovery: Arc<dyn WslDiscovery>,
         refresh_runtime: Arc<dyn RefreshRuntime>,
     ) -> (Runtime, Option<String>) {
-        let allow_remote_clipboard_write = appearance.allow_remote_clipboard_write();
         let hosts = wsl
             .as_ref()
             .map(WslHostSpec::host_item)
@@ -4081,7 +4089,6 @@ impl Workspace {
                 herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                 session_operations: Mutex::new(()),
                 remote_constructive_in_flight: AtomicBool::new(false),
-                allow_remote_clipboard_write,
                 refresh_generation: AtomicU64::new(0),
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
@@ -4104,7 +4111,6 @@ impl Workspace {
 
     #[must_use]
     pub fn start_wsl(config: WslConfig, appearance: TerminalAppearance) -> Self {
-        let allow_remote_clipboard_write = appearance.allow_remote_clipboard_write();
         let workspace = Self {
             scene: attach_scene(
                 Arc::new(Runtime {
@@ -4141,7 +4147,6 @@ impl Workspace {
                     herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                     session_operations: Mutex::new(()),
                     remote_constructive_in_flight: AtomicBool::new(false),
-                    allow_remote_clipboard_write,
                     refresh_generation: AtomicU64::new(0),
                     refresh_finished: AtomicU64::new(0),
                     refresh_publication: Mutex::new(()),
@@ -4269,8 +4274,7 @@ impl Workspace {
             .hide_mouse_while_typing()
     }
 
-    /// Persist terminal interaction settings and publish them to the
-    /// running workspace, updating the default cursor shape on every live
+    /// Persist terminal interaction settings and publish them to every live
     /// worker.
     ///
     /// # Errors
@@ -4309,7 +4313,8 @@ impl Workspace {
                     draft.cursor_style,
                     draft.allow_shell_integration_cursor,
                     draft.hide_mouse_while_typing,
-                );
+                )
+                .with_remote_clipboard_write(draft.allow_remote_clipboard_write);
             let roots = settings.roots.clone();
             settings
                 .config
@@ -4328,6 +4333,10 @@ impl Workspace {
         update_default_cursor_shapes(
             &self.scene,
             current_default_cursor_shape(&self.scene.runtime),
+        );
+        update_remote_clipboard_policies(
+            &self.scene,
+            current_remote_clipboard_policy(&self.scene.runtime),
         );
         self.scene.runtime.revision.fetch_add(1, Ordering::Release);
         Ok(())
@@ -6146,7 +6155,7 @@ impl Workspace {
         let presentation_id = presentation.presentation_id;
         presentation.worker.set_clipboard_writes_enabled(true);
         let (_, previous_worker) = workers.replace(presentation.worker);
-        reconcile_active_worker_cursor(&self.scene.runtime, &workers);
+        reconcile_active_worker_terminal_settings(&self.scene.runtime, &workers);
         let previous_remote = remote_active.take();
         clear_pending_paste(&self.scene);
         set_terminal_notice(&self.scene, term);
@@ -9540,6 +9549,14 @@ pub(crate) fn current_default_cursor_shape(runtime: &Runtime) -> CursorShape {
     runtime.cursor_default.load()
 }
 
+pub(crate) fn current_remote_clipboard_policy(runtime: &Runtime) -> ClipboardPolicy {
+    let appearance = runtime
+        .appearance
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ClipboardPolicy::remote(appearance.allow_remote_clipboard_write())
+}
+
 /// Push the new default cursor shape to every live worker across every
 /// scene; existing surfaces reflect the setting without a restart.
 fn update_default_cursor_shapes(initiator: &Arc<Scene>, shape: CursorShape) {
@@ -9571,6 +9588,44 @@ fn update_default_cursor_shapes(initiator: &Arc<Scene>, shape: CursorShape) {
     }
 }
 
+fn update_remote_clipboard_policies(initiator: &Arc<Scene>, policy: ClipboardPolicy) {
+    for scene in live_scenes(&initiator.runtime) {
+        if let Some(worker) = scene
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active()
+        {
+            worker.set_clipboard_policy(policy);
+        }
+        {
+            let retained = scene
+                .retained_presentations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for presentation in &retained.entries {
+                presentation.worker.set_clipboard_policy(policy);
+            }
+        }
+        let remote = scene
+            .remote_retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for presentation in &remote.entries {
+            presentation.worker.set_clipboard_policy(policy);
+        }
+        drop(remote);
+        if !policy.allows_osc52_write() {
+            purge_queued_clipboard_writes(&scene);
+        }
+    }
+}
+
+pub(crate) fn reconcile_worker_terminal_settings(runtime: &Runtime, worker: &TerminalWorker) {
+    worker.set_default_cursor_shape(current_default_cursor_shape(runtime));
+    worker.set_clipboard_policy(current_remote_clipboard_policy(runtime));
+}
+
 pub(crate) fn insert_retained_presentation(
     runtime: &Runtime,
     retained: &Mutex<crate::RetainedPresentations<TerminalWorker>>,
@@ -9579,9 +9634,7 @@ pub(crate) fn insert_retained_presentation(
     let mut retained = retained
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    presentation
-        .worker
-        .set_default_cursor_shape(current_default_cursor_shape(runtime));
+    reconcile_worker_terminal_settings(runtime, &presentation.worker);
     retained.insert(presentation);
 }
 
@@ -9593,20 +9646,20 @@ pub(crate) fn insert_remote_retained_presentation(
     let mut retained = retained
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    presentation
-        .worker
-        .set_default_cursor_shape(current_default_cursor_shape(runtime));
+    reconcile_worker_terminal_settings(runtime, &presentation.worker);
     retained.insert(presentation);
 }
 
-pub(crate) fn reconcile_active_worker_cursor(
+pub(crate) fn reconcile_active_worker_terminal_settings(
     runtime: &Runtime,
     workers: &WorkerState<TerminalWorker>,
 ) {
-    workers
-        .active()
-        .expect("worker was published before cursor reconciliation")
-        .set_default_cursor_shape(current_default_cursor_shape(runtime));
+    reconcile_worker_terminal_settings(
+        runtime,
+        workers
+            .active()
+            .expect("worker was published before terminal settings reconciliation"),
+    );
 }
 
 fn rgb(color: u32) -> Rgb {

@@ -2,14 +2,14 @@
 
 use crate::{
     Arc, AtomicBool, AtomicU64, AttachFreshError, AttachRequest, AttachTarget, AttachTerm,
-    AttachmentState, CREATE_IDENTITY_TIMEOUT, CancellationToken, ClipboardPolicy,
-    ClosedRetainedPresentation, ConptyAdmissionAttacher, CreateRequest, DiagnosticKind,
-    DirectoryWorkspaceItem, Duration, FallbackAuthority, HERDR_STARTUP_BACKOFF, HerdrCreateRequest,
-    HerdrInventory, HerdrLaunchPrecondition, HerdrLaunchTarget, HerdrLifecycleAction,
-    HerdrSessionName, HerdrSessionState, HostConnectionState, HostContext, HostDiagnostic,
-    HostError, HostItem, HostSnapshot, INVENTORY_REFRESH_INTERVAL, Instant, KWT_REFRESH_BUDGET,
-    KWT_REFRESH_INTERVAL, KillCaptureIntent, KillCaptureRequest, KillTarget, KwtBranchItem,
-    KwtInventory, KwtProjectAction, KwtProjectMutationRequest, KwtProjectMutationTask,
+    AttachmentState, CREATE_IDENTITY_TIMEOUT, CancellationToken, ClosedRetainedPresentation,
+    ConptyAdmissionAttacher, CreateRequest, DiagnosticKind, DirectoryWorkspaceItem, Duration,
+    FallbackAuthority, HERDR_STARTUP_BACKOFF, HerdrCreateRequest, HerdrInventory,
+    HerdrLaunchPrecondition, HerdrLaunchTarget, HerdrLifecycleAction, HerdrSessionName,
+    HerdrSessionState, HostConnectionState, HostContext, HostDiagnostic, HostError, HostItem,
+    HostSnapshot, INVENTORY_REFRESH_INTERVAL, Instant, KWT_REFRESH_BUDGET, KWT_REFRESH_INTERVAL,
+    KillCaptureIntent, KillCaptureRequest, KillTarget, KwtBranchItem, KwtInventory,
+    KwtProjectAction, KwtProjectMutationRequest, KwtProjectMutationTask,
     KwtPullRequestImportRequest, KwtPullRequestItem, KwtRefresh, KwtRemovalCapture,
     KwtRemovalCaptureIntent, KwtState, KwtWorktreeOperation, KwtWorktreeOutcome, KwtWorktreeTarget,
     KwtWorktreeTask, Mutex, Ordering, PendingCreation, PendingHerdrLifecycle, PendingKill,
@@ -32,18 +32,19 @@ use crate::{
     cancel_scene_remote_attachments, cancel_superseded_remote_constructive_navigation,
     capture_kwt_creation_baseline, clear_pending_remote_constructive, created_session,
     creation_launch_geometry, current_default_colors, current_default_cursor_shape,
-    current_inventory_session_name, default_terminal_geometry, discover_fresh_runtime,
-    finish_pending_creation, fmt, for_each_scene, fresh_herdr_session, herdr_launch_result_matches,
-    insert_remote_retained_presentation, insert_retained_presentation, invalidate_kwt_inventory,
-    kwt_attachment_failure, kwt_pull_request_import_failure, live_scenes, lock_session_operations,
-    next_operation_id, next_presentation_id, next_scene_id, normalize_attached_kwt_target,
-    pending_kwt_creation, pending_kwt_creation_target, pending_remote_constructive_snapshot,
-    poll_session_startup, preflight_kwt_worktree_remove, publish_refresh,
-    publish_worker_at_latest_geometry, ready_content, recapture_remote_herdr_attach_request,
-    recapture_remote_herdr_create_request, recapture_remote_tmux_attach_request,
-    recapture_remote_zellij_attach_request, recapture_remote_zellij_create_request,
-    reconcile_active_worker_cursor, reconcile_herdr_lifecycle_fences,
-    reconcile_kwt_session_availability, refresh_budget, refreshed_session_name, register_scene,
+    current_inventory_session_name, current_remote_clipboard_policy, default_terminal_geometry,
+    discover_fresh_runtime, finish_pending_creation, fmt, for_each_scene, fresh_herdr_session,
+    herdr_launch_result_matches, insert_remote_retained_presentation, insert_retained_presentation,
+    invalidate_kwt_inventory, kwt_attachment_failure, kwt_pull_request_import_failure, live_scenes,
+    lock_session_operations, next_operation_id, next_presentation_id, next_scene_id,
+    normalize_attached_kwt_target, pending_kwt_creation, pending_kwt_creation_target,
+    pending_remote_constructive_snapshot, poll_session_startup, preflight_kwt_worktree_remove,
+    publish_refresh, publish_worker_at_latest_geometry, ready_content,
+    recapture_remote_herdr_attach_request, recapture_remote_herdr_create_request,
+    recapture_remote_tmux_attach_request, recapture_remote_zellij_attach_request,
+    recapture_remote_zellij_create_request, reconcile_active_worker_terminal_settings,
+    reconcile_herdr_lifecycle_fences, reconcile_kwt_session_availability,
+    reconcile_worker_terminal_settings, refresh_budget, refreshed_session_name, register_scene,
     remember_pending_kwt_creation, remote_constructive_is_current,
     remote_constructive_target_is_present, remove_cached_kwt_worktree,
     require_current_kwt_selection, require_host_session_actions, require_wsl_host_id,
@@ -1096,7 +1097,7 @@ pub(crate) fn activate_retained_presentation(
     worker.set_clipboard_writes_enabled(false);
     let surface = worker.surface_handle();
     let worker_generation = workers.publish(worker);
-    reconcile_active_worker_cursor(&scene.runtime, &workers);
+    reconcile_active_worker_terminal_settings(&scene.runtime, &workers);
     drop(workers);
 
     clear_pending_paste(scene);
@@ -4575,7 +4576,7 @@ pub(crate) fn prepare_remote_tmux_attachment<'scene>(
                 geometry.grid,
                 geometry.sequence,
                 geometry.pixels,
-                ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+                current_remote_clipboard_policy(&scene.runtime),
                 current_default_colors(&scene.runtime),
                 current_default_cursor_shape(&scene.runtime),
             )
@@ -4724,7 +4725,7 @@ pub(crate) fn prepare_remote_herdr_attachment<'scene>(
                 geometry.grid,
                 geometry.sequence,
                 geometry.pixels,
-                ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+                current_remote_clipboard_policy(&scene.runtime),
                 current_default_colors(&scene.runtime),
                 current_default_cursor_shape(&scene.runtime),
             )
@@ -4865,7 +4866,7 @@ pub(crate) fn prepare_remote_zellij_attachment<'scene>(
                 geometry.grid,
                 geometry.sequence,
                 geometry.pixels,
-                ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+                current_remote_clipboard_policy(&scene.runtime),
                 current_default_colors(&scene.runtime),
                 current_default_cursor_shape(&scene.runtime),
             )
@@ -5209,7 +5210,7 @@ pub(crate) fn create_remote_herdr_fresh(
                 geometry.grid,
                 geometry.sequence,
                 geometry.pixels,
-                ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+                current_remote_clipboard_policy(&scene.runtime),
                 current_default_colors(&scene.runtime),
                 current_default_cursor_shape(&scene.runtime),
             )
@@ -5327,7 +5328,7 @@ pub(crate) fn create_remote_zellij_fresh(
                 geometry.grid,
                 geometry.sequence,
                 geometry.pixels,
-                ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+                current_remote_clipboard_policy(&scene.runtime),
                 current_default_colors(&scene.runtime),
                 current_default_cursor_shape(&scene.runtime),
             )
@@ -5657,7 +5658,7 @@ pub(crate) fn create_herdr_fresh(
                     geometry.grid,
                     geometry.sequence,
                     geometry.pixels,
-                    ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+                    current_remote_clipboard_policy(&scene.runtime),
                     current_default_colors(&scene.runtime),
                     current_default_cursor_shape(&scene.runtime),
                 )
@@ -5775,7 +5776,7 @@ pub(crate) fn create_zellij_fresh(
             geometry.grid,
             geometry.sequence,
             geometry.pixels,
-            ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+            current_remote_clipboard_policy(&scene.runtime),
             current_default_colors(&scene.runtime),
             current_default_cursor_shape(&scene.runtime),
         )
@@ -5881,7 +5882,7 @@ pub(crate) fn publish_created_presentation(
         worker,
         initial_geometry,
         resize_terminal_worker,
-        |worker| worker.set_default_cursor_shape(current_default_cursor_shape(&scene.runtime)),
+        |worker| reconcile_worker_terminal_settings(&scene.runtime, worker),
     ) {
         attachment.clear_if_current(generation);
         finish_pending_creation(&scene.runtime, &pending);
@@ -5968,7 +5969,7 @@ pub(crate) fn create_fresh(
             launch_geometry.grid,
             launch_geometry.sequence,
             launch_geometry.pixels,
-            ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+            current_remote_clipboard_policy(&scene.runtime),
             current_default_colors(&scene.runtime),
             current_default_cursor_shape(&scene.runtime),
         )
@@ -6113,7 +6114,7 @@ pub(crate) fn run_attach(
                 initial_geometry,
                 resize_terminal_worker,
                 |worker| {
-                    worker.set_default_cursor_shape(current_default_cursor_shape(&scene.runtime));
+                    reconcile_worker_terminal_settings(&scene.runtime, worker);
                 },
             ) {
                 let current_request = attachment
@@ -6279,7 +6280,7 @@ pub(crate) fn publish_remote_worker(
         None
     };
     let (worker_generation, previous_worker) = workers.replace(worker);
-    reconcile_active_worker_cursor(&scene.runtime, &workers);
+    reconcile_active_worker_terminal_settings(&scene.runtime, &workers);
     let previous_remote = remote_active.replace(RemoteActive {
         key,
         selection: selection.clone(),
@@ -6457,7 +6458,7 @@ pub(crate) fn run_attach_over_remote(
         return;
     }
     let (_, previous_worker) = workers.replace(worker);
-    reconcile_active_worker_cursor(&scene.runtime, &workers);
+    reconcile_active_worker_terminal_settings(&scene.runtime, &workers);
     let previous_remote = remote_active.take();
     set_terminal_notice(scene, attached_term);
     let presentation_id = next_presentation_id(&scene.runtime);
@@ -6546,7 +6547,7 @@ pub(crate) fn run_retained_retry(scene: &Scene, retry: &RetainedRetry) {
                 return;
             }
             worker.set_clipboard_writes_enabled(false);
-            worker.set_default_cursor_shape(current_default_cursor_shape(&scene.runtime));
+            reconcile_worker_terminal_settings(&scene.runtime, &worker);
             let published = scene
                 .retained_presentations
                 .lock()
@@ -7137,9 +7138,7 @@ pub(crate) fn publish_restored_retained_presentation(
         if scene.closed.load(Ordering::Acquire) {
             Some(presentation)
         } else {
-            presentation
-                .worker
-                .set_default_cursor_shape(current_default_cursor_shape(&scene.runtime));
+            reconcile_worker_terminal_settings(&scene.runtime, &presentation.worker);
             retained.insert(presentation);
             None
         }
@@ -7486,7 +7485,7 @@ pub(crate) fn launch_fresh_tmux(
         geometry.grid,
         geometry.sequence,
         geometry.pixels,
-        ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+        current_remote_clipboard_policy(&scene.runtime),
         current_default_colors(&scene.runtime),
         current_default_cursor_shape(&scene.runtime),
     )
@@ -7575,7 +7574,7 @@ fn launch_fresh_named_tmux(
         geometry.grid,
         geometry.sequence,
         geometry.pixels,
-        ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+        current_remote_clipboard_policy(&scene.runtime),
         current_default_colors(&scene.runtime),
         current_default_cursor_shape(&scene.runtime),
     )
@@ -7827,7 +7826,7 @@ pub(crate) fn launch_fresh_protected_worktree_once(
         geometry.grid,
         geometry.sequence,
         geometry.pixels,
-        ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+        current_remote_clipboard_policy(&scene.runtime),
         current_default_colors(&scene.runtime),
         current_default_cursor_shape(&scene.runtime),
     )
@@ -7978,7 +7977,7 @@ fn launch_fresh_direct_kwt_plan(
         geometry.grid,
         geometry.sequence,
         geometry.pixels,
-        ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+        current_remote_clipboard_policy(&scene.runtime),
         current_default_colors(&scene.runtime),
         current_default_cursor_shape(&scene.runtime),
     )
@@ -8112,7 +8111,7 @@ pub(crate) fn launch_fresh_herdr(
                 geometry.grid,
                 geometry.sequence,
                 geometry.pixels,
-                ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+                current_remote_clipboard_policy(&scene.runtime),
                 current_default_colors(&scene.runtime),
                 current_default_cursor_shape(&scene.runtime),
             )
@@ -8145,7 +8144,7 @@ pub(crate) fn launch_fresh_zellij(
         geometry.grid,
         geometry.sequence,
         geometry.pixels,
-        ClipboardPolicy::remote(scene.runtime.allow_remote_clipboard_write),
+        current_remote_clipboard_policy(&scene.runtime),
         current_default_colors(&scene.runtime),
         current_default_cursor_shape(&scene.runtime),
     )

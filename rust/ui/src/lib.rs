@@ -520,7 +520,7 @@ impl SettingsPane {
     const fn subtitle(self) -> &'static str {
         match self {
             Self::Appearance => "Choose a terminal theme and installed monospace font.",
-            Self::Terminal => "Control cursor behavior and pointer visibility while typing.",
+            Self::Terminal => "Control cursor, pointer, and remote clipboard behavior.",
             Self::Hosts => "Connect the machines and tmux sessions in your SSH network.",
         }
     }
@@ -540,6 +540,7 @@ enum TerminalField {
     CursorStyle,
     ShellIntegrationCursor,
     HideMouseWhileTyping,
+    RemoteClipboardWrite,
 }
 
 impl TerminalField {
@@ -548,10 +549,13 @@ impl TerminalField {
             (Self::CursorStyle, false) | (Self::HideMouseWhileTyping, true) => {
                 Self::ShellIntegrationCursor
             }
-            (Self::ShellIntegrationCursor, false) | (Self::CursorStyle, true) => {
+            (Self::ShellIntegrationCursor, false) | (Self::RemoteClipboardWrite, true) => {
                 Self::HideMouseWhileTyping
             }
-            (Self::ShellIntegrationCursor, true) | (Self::HideMouseWhileTyping, false) => {
+            (Self::HideMouseWhileTyping, false) | (Self::CursorStyle, true) => {
+                Self::RemoteClipboardWrite
+            }
+            (Self::RemoteClipboardWrite, false) | (Self::ShellIntegrationCursor, true) => {
                 Self::CursorStyle
             }
         }
@@ -717,7 +721,7 @@ fn focus_settings_detail(dialog: &mut SettingsDialog, reverse: bool) -> bool {
         }
         SettingsPane::Terminal => {
             dialog.terminal_editor.field = if reverse {
-                TerminalField::HideMouseWhileTyping
+                TerminalField::RemoteClipboardWrite
             } else {
                 TerminalField::CursorStyle
             };
@@ -784,7 +788,7 @@ fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
             let at_edge = if reverse {
                 dialog.terminal_editor.field == TerminalField::CursorStyle
             } else {
-                dialog.terminal_editor.field == TerminalField::HideMouseWhileTyping
+                dialog.terminal_editor.field == TerminalField::RemoteClipboardWrite
             };
             if at_edge {
                 dialog.sidebar_focus = Some(if reverse {
@@ -1370,14 +1374,12 @@ const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
     };
     if matches!(context.authority, WorktreeAuthority::Generation) && kwt_available {
         WorktreeOpenMode::RepairOrOpen
-    } else if matches!(context.attach_mode, KwtTmuxAttachMode::Direct)
+    } else if (matches!(context.attach_mode, KwtTmuxAttachMode::Direct)
         && matches!(context.authority, WorktreeAuthority::Generation)
         && (matches!(context.socket, WorktreeSocket::Custom)
-            || matches!(context.session, WorktreeSessionPresence::Discovered))
-    {
-        WorktreeOpenMode::DirectTmux
-    } else if matches!(context.authority, WorktreeAuthority::Generationless)
-        && matches!(context.session, WorktreeSessionPresence::Discovered)
+            || matches!(context.session, WorktreeSessionPresence::Discovered)))
+        || (matches!(context.authority, WorktreeAuthority::Generationless)
+            && matches!(context.session, WorktreeSessionPresence::Discovered))
     {
         WorktreeOpenMode::DirectTmux
     } else {
@@ -2193,6 +2195,11 @@ impl RootView {
             }
             TerminalField::HideMouseWhileTyping if activate => {
                 editor.draft.hide_mouse_while_typing = !editor.draft.hide_mouse_while_typing;
+                true
+            }
+            TerminalField::RemoteClipboardWrite if activate => {
+                editor.draft.allow_remote_clipboard_write =
+                    !editor.draft.allow_remote_clipboard_write;
                 true
             }
             _ => false,
@@ -5791,6 +5798,10 @@ impl RootView {
                             dialog.terminal_editor.draft.hide_mouse_while_typing =
                                 !dialog.terminal_editor.draft.hide_mouse_while_typing;
                         }
+                        TerminalField::RemoteClipboardWrite => {
+                            dialog.terminal_editor.draft.allow_remote_clipboard_write =
+                                !dialog.terminal_editor.draft.allow_remote_clipboard_write;
+                        }
                         TerminalField::CursorStyle => {}
                     }
                 }
@@ -5803,6 +5814,24 @@ impl RootView {
                     this.persist_terminal_settings(draft, cx);
                 }
             }))
+            .into_any_element()
+    }
+
+    fn terminal_settings_section(
+        title: &'static str,
+        content: gpui::AnyElement,
+    ) -> gpui::AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(content)
             .into_any_element()
     }
 
@@ -5833,17 +5862,12 @@ impl RootView {
             .flex()
             .flex_col()
             .gap_6()
-            .child(
+            .child(Self::terminal_settings_section(
+                "Cursor",
                 div()
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Cursor"),
-                    )
                     .child(cursor_options)
                     .child(self.terminal_toggle_row(
                         "terminal-shell-cursor",
@@ -5852,28 +5876,31 @@ impl RootView {
                         TerminalField::ShellIntegrationCursor,
                         editor.draft.allow_shell_integration_cursor,
                         cx,
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Interaction"),
-                    )
-                    .child(self.terminal_toggle_row(
-                        "terminal-hide-mouse",
-                        "Hide mouse while typing",
-                        "Reveal the pointer again as soon as it moves over the terminal.",
-                        TerminalField::HideMouseWhileTyping,
-                        editor.draft.hide_mouse_while_typing,
-                        cx,
-                    )),
-            );
+                    ))
+                    .into_any_element(),
+            ))
+            .child(Self::terminal_settings_section(
+                "Interaction",
+                self.terminal_toggle_row(
+                    "terminal-hide-mouse",
+                    "Hide mouse while typing",
+                    "Reveal the pointer again as soon as it moves over the terminal.",
+                    TerminalField::HideMouseWhileTyping,
+                    editor.draft.hide_mouse_while_typing,
+                    cx,
+                ),
+            ))
+            .child(Self::terminal_settings_section(
+                "Clipboard",
+                self.terminal_toggle_row(
+                    "terminal-remote-clipboard-write",
+                    "Allow remote clipboard writes",
+                    "Let terminal applications copy text to your clipboard with OSC 52.",
+                    TerminalField::RemoteClipboardWrite,
+                    editor.draft.allow_remote_clipboard_write,
+                    cx,
+                ),
+            ));
         if let Some(error) = &editor.error {
             form = form.child(
                 div()
@@ -9657,6 +9684,7 @@ mod tests {
             cursor_style: CursorStyle::Block,
             allow_shell_integration_cursor: false,
             hide_mouse_while_typing: true,
+            allow_remote_clipboard_write: true,
         };
         let dialog = SettingsDialog::new(
             &[],
@@ -9694,6 +9722,7 @@ mod tests {
             cursor_style: CursorStyle::Bar,
             allow_shell_integration_cursor: false,
             hide_mouse_while_typing: true,
+            allow_remote_clipboard_write: true,
         };
         let mut dialog =
             SettingsDialog::new(&[], appearance, terminal, vec!["Cascadia Mono".to_owned()]);
@@ -9717,13 +9746,14 @@ mod tests {
         advance_settings_focus(&mut dialog, false);
         advance_settings_focus(&mut dialog, false);
         advance_settings_focus(&mut dialog, false);
+        advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
 
         advance_settings_focus(&mut dialog, true);
         assert_eq!(dialog.sidebar_focus, None);
         assert_eq!(
             dialog.terminal_editor.field,
-            TerminalField::HideMouseWhileTyping
+            TerminalField::RemoteClipboardWrite
         );
     }
 

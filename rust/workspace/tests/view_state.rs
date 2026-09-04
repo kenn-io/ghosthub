@@ -249,6 +249,7 @@ fn saved_terminal_settings_are_persisted_and_published_without_rebuilding_hosts(
         cursor_style: workspace::CursorStyle::Underline,
         allow_shell_integration_cursor: true,
         hide_mouse_while_typing: false,
+        allow_remote_clipboard_write: false,
     };
     assert!(workspace.hide_mouse_while_typing());
 
@@ -261,10 +262,12 @@ fn saved_terminal_settings_are_persisted_and_published_without_rebuilding_hosts(
     assert_eq!(snapshot.appearance().cursor_style(), draft.cursor_style);
     assert!(snapshot.appearance().allow_shell_integration_cursor());
     assert!(!snapshot.appearance().hide_mouse_while_typing());
+    assert!(!snapshot.appearance().allow_remote_clipboard_write());
     assert!(snapshot.hosts().is_empty());
     let loaded = ApplicationConfig::load(&roots).expect("reload application config");
     assert_eq!(loaded.terminal().cursor_style(), draft.cursor_style);
     assert!(loaded.terminal().allow_shell_integration_cursor());
     assert!(!loaded.terminal().hide_mouse_while_typing());
+    assert!(!loaded.terminal().allow_remote_clipboard_write());
     fs::remove_dir_all(root).expect("remove temporary config root");
 }

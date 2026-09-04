@@ -339,8 +339,10 @@ bytes.
 
 Clipboard behavior follows the shipped Swift contract. Local and remote tmux
 surfaces may write the system clipboard through OSC 52 when `clipboard-write`
-allows it, so tmux copy-mode yanks reach Windows as they do on macOS. Remote
-OSC 52 reads always receive an empty response regardless of `clipboard-read`;
+allows it, so tmux copy-mode yanks reach Windows as they do on macOS. The
+Terminal settings pane changes this policy immediately for open and retained
+presentations as well as future attachments. Remote OSC 52 reads always
+receive an empty response regardless of `clipboard-read`;
 local OSC 52 reads follow the configured local policy. Only a genuine user
 paste action may acquire clipboard contents for PTY input, and the terminal
 worker applies bracketed-paste framing and unsafe-paste confirmation before
@@ -1147,9 +1149,11 @@ workspace. Terminal palettes never recolor Ghosthub's application chrome;
 interface appearance remains a separate settings concern. Existing terminal
 clients keep the palette they negotiated until reopened; new clients use the
 current defaults. Terminal persists the cursor shape, whether shell integration
-may replace that shape, and whether keyboard input hides the pointer until it
-moves again. Cursor changes apply to existing surfaces immediately, including
-dynamic DECSCUSR application requests when shell control is enabled. Hosts owns only
+may replace that shape, whether keyboard input hides the pointer until it moves
+again, and whether remote terminal applications may write to the clipboard
+through OSC 52. Cursor and clipboard-policy changes apply to existing surfaces
+immediately, including dynamic DECSCUSR application requests when shell control
+is enabled. Hosts owns only
 `[[ssh-host]]` records. The shell's stable navigation, page header, list, and
 detail regions are the permanent container for the remaining Swift settings
 domains.
@@ -1159,11 +1163,11 @@ The parity inventory is:
 | --- | --- |
 | Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
 | Appearance | Built-in themes, Custom colors, installed-font and size pickers, live preview, and atomic persistence |
-| Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, and atomic persistence |
+| Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, remote clipboard writes, and atomic persistence |
 | Keyboard | Runtime shortcuts exist; pane not yet implemented |
 | Worktrees | Project/worktree workflows exist; preferences pane not yet implemented |
 | Agents | Not yet implemented |
-| Privacy | Clipboard policy exists in configuration; pane not yet implemented |
+| Privacy | Anonymous usage-reporting preference not yet implemented |
 | Integrations | Not yet implemented |
 
 Adding the remaining panes extends the existing shell rather than replacing

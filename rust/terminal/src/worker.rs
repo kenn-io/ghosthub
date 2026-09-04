@@ -86,6 +86,7 @@ struct IngressState {
     resize: Option<ResizeCommand>,
     mouse_motion: Option<MouseInput>,
     default_cursor_shape: Option<CursorShape>,
+    clipboard_policy: Option<ClipboardPolicy>,
     queued_bytes: usize,
 }
 
@@ -188,6 +189,7 @@ pub struct TerminalWorker {
     surface: Arc<SurfaceStore>,
     confirmed_live: Arc<AtomicBool>,
     clipboard_visibility: Arc<AtomicU64>,
+    clipboard_write_allowed: Arc<AtomicBool>,
     /// Count of paste-cancel actions successfully delivered into this
     /// worker's control channel; shared so a test can keep observing it
     /// after the worker is torn down.
@@ -475,6 +477,9 @@ impl TerminalWorker {
         let worker_confirmed_live = Arc::clone(&confirmed_live);
         let clipboard_visibility = Arc::new(AtomicU64::new(INITIAL_CLIPBOARD_VISIBILITY));
         let worker_clipboard_visibility = Arc::clone(&clipboard_visibility);
+        let clipboard_write_allowed =
+            Arc::new(AtomicBool::new(clipboard_policy.allows_osc52_write()));
+        let worker_clipboard_write_allowed = Arc::clone(&clipboard_write_allowed);
 
         let startup = StartupPty::new(process);
         let writer_thread = match thread::Builder::new()
@@ -508,6 +513,7 @@ impl TerminalWorker {
                     &events_sender,
                     &worker_confirmed_live,
                     &worker_clipboard_visibility,
+                    &worker_clipboard_write_allowed,
                 );
             });
         let worker_thread = match worker_result {
@@ -532,6 +538,7 @@ impl TerminalWorker {
             surface,
             confirmed_live,
             clipboard_visibility,
+            clipboard_write_allowed,
             #[cfg(feature = "test-support")]
             delivered_paste_cancels: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             thread: Some(worker_thread),
@@ -683,6 +690,32 @@ impl TerminalWorker {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .default_cursor_shape = Some(shape);
         let _stopped = wake_coalesced(&self.coalesced_wake, "update terminal cursor shape");
+    }
+
+    /// Update which terminal-originated clipboard operations may reach the UI.
+    pub fn set_clipboard_policy(&self, policy: ClipboardPolicy) {
+        let allowed = policy.allows_osc52_write();
+        let changed = self.clipboard_write_allowed.swap(allowed, Ordering::AcqRel) != allowed;
+        self.ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clipboard_policy = Some(policy);
+        let _stopped = wake_coalesced(&self.coalesced_wake, "update terminal clipboard policy");
+        if !changed {
+            return;
+        }
+        let visibility = self.clipboard_visibility.load(Ordering::Acquire);
+        advance_clipboard_visibility(
+            &self.clipboard_visibility,
+            clipboard_visibility_is_enabled(visibility),
+        );
+        if !allowed {
+            let mut deferred = self
+                .deferred_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            discard_clipboard_events(&self.events, &mut deferred);
+        }
     }
 
     /// Resize the VT grid and PTY in one ordered worker operation.
@@ -867,6 +900,7 @@ fn run_worker(
     events: &Sender<TerminalEvent>,
     confirmed_live: &AtomicBool,
     clipboard_visibility: &AtomicU64,
+    clipboard_write_allowed: &AtomicBool,
 ) {
     let mut report_exit = false;
     let mut observed_exit = None;
@@ -1035,7 +1069,8 @@ fn run_worker(
                     }
                     for write in output.clipboard_writes {
                         let visibility = clipboard_visibility.load(Ordering::Acquire);
-                        if clipboard_visibility_is_enabled(visibility)
+                        if clipboard_write_allowed.load(Ordering::Acquire)
+                            && clipboard_visibility_is_enabled(visibility)
                             && !emit_event(
                                 events,
                                 shutdown,
@@ -1197,12 +1232,16 @@ fn process_coalesced(
     let CoalescedWork {
         resize,
         default_cursor_shape,
+        clipboard_policy,
         input,
         wake_again,
     } = take_coalesced_work(commands, ingress, accept_mouse_motion);
 
     if let Some(shape) = default_cursor_shape {
         engine.set_default_cursor_shape(shape);
+    }
+    if let Some(policy) = clipboard_policy {
+        engine.set_clipboard_policy(policy);
     }
     if let Some(resize) = resize
         && !process_resize(resize, engine, pty, shutdown, events)
@@ -1252,6 +1291,7 @@ enum CoalescedInput {
 struct CoalescedWork {
     resize: Option<ResizeCommand>,
     default_cursor_shape: Option<CursorShape>,
+    clipboard_policy: Option<ClipboardPolicy>,
     input: CoalescedInput,
     wake_again: bool,
 }
@@ -1268,6 +1308,7 @@ fn take_coalesced_work(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let default_cursor_shape = state.default_cursor_shape.take();
+    let clipboard_policy = state.clipboard_policy.take();
     let (resize, input, wake_again) = if accept_mouse_motion {
         match commands.try_recv() {
             Ok(mut command) => {
@@ -1299,6 +1340,7 @@ fn take_coalesced_work(
     CoalescedWork {
         resize,
         default_cursor_shape,
+        clipboard_policy,
         input,
         wake_again,
     }
@@ -1805,6 +1847,7 @@ mod tests {
                 modifiers: Modifiers::default(),
             }),
             default_cursor_shape: None,
+            clipboard_policy: None,
             queued_bytes: 0,
         });
 
@@ -1828,7 +1871,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_defaults_coalesce_while_ordered_input_is_blocked() {
+    fn terminal_settings_coalesce_while_ordered_input_is_blocked() {
         let (sender, receiver) = bounded(1);
         sender
             .send(QueuedCommand {
@@ -1839,6 +1882,7 @@ mod tests {
             .expect("fill ordered queue");
         let ingress = Mutex::new(IngressState {
             default_cursor_shape: Some(CursorShape::Underline),
+            clipboard_policy: Some(ClipboardPolicy::remote(false)),
             queued_bytes: 11,
             ..IngressState::default()
         });
@@ -1846,15 +1890,15 @@ mod tests {
         let work = take_coalesced_work(&receiver, &ingress, false);
 
         assert_eq!(work.default_cursor_shape, Some(CursorShape::Underline));
+        assert_eq!(work.clipboard_policy, Some(ClipboardPolicy::remote(false)));
         assert!(matches!(work.input, CoalescedInput::None));
         assert_eq!(receiver.len(), 1, "ordered input remains queued");
+        let state = ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
-            ingress
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .default_cursor_shape
-                .is_none(),
-            "the latest cursor default is consumed independently"
+            state.default_cursor_shape.is_none() && state.clipboard_policy.is_none(),
+            "the latest terminal defaults are consumed independently"
         );
     }
 
@@ -1970,6 +2014,7 @@ mod tests {
                 modifiers: Modifiers::default(),
             }),
             default_cursor_shape: None,
+            clipboard_policy: None,
             queued_bytes: 0,
         });
 
