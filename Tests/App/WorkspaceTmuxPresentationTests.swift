@@ -478,7 +478,7 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(command.contains("/test/kwt"))
         #expect(command.contains("'open'"))
         #expect(!command.contains("ignore-size"))
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             hiddenSizingMutations.load() == 1
         }
 
@@ -611,7 +611,7 @@ extension WorkspaceTmuxDiscoveryTests {
         }
         releaseResolution.signal()
 
-        await waitUntilMainActor(timeout: .seconds(5)) {
+        await waitUntilMainActor {
             model.retainedBorrowedTmuxHandle(for: selection) == nil
         }
         #expect(model.activeBorrowedTmuxSelection == nil)
