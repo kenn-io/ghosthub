@@ -260,11 +260,6 @@ final class WorkspaceSceneModel: ObservableObject {
         [UUID: HerdrLifecycleAuthority] = [:]
     private var fencedWorktreeMutationScopes:
         Set<WorktreeMutationCoordinator.Scope> = []
-    private var worktreeRemovalTombstones:
-        [
-            WorktreeMutationCoordinator.Scope:
-                Set<WorktreeMutationCoordinator.RemovalTombstone>
-        ] = [:]
 
     var isWorkspaceInventoryRefreshComplete: Bool {
         inventoryRefreshProgress.kwtCompleted
@@ -3927,9 +3922,6 @@ final class WorkspaceSceneModel: ObservableObject {
         for (hostID, target) in resolved where !Self.supportsZellij(target) {
             zellijSessionsByHost[hostID] = []
         }
-        worktreeRemovalTombstones = worktreeRemovalTombstones.filter {
-            retainedHostIDs.contains($0.key.hostID)
-        }
         inventoryHosts = resolved
         appliedKwtInventoryRevisions = appliedKwtInventoryRevisions.filter {
             resolved[$0.key.hostID] == $0.key.commandHost
@@ -4111,16 +4103,9 @@ final class WorkspaceSceneModel: ObservableObject {
                             }
                             return false
                         }()
-                    let tombstones = recordsSuccessfulLoad
-                        ? activeRemovalTombstones(
-                            after: inventory,
-                            hostID: hostID
-                        )
-                        : removalTombstones(hostID: hostID)
                     applyAuthoritativeKwtInventory(
                         inventory,
                         hostID: hostID,
-                        excludingWorktrees: tombstones,
                         publish: false,
                         publishToStore: false,
                         recordsSuccessfulLoad: recordsSuccessfulLoad
@@ -4227,13 +4212,15 @@ final class WorkspaceSceneModel: ObservableObject {
             let entries = commandHosts.map { shared.kwtByHost[$0] }
             isKwtInventoryLoading = entries.contains { entry in
                 guard let entry else { return true }
-                if case .idle = entry.state {
+                switch entry.state {
+                case .idle, .loading:
                     return true
+                case .loaded:
+                    // Provisional rows are not a completed refresh.
+                    return !entry.isFresh
+                case .failed, .provisioningFailed:
+                    return false
                 }
-                if case .loading = entry.state {
-                    return true
-                }
-                return false
             }
             inventoryRefreshProgress.kwtCompleted =
                 !isKwtInventoryLoading
@@ -4293,13 +4280,6 @@ final class WorkspaceSceneModel: ObservableObject {
             retainPresentationsForFailedRemoval(event)
             return
         case .registered:
-            worktreeRemovalTombstones.removeValue(forKey: event.scope)
-            worktreeRemovalTombstones.removeValue(
-                forKey: WorktreeMutationCoordinator.Scope(
-                    hostID: event.scope.hostID,
-                    projectIdentity: ""
-                )
-            )
             return
         case .quarantined:
             fencedWorktreeMutationScopes.remove(event.scope)
@@ -4321,8 +4301,6 @@ final class WorkspaceSceneModel: ObservableObject {
                     projectPath: event.projectPath
                 )
             } else if !event.removalTombstones.isEmpty {
-                worktreeRemovalTombstones[event.scope, default: []]
-                    .formUnion(event.removalTombstones)
                 applyRemovalTombstones(
                     event.removalTombstones,
                     scope: event.scope
@@ -5075,57 +5053,6 @@ final class WorkspaceSceneModel: ObservableObject {
     ) -> Bool {
         tombstones.contains { tombstone in
             tombstone.matches(path: path, generation: generation)
-        }
-    }
-
-    private func activeRemovalTombstones(
-        after inventory: KwtHostInventory,
-        hostID: UUID
-    ) -> [String: Set<KwtWorktreeIdentity>] {
-        var activeTombstones: [String: Set<KwtWorktreeIdentity>] = [:]
-        let scopes = worktreeRemovalTombstones.keys.filter {
-            $0.hostID == hostID
-        }
-        for scope in scopes {
-            guard let tombstones = worktreeRemovalTombstones[scope] else {
-                continue
-            }
-            let projects = inventory.projects.filter {
-                Self.removalScopeIncludesRepository(
-                    $0.project.repository,
-                    scope: scope
-                )
-            }
-            let active = tombstones.filter { tombstone in
-                projects.contains { project in
-                    project.warning != nil
-                        || project.worktrees.contains {
-                            Self.removalTombstones(
-                                [tombstone],
-                                matchPath: $0.path,
-                                generation: $0.generation
-                            )
-                        }
-                }
-            }
-            if active.isEmpty {
-                worktreeRemovalTombstones.removeValue(forKey: scope)
-            } else {
-                worktreeRemovalTombstones[scope] = active
-                activeTombstones[scope.projectIdentity, default: []]
-                    .formUnion(active)
-            }
-        }
-        return activeTombstones
-    }
-
-    private func removalTombstones(
-        hostID: UUID
-    ) -> [String: Set<KwtWorktreeIdentity>] {
-        worktreeRemovalTombstones.reduce(into: [:]) { active, entry in
-            guard entry.key.hostID == hostID else { return }
-            active[entry.key.projectIdentity, default: []]
-                .formUnion(entry.value)
         }
     }
 

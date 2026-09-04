@@ -145,6 +145,11 @@ final class WorkspaceInventoryStore {
     private var satisfiedFenceGenerationsByHostID: [UUID: UInt64] = [:]
     private var kwtRemovalTombstonesByHost:
         [CommandHost: [String: Set<KwtWorktreeIdentity>]] = [:]
+    /// The normalized project path behind each worktree tombstone key, so a
+    /// registration can release tombstones recorded under an earlier
+    /// repository identity of the same project.
+    private var kwtRemovalTombstonePathsByHost:
+        [CommandHost: [String: String]] = [:]
     private var kwtProjectRemovalTombstonesByHost:
         [CommandHost: Set<ProjectRemovalTombstone>] = [:]
     private var revision: UInt64 = 0
@@ -414,6 +419,10 @@ final class WorkspaceInventoryStore {
                     recordKwtProvisioningFailure(host: host)
                     return
                 }
+                // Invalidation during provisioning makes the load pointless.
+                guard !Task.isCancelled,
+                      self?.kwtGenerations[host, default: 0] == generation
+                else { return }
             }
             do {
                 let inventory = try await Self.runDetached {
@@ -485,8 +494,13 @@ final class WorkspaceInventoryStore {
         }
         if tombstones.isEmpty {
             kwtRemovalTombstonesByHost.removeValue(forKey: host)
+            kwtRemovalTombstonePathsByHost.removeValue(forKey: host)
         } else {
             kwtRemovalTombstonesByHost[host] = tombstones
+            kwtRemovalTombstonePathsByHost[host] =
+                kwtRemovalTombstonePathsByHost[host]?.filter {
+                    tombstones[$0.key] != nil
+                }
         }
         var projectTombstones = kwtProjectRemovalTombstonesByHost[host] ?? []
         if recordsSuccessfulLoad {
@@ -719,13 +733,20 @@ final class WorkspaceInventoryStore {
             if !fenceIsSatisfied {
                 for host in hosts {
                     if !event.removalTombstones.isEmpty {
+                        let key = KwtSnapshotMerger.removalTombstoneKey(
+                            repository: event.scope.projectIdentity,
+                            path: event.projectPath
+                        )
                         kwtRemovalTombstonesByHost[host, default: [:]][
-                            KwtSnapshotMerger.removalTombstoneKey(
-                                repository: event.scope.projectIdentity,
-                                path: event.projectPath
-                            ),
+                            key,
                             default: []
                         ].formUnion(event.removalTombstones)
+                        if let path = event.projectPath {
+                            kwtRemovalTombstonePathsByHost[
+                                host,
+                                default: [:]
+                            ][key] = KwtSnapshotMerger.normalizedPath(path)
+                        }
                     }
                     if event.removesProject {
                         let path = event.projectPath
@@ -810,15 +831,19 @@ final class WorkspaceInventoryStore {
         if kwtProjectRemovalTombstonesByHost[host]?.isEmpty == true {
             kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
         }
+        let recordedPaths = kwtRemovalTombstonePathsByHost[host] ?? [:]
         let keys = Set(
             cleared.map(\.repository) + cleared.compactMap(\.path)
                 + [repository] + (path.map { [$0] } ?? [])
+                + recordedPaths.filter { $0.value == path }.map(\.key)
         )
         for key in keys {
             kwtRemovalTombstonesByHost[host]?.removeValue(forKey: key)
+            kwtRemovalTombstonePathsByHost[host]?.removeValue(forKey: key)
         }
         if kwtRemovalTombstonesByHost[host]?.isEmpty == true {
             kwtRemovalTombstonesByHost.removeValue(forKey: host)
+            kwtRemovalTombstonePathsByHost.removeValue(forKey: host)
         }
     }
 

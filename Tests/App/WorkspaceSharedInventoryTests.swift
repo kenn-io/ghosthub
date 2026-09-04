@@ -884,6 +884,42 @@ struct WorkspaceSharedInventoryTests {
         await model.shutdown()
     }
 
+    @Test("provisional shared inventory keeps the refresh incomplete")
+    func provisionalSharedInventoryKeepsRefreshIncomplete() async throws {
+        let environment = try setupStandardEnvironment()
+        let inventory = WorkspaceTmuxTestSupport.inventory(
+            project: environment.snapshot.projects[0],
+            worktrees: environment.snapshot.worktrees
+        )
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in inventory },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            workspaceInventoryStore: store
+        )
+        model.startKwtInventory()
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+
+        store.publishKwtInventory(
+            inventory,
+            on: .local,
+            mutation: nil,
+            recordsSuccessfulLoad: false
+        )
+        #expect(!model.isWorkspaceInventoryRefreshComplete)
+
+        store.publishKwtInventory(inventory, on: .local, mutation: nil)
+        #expect(model.isWorkspaceInventoryRefreshComplete)
+        await model.shutdown()
+    }
+
     @Test("cached tombstone filtering preserves a KWT refresh failure")
     func cachedTombstoneFilteringPreservesRefreshFailure() async throws {
         enum RefreshFailure: LocalizedError {
