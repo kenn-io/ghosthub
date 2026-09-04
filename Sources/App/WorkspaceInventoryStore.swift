@@ -75,24 +75,39 @@ final class WorkspaceInventoryStore {
         var tmuxByHost: [CommandHost: TmuxEntry] = [:]
     }
 
-    /// A removed project. Two non-empty repository identities compare by
-    /// identity; when either side is legacy-empty, only the normalized path
-    /// recorded at removal time identifies the project.
+    /// A removed project. It matches only the registration that was removed:
+    /// the same repository at the same path with the same registration
+    /// fingerprint, so a repository registered again elsewhere is a new
+    /// project. When either identity is legacy-empty, only the normalized
+    /// path recorded at removal time identifies the project.
     struct ProjectRemovalTombstone: Hashable, Sendable {
         let repository: String
         let path: String?
+        let registrationFingerprint: String
 
-        init(repository: String, path: String?) {
+        init(
+            repository: String,
+            path: String?,
+            registrationFingerprint: String = ""
+        ) {
             self.repository = repository
             self.path = path.map(KwtSnapshotMerger.normalizedPath)
+            self.registrationFingerprint = registrationFingerprint
         }
 
         func matches(_ record: KwtProjectRecord) -> Bool {
-            if !repository.isEmpty, !record.repository.isEmpty {
-                return record.repository == repository
+            let samePath = path.map {
+                KwtSnapshotMerger.normalizedPath(record.path) == $0
             }
-            guard let path else { return false }
-            return KwtSnapshotMerger.normalizedPath(record.path) == path
+            if !repository.isEmpty, !record.repository.isEmpty {
+                let sameFingerprint = registrationFingerprint.isEmpty
+                    || record.registrationFingerprint.isEmpty
+                    || record.registrationFingerprint == registrationFingerprint
+                return record.repository == repository
+                    && samePath != false
+                    && sameFingerprint
+            }
+            return samePath == true
         }
     }
 
@@ -380,11 +395,9 @@ final class WorkspaceInventoryStore {
         ) {
             return true
         }
-        guard let entry = snapshot.kwtByHost[host] else { return true }
-        if case .idle = entry.state {
-            return true
-        }
-        return false
+        // A stale entry, including provisional rows, still needs a load;
+        // an in-flight task keeps that request from duplicating.
+        return !(snapshot.kwtByHost[host]?.isFresh ?? false)
     }
 
     private func needsInitialTmuxLoad(_ host: CommandHost) -> Bool {
@@ -749,15 +762,16 @@ final class WorkspaceInventoryStore {
                         }
                     }
                     if event.removesProject {
-                        let path = event.projectPath
-                            ?? cachedProjectPath(
-                                repository: event.scope.projectIdentity,
-                                on: host
-                            )
+                        let cached = cachedProjectRecord(
+                            repository: event.scope.projectIdentity,
+                            on: host
+                        )
                         kwtProjectRemovalTombstonesByHost[host, default: []]
                             .insert(ProjectRemovalTombstone(
                                 repository: event.scope.projectIdentity,
-                                path: path
+                                path: event.projectPath ?? cached?.path,
+                                registrationFingerprint:
+                                cached?.registrationFingerprint ?? ""
                             ))
                     }
                     applyRemovalTombstonesToCachedInventory(on: host)
@@ -806,14 +820,14 @@ final class WorkspaceInventoryStore {
         }
     }
 
-    private func cachedProjectPath(
+    private func cachedProjectRecord(
         repository: String,
         on host: CommandHost
-    ) -> String? {
+    ) -> KwtProjectRecord? {
         guard !repository.isEmpty else { return nil }
         return snapshot.kwtByHost[host]?.inventory?.projects.first {
             $0.project.repository == repository
-        }?.project.path
+        }?.project
     }
 
     private func clearRemovalTombstones(

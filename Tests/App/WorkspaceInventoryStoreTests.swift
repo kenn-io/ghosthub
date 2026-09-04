@@ -2543,4 +2543,118 @@ struct WorkspaceInventoryStoreTests {
                 .worktrees == [worktree]
         )
     }
+
+    @Test("a later subscriber loads after a provisional publication")
+    func laterSubscriberLoadsAfterProvisionalPublication() async {
+        let loadCount = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return KwtHostInventory(projects: [])
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        store.publishKwtInventory(
+            KwtHostInventory(projects: []),
+            on: .local,
+            mutation: nil
+        )
+        store.publishKwtInventory(
+            KwtHostInventory(projects: []),
+            on: .local,
+            mutation: nil,
+            recordsSuccessfulLoad: false
+        )
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: UUID(),
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        await waitUntilMainActor {
+            loadCount.load() == 1
+                && store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        #expect(loadCount.load() == 1)
+    }
+
+    @Test("a repository registered again elsewhere escapes its tombstone")
+    func reregisteredRepositoryEscapesTombstone() async {
+        let repository = "example/repository"
+        let removed = KwtHostInventory(projects: [KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: repository,
+                name: "Repository",
+                path: "/test/old",
+                lastTouched: nil,
+                registrationFingerprint: "old-registration"
+            ),
+            worktrees: [],
+            warning: nil
+        )])
+        let reregistered = KwtHostInventory(projects: [KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: repository,
+                name: "Repository",
+                path: "/test/new",
+                lastTouched: nil,
+                registrationFingerprint: "new-registration"
+            ),
+            worktrees: [],
+            warning: nil
+        )])
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return reregistered
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        store.publishKwtInventory(removed, on: .local, mutation: nil)
+        #expect(coordinator.acquire(
+            hostID: hostID,
+            projectIdentity: repository
+        ))
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: repository,
+            removesProject: true,
+            projectPath: "/test/old"
+        )
+        await waitUntilMainActor {
+            loadCount.load() == 1
+                && store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects
+                == reregistered.projects
+        )
+    }
 }
