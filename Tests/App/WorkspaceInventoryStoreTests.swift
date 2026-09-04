@@ -2954,14 +2954,11 @@ struct WorkspaceInventoryStoreTests {
         )
     }
 
-    @Test("a parked quarantine does not block another mutation's fence")
-    func parkedQuarantineDoesNotBlockAnotherMutationsFence() async throws {
+    @Test("a parked quarantine does not block another mutation's reload")
+    func parkedQuarantineDoesNotBlockAnotherMutationsReload() async {
         let coordinator = WorktreeMutationCoordinator()
         let loadCount = LockedValue(0)
         let hostID = UUID()
-        let registered = KwtHostInventory(projects: [
-            legacyProject(name: "X", path: "/test/x", repository: "x"),
-        ])
         let store = WorkspaceInventoryStore(
             refreshInterval: .seconds(3_600),
             kwtLoader: { _ in
@@ -3002,24 +2999,12 @@ struct WorkspaceInventoryStoreTests {
         }
         let initialLoads = loadCount.load()
 
+        // A mutation that ends without an authoritative publication relies
+        // on the fence-end reload; the parked quarantine must not block it.
         #expect(coordinator.acquire(hostID: hostID, projectIdentity: "x"))
-        store.publishKwtInventory(
-            registered,
-            on: .local,
-            mutation: .init(
-                hostID: hostID,
-                host: .local,
-                epoch: store.kwtMutationEpoch(on: .local)
-            )
-        )
         coordinator.release(hostID: hostID, projectIdentity: "x")
 
-        try await Task.sleep(for: .milliseconds(30))
-        #expect(loadCount.load() == initialLoads)
-        #expect(
-            store.snapshot.kwtByHost[.local]?.inventory?.projects
-                == registered.projects
-        )
-        #expect(store.snapshot.kwtByHost[.local]?.isFresh == true)
+        await waitUntilMainActor { loadCount.load() == initialLoads + 1 }
+        #expect(loadCount.load() == initialLoads + 1)
     }
 }
