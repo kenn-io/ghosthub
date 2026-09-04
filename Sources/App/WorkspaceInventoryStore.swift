@@ -610,11 +610,20 @@ final class WorkspaceInventoryStore {
         let endpointHostIDs = Set(subscribers.values.flatMap(\.registrations)
             .filter { $0.commandHost == commandHost }
             .map(\.hostID))
-        let activeScopes = mutationCoordinator.scopes.filter {
+        let activeScopes = fencingScopes.filter {
             endpointHostIDs.contains($0.hostID)
         }
         return activeScopes.count == 1
             && activeScopes.first?.hostID == hostID
+    }
+
+    /// Mutation scopes that fence inventory. A quarantined project removal
+    /// stays registered until inventory resolves it, so it must not block
+    /// the loads and publications that resolution depends on.
+    private var fencingScopes: Set<WorktreeMutationCoordinator.Scope> {
+        mutationCoordinator.scopes.subtracting(
+            mutationCoordinator.quarantinedProjectRemovals.keys
+        )
     }
 
     private func recordKwtFailure(
@@ -706,13 +715,7 @@ final class WorkspaceInventoryStore {
 
     private func isKwtFenced(_ host: CommandHost) -> Bool {
         let hostIDs = Set(registrations(for: host).map(\.hostID))
-        let quarantinedScopes = Set(
-            mutationCoordinator.quarantinedProjectRemovals.keys
-        )
-        return mutationCoordinator.scopes
-            .subtracting(quarantinedScopes).contains {
-                hostIDs.contains($0.hostID)
-            }
+        return fencingScopes.contains { hostIDs.contains($0.hostID) }
     }
 
     private func mutationEvent(
@@ -773,7 +776,7 @@ final class WorkspaceInventoryStore {
                     applyRemovalTombstonesToCachedInventory(on: host)
                 }
             }
-            guard !mutationCoordinator.scopes.contains(where: {
+            guard !fencingScopes.contains(where: {
                 $0.hostID == event.scope.hostID
             }) else { return }
             guard !fenceIsSatisfied else { return }

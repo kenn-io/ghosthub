@@ -2953,4 +2953,73 @@ struct WorkspaceInventoryStoreTests {
             store.snapshot.kwtByHost[.local]?.inventory?.projects == [first]
         )
     }
+
+    @Test("a parked quarantine does not block another mutation's fence")
+    func parkedQuarantineDoesNotBlockAnotherMutationsFence() async throws {
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let registered = KwtHostInventory(projects: [
+            legacyProject(name: "X", path: "/test/x", repository: "x"),
+        ])
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return KwtHostInventory(projects: [])
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: "q"))
+        coordinator.prepareRemoval(
+            hostID: hostID,
+            projectIdentity: "q",
+            worktrees: [],
+            presentationTargets: []
+        )
+        coordinator.quarantineProjectRemoval(
+            hostID: hostID,
+            projectIdentity: "q",
+            projectPath: "/test/q",
+            host: .local
+        )
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        let initialLoads = loadCount.load()
+
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: "x"))
+        store.publishKwtInventory(
+            registered,
+            on: .local,
+            mutation: .init(
+                hostID: hostID,
+                host: .local,
+                epoch: store.kwtMutationEpoch(on: .local)
+            )
+        )
+        coordinator.release(hostID: hostID, projectIdentity: "x")
+
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(loadCount.load() == initialLoads)
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects
+                == registered.projects
+        )
+        #expect(store.snapshot.kwtByHost[.local]?.isFresh == true)
+    }
 }
