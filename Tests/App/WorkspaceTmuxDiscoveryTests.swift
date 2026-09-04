@@ -525,7 +525,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 .tmuxSessions.first?.sessionID == "$2"
         }
         model.tmuxAttachedSessionIdentityBecameUnavailable(initialHandle)
-        await waitUntilMainActor(timeout: .seconds(5)) {
+        await waitUntilMainActor {
             surfaceStore.requestCount == 2
                 && model.retainedBorrowedTmuxHandle(for: selection)
                 != initialHandle
