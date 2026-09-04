@@ -933,14 +933,14 @@ enum KwtSnapshotMerger {
         return updated
     }
 
-    /// The key worktree removal tombstones live under: the repository
-    /// identity, or the normalized project path when that identity is
-    /// legacy-empty. Repository identities never begin with a separator.
+    /// The key worktree removal tombstones live under: the project's
+    /// normalized path when known, since a worktree belongs to exactly one
+    /// registration, else the repository identity.
     static func removalTombstoneKey(
         repository: String,
         path: String?
     ) -> String {
-        guard repository.isEmpty, let path else { return repository }
+        guard let path else { return repository }
         return removalPathKey(path)
     }
 

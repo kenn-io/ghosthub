@@ -4365,11 +4365,14 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         let removedPath = projectPath.map(normalizedWorkspacePath)
         func removes(repository: String, path: String) -> Bool {
+            let samePath = removedPath.map {
+                normalizedWorkspacePath(path) == $0
+            }
             if !scope.projectIdentity.isEmpty, !repository.isEmpty {
                 return repository == scope.projectIdentity
+                    && samePath != false
             }
-            guard let removedPath else { return false }
-            return normalizedWorkspacePath(path) == removedPath
+            return samePath == true
         }
         if var inventory = kwtInventoriesByHost[scope.hostID] {
             inventory.projects.removeAll {
