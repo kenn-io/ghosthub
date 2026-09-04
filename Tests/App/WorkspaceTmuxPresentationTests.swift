@@ -906,6 +906,9 @@ extension WorkspaceTmuxDiscoveryTests {
 
         model.openBorrowedTmuxSession(unbound)
         await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxSessionIsConnected(unbound)
+        }
         let handle = try #require(
             model.retainedBorrowedTmuxHandle(for: unbound)
         )
@@ -915,6 +918,8 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(model.retainedBorrowedTmuxPresentationCount == 1)
         #expect(surfaceStore.requestCount == 1)
         #expect(model.activeBorrowedTmuxSelection == worktree)
+        #expect(model.previewableTmuxSessionIDs == [worktree.id])
+        #expect(model.connectedBorrowedTmuxSessionIDs == [worktree.id])
 
         model.closeBorrowedTmuxSession(worktree)
 

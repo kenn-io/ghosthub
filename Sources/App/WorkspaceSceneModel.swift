@@ -541,12 +541,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
 
         var sessionID: String {
-            [
-                hostID.uuidString,
-                tmuxAttachMode?.rawValue ?? "unbound",
-                socketName ?? "default",
-                name,
-            ].joined(separator: ":")
+            WorkspaceTmuxSessionSelection.canonicalEndpointID(
+                hostID: hostID,
+                name: name,
+                socketName: socketName,
+                tmuxAttachMode: tmuxAttachMode
+            )
         }
     }
     private enum RetainedTmuxSizingIntent {

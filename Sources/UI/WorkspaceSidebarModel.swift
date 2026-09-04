@@ -218,9 +218,24 @@ public struct WorkspaceTmuxSessionSelection:
     }
 
     public var id: String {
+        Self.canonicalEndpointID(
+            hostID: hostID,
+            name: name,
+            socketName: socketName,
+            tmuxAttachMode: tmuxAttachMode
+        )
+    }
+
+    public static func canonicalEndpointID(
+        hostID: UUID,
+        name: String,
+        socketName: String?,
+        tmuxAttachMode: TmuxAttachMode?
+    ) -> String {
         [
             hostID.uuidString,
-            tmuxAttachMode?.rawValue ?? "unbound",
+            tmuxAttachMode == .direct
+                ? "unbound" : tmuxAttachMode?.rawValue ?? "unbound",
             socketName ?? "default",
             name,
         ].joined(separator: ":")
