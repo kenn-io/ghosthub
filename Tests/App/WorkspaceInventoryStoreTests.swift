@@ -2891,4 +2891,65 @@ struct WorkspaceInventoryStoreTests {
         #expect(projects?.first?.worktrees == first.worktrees)
         #expect(projects?.last?.worktrees.isEmpty == true)
     }
+
+    @Test("removing one of two same-repository projects tombstones its path")
+    func removingOneOfTwoSameRepositoryProjectsTombstonesItsPath() async {
+        let repository = "example/repository"
+        let first = legacyProject(
+            name: "First",
+            path: "/test/first",
+            repository: repository
+        )
+        let second = legacyProject(
+            name: "Second",
+            path: "/test/second",
+            repository: repository
+        )
+        let inventory = KwtHostInventory(projects: [first, second])
+        let coordinator = WorktreeMutationCoordinator()
+        let loadCount = LockedValue(0)
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                return inventory
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID,
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        #expect(coordinator.acquire(
+            hostID: hostID,
+            projectIdentity: repository
+        ))
+        coordinator.release(
+            hostID: hostID,
+            projectIdentity: repository,
+            removesProject: true,
+            projectPath: second.project.path
+        )
+        await waitUntilMainActor {
+            loadCount.load() == 2
+                && store.snapshot.kwtByHost[.local]?.isFresh == true
+        }
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects == [first]
+        )
+    }
 }

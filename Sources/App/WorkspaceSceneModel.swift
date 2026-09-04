@@ -5159,13 +5159,14 @@ final class WorkspaceSceneModel: ObservableObject {
                 continue
             }
             let projectPath = quarantine.projectPath
+            // The same repository registered at another path is a different
+            // project, so the survivor must sit at the quarantined path.
             if let item = inventory.projects.first(where: {
                 $0.project.repository == scope.projectIdentity
+                    && normalizedWorkspacePath($0.project.path)
+                    == normalizedWorkspacePath(projectPath)
             }) {
                 if item.warning != nil {
-                    guard normalizedWorkspacePath(item.project.path)
-                        == normalizedWorkspacePath(projectPath)
-                    else { continue }
                     worktreeMutationCoordinator.release(
                         hostID: scope.hostID,
                         projectIdentity: scope.projectIdentity,

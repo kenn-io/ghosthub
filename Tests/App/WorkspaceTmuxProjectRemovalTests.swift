@@ -2177,6 +2177,64 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("Quarantine resolution ignores the same repository at another path")
+    func quarantineResolutionIgnoresSameRepositoryElsewhere() async throws {
+        let environment = try setupStandardEnvironment()
+        let snapshot = environment.snapshot
+        let project = try #require(snapshot.projects.first)
+        let worktree = try #require(snapshot.worktrees.first)
+        let coordinator = WorktreeMutationCoordinator()
+        #expect(coordinator.acquire(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey
+        ))
+        coordinator.prepareRemoval(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey,
+            worktrees: [WorktreeMutationCoordinator.RemovalTombstone(
+                path: worktree.path,
+                generation: worktree.generation ?? ""
+            )],
+            presentationTargets: []
+        )
+        coordinator.quarantineProjectRemoval(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey,
+            projectPath: project.rootPath,
+            host: .local
+        )
+        var elsewhere = project
+        elsewhere.rootPath = "/tmp/ghosthub-elsewhere"
+        let inventory = WorkspaceTmuxTestSupport.inventory(
+            project: elsewhere,
+            worktrees: []
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in inventory },
+            worktreeMutationCoordinator: coordinator
+        )
+
+        model.startKwtInventory()
+
+        await waitUntilMainActor { coordinator.scopes.isEmpty }
+        await waitUntilMainActor {
+            !model.snapshot.projects.contains {
+                $0.rootPath == project.rootPath
+            }
+        }
+        #expect(!model.snapshot.projects.contains {
+            $0.rootPath == project.rootPath
+        })
+        #expect(model.snapshot.projects.contains {
+            $0.rootPath == elsewhere.rootPath
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("Replacement endpoint cannot classify an old quarantine as removed")
     func replacementEndpointDoesNotResolveOldQuarantine() async throws {
         let environment = try setupRemoteEnvironment()

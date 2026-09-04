@@ -759,6 +759,7 @@ final class WorkspaceInventoryStore {
                     if event.removesProject {
                         let cached = cachedProjectRecord(
                             repository: event.scope.projectIdentity,
+                            path: event.projectPath,
                             on: host
                         )
                         kwtProjectRemovalTombstonesByHost[host, default: []]
@@ -817,11 +818,16 @@ final class WorkspaceInventoryStore {
 
     private func cachedProjectRecord(
         repository: String,
+        path: String?,
         on host: CommandHost
     ) -> KwtProjectRecord? {
         guard !repository.isEmpty else { return nil }
+        let path = path.map(KwtSnapshotMerger.normalizedPath)
         return snapshot.kwtByHost[host]?.inventory?.projects.first {
             $0.project.repository == repository
+                && (path == nil
+                    || KwtSnapshotMerger.normalizedPath($0.project.path)
+                    == path)
         }?.project
     }
 
