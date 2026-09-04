@@ -183,7 +183,7 @@ struct KwtHostInventory: Equatable, Sendable {
                 // A legacy-empty record cannot name its repository, so every
                 // repository-keyed removal applies to it as well.
                 var exclusions = excludingWorktrees[
-                    KwtSnapshotMerger.normalizedPath(item.project.path)
+                    KwtSnapshotMerger.removalPathKey(item.project.path)
                 ] ?? []
                 if item.project.repository.isEmpty {
                     for (key, identities) in excludingWorktrees
@@ -941,12 +941,20 @@ enum KwtSnapshotMerger {
         path: String?
     ) -> String {
         guard repository.isEmpty, let path else { return repository }
-        return normalizedPath(path)
+        return removalPathKey(path)
+    }
+
+    /// Path keys carry an explicit marker so no repository identity, on any
+    /// platform's path syntax, can be mistaken for one.
+    static func removalPathKey(_ path: String) -> String {
+        removalPathKeyMarker + normalizedPath(path)
     }
 
     static func isRemovalPathKey(_ key: String) -> Bool {
-        key.hasPrefix("/")
+        key.hasPrefix(removalPathKeyMarker)
     }
+
+    private static let removalPathKeyMarker = "path\u{0}"
 
     /// Lexically normalizes a host path so equivalent spellings compare
     /// equal without touching any filesystem.

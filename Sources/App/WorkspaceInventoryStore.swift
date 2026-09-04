@@ -560,7 +560,7 @@ final class WorkspaceInventoryStore {
             // be this project, as the scene does.
             let projects = inventory.projects.filter { item in
                 if KwtSnapshotMerger.isRemovalPathKey(entry.key) {
-                    return KwtSnapshotMerger.normalizedPath(item.project.path)
+                    return KwtSnapshotMerger.removalPathKey(item.project.path)
                         == entry.key
                 }
                 return item.project.repository == entry.key
@@ -835,22 +835,42 @@ final class WorkspaceInventoryStore {
         path: String?,
         on host: CommandHost
     ) {
+        // Only the registered project's own tombstones are released: those
+        // recorded at its path, plus repository-keyed ones whose path is
+        // unknown. The same repository registered elsewhere keeps its fence.
         let path = path.map(KwtSnapshotMerger.normalizedPath)
-        let cleared = (kwtProjectRemovalTombstonesByHost[host] ?? [])
-            .filter { tombstone in
-                (!repository.isEmpty && tombstone.repository == repository)
-                    || (path != nil && tombstone.path == path)
+        let projectTombstones = kwtProjectRemovalTombstonesByHost[host] ?? []
+        let cleared = projectTombstones.filter { tombstone in
+            if path != nil, tombstone.path == path {
+                return true
             }
+            guard !repository.isEmpty, tombstone.repository == repository
+            else { return false }
+            return tombstone.path == nil || path == nil
+        }
         kwtProjectRemovalTombstonesByHost[host]?.subtract(cleared)
         if kwtProjectRemovalTombstonesByHost[host]?.isEmpty == true {
             kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
         }
         let recordedPaths = kwtRemovalTombstonePathsByHost[host] ?? [:]
-        let keys = Set(
-            cleared.map(\.repository) + cleared.compactMap(\.path)
-                + [repository] + (path.map { [$0] } ?? [])
-                + recordedPaths.filter { $0.value == path }.map(\.key)
-        )
+        var keys: Set<String> = []
+        for tombstone in cleared {
+            if let tombstonePath = tombstone.path {
+                keys.insert(KwtSnapshotMerger.removalPathKey(tombstonePath))
+            }
+        }
+        if let path {
+            keys.insert(KwtSnapshotMerger.removalPathKey(path))
+            for (key, recordedPath) in recordedPaths where recordedPath == path {
+                keys.insert(key)
+            }
+        }
+        if !repository.isEmpty {
+            let recordedPath = recordedPaths[repository]
+            if recordedPath == nil || recordedPath == path {
+                keys.insert(repository)
+            }
+        }
         for key in keys {
             kwtRemovalTombstonesByHost[host]?.removeValue(forKey: key)
             kwtRemovalTombstonePathsByHost[host]?.removeValue(forKey: key)
