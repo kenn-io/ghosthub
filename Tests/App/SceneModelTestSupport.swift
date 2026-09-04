@@ -364,6 +364,19 @@ func makeModel(
     @escaping WorkspaceSceneModel.KwtWorktreeChangeReader = { _, _, _, _ in
         .clean
     },
+    kwtWorktreeChangesReader:
+    @escaping WorkspaceSceneModel.KwtWorktreeChangesReader = {
+        path, repository, generation, _ in
+        WorktreeFileChanges(
+            repository: repository,
+            path: path,
+            generation: generation,
+            state: .clean,
+            summary: .clean,
+            files: [],
+            observedAt: "now"
+        )
+    },
     sshRouteIdentityResolver:
     @escaping WorkspaceSceneModel.SSHRouteIdentityResolver = { _ in
         "sha256:test-route"
@@ -584,6 +597,7 @@ func makeModel(
         kwtWorktreeRemover: kwtWorktreeRemover,
         kwtForceWorktreeRemover: kwtForceWorktreeRemover,
         kwtWorktreeChangeReader: kwtWorktreeChangeReader,
+        kwtWorktreeChangesReader: kwtWorktreeChangesReader,
         sshRouteIdentityResolver: sshRouteIdentityResolver,
         worktreeMutationCoordinator: worktreeMutationCoordinator,
         herdrLifecycleCoordinator: herdrLifecycleCoordinator,

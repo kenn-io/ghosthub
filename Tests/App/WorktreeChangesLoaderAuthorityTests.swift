@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubPersistence
 import GhosthubTransport
 import GhosthubTmux
 import GhosthubWorkspace
@@ -63,6 +64,47 @@ struct WorktreeChangesLoaderAuthorityTests {
             )
         }
         #expect(reads.load() == 0)
+    }
+
+    @Test("remote loads provision kwt before reading changes")
+    @MainActor
+    func remoteLoadProvisionsKwt() async throws {
+        let fixture = makeFixture()
+        let localHost = HostSummary.fixture()
+        var remoteHost = fixture.snapshot.hosts[0]
+        remoteHost.kind = .remote
+        remoteHost.platform = .linux
+        remoteHost.sshDestination = "user-a@builder.example.test"
+        var snapshot = fixture.snapshot
+        snapshot.hosts = [localHost, remoteHost]
+        let events = LockedValue<[String]>([])
+        let expected = WorktreeFileChanges(
+            repository: fixture.project.scopedKey,
+            path: fixture.worktree.path,
+            generation: fixture.worktree.generation!,
+            state: .clean,
+            summary: .clean,
+            files: [],
+            observedAt: "now"
+        )
+        let model = try makeModel(
+            database: try WorkspaceDatabase.inMemory(),
+            localHostID: localHost.id,
+            snapshot: snapshot,
+            kwtRemoteProvisioner: { _ in
+                events.withLock { $0.append("provision") }
+            },
+            kwtWorktreeChangesReader: { _, _, _, _ in
+                events.withLock { $0.append("read") }
+                return expected
+            }
+        )
+
+        let result = try await model.loadWorktreeChanges(fixture.worktree)
+
+        #expect(result == expected)
+        #expect(events.load() == ["provision", "read"])
+        await model.shutdown()
     }
 
     private func makeFixture() -> AuthorityFixture {

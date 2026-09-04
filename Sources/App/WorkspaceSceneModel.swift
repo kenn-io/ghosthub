@@ -76,6 +76,7 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias KwtWorktreeChangeReader = @Sendable (
         String, String, String, CommandHost
     ) async throws -> WorktreeChangeSummary
+    typealias KwtWorktreeChangesReader = WorktreeChangesLoaderAuthority.Reader
     typealias SSHRouteIdentityResolver = @Sendable (
         SSHHostInfo
     ) async throws -> String
@@ -886,6 +887,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let kwtWorktreeRemover: KwtWorktreeRemover
     private let kwtForceWorktreeRemover: KwtWorktreeRemover
     private let kwtWorktreeChangeReader: KwtWorktreeChangeReader
+    private let kwtWorktreeChangesReader: KwtWorktreeChangesReader
     private let sshRouteIdentityResolver: SSHRouteIdentityResolver
     private let kwtBranchLister: KwtBranchLister
     private let kwtPullRequestLister: KwtPullRequestLister
@@ -1150,6 +1152,15 @@ final class WorkspaceSceneModel: ObservableObject {
                 expectedGeneration: generation,
                 on: host
             ).summary
+        },
+        kwtWorktreeChangesReader: @escaping KwtWorktreeChangesReader = {
+            worktreePath, repository, generation, host in
+            try await KwtWorktreeClient().changes(
+                worktreePath: worktreePath,
+                expectedRepository: repository,
+                expectedGeneration: generation,
+                on: host
+            )
         },
         sshRouteIdentityResolver: @escaping SSHRouteIdentityResolver = {
             host in
@@ -1464,6 +1475,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.kwtWorktreeRemover = kwtWorktreeRemover
         self.kwtForceWorktreeRemover = kwtForceWorktreeRemover
         self.kwtWorktreeChangeReader = kwtWorktreeChangeReader
+        self.kwtWorktreeChangesReader = kwtWorktreeChangesReader
         self.sshRouteIdentityResolver = sshRouteIdentityResolver
         self.kwtBranchLister = kwtBranchLister
         self.kwtPullRequestLister = kwtPullRequestLister
@@ -2744,6 +2756,31 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         } catch {
             recordKwtUnavailability(error, hostID: project.hostID)
+            throw error
+        }
+    }
+
+    func loadWorktreeChanges(
+        _ requested: WorktreeSummary
+    ) async throws -> WorktreeFileChanges {
+        guard let worktree = snapshot.worktree(id: requested.id),
+              !worktree.isStale,
+              worktree.hostID == requested.hostID,
+              worktree.projectID == requested.projectID,
+              worktree.path == requested.path,
+              worktree.generation == requested.generation
+        else {
+            throw KwtWorktreeError.worktreeUnavailable
+        }
+        do {
+            try await ensureRemoteKwtForOperation(hostID: worktree.hostID)
+            return try await WorktreeChangesLoaderAuthority.load(
+                requested: requested,
+                in: snapshot,
+                read: kwtWorktreeChangesReader
+            )
+        } catch {
+            recordKwtUnavailability(error, hostID: worktree.hostID)
             throw error
         }
     }

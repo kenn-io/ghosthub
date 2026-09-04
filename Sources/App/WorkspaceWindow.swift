@@ -1101,13 +1101,7 @@ struct WorkspaceWindow: View {
                     sceneModel.snapshot
                 },
                 loadWorktreeChanges: { [sceneModel] requested in
-                    let snapshot = await MainActor.run {
-                        sceneModel.snapshot
-                    }
-                    return try await WorktreeChangesLoaderAuthority.load(
-                        requested: requested,
-                        in: snapshot
-                    )
+                    try await sceneModel.loadWorktreeChanges(requested)
                 },
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshWorkspaceInventory()
