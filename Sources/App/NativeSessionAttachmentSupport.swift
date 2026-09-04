@@ -6,6 +6,9 @@ import GhosthubWorkspace
 @MainActor
 protocol NativeSessionPaneSurfacing: AnyObject {
     var blocksClipboardReads: Bool { get set }
+    var remoteImagePasteHandler: ((TerminalClipboardImage) -> Void)? {
+        get set
+    }
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)? {
         get set
     }
@@ -19,6 +22,8 @@ protocol NativeSessionPaneSurfacing: AnyObject {
     var childExitCode: UInt32? { get }
     func requestKeyboardFocus()
     @discardableResult
+    func pasteProgrammaticInput(_ string: String) -> Bool
+    @discardableResult
     func sizeForPreviewGrid(columns: Int, rows: Int) -> Bool
     func clearPreviewGridSize()
     func registerSurfaceCloseObserver(
@@ -28,6 +33,11 @@ protocol NativeSessionPaneSurfacing: AnyObject {
 }
 
 extension NativeSessionPaneSurfacing {
+    var remoteImagePasteHandler: ((TerminalClipboardImage) -> Void)? {
+        get { nil }
+        set {}
+    }
+
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)? {
         get { nil }
         set {}
@@ -48,6 +58,11 @@ extension NativeSessionPaneSurfacing {
     var launchFailureIsRetryable: Bool { false }
 
     func requestKeyboardFocus() {}
+
+    @discardableResult
+    func pasteProgrammaticInput(_: String) -> Bool {
+        false
+    }
 
     @discardableResult
     func sizeForPreviewGrid(columns _: Int, rows _: Int) -> Bool {

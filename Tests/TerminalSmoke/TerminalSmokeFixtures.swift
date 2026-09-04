@@ -10,15 +10,21 @@ import XCTest
 @MainActor
 final class InMemoryTerminalPasteboard: TerminalPasteboard {
     private var contents: [NSPasteboard.PasteboardType: String] = [:]
+    private var dataContents: [NSPasteboard.PasteboardType: Data] = [:]
     var acceptsWrites = true
 
     func string(forType dataType: NSPasteboard.PasteboardType) -> String? {
         contents[dataType]
     }
 
+    func data(forType dataType: NSPasteboard.PasteboardType) -> Data? {
+        dataContents[dataType]
+    }
+
     @discardableResult
     func clearContents() -> Int {
         contents.removeAll()
+        dataContents.removeAll()
         return 1
     }
 
@@ -28,6 +34,7 @@ final class InMemoryTerminalPasteboard: TerminalPasteboard {
         owner newOwner: Any?
     ) -> Int {
         contents.removeAll()
+        dataContents.removeAll()
         return newTypes.count
     }
 
@@ -39,6 +46,10 @@ final class InMemoryTerminalPasteboard: TerminalPasteboard {
         guard acceptsWrites else { return false }
         contents[dataType] = string
         return true
+    }
+
+    func setData(_ data: Data, forType dataType: NSPasteboard.PasteboardType) {
+        dataContents[dataType] = data
     }
 }
 

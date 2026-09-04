@@ -41,6 +41,71 @@ private func splitMismatchMarker(in command: String) -> String? {
 @Suite("Native tmux connection identity", .serialized)
 @MainActor
 struct NativeTmuxSessionCoordinatorTests {
+    @Test("remote image paste uploads through the attachment route and pastes its path")
+    func remoteImagePasteUsesAttachmentRoute() async throws {
+        let uploaded = LockedValue<(SSHHostInfo, [String], Data)?>(nil)
+        let store = RecordingNativeSessionSurfaceStore()
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "builder.example.test",
+            port: nil
+        )
+        let connectionArguments = ["-F", "/tmp/ghosthub ssh/config"]
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/local/bin/tmux")
+            },
+            remoteConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: connectionArguments)
+            },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                return (0, "")
+            },
+            imagePaster: TmuxImagePaster(
+                runner: { receivedHost, arguments, _, image, _ in
+                    uploaded.withLock {
+                        $0 = (receivedHost, arguments, image)
+                    }
+                    return AccountCommandOutput(
+                        status: 0,
+                        stdout: "GHOSTHUB_IMAGE_PASTE\t/home/dev/.ghosthub/paste-images/paste-test.png\n",
+                        stderr: ""
+                    )
+                },
+                fileNameProvider: { "paste-test.png" }
+            )
+        )
+        var ready = false
+        coordinator.onSurfaceReady = { _ in ready = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "agent",
+            host: .ssh(host),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { ready }
+        _ = coordinator.surface(handle: handle)
+        let handler = try #require(store.surface.remoteImagePasteHandler)
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+
+        handler(TerminalClipboardImage(pngData: png))
+
+        await waitUntilMainActor { !store.surface.programmaticPastes.isEmpty }
+        #expect(uploaded.load()?.0 == host)
+        #expect(uploaded.load()?.1 == connectionArguments)
+        #expect(uploaded.load()?.2 == png)
+        #expect(
+            store.surface.programmaticPastes
+                == ["/home/dev/.ghosthub/paste-images/paste-test.png"]
+        )
+        await coordinator.shutdown()
+    }
+
     @Test("dead remote tmux resolution invalidates before lease release")
     func deadResolutionInvalidatesConnection() async {
         let events = LockedValue<[String]>([])

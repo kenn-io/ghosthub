@@ -257,14 +257,19 @@ ssh -F "$fixture/ssh_config" ghosthub-direct printf fixture-ready \
 ssh -F "$fixture/ssh_config" ghosthub-jumped printf fixture-ready \
     | grep -qx fixture-ready
 
-GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS=1 \
-GHOSTHUB_REQUIRE_SSH_INTERACTION_FIXTURE=1 \
-GHOSTHUB_SSH_INTEGRATION_DESTINATION=ghosthub-direct \
-GHOSTHUB_SSH_PROXYJUMP_INTEGRATION_DESTINATION=ghosthub-jumped \
-GHOSTHUB_SSH_INTERACTIVE_INTEGRATION_DESTINATION=ghosthub-interactive-jumped \
-GHOSTHUB_SSH_UNATTENDED_INTEGRATION_DESTINATION=ghosthub-unattended \
-GHOSTHUB_SSH_UNATTENDED_KNOWN_HOSTS="$fixture/unattended_known_hosts" \
-GHOSTHUB_SSH_INTEGRATION_KWT_HOME="$kwt_home" \
-GHOSTHUB_KWT_CONTRACT_BINARY="$kwt_binary" \
-    sh "$repo_root/tools/run_swift_tests.sh" \
-        swift test --filter KwtSSHLiveIntegrationTests
+for test_filter in \
+    KwtSSHLiveIntegrationTests \
+    TmuxImagePasterLiveIntegrationTests
+do
+    GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS=1 \
+    GHOSTHUB_REQUIRE_SSH_INTERACTION_FIXTURE=1 \
+    GHOSTHUB_SSH_INTEGRATION_DESTINATION=ghosthub-direct \
+    GHOSTHUB_SSH_PROXYJUMP_INTEGRATION_DESTINATION=ghosthub-jumped \
+    GHOSTHUB_SSH_INTERACTIVE_INTEGRATION_DESTINATION=ghosthub-interactive-jumped \
+    GHOSTHUB_SSH_UNATTENDED_INTEGRATION_DESTINATION=ghosthub-unattended \
+    GHOSTHUB_SSH_UNATTENDED_KNOWN_HOSTS="$fixture/unattended_known_hosts" \
+    GHOSTHUB_SSH_INTEGRATION_KWT_HOME="$kwt_home" \
+    GHOSTHUB_KWT_CONTRACT_BINARY="$kwt_binary" \
+        sh "$repo_root/tools/run_swift_tests.sh" \
+            swift test --filter "$test_filter"
+done
