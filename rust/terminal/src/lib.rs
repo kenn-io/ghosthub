@@ -87,6 +87,11 @@ impl ClipboardPolicy {
             allow_osc52_write,
         }
     }
+
+    #[must_use]
+    pub const fn allows_osc52_write(self) -> bool {
+        self.allow_osc52_write
+    }
 }
 
 impl Default for ClipboardPolicy {
@@ -303,6 +308,10 @@ impl TerminalEngine {
         self.term.set_options(self.config.clone());
         self.publish_full();
         self.term.reset_damage();
+    }
+
+    pub fn set_clipboard_policy(&mut self, policy: ClipboardPolicy) {
+        self.clipboard_policy = policy;
     }
 
     #[must_use]

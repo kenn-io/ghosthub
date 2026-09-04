@@ -79,7 +79,6 @@ pub(crate) struct Runtime {
     pub(crate) herdr_lifecycle: Mutex<HerdrLifecycleState>,
     pub(crate) session_operations: Mutex<()>,
     pub(crate) remote_constructive_in_flight: AtomicBool,
-    pub(crate) allow_remote_clipboard_write: bool,
     pub(crate) refresh_generation: AtomicU64,
     pub(crate) refresh_finished: AtomicU64,
     pub(crate) refresh_publication: Mutex<()>,

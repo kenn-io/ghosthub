@@ -251,11 +251,17 @@ fn damage_after_scroll_is_relative_to_the_immediately_previous_frame() {
 }
 
 #[test]
-fn denied_remote_osc_52_write_emits_no_clipboard_event() {
+fn remote_osc_52_write_policy_updates_apply_to_later_output() {
     let size = GridSize::new(4, 2).expect("valid grid");
     let mut engine = TerminalEngine::with_clipboard_policy(size, ClipboardPolicy::remote(false));
 
-    let output = engine.process(b"\x1b]52;c;SGVsbG8=\x07");
+    let denied = engine.process(b"\x1b]52;c;SGVsbG8=\x07");
+    engine.set_clipboard_policy(ClipboardPolicy::remote(true));
+    let allowed = engine.process(b"\x1b]52;c;V29ybGQ=\x07");
+    engine.set_clipboard_policy(ClipboardPolicy::remote(false));
+    let denied_again = engine.process(b"\x1b]52;c;R2hvc3RodWI=\x07");
 
-    assert!(output.clipboard_writes().is_empty());
+    assert!(denied.clipboard_writes().is_empty());
+    assert_eq!(allowed.clipboard_writes()[0].text, "World");
+    assert!(denied_again.clipboard_writes().is_empty());
 }
