@@ -1277,6 +1277,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
         let previewGrid = TmuxGridSize(columns: 120, rows: 37)
         snapshot.hosts[0].tmuxSessions = [
             TmuxSessionSummary(
@@ -1867,6 +1868,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let sessionName = "kwt-ghosthub-main"
         let firstProbe = BlockingGate()
@@ -2452,6 +2454,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let sessionName = "kwt-ghosthub-main"
         let firstProbe = BlockingGate()
@@ -2516,6 +2519,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let sessionName = "kwt-ghosthub-main"
         let discoveries = TmuxDiscoveryResultQueue([
@@ -3280,6 +3284,71 @@ extension WorkspaceTmuxDiscoveryTests {
             model.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.contains { $0.name == "created-work" } == true
         )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("confirmed direct kwt endpoint fences the reconnect attach")
+    func confirmedDirectKwtEndpointFencesReconnect() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt-main"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let endpointIdentity = TmuxSessionIdentity(
+            serverPID: "123",
+            sessionID: "$7",
+            createdAt: "1721552400"
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: endpointIdentity),
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution(
+                    "/usr/bin/tmux",
+                    version: "tmux 3.3"
+                )
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: ["-F", "/tmp/attachment"])
+            },
+            tmuxExactSessionProbe: { _ in .success(true) },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in endpointIdentity },
+            createdSessionDiscoveryDelays: [.milliseconds(1)],
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+        let openCommand = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(openCommand.contains("'open'"))
+        let initialRequestCount = surfaceStore.requestCount
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            surfaceStore.requestCount > initialRequestCount
+        }
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(!command.contains("'open'"))
+        #expect(command.contains("if-shell"))
+        #expect(command.contains("#{pid},123"))
+        #expect(command.contains("$7"))
+        #expect(command.contains("#{session_created},1721552400"))
         await model.shutdown()
     }
 

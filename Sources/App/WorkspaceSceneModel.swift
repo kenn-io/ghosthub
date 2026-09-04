@@ -4234,6 +4234,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             } else if let pendingRestoration {
                 if event.allowsRemovalRestoration {
+                    adoptReconciledRestorationTargets(
+                        event.reconciledRestorationTargets,
+                        scope: event.scope
+                    )
                     restorePresentationsAfterFailedRemoval(
                         pendingRestoration,
                         reconciledTargets: event.reconciledRestorationTargets,
@@ -4909,6 +4913,37 @@ final class WorkspaceSceneModel: ObservableObject {
                 activatesPresentation: activatesPresentation,
                 startsHidden: !activatesPresentation
             )
+        }
+    }
+
+    /// The reconciled targets are authoritative for every scene, so a scene
+    /// whose snapshot still carries the pre-removal endpoint adopts them
+    /// before restoring. Otherwise the restoration's kwt identity check
+    /// would compare the reconciled selection against the stale record and
+    /// skip the presentation until the next inventory pass.
+    private func adoptReconciledRestorationTargets(
+        _ targets: Set<WorkspaceTmuxSessionSelection>?,
+        scope: WorktreeMutationCoordinator.Scope
+    ) {
+        guard let targets, !targets.isEmpty else { return }
+        for target in targets {
+            guard let generation = WorktreeGeneration.canonical(
+                target.worktreeGeneration
+            ),
+                let index = snapshot.worktrees.firstIndex(where: {
+                    $0.hostID == scope.hostID
+                        && WorktreeGeneration.canonical($0.generation)
+                        == generation
+                })
+            else { continue }
+            var worktree = snapshot.worktrees[index]
+            worktree.path = target.workspacePath ?? worktree.path
+            worktree.tmuxSessionName = target.name
+            worktree.tmuxSocketName = target.socketName
+            worktree.tmuxAttachMode =
+                target.tmuxAttachMode ?? worktree.tmuxAttachMode
+            guard worktree != snapshot.worktrees[index] else { continue }
+            snapshot.worktrees[index] = worktree
         }
     }
 
@@ -9837,6 +9872,13 @@ final class WorkspaceSceneModel: ObservableObject {
             selection,
             hostSummary: host
         )
+        // A workspace row attaching by name would accept any same-name
+        // session. Without kwt's identity flags, fence the attach on the
+        // discovered identity so it rejects a replacement session.
+        let isWorkspaceBound = selection.worktreeID != nil
+            || selection.directoryWorkspaceID != nil
+        let fencedAttachIdentity = expectedAttachIdentity
+            ?? (isWorkspaceBound && !openWorkspace ? discoveredIdentity : nil)
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -9853,7 +9895,7 @@ final class WorkspaceSceneModel: ObservableObject {
             kwtProtectedWorktreeIdentity: kwtProtectedWorktreeIdentity,
             kwtExpectedSessionName: kwtExpectedSessionName,
             sessionIdentity: expectedAttachIdentity ?? discoveredIdentity,
-            expectedAttachIdentity: expectedAttachIdentity,
+            expectedAttachIdentity: fencedAttachIdentity,
             expectedRouteIdentity: expectedRouteIdentity,
             ignoresClientSize: startsHidden || ignoresClientSize,
             previewGridSize: startsHidden
@@ -13283,6 +13325,14 @@ final class WorkspaceSceneModel: ObservableObject {
                     presentation.reconnectContext?.phase = .attachOnly
                     presentation.establishmentConfirmationTask = nil
                     releaseProtectedTmuxAttachmentScope(handleID: handle.id)
+                    // Keep the identity kwt's endpoint check verified so a
+                    // later attach-only reconnect stays fenced to it.
+                    if requiresClientEndpointConfirmation,
+                       case let .resolved(identity) =
+                       nativeTmuxSessionCoordinator
+                           .attachedSessionIdentityResolution(handle) {
+                        presentation.reconnectExpectedIdentity = identity
+                    }
                     if requiresEndpointConfirmation {
                         nativeTmuxStateChanged(
                             handle: handle,

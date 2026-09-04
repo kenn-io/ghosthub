@@ -72,6 +72,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -444,6 +445,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
         let resolutionStarted = LockedValue(false)
         let releaseResolution = DispatchSemaphore(value: 0)
         defer { releaseResolution.signal() }
@@ -516,6 +518,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
         let resolutionStarted = LockedValue(false)
         let releaseResolution = DispatchSemaphore(value: 0)
         defer { releaseResolution.signal() }
@@ -604,6 +607,7 @@ extension WorkspaceTmuxDiscoveryTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
         let resolutionStarted = LockedValue(false)
         let releaseResolution = DispatchSemaphore(value: 0)
         defer { releaseResolution.signal() }
@@ -1815,6 +1819,57 @@ extension WorkspaceTmuxDiscoveryTests {
         let command = try #require(surfaceStore.lastConfiguration?.command)
         #expect(command.contains("'open'"))
         #expect(command.contains(environment.worktree.path))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a generationless worktree attaches fenced to its discovered session")
+    func generationlessWorktreeAttachesFencedToDiscoveredSession() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.worktrees[0].tmuxSocketName = nil
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation = nil
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: [],
+                serverPID: "123",
+                sessionID: "$7",
+                createdAt: "1721552400"
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
+        )
+        #expect(selection.worktreeGeneration == nil)
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(!command.contains("'open'"))
+        #expect(command.contains("'attach-session'"))
+        #expect(command.contains("if-shell"))
+        #expect(command.contains("#{pid},123"))
+        #expect(command.contains("$7"))
+        #expect(command.contains("#{session_created},1721552400"))
+        #expect(command.contains("Ghosthub: tmux session identity changed"))
         await model.shutdown()
     }
 
