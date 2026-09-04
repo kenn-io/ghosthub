@@ -3054,7 +3054,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 refreshed,
                 hostID: project.hostID,
                 excludingWorktrees: [
-                    project.scopedKey: [
+                    KwtSnapshotMerger.removalTombstoneKey(
+                        repository: project.scopedKey,
+                        path: project.rootPath
+                    ): [
                         KwtWorktreeIdentity(
                             path: worktree.path,
                             generation: generation
@@ -3179,7 +3182,10 @@ final class WorkspaceSceneModel: ObservableObject {
                     refreshed,
                     hostID: hostID,
                     excludingWorktrees: [
-                        request.project.scopedKey: [tombstone],
+                        KwtSnapshotMerger.removalTombstoneKey(
+                            repository: request.project.scopedKey,
+                            path: request.project.rootPath
+                        ): [tombstone],
                     ],
                     mutation: mutation
                 )

@@ -920,6 +920,64 @@ struct WorkspaceSharedInventoryTests {
         await model.shutdown()
     }
 
+    @Test("a legacy project's worktree removal survives an identity change")
+    func legacyWorktreeRemovalSurvivesIdentityChange() async throws {
+        var fixture = try removalFixture()
+        let environment = fixture.environment
+        fixture.snapshot.projects[0].scopedKey = ""
+        var legacy = fixture.beforeRemoval
+        legacy.projects[0].project.repository = ""
+        for index in legacy.projects[0].worktrees.indices {
+            legacy.projects[0].worktrees[index].repository = ""
+        }
+        let canonical = fixture.beforeRemoval
+        let legacyInventory = legacy
+        let loads = LockedValue(0)
+        let coordinator = WorktreeMutationCoordinator()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in legacyInventory },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            workspaceInventoryStore: store,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1 ? legacyInventory : canonical
+            },
+            kwtWorktreeRemover: { _, _, _, _, _ in },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        model.startKwtInventory()
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+
+        let request = try await model.prepareWorktreeRemoval(
+            fixture.removable.id
+        )
+        try await model.removeWorktree(request)
+
+        #expect(!model.snapshot.worktrees.contains {
+            $0.path == fixture.removable.path
+        })
+        #expect(
+            store.snapshot.kwtByHost[.local]?.inventory?.projects.first?
+                .worktrees.contains { $0.path == fixture.removable.path }
+                == false
+        )
+        await model.shutdown()
+    }
+
     @Test("cached tombstone filtering preserves a KWT refresh failure")
     func cachedTombstoneFilteringPreservesRefreshFailure() async throws {
         enum RefreshFailure: LocalizedError {
