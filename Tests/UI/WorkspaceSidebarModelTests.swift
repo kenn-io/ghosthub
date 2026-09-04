@@ -307,6 +307,27 @@ struct WorkspaceSidebarModelTests {
         #expect(nested - child == child - host)
     }
 
+    @Test("worktree disclosure occupies its hierarchy indent")
+    func worktreeDisclosureUsesChildIndent() {
+        let rowLevel = 1
+        let presentation = WorkspaceWorktreeDisclosurePresentation(
+            rowIndentLevel: rowLevel
+        )
+
+        #expect(
+            presentation.leadingIndent
+                == WorkspaceSidebarHierarchy.indent(level: rowLevel)
+        )
+        #expect(presentation.contentIndentLevel == 0)
+        #expect(
+            presentation.leadingIndent
+                + WorkspaceSidebarHierarchy.indent(
+                    level: presentation.contentIndentLevel
+                )
+                == WorkspaceSidebarHierarchy.indent(level: rowLevel)
+        )
+    }
+
     @Test("session actions appear on hover or selection without shifting rows")
     func sessionActionsStayDiscoverableAndStable() {
         let idle = WorkspaceSessionActionPresentation(
@@ -342,26 +363,36 @@ struct WorkspaceSidebarModelTests {
         #expect(selected.hitTargetWidth >= 28)
     }
 
-    @Test("worktree removal is subtle without shrinking its hit target")
-    func worktreeRemovalHoverKeepsStableHitTarget() {
+    @Test("worktree removal stays subtle without shrinking its hit target")
+    func worktreeRemovalKeepsStableHitTarget() {
         let idle = WorkspaceWorktreeRemovalActionPresentation(
             isRemovable: true,
             isRowHovered: false,
-            isActionHovered: false
+            isActionHovered: false,
+            isFocused: false
         )
         let hovered = WorkspaceWorktreeRemovalActionPresentation(
             isRemovable: true,
             isRowHovered: true,
-            isActionHovered: false
+            isActionHovered: false,
+            isFocused: false
+        )
+        let focused = WorkspaceWorktreeRemovalActionPresentation(
+            isRemovable: true,
+            isRowHovered: false,
+            isActionHovered: false,
+            isFocused: true
         )
         let primary = WorkspaceWorktreeRemovalActionPresentation(
             isRemovable: false,
             isRowHovered: true,
-            isActionHovered: true
+            isActionHovered: true,
+            isFocused: true
         )
 
         #expect(!idle.isVisible)
         #expect(hovered.isVisible)
+        #expect(focused.isVisible)
         #expect(idle.reservedWidth == hovered.reservedWidth)
         #expect(hovered.hitTargetWidth >= 28)
         #expect(!primary.isVisible)

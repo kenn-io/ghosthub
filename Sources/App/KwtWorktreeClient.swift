@@ -18,7 +18,14 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
     case sessionStartedAfterConfirmation(session: String)
     case commandFailed(host: String, status: Int32)
     case removalFailed(host: String, status: Int32)
-    case changeStatusFailed(host: String, status: Int32)
+    case changeInspectionFailed(
+        host: String,
+        status: Int32,
+        code: String?,
+        message: String?,
+        retryable: Bool,
+        details: [String: KwtProjectErrorDetail]
+    )
     case malformedChangeStatus(host: String)
     case createdWorktreeMissing(branch: String)
     case malformedBranches(host: String)
@@ -26,48 +33,68 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidBranchName:
-            "Enter a valid git branch name."
+            return "Enter a valid git branch name."
         case .projectUnavailable:
-            "The selected kwt project or host is no longer available."
+            return "The selected kwt project or host is no longer available."
         case .creationInProgress:
-            "Another worktree change is already in progress."
+            return "Another worktree change is already in progress."
         case .worktreeUnavailable:
-            "The selected kwt worktree or host is no longer available."
+            return "The selected kwt worktree or host is no longer available."
         case .primaryWorktreeCannotBeRemoved:
-            "The primary checkout cannot be removed."
+            return "The primary checkout cannot be removed."
         case .removalInProgress:
-            "Another worktree change is already in progress."
+            return "Another worktree change is already in progress."
         case .removalIdentityUnavailable:
-            "The worktree has no stable removal identity. Refresh the"
+            return "The worktree has no stable removal identity. Refresh the"
                 + " workspace and try again."
         case .removalTargetChanged:
-            "The worktree or its tmux session changed after confirmation."
+            return "The worktree or its tmux session changed after confirmation."
                 + " Review the refreshed workspace and try again."
         case .removalHostChanged:
-            "The host destination changed after confirmation. Review the host"
+            return "The host destination changed after confirmation. Review the host"
                 + " settings and try again."
         case .removalChangesChanged:
-            "The worktree gained uncommitted changes after confirmation."
+            return "The worktree gained uncommitted changes after confirmation."
                 + " Review the updated removal warning and try again."
         case let .removalPreflightUnavailable(host, message):
-            "kwt could not verify the worktree on \(host): \(message)"
+            return "kwt could not verify the worktree on \(host): \(message)"
         case let .sessionStartedAfterConfirmation(session):
-            "Tmux session “\(session)” started after confirmation. Review the"
+            return "Tmux session “\(session)” started after confirmation. Review the"
                 + " updated removal warning and try again."
         case let .commandFailed(host, status):
-            "kwt could not create the worktree on \(host) (status \(status))."
+            return "kwt could not create the worktree on \(host) (status \(status))."
         case let .removalFailed(host, status):
-            "kwt could not remove the worktree on \(host) (status \(status))."
-        case let .changeStatusFailed(host, status):
-            "kwt could not check the worktree for uncommitted changes on"
-                + " \(host) (status \(status))."
+            return "kwt could not remove the worktree on \(host) (status \(status))."
+        case let .changeInspectionFailed(
+            host,
+            status,
+            _,
+            message,
+            retryable,
+            _
+        ):
+            let detail = message
+                ?? "kwt could not inspect worktree changes on \(host)"
+                + " (status \(status))."
+            return retryable ? "\(detail) Try again." : detail
         case let .malformedChangeStatus(host):
-            "kwt returned an invalid worktree change status on \(host)."
+            return "kwt returned an invalid worktree change status on \(host)."
         case let .createdWorktreeMissing(branch):
-            "kwt completed, but \(branch) was not present in the refreshed inventory."
+            return "kwt completed, but \(branch) was not present in the refreshed inventory."
         case let .malformedBranches(host):
-            "kwt returned an invalid branch list on \(host)."
+            return "kwt returned an invalid branch list on \(host)."
         }
+    }
+}
+
+extension KwtWorktreeError: WorktreeChangesRetryClassifying {
+    var isRetryable: Bool {
+        if case let .changeInspectionFailed(
+            _, _, _, _, retryable, _
+        ) = self {
+            return retryable
+        }
+        return false
     }
 }
 
@@ -76,6 +103,7 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
 /// implementation.
 struct KwtWorktreeClient: Sendable {
     private static let jsonMarker = "GHOSTHUB_KWT_JSON\n"
+    private static let maximumOutputBytes = 16 * 1_024 * 1_024
     typealias LocalRunner = @Sendable (
         _ shell: String, _ command: String
     ) -> (status: Int32, stdout: String)
@@ -85,6 +113,8 @@ struct KwtWorktreeClient: Sendable {
 
     private let localRunner: LocalRunner
     private let remoteRunner: RemoteRunner
+    private let changeLocalRunner: LocalRunner
+    private let changeRemoteRunner: RemoteRunner
     private let loginShellProvider: @Sendable () -> String
     private let localBinaryPath: String?
     private let remoteBinaryRevision: String?
@@ -93,24 +123,48 @@ struct KwtWorktreeClient: Sendable {
         localRunner: LocalRunner? = nil,
         remoteRunner: RemoteRunner? = nil,
         processTimeout: TimeInterval = 60,
+        changeInspectionTimeout: TimeInterval = 15,
         localBinaryPath: String? = KwtBinaryLocator.bundledPath(),
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),
         loginShellProvider: @escaping @Sendable () -> String =
             AccountCommandRunner.loginShell
     ) {
+        let maximumOutputBytes = Self.maximumOutputBytes
         self.localRunner = localRunner ?? { shell, command in
             AccountCommandRunner.runLoginShell(
                 shell: shell,
                 command: command,
-                timeout: processTimeout
+                timeout: processTimeout,
+                maximumOutputBytes: maximumOutputBytes
             )
         }
         self.remoteRunner = remoteRunner ?? { host, command, expectedRouteIdentity in
-            await KwtSSHCommandClient().run(
+            await KwtSSHCommandClient(
+                maximumOutputBytes: maximumOutputBytes
+            ).run(
                 on: host,
                 command: command,
                 timeout: processTimeout,
+                expectedRouteIdentity: expectedRouteIdentity
+            )
+        }
+        changeLocalRunner = localRunner ?? { shell, command in
+            AccountCommandRunner.runLoginShell(
+                shell: shell,
+                command: command,
+                timeout: changeInspectionTimeout,
+                maximumOutputBytes: maximumOutputBytes
+            )
+        }
+        changeRemoteRunner = remoteRunner ?? {
+            host, command, expectedRouteIdentity in
+            await KwtSSHCommandClient(
+                maximumOutputBytes: maximumOutputBytes
+            ).run(
+                on: host,
+                command: command,
+                timeout: changeInspectionTimeout,
                 expectedRouteIdentity: expectedRouteIdentity
             )
         }
@@ -275,9 +329,10 @@ struct KwtWorktreeClient: Sendable {
 
     func changes(
         worktreePath: String,
-        projectPath: String,
+        expectedRepository: String,
+        expectedGeneration: String,
         on host: CommandHost
-    ) async throws -> WorktreeChangeSummary {
+    ) async throws -> WorktreeFileChanges {
         let binaryPrelude: String
         let windowsKwtRelativePath: String?
         let platform: SSHHostInfo.Platform
@@ -299,42 +354,83 @@ struct KwtWorktreeClient: Sendable {
             platform = info.platform
         }
         let command = Self.changesCommand(
-            projectPath: projectPath,
+            worktreePath: worktreePath,
+            expectedRepository: expectedRepository,
+            expectedGeneration: expectedGeneration,
             platform: platform,
             binaryPrelude: binaryPrelude,
             windowsKwtRelativePath: windowsKwtRelativePath
         )
-        let result = try await run(command, on: host)
-        guard result.status == 0 else {
-            throw KwtWorktreeError.changeStatusFailed(
-                host: host.displayName,
-                status: result.status
-            )
-        }
+        let result = await runChanges(command, on: host)
         let normalizedOutput = result.stdout.replacingOccurrences(
             of: "\r\n",
             with: "\n"
         )
+        if result.status == AccountCommandRunner.outputExceededStatus {
+            throw KwtWorktreeError.changeInspectionFailed(
+                host: host.displayName,
+                status: result.status,
+                code: "response_too_large",
+                message: "kwt returned too many changed files to display.",
+                retryable: false,
+                details: [:]
+            )
+        }
         guard let markerRange = normalizedOutput.range(
             of: Self.jsonMarker,
             options: .backwards
         ) else {
+            if result.status != 0 {
+                throw KwtWorktreeError.changeInspectionFailed(
+                    host: host.displayName,
+                    status: result.status,
+                    code: nil,
+                    message: nil,
+                    retryable: Self.isRetryableChangeInspectionStatus(
+                        result.status
+                    ),
+                    details: [:]
+                )
+            }
             throw KwtWorktreeError.malformedChangeStatus(
                 host: host.displayName
             )
         }
-        let json = normalizedOutput[markerRange.upperBound...]
-        do {
-            let records = try JSONDecoder().decode(
-                [KwtWorktreeChangeRecord].self,
-                from: Data(json.utf8)
+        let data = Data(normalizedOutput[markerRange.upperBound...].utf8)
+        guard result.status == 0 else {
+            let envelope = try? JSONDecoder().decode(
+                KwtChangeInspectionErrorEnvelope.self,
+                from: data
             )
-            guard let record = records.first(where: {
-                $0.path == worktreePath
-            }) else {
-                return .clean
+            throw KwtWorktreeError.changeInspectionFailed(
+                host: host.displayName,
+                status: result.status,
+                code: envelope?.error.code,
+                message: envelope?.error.message,
+                retryable: envelope?.error.retryable
+                    ?? Self.isRetryableChangeInspectionStatus(result.status),
+                details: envelope?.error.details ?? [:]
+            )
+        }
+        do {
+            let response = try JSONDecoder().decode(
+                KwtChangeInspectionResponse.self,
+                from: data
+            )
+            guard response.worktree.repository == expectedRepository,
+                  Self.worktreePath(
+                      response.worktree.path,
+                      matches: worktreePath,
+                      platform: platform
+                  ),
+                  response.worktree.generation == expectedGeneration,
+                  WorktreeGeneration.isCanonical(response.worktree.generation)
+            else {
+                throw KwtWorktreeError.malformedChangeStatus(
+                    host: host.displayName
+                )
             }
-            return record.gitStatus.summary
+            return response.value.sortedForPresentation()
         } catch let error as KwtWorktreeError {
             throw error
         } catch {
@@ -363,6 +459,40 @@ struct KwtWorktreeClient: Sendable {
                 expectedRouteIdentity
             )
             return (output.status, output.stdout)
+        }
+    }
+
+    private func runChanges(
+        _ command: String,
+        on host: CommandHost
+    ) async -> (status: Int32, stdout: String) {
+        let localRunner = changeLocalRunner
+        let remoteRunner = changeRemoteRunner
+        let shell = loginShellProvider()
+        switch host {
+        case .local:
+            return await BlockingTask.run(priority: .userInitiated) {
+                localRunner(shell, command)
+            }
+        case let .ssh(info):
+            let output = await remoteRunner(info, command, nil)
+            return (output.status, output.stdout)
+        }
+    }
+
+    private static func worktreePath(
+        _ actual: String,
+        matches expected: String,
+        platform: SSHHostInfo.Platform
+    ) -> Bool {
+        switch platform {
+        case .posix:
+            actual == expected
+        case .windows:
+            actual.replacingOccurrences(of: "/", with: "\\")
+                .caseInsensitiveCompare(
+                    expected.replacingOccurrences(of: "/", with: "\\")
+                ) == .orderedSame
         }
     }
 
@@ -459,37 +589,83 @@ struct KwtWorktreeClient: Sendable {
     }
 
     private static func changesCommand(
-        projectPath: String,
+        worktreePath: String,
+        expectedRepository: String,
+        expectedGeneration: String,
         platform: SSHHostInfo.Platform,
         binaryPrelude: String,
         windowsKwtRelativePath: String?
     ) -> String {
         if platform == .windows {
             return KwtPowerShellCommand.run(
-                arguments: ["status", "--json", "--no-fetch"],
-                workingDirectory: projectPath,
+                arguments: [
+                    "changes",
+                    worktreePath,
+                    "--expected-repository",
+                    expectedRepository,
+                    "--expected-generation",
+                    expectedGeneration,
+                    "--json",
+                ],
                 marker: "GHOSTHUB_KWT_JSON",
                 managedRelativePath: windowsKwtRelativePath
             )
         }
         return binaryPrelude
-            + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
-            + "exec \"$ghosthub_kwt_path\" status --json --no-fetch"
+            + "exec \"$ghosthub_kwt_path\" changes "
+            + shellQuotedCommandArgument(worktreePath)
+            + " --expected-repository "
+            + shellQuotedCommandArgument(expectedRepository)
+            + " --expected-generation "
+            + shellQuotedCommandArgument(expectedGeneration)
+            + " --json"
+    }
+
+    private static func isRetryableChangeInspectionStatus(
+        _ status: Int32
+    ) -> Bool {
+        status == 255 || status == AccountCommandRunner.timedOutStatus
     }
 }
 
-private struct KwtWorktreeChangeRecord: Decodable {
-    let path: String
-    let gitStatus: KwtGitStatusRecord
+private struct KwtChangeInspectionResponse: Decodable {
+    let worktree: KwtChangeInspectionIdentity
+    let changes: KwtChangeSet
+    let observedAt: String
+
+    var value: WorktreeFileChanges {
+        WorktreeFileChanges(
+            repository: worktree.repository,
+            path: worktree.path,
+            generation: worktree.generation,
+            state: changes.state,
+            summary: changes.summary.value,
+            files: changes.files,
+            observedAt: observedAt
+        )
+    }
 
     private enum CodingKeys: String, CodingKey {
-        case path
-        case gitStatus = "git_status"
+        case worktree
+        case changes
+        case observedAt = "observed_at"
     }
 }
 
-private struct KwtGitStatusRecord: Decodable {
+private struct KwtChangeInspectionIdentity: Decodable {
+    let repository: String
+    let path: String
+    let generation: String
+}
+
+private struct KwtChangeSet: Decodable {
+    let state: WorktreeChangeState
+    let summary: KwtChangeSummary
+    let files: [WorktreeFileChange]
+}
+
+private struct KwtChangeSummary: Decodable {
     let modified: Int
     let added: Int
     let deleted: Int
@@ -497,7 +673,7 @@ private struct KwtGitStatusRecord: Decodable {
     let staged: Int
     let conflicts: Int
 
-    var summary: WorktreeChangeSummary {
+    var value: WorktreeChangeSummary {
         WorktreeChangeSummary(
             modified: modified,
             added: added,
@@ -507,4 +683,15 @@ private struct KwtGitStatusRecord: Decodable {
             conflicts: conflicts
         )
     }
+}
+
+private struct KwtChangeInspectionErrorEnvelope: Decodable {
+    let error: KwtChangeInspectionError
+}
+
+private struct KwtChangeInspectionError: Decodable {
+    let code: String
+    let message: String
+    let retryable: Bool
+    let details: [String: KwtProjectErrorDetail]?
 }

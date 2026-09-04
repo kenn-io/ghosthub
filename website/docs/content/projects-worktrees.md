@@ -99,6 +99,27 @@ of being duplicated under **Tmux Sessions**. Open **Settings → Worktrees** and
 turn off **Hide kwt-managed sessions from Tmux Sessions** if you want both
 entries visible.
 
+## Inspect changed files
+
+Select the disclosure chevron beside a worktree. The panel expands beneath that
+worktree without selecting it or attaching its tmux session. More than one
+worktree can remain expanded.
+
+![Ghosthub showing staged, modified, and untracked files beneath a worktree](assets/guide-worktree-changes.png)
+
+Each file shows separate staged and working-tree states when both apply, and a
+renamed file includes its original path. An empty panel says **No changed
+files**. Large results show the first 200 files; select **Show more** to reveal
+the next page. Expanded panels refresh about five seconds after each successful
+read. Temporary failures retry less frequently when they continue, while a
+permanent failure waits for **Refresh**. Use **Refresh** for an immediate read
+or the disclosure chevron to hide the panel. If a later read fails, Ghosthub
+keeps the last successful rows visible and marks them stale.
+
+This view is deliberately read-only. Kwt supplies the semantic file status;
+Ghosthub does not calculate or display diffs and does not offer per-file Git
+actions.
+
 ## Create a worktree from a branch
 
 1. Select the project.
@@ -136,8 +157,9 @@ resulting worktree session.
 
 ## Remove a worktree
 
-Hover over a non-primary worktree in the sidebar and choose **×**. After you
-confirm the exact worktree and host, Ghosthub:
+Hover over a non-primary worktree and select the **×**, or Control-click its row
+and choose **Remove Worktree…**.
+After you confirm the exact worktree and host, Ghosthub:
 
 1. ends that worktree's verified live tmux session when necessary; and
 2. asks kwt to remove the checkout.
@@ -147,6 +169,10 @@ redundant filesystem removal but still reconciles the exact live session
 covered by the confirmation. If the worktree or session changes while the
 confirmation is open, Ghosthub stops and presents the current removal details
 for fresh confirmation instead of continuing automatically.
+
+If an unusually large change set exceeds the bounded inspection, Ghosthub
+cannot enumerate every changed file and requires an explicit force
+confirmation instead of treating the checkout as clean or blocking removal.
 
 After removal, the owning project remains selected. Ghosthub does not select
 another worktree or open its tmux session on your behalf.

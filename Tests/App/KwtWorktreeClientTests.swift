@@ -287,9 +287,10 @@ struct KwtWorktreeClientTests {
         #expect(recorder.command?.contains("--force") == false)
     }
 
-    @Test("worktree changes are read from kwt status JSON")
+    @Test("worktree changes preserve the exact kwt inspection contract")
     func worktreeChanges() async throws {
         let recorder = CommandRecorder()
+        let generation = "0123456789abcdef0123456789abcdef"
         let client = KwtWorktreeClient(
             localRunner: { shell, command in
                 recorder.record(shell: shell, command: command)
@@ -298,23 +299,37 @@ struct KwtWorktreeClientTests {
                     """
                     shell startup noise
                     GHOSTHUB_KWT_JSON
-                    [
-                      {
+                    {
+                      "worktree": {
+                        "repository": "github.com/acme/ghosthub",
                         "path": "/worktrees/ghost hub/feature",
-                        "branch": "feature/remove",
-                        "status": "modified",
-                        "git_status": {
+                        "generation": "0123456789abcdef0123456789abcdef"
+                      },
+                      "changes": {
+                        "state": "staged",
+                        "summary": {
                           "modified": 2,
                           "added": 1,
                           "deleted": 3,
                           "untracked": 4,
                           "staged": 5,
-                          "ahead": 6,
-                          "behind": 7,
                           "conflicts": 8
-                        }
-                      }
-                    ]
+                        },
+                        "files": [
+                          {
+                            "path": "notes.txt",
+                            "worktree": "untracked"
+                          },
+                          {
+                            "path": "Sources/New.swift",
+                            "original_path": "Sources/Old.swift",
+                            "index": "renamed",
+                            "worktree": "modified"
+                          }
+                        ]
+                      },
+                      "observed_at": "2026-08-25T15:04:05.123456789Z"
+                    }
                     """
                 )
             },
@@ -324,11 +339,16 @@ struct KwtWorktreeClientTests {
 
         let changes = try await client.changes(
             worktreePath: "/worktrees/ghost hub/feature",
-            projectPath: "/code/ghost hub",
+            expectedRepository: "github.com/acme/ghosthub",
+            expectedGeneration: generation,
             on: .local
         )
 
-        #expect(changes == WorktreeChangeSummary(
+        #expect(changes.repository == "github.com/acme/ghosthub")
+        #expect(changes.path == "/worktrees/ghost hub/feature")
+        #expect(changes.generation == generation)
+        #expect(changes.state == .staged)
+        #expect(changes.summary == WorktreeChangeSummary(
             modified: 2,
             added: 1,
             deleted: 3,
@@ -336,11 +356,30 @@ struct KwtWorktreeClientTests {
             staged: 5,
             conflicts: 8
         ))
+        #expect(changes.files == [
+            WorktreeFileChange(
+                path: "Sources/New.swift",
+                originalPath: "Sources/Old.swift",
+                index: .renamed,
+                worktree: .modified
+            ),
+            WorktreeFileChange(
+                path: "notes.txt",
+                originalPath: nil,
+                index: nil,
+                worktree: .untracked
+            ),
+        ])
+        #expect(changes.observedAt == "2026-08-25T15:04:05.123456789Z")
         #expect(
             recorder.command?.contains(
-                "exec \"$ghosthub_kwt_path\" status --json --no-fetch"
+                "exec \"$ghosthub_kwt_path\" changes "
+                    + "'/worktrees/ghost hub/feature' "
+                    + "--expected-repository 'github.com/acme/ghosthub' "
+                    + "--expected-generation '\(generation)' --json"
             ) == true
         )
+        #expect(recorder.command?.contains(" status ") == false)
     }
 
     @Test("force removal passes explicit force authority to kwt")
@@ -370,19 +409,313 @@ struct KwtWorktreeClientTests {
         ) == true)
     }
 
-    @Test("an absent worktree has no changes left to discard")
-    func absentWorktreeChanges() async throws {
+    @Test("worktree inspection preserves kwt's structured error")
+    func worktreeChangesStructuredError() async {
         let client = KwtWorktreeClient(
-            localRunner: { _, _ in (0, "GHOSTHUB_KWT_JSON\n[]") }
+            localRunner: { _, _ in
+                (
+                    1,
+                    """
+                    GHOSTHUB_KWT_JSON
+                    {"error":{"code":"registration_changed","message":"worktree registration changed","retryable":true,"details":{"path":"/worktrees/removed"}}}
+                    """
+                )
+            }
+        )
+
+        await #expect {
+            try await client.changes(
+                worktreePath: "/worktrees/removed",
+                expectedRepository: "github.com/acme/project",
+                expectedGeneration:
+                "0123456789abcdef0123456789abcdef",
+                on: .local
+            )
+        } throws: { error in
+            error as? KwtWorktreeError == .changeInspectionFailed(
+                host: "localhost",
+                status: 1,
+                code: "registration_changed",
+                message: "worktree registration changed",
+                retryable: true,
+                details: ["path": .string("/worktrees/removed")]
+            )
+        }
+    }
+
+    @Test(
+        "marked malformed transport failures remain retryable",
+        arguments: [Int32(255), AccountCommandRunner.timedOutStatus]
+    )
+    func worktreeChangesMarkedTransportFailure(status: Int32) async {
+        let client = KwtWorktreeClient(
+            localRunner: { _, _ in
+                (status, "GHOSTHUB_KWT_JSON\ntruncated")
+            }
+        )
+
+        await #expect {
+            try await client.changes(
+                worktreePath: "/worktrees/remote",
+                expectedRepository: "github.com/acme/project",
+                expectedGeneration:
+                "0123456789abcdef0123456789abcdef",
+                on: .local
+            )
+        } throws: { error in
+            error as? KwtWorktreeError == .changeInspectionFailed(
+                host: "localhost",
+                status: status,
+                code: nil,
+                message: nil,
+                retryable: true,
+                details: [:]
+            )
+        }
+    }
+
+    @Test("worktree inspection preserves a structured output-limit error")
+    func worktreeChangesOutputLimitError() async {
+        let client = KwtWorktreeClient(
+            localRunner: { _, _ in
+                (AccountCommandRunner.outputExceededStatus, "")
+            }
+        )
+
+        await #expect {
+            try await client.changes(
+                worktreePath: "/worktrees/large",
+                expectedRepository: "github.com/acme/project",
+                expectedGeneration:
+                "0123456789abcdef0123456789abcdef",
+                on: .local
+            )
+        } throws: { error in
+            error as? KwtWorktreeError == .changeInspectionFailed(
+                host: "localhost",
+                status: AccountCommandRunner.outputExceededStatus,
+                code: "response_too_large",
+                message: "kwt returned too many changed files to display.",
+                retryable: false,
+                details: [:]
+            )
+        }
+    }
+
+    @Test("transport failures remain retryable without a kwt envelope")
+    func worktreeChangesTransportFailure() async {
+        let client = KwtWorktreeClient(
+            localRunner: { _, _ in (255, "") }
+        )
+
+        await #expect {
+            try await client.changes(
+                worktreePath: "/worktrees/remote",
+                expectedRepository: "github.com/acme/project",
+                expectedGeneration:
+                "0123456789abcdef0123456789abcdef",
+                on: .local
+            )
+        } throws: { error in
+            error as? KwtWorktreeError == .changeInspectionFailed(
+                host: "localhost",
+                status: 255,
+                code: nil,
+                message: nil,
+                retryable: true,
+                details: [:]
+            )
+        }
+    }
+
+    @Test(
+        "unstructured command failures wait for manual retry",
+        arguments: [
+            Int32(1), Int32(2), Int32(64), Int32(126), Int32(127),
+            AccountCommandRunner.cancelledStatus,
+        ]
+    )
+    func worktreeChangesUnstructuredFailureIsNotRetryable(
+        status: Int32
+    ) async {
+        let client = KwtWorktreeClient(
+            localRunner: { _, _ in (status, "") }
+        )
+
+        await #expect {
+            try await client.changes(
+                worktreePath: "/worktrees/missing",
+                expectedRepository: "github.com/acme/project",
+                expectedGeneration:
+                "0123456789abcdef0123456789abcdef",
+                on: .local
+            )
+        } throws: { error in
+            error as? KwtWorktreeError == .changeInspectionFailed(
+                host: "localhost",
+                status: status,
+                code: nil,
+                message: nil,
+                retryable: false,
+                details: [:]
+            )
+        }
+    }
+
+    @Test("worktree inspection uses its shorter process deadline")
+    func worktreeChangesUsesInspectionTimeout() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghosthub-kwt-changes-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("kwt")
+        try "#!/bin/sh\nexec /bin/sleep 10\n".write(
+            to: helper,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+        let client = KwtWorktreeClient(
+            processTimeout: 5,
+            changeInspectionTimeout: 0.05,
+            localBinaryPath: helper.path,
+            loginShellProvider: { "/bin/sh" }
+        )
+        let started = Date()
+
+        do {
+            _ = try await client.changes(
+                worktreePath: directory.path,
+                expectedRepository: "github.com/acme/project",
+                expectedGeneration:
+                "0123456789abcdef0123456789abcdef",
+                on: .local
+            )
+            Issue.record("expected changed-file inspection to time out")
+        } catch {}
+
+        #expect(Date().timeIntervalSince(started) < 3)
+    }
+
+    @Test("canceling inspection cancels its detached command task")
+    func worktreeChangesCancellation() async {
+        let probe = DetachedCancellationProbe()
+        let client = KwtWorktreeClient(localRunner: { _, _ in
+            probe.run()
+        })
+        let task = Task {
+            try await client.changes(
+                worktreePath: "/worktrees/slow",
+                expectedRepository: "github.com/acme/project",
+                expectedGeneration:
+                "0123456789abcdef0123456789abcdef",
+                on: .local
+            )
+        }
+
+        await probe.waitUntilStarted()
+        task.cancel()
+        _ = await task.result
+        await probe.waitUntilFinished()
+
+        #expect(probe.observedCancellation)
+    }
+
+    @Test("successful inspection rejects mismatched worktree identity")
+    func worktreeChangesRejectIdentityMismatch() async {
+        let expectedRepository = "github.com/acme/ghosthub"
+        let expectedPath = "/worktrees/ghosthub/feature"
+        let expectedGeneration = "0123456789abcdef0123456789abcdef"
+        let mismatches = [
+            ("github.com/acme/other", expectedPath, expectedGeneration),
+            (expectedRepository, "/worktrees/ghosthub/other", expectedGeneration),
+            (expectedRepository, expectedPath, "fedcba9876543210fedcba9876543210"),
+        ]
+
+        for (repository, path, generation) in mismatches {
+            let client = KwtWorktreeClient(
+                localRunner: { _, _ in
+                    (
+                        0,
+                        """
+                        GHOSTHUB_KWT_JSON
+                        {"worktree":{"repository":"\(repository)","path":"\(path)","generation":"\(
+                            generation
+                        )"},"changes":{"state":"clean","summary":{"modified":0,"added":0,"deleted":0,"untracked":0,"staged":0,"conflicts":0},"files":[]},"observed_at":"2026-08-25T15:04:05Z"}
+                        """
+                    )
+                }
+            )
+
+            await #expect {
+                try await client.changes(
+                    worktreePath: expectedPath,
+                    expectedRepository: expectedRepository,
+                    expectedGeneration: expectedGeneration,
+                    on: .local
+                )
+            } throws: { error in
+                error as? KwtWorktreeError == .malformedChangeStatus(
+                    host: "localhost"
+                )
+            }
+        }
+    }
+
+    @Test("Windows inspection uses the managed helper and identity guards")
+    func windowsRemoteChanges() async throws {
+        let recorder = CommandRecorder()
+        let revision = String(repeating: "f", count: 40)
+        let generation = "0123456789abcdef0123456789abcdef"
+        let path = #"C:\worktrees\ghost hub\feature"#
+        let repository = "github.com/acme/ghosthub"
+        let ssh = SSHHostInfo(
+            user: "ci-user",
+            hostname: "windows-builder.example",
+            port: nil,
+            platform: .windows
+        )
+        let client = KwtWorktreeClient(
+            remoteRunner: { host, command, _ in
+                recorder.record(host: host, command: command)
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: """
+                    GHOSTHUB_KWT_JSON\r
+                    {"worktree":{"repository":"github.com/acme/ghosthub","path":"C:\\\\worktrees\\\\ghost hub\\\\feature","generation":"0123456789abcdef0123456789abcdef"},"changes":{"state":"clean","summary":{"modified":0,"added":0,"deleted":0,"untracked":0,"staged":0,"conflicts":0},"files":[]},"observed_at":"2026-08-25T15:04:05Z"}\r
+                    """,
+                    stderr: ""
+                )
+            },
+            remoteBinaryRevision: revision
         )
 
         let changes = try await client.changes(
-            worktreePath: "/worktrees/removed",
-            projectPath: "/code/project",
-            on: .local
+            worktreePath: path,
+            expectedRepository: repository,
+            expectedGeneration: generation,
+            on: .ssh(ssh)
         )
 
-        #expect(changes == .clean)
+        #expect(changes.state == .clean)
+        #expect(recorder.host == ssh)
+        #expect(recorder.command?.contains(
+            [
+                "changes", path,
+                "--expected-repository", repository,
+                "--expected-generation", generation,
+                "--json",
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
+        ) == true)
+        #expect(recorder.command?.contains("Set-Location") == false)
     }
 
     @Test("Windows removal uses the managed kwt helper")
@@ -472,6 +805,44 @@ private final class CommandRecorder: @unchecked Sendable {
         lock.withLock {
             storedHost = host
             storedCommand = command
+        }
+    }
+}
+
+private final class DetachedCancellationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started = false
+    private var finished = false
+    private var canceled = false
+
+    var observedCancellation: Bool { lock.withLock { canceled } }
+
+    func run() -> (status: Int32, stdout: String) {
+        lock.withLock { started = true }
+        let deadline = Date().addingTimeInterval(0.5)
+        while Date() < deadline {
+            if withUnsafeCurrentTask(body: { $0?.isCancelled == true }) {
+                lock.withLock {
+                    canceled = true
+                    finished = true
+                }
+                return (AccountCommandRunner.cancelledStatus, "")
+            }
+            usleep(1_000)
+        }
+        lock.withLock { finished = true }
+        return (0, "")
+    }
+
+    func waitUntilStarted() async {
+        while !lock.withLock({ started }) {
+            await Task.yield()
+        }
+    }
+
+    func waitUntilFinished() async {
+        while !lock.withLock({ finished }) {
+            await Task.yield()
         }
     }
 }

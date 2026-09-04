@@ -145,6 +145,13 @@ private struct WorkspaceSidebarReorderIndicator: Equatable {
     let placement: WorkspaceSidebarDropPlacement
 }
 
+private struct WorktreeChangesTaskID: Hashable {
+    let identity: WorktreeChangesIdentity
+    let isEligible: Bool
+    let manualRefreshRevision: UInt64
+    let resumeRevision: UInt64
+}
+
 // MARK: - WorkspaceSidebarView
 
 struct WorkspaceSidebarView: View {
@@ -185,6 +192,10 @@ struct WorkspaceSidebarView: View {
     let onRequestKillTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onRequestKillZellijSession: (WorkspaceZellijSessionSelection) -> Void
     let onRequestRemoveWorktree: (WorktreeSummary) -> Void
+    let isWorktreeChangesPollingEligible: Bool
+    let currentSnapshot: @MainActor () -> WorkspaceSnapshot
+    let loadWorktreeChanges: WorktreeChangesLoader?
+    let worktreeChangesSleep: WorktreeChangesSleep
     let onRequestRemoveProject: (ProjectSummary) -> Void
     let onOpenProjectWorktreesAsTabs:
         (ProjectSummary, [WorktreeSummary]) -> Void
@@ -210,7 +221,9 @@ struct WorkspaceSidebarView: View {
     @State private var sessionActionHoverDismissTask: Task<Void, Never>?
     @State private var hoveredWorktreeID: UUID?
     @State private var hoveredWorktreeActionID: UUID?
+    @FocusState private var focusedWorktreeActionID: UUID?
     @State private var worktreeHoverDismissTask: Task<Void, Never>?
+    @StateObject private var worktreeChanges = WorktreeChangesStore()
     @State private var hoveredProjectID: UUID?
     @State private var draggedSidebarItem: WorkspaceSidebarDragItem?
     @State private var reorderIndicator:
@@ -277,6 +290,12 @@ struct WorkspaceSidebarView: View {
         onRequestRemoveWorktree: @escaping (
             WorktreeSummary
         ) -> Void = { _ in },
+        isWorktreeChangesPollingEligible: Bool = false,
+        currentSnapshot: (@MainActor () -> WorkspaceSnapshot)? = nil,
+        loadWorktreeChanges: WorktreeChangesLoader? = nil,
+        worktreeChangesSleep: @escaping WorktreeChangesSleep = {
+            try await Task.sleep(for: $0)
+        },
         onRequestRemoveProject: @escaping (
             ProjectSummary
         ) -> Void = { _ in },
@@ -333,6 +352,11 @@ struct WorkspaceSidebarView: View {
         self.onRequestKillTmuxSession = onRequestKillTmuxSession
         self.onRequestKillZellijSession = onRequestKillZellijSession
         self.onRequestRemoveWorktree = onRequestRemoveWorktree
+        self.isWorktreeChangesPollingEligible =
+            isWorktreeChangesPollingEligible
+        self.currentSnapshot = currentSnapshot ?? { snapshot }
+        self.loadWorktreeChanges = loadWorktreeChanges
+        self.worktreeChangesSleep = worktreeChangesSleep
         self.onRequestRemoveProject = onRequestRemoveProject
         self.onOpenProjectWorktreesAsTabs = onOpenProjectWorktreesAsTabs
         self.canOpenProjectWorktreesAsTabs =
@@ -1428,16 +1452,24 @@ struct WorkspaceSidebarView: View {
             activeSelection: activeTmuxSession,
             activeSelectionIsConnected: activeTmuxSessionIsConnected
         )
+        let isExpanded = worktreeChanges.isExpanded(worktreeID)
         let isActionHovered = hoveredWorktreeActionID == worktreeID
         let actionPresentation =
             WorkspaceWorktreeRemovalActionPresentation(
                 isRemovable: isRemovable,
                 isRowHovered: hoveredWorktreeID == worktreeID,
-                isActionHovered: isActionHovered
+                isActionHovered: isActionHovered,
+                isFocused: focusedWorktreeActionID == worktreeID
             )
-        let content = AnyView(
+        let disclosurePresentation =
+            WorkspaceWorktreeDisclosurePresentation(
+                rowIndentLevel: row.indentLevel
+            )
+        var contentRow = row
+        contentRow.indentLevel = disclosurePresentation.contentIndentLevel
+        let worktreeRow = AnyView(
             sidebarButton(
-                row,
+                contentRow,
                 reservedTrailingActionWidth:
                 actionPresentation.reservedWidth
             )
@@ -1463,17 +1495,19 @@ struct WorkspaceSidebarView: View {
                         .background {
                             if actionPresentation.isVisible {
                                 RoundedRectangle(cornerRadius: 5)
-                                    .fill(
-                                        Color.primary.opacity(
-                                            isActionHovered ? 0.14 : 0.05
-                                        )
-                                    )
+                                    .fill(Color.primary.opacity(
+                                        isActionHovered ? 0.14 : 0.05
+                                    ))
                             }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    .focused(
+                        $focusedWorktreeActionID,
+                        equals: worktreeID
+                    )
                     .onHover { isHovered in
                         if isHovered {
                             worktreeHoverDismissTask?.cancel()
@@ -1502,16 +1536,34 @@ struct WorkspaceSidebarView: View {
                 }
             }
             .contextMenu {
+                Button(isExpanded ? "Hide Changes" : "Show Changes") {
+                    worktreeChanges.setExpanded(
+                        !isExpanded,
+                        worktreeID: worktreeID
+                    )
+                }
                 if let runningTmuxSession {
+                    Divider()
                     Button("Kill Session…", role: .destructive) {
                         onRequestKillTmuxSession(runningTmuxSession)
                     }
                 }
                 if isRemovable {
+                    if runningTmuxSession == nil {
+                        Divider()
+                    }
                     Button("Remove Worktree…", role: .destructive) {
                         onRequestRemoveWorktree(worktree)
                     }
                 }
+            }
+            .accessibilityAction(
+                named: isExpanded ? "Hide Changes" : "Show Changes"
+            ) {
+                worktreeChanges.setExpanded(
+                    !isExpanded,
+                    worktreeID: worktreeID
+                )
             }
             .accessibilityAction(named: "Remove Worktree") {
                 if isRemovable {
@@ -1538,7 +1590,101 @@ struct WorkspaceSidebarView: View {
                 )
             )
         )
-        return tmuxPreviewRow(row, content: content)
+        let content = AnyView(
+            HStack(spacing: 0) {
+                worktreeChangesDisclosureButton(
+                    worktree,
+                    isExpanded: isExpanded
+                )
+                worktreeRow
+            }
+            .padding(.leading, disclosurePresentation.leadingIndent)
+        )
+        let rowContent = tmuxPreviewRow(row, content: content)
+        guard isExpanded else { return rowContent }
+        return AnyView(
+            VStack(alignment: .leading, spacing: 4) {
+                rowContent
+                worktreeChangesPanel(for: worktree)
+                    .padding(.leading, 28)
+                    .padding(.trailing, 6)
+            }
+        )
+    }
+
+    private func worktreeChangesDisclosureButton(
+        _ worktree: WorktreeSummary,
+        isExpanded: Bool
+    ) -> some View {
+        Button {
+            worktreeChanges.setExpanded(
+                !isExpanded,
+                worktreeID: worktree.id
+            )
+        } label: {
+            hierarchyDisclosureIcon(isExpanded: isExpanded)
+        }
+        .buttonStyle(.plain)
+        .workspaceAccessibility(
+            WorkspaceAccessibilityModel.disclosureDescriptor(
+                title: "Changes for \(worktree.name)",
+                isExpanded: isExpanded
+            )
+        )
+        .help(isExpanded ? "Hide changes" : "Show changes")
+        .accessibilityIdentifier(
+            "worktree-changes-disclosure-\(worktree.id.uuidString)"
+        )
+    }
+
+    private func worktreeChangesPanel(
+        for worktree: WorktreeSummary
+    ) -> AnyView {
+        guard let identity = WorktreeChangesIdentity.resolve(
+            worktreeID: worktree.id,
+            in: snapshot
+        ) else {
+            var entry = WorktreeChangesEntry()
+            entry.errorMessage = "Changed files are unavailable for this worktree."
+            return AnyView(WorktreeChangesView(
+                entry: entry,
+                onRefresh: onRefreshInventory
+            ))
+        }
+        guard let loadWorktreeChanges else {
+            var entry = WorktreeChangesEntry()
+            entry.errorMessage = "Changed-file loading is unavailable."
+            return AnyView(WorktreeChangesView(
+                entry: entry,
+                onRefresh: nil
+            ))
+        }
+        let entry = worktreeChanges.entry(for: identity)
+        let taskID = WorktreeChangesTaskID(
+            identity: identity,
+            isEligible: isWorktreeChangesPollingEligible,
+            manualRefreshRevision: entry.manualRefreshRevision,
+            resumeRevision: entry.resumeRevision
+        )
+        return AnyView(
+            WorktreeChangesView(
+                entry: entry,
+                onRefresh: {
+                    worktreeChanges.requestManualRefresh(for: identity)
+                }
+            )
+            .task(id: taskID) {
+                await WorktreeChangesPollLoop.run(
+                    identity: identity,
+                    worktree: worktree,
+                    store: worktreeChanges,
+                    currentSnapshot: currentSnapshot,
+                    isEligible: { isWorktreeChangesPollingEligible },
+                    load: loadWorktreeChanges,
+                    sleep: worktreeChangesSleep
+                )
+            }
+        )
     }
 
     private func tmuxPreviewRow(
@@ -2090,6 +2236,18 @@ struct WorkspaceSidebarView: View {
             inventoryWarningsByHost: inventoryWarningsByHost
         )
         else { return }
+        let hostsByID = snapshot.hostsByID
+        let projectsByID = snapshot.projectsByID
+        let worktreeChangeIdentities = Set(
+            snapshot.worktrees.compactMap { worktree in
+                WorktreeChangesIdentity.resolve(
+                    worktree: worktree,
+                    host: hostsByID[worktree.hostID],
+                    project: projectsByID[worktree.projectID]
+                )
+            }
+        )
+        worktreeChanges.prune(keeping: worktreeChangeIdentities)
         var worktreeOrder = WorkspaceSidebarOrder(
             rawValue: worktreeOrderRawValue
         )

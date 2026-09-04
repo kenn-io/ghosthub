@@ -9,6 +9,7 @@
 #import <ImageIO/ImageIO.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
+#import <stdlib.h>
 #import <unistd.h>
 
 static NSString *const DemoCaptureNotification =
@@ -466,6 +467,106 @@ static CGImageRef DemoCreateOwnedWindowComposite(
   return composite;
 }
 
+static BOOL DemoImageHasVisibleColor(CGImageRef image) {
+  const size_t width = 64;
+  const size_t height = 64;
+  const size_t bytesPerRow = width * 4;
+  unsigned char *pixels = calloc(height, bytesPerRow);
+  if (pixels == NULL) return NO;
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(
+      pixels, width, height, 8, bytesPerRow, colorSpace,
+      (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+  CGColorSpaceRelease(colorSpace);
+  if (context == NULL) {
+    free(pixels);
+    return NO;
+  }
+  CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+  CGContextRelease(context);
+
+  BOOL visible = NO;
+  for (size_t offset = 0; offset < height * bytesPerRow; offset += 4) {
+    if (pixels[offset] != 0 || pixels[offset + 1] != 0 ||
+        pixels[offset + 2] != 0) {
+      visible = YES;
+      break;
+    }
+  }
+  free(pixels);
+  return visible;
+}
+
+static CGImageRef DemoCreateViewSnapshot(NSWindow *window) {
+  NSView *frameView = window.contentView.superview;
+  if (frameView == nil || NSIsEmptyRect(frameView.bounds)) return NULL;
+  [frameView layoutSubtreeIfNeeded];
+  NSBitmapImageRep *bitmap =
+      [frameView bitmapImageRepForCachingDisplayInRect:frameView.bounds];
+  if (bitmap == nil) return NULL;
+  [frameView cacheDisplayInRect:frameView.bounds toBitmapImageRep:bitmap];
+  return bitmap.CGImage == NULL ? NULL : CGImageRetain(bitmap.CGImage);
+}
+
+static void DemoAppendRelatedWindows(
+    NSWindow *window, NSMutableArray<NSWindow *> *windows) {
+  if (window == nil || [windows containsObject:window]) return;
+  [windows addObject:window];
+  for (NSWindow *child in window.childWindows) {
+    DemoAppendRelatedWindows(child, windows);
+  }
+  DemoAppendRelatedWindows(window.attachedSheet, windows);
+}
+
+static CGImageRef DemoCreateViewSnapshotComposite(NSWindow *root) {
+  CGImageRef rootImage = DemoCreateViewSnapshot(root);
+  if (rootImage == NULL) return NULL;
+
+  NSRect rootFrame = root.frame;
+  CGFloat scaleX = (CGFloat)CGImageGetWidth(rootImage) / NSWidth(rootFrame);
+  CGFloat scaleY = (CGFloat)CGImageGetHeight(rootImage) / NSHeight(rootFrame);
+  size_t width = CGImageGetWidth(rootImage);
+  size_t height = CGImageGetHeight(rootImage);
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(
+      NULL, width, height, 8, width * 4, colorSpace,
+      (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+  CGColorSpaceRelease(colorSpace);
+  if (context == NULL) {
+    CGImageRelease(rootImage);
+    return NULL;
+  }
+
+  BOOL complete = YES;
+  NSMutableArray<NSWindow *> *windows = [NSMutableArray array];
+  DemoAppendRelatedWindows(root, windows);
+  for (NSWindow *candidate in windows) {
+    if (!candidate.isVisible) continue;
+    CGImageRef snapshot = candidate == root
+        ? CGImageRetain(rootImage)
+        : DemoCreateViewSnapshot(candidate);
+    if (snapshot == NULL || !DemoImageHasVisibleColor(snapshot)) {
+      if (snapshot != NULL) CGImageRelease(snapshot);
+      complete = NO;
+      break;
+    }
+    NSRect frame = candidate.frame;
+    CGRect destination = CGRectMake(
+        (NSMinX(frame) - NSMinX(rootFrame)) * scaleX,
+        (NSMinY(frame) - NSMinY(rootFrame)) * scaleY,
+        NSWidth(frame) * scaleX, NSHeight(frame) * scaleY);
+    CGContextDrawImage(context, destination, snapshot);
+    CGImageRelease(snapshot);
+  }
+  CGImageRelease(rootImage);
+
+  CGImageRef composite = complete
+      ? CGBitmapContextCreateImage(context)
+      : NULL;
+  CGContextRelease(context);
+  return composite;
+}
+
 static BOOL DemoCaptureWindow(NSWindow *window, NSString *path,
                               BOOL exactWindow) {
   if (window == nil) return NO;
@@ -496,6 +597,16 @@ static BOOL DemoCaptureWindow(NSWindow *window, NSString *path,
     CFRelease(windowIDs);
   }
   if (image == NULL) return NO;
+  if (!DemoImageHasVisibleColor(image)) {
+    CGImageRelease(image);
+    image = exactWindow
+        ? DemoCreateViewSnapshot(window)
+        : DemoCreateViewSnapshotComposite(window);
+  }
+  if (image == NULL || !DemoImageHasVisibleColor(image)) {
+    if (image != NULL) CGImageRelease(image);
+    return NO;
+  }
 
   BOOL wrote = NO;
   NSString *temporary = [path stringByAppendingString:@".tmp"];

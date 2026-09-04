@@ -209,9 +209,10 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
     public let routeIdentity: String?
     public let sessionKillRequest: TmuxSessionKillRequest?
     public let changes: WorktreeChangeSummary
+    public let changeInspectionComplete: Bool
 
     public var forceRemoval: Bool {
-        changes.hasUncommittedChanges
+        changes.hasUncommittedChanges || !changeInspectionComplete
     }
 
     public init(
@@ -220,7 +221,8 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
         confirmedHost: HostSummary,
         routeIdentity: String? = nil,
         sessionKillRequest: TmuxSessionKillRequest? = nil,
-        changes: WorktreeChangeSummary = .clean
+        changes: WorktreeChangeSummary = .clean,
+        changeInspectionComplete: Bool = true
     ) {
         self.worktree = worktree
         self.project = project
@@ -228,6 +230,7 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
         self.routeIdentity = routeIdentity
         self.sessionKillRequest = sessionKillRequest
         self.changes = changes
+        self.changeInspectionComplete = changeInspectionComplete
     }
 
     var worktreeRemovalActionTitle: String {
@@ -239,11 +242,18 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
             ? ""
             : " Its live tmux session will be terminated first,"
             + " including every window, pane, and process."
-        let changesMessage = forceRemoval
-            ? " This worktree has uncommitted changes. Force removal"
-            + " permanently discards every staged, unstaged, and untracked"
-            + " change in it."
-            : ""
+        let changesMessage: String
+        if !changeInspectionComplete {
+            changesMessage = " Kwt could not enumerate every changed file."
+                + " Force removal may permanently discard staged, unstaged,"
+                + " and untracked changes in this worktree."
+        } else if forceRemoval {
+            changesMessage = " This worktree has uncommitted changes."
+                + " Force removal permanently discards every staged,"
+                + " unstaged, and untracked change in it."
+        } else {
+            changesMessage = ""
+        }
         return "This removes the worktree at \(worktree.path)."
             + sessionMessage
             + changesMessage
@@ -459,6 +469,7 @@ public struct InteractionHandlers {
     public let createTmuxSession:
         ((WorkspaceTmuxSessionCreationRequest) -> Void)?
     public let currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)?
+    public let loadWorktreeChanges: WorktreeChangesLoader?
     public let refreshWorkspaceInventory: (() -> Void)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
     public let reconnectActiveHerdrSessionNow: (() -> Void)?
@@ -551,6 +562,7 @@ public struct InteractionHandlers {
         createTmuxSession:
         ((WorkspaceTmuxSessionCreationRequest) -> Void)? = nil,
         currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)? = nil,
+        loadWorktreeChanges: WorktreeChangesLoader? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
         reconnectActiveHerdrSessionNow: (() -> Void)? = nil,
@@ -622,6 +634,7 @@ public struct InteractionHandlers {
         self.applyTmuxSessionTheme = applyTmuxSessionTheme
         self.createTmuxSession = createTmuxSession
         self.currentWorkspaceSnapshot = currentWorkspaceSnapshot
+        self.loadWorktreeChanges = loadWorktreeChanges
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.reconnectActiveTmuxSessionNow = reconnectActiveTmuxSessionNow
         self.reconnectActiveHerdrSessionNow = reconnectActiveHerdrSessionNow

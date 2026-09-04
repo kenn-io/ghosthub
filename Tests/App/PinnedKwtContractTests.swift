@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import GhosthubTestSupport
 import GhosthubTransport
+import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
@@ -323,6 +324,112 @@ struct PinnedKwtContractTests {
 
         let finalInventory = try await inventoryClient.load(from: .local)
         #expect(finalInventory.projects.isEmpty)
+    }
+
+    @Test("exact helper inspects one generation-fenced worktree")
+    func worktreeChanges() async throws {
+        guard ProcessInfo.processInfo.environment[
+            "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
+        ] == "1" else { return }
+        let binary = try #require(
+            ProcessInfo.processInfo.environment[
+                "GHOSTHUB_KWT_CONTRACT_BINARY"
+            ]
+        )
+        let fixture = try TempDirectoryFixture(shortPath: true)
+        let kwtHome = try fixture.createSubdirectory("kwt-home")
+        let repository = try fixture.createSubdirectory("changes-widget")
+        let environment = ["KWT_HOME": kwtHome.path]
+        let timeout: TimeInterval = 45
+        let runLoginShell: @Sendable (String, String) -> (
+            status: Int32,
+            stdout: String
+        ) = { shell, command in
+            AccountCommandRunner.runLoginShell(
+                shell: shell,
+                command: command,
+                timeout: timeout,
+                environmentOverrides: environment
+            )
+        }
+        defer {
+            _ = AccountCommandRunner.runProcess(
+                executable: binary,
+                arguments: ["daemon", "stop"],
+                timeout: 10,
+                environmentOverrides: environment
+            )
+        }
+
+        try initializeRepository(repository)
+        let registry = KwtProjectRegistryClient(
+            localRunner: { command in
+                runLoginShell("/bin/zsh", command)
+            },
+            localBinaryPath: binary
+        )
+        let inventoryClient = KwtInventoryClient(
+            localRunner: runLoginShell,
+            localBinaryPath: binary,
+            loginShellProvider: { "/bin/zsh" }
+        )
+        let changesClient = KwtWorktreeClient(
+            localRunner: runLoginShell,
+            localBinaryPath: binary,
+            loginShellProvider: { "/bin/zsh" }
+        )
+
+        _ = try await registry.register(
+            projectPath: repository.path,
+            on: .local
+        )
+        let inventory = try await inventoryClient.load(from: .local)
+        let project = try #require(inventory.projects.first)
+        let worktree = try #require(project.worktrees.first { $0.isMain })
+        let generation = try #require(worktree.generation)
+        try Data("untracked".utf8).write(
+            to: repository.appendingPathComponent("notes.txt")
+        )
+
+        let changes = try await changesClient.changes(
+            worktreePath: worktree.path,
+            expectedRepository: project.project.repository,
+            expectedGeneration: generation,
+            on: .local
+        )
+
+        #expect(changes.repository == project.project.repository)
+        #expect(changes.path == worktree.path)
+        #expect(changes.generation == generation)
+        #expect(changes.state == .modified)
+        #expect(changes.summary == WorktreeChangeSummary(untracked: 1))
+        #expect(changes.files == [
+            WorktreeFileChange(
+                path: "notes.txt",
+                originalPath: nil,
+                index: nil,
+                worktree: .untracked
+            ),
+        ])
+
+        let staleGeneration = generation.first == "f"
+            ? String(repeating: "0", count: 32)
+            : String(repeating: "f", count: 32)
+        await #expect {
+            try await changesClient.changes(
+                worktreePath: worktree.path,
+                expectedRepository: project.project.repository,
+                expectedGeneration: staleGeneration,
+                on: .local
+            )
+        } throws: { error in
+            guard case let .changeInspectionFailed(
+                _, status, code, _, retryable, _
+            ) = error as? KwtWorktreeError else { return false }
+            return status == 1
+                && code == "registration_changed"
+                && retryable
+        }
     }
 
     @Test(

@@ -50,8 +50,8 @@ public struct RootView: View {
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
     @State private var pendingWorktreeRemoval: WorktreeRemovalRequest?
-    // Retain the first confirmed generation for every runtime ID encountered
-    // while reconfirming so ID reuse cannot disguise a displaced target.
+    /// Retain the first confirmed generation for every runtime ID encountered
+    /// while reconfirming so ID reuse cannot disguise a displaced target.
     @State private var pendingWorktreeRemovals:
         [UUID: WorkspacePresentationLifecycle.PendingWorktreeRemovalIdentity] = [:]
     @State private var sessionRecoveryRequestRouter =
@@ -713,6 +713,17 @@ public struct RootView: View {
             onRequestKillTmuxSession: requestSessionKill,
             onRequestKillZellijSession: requestZellijSessionKill,
             onRequestRemoveWorktree: requestWorktreeRemoval,
+            isWorktreeChangesPollingEligible:
+            WorktreeChangesPollingEligibility.isEligible(
+                sidebarVisible: isSidebarVisible,
+                applicationActive: controlActiveState == .key
+                    && NSApplication.shared.isActive,
+                permitsBackgroundDemoControl: permitsBackgroundDemoControl
+            ),
+            currentSnapshot: {
+                handlers.currentWorkspaceSnapshot?() ?? snapshot
+            },
+            loadWorktreeChanges: handlers.loadWorktreeChanges,
             onRequestRemoveProject: requestProjectRemoval,
             onOpenProjectWorktreesAsTabs: { project, worktrees in
                 handlers.openProjectWorktreesAsTabs?(project, worktrees)

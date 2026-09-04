@@ -361,7 +361,7 @@ func makeModel(
     kwtForceWorktreeRemover:
     @escaping WorkspaceSceneModel.KwtWorktreeRemover = { _, _, _, _, _ in },
     kwtWorktreeChangeReader:
-    @escaping WorkspaceSceneModel.KwtWorktreeChangeReader = { _, _, _ in
+    @escaping WorkspaceSceneModel.KwtWorktreeChangeReader = { _, _, _, _ in
         .clean
     },
     sshRouteIdentityResolver:

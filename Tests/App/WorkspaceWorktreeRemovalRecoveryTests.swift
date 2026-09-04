@@ -1177,7 +1177,7 @@ extension WorkspaceWorktreeRemovalTests {
                     status: 1
                 )
             },
-            kwtWorktreeChangeReader: { _, _, _ in
+            kwtWorktreeChangeReader: { _, _, _, _ in
                 reads.withLock { $0 += 1 }
                 return reads.load() < 3
                     ? .clean
