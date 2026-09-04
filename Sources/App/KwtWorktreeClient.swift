@@ -331,6 +331,7 @@ struct KwtWorktreeClient: Sendable {
         worktreePath: String,
         expectedRepository: String,
         expectedGeneration: String,
+        expectedRouteIdentity: String? = nil,
         on host: CommandHost
     ) async throws -> WorktreeFileChanges {
         let binaryPrelude: String
@@ -361,7 +362,11 @@ struct KwtWorktreeClient: Sendable {
             binaryPrelude: binaryPrelude,
             windowsKwtRelativePath: windowsKwtRelativePath
         )
-        let result = await runChanges(command, on: host)
+        let result = await runChanges(
+            command,
+            on: host,
+            expectedRouteIdentity: expectedRouteIdentity
+        )
         let normalizedOutput = result.stdout.replacingOccurrences(
             of: "\r\n",
             with: "\n"
@@ -464,7 +469,8 @@ struct KwtWorktreeClient: Sendable {
 
     private func runChanges(
         _ command: String,
-        on host: CommandHost
+        on host: CommandHost,
+        expectedRouteIdentity: String?
     ) async -> (status: Int32, stdout: String) {
         let localRunner = changeLocalRunner
         let remoteRunner = changeRemoteRunner
@@ -475,7 +481,11 @@ struct KwtWorktreeClient: Sendable {
                 localRunner(shell, command)
             }
         case let .ssh(info):
-            let output = await remoteRunner(info, command, nil)
+            let output = await remoteRunner(
+                info,
+                command,
+                expectedRouteIdentity
+            )
             return (output.status, output.stdout)
         }
     }

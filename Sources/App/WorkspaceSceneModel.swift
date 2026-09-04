@@ -1154,11 +1154,12 @@ final class WorkspaceSceneModel: ObservableObject {
             ).summary
         },
         kwtWorktreeChangesReader: @escaping KwtWorktreeChangesReader = {
-            worktreePath, repository, generation, host in
+            worktreePath, repository, generation, routeIdentity, host in
             try await KwtWorktreeClient().changes(
                 worktreePath: worktreePath,
                 expectedRepository: repository,
                 expectedGeneration: generation,
+                expectedRouteIdentity: routeIdentity,
                 on: host
             )
         },
@@ -2777,6 +2778,14 @@ final class WorkspaceSceneModel: ObservableObject {
             return try await WorktreeChangesLoaderAuthority.load(
                 requested: requested,
                 in: snapshot,
+                resolveRouteIdentity: { [sshRouteIdentityResolver] host in
+                    switch host {
+                    case .local:
+                        nil
+                    case let .ssh(info):
+                        try await sshRouteIdentityResolver(info)
+                    }
+                },
                 read: kwtWorktreeChangesReader
             )
         } catch {

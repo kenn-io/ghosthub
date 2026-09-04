@@ -25,7 +25,7 @@ struct WorktreeChangesLoaderAuthorityTests {
         let result = try await WorktreeChangesLoaderAuthority.load(
             requested: fixture.worktree,
             in: fixture.snapshot,
-            read: { path, repository, generation, host in
+            read: { path, repository, generation, _, host in
                 recorded.store(ReadArguments(
                     path: path,
                     repository: repository,
@@ -54,7 +54,7 @@ struct WorktreeChangesLoaderAuthorityTests {
             _ = try await WorktreeChangesLoaderAuthority.load(
                 requested: fixture.worktree,
                 in: changed,
-                read: { _, _, _, _ in
+                read: { _, _, _, _, _ in
                     reads.withLock { $0 += 1 }
                     throw KwtWorktreeError.commandFailed(
                         host: "unexpected",
@@ -94,8 +94,9 @@ struct WorktreeChangesLoaderAuthorityTests {
             kwtRemoteProvisioner: { _ in
                 events.withLock { $0.append("provision") }
             },
-            kwtWorktreeChangesReader: { _, _, _, _ in
+            kwtWorktreeChangesReader: { _, _, _, routeIdentity, _ in
                 events.withLock { $0.append("read") }
+                #expect(routeIdentity == "sha256:test-route")
                 return expected
             }
         )
@@ -104,6 +105,93 @@ struct WorktreeChangesLoaderAuthorityTests {
 
         #expect(result == expected)
         #expect(events.load() == ["provision", "read"])
+        await model.shutdown()
+    }
+
+    @Test("permanent provisioning failures stop automatic retries")
+    @MainActor
+    func permanentProvisioningFailureIsNotRetryable() async throws {
+        let fixture = makeFixture()
+        let localHost = HostSummary.fixture()
+        var remoteHost = fixture.snapshot.hosts[0]
+        remoteHost.kind = .remote
+        remoteHost.platform = .linux
+        remoteHost.sshDestination = "user-a@builder.example.test"
+        var snapshot = fixture.snapshot
+        snapshot.hosts = [localHost, remoteHost]
+        let model = try makeModel(
+            database: try WorkspaceDatabase.inMemory(),
+            localHostID: localHost.id,
+            snapshot: snapshot,
+            kwtRemoteProvisioner: { _ in
+                throw KwtRemoteInstallError.bundleIncomplete
+            }
+        )
+
+        await #expect {
+            try await model.loadWorktreeChanges(fixture.worktree)
+        } throws: { error in
+            (error as? any WorktreeChangesRetryClassifying)?.isRetryable
+                == false
+        }
+        await model.shutdown()
+    }
+
+    @Test("transient provisioning failures remain retryable")
+    @MainActor
+    func transientProvisioningFailureIsRetryable() async throws {
+        let fixture = makeFixture()
+        let localHost = HostSummary.fixture()
+        var remoteHost = fixture.snapshot.hosts[0]
+        remoteHost.kind = .remote
+        remoteHost.platform = .linux
+        remoteHost.sshDestination = "user-a@builder.example.test"
+        var snapshot = fixture.snapshot
+        snapshot.hosts = [localHost, remoteHost]
+        let model = try makeModel(
+            database: try WorkspaceDatabase.inMemory(),
+            localHostID: localHost.id,
+            snapshot: snapshot,
+            kwtRemoteProvisioner: { _ in
+                throw KwtSSHLeaseError.acquisitionTimedOut
+            }
+        )
+
+        await #expect {
+            try await model.loadWorktreeChanges(fixture.worktree)
+        } throws: { error in
+            (error as? any WorktreeChangesRetryClassifying)?.isRetryable
+                == true
+        }
+        await model.shutdown()
+    }
+
+    @Test("route resolution failures stop automatic retries")
+    @MainActor
+    func routeResolutionFailureIsNotRetryable() async throws {
+        let fixture = makeFixture()
+        let localHost = HostSummary.fixture()
+        var remoteHost = fixture.snapshot.hosts[0]
+        remoteHost.kind = .remote
+        remoteHost.platform = .linux
+        remoteHost.sshDestination = "user-a@builder.example.test"
+        var snapshot = fixture.snapshot
+        snapshot.hosts = [localHost, remoteHost]
+        let model = try makeModel(
+            database: try WorkspaceDatabase.inMemory(),
+            localHostID: localHost.id,
+            snapshot: snapshot,
+            sshRouteIdentityResolver: { _ in
+                throw KwtSSHRouteError.helperUnavailable
+            }
+        )
+
+        await #expect {
+            try await model.loadWorktreeChanges(fixture.worktree)
+        } throws: { error in
+            (error as? any WorktreeChangesRetryClassifying)?.isRetryable
+                == false
+        }
         await model.shutdown()
     }
 

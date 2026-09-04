@@ -366,7 +366,7 @@ func makeModel(
     },
     kwtWorktreeChangesReader:
     @escaping WorkspaceSceneModel.KwtWorktreeChangesReader = {
-        path, repository, generation, _ in
+        path, repository, generation, _, _ in
         WorktreeFileChanges(
             repository: repository,
             path: path,

@@ -671,6 +671,7 @@ struct KwtWorktreeClientTests {
     @Test("Windows inspection uses the managed helper and identity guards")
     func windowsRemoteChanges() async throws {
         let recorder = CommandRecorder()
+        let reviewedRoute = LockedValue<String?>(nil)
         let revision = String(repeating: "f", count: 40)
         let generation = "0123456789abcdef0123456789abcdef"
         let path = #"C:\worktrees\ghost hub\feature"#
@@ -682,8 +683,9 @@ struct KwtWorktreeClientTests {
             platform: .windows
         )
         let client = KwtWorktreeClient(
-            remoteRunner: { host, command, _ in
+            remoteRunner: { host, command, routeIdentity in
                 recorder.record(host: host, command: command)
+                reviewedRoute.withLock { $0 = routeIdentity }
                 return AccountCommandOutput(
                     status: 0,
                     stdout: """
@@ -700,11 +702,13 @@ struct KwtWorktreeClientTests {
             worktreePath: path,
             expectedRepository: repository,
             expectedGeneration: generation,
+            expectedRouteIdentity: "sha256:reviewed-route",
             on: .ssh(ssh)
         )
 
         #expect(changes.state == .clean)
         #expect(recorder.host == ssh)
+        #expect(reviewedRoute.load() == "sha256:reviewed-route")
         #expect(recorder.command?.contains(
             [
                 "changes", path,
