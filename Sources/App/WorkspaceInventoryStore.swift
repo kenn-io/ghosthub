@@ -206,6 +206,7 @@ final class WorkspaceInventoryStore {
         wantsKwt: Bool,
         wantsTmux: Bool
     ) {
+        let previous = subscribers[id]
         let previousKwtHosts = subscribedKwtHosts()
         let previousTmuxHosts = subscribedTmuxHosts()
         subscribers[id] = Subscriber(
@@ -218,15 +219,25 @@ final class WorkspaceInventoryStore {
         invalidateKwtHosts(previousKwtHosts.subtracting(currentKwtHosts))
         invalidateTmuxHosts(previousTmuxHosts.subtracting(currentTmuxHosts))
 
+        // Scenes re-register on every snapshot change. Only a host or lane
+        // this subscriber did not have before earns an initial load; a stale
+        // entry otherwise waits for an explicit refresh or the cadence.
+        let hosts = Set(registrations.map(\.commandHost))
+        func isNew(_ host: CommandHost, wanted: Bool) -> Bool {
+            guard let previous, wanted else { return true }
+            return !previous.registrations.contains { $0.commandHost == host }
+        }
         if isApplicationActive, wantsKwt {
-            for host in Set(registrations.map(\.commandHost))
-                where needsInitialKwtLoad(host) {
+            for host in hosts
+                where isNew(host, wanted: previous?.wantsKwt ?? false)
+                && needsInitialKwtLoad(host) {
                 requestKwt(host)
             }
         }
         if isApplicationActive, wantsTmux {
-            for host in Set(registrations.map(\.commandHost))
-                where needsInitialTmuxLoad(host) {
+            for host in hosts
+                where isNew(host, wanted: previous?.wantsTmux ?? false)
+                && needsInitialTmuxLoad(host) {
                 requestTmux(host)
             }
         }

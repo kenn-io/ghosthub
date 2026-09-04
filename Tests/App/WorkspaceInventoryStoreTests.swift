@@ -2739,4 +2739,64 @@ struct WorkspaceInventoryStoreTests {
                 .worktrees.isEmpty == true
         )
     }
+
+    @Test("re-registering the same subscriber does not retry a failed load")
+    func reregisteringSubscriberDoesNotRetryFailedLoad() async throws {
+        enum LoadFailure: Error {
+            case failed
+        }
+        let loadCount = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                loadCount.withLock { $0 += 1 }
+                throw LoadFailure.failed
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let subscriberID = UUID()
+        let hostID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        let registrations: [WorkspaceInventoryStore.HostRegistration] = [
+            .init(hostID: hostID, commandHost: .local, provisioningHost: nil),
+        ]
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: registrations,
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        await waitUntilMainActor {
+            guard let entry = store.snapshot.kwtByHost[.local] else {
+                return false
+            }
+            if case .failed = entry.state {
+                return true
+            }
+            return false
+        }
+        #expect(loadCount.load() == 1)
+
+        for _ in 0 ..< 3 {
+            store.updateSubscriber(
+                id: subscriberID,
+                registrations: registrations,
+                wantsKwt: true,
+                wantsTmux: false
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(loadCount.load() == 1)
+
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: registrations,
+            wantsKwt: true,
+            wantsTmux: true
+        )
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(loadCount.load() == 1)
+    }
 }
