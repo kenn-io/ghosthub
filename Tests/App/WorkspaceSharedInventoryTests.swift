@@ -375,6 +375,7 @@ struct WorkspaceSharedInventoryTests {
             }
         )
         model.startKwtInventory()
+        model.startTmuxSessionDiscovery()
         await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
         let host = try #require(model.snapshot.host(id: firstRemoteID))
 
