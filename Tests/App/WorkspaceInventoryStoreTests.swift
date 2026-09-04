@@ -2900,11 +2900,12 @@ struct WorkspaceInventoryStoreTests {
             path: "/test/first",
             repository: repository
         )
-        let second = legacyProject(
+        var second = legacyProject(
             name: "Second",
             path: "/test/second",
             repository: repository
         )
+        second.project.registrationFingerprint = "second-registration"
         let inventory = KwtHostInventory(projects: [first, second])
         let coordinator = WorktreeMutationCoordinator()
         let loadCount = LockedValue(0)

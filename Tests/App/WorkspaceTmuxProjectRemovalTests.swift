@@ -2209,10 +2209,18 @@ extension WorkspaceTmuxDiscoveryTests {
             project: elsewhere,
             worktrees: []
         )
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in inventory },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
+            workspaceInventoryStore: store,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator
         )
@@ -2220,16 +2228,18 @@ extension WorkspaceTmuxDiscoveryTests {
         model.startKwtInventory()
 
         await waitUntilMainActor { coordinator.scopes.isEmpty }
+        // The quarantined project was removed rather than restored onto the
+        // registration elsewhere, so its removal tombstone exists.
+        #expect(store.projectRemovalTombstones(on: .local).contains {
+            $0.path == project.rootPath
+        })
         await waitUntilMainActor {
-            !model.snapshot.projects.contains {
-                $0.rootPath == project.rootPath
+            model.snapshot.projects.contains {
+                $0.rootPath == elsewhere.rootPath
             }
         }
         #expect(!model.snapshot.projects.contains {
             $0.rootPath == project.rootPath
-        })
-        #expect(model.snapshot.projects.contains {
-            $0.rootPath == elsewhere.rootPath
         })
         await model.shutdown()
     }
