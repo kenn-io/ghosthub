@@ -106,7 +106,9 @@ struct HerdrSessionProbeBrokerTests {
         async let first = broker.sessions(on: .local)
         async let second = broker.sessions(on: .local)
         await gate.waitUntilBlocked()
-        await Task.yield()
+        await waitUntilMainActor {
+            broker.sessionConsumerCount(on: .local) == 2
+        }
         await gate.open()
 
         #expect(await first == expected)

@@ -7,18 +7,22 @@ use crate::scene::{
     broadcast_event, broadcast_event_with_lossless_owner, push_lossless_event, push_operation_event,
 };
 use crate::scene::{
-    drop_matching_kwt_removal_confirmations, invalidate_pending_kill_with_intent,
-    merge_created_inventory, merge_herdr_lifecycle_inventory, publish_attach_inventory,
-    publish_attachment_failure, publish_captured_kwt_removal, publish_kwt_error,
-    publish_kwt_inventory, publish_kwt_mutation_failure, publish_kwt_project_mutation,
+    drop_matching_kwt_removal_confirmations, fresh_worktree_exact_kwt_endpoint,
+    invalidate_pending_kill_with_intent, merge_created_inventory, merge_herdr_lifecycle_inventory,
+    publish_attachment_failure, publish_kwt_error, publish_kwt_inventory,
+    publish_kwt_mutation_failure, publish_kwt_project_mutation,
     publish_kwt_removal_capture_failure, publish_legacy_inventory_state, publish_local_notice,
     publish_remote_inventory, publish_retained_stale_failure, publish_stale_attachment_failure,
-    reconcile_remote_constructive_with_backoff, reconcile_removed_kwt_worktree,
-    reconcile_retained_session_names, reserve_current_constructive_inventory, reserve_kwt_refresh,
-    resolve_pending_kwt_creations, resolve_pending_kwt_creations_at, set_inventory_state,
-    settle_constructive_inventory, settle_removed_kwt_worktree,
-    settle_timed_out_kwt_worktree_remove, tombstone_removed_kwt_worktree,
+    reconcile_remote_constructive_with_backoff, reserve_current_constructive_inventory,
+    reserve_kwt_refresh, resolve_pending_kwt_creations, resolve_pending_kwt_creations_at,
+    retained_retry_exact_kwt_endpoint, set_inventory_state, settle_constructive_inventory,
     with_current_remote_attachment_launch,
+};
+#[cfg(windows)]
+use crate::scene::{
+    publish_attach_inventory, publish_captured_kwt_removal, reconcile_removed_kwt_worktree,
+    reconcile_retained_session_names, settle_removed_kwt_worktree,
+    settle_timed_out_kwt_worktree_remove, tombstone_removed_kwt_worktree,
 };
 use terminal::TerminalEngine;
 
@@ -442,7 +446,10 @@ fn worktree_removal_capture_requires_the_reviewed_tmux_socket() {
             false,
             Some(generation.to_owned()),
             "project-protected",
-            Some("kwt-pr-reviewed".to_owned()),
+            (
+                Some("kwt-pr-reviewed".to_owned()),
+                host::KwtTmuxAttachMode::Protected,
+            ),
             false,
         ));
 
@@ -457,6 +464,7 @@ fn worktree_removal_capture_requires_the_reviewed_tmux_socket() {
         generation,
         "project-protected",
         Some("kwt-pr-reviewed"),
+        host::KwtTmuxAttachMode::Protected,
     )
     .expect("the reviewed protected socket grants removal capture");
     assert_eq!(captured.3.as_deref(), Some("kwt-pr-reviewed"));
@@ -475,9 +483,60 @@ fn worktree_removal_capture_requires_the_reviewed_tmux_socket() {
             generation,
             "project-protected",
             Some("kwt-pr-reviewed"),
+            host::KwtTmuxAttachMode::Protected,
         )
         .is_err(),
         "a changed protected socket requires a fresh removal confirmation"
+    );
+    workspace.scene.runtime.hosts.write().expect("hosts")[0].projects[0].worktrees[1]
+        .tmux_socket_name = Some("kwt-pr-reviewed".to_owned());
+    workspace.scene.runtime.hosts.write().expect("hosts")[0].projects[0].worktrees[1]
+        .tmux_attach_mode = host::KwtTmuxAttachMode::Direct;
+    assert!(
+        capture_kwt_worktree_removal_context(
+            &workspace.scene.runtime,
+            "wsl",
+            "Ubuntu",
+            "project-id",
+            "/repos/project",
+            "project-fingerprint",
+            "/work/project/protected",
+            generation,
+            "project-protected",
+            Some("kwt-pr-reviewed"),
+            host::KwtTmuxAttachMode::Protected,
+        )
+        .is_err(),
+        "a changed attachment mode requires a fresh removal confirmation"
+    );
+
+    workspace.scene.runtime.hosts.write().expect("hosts")[0].projects[0]
+        .worktrees
+        .push(WorktreeItem::new(
+            "/work/project/unresolved",
+            "unresolved",
+            false,
+            Some("33333333333333333333333333333333".to_owned()),
+            "project-unresolved",
+            (None, host::KwtTmuxAttachMode::Protected),
+            false,
+        ));
+    assert!(
+        capture_kwt_worktree_removal_context(
+            &workspace.scene.runtime,
+            "wsl",
+            "Ubuntu",
+            "project-id",
+            "/repos/project",
+            "project-fingerprint",
+            "/work/project/unresolved",
+            "33333333333333333333333333333333",
+            "project-unresolved",
+            None,
+            host::KwtTmuxAttachMode::Protected,
+        )
+        .is_err(),
+        "an unresolved protected endpoint cannot fall back to default tmux"
     );
 }
 
@@ -505,7 +564,7 @@ fn later_kwt_inventory_resolves_a_pending_created_worktree_once() {
         });
     let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
-            br#"[{"path":"/work/widget/new","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-new","tmux_socket_name":null}]"#,
+            br#"[{"path":"/work/widget/new","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-new","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
             b"[]",
         )
         .expect("valid KWT inventory");
@@ -565,7 +624,7 @@ fn pending_creation_ignores_a_preexisting_same_branch_worktree_and_expires() {
         });
     let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
-            br#"[{"path":"/work/widget/existing","branch":"feature/new","commit_hash":"def","is_main":false,"created_at":null,"generation":"fedcba9876543210fedcba9876543210","repository":"github.com/acme/widget","session_name":"widget-existing","tmux_socket_name":null}]"#,
+            br#"[{"path":"/work/widget/existing","branch":"feature/new","commit_hash":"def","is_main":false,"created_at":null,"generation":"fedcba9876543210fedcba9876543210","repository":"github.com/acme/widget","session_name":"widget-existing","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
             b"[]",
         )
         .expect("valid KWT inventory");
@@ -609,7 +668,7 @@ fn confirmed_creation_expiry_rejects_a_late_same_branch_worktree() {
         });
     let inventory = KwtInventory::parse(
             br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"registration"}]"#,
-            br#"[{"path":"/work/widget/late","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-late","tmux_socket_name":null}]"#,
+            br#"[{"path":"/work/widget/late","branch":"feature/new","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-late","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
             b"[]",
         )
         .expect("valid KWT inventory");
@@ -666,6 +725,7 @@ fn worktree_removal_authority_can_be_restored_before_dispatch() {
             generation: "0123456789abcdef0123456789abcdef".to_owned(),
             session_name: "widget-topic".to_owned(),
             socket_name: None,
+            tmux_attach_mode: host::KwtTmuxAttachMode::Direct,
             live_target: Some(Arc::new(host::LiveSessionTarget::test_fixture(
                 &snapshot,
                 "widget-topic",
@@ -717,6 +777,10 @@ fn worktree_removal_authority_can_be_restored_before_dispatch() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one inventory verifies every field that grants exact worktree removal authority"
+)]
 fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
     let project = ProjectItem::new(
         "github.com/acme/widget",
@@ -730,7 +794,7 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 true,
                 Some("11111111111111111111111111111111".to_owned()),
                 "widget-main",
-                None,
+                (None, host::KwtTmuxAttachMode::Direct),
                 false,
             ),
             WorktreeItem::new(
@@ -739,7 +803,7 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 false,
                 Some("22222222222222222222222222222222".to_owned()),
                 "widget-topic",
-                None,
+                (None, host::KwtTmuxAttachMode::Direct),
                 true,
             ),
             WorktreeItem::new(
@@ -748,17 +812,25 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 false,
                 Some("33333333333333333333333333333333".to_owned()),
                 "widget-protected",
-                Some("protected-socket".to_owned()),
+                (
+                    Some("protected-socket".to_owned()),
+                    host::KwtTmuxAttachMode::Protected,
+                ),
                 false,
             ),
         ],
     );
-    let remove = |path: &str, generation: &str, session: &str, socket_name: Option<&str>| {
+    let remove = |path: &str,
+                  generation: &str,
+                  session: &str,
+                  socket_name: Option<&str>,
+                  tmux_attach_mode: host::KwtTmuxAttachMode| {
         KwtWorktreeOperation::Remove {
             worktree_path: path.to_owned(),
             generation: generation.to_owned(),
             session_name: session.to_owned(),
             socket_name: socket_name.map(str::to_owned),
+            tmux_attach_mode,
             live_target: None,
             operation_id: 1,
         }
@@ -772,6 +844,7 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 "22222222222222222222222222222222",
                 "widget-topic",
                 None,
+                host::KwtTmuxAttachMode::Direct,
             ),
         )
         .is_ok()
@@ -784,6 +857,7 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 "11111111111111111111111111111111",
                 "widget-main",
                 None,
+                host::KwtTmuxAttachMode::Direct,
             ),
         )
         .is_err()
@@ -796,6 +870,7 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 "22222222222222222222222222222222",
                 "replacement",
                 None,
+                host::KwtTmuxAttachMode::Direct,
             ),
         )
         .is_err()
@@ -808,10 +883,25 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                 "33333333333333333333333333333333",
                 "widget-protected",
                 Some("protected-socket"),
+                host::KwtTmuxAttachMode::Protected,
             ),
         )
         .is_ok(),
         "custom-socket worktrees are removable only through their exact protected socket"
+    );
+    assert!(
+        validate_kwt_worktree_operation(
+            &project,
+            &remove(
+                "/work/widget/protected",
+                "33333333333333333333333333333333",
+                "widget-protected",
+                Some("protected-socket"),
+                host::KwtTmuxAttachMode::Direct,
+            ),
+        )
+        .is_err(),
+        "a changed attachment mode invalidates the removal"
     );
 }
 
@@ -822,8 +912,9 @@ fn killed_tmux_cleanup_matches_worktree_presentations_by_authoritative_name() {
         repository: "project-id".to_owned(),
         registration_fingerprint: "registration".to_owned(),
         path: "/work/project/topic".to_owned(),
-        generation: Some("generation".to_owned()),
+        generation: "generation".to_owned(),
         session_name: "project-topic".to_owned(),
+        tmux_socket_name: None,
     };
 
     assert!(attach_target_matches_killed_tmux(
@@ -845,7 +936,7 @@ fn killed_tmux_cleanup_matches_worktree_presentations_by_authoritative_name() {
 
 #[cfg(windows)]
 #[test]
-fn worktree_navigation_reuses_the_equivalent_discovered_tmux_identity() {
+fn default_worktree_navigation_reuses_the_equivalent_discovered_tmux_identity() {
     let identity = session::SessionIdentity::new(100, "$1", 200);
     let snapshot = HostSnapshot::test_fixture(
         "Ubuntu",
@@ -863,18 +954,19 @@ fn worktree_navigation_reuses_the_equivalent_discovered_tmux_identity() {
         repository: "project-id".to_owned(),
         registration_fingerprint: "registration".to_owned(),
         path: "/work/project/topic".to_owned(),
-        generation: Some("generation".to_owned()),
+        generation: "generation".to_owned(),
         session_name: "project-topic".to_owned(),
+        tmux_socket_name: None,
     };
 
-    let key = worktree_tmux_presentation_key(&worktree, &snapshot)
+    let key = kwt_tmux_presentation_key(&worktree, &snapshot)
         .expect("the current tmux session supplies a stable presentation key");
     assert_eq!(key, direct.presentation_key());
 }
 
 #[cfg(windows)]
 #[test]
-fn launched_worktree_identity_remains_reusable_after_it_becomes_unbound() {
+fn launched_default_kwt_identity_remains_reusable_after_it_becomes_unbound() {
     let identity = session::SessionIdentity::new(100, "$1", 200);
     let snapshot = HostSnapshot::test_fixture(
         "Ubuntu",
@@ -892,8 +984,9 @@ fn launched_worktree_identity_remains_reusable_after_it_becomes_unbound() {
         repository: "project-id".to_owned(),
         registration_fingerprint: "registration".to_owned(),
         path: "/work/project/topic".to_owned(),
-        generation: Some("generation".to_owned()),
+        generation: "generation".to_owned(),
         session_name: "project-topic".to_owned(),
+        tmux_socket_name: None,
     };
     let worktree_key = worktree.presentation_key();
 
@@ -907,7 +1000,7 @@ fn launched_worktree_identity_remains_reusable_after_it_becomes_unbound() {
             navigation_generation: 0,
         }),
     );
-    assert!(normalize_attached_worktree_target(
+    assert!(normalize_attached_kwt_target(
         active.active_mut().expect("active worktree"),
         &snapshot,
         "project-topic",
@@ -942,6 +1035,40 @@ fn launched_worktree_identity_remains_reusable_after_it_becomes_unbound() {
         presentation_id: 1,
     });
     assert!(retained.contains(&direct.presentation_key()));
+
+    let mut directory = direct.clone();
+    directory.target = AttachTarget::DirectoryWorkspace {
+        path: "/work/scratch".to_owned(),
+        session_name: "project-topic".to_owned(),
+        tmux_socket_name: None,
+    };
+    let mut active = AttachmentState::new();
+    active.reserve(directory, AttachTerm::Xterm256Color);
+    assert!(normalize_attached_kwt_target(
+        active.active_mut().expect("active directory workspace"),
+        &snapshot,
+        "project-topic",
+    ));
+    assert_eq!(
+        active
+            .active()
+            .expect("normalized directory workspace")
+            .request
+            .presentation_key(),
+        direct.presentation_key(),
+    );
+    let active = active
+        .take_active()
+        .expect("retain active directory workspace");
+    let mut retained = RetainedPresentations::new();
+    retained.insert(RetainedPresentation {
+        key: active.request.presentation_key(),
+        selection: active.request.selection(),
+        attachment: active,
+        worker: (),
+        presentation_id: 2,
+    });
+    assert!(retained.contains(&direct.presentation_key()));
 }
 
 #[test]
@@ -959,7 +1086,7 @@ fn successful_worktree_removal_tombstones_only_the_exact_cached_generation() {
                 false,
                 Some("old-generation".to_owned()),
                 "project-topic",
-                None,
+                (None, host::KwtTmuxAttachMode::Direct),
                 false,
             ),
             WorktreeItem::new(
@@ -968,7 +1095,7 @@ fn successful_worktree_removal_tombstones_only_the_exact_cached_generation() {
                 false,
                 Some("replacement-generation".to_owned()),
                 "project-topic",
-                None,
+                (None, host::KwtTmuxAttachMode::Direct),
                 false,
             ),
         ],
@@ -1409,6 +1536,7 @@ fn retained_herdr_recovery_does_not_block_snapshots_during_discovery() {
             session_directory: "/tmp/herdr/review".to_owned(),
             socket_path: "/tmp/herdr/review/herdr.sock".to_owned(),
         },
+        exact_worktree_attach: false,
         name: "review".to_owned(),
         inventory_generation: 1,
     };
@@ -1575,7 +1703,7 @@ fn kwt_worktree_workspace_fixture() -> (Workspace, Arc<ManualRefreshRuntime>) {
         .store(7, Ordering::Release);
     let inventory = KwtInventory::parse(
             br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
-            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"project-id","session_name":"project-main","tmux_socket_name":null}]"#,
+            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"project-id","session_name":"project-main","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
             b"[]",
         )
         .expect("valid KWT inventory");
@@ -1784,6 +1912,7 @@ fn attach_request_fixture_with_runner(
         endpoint: snapshot.endpoint().clone(),
         runtime: snapshot.runtime().clone(),
         target: AttachTarget::Tmux(identity),
+        exact_worktree_attach: false,
         name: name.to_owned(),
         inventory_generation: 1,
     }
@@ -1807,6 +1936,7 @@ fn herdr_attach_request_fixture(snapshot: &HostSnapshot, name: &str) -> AttachRe
             session_directory: "/tmp/herdr/review".to_owned(),
             socket_path: "/tmp/herdr/review/herdr.sock".to_owned(),
         },
+        exact_worktree_attach: false,
         name: name.to_owned(),
         inventory_generation: 1,
     }
@@ -1828,6 +1958,7 @@ fn zellij_attach_request_fixture(snapshot: &HostSnapshot, name: &str) -> AttachR
             executable: "/usr/bin/zellij".to_owned(),
             name: name.to_owned(),
         },
+        exact_worktree_attach: false,
         name: name.to_owned(),
         inventory_generation: 1,
     }
@@ -2206,6 +2337,7 @@ fn hidden_unconfirmed_client_keeps_its_identity_and_fallback_during_terminfo_ret
         endpoint: snapshot.endpoint().clone(),
         runtime: snapshot.runtime().clone(),
         target: AttachTarget::Tmux(identity.clone()),
+        exact_worktree_attach: false,
         name: "replacement".to_owned(),
         inventory_generation: 1,
     };
@@ -2319,6 +2451,137 @@ fn retained_terminfo_retry_resolves_a_renamed_session_by_identity() {
     assert_eq!(retained.entries[0].attachment.request.name, "renamed");
 }
 
+#[test]
+fn retained_custom_socket_actions_work_without_kwt() {
+    let mut host = HostItem::wsl("Ubuntu", None, HostConnectionState::Ready, Vec::new(), None);
+    host.kwt_state = KwtState::Unavailable;
+    let workspace = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), vec![host]));
+    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+    let base = attach_request_fixture_with_runner(
+        &snapshot,
+        session::SessionIdentity::new(100, "$1", 200),
+        "work",
+        Arc::new(StdCommandRunner) as SharedCommandRunner,
+    );
+    let request = |target| AttachRequest {
+        target,
+        ..base.clone()
+    };
+
+    let worktree = request(AttachTarget::Worktree {
+        repository: "project-id".to_owned(),
+        registration_fingerprint: "project-fingerprint".to_owned(),
+        path: "/work/project/topic".to_owned(),
+        generation: "generation-a".to_owned(),
+        session_name: "project-topic".to_owned(),
+        tmux_socket_name: Some("kwt-project".to_owned()),
+    });
+    assert_eq!(
+        retained_retry_exact_kwt_endpoint(&workspace.scene.runtime, &worktree),
+        Some(("project-topic", "kwt-project"))
+    );
+    *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
+        HostContext {
+            host: worktree.host.clone(),
+            snapshot: snapshot.clone(),
+        },
+        1,
+    ));
+    *workspace
+        .scene
+        .selected_host
+        .write()
+        .expect("selected host") = Some("wsl".to_owned());
+    let selection = worktree.selection();
+    let key = worktree.presentation_key();
+    workspace
+        .scene
+        .retained_presentations
+        .lock()
+        .expect("retained presentations")
+        .restarting
+        .push(RetainedRestart {
+            key,
+            selection: selection.clone(),
+            attachment: ActiveAttachment {
+                request: worktree,
+                term: AttachTerm::Xterm,
+                generation: 1,
+                fallback: None,
+            },
+            presentation_id: 7,
+        });
+    assert!(matches!(
+        capture_kill_request(&workspace.scene, &selection, 8)
+            .expect("retained exact socket grants a fresh kill identity capture"),
+        KillCaptureRequest::Tmux { selection, .. }
+            if selection.tmux_socket_name() == Some("kwt-project")
+    ));
+
+    let directory = request(AttachTarget::DirectoryWorkspace {
+        path: "/work/scratch".to_owned(),
+        session_name: "scratch".to_owned(),
+        tmux_socket_name: Some("kwt-directory".to_owned()),
+    });
+    assert_eq!(
+        retained_retry_exact_kwt_endpoint(&workspace.scene.runtime, &directory),
+        Some(("scratch", "kwt-directory"))
+    );
+
+    let default_server = request(AttachTarget::DirectoryWorkspace {
+        path: "/work/default".to_owned(),
+        session_name: "default".to_owned(),
+        tmux_socket_name: None,
+    });
+    assert_eq!(
+        retained_retry_exact_kwt_endpoint(&workspace.scene.runtime, &default_server),
+        None
+    );
+}
+
+#[test]
+fn fresh_custom_socket_worktree_uses_kwt_when_available() {
+    let mut host = HostItem::wsl("Ubuntu", None, HostConnectionState::Ready, Vec::new(), None);
+    host.kwt_state = KwtState::Ready;
+    let workspace = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), vec![host]));
+    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+    let request = AttachRequest {
+        target: AttachTarget::Worktree {
+            repository: "project-id".to_owned(),
+            registration_fingerprint: "project-fingerprint".to_owned(),
+            path: "/work/project/topic".to_owned(),
+            generation: "generation-a".to_owned(),
+            session_name: "project-topic".to_owned(),
+            tmux_socket_name: Some("kwt-project".to_owned()),
+        },
+        exact_worktree_attach: true,
+        ..attach_request_fixture_with_runner(
+            &snapshot,
+            session::SessionIdentity::new(100, "$1", 200),
+            "work",
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+        )
+    };
+
+    assert_eq!(
+        fresh_worktree_exact_kwt_endpoint(&workspace.scene.runtime, &request),
+        None,
+        "KWT-ready worktrees retain repair-or-open authority"
+    );
+    workspace
+        .scene
+        .runtime
+        .hosts
+        .write()
+        .expect("host inventory")[0]
+        .kwt_state = KwtState::Unavailable;
+    assert_eq!(
+        fresh_worktree_exact_kwt_endpoint(&workspace.scene.runtime, &request),
+        Some(("project-topic", "kwt-project")),
+        "KWT-unavailable worktrees retain exact-socket fallback"
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn retained_terminfo_retry_preserves_herdr_selection_kind() {
@@ -2376,7 +2639,7 @@ fn current_inventory_identity_wins_over_a_same_name_retained_session() {
     );
 
     let (selected, request) =
-        choose_navigation_target(Some(stale.presentation_key()), Ok(current.clone()))
+        choose_navigation_target(Some(stale.presentation_key()), None, Ok(current.clone()))
             .expect("current session remains selectable");
 
     assert_eq!(selected, current.presentation_key());
@@ -2607,6 +2870,7 @@ fn detach_invalidates_fallback_authority_before_an_async_failure() {
         endpoint: snapshot.endpoint().clone(),
         runtime: snapshot.runtime().clone(),
         target: AttachTarget::Tmux(session::SessionIdentity::new(100, "$1", 200)),
+        exact_worktree_attach: false,
         name: "replacement".to_owned(),
         inventory_generation: 1,
     };
@@ -4951,6 +5215,7 @@ fn a_herdr_stop_revokes_restarts_and_the_delayed_recovery_re_drives_them() {
             session_directory: "/tmp/herdr/default".to_owned(),
             socket_path: "/tmp/herdr/default/herdr.sock".to_owned(),
         },
+        exact_worktree_attach: false,
         name: "default".to_owned(),
         inventory_generation: 1,
     };
@@ -5570,8 +5835,8 @@ fn kwt_inventory_projects_worktrees_without_replacing_session_state() {
         .store(7, Ordering::Release);
     let inventory = KwtInventory::parse(
             br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
-            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"project-id","session_name":"project-main","tmux_socket_name":null}]"#,
-            br#"[{"name":"scratch","path":"/work/scratch","session_name":"scratch","session_live":false}]"#,
+            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"project-id","session_name":"project-main","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
+            br#"[{"name":"scratch","path":"/work/scratch","session_name":"scratch","session_live":false,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#,
         )
         .expect("valid KWT inventory");
 
@@ -5648,7 +5913,21 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         TerminalAppearance::default(),
         Some(WslHostSpec::available(config.clone(), executable.clone())),
     );
-    let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
+    let generationless_identity = session::SessionIdentity::new(100, "$1", 200);
+    let generation_identity = session::SessionIdentity::new(100, "$2", 201);
+    let directory_identity = session::SessionIdentity::new(100, "$3", 202);
+    let stale_directory_identity = session::SessionIdentity::new(100, "$4", 203);
+    let snapshot = HostSnapshot::test_fixture(
+        "Ubuntu",
+        "boot",
+        42,
+        vec![
+            session::DiscoveredSession::new("project-legacy", generationless_identity.clone(), 0),
+            session::DiscoveredSession::new("project-topic", generation_identity.clone(), 0),
+            session::DiscoveredSession::new("adopted", directory_identity.clone(), 0),
+            session::DiscoveredSession::new("stale", stale_directory_identity, 0),
+        ],
+    );
     *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
         HostContext {
             host: WslHost::new(
@@ -5673,7 +5952,7 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         .store(7, Ordering::Release);
     let inventory = KwtInventory::parse(
             br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
-            br#"[{"path":"/work/project/topic","branch":"topic","commit_hash":"abc","is_main":false,"created_at":null,"generation":"g7","repository":"project-id","session_name":"project-topic","tmux_socket_name":null},{"path":"/work/project/pr-17","branch":"pr-17","commit_hash":"def","is_main":false,"created_at":null,"generation":"g8","repository":"project-id","session_name":"project-pr-17","tmux_socket_name":"kwt-pr-a1b2"}]"#,
+            br#"[{"path":"/work/project/legacy","branch":"legacy","commit_hash":"123","is_main":false,"created_at":null,"generation":null,"repository":"project-id","session_name":"project-legacy","tmux_socket_name":null,"tmux_attach_mode":"direct"},{"path":"/work/project/topic","branch":"topic","commit_hash":"abc","is_main":false,"created_at":null,"generation":"g7","repository":"project-id","session_name":"project-topic","tmux_socket_name":null,"tmux_attach_mode":"direct"},{"path":"/work/project/named","branch":"named","commit_hash":"cab","is_main":false,"created_at":null,"generation":"g9","repository":"project-id","session_name":"project-named","tmux_socket_name":"kwt","tmux_attach_mode":"direct"},{"path":"/work/project/pr-17","branch":"pr-17","commit_hash":"def","is_main":false,"created_at":null,"generation":"g8","repository":"project-id","session_name":"project-pr-17","tmux_socket_name":"kwt-pr-a1b2","tmux_attach_mode":"protected"},{"path":"/work/project/pr-18","branch":"pr-18","commit_hash":"fed","is_main":false,"created_at":null,"generation":"g10","repository":"project-id","session_name":"project-pr-18","tmux_socket_name":null,"tmux_attach_mode":"protected"}]"#,
             b"[]",
         )
         .expect("valid KWT inventory");
@@ -5683,6 +5962,49 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         snapshot.endpoint(),
         snapshot.runtime(),
         &inventory,
+    );
+
+    let generationless = capture_attach_request(
+        &workspace.scene,
+        &SessionSelection::kwt_workspace(
+            "wsl",
+            "Ubuntu",
+            "project-legacy",
+            host::KwtTmuxAttachMode::Direct,
+            None,
+            "/work/project/legacy",
+            None,
+        ),
+    )
+    .expect("a generationless worktree attaches to its discovered tmux identity");
+    assert!(matches!(
+        generationless.target,
+        AttachTarget::DiscoveredWorktree {
+            ref repository,
+            ref registration_fingerprint,
+            ref path,
+            ref generation,
+            ref session_name,
+            ref identity,
+        } if repository == "project-id"
+            && registration_fingerprint == "project-fingerprint"
+            && path == "/work/project/legacy"
+            && generation.is_none()
+            && session_name == "project-legacy"
+            && identity == &generationless_identity
+    ));
+    assert_eq!(
+        generationless.selection(),
+        SessionSelection::kwt_workspace(
+            "wsl",
+            "Ubuntu",
+            "project-legacy",
+            host::KwtTmuxAttachMode::Direct,
+            None,
+            "/work/project/legacy",
+            None,
+        ),
+        "the presentation remains owned by the generationless KWT row"
     );
 
     let request = capture_kwt_worktree_request(
@@ -5696,10 +6018,100 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         Some("g7"),
         "project-topic",
         None,
+        host::KwtTmuxAttachMode::Direct,
     )
     .expect("KWT identity grants repair-or-open authority");
     assert!(matches!(request.target, AttachTarget::Worktree { .. }));
+    assert!(!request.exact_worktree_attach);
     assert_eq!(request.name, "project-topic");
+    let direct_named = capture_kwt_worktree_request(
+        &workspace.scene,
+        "wsl",
+        "Ubuntu",
+        "project-id",
+        "/repos/project",
+        "project-fingerprint",
+        "/work/project/named",
+        Some("g9"),
+        "project-named",
+        Some("kwt"),
+        host::KwtTmuxAttachMode::Direct,
+    )
+    .expect("a direct named endpoint grants ordinary KWT open authority");
+    assert!(matches!(direct_named.target, AttachTarget::Worktree { .. }));
+    assert!(direct_named.exact_worktree_attach);
+    assert_eq!(
+        fresh_worktree_exact_kwt_endpoint(&workspace.scene.runtime, &direct_named),
+        None,
+        "a KWT-ready direct endpoint retains repair-or-open authority"
+    );
+    let direct_named_selection = direct_named.selection();
+    assert_eq!(direct_named_selection.tmux_socket_name(), Some("kwt"));
+    assert_eq!(
+        direct_named_selection.tmux_attach_mode(),
+        Some(host::KwtTmuxAttachMode::Direct)
+    );
+    assert_ne!(
+        direct_named_selection,
+        SessionSelection::new("wsl", "Ubuntu", "project-named")
+    );
+    assert!(matches!(
+        capture_kill_request(&workspace.scene, &direct_named_selection, 8)
+            .expect("direct named selection grants an exact socket kill query"),
+        KillCaptureRequest::Tmux { selection, .. }
+            if selection.tmux_socket_name() == Some("kwt")
+                && selection.tmux_attach_mode()
+                    == Some(host::KwtTmuxAttachMode::Direct)
+    ));
+    workspace
+        .scene
+        .runtime
+        .hosts
+        .write()
+        .expect("host inventory")
+        .first_mut()
+        .expect("WSL host")
+        .kwt_state = KwtState::Unavailable;
+    assert_eq!(
+        fresh_worktree_exact_kwt_endpoint(&workspace.scene.runtime, &direct_named),
+        Some(("project-named", "kwt")),
+        "the captured direct endpoint becomes the KWT-unavailable fallback"
+    );
+    let attached_default = capture_attach_request(&workspace.scene, &request.selection())
+        .expect("a live default-server worktree captures its tmux identity");
+    assert!(matches!(
+        attached_default.target,
+        AttachTarget::DiscoveredWorktree {
+            ref generation,
+            ref identity,
+            ..
+        } if generation.as_deref() == Some("g7")
+            && identity == &generation_identity
+    ));
+    assert!(!attached_default.exact_worktree_attach);
+    let attached_named = capture_attach_request(&workspace.scene, &direct_named_selection)
+        .expect("a direct named worktree captures its exact tmux endpoint");
+    assert!(matches!(
+        attached_named.target,
+        AttachTarget::Worktree {
+            ref path,
+            ref session_name,
+            ref tmux_socket_name,
+            ..
+        } if path == "/work/project/named"
+            && session_name == "project-named"
+            && tmux_socket_name.as_deref() == Some("kwt")
+    ));
+    assert!(attached_named.exact_worktree_attach);
+    workspace
+        .scene
+        .runtime
+        .hosts
+        .write()
+        .expect("host inventory")
+        .first_mut()
+        .expect("WSL host")
+        .kwt_state = KwtState::Ready;
     let protected = capture_kwt_worktree_request(
         &workspace.scene,
         "wsl",
@@ -5711,8 +6123,10 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
         Some("g8"),
         "project-pr-17",
         Some("kwt-pr-a1b2"),
+        host::KwtTmuxAttachMode::Protected,
     )
     .expect("KWT identity grants protected attach authority");
+    assert!(!protected.exact_worktree_attach);
     assert!(matches!(
         protected.target,
         AttachTarget::ProtectedWorktree { ref tmux_socket_name, .. }
@@ -5733,10 +6147,28 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
             "project-id",
             "/repos/project",
             "project-fingerprint",
+            "/work/project/pr-18",
+            Some("g10"),
+            "project-pr-18",
+            None,
+            host::KwtTmuxAttachMode::Protected,
+        )
+        .is_err(),
+        "an unresolved protected endpoint cannot fall through to direct attachment"
+    );
+    assert!(
+        capture_kwt_worktree_request(
+            &workspace.scene,
+            "wsl",
+            "Ubuntu",
+            "project-id",
+            "/repos/project",
+            "project-fingerprint",
             "/work/project/pr-17",
             Some("g8"),
             "project-pr-17",
             Some("kwt-pr-replaced"),
+            host::KwtTmuxAttachMode::Protected,
         )
         .is_err(),
         "a stale protected-socket action cannot open the replacement server"
@@ -5759,9 +6191,95 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
             Some("stale"),
             "project-topic",
             None,
+            host::KwtTmuxAttachMode::Direct,
         )
         .is_err()
     );
+    let directory_inventory = KwtInventory::parse(
+        b"[]",
+        b"[]",
+        br#"[{"name":"scratch","path":"/work/scratch","session_name":"scratch","session_live":true,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"},{"name":"adopted","path":"/work/adopted","session_name":"adopted","session_live":true,"tmux_socket_name":null,"tmux_attach_mode":"direct"},{"name":"stale","path":"/work/stale","session_name":"stale","session_live":false,"tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
+    )
+    .expect("valid directory workspace inventory");
+    workspace
+        .scene
+        .runtime
+        .kwt_refresh_generation
+        .store(8, Ordering::Release);
+    publish_kwt_inventory(
+        &workspace.scene,
+        8,
+        snapshot.endpoint(),
+        snapshot.runtime(),
+        &directory_inventory,
+    );
+    let directory = capture_attach_request(
+        &workspace.scene,
+        &SessionSelection::kwt_workspace(
+            "wsl",
+            "Ubuntu",
+            "scratch",
+            host::KwtTmuxAttachMode::Direct,
+            Some("kwt".to_owned()),
+            "/work/scratch",
+            None,
+        ),
+    )
+    .expect("a direct named directory workspace opens through KWT");
+    assert!(matches!(
+        directory.target,
+        AttachTarget::DirectoryWorkspace {
+            ref path,
+            ref session_name,
+            ref tmux_socket_name,
+        } if path == "/work/scratch"
+            && session_name == "scratch"
+            && tmux_socket_name.as_deref() == Some("kwt")
+    ));
+    let adopted = capture_attach_request(
+        &workspace.scene,
+        &SessionSelection::kwt_workspace(
+            "wsl",
+            "Ubuntu",
+            "adopted",
+            host::KwtTmuxAttachMode::Direct,
+            None,
+            "/work/adopted",
+            None,
+        ),
+    )
+    .expect("a live default-server directory workspace attaches without KWT");
+    assert!(matches!(
+        adopted.target,
+        AttachTarget::Tmux(ref identity) if identity == &directory_identity
+    ));
+    let stale = capture_attach_request(
+        &workspace.scene,
+        &SessionSelection::kwt_workspace(
+            "wsl",
+            "Ubuntu",
+            "stale",
+            host::KwtTmuxAttachMode::Direct,
+            None,
+            "/work/stale",
+            None,
+        ),
+    )
+    .expect("a stale default-server directory workspace opens through KWT");
+    let equivalent = kwt_tmux_presentation_key(&stale, &snapshot);
+    assert!(equivalent.is_none());
+    let (key, request) = choose_navigation_target(None, equivalent, Ok(stale.clone()))
+        .expect("stale directory navigation remains available through KWT");
+    assert_eq!(key, stale.presentation_key());
+    assert!(request.is_some());
+    assert!(matches!(
+        stale.target,
+        AttachTarget::DirectoryWorkspace {
+            ref path,
+            ref session_name,
+            tmux_socket_name: None,
+        } if path == "/work/stale" && session_name == "stale"
+    ));
 }
 
 #[test]
@@ -8281,6 +8799,7 @@ fn removed_kwt_worktree_drops_matching_confirmations_in_every_scene() {
         generation: generation.to_owned(),
         session_name: "widget-topic".to_owned(),
         socket_name: None,
+        tmux_attach_mode: host::KwtTmuxAttachMode::Direct,
         live_target: None,
     };
     *b.scene
@@ -8336,7 +8855,7 @@ fn removed_kwt_worktree_drops_matching_confirmations_in_every_scene() {
 fn kwt_removal_reconciliation_branches_gate_confirmation_drops() {
     fn widget_inventory(with_topic_worktree: bool) -> KwtInventory {
         let worktrees: &[u8] = if with_topic_worktree {
-            br#"[{"path":"/work/widget/topic","branch":"topic","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-topic","tmux_socket_name":null}]"#
+            br#"[{"path":"/work/widget/topic","branch":"topic","commit_hash":"abc","is_main":false,"created_at":null,"generation":"0123456789abcdef0123456789abcdef","repository":"github.com/acme/widget","session_name":"widget-topic","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#
         } else {
             b"[]"
         };
@@ -8367,6 +8886,7 @@ fn kwt_removal_reconciliation_branches_gate_confirmation_drops() {
             generation: generation.to_owned(),
             session_name: "widget-topic".to_owned(),
             socket_name: None,
+            tmux_attach_mode: host::KwtTmuxAttachMode::Direct,
             live_target: None,
         });
     };
@@ -8421,6 +8941,7 @@ fn kwt_removal_reconciliation_branches_gate_confirmation_drops() {
             generation: generation.to_owned(),
             session_name: "widget-topic".to_owned(),
             socket_name: None,
+            tmux_attach_mode: host::KwtTmuxAttachMode::Direct,
             live_target: None,
             operation_id: 9,
         },
@@ -9341,6 +9862,7 @@ fn removal_completing_during_identity_capture_cannot_publish_a_stale_confirmatio
         generation: generation.to_owned(),
         session_name: "widget-topic".to_owned(),
         socket_name: None,
+        tmux_attach_mode: host::KwtTmuxAttachMode::Direct,
     };
     // Both scenes' removal requests recorded their capture intents (the
     // request registration writes exactly this shape) and the captured
@@ -10843,6 +11365,7 @@ fn created_worktree_target() -> KwtWorktreeTarget {
         generation: Some("0123456789abcdef0123456789abcdef".to_owned()),
         session_name: "widget-topic".to_owned(),
         tmux_socket_name: None,
+        tmux_attach_mode: host::KwtTmuxAttachMode::Direct,
     }
 }
 
@@ -11824,6 +12347,7 @@ fn destructive_lifecycle_paths_refuse_a_closed_scene() {
             &"a".repeat(40),
             "ghosthub/web",
             None,
+            host::KwtTmuxAttachMode::Direct,
         )
         .expect_err("a closed scene arms no worktree removal");
     assert!(error.to_string().contains("closed"), "{error}");
@@ -12291,6 +12815,7 @@ fn closure_during_a_retry_launch_suppresses_the_failure_publication() {
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn retained_retries_never_hold_navigation_while_waiting_on_operations() {
     // Mimic a remote attach: hold session_operations, then acquire the

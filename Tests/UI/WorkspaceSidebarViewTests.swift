@@ -363,6 +363,37 @@ struct WorkspaceSidebarViewTests {
         ))
     }
 
+    @MainActor
+    @Test("a direct worktree row matches its active unbound endpoint")
+    func directWorktreeRowMatchesActiveUnboundEndpoint() {
+        let hostID = UUID()
+        let worktreeID = UUID()
+        let row = WorkspaceSidebarRow(
+            target: .worktree(worktreeID),
+            icon: .worktree,
+            title: "Feature"
+        )
+        let worktree = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "kwt-project-feature",
+            worktreeID: worktreeID,
+            workspacePath: "/repo/feature",
+            tmuxAttachMode: .direct
+        )
+        let active = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "kwt-project-feature"
+        )
+
+        #expect(WorkspaceSidebarView.isRowSelected(
+            row,
+            selection: WorkspaceSelection(selectedHostID: hostID),
+            rowTmuxSession: worktree,
+            activeTmuxSession: active,
+            activeHerdrSession: nil
+        ))
+    }
+
     @Test("Herdr rows expose lifecycle actions by state and identity")
     func herdrRowsExposeLifecycleActions() {
         let hostID = UUID()

@@ -887,6 +887,99 @@ struct WorkspaceSidebarModelTests {
         )
     }
 
+    @Test("direct named directory workspaces use endpoint liveness")
+    func directNamedDirectoryWorkspaceUsesEndpointLiveness() {
+        let hostID = UUID()
+        let workspace = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: hostID,
+            name: "jibot",
+            path: "/workspaces/jibot",
+            tmuxSessionName: "kwt-workspace-dir-jibot-abc",
+            tmuxSocketName: "kwt",
+            tmuxAttachMode: .direct,
+            sessionLive: true
+        )
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(id: hostID)],
+            projects: [],
+            worktrees: [],
+            directoryWorkspaces: [workspace]
+        )
+
+        let row = WorkspaceSidebarModel.sections(in: snapshot)[0]
+            .directoryWorkspaceRows[0]
+        #expect(row.sessionIsRunning)
+
+        let selection = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: workspace
+        )
+        #expect(WorkspaceSidebarModel.canRequestKill(selection, in: snapshot))
+        var staleSelection = selection
+        staleSelection.workspacePath = "/workspaces/replacement"
+        #expect(!WorkspaceSidebarModel.canRequestKill(
+            staleSelection,
+            in: snapshot
+        ))
+
+        var stopped = snapshot
+        stopped.directoryWorkspaces[0].sessionLive = false
+        stopped.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: workspace.tmuxSessionName,
+                managed: false,
+                windows: [],
+                serverPID: "123",
+                sessionID: "$1",
+                createdAt: "456"
+            ),
+        ]
+        let stoppedRow = WorkspaceSidebarModel.sections(in: stopped)[0]
+            .directoryWorkspaceRows[0]
+        #expect(!stoppedRow.sessionIsRunning)
+        #expect(!WorkspaceSidebarModel.canRequestKill(selection, in: stopped))
+    }
+
+    @Test("direct named worktree kill uses exact KWT ownership")
+    func directNamedWorktreeKillUsesExactOwnership() throws {
+        let hostID = UUID()
+        let projectID = UUID()
+        var worktree = WorktreeSummary.fixture(
+            hostID: hostID,
+            projectID: projectID,
+            name: "jibot",
+            path: "/worktrees/jibot",
+            branch: "main"
+        )
+        worktree.generation = "0123456789abcdef0123456789abcdef"
+        worktree.tmuxSessionName = "kwt-worktree-jibot-abc"
+        worktree.tmuxSocketName = "kwt"
+        worktree.tmuxAttachMode = .direct
+        var snapshot = WorkspaceSnapshot.fixture(
+            hosts: [.fixture(id: hostID)],
+            projects: [.fixture(id: projectID, hostID: hostID)],
+            worktrees: [worktree]
+        )
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "kwt-worktree-jibot-abc",
+                managed: false,
+                windows: [],
+                serverPID: "123",
+                sessionID: "$1",
+                createdAt: "456"
+            ),
+        ]
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+
+        #expect(WorkspaceSidebarModel.canRequestKill(selection, in: snapshot))
+
+        snapshot.worktrees = []
+        #expect(!WorkspaceSidebarModel.canRequestKill(selection, in: snapshot))
+    }
+
     @Test("hidden patterns remove only standalone tmux session rows")
     func hiddenPatternsRemoveStandaloneSessions() {
         let hostID = UUID()

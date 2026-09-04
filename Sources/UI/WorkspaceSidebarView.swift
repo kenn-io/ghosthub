@@ -885,6 +885,7 @@ struct WorkspaceSidebarView: View {
         let isSelected = Self.isRowSelected(
             row,
             selection: selection,
+            rowTmuxSession: tmuxSession,
             activeTmuxSession: activeTmuxSession,
             activeHerdrSession: activeHerdrSession,
             activeZellijSession: activeZellijSession
@@ -1291,6 +1292,7 @@ struct WorkspaceSidebarView: View {
     static func isRowSelected(
         _ row: WorkspaceSidebarRow,
         selection: WorkspaceSelection,
+        rowTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSession: WorkspaceTmuxSessionSelection?,
         activeHerdrSession: WorkspaceHerdrSessionSelection?,
         activeZellijSession: WorkspaceZellijSessionSelection? = nil
@@ -1313,6 +1315,10 @@ struct WorkspaceSidebarView: View {
                 name: name
             )
         }
+        if let rowTmuxSession, let activeTmuxSession,
+           sameTmuxPresentationEndpoint(rowTmuxSession, activeTmuxSession) {
+            return true
+        }
         if case let .worktree(worktreeID) = row.target,
            activeTmuxSession?.worktreeID == worktreeID {
             return true
@@ -1325,6 +1331,18 @@ struct WorkspaceSidebarView: View {
             && activeHerdrSession == nil
             && activeZellijSession == nil
             && selection.navigationTarget == row.target
+    }
+
+    private static func sameTmuxPresentationEndpoint(
+        _ lhs: WorkspaceTmuxSessionSelection,
+        _ rhs: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        let lhsMode = lhs.tmuxAttachMode == .direct ? nil : lhs.tmuxAttachMode
+        let rhsMode = rhs.tmuxAttachMode == .direct ? nil : rhs.tmuxAttachMode
+        return lhs.hostID == rhs.hostID
+            && lhs.name == rhs.name
+            && lhs.socketName == rhs.socketName
+            && lhsMode == rhsMode
     }
 
     private func sessionActionLabel(

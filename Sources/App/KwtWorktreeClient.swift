@@ -38,7 +38,7 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
         case .removalInProgress:
             "Another worktree change is already in progress."
         case .removalIdentityUnavailable:
-            "The worktree has no stable creation identity. Refresh the"
+            "The worktree has no stable removal identity. Refresh the"
                 + " workspace and try again."
         case .removalTargetChanged:
             "The worktree or its tmux session changed after confirmation."

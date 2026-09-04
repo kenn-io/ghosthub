@@ -22,10 +22,10 @@ mod wsl;
 mod zellij;
 
 pub use kwt::{
-    KwtBranchCandidate, KwtBundle, KwtDirectoryWorkspace, KwtInventory, KwtProject,
-    KwtProjectInventory, KwtProtectedWorktreeOpen, KwtPullRequest, KwtPullRequestImport,
-    KwtPullRequestImportRequest, KwtWorktree, KwtWorktreeCreate, KwtWorktreeOpen,
-    kwt_command_failure_message,
+    KwtBranchCandidate, KwtBundle, KwtDirectoryWorkspace, KwtDirectoryWorkspaceOpen, KwtInventory,
+    KwtProject, KwtProjectInventory, KwtProtectedWorktreeOpen, KwtPullRequest,
+    KwtPullRequestImport, KwtPullRequestImportRequest, KwtTmuxAttachMode, KwtWorktree,
+    KwtWorktreeCreate, KwtWorktreeOpen, kwt_command_failure_message,
 };
 pub use remote::{
     RemoteSessionInventory, RemoteTmuxConfig, RemoteTmuxError, RemoteTmuxHost, RemoteTmuxSnapshot,

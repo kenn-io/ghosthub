@@ -87,6 +87,9 @@ private struct NativeTmuxAttachment {
     var windowsKwtRelativePath: String?
     var socketName: String?
     var protectedWorkspacePath: String?
+    var kwtWorktreeIdentity: KwtWorktreeOpenIdentity?
+    var kwtProtectedWorktreeIdentity: KwtProtectedWorktreeOpenIdentity?
+    var kwtExpectedSessionName: String?
     var launchMode: TmuxAttachmentLaunchMode
     var initialCommand: String?
     var workingDirectory: String?
@@ -94,11 +97,13 @@ private struct NativeTmuxAttachment {
     var sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
     var sshConnection: KwtSSHConnection?
     var sessionIdentity: TmuxSessionIdentity?
+    var expectedAttachIdentity: TmuxSessionIdentity?
     var paneSplitClientToken: String
     var clientTTYDirectory: String?
     var ignoresClientSize: Bool
     var previewGridSize: TmuxGridSize?
     var supportsClientSizing: Bool
+    var supportsClientIdentity: Bool
     var supportsPaneSplitting: Bool
     var remoteExitStatusURL: URL?
 
@@ -314,7 +319,12 @@ final class NativeTmuxSessionCoordinator {
         initialCommand: String? = nil,
         workingDirectory: String? = nil,
         openWorkspace: Bool = false,
+        kwtWorktreeIdentity: KwtWorktreeOpenIdentity? = nil,
+        kwtProtectedWorktreeIdentity:
+        KwtProtectedWorktreeOpenIdentity? = nil,
+        kwtExpectedSessionName: String? = nil,
         sessionIdentity: TmuxSessionIdentity? = nil,
+        expectedAttachIdentity: TmuxSessionIdentity? = nil,
         expectedRouteIdentity: String? = nil,
         ignoresClientSize: Bool = false,
         previewGridSize: TmuxGridSize? = nil
@@ -363,17 +373,18 @@ final class NativeTmuxSessionCoordinator {
                 let sshConnection: KwtSSHConnection?
                 let sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
                 if case let .ssh(info) = host {
-                    sshConnection = try await remoteConnectionProvider(
+                    let connection = try await remoteConnectionProvider(
                         hostID,
                         info
                     )
                     if let expectedRouteIdentity,
-                       sshConnection?.routeIdentity != expectedRouteIdentity {
-                        try? await sshConnection?.release()
+                       connection.routeIdentity != expectedRouteIdentity {
+                        try? await connection.release()
                         throw KwtSSHLeaseError.routeChanged
                     }
+                    sshConnection = connection
                     sshConnectionSnapshot = SSHConnectionArgumentsSnapshot(
-                        arguments: sshConnection?.arguments ?? []
+                        connection
                     )
                 } else {
                     sshConnection = nil
@@ -412,7 +423,12 @@ final class NativeTmuxSessionCoordinator {
                     initialCommand: launchMode == .create ? initialCommand : nil,
                     workingDirectory: workingDirectory,
                     openWorkspace: openWorkspace,
+                    kwtWorktreeIdentity: kwtWorktreeIdentity,
+                    kwtProtectedWorktreeIdentity:
+                    kwtProtectedWorktreeIdentity,
+                    kwtExpectedSessionName: kwtExpectedSessionName,
                     sessionIdentity: sessionIdentity,
+                    expectedAttachIdentity: expectedAttachIdentity,
                     ignoresClientSize: ignoresClientSize,
                     previewGridSize: previewGridSize,
                     sshConnectionSnapshot: sshConnectionSnapshot,
@@ -436,7 +452,11 @@ final class NativeTmuxSessionCoordinator {
         initialCommand: String?,
         workingDirectory: String?,
         openWorkspace: Bool,
+        kwtWorktreeIdentity: KwtWorktreeOpenIdentity?,
+        kwtProtectedWorktreeIdentity: KwtProtectedWorktreeOpenIdentity?,
+        kwtExpectedSessionName: String?,
         sessionIdentity: TmuxSessionIdentity?,
+        expectedAttachIdentity: TmuxSessionIdentity?,
         ignoresClientSize: Bool,
         previewGridSize: TmuxGridSize?,
         sshConnectionSnapshot: SSHConnectionArgumentsSnapshot,
@@ -509,6 +529,10 @@ final class NativeTmuxSessionCoordinator {
                     : nil,
                 socketName: socketName,
                 protectedWorkspacePath: protectedWorkspacePath,
+                kwtWorktreeIdentity: kwtWorktreeIdentity,
+                kwtProtectedWorktreeIdentity:
+                kwtProtectedWorktreeIdentity,
+                kwtExpectedSessionName: kwtExpectedSessionName,
                 launchMode: launchMode,
                 initialCommand: launchMode == .create ? initialCommand : nil,
                 workingDirectory: workingDirectory,
@@ -516,6 +540,7 @@ final class NativeTmuxSessionCoordinator {
                 sshConnectionSnapshot: sshConnectionSnapshot,
                 sshConnection: sshConnection,
                 sessionIdentity: sessionIdentity,
+                expectedAttachIdentity: expectedAttachIdentity,
                 paneSplitClientToken: attachmentID.uuidString.lowercased(),
                 clientTTYDirectory: host.isRemote ? nil : StateHome.resolved()
                     .appendingPathComponent(
@@ -524,6 +549,8 @@ final class NativeTmuxSessionCoordinator {
                 ignoresClientSize: effectiveIgnoresClientSize,
                 previewGridSize: effectivePreviewGridSize,
                 supportsClientSizing: supportsClientSizing,
+                supportsClientIdentity: TmuxPaneSplitter
+                    .supportsClientIdentity(host: host),
                 supportsPaneSplitting: TmuxPaneSplitter
                     .supportsPaneSplitting(
                         version: resolved.version,
@@ -592,6 +619,13 @@ final class NativeTmuxSessionCoordinator {
         guard let handle = handlesByKey.removeValue(forKey: key) else {
             return
         }
+        removeHandle(handle, for: key, keyAlreadyRemoved: true)
+    }
+
+    func detach(_ handle: BorrowedTmuxSessionHandle) {
+        let key = sessionKey(handle)
+        guard handlesByKey[key] == handle else { return }
+        handlesByKey.removeValue(forKey: key)
         removeHandle(handle, for: key, keyAlreadyRemoved: true)
     }
 
@@ -665,7 +699,13 @@ final class NativeTmuxSessionCoordinator {
     func attachmentRouteIdentity(
         _ handle: BorrowedTmuxSessionHandle
     ) -> String? {
-        attachments[handle.id]?.sshConnection?.routeIdentity
+        attachments[handle.id]?.sshConnectionSnapshot.routeIdentity
+    }
+
+    func attachmentConnectionSnapshot(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> SSHConnectionArgumentsSnapshot? {
+        attachments[handle.id]?.sshConnectionSnapshot
     }
 
     func hasDeferredPresentationStyle(
@@ -996,7 +1036,12 @@ final class NativeTmuxSessionCoordinator {
             workspacePath: attachment.openWorkspace
                 ? attachment.workingDirectory
                 : nil,
+            kwtWorktreeIdentity: attachment.kwtWorktreeIdentity,
+            kwtProtectedWorktreeIdentity:
+            attachment.kwtProtectedWorktreeIdentity,
+            kwtExpectedSessionName: attachment.kwtExpectedSessionName,
             protectedWorkspacePath: attachment.protectedWorkspacePath,
+            expectedAttachIdentity: attachment.expectedAttachIdentity,
             presentationStyle: presentationStyle,
             launchMode: attachment.launchMode,
             initialCommand: attachment.initialCommand,
@@ -1318,7 +1363,7 @@ final class NativeTmuxSessionCoordinator {
               paneSplitClients[handle.id] == nil,
               paneSplitClientBindings[handle.id] == nil
         else { return }
-        guard attachments[handle.id]?.supportsPaneSplitting == true else {
+        guard attachments[handle.id]?.supportsClientIdentity == true else {
             if previewIdentityRetryHandles.remove(handle.id) != nil {
                 unavailablePreviewIdentityHandles.insert(handle.id)
                 onAttachedSessionIdentityUnavailable?(handle)
@@ -1783,7 +1828,7 @@ final class NativeTmuxSessionCoordinator {
         _ handle: BorrowedTmuxSessionHandle
     ) async -> TmuxSessionIdentity? {
         guard let attachment = attachments[handle.id],
-              attachment.supportsPaneSplitting,
+              attachment.supportsClientIdentity,
               launchedAttachmentIDs[handle.id] == attachment.id,
               paneSplitClients[handle.id] != nil
         else { return nil }

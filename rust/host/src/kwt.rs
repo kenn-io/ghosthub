@@ -206,6 +206,14 @@ pub struct KwtWorktree {
     repository: String,
     session_name: String,
     tmux_socket_name: Option<String>,
+    tmux_attach_mode: KwtTmuxAttachMode,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum KwtTmuxAttachMode {
+    Direct,
+    Protected,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -278,6 +286,7 @@ pub struct KwtImportedWorkspace {
     session_name: String,
     #[serde(default)]
     tmux_socket_name: Option<String>,
+    tmux_attach_mode: KwtTmuxAttachMode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -363,6 +372,31 @@ pub struct KwtWorktreeOpen {
     registration_fingerprint: String,
     generation: String,
     session_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KwtDirectoryWorkspaceOpen {
+    path: String,
+    session_name: String,
+}
+
+impl KwtDirectoryWorkspaceOpen {
+    #[must_use]
+    pub fn new(path: impl Into<String>, session_name: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            session_name: session_name.into(),
+        }
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn session_name(&self) -> &str {
+        &self.session_name
+    }
 }
 
 impl KwtWorktreeOpen {
@@ -556,6 +590,9 @@ pub(crate) fn parse_pull_request_import(output: &[u8]) -> Result<KwtPullRequestI
     {
         return Err("KWT pull-request import omitted its protected tmux socket".to_owned());
     }
+    if response.workspace.tmux_attach_mode != KwtTmuxAttachMode::Protected {
+        return Err("KWT pull-request import did not require protected attachment".to_owned());
+    }
     Ok(response)
 }
 
@@ -619,6 +656,10 @@ impl KwtImportedWorkspace {
     pub fn tmux_socket_name(&self) -> Option<&str> {
         self.tmux_socket_name.as_deref()
     }
+    #[must_use]
+    pub const fn tmux_attach_mode(&self) -> KwtTmuxAttachMode {
+        self.tmux_attach_mode
+    }
 }
 
 impl KwtPullRequestImport {
@@ -673,6 +714,10 @@ impl KwtWorktree {
     pub fn tmux_socket_name(&self) -> Option<&str> {
         self.tmux_socket_name.as_deref()
     }
+    #[must_use]
+    pub const fn tmux_attach_mode(&self) -> KwtTmuxAttachMode {
+        self.tmux_attach_mode
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -682,6 +727,8 @@ pub struct KwtDirectoryWorkspace {
     path: String,
     session_name: String,
     session_live: bool,
+    tmux_socket_name: Option<String>,
+    tmux_attach_mode: KwtTmuxAttachMode,
 }
 
 impl KwtDirectoryWorkspace {
@@ -700,6 +747,14 @@ impl KwtDirectoryWorkspace {
     #[must_use]
     pub const fn session_live(&self) -> bool {
         self.session_live
+    }
+    #[must_use]
+    pub fn tmux_socket_name(&self) -> Option<&str> {
+        self.tmux_socket_name.as_deref()
+    }
+    #[must_use]
+    pub const fn tmux_attach_mode(&self) -> KwtTmuxAttachMode {
+        self.tmux_attach_mode
     }
 }
 
@@ -775,7 +830,7 @@ impl KwtInventory {
 #[cfg(test)]
 mod tests {
     use super::{
-        KwtBundle, KwtInventory, parse_command_failure, parse_project_mutation,
+        KwtBundle, KwtInventory, KwtTmuxAttachMode, parse_command_failure, parse_project_mutation,
         parse_pull_request_import, parse_pull_requests,
     };
 
@@ -793,17 +848,25 @@ mod tests {
     fn inventory_joins_global_worktrees_without_reordering_projects() {
         let inventory = KwtInventory::parse(
             br#"[{"repository":"two","name":"Second","path":"/r/two","last_touched":null,"registration_fingerprint":"two-fingerprint"},{"repository":"one","name":"First","path":"/r/one","last_touched":"now","registration_fingerprint":"one-fingerprint"}]"#,
-            br#"[{"path":"/w/one","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"one","session_name":"one-main","tmux_socket_name":null},{"path":"/w/two","branch":"topic","commit_hash":"def","is_main":false,"created_at":"then","generation":null,"repository":"two","session_name":"two-topic","tmux_socket_name":"alt"}]"#,
-            br#"[{"name":"scratch","path":"/w/scratch","session_name":"scratch","session_live":false}]"#,
+            br#"[{"path":"/w/one","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"one","session_name":"one-main","tmux_socket_name":null,"tmux_attach_mode":"direct"},{"path":"/w/two","branch":"topic","commit_hash":"def","is_main":false,"created_at":"then","generation":null,"repository":"two","session_name":"two-topic","tmux_socket_name":"alt","tmux_attach_mode":"protected"}]"#,
+            br#"[{"name":"scratch","path":"/w/scratch","session_name":"scratch","session_live":false,"tmux_socket_name":"kwt","tmux_attach_mode":"direct"}]"#,
         ).expect("valid inventory");
 
         assert_eq!(inventory.projects()[0].project().repository(), "two");
         assert_eq!(inventory.projects()[0].worktrees()[0].branch(), "topic");
         assert_eq!(
+            inventory.projects()[0].worktrees()[0].tmux_attach_mode(),
+            KwtTmuxAttachMode::Protected
+        );
+        assert_eq!(
             inventory.projects()[1].worktrees()[0].session_name(),
             "one-main"
         );
         assert_eq!(inventory.directory_workspaces()[0].name(), "scratch");
+        assert_eq!(
+            inventory.directory_workspaces()[0].tmux_socket_name(),
+            Some("kwt")
+        );
     }
 
     #[test]
@@ -860,8 +923,12 @@ mod tests {
         assert_eq!(pull_requests[0].number(), 17);
         assert_eq!(pull_requests[0].source_branch(), "feature/rendering");
 
-        let imported = parse_pull_request_import(br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true,"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2"}},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2"}}"#).expect("valid import");
+        let imported = parse_pull_request_import(br#"{"status":"created","pull_request":{"id":"github:github.com/acme/widget#17","provider":"github","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"number":17,"url":"https://github.com/acme/widget/pull/17","title":"Improve rendering","author":"octocat","source":{"branch":"feature/rendering","repository":{"provider":"github","identity":"github.com/octocat/widget","host":"github.com","owner":"octocat","name":"widget"},"is_fork":true},"target":{"branch":"main","repository":{"provider":"github","identity":"github.com/acme/widget","host":"github.com","owner":"acme","name":"widget"},"is_fork":false},"draft":false,"state":"open","head_sha":"0123456789abcdef0123456789abcdef01234567","imported":true,"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2","tmux_attach_mode":"protected"}},"project":{"identity":"github.com/acme/widget","name":"widget","path":"/code/widget"},"workspace":{"id":"workspace","repository":"github.com/acme/widget","branch":"pr-17-feature-rendering","path":"/worktrees/pr-17","generation":"11111111111111111111111111111111","state":"ready","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-a1b2","tmux_attach_mode":"protected"}}"#).expect("valid import");
         assert_eq!(imported.workspace().tmux_socket_name(), Some("kwt-pr-a1b2"));
+        assert_eq!(
+            imported.workspace().tmux_attach_mode(),
+            KwtTmuxAttachMode::Protected
+        );
     }
 
     #[test]

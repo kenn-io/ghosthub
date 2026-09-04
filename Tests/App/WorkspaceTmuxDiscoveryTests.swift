@@ -2568,7 +2568,10 @@ struct WorkspaceTmuxDiscoveryTests {
                             repository: environment.project.scopedKey,
                             name: environment.project.name,
                             path: environment.project.rootPath,
-                            lastTouched: nil
+                            lastTouched: nil,
+                            registrationFingerprint:
+                            environment.snapshot.projects[0]
+                                .registrationFingerprint
                         ),
                         worktrees: inventoryRemoved.load() ? [] : [
                             KwtWorktreeRecord(
@@ -2880,7 +2883,10 @@ struct WorkspaceTmuxDiscoveryTests {
                             repository: environment.project.scopedKey,
                             name: environment.project.name,
                             path: environment.project.rootPath,
-                            lastTouched: nil
+                            lastTouched: nil,
+                            registrationFingerprint:
+                            environment.snapshot.projects[0]
+                                .registrationFingerprint
                         ),
                         worktrees: [
                             KwtWorktreeRecord(

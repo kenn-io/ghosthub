@@ -57,6 +57,10 @@ struct TmuxPaneSplitter: Sendable {
         self.runner = runner ?? Self.run
     }
 
+    static func supportsClientIdentity(host: CommandHost) -> Bool {
+        platform(for: host) == .posix
+    }
+
     static func supportsPaneSplitting(
         version: String,
         host: CommandHost

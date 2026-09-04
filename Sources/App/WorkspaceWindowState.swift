@@ -53,7 +53,66 @@ struct WorkspaceTmuxDescriptor: Codable, Hashable, Sendable {
     var hostKey: String
     var sessionName: String
     var socketName: String?
+    var tmuxAttachMode: TmuxAttachMode?
     var owner: WorkspaceTmuxOwnerDescriptor
+
+    init(
+        hostKey: String,
+        sessionName: String,
+        socketName: String?,
+        tmuxAttachMode: TmuxAttachMode? = nil,
+        owner: WorkspaceTmuxOwnerDescriptor
+    ) {
+        self.hostKey = hostKey
+        self.sessionName = sessionName
+        self.socketName = socketName
+        self.tmuxAttachMode = Self.persistedAttachMode(
+            tmuxAttachMode,
+            owner: owner
+        )
+        self.owner = owner
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hostKey
+        case sessionName
+        case socketName
+        case tmuxAttachMode
+        case owner
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hostKey = try container.decode(String.self, forKey: .hostKey)
+        sessionName = try container.decode(String.self, forKey: .sessionName)
+        socketName = try container.decodeIfPresent(
+            String.self,
+            forKey: .socketName
+        )
+        owner = try container.decode(
+            WorkspaceTmuxOwnerDescriptor.self,
+            forKey: .owner
+        )
+        tmuxAttachMode = try container.decodeIfPresent(
+            TmuxAttachMode.self,
+            forKey: .tmuxAttachMode
+        )
+    }
+
+    private static func persistedAttachMode(
+        _ mode: TmuxAttachMode?,
+        owner: WorkspaceTmuxOwnerDescriptor
+    ) -> TmuxAttachMode? {
+        if let mode {
+            return mode
+        }
+        return switch owner {
+        case .unbound:
+            nil
+        case .worktree, .directoryWorkspace:
+            .direct
+        }
+    }
 }
 
 struct WorkspaceHerdrDescriptor: Codable, Hashable, Sendable {
@@ -189,6 +248,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                 hostKey: activeHost.configKey,
                 sessionName: active.name,
                 socketName: active.socketName,
+                tmuxAttachMode: active.tmuxAttachMode,
                 owner: owner
             )
         }
@@ -307,6 +367,7 @@ enum ProjectWorktreeWindowPlan {
                     hostKey: host.configKey,
                     sessionName: sessionName,
                     socketName: worktree.tmuxSocketName,
+                    tmuxAttachMode: worktree.tmuxAttachMode,
                     owner: .worktree(generation: generation)
                 )
             )
@@ -381,7 +442,7 @@ enum WorkspaceRestorationResolution: Equatable, Sendable {
         selection: WorkspaceSelection,
         presentation: WorkspaceRestoredPresentation?
     )
-    case needsProtectedProbe(
+    case needsExactTmuxProbe(
         selection: WorkspaceSelection,
         tmux: WorkspaceTmuxSessionSelection
     )
@@ -434,7 +495,8 @@ enum WorkspaceWindowRestorationResolver {
             case .unbound:
                 guard navigation.worktreeGeneration == nil,
                       navigation.directoryWorkspacePath == nil,
-                      tmux.socketName == nil
+                      tmux.socketName == nil,
+                      tmux.tmuxAttachMode == nil
                 else { return .invalid }
             case let .worktree(generation):
                 guard WorktreeGeneration.canonical(generation) != nil,
@@ -565,10 +627,15 @@ enum WorkspaceWindowRestorationResolver {
         if worktreeGeneration != nil, owner == nil {
             return .pending(selection: selection)
         }
-        if let owner,
-           owner.tmuxSessionName != tmux.sessionName
-           || owner.tmuxSocketName != tmux.socketName {
-            return .pending(selection: selection)
+        if let owner {
+            guard owner.tmuxSessionName == tmux.sessionName,
+                  owner.tmuxSocketName == tmux.socketName,
+                  tmux.tmuxAttachMode.map({
+                      owner.tmuxAttachMode == $0
+                  }) ?? true
+            else {
+                return .pending(selection: selection)
+            }
         }
         let directoryOwner: DirectoryWorkspaceSummary?
         if case let .directoryWorkspace(path) = tmux.owner {
@@ -578,7 +645,10 @@ enum WorkspaceWindowRestorationResolver {
                     && $0.path == path
             }
             guard directoryOwner?.tmuxSessionName == tmux.sessionName,
-                  directoryOwner?.tmuxSocketName == tmux.socketName
+                  directoryOwner?.tmuxSocketName == tmux.socketName,
+                  tmux.tmuxAttachMode.map({
+                      directoryOwner?.tmuxAttachMode == $0
+                  }) ?? true
             else {
                 return .pending(selection: selection)
             }
@@ -593,7 +663,8 @@ enum WorkspaceWindowRestorationResolver {
             workspacePath: owner?.path ?? directoryOwner?.path,
             worktreeGeneration: worktreeGeneration,
             socketName: tmux.socketName,
-            tmuxAttachMode: owner?.tmuxAttachMode
+            tmuxAttachMode: tmux.tmuxAttachMode
+                ?? owner?.tmuxAttachMode
                 ?? directoryOwner?.tmuxAttachMode
         )
 
@@ -607,13 +678,14 @@ enum WorkspaceWindowRestorationResolver {
             return .pending(selection: selection)
         }
 
-        if tmuxSelection.tmuxAttachMode == .protected {
-            guard owner != nil
-            else { return .pending(selection: selection) }
-            return .needsProtectedProbe(
+        if tmuxSelection.socketName != nil {
+            return .needsExactTmuxProbe(
                 selection: selection,
                 tmux: tmuxSelection
             )
+        }
+        if tmuxSelection.tmuxAttachMode == .protected {
+            return .pending(selection: selection)
         }
         guard host.tmuxSessions.contains(where: {
             $0.name == tmux.sessionName

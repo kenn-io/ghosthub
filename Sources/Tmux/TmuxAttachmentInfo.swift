@@ -17,6 +17,79 @@ public struct TmuxClientSize: Equatable, Sendable {
     }
 }
 
+/// Identity captured from one direct KWT worktree inventory record.
+///
+/// KWT accepts the four stored fields as one guarded-open contract. Its open
+/// command rejects protected workspaces, so accepting only `direct` here also
+/// preserves the selected attachment mode at execution time.
+public struct KwtWorktreeOpenIdentity: Equatable, Sendable {
+    public let repository: String
+    public let registrationFingerprint: String
+    public let generation: String
+    public let sessionName: String
+
+    public init?(
+        repository: String,
+        registrationFingerprint: String,
+        generation: String,
+        sessionName: String,
+        tmuxAttachMode: String
+    ) {
+        guard !repository.isEmpty,
+              !registrationFingerprint.isEmpty,
+              !generation.isEmpty,
+              !sessionName.isEmpty,
+              tmuxAttachMode == "direct"
+        else { return nil }
+        self.repository = repository
+        self.registrationFingerprint = registrationFingerprint
+        self.generation = generation
+        self.sessionName = sessionName
+    }
+}
+
+/// Identity captured from one protected KWT worktree inventory record.
+///
+/// KWT validates every field before attaching, preserving the selected
+/// registration, worktree generation, session, and named tmux endpoint.
+public struct KwtProtectedWorktreeOpenIdentity: Equatable, Sendable {
+    public let path: String
+    public let projectPath: String
+    public let repository: String
+    public let registrationFingerprint: String
+    public let generation: String
+    public let sessionName: String
+    public let socketName: String
+
+    public init?(
+        path: String,
+        projectPath: String,
+        repository: String,
+        registrationFingerprint: String,
+        generation: String,
+        sessionName: String,
+        socketName: String,
+        tmuxAttachMode: String
+    ) {
+        guard !path.isEmpty,
+              !projectPath.isEmpty,
+              !repository.isEmpty,
+              !registrationFingerprint.isEmpty,
+              !generation.isEmpty,
+              !sessionName.isEmpty,
+              !socketName.isEmpty,
+              tmuxAttachMode == "protected"
+        else { return nil }
+        self.path = path
+        self.projectPath = projectPath
+        self.repository = repository
+        self.registrationFingerprint = registrationFingerprint
+        self.generation = generation
+        self.sessionName = sessionName
+        self.socketName = socketName
+    }
+}
+
 /// An ordinary tmux client launched inside a libghostty terminal surface.
 /// Tmux owns rendering, windows, panes, history, input, and process lifetime.
 /// Ghosthub enables tmux's session mouse option before presenting the client so
@@ -26,7 +99,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     public let host: CommandHost
     public let socketName: String?
     public let workspacePath: String?
+    public let kwtWorktreeIdentity: KwtWorktreeOpenIdentity?
+    public let kwtProtectedWorktreeIdentity:
+        KwtProtectedWorktreeOpenIdentity?
+    public let kwtExpectedSessionName: String?
     public let protectedWorkspacePath: String?
+    public let expectedAttachIdentity: TmuxSessionIdentity?
     public let presentationStyle: TmuxPresentationStyle?
     public var launchMode: TmuxAttachmentLaunchMode
     public let initialCommand: String?
@@ -38,7 +116,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         host: CommandHost,
         socketName: String? = nil,
         workspacePath: String? = nil,
+        kwtWorktreeIdentity: KwtWorktreeOpenIdentity? = nil,
+        kwtProtectedWorktreeIdentity:
+        KwtProtectedWorktreeOpenIdentity? = nil,
+        kwtExpectedSessionName: String? = nil,
         protectedWorkspacePath: String? = nil,
+        expectedAttachIdentity: TmuxSessionIdentity? = nil,
         presentationStyle: TmuxPresentationStyle? = nil,
         launchMode: TmuxAttachmentLaunchMode = .attach,
         initialCommand: String? = nil,
@@ -49,7 +132,11 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         self.host = host
         self.socketName = socketName
         self.workspacePath = workspacePath
+        self.kwtWorktreeIdentity = kwtWorktreeIdentity
+        self.kwtProtectedWorktreeIdentity = kwtProtectedWorktreeIdentity
+        self.kwtExpectedSessionName = kwtExpectedSessionName
         self.protectedWorkspacePath = protectedWorkspacePath
+        self.expectedAttachIdentity = expectedAttachIdentity
         self.presentationStyle = presentationStyle
         self.launchMode = launchMode
         self.initialCommand = initialCommand
@@ -199,9 +286,17 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     )
                     commands.append("export PATH")
                 }
-                let protectedAttach = [
-                    kwtPath, "pr", "attach", protectedWorkspacePath,
-                ].map(shellQuotedCommandArgument).joined(separator: " ")
+                guard let protectedArguments = kwtProtectedAttachArguments(
+                    workspacePath: protectedWorkspacePath
+                ) else {
+                    commands.append(
+                        "printf 'Ghosthub: KWT worktree identity changed\\n' >&2"
+                    )
+                    commands.append("exit 1")
+                    break
+                }
+                let protectedAttach = ([kwtPath] + protectedArguments)
+                    .map(shellQuotedCommandArgument).joined(separator: " ")
                 commands.append(
                     kwtAttachWithSessionSetupCommand(
                         protectedAttach,
@@ -223,9 +318,18 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                         )
                         commands.append("export PATH")
                     }
-                    let openWorkspace = [
-                        kwtPath, "open", workspacePath,
-                    ].map(shellQuotedCommandArgument).joined(separator: " ")
+                    guard let openArguments = kwtOpenArguments(
+                        workspacePath: workspacePath
+                    ) else {
+                        commands.append(
+                            "printf 'Ghosthub: KWT worktree identity changed\\n' >&2"
+                        )
+                        commands.append("exit 1")
+                        break
+                    }
+                    let openWorkspace = ([kwtPath] + openArguments)
+                        .map(shellQuotedCommandArgument)
+                        .joined(separator: " ")
                     // Let kwt create and attach with one tmux client.
                     // A detached `--start-session` phase is unsafe when the
                     // user's tmux server enables destroy-unattached.
@@ -246,13 +350,20 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 }
             }
         case .attachOnly:
-            commands.append(mouseSetupCommand(tmuxPath: tmuxPath))
-            commands.append(
-                presentationCommand?.bestEffortCommand(
-                    tmuxPath: tmuxPath
-                ) ?? ":"
-            )
-            commands.append("exec \(attach)")
+            if protectedWorkspacePath != nil, socketName == nil {
+                commands.append(
+                    "printf 'Ghosthub: protected tmux endpoint is unavailable\\n' >&2"
+                )
+                commands.append("exit 1")
+            } else {
+                commands.append(mouseSetupCommand(tmuxPath: tmuxPath))
+                commands.append(
+                    presentationCommand?.bestEffortCommand(
+                        tmuxPath: tmuxPath
+                    ) ?? ":"
+                )
+                commands.append("exec \(attach)")
+            }
         case .create:
             let createAndAttach = localCreateAndAttachCommand(
                 tmuxPath: tmuxPath,
@@ -303,8 +414,20 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         if ignoresClientSize {
             arguments += ["-f", "ignore-size"]
         }
-        arguments += ["-t", "=\(sessionName)"]
-        return arguments
+        guard let expectedAttachIdentity else {
+            arguments += ["-t", "=\(sessionName)"]
+            return arguments
+        }
+        arguments += ["-t", expectedAttachIdentity.sessionID]
+        let attach = arguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+        return [
+            "if-shell", "-F", "-t", expectedAttachIdentity.sessionID,
+            expectedAttachIdentity.formatCondition,
+            attach,
+            "display-message -p 'Ghosthub: tmux session identity changed'",
+        ]
     }
 
     private var initialSizeCommand: String? {
@@ -377,17 +500,30 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             )
         }
         let attach: String
-        if let protectedWorkspacePath,
-           launchMode != .attachOnly {
+        if protectedWorkspacePath != nil,
+           socketName == nil,
+           launchMode == .attachOnly {
+            attach =
+                "printf 'Ghosthub: protected tmux endpoint is unavailable\\n' >&2; "
+                    + "exit 1"
+        } else if let protectedWorkspacePath, launchMode != .attachOnly {
             let protectedAttach: String
-            if let remoteKwtCommandPrelude {
+            if let remoteKwtCommandPrelude,
+               let protectedArguments = kwtProtectedAttachArguments(
+                   workspacePath: protectedWorkspacePath
+               ) {
                 let kwtAttach = remoteKwtCommandPrelude
-                    + "\"$ghosthub_kwt_path\" 'pr' 'attach' "
-                    + shellQuotedCommandArgument(protectedWorkspacePath)
+                    + (["\"$ghosthub_kwt_path\""] + protectedArguments.map(
+                        shellQuotedCommandArgument
+                    )).joined(separator: " ")
                 protectedAttach = kwtAttachWithSessionSetupCommand(
                     kwtAttach,
                     tmuxPath: tmuxPath
                 )
+            } else if remoteKwtCommandPrelude != nil {
+                protectedAttach =
+                    "printf 'Ghosthub: KWT worktree identity changed\\n' >&2; "
+                        + "exit 1"
             } else {
                 protectedAttach =
                     "printf 'Ghosthub: managed kwt is unavailable\\n' >&2; "
@@ -447,18 +583,26 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             )
         }
         let remoteOpen: String
-        if let remoteKwtCommandPrelude {
+        if let remoteKwtCommandPrelude,
+           let openArguments = kwtOpenArguments(
+               workspacePath: workspacePath
+           ) {
             let kwtOpen = remoteKwtCommandPrelude
-                + "\"$ghosthub_kwt_path\" 'open' "
-                + shellQuotedCommandArgument(workspacePath)
+                + "\"$ghosthub_kwt_path\" "
+                + openArguments.map(shellQuotedCommandArgument)
+                .joined(separator: " ")
             remoteOpen = kwtAttachWithSessionSetupCommand(
                 kwtOpen,
                 tmuxPath: tmuxPath
             )
-        } else {
+        } else if remoteKwtCommandPrelude == nil {
             remoteOpen =
                 "printf 'Ghosthub: managed kwt is unavailable\\n' >&2; "
                     + "exit 127"
+        } else {
+            remoteOpen =
+                "printf 'Ghosthub: KWT worktree identity changed\\n' >&2; "
+                    + "exit 1"
         }
         let initialBody = recordedClientTTYBody([
             "unset TMUX TMUX_PANE",
@@ -501,7 +645,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         \(powerShellKwtResolutionPrelude(
             managedRelativePath: windowsKwtRelativePath
         ))
-        & $ghosthubKwt 'open' \(powerShellEncodedArgument(workspacePath))
+        \(windowsKwtWorkspaceAttachScript(
+            tmuxPath: tmuxPath,
+            workspacePath: workspacePath
+        ))
         exit $LASTEXITCODE
         """
         let initialAttach = shellCommand(
@@ -519,6 +666,84 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         ])
     }
 
+    private func windowsKwtWorkspaceAttachScript(
+        tmuxPath: String,
+        workspacePath: String
+    ) -> String {
+        guard let openArguments = kwtOpenArguments(
+            workspacePath: workspacePath
+        ) else {
+            return "Write-Error 'Ghosthub: KWT worktree identity changed'; exit 1"
+        }
+        let openCommand = "& $ghosthubKwt " + openArguments
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
+        let attach = windowsMuxCommand(
+            tmuxPath: tmuxPath,
+            arguments: attachArguments
+        )
+        let expectedSocketName = socketName ?? ""
+        return """
+        $ghosthubEndpointJSON = \(openCommand) '--start-session' '--json'
+        $ghosthubKwtStatus = $LASTEXITCODE
+        if ($ghosthubKwtStatus -ne 0) {
+            exit $ghosthubKwtStatus
+        }
+        try {
+            $ghosthubEndpoint = $ghosthubEndpointJSON | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            Write-Error 'Ghosthub: kwt returned an invalid tmux endpoint'
+            exit 1
+        }
+        if ([string]$ghosthubEndpoint.session_name -cne \(powerShellEncodedArgument(sessionName))
+            -or [string]$ghosthubEndpoint.tmux_socket_name -cne \(
+                powerShellEncodedArgument(expectedSocketName)
+            )
+            -or [string]$ghosthubEndpoint.tmux_attach_mode -cne
+                \(powerShellEncodedArgument("direct"))) {
+            Write-Error 'Ghosthub: kwt tmux endpoint changed'
+            exit 1
+        }
+        \(attach)
+        """
+    }
+
+    private func kwtOpenArguments(workspacePath: String) -> [String]? {
+        var arguments = ["open", workspacePath]
+        if let identity = kwtWorktreeIdentity {
+            guard identity.sessionName == sessionName else { return nil }
+            arguments += [
+                "--expected-repository", identity.repository,
+                "--expected-registration", identity.registrationFingerprint,
+                "--expected-generation", identity.generation,
+                "--expected-session", identity.sessionName,
+            ]
+        } else if let kwtExpectedSessionName {
+            guard kwtExpectedSessionName == sessionName else { return nil }
+            arguments += ["--expected-session", kwtExpectedSessionName]
+        }
+        return arguments
+    }
+
+    private func kwtProtectedAttachArguments(
+        workspacePath: String
+    ) -> [String]? {
+        guard let identity = kwtProtectedWorktreeIdentity,
+              identity.path == workspacePath,
+              identity.sessionName == sessionName,
+              identity.socketName == socketName
+        else { return nil }
+        return [
+            "pr", "attach", identity.path,
+            "--project", identity.projectPath,
+            "--expected-repository", identity.repository,
+            "--expected-registration", identity.registrationFingerprint,
+            "--expected-generation", identity.generation,
+            "--expected-session", identity.sessionName,
+            "--expected-socket", identity.socketName,
+        ]
+    }
+
     private func windowsRemoteAttachCommand(
         info: SSHHostInfo,
         tmuxPath: String,
@@ -526,13 +751,25 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         sshConnectionArguments: [String]
     ) -> String {
         let attach: String
-        if let protectedWorkspacePath, launchMode != .attachOnly {
-            attach = """
-            \(powerShellKwtResolutionPrelude(
-                managedRelativePath: windowsKwtRelativePath
-            ))
-            & $ghosthubKwt 'pr' 'attach' \(powerShellEncodedArgument(protectedWorkspacePath))
-            """
+        if protectedWorkspacePath != nil,
+           socketName == nil,
+           launchMode == .attachOnly {
+            attach = "Write-Error 'Ghosthub: protected tmux endpoint is unavailable'; exit 1"
+        } else if let protectedWorkspacePath, launchMode != .attachOnly {
+            if let protectedArguments = kwtProtectedAttachArguments(
+                workspacePath: protectedWorkspacePath
+            ) {
+                attach = """
+                \(powerShellKwtResolutionPrelude(
+                    managedRelativePath: windowsKwtRelativePath
+                ))
+                & $ghosthubKwt \(protectedArguments.map(
+                    powerShellEncodedArgument
+                ).joined(separator: " "))
+                """
+            } else {
+                attach = "Write-Error 'Ghosthub: KWT worktree identity changed'; exit 1"
+            }
         } else {
             attach = windowsMuxCommand(
                 tmuxPath: tmuxPath,

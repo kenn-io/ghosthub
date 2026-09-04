@@ -110,7 +110,9 @@ func inventory(
                 repository: environment.project.scopedKey,
                 name: environment.project.name,
                 path: environment.project.rootPath,
-                lastTouched: nil
+                lastTouched: nil,
+                registrationFingerprint:
+                environment.snapshot.projects[0].registrationFingerprint
             ),
             worktrees: worktrees,
             warning: nil
@@ -128,7 +130,9 @@ func inventory(
                 repository: environment.project.scopedKey,
                 name: environment.project.name,
                 path: environment.project.rootPath,
-                lastTouched: nil
+                lastTouched: nil,
+                registrationFingerprint:
+                environment.snapshot.projects[0].registrationFingerprint
             ),
             worktrees: [
                 KwtWorktreeRecord(

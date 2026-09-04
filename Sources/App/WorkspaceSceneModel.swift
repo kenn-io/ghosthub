@@ -142,6 +142,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias TmuxSessionIdentityReading = @Sendable (
         WorkspaceTmuxSessionSelection, CommandHost
     ) async throws -> TmuxSessionIdentity
+    typealias TmuxRoutedSessionIdentityReading = @Sendable (
+        WorkspaceTmuxSessionSelection, CommandHost, [String]
+    ) async throws -> TmuxSessionIdentity
     typealias TmuxSessionIdentityReviewReading = @Sendable (
         WorkspaceTmuxSessionSelection, TmuxSessionIdentity?, CommandHost
     ) async throws -> ReviewedTmuxSessionIdentity
@@ -525,7 +528,8 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID = selection.hostID
             name = selection.name
             socketName = selection.socketName
-            tmuxAttachMode = selection.tmuxAttachMode
+            tmuxAttachMode = selection.tmuxAttachMode == .direct
+                ? nil : selection.tmuxAttachMode
         }
 
         var previewKey: TmuxPreviewKey {
@@ -537,12 +541,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
 
         var sessionID: String {
-            [
-                hostID.uuidString,
-                tmuxAttachMode?.rawValue ?? "unbound",
-                socketName ?? "default",
-                name,
-            ].joined(separator: ":")
+            WorkspaceTmuxSessionSelection.canonicalEndpointID(
+                hostID: hostID,
+                name: name,
+                socketName: socketName,
+                tmuxAttachMode: tmuxAttachMode
+            )
         }
     }
     private enum RetainedTmuxSizingIntent {
@@ -667,9 +671,9 @@ final class WorkspaceSceneModel: ObservableObject {
     private var pendingRestoration: WorkspaceWindowState?
     private var pendingRestorationLaunchIntent:
         WorkspaceWindowLaunchIntent?
-    private var protectedRestorationProbeTask: Task<Void, Never>?
-    private var protectedRestorationProbeID: UUID?
-    private var protectedRestorationRefreshPending = false
+    private var exactTmuxRestorationProbeTask: Task<Void, Never>?
+    private var exactTmuxRestorationProbeID: UUID?
+    private var exactTmuxRestorationRefreshPending = false
     private var herdrRestorationValidationTask: Task<Void, Never>?
     private var herdrRestorationValidationID: UUID?
     private var zellijRestorationValidationTask: Task<Void, Never>?
@@ -910,6 +914,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private let presentationSSHEnvironment: [String: String]
     private let tmuxSessionKiller: ReviewedTmuxSessionKilling
     private let tmuxSessionIdentityReader: TmuxSessionIdentityReading
+    private let tmuxRoutedSessionIdentityReader:
+        TmuxRoutedSessionIdentityReading
     private let tmuxSessionIdentityReviewer:
         TmuxSessionIdentityReviewReading
     private let tmuxSessionStyler: TmuxSessionStyling
@@ -1347,6 +1353,15 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
+        tmuxRoutedSessionIdentityReader:
+        @escaping TmuxRoutedSessionIdentityReading = {
+            selection, host, arguments in
+            try await TmuxSessionKiller().sessionIdentity(
+                selection,
+                on: host,
+                sshConnectionArguments: arguments
+            )
+        },
         tmuxSessionIdentityReviewer:
         @escaping TmuxSessionIdentityReviewReading = {
             selection, knownIdentity, host in
@@ -1531,6 +1546,8 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         self.tmuxSessionKiller = tmuxSessionKiller
         self.tmuxSessionIdentityReader = tmuxSessionIdentityReader
+        self.tmuxRoutedSessionIdentityReader =
+            tmuxRoutedSessionIdentityReader
         self.tmuxSessionIdentityReviewer = tmuxSessionIdentityReviewer
         self.tmuxSessionStyler = tmuxSessionStyler
         self.tmuxPresentationStyleProvider =
@@ -2000,10 +2017,10 @@ final class WorkspaceSceneModel: ObservableObject {
         pendingRestorationLaunchIntent = nil
         isWorkspaceRestorationPending = false
         suppressesAutomaticWorktreeSessionOpen = false
-        protectedRestorationProbeTask?.cancel()
-        protectedRestorationProbeTask = nil
-        protectedRestorationProbeID = nil
-        protectedRestorationRefreshPending = false
+        exactTmuxRestorationProbeTask?.cancel()
+        exactTmuxRestorationProbeTask = nil
+        exactTmuxRestorationProbeID = nil
+        exactTmuxRestorationRefreshPending = false
         herdrRestorationValidationTask?.cancel()
         herdrRestorationValidationTask = nil
         herdrRestorationValidationID = nil
@@ -2088,8 +2105,8 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func attemptPendingRestoration() {
         guard let pendingRestoration else { return }
-        if protectedRestorationProbeTask != nil {
-            protectedRestorationRefreshPending = true
+        if exactTmuxRestorationProbeTask != nil {
+            exactTmuxRestorationRefreshPending = true
             return
         }
         guard herdrRestorationValidationTask == nil,
@@ -2140,8 +2157,8 @@ final class WorkspaceSceneModel: ObservableObject {
             self.pendingRestoration = nil
             pendingRestorationLaunchIntent = nil
             isWorkspaceRestorationPending = false
-        case let .needsProtectedProbe(resolvedSelection, tmuxSelection):
-            beginProtectedRestorationProbe(
+        case let .needsExactTmuxProbe(resolvedSelection, tmuxSelection):
+            beginExactTmuxRestorationProbe(
                 selection: resolvedSelection,
                 tmuxSelection: tmuxSelection,
                 expectedState: pendingRestoration
@@ -2417,42 +2434,44 @@ final class WorkspaceSceneModel: ObservableObject {
         scheduleZellijSessionDiscovery()
     }
 
-    private func beginProtectedRestorationProbe(
+    private func beginExactTmuxRestorationProbe(
         selection resolvedSelection: WorkspaceSelection,
         tmuxSelection: WorkspaceTmuxSessionSelection,
         expectedState: WorkspaceWindowState
     ) {
-        guard protectedRestorationProbeTask == nil,
+        guard exactTmuxRestorationProbeTask == nil,
               let hostSummary = snapshot.host(id: tmuxSelection.hostID),
               let host = CommandHostResolver.resolve(hostSummary)
         else { return }
         let probeID = UUID()
-        protectedRestorationProbeID = probeID
-        protectedRestorationProbeTask = Task { [weak self] in
+        exactTmuxRestorationProbeID = probeID
+        exactTmuxRestorationProbeTask = Task { [weak self] in
             defer {
-                if self?.protectedRestorationProbeID == probeID {
-                    self?.protectedRestorationProbeTask = nil
-                    self?.protectedRestorationProbeID = nil
+                if self?.exactTmuxRestorationProbeID == probeID {
+                    self?.exactTmuxRestorationProbeTask = nil
+                    self?.exactTmuxRestorationProbeID = nil
                 }
             }
+            let expectedAttachIdentity: TmuxSessionIdentity
             do {
-                _ = try await self?.tmuxSessionIdentityReader(
+                guard let identity = try await self?.tmuxSessionIdentityReader(
                     tmuxSelection,
                     host
-                )
+                ) else { return }
+                expectedAttachIdentity = identity
             } catch {
-                self?.retryProtectedRestorationAfterProbeCleanupIfNeeded(
+                self?.retryExactTmuxRestorationAfterProbeCleanupIfNeeded(
                     probeID
                 )
                 return
             }
             guard !Task.isCancelled,
                   let self,
-                  protectedRestorationProbeID == probeID else {
+                  exactTmuxRestorationProbeID == probeID else {
                 return
             }
             guard pendingRestoration == expectedState,
-                  case let .needsProtectedProbe(
+                  case let .needsExactTmuxProbe(
                       currentSelection,
                       currentTmuxSelection
                   ) = WorkspaceWindowRestorationResolver.resolve(
@@ -2466,21 +2485,22 @@ final class WorkspaceSceneModel: ObservableObject {
                       currentHostSummary
                   )
             else {
-                retryProtectedRestorationAfterProbeCleanupIfNeeded(probeID)
+                retryExactTmuxRestorationAfterProbeCleanupIfNeeded(probeID)
                 return
             }
             guard currentSelection == resolvedSelection,
                   currentTmuxSelection == tmuxSelection,
                   currentHost == host else {
-                retryProtectedRestorationAfterProbeCleanupIfNeeded(probeID)
+                retryExactTmuxRestorationAfterProbeCleanupIfNeeded(probeID)
                 return
             }
-            protectedRestorationRefreshPending = false
+            exactTmuxRestorationRefreshPending = false
             applyRestoredSelection(resolvedSelection)
             _ = presentTmuxSession(
                 tmuxSelection,
                 launchMode: .attach,
-                intent: .restoreOnly
+                intent: .restoreOnly,
+                expectedAttachIdentity: expectedAttachIdentity
             )
             pendingRestoration = nil
             isWorkspaceRestorationPending = false
@@ -2488,12 +2508,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
-    private func retryProtectedRestorationAfterProbeCleanupIfNeeded(
+    private func retryExactTmuxRestorationAfterProbeCleanupIfNeeded(
         _ probeID: UUID
     ) {
-        guard protectedRestorationProbeID == probeID,
-              protectedRestorationRefreshPending else { return }
-        protectedRestorationRefreshPending = false
+        guard exactTmuxRestorationProbeID == probeID,
+              exactTmuxRestorationRefreshPending else { return }
+        exactTmuxRestorationRefreshPending = false
         Task { @MainActor [weak self] in
             await Task.yield()
             self?.attemptPendingRestoration()
@@ -2749,6 +2769,11 @@ final class WorkspaceSceneModel: ObservableObject {
         ) else {
             throw KwtWorktreeError.removalIdentityUnavailable
         }
+        guard worktree.tmuxAttachMode != .protected
+            || worktree.tmuxSocketName != nil
+        else {
+            throw KwtWorktreeError.removalIdentityUnavailable
+        }
         let changes: WorktreeChangeSummary
         do {
             try await ensureRemoteKwtForOperation(hostID: project.hostID)
@@ -2773,6 +2798,7 @@ final class WorkspaceSceneModel: ObservableObject {
             for: worktree
         ) {
             if !refreshSessionIdentity,
+               session.socketName == nil,
                WorkspaceSidebarModel.canRequestKill(
                    session,
                    in: snapshot,
@@ -4208,6 +4234,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             } else if let pendingRestoration {
                 if event.allowsRemovalRestoration {
+                    adoptReconciledRestorationTargets(
+                        event.reconciledRestorationTargets,
+                        scope: event.scope
+                    )
                     restorePresentationsAfterFailedRemoval(
                         pendingRestoration,
                         reconciledTargets: event.reconciledRestorationTargets,
@@ -4883,6 +4913,37 @@ final class WorkspaceSceneModel: ObservableObject {
                 activatesPresentation: activatesPresentation,
                 startsHidden: !activatesPresentation
             )
+        }
+    }
+
+    /// The reconciled targets are authoritative for every scene, so a scene
+    /// whose snapshot still carries the pre-removal endpoint adopts them
+    /// before restoring. Otherwise the restoration's kwt identity check
+    /// would compare the reconciled selection against the stale record and
+    /// skip the presentation until the next inventory pass.
+    private func adoptReconciledRestorationTargets(
+        _ targets: Set<WorkspaceTmuxSessionSelection>?,
+        scope: WorktreeMutationCoordinator.Scope
+    ) {
+        guard let targets, !targets.isEmpty else { return }
+        for target in targets {
+            guard let generation = WorktreeGeneration.canonical(
+                target.worktreeGeneration
+            ),
+                let index = snapshot.worktrees.firstIndex(where: {
+                    $0.hostID == scope.hostID
+                        && WorktreeGeneration.canonical($0.generation)
+                        == generation
+                })
+            else { continue }
+            var worktree = snapshot.worktrees[index]
+            worktree.path = target.workspacePath ?? worktree.path
+            worktree.tmuxSessionName = target.name
+            worktree.tmuxSocketName = target.socketName
+            worktree.tmuxAttachMode =
+                target.tmuxAttachMode ?? worktree.tmuxAttachMode
+            guard worktree != snapshot.worktrees[index] else { continue }
+            snapshot.worktrees[index] = worktree
         }
     }
 
@@ -5671,6 +5732,9 @@ final class WorkspaceSceneModel: ObservableObject {
                       $0.name == context.selection.name
                   })
             else { continue }
+            guard !Self.requiresKwtEndpointConfirmation(context) else {
+                continue
+            }
             context.phase = .attachOnly
             presentation.reconnectContext = context
             presentation.establishmentConfirmationTask?.cancel()
@@ -7678,7 +7742,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 activeBorrowedTmuxRetryRequiresConfirmation,
                 retryCommand: activeBorrowedTmuxRetryCommand,
                 surface: { [weak self] in
-                    self?.protectedTmuxSurface(handle: handle)
+                    self?.publishedTmuxSurface(handle: handle)
                 },
                 onCloseRequest: { [weak self] in
                     guard let self else { return }
@@ -7737,6 +7801,51 @@ final class WorkspaceSceneModel: ObservableObject {
         if pendingCreation?.initialCommand != nil,
            pendingCreation?.commandReplayAuthorized != true {
             presentTmuxSession(selection, launchMode: .attachOnly)
+            return
+        }
+        let requiresNamedKwtFallbackIdentity =
+            selection.tmuxAttachMode == .direct
+                && selection.socketName != nil
+                && selection.workspacePath != nil
+                && (selection.worktreeID != nil
+                    || selection.directoryWorkspaceID != nil)
+                && kwtAvailabilityByHost[selection.hostID] == false
+                && retainedTmuxPresentations[
+                    TmuxPresentationKey(selection)
+                ] == nil
+        if requiresNamedKwtFallbackIdentity {
+            guard let hostSummary = snapshot.host(id: selection.hostID),
+                  let host = CommandHostResolver.resolve(hostSummary)
+            else { return }
+            let navigationRevision = userNavigationRevision
+            Task { [weak self] in
+                guard let self else { return }
+                let review: ReviewedTmuxSessionIdentity
+                do {
+                    review = try await tmuxSessionIdentityReviewer(
+                        selection,
+                        nil,
+                        host
+                    )
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled,
+                      userNavigationRevision == navigationRevision,
+                      kwtAvailabilityByHost[selection.hostID] == false,
+                      currentKwtSelectionMatches(selection),
+                      let currentHostSummary = snapshot.host(
+                          id: selection.hostID
+                      ),
+                      CommandHostResolver.resolve(currentHostSummary) == host
+                else { return }
+                presentTmuxSession(
+                    selection,
+                    launchMode: .attach,
+                    expectedAttachIdentity: review.identity,
+                    expectedRouteIdentity: review.routeIdentity
+                )
+            }
             return
         }
         presentTmuxSession(
@@ -7924,6 +8033,7 @@ final class WorkspaceSceneModel: ObservableObject {
             $0.hostID == hostID
                 && !$0.isStale
                 && $0.tmuxSocketName == nil
+                && $0.tmuxAttachMode == .direct
                 && $0.tmuxSessionName == name
         }),
             let selection = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -7932,7 +8042,10 @@ final class WorkspaceSceneModel: ObservableObject {
             return selection
         }
         if let workspace = snapshot.directoryWorkspaces.first(where: {
-            $0.hostID == hostID && $0.tmuxSessionName == name
+            $0.hostID == hostID
+                && $0.tmuxSocketName == nil
+                && $0.tmuxAttachMode == .direct
+                && $0.tmuxSessionName == name
         }) {
             return WorkspaceSidebarModel.tmuxSessionSelection(for: workspace)
         }
@@ -9471,6 +9584,101 @@ final class WorkspaceSceneModel: ObservableObject {
         case restoreOnly
     }
 
+    private func kwtWorktreeOpenIdentity(
+        for selection: WorkspaceTmuxSessionSelection
+    ) -> KwtWorktreeOpenIdentity? {
+        guard selection.tmuxAttachMode == .direct,
+              let worktreeID = selection.worktreeID,
+              let path = selection.workspacePath,
+              let generation = WorktreeGeneration.canonical(
+                  selection.worktreeGeneration
+              ),
+              let worktree = snapshot.worktree(id: worktreeID),
+              !worktree.isStale,
+              worktree.hostID == selection.hostID,
+              worktree.path == path,
+              WorktreeGeneration.canonical(worktree.generation) == generation,
+              worktree.tmuxSessionName == selection.name,
+              worktree.tmuxSocketName == selection.socketName,
+              worktree.tmuxAttachMode == selection.tmuxAttachMode,
+              let project = snapshot.project(id: worktree.projectID),
+              !project.isStale,
+              project.hostID == selection.hostID
+        else { return nil }
+        return KwtWorktreeOpenIdentity(
+            repository: project.scopedKey,
+            registrationFingerprint: project.registrationFingerprint,
+            generation: generation,
+            sessionName: selection.name,
+            tmuxAttachMode: selection.tmuxAttachMode?.rawValue ?? ""
+        )
+    }
+
+    private func kwtProtectedWorktreeOpenIdentity(
+        for selection: WorkspaceTmuxSessionSelection
+    ) -> KwtProtectedWorktreeOpenIdentity? {
+        guard selection.tmuxAttachMode == .protected,
+              let worktreeID = selection.worktreeID,
+              let path = selection.workspacePath,
+              let generation = WorktreeGeneration.canonical(
+                  selection.worktreeGeneration
+              ),
+              let socketName = selection.socketName,
+              let worktree = snapshot.worktree(id: worktreeID),
+              !worktree.isStale,
+              worktree.hostID == selection.hostID,
+              worktree.path == path,
+              WorktreeGeneration.canonical(worktree.generation) == generation,
+              worktree.tmuxSessionName == selection.name,
+              worktree.tmuxSocketName == socketName,
+              worktree.tmuxAttachMode == .protected,
+              let project = snapshot.project(id: worktree.projectID),
+              !project.isStale,
+              project.hostID == selection.hostID
+        else { return nil }
+        return KwtProtectedWorktreeOpenIdentity(
+            path: path,
+            projectPath: project.rootPath,
+            repository: project.scopedKey,
+            registrationFingerprint: project.registrationFingerprint,
+            generation: generation,
+            sessionName: selection.name,
+            socketName: socketName,
+            tmuxAttachMode: selection.tmuxAttachMode?.rawValue ?? ""
+        )
+    }
+
+    private func currentKwtSelectionMatches(
+        _ selection: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        if let worktreeID = selection.worktreeID,
+           let worktree = snapshot.worktree(id: worktreeID) {
+            return WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+                == selection
+        }
+        if let directoryID = selection.directoryWorkspaceID,
+           let directory = snapshot.directoryWorkspace(id: directoryID) {
+            return WorkspaceSidebarModel.tmuxSessionSelection(for: directory)
+                == selection
+        }
+        return false
+    }
+
+    private func kwtDirectoryExpectedSessionName(
+        for selection: WorkspaceTmuxSessionSelection
+    ) -> String? {
+        guard selection.tmuxAttachMode == .direct,
+              let directoryID = selection.directoryWorkspaceID,
+              let directory = snapshot.directoryWorkspace(id: directoryID),
+              directory.hostID == selection.hostID,
+              directory.path == selection.workspacePath,
+              directory.tmuxSessionName == selection.name,
+              directory.tmuxSocketName == selection.socketName,
+              directory.tmuxAttachMode == .direct
+        else { return nil }
+        return selection.name
+    }
+
     @discardableResult
     private func presentTmuxSession(
         _ selection: WorkspaceTmuxSessionSelection,
@@ -9481,7 +9689,9 @@ final class WorkspaceSceneModel: ObservableObject {
         activatesPresentation: Bool = true,
         startsHidden: Bool = false,
         ignoresClientSize: Bool = false,
-        previewGridSize: TmuxGridSize? = nil
+        previewGridSize: TmuxGridSize? = nil,
+        expectedAttachIdentity: TmuxSessionIdentity? = nil,
+        expectedRouteIdentity: String? = nil
     ) -> BorrowedTmuxSessionHandle? {
         if activatesPresentation {
             cancelPendingTmuxPreviewActivations()
@@ -9500,6 +9710,9 @@ final class WorkspaceSceneModel: ObservableObject {
            WorktreeGeneration.isCanonical(generation) {
             selection.worktreeGeneration = generation
         }
+        guard selection.tmuxAttachMode != .protected
+            || selection.socketName != nil
+        else { return nil }
         guard !worktreeRemovalIsPending(for: selection) else { return nil }
         let effectiveLaunchMode: TmuxAttachmentLaunchMode =
             (selection.tmuxAttachMode == .protected
@@ -9617,17 +9830,40 @@ final class WorkspaceSceneModel: ObservableObject {
         // establishes a workspace, so attach directly with ignore-size.
         let attachmentLaunchMode: TmuxAttachmentLaunchMode =
             startsHidden ? .attachOnly : effectiveLaunchMode
-        let knownSessions = tmuxSessionsByHost[selection.hostID]
-            ?? host.tmuxSessions
-        let sessionIsDiscovered = selection.socketName == nil
-            && knownSessions.contains { $0.name == selection.name }
         let managedKwtUnavailable =
             kwtAvailabilityByHost[selection.hostID] == false
-        let openWorkspace = intent == .userInitiated
+        let mayOpenWorkspace = intent == .userInitiated
             && attachmentLaunchMode == .attach
             && selection.tmuxAttachMode == .direct
             && selection.workspacePath != nil
-            && (!sessionIsDiscovered || !managedKwtUnavailable)
+            && !managedKwtUnavailable
+        let requiresKwtWorktreeIdentity = mayOpenWorkspace
+            && selection.worktreeID != nil
+            && selection.worktreeGeneration != nil
+        let kwtWorktreeIdentity = requiresKwtWorktreeIdentity
+            ? kwtWorktreeOpenIdentity(for: selection) : nil
+        guard !requiresKwtWorktreeIdentity || kwtWorktreeIdentity != nil
+        else { return nil }
+        let requiresKwtDirectoryIdentity = mayOpenWorkspace
+            && selection.directoryWorkspaceID != nil
+        let kwtExpectedSessionName = requiresKwtDirectoryIdentity
+            ? kwtDirectoryExpectedSessionName(for: selection) : nil
+        guard !requiresKwtDirectoryIdentity
+            || kwtExpectedSessionName != nil
+        else { return nil }
+        let openWorkspace = mayOpenWorkspace
+            && (selection.worktreeID == nil || kwtWorktreeIdentity != nil)
+            && (selection.directoryWorkspaceID == nil
+                || kwtExpectedSessionName != nil)
+        let requiresProtectedWorktreeIdentity =
+            attachmentLaunchMode == .attach
+                && selection.tmuxAttachMode == .protected
+                && selection.workspacePath != nil
+        let kwtProtectedWorktreeIdentity = requiresProtectedWorktreeIdentity
+            ? kwtProtectedWorktreeOpenIdentity(for: selection) : nil
+        guard !requiresProtectedWorktreeIdentity
+            || kwtProtectedWorktreeIdentity != nil
+        else { return nil }
         let protectedSessionNeedsEstablishment = intent == .userInitiated
             && attachmentLaunchMode == .attach
             && selection.tmuxAttachMode == .protected
@@ -9636,6 +9872,13 @@ final class WorkspaceSceneModel: ObservableObject {
             selection,
             hostSummary: host
         )
+        // A workspace row attaching by name would accept any same-name
+        // session. Without kwt's identity flags, fence the attach on the
+        // discovered identity so it rejects a replacement session.
+        let isWorkspaceBound = selection.worktreeID != nil
+            || selection.directoryWorkspaceID != nil
+        let fencedAttachIdentity = expectedAttachIdentity
+            ?? (isWorkspaceBound && !openWorkspace ? discoveredIdentity : nil)
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -9648,7 +9891,12 @@ final class WorkspaceSceneModel: ObservableObject {
                 : nil,
             workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace,
-            sessionIdentity: discoveredIdentity,
+            kwtWorktreeIdentity: kwtWorktreeIdentity,
+            kwtProtectedWorktreeIdentity: kwtProtectedWorktreeIdentity,
+            kwtExpectedSessionName: kwtExpectedSessionName,
+            sessionIdentity: expectedAttachIdentity ?? discoveredIdentity,
+            expectedAttachIdentity: fencedAttachIdentity,
+            expectedRouteIdentity: expectedRouteIdentity,
             ignoresClientSize: startsHidden || ignoresClientSize,
             previewGridSize: startsHidden
                 ? self.previewGridSize(for: selection) : previewGridSize
@@ -9691,7 +9939,8 @@ final class WorkspaceSceneModel: ObservableObject {
         presentation.sizingIntent = startsHidden ? .hidden : .interactive
         presentation.launchesThroughKwtWorkspace =
             openWorkspace || protectedSessionNeedsEstablishment
-        presentation.reconnectExpectedIdentity = discoveredIdentity
+        presentation.reconnectExpectedIdentity =
+            expectedAttachIdentity ?? discoveredIdentity
         objectWillChange.send()
         retainedTmuxPresentations[key] = presentation
         retainedTmuxPresentationKeysByHandle[handle.id] = key
@@ -9913,7 +10162,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     guard let self, let presentation,
                           retainedTmuxPresentations[key] === presentation
                     else { return nil }
-                    return protectedTmuxSurface(handle: presentation.handle)
+                    return publishedTmuxSurface(handle: presentation.handle)
                 },
                 handleID: { [weak presentation] in
                     presentation?.handle.id
@@ -10252,6 +10501,17 @@ final class WorkspaceSceneModel: ObservableObject {
             return nil
         }
         return nativeTmuxSessionCoordinator.surface(handle: handle)
+    }
+
+    private func publishedTmuxSurface(
+        handle: BorrowedTmuxSessionHandle
+    ) -> TerminalSurfaceView? {
+        guard let presentation = retainedTmuxPresentation(for: handle),
+              presentation.reconnectContext.map(
+                  Self.requiresKwtEndpointConfirmation
+              ) != true
+        else { return nil }
+        return protectedTmuxSurface(handle: handle)
     }
 
     private func acquireProtectedTmuxAttachmentScopeIfNeeded(
@@ -10796,10 +11056,7 @@ final class WorkspaceSceneModel: ObservableObject {
         _ lhs: WorkspaceTmuxSessionSelection,
         _ rhs: WorkspaceTmuxSessionSelection
     ) -> Bool {
-        lhs.hostID == rhs.hostID
-            && lhs.name == rhs.name
-            && lhs.socketName == rhs.socketName
-            && lhs.tmuxAttachMode == rhs.tmuxAttachMode
+        TmuxPresentationKey(lhs) == TmuxPresentationKey(rhs)
     }
 
     private func transferPendingCreation(
@@ -10947,12 +11204,7 @@ final class WorkspaceSceneModel: ObservableObject {
             activeBorrowedTmuxRecoveryState = nil
             sessionConnectionRecoveryRequest = nil
         }
-        nativeTmuxSessionCoordinator.detach(
-            hostID: presentation.selection.hostID,
-            name: presentation.selection.name,
-            socketName: presentation.selection.socketName,
-            tmuxAttachMode: presentation.selection.tmuxAttachMode
-        )
+        nativeTmuxSessionCoordinator.detach(handle)
     }
 
     func prepareTmuxSessionKill(
@@ -10972,6 +11224,7 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         guard discoveredIdentity != nil
             || isConnectedActiveTmuxSession(selection)
+            || hasAuthoritativeNamedTmuxEndpoint(selection)
         else {
             throw TmuxSessionKillError.sessionNotRunning(
                 host: currentHost.displayName,
@@ -10992,6 +11245,36 @@ final class WorkspaceSceneModel: ObservableObject {
             sessionCreatedAt: review.identity.createdAt,
             routeIdentity: review.routeIdentity
         )
+    }
+
+    private func hasAuthoritativeNamedTmuxEndpoint(
+        _ selection: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        guard selection.tmuxAttachMode == .direct,
+              selection.socketName != nil
+        else { return false }
+        if let worktreeID = selection.worktreeID,
+           let worktree = snapshot.worktree(id: worktreeID) {
+            return !worktree.isStale
+                && worktree.hostID == selection.hostID
+                && worktree.tmuxSessionName == selection.name
+                && worktree.tmuxSocketName == selection.socketName
+                && worktree.tmuxAttachMode == selection.tmuxAttachMode
+                && worktree.path == selection.workspacePath
+                && worktree.generation == selection.worktreeGeneration
+        }
+        if let directoryWorkspaceID = selection.directoryWorkspaceID,
+           let workspace = snapshot.directoryWorkspace(
+               id: directoryWorkspaceID
+           ) {
+            return workspace.hostID == selection.hostID
+                && workspace.path == selection.workspacePath
+                && workspace.tmuxSessionName == selection.name
+                && workspace.tmuxSocketName == selection.socketName
+                && workspace.tmuxAttachMode == selection.tmuxAttachMode
+                && workspace.sessionLive
+        }
+        return false
     }
 
     func killTmuxSession(
@@ -11126,7 +11409,8 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceTmuxSessionSelection,
         hostSummary: HostSummary
     ) -> TmuxSessionIdentity? {
-        guard selection.socketName == nil,
+        guard selection.tmuxAttachMode != .protected,
+              selection.socketName == nil,
               let summary = hostSummary.tmuxSessions.first(where: {
                   $0.name == selection.name
               })
@@ -11175,6 +11459,25 @@ final class WorkspaceSceneModel: ObservableObject {
         state: ConnectionState
     ) {
         let previousState = borrowedTmuxConnectionStates[handle.id]
+        if state == .connected,
+           let presentation = retainedTmuxPresentation(for: handle),
+           let context = presentation.reconnectContext,
+           context.handleID == handle.id,
+           Self.requiresKwtEndpointConfirmation(context) {
+            // `kwt open` resolves its endpoint at execution time. Keep the
+            // surface provisional until the endpoint captured by the row is
+            // present, so an inventory race cannot publish a client attached
+            // to a different session or socket.
+            borrowedTmuxConnectionStates[handle.id] = .connecting
+            presentation.reconnectContext?.routeIdentity =
+                nativeTmuxSessionCoordinator.attachmentRouteIdentity(handle)
+            presentation.reconnectContext?.surfaceExitCode = nil
+            presentation.reconnectContext?.surfaceLaunchFailed = false
+            startEstablishmentConfirmationIfNeeded(
+                presentation: presentation
+            )
+            return
+        }
         switch state {
         case .disconnected:
             releaseProtectedTmuxAttachmentScope(handleID: handle.id)
@@ -12494,6 +12797,9 @@ final class WorkspaceSceneModel: ObservableObject {
         for presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext
     ) async -> TmuxSessionProbeOutcome {
+        guard context.selection.tmuxAttachMode != .protected
+            || context.selection.socketName != nil
+        else { return .failure(.sessionContextUnavailable) }
         if context.selection.socketName == nil {
             let observationSequence = beginTmuxDiscoveryObservation(
                 hostID: context.selection.hostID
@@ -12735,17 +13041,57 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             return
         }
-        let knownSessions = tmuxSessionsByHost[selection.hostID]
-            ?? host.tmuxSessions
-        let sessionIsDiscovered = selection.socketName == nil
-            && knownSessions.contains { $0.name == selection.name }
         let managedKwtUnavailable =
             kwtAvailabilityByHost[selection.hostID] == false
-        let openWorkspace = intent == .userInitiated
+        let mayOpenWorkspace = intent == .userInitiated
             && launchMode == .attach
             && selection.tmuxAttachMode == .direct
             && selection.workspacePath != nil
-            && (!sessionIsDiscovered || !managedKwtUnavailable)
+            && !managedKwtUnavailable
+        let requiresKwtWorktreeIdentity = mayOpenWorkspace
+            && selection.worktreeID != nil
+            && selection.worktreeGeneration != nil
+        let kwtWorktreeIdentity = requiresKwtWorktreeIdentity
+            ? kwtWorktreeOpenIdentity(for: selection) : nil
+        guard !requiresKwtWorktreeIdentity || kwtWorktreeIdentity != nil
+        else {
+            stopTmuxReconnectWithUnableToAttach(
+                presentation,
+                "The worktree changed before it was opened."
+            )
+            return
+        }
+        let requiresKwtDirectoryIdentity = mayOpenWorkspace
+            && selection.directoryWorkspaceID != nil
+        let kwtExpectedSessionName = requiresKwtDirectoryIdentity
+            ? kwtDirectoryExpectedSessionName(for: selection) : nil
+        guard !requiresKwtDirectoryIdentity
+            || kwtExpectedSessionName != nil
+        else {
+            stopTmuxReconnectWithUnableToAttach(
+                presentation,
+                "The directory workspace changed before it was opened."
+            )
+            return
+        }
+        let openWorkspace = mayOpenWorkspace
+            && (selection.worktreeID == nil || kwtWorktreeIdentity != nil)
+            && (selection.directoryWorkspaceID == nil
+                || kwtExpectedSessionName != nil)
+        let requiresProtectedWorktreeIdentity = launchMode == .attach
+            && selection.tmuxAttachMode == .protected
+            && selection.workspacePath != nil
+        let kwtProtectedWorktreeIdentity = requiresProtectedWorktreeIdentity
+            ? kwtProtectedWorktreeOpenIdentity(for: selection) : nil
+        guard !requiresProtectedWorktreeIdentity
+            || kwtProtectedWorktreeIdentity != nil
+        else {
+            stopTmuxReconnectWithUnableToAttach(
+                presentation,
+                "The protected worktree changed before it was opened."
+            )
+            return
+        }
         let protectedSessionNeedsEstablishment = intent == .userInitiated
             && launchMode == .attach
             && selection.tmuxAttachMode == .protected
@@ -12782,7 +13128,11 @@ final class WorkspaceSceneModel: ObservableObject {
             initialCommand: launchMode == .create ? initialCommand : nil,
             workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace,
+            kwtWorktreeIdentity: kwtWorktreeIdentity,
+            kwtProtectedWorktreeIdentity: kwtProtectedWorktreeIdentity,
+            kwtExpectedSessionName: kwtExpectedSessionName,
             sessionIdentity: presentation.reconnectExpectedIdentity,
+            expectedAttachIdentity: presentation.reconnectExpectedIdentity,
             expectedRouteIdentity: routeIdentity,
             ignoresClientSize: startsNonSizing,
             previewGridSize: startsNonSizing ? previewGridSize : nil
@@ -12927,6 +13277,12 @@ final class WorkspaceSceneModel: ObservableObject {
         let initialDelays = [.zero] + createdSessionDiscoveryDelays
         let keepsProbingUntilConfirmed =
             context.selection.tmuxAttachMode == .protected
+        let requiresEndpointConfirmation = Self
+            .requiresKwtEndpointConfirmation(context)
+        let requiresClientEndpointConfirmation = Self
+            .requiresKwtClientEndpointConfirmation(context)
+        let expectedConnectionState: ConnectionState =
+            requiresEndpointConfirmation ? .connecting : .connected
         let settledDelay = createdSessionDiscoveryDelays.last(where: {
             $0 > .zero
         }) ?? .seconds(4)
@@ -12946,27 +13302,125 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard let self, let presentation,
                       !Task.isCancelled,
                       presentation.reconnectContext == context,
-                      borrowedTmuxConnectionStates[handle.id] == .connected
+                      borrowedTmuxConnectionStates[handle.id]
+                      == expectedConnectionState
                 else { return }
-                let outcome = await tmuxProbeOutcome(
-                    for: presentation,
-                    context: context
-                )
+                let outcome = if requiresClientEndpointConfirmation {
+                    await kwtEndpointConfirmationOutcome(
+                        for: presentation,
+                        context: context
+                    )
+                } else {
+                    await tmuxProbeOutcome(
+                        for: presentation,
+                        context: context
+                    )
+                }
                 guard !Task.isCancelled,
                       presentation.reconnectContext == context,
-                      borrowedTmuxConnectionStates[handle.id] == .connected
+                      borrowedTmuxConnectionStates[handle.id]
+                      == expectedConnectionState
                 else { return }
                 if outcome == .present {
                     presentation.reconnectContext?.phase = .attachOnly
                     presentation.establishmentConfirmationTask = nil
                     releaseProtectedTmuxAttachmentScope(handleID: handle.id)
+                    // Keep the identity kwt's endpoint check verified so a
+                    // later attach-only reconnect stays fenced to it.
+                    if requiresClientEndpointConfirmation,
+                       case let .resolved(identity) =
+                       nativeTmuxSessionCoordinator
+                           .attachedSessionIdentityResolution(handle) {
+                        presentation.reconnectExpectedIdentity = identity
+                    }
+                    if requiresEndpointConfirmation {
+                        nativeTmuxStateChanged(
+                            handle: handle,
+                            state: .connected
+                        )
+                    }
                     return
                 }
             }
-            guard let presentation,
+            guard let self, let presentation,
                   presentation.reconnectContext == context
             else { return }
             presentation.establishmentConfirmationTask = nil
+            if requiresEndpointConfirmation {
+                // The surface may be attached to the endpoint KWT resolved
+                // after the row was selected. Removing it detaches that client
+                // rather than retaining or exposing an unverified terminal.
+                invalidateBorrowedTmuxSession(presentation.selection)
+            }
+        }
+    }
+
+    private static func requiresKwtEndpointConfirmation(
+        _ context: TmuxReconnectContext
+    ) -> Bool {
+        context.phase == .establishingWorkspace
+            && context.usesKwtWorkspaceCommand
+            && context.selection.tmuxAttachMode == .direct
+    }
+
+    private static func requiresKwtClientEndpointConfirmation(
+        _ context: TmuxReconnectContext
+    ) -> Bool {
+        requiresKwtEndpointConfirmation(context)
+            && context.selection.socketName != nil
+    }
+
+    private func kwtEndpointConfirmationOutcome(
+        for presentation: RetainedTmuxPresentation,
+        context: TmuxReconnectContext
+    ) async -> TmuxSessionProbeOutcome {
+        guard let connection = nativeTmuxSessionCoordinator
+            .attachmentConnectionSnapshot(presentation.handle),
+            connection.routeIdentity == context.routeIdentity
+        else { return .absent }
+        if case let .ssh(info) = context.host,
+           info.platform == .windows {
+            do {
+                // The Windows launch validates `kwt open --start-session`
+                // output before attaching psmux to this exact endpoint. Probe
+                // that endpoint on the same route because psmux cannot report
+                // the launched client's identity.
+                _ = try await tmuxRoutedSessionIdentityReader(
+                    context.selection,
+                    context.host,
+                    connection.arguments
+                )
+                return .present
+            } catch TmuxSessionKillError.sessionNotRunning {
+                return .absent
+            } catch {
+                return .failure(.sessionContextUnavailable)
+            }
+        }
+        let attachedIdentity: TmuxSessionIdentity
+        switch nativeTmuxSessionCoordinator
+            .attachedSessionIdentityResolution(presentation.handle) {
+        case .pending:
+            nativeTmuxSessionCoordinator.requestAttachedSessionIdentity(
+                presentation.handle
+            )
+            return .failure(.sessionContextUnavailable)
+        case let .resolved(identity):
+            attachedIdentity = identity
+        case .unavailable:
+            return .failure(.sessionContextUnavailable)
+        }
+        do {
+            let capturedIdentity = try await tmuxRoutedSessionIdentityReader(
+                context.selection,
+                context.host,
+                connection.arguments
+            )
+            return capturedIdentity == attachedIdentity ? .present : .absent
+        } catch TmuxSessionKillError.sessionNotRunning {
+            return .absent
+        } catch {
+            return .failure(.sessionContextUnavailable)
         }
     }
 

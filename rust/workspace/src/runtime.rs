@@ -14,9 +14,9 @@ use crate::{
     SettingsState, SharedCommandRunner, SshExecutable, SuppressedHerdrPresentation, Weak,
     WorkspaceContent, WorkspaceError, WslConfig, WslDiscovery, WslExecutable, ZellijInventory,
     ZellijSessionName, apply_herdr_inventory, apply_zellij_inventory, current_remote_context,
-    refreshed_session_name, remote_snapshot_authority_matches, resolve_remote_herdr_attach_target,
-    resolve_remote_zellij_attach_target, validate_herdr_launch_precondition,
-    worktree_tmux_presentation_key,
+    kwt_tmux_presentation_key, refreshed_session_name, remote_snapshot_authority_matches,
+    resolve_remote_herdr_attach_target, resolve_remote_zellij_attach_target,
+    validate_herdr_launch_precondition,
 };
 pub(crate) fn equivalent_tmux_presentation_key(
     runtime: &Runtime,
@@ -30,7 +30,7 @@ pub(crate) fn equivalent_tmux_presentation_key(
         published.value.snapshot.endpoint() == &request.endpoint
             && published.value.snapshot.runtime() == &request.runtime
     })?;
-    worktree_tmux_presentation_key(request, &host.value.snapshot)
+    kwt_tmux_presentation_key(request, &host.value.snapshot)
 }
 
 /// Process-wide state: host connections, inventory discovery and
@@ -531,17 +531,18 @@ pub(crate) fn finish_pending_creation(runtime: &Runtime, pending: &PendingCreati
     }
 }
 
-pub(crate) fn require_current_protected_selection(
+pub(crate) fn require_current_kwt_selection(
     runtime: &Runtime,
     selection: &SessionSelection,
 ) -> Result<(), WorkspaceError> {
-    let Some(socket_name) = selection.tmux_socket_name() else {
+    let Some(mode) = selection.tmux_attach_mode() else {
         return Ok(());
     };
-    let exact_worktree = runtime
+    let hosts = runtime
         .hosts
         .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let exact_worktree = hosts
         .iter()
         .filter(|host| {
             host.id() == selection.host_id()
@@ -552,15 +553,31 @@ pub(crate) fn require_current_protected_selection(
         .flat_map(ProjectItem::worktrees)
         .any(|worktree| {
             worktree.session_name() == selection.session()
-                && worktree.tmux_socket_name() == Some(socket_name)
+                && worktree.tmux_socket_name() == selection.tmux_socket_name()
+                && worktree.tmux_attach_mode() == mode
                 && worktree.path() == selection.worktree_path().unwrap_or_default()
                 && worktree.generation() == selection.worktree_generation()
-        });
+        })
+        || hosts
+            .iter()
+            .filter(|host| {
+                host.id() == selection.host_id()
+                    && host.endpoint() == selection.endpoint()
+                    && host.connection() == HostConnectionState::Ready
+            })
+            .flat_map(HostItem::directory_workspaces)
+            .any(|workspace| {
+                workspace.session_name() == selection.session()
+                    && workspace.tmux_socket_name() == selection.tmux_socket_name()
+                    && workspace.tmux_attach_mode() == mode
+                    && workspace.path() == selection.worktree_path().unwrap_or_default()
+                    && selection.worktree_generation().is_none()
+            });
     if exact_worktree {
         Ok(())
     } else {
         Err(WorkspaceError::new(
-            "protected worktree is not in the current inventory",
+            "KWT workspace is not in the current inventory",
         ))
     }
 }
@@ -1037,12 +1054,14 @@ pub(crate) fn capture_kwt_worktree_removal_context(
     generation: &str,
     session_name: &str,
     tmux_socket_name: Option<&str>,
+    tmux_attach_mode: host::KwtTmuxAttachMode,
 ) -> Result<
     (
         RuntimeHost,
         host::WslEndpoint,
         host::WslRuntimeIdentity,
         Option<String>,
+        host::KwtTmuxAttachMode,
     ),
     WorkspaceError,
 > {
@@ -1095,6 +1114,7 @@ pub(crate) fn capture_kwt_worktree_removal_context(
                     && worktree.generation.as_deref() == Some(generation)
                     && worktree.session_name == session_name
                     && worktree.tmux_socket_name.as_deref() == tmux_socket_name
+                    && worktree.tmux_attach_mode == tmux_attach_mode
             })
         })
         .ok_or_else(|| {
@@ -1105,11 +1125,19 @@ pub(crate) fn capture_kwt_worktree_removal_context(
             "the primary checkout cannot be removed",
         ));
     }
+    if worktree.tmux_attach_mode == host::KwtTmuxAttachMode::Protected
+        && worktree.tmux_socket_name.is_none()
+    {
+        return Err(WorkspaceError::new(
+            "refresh KWT inventory before removing this protected worktree",
+        ));
+    }
     Ok((
         context.0,
         context.1,
         context.2,
         worktree.tmux_socket_name.clone(),
+        worktree.tmux_attach_mode,
     ))
 }
 
