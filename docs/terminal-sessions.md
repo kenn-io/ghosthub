@@ -732,15 +732,15 @@ of every clipboard request: Ghosthub supplies clipboard contents only for a
 configured `paste_from_clipboard` action, independent of which key triggers
 it. libghostty retains bracketed-paste framing and requires confirmation before
 unsafe unbracketed text can reach the PTY. On a remote POSIX tmux surface,
-Ctrl-V with an image on the Mac clipboard is a separate explicit image-paste
+Cmd-V with an image-only Mac clipboard is a separate explicit image-paste
 action. Ghosthub encodes TIFF clipboard images as PNG, streams the PNG through
 the attachment's frozen SSH route into `~/.ghosthub/paste-images/`, and asks
 libghostty to paste the resulting
 absolute remote path. Tmux therefore retains its normal bracketed-paste
 behavior, and applications such as Codex and Claude can ingest the path on the
 machine where they run. Cached paste images older than seven days are removed
-when the next image is uploaded. Text paste and non-image Ctrl-V input retain
-their ordinary terminal paths.
+when the next image is uploaded. Cmd-V prefers ordinary text paste when the
+clipboard also contains text, and Ctrl-V always retains its terminal meaning.
 
 ## Inventory and Startup
 

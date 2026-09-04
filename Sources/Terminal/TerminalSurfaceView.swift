@@ -490,6 +490,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         hasSyncedFocusState = true
         if !newFocused {
             consumedCommandKeyCodes.removeAll()
+            consumedImagePasteKeyCodes.removeAll()
         }
         if stateChanged {
             onFocusChange?(newFocused)
@@ -1840,25 +1841,18 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         if consumedImagePasteKeyCodes.contains(event.keyCode) {
             return true
         }
+        let pasteboard = TerminalPasteboardAccess.current
         guard action == GHOSTTY_ACTION_PRESS,
               let handler = remoteImagePasteHandler,
-              isImagePasteShortcut(event),
+              isPasteShortcut(event),
+              pasteboard.string(forType: .string)?.isEmpty != false,
               let image = TerminalClipboardImage.read(
-                  from: TerminalPasteboardAccess.current
+                  from: pasteboard
               )
         else { return false }
         consumedImagePasteKeyCodes.insert(event.keyCode)
         handler(image)
         return true
-    }
-
-    private func isImagePasteShortcut(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        return flags.contains(.control)
-            && !flags.contains(.shift)
-            && !flags.contains(.option)
-            && !flags.contains(.command)
-            && event.charactersIgnoringModifiers?.lowercased() == "v"
     }
 
     func clipboardContents(

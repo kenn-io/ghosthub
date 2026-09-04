@@ -21,7 +21,8 @@ struct TmuxImagePaster: Sendable {
         _ host: SSHHostInfo,
         _ connectionArguments: [String],
         _ remoteCommand: String,
-        _ image: Data
+        _ image: Data,
+        _ timeout: TimeInterval
     ) async -> AccountCommandOutput
 
     private static let resultMarker = "GHOSTHUB_IMAGE_PASTE"
@@ -54,7 +55,8 @@ struct TmuxImagePaster: Sendable {
             host,
             connectionArguments,
             Self.uploadCommand(fileName: fileName),
-            image.pngData
+            image.pngData,
+            Self.uploadTimeout(byteCount: image.pngData.count)
         )
         guard output.status == 0 else {
             return .failure(.init(
@@ -120,6 +122,12 @@ struct TmuxImagePaster: Sendable {
         return path
     }
 
+    static func uploadTimeout(byteCount: Int) -> TimeInterval {
+        let baseTimeout: TimeInterval = 30
+        let transferAllowance = TimeInterval(max(0, byteCount)) / 65_536
+        return min(600, baseTimeout + transferAllowance)
+    }
+
     private static func normalizedDiagnostic(_ diagnostic: String) -> String {
         String(
             diagnostic
@@ -133,7 +141,8 @@ struct TmuxImagePaster: Sendable {
         host: SSHHostInfo,
         connectionArguments: [String],
         remoteCommand: String,
-        image: Data
+        image: Data,
+        timeout: TimeInterval
     ) async -> AccountCommandOutput {
         await BlockingTask.run(priority: .userInitiated) {
             let directory = FileManager.default.temporaryDirectory
@@ -181,7 +190,7 @@ struct TmuxImagePaster: Sendable {
                     + " < " + shellQuotedCommandArgument(localImage.path)
                 return AccountCommandRunner().runLocalLoginShell(
                     command: invocation,
-                    timeout: 30
+                    timeout: timeout
                 )
             } catch {
                 try? FileManager.default.removeItem(at: directory)

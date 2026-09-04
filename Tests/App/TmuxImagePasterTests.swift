@@ -8,6 +8,16 @@ import Testing
 
 @Suite("Remote tmux image paste")
 struct TmuxImagePasterTests {
+    @Test("allows larger clipboard images more upload time within a cap")
+    func uploadTimeoutScalesWithImageSize() {
+        #expect(TmuxImagePaster.uploadTimeout(byteCount: 0) == 30)
+        #expect(
+            TmuxImagePaster.uploadTimeout(byteCount: 10 * 1_024 * 1_024)
+                == 190
+        )
+        #expect(TmuxImagePaster.uploadTimeout(byteCount: .max) == 600)
+    }
+
     @Test("stages image bytes and reports the remote cache path")
     func uploadCommandStagesImage() throws {
         let fixture = try TempDirectoryFixture()
@@ -59,6 +69,7 @@ struct TmuxImagePasterTests {
             let host: SSHHostInfo
             let connectionArguments: [String]
             let image: Data
+            let timeout: TimeInterval
         }
         let invocation = LockedValue<Invocation?>(nil)
         let host = SSHHostInfo(
@@ -68,12 +79,13 @@ struct TmuxImagePasterTests {
         )
         let image = TerminalClipboardImage(pngData: Data([0x89, 0x50, 0x4E, 0x47]))
         let paster = TmuxImagePaster(
-            runner: { host, arguments, _, image in
+            runner: { host, arguments, _, image, timeout in
                 invocation.withLock {
                     $0 = Invocation(
                         host: host,
                         connectionArguments: arguments,
-                        image: image
+                        image: image,
+                        timeout: timeout
                     )
                 }
                 return AccountCommandOutput(
@@ -98,12 +110,18 @@ struct TmuxImagePasterTests {
                 == ["-F", "/tmp/ghosthub-ssh-config"]
         )
         #expect(invocation.load()?.image == image.pngData)
+        #expect(
+            invocation.load()?.timeout
+                == TmuxImagePaster.uploadTimeout(
+                    byteCount: image.pngData.count
+                )
+        )
     }
 
     @Test("rejects an upload response that does not name the staged image")
     func rejectsUnexpectedRemotePath() async {
         let paster = TmuxImagePaster(
-            runner: { _, _, _, _ in
+            runner: { _, _, _, _, _ in
                 AccountCommandOutput(
                     status: 0,
                     stdout: "GHOSTHUB_IMAGE_PASTE\t/tmp/different.png\n",

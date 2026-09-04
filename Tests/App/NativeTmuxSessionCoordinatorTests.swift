@@ -67,7 +67,7 @@ struct NativeTmuxSessionCoordinatorTests {
                 return (0, "")
             },
             imagePaster: TmuxImagePaster(
-                runner: { receivedHost, arguments, _, image in
+                runner: { receivedHost, arguments, _, image, _ in
                     uploaded.withLock {
                         $0 = (receivedHost, arguments, image)
                     }
