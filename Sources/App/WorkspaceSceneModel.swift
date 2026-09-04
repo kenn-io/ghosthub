@@ -6942,17 +6942,21 @@ final class WorkspaceSceneModel: ObservableObject {
         )
     }
 
+    /// Announces a registration once per command host; the store applies it
+    /// to every host identity that resolves there.
     private func noteProjectRegistration(
         _ project: KwtProjectRecord,
         on target: CommandHost
     ) {
-        for hostID in inventoryHosts.filter({ $0.value == target }).keys {
-            worktreeMutationCoordinator.noteProjectRegistration(
-                hostID: hostID,
-                projectIdentity: project.repository,
-                projectPath: project.path
-            )
-        }
+        guard let hostID = inventoryHosts
+            .filter({ $0.value == target })
+            .keys.min(by: { $0.uuidString < $1.uuidString })
+        else { return }
+        worktreeMutationCoordinator.noteProjectRegistration(
+            hostID: hostID,
+            projectIdentity: project.repository,
+            projectPath: project.path
+        )
     }
 
     private func performProjectRegistration(

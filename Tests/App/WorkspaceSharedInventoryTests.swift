@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import GhosthubPersistence
 import GhosthubWorkspace
@@ -306,6 +307,82 @@ struct WorkspaceSharedInventoryTests {
         #expect(second.inventoryRefreshProgress.kwtCompleted)
         await first.shutdown()
         await second.shutdown()
+    }
+
+    @Test("registration on an aliased host announces once")
+    func registrationOnAliasedHostAnnouncesOnce() async throws {
+        let localID = UUID()
+        let firstRemoteID = UUID()
+        let secondRemoteID = UUID()
+        let snapshot = WorkspaceSnapshot(
+            hosts: [
+                HostSummary(
+                    id: localID,
+                    configKey: "local",
+                    name: "This Mac",
+                    kind: .selfHost,
+                    platform: .macOS,
+                    preferredTransport: .local,
+                    decodedConnectionState: .local
+                ),
+                HostSummary(
+                    id: firstRemoteID,
+                    configKey: "alias-a",
+                    name: "Alias A",
+                    kind: .remote,
+                    platform: .linux,
+                    sshDestination: "test@example.invalid"
+                ),
+                HostSummary(
+                    id: secondRemoteID,
+                    configKey: "alias-b",
+                    name: "Alias B",
+                    kind: .remote,
+                    platform: .linux,
+                    sshDestination: "test@example.invalid"
+                ),
+            ],
+            projects: [],
+            worktrees: []
+        )
+        let coordinator = WorktreeMutationCoordinator()
+        let registrations = LockedValue(0)
+        let events = coordinator.events.sink { event in
+            if event.phase == .registered {
+                registrations.withLock { $0 += 1 }
+            }
+        }
+        defer { events.cancel() }
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in KwtHostInventory(projects: []) },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let model = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: localID,
+            snapshot: snapshot,
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator,
+            kwtProjectRegistration: { path, _ in
+                KwtProjectRecord(
+                    repository: "example/repository",
+                    name: "Repository",
+                    path: path,
+                    lastTouched: nil
+                )
+            }
+        )
+        model.startKwtInventory()
+        await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+        let host = try #require(model.snapshot.host(id: firstRemoteID))
+
+        let result = await model.registerProject("/srv/repository", on: host)
+
+        #expect(result == .success("Repository"))
+        #expect(registrations.load() == 1)
+        await model.shutdown()
     }
 
     @Test("external additions and removals converge across scenes")

@@ -796,9 +796,13 @@ final class WorkspaceInventoryStore {
             let hosts = Set(subscribers.values.flatMap(\.registrations)
                 .filter { $0.hostID == event.scope.hostID }
                 .map(\.commandHost))
-            satisfiedFenceGenerationsByHostID.removeValue(
-                forKey: event.scope.hostID
-            )
+            // One event covers every host identity aliasing these hosts.
+            let aliasHostIDs = Set(subscribers.values.flatMap(\.registrations)
+                .filter { hosts.contains($0.commandHost) }
+                .map(\.hostID))
+            for hostID in aliasHostIDs {
+                satisfiedFenceGenerationsByHostID.removeValue(forKey: hostID)
+            }
             for host in hosts {
                 kwtMutationEpochsByHost[host, default: 0] &+= 1
                 clearRemovalTombstones(
