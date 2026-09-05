@@ -792,34 +792,43 @@ final class WorkspaceInventoryStore {
                 requestKwt(host)
             }
         case .registered:
-            // Registration is not fenced, so a concurrent mutation's result
-            // or an in-flight load may predate it. Advancing the epoch
-            // rejects such a result, invalidation discards such a load, and
-            // dropping the satisfied fence makes the mutation end reload.
             let hosts = Set(subscribers.values.flatMap(\.registrations)
                 .filter { $0.hostID == event.scope.hostID }
                 .map(\.commandHost))
-            // One event covers every host identity aliasing these hosts.
-            let aliasHostIDs = Set(subscribers.values.flatMap(\.registrations)
-                .filter { hosts.contains($0.commandHost) }
-                .map(\.hostID))
-            for hostID in aliasHostIDs {
-                satisfiedFenceGenerationsByHostID.removeValue(forKey: hostID)
-            }
             for host in hosts {
-                kwtMutationEpochsByHost[host, default: 0] &+= 1
-                clearRemovalTombstones(
-                    forRepository: event.scope.projectIdentity,
-                    path: event.projectPath,
-                    on: host
+                noteProjectRegistration(
+                    on: host,
+                    projectIdentity: event.scope.projectIdentity,
+                    projectPath: event.projectPath
                 )
-            }
-            invalidateKwtHosts(hosts)
-            for host in hosts where subscribedKwtHosts().contains(host) {
-                requestKwt(host)
             }
         case .willRemove:
             break
+        }
+    }
+
+    /// Also accepts unsaved host drafts that have no scene inventory identity.
+    func noteProjectRegistration(
+        on host: CommandHost,
+        projectIdentity: String,
+        projectPath: String?
+    ) {
+        // Registration is not fenced, so a concurrent mutation's result
+        // or an in-flight load may predate it. Advancing the epoch
+        // rejects such a result, invalidation discards such a load, and
+        // dropping the satisfied fence makes the mutation end reload.
+        for registration in registrations(for: host) {
+            satisfiedFenceGenerationsByHostID.removeValue(forKey: registration.hostID)
+        }
+        kwtMutationEpochsByHost[host, default: 0] &+= 1
+        clearRemovalTombstones(
+            forRepository: projectIdentity,
+            path: projectPath,
+            on: host
+        )
+        invalidateKwtHosts([host])
+        if subscribedKwtHosts().contains(host) {
+            requestKwt(host)
         }
     }
 

@@ -6951,7 +6951,14 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let hostID = inventoryHosts
             .filter({ $0.value == target })
             .keys.min(by: { $0.uuidString < $1.uuidString })
-        else { return }
+        else {
+            workspaceInventoryStore.noteProjectRegistration(
+                on: target,
+                projectIdentity: project.repository,
+                projectPath: project.path
+            )
+            return
+        }
         worktreeMutationCoordinator.noteProjectRegistration(
             hostID: hostID,
             projectIdentity: project.repository,

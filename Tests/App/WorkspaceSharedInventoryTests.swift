@@ -1,6 +1,8 @@
 import Combine
 import Foundation
 import GhosthubPersistence
+import GhosthubSettings
+import GhosthubTransport
 import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
@@ -383,6 +385,81 @@ struct WorkspaceSharedInventoryTests {
 
         #expect(result == .success("Repository"))
         #expect(registrations.load() == 1)
+        await model.shutdown()
+    }
+
+    @Test("unsaved draft registration refreshes a removed project", arguments: [true, false])
+    func unsavedDraftRegistrationRefreshesRemovedProject(keepsSubscriber: Bool) async throws {
+        let environment = try setupHostEnvironment()
+        let draft = SSHHost(
+            configKey: "new-host",
+            name: "New Host",
+            platform: .linux,
+            sshDestination: "test@example.invalid"
+        )
+        let target = CommandHost.ssh(SSHHostInfo(
+            user: "test", hostname: "example.invalid", port: nil, platform: .posix
+        ))
+        let record = KwtProjectRecord(
+            repository: "example/repository",
+            name: "Repository",
+            path: "/srv/repository",
+            lastTouched: nil
+        )
+        let inventory = KwtHostInventory(projects: [
+            KwtProjectInventory(project: record, worktrees: [], warning: nil),
+        ])
+        let coordinator = WorktreeMutationCoordinator()
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in inventory },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        let hostID = UUID()
+        let registrations = [WorkspaceInventoryStore.HostRegistration(
+            hostID: hostID, commandHost: target, provisioningHost: nil
+        )]
+        defer { store.removeSubscriber(id: subscriberID) }
+        store.updateSubscriber(
+            id: subscriberID, registrations: registrations,
+            wantsKwt: true, wantsTmux: false
+        )
+        await waitUntilMainActor { store.snapshot.kwtByHost[target]?.isFresh == true }
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: record.repository))
+        coordinator.release(
+            hostID: hostID, projectIdentity: record.repository,
+            removesProject: true, projectPath: record.path
+        )
+        await waitUntilMainActor { store.snapshot.kwtByHost[target]?.isFresh == true }
+        #expect(store.snapshot.kwtByHost[target]?.inventory?.projects.isEmpty == true)
+        if !keepsSubscriber {
+            store.removeSubscriber(id: subscriberID)
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator,
+            kwtProjectRegistration: { _, _ in record }
+        )
+
+        let result = await model.registerRemoteProject(record.path, on: draft)
+
+        #expect(result == .success(record.name))
+        if !keepsSubscriber {
+            store.updateSubscriber(
+                id: subscriberID, registrations: registrations,
+                wantsKwt: true, wantsTmux: false
+            )
+        }
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[target]?.inventory?.projects == inventory.projects
+        }
+        #expect(store.snapshot.kwtByHost[target]?.inventory?.projects == inventory.projects)
         await model.shutdown()
     }
 
