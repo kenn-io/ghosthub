@@ -381,27 +381,14 @@ struct KwtWorktreeClient: Sendable {
                 details: [:]
             )
         }
-        guard let markerRange = normalizedOutput.range(
+        let markerRange = normalizedOutput.range(
             of: Self.jsonMarker,
             options: .backwards
-        ) else {
-            if result.status != 0 {
-                throw KwtWorktreeError.changeInspectionFailed(
-                    host: host.displayName,
-                    status: result.status,
-                    code: nil,
-                    message: nil,
-                    retryable: Self.isRetryableChangeInspectionStatus(
-                        result.status
-                    ),
-                    details: [:]
-                )
-            }
-            throw KwtWorktreeError.malformedChangeStatus(
-                host: host.displayName
-            )
-        }
-        let data = Data(normalizedOutput[markerRange.upperBound...].utf8)
+        )
+        // SSH setup can fail before the remote shell emits our marker.
+        // Its error envelope still carries the helper's retry decision.
+        let payloadStart = markerRange?.upperBound ?? normalizedOutput.startIndex
+        let data = Data(normalizedOutput[payloadStart...].utf8)
         guard result.status == 0 else {
             let envelope = try? JSONDecoder().decode(
                 KwtChangeInspectionErrorEnvelope.self,
@@ -415,6 +402,11 @@ struct KwtWorktreeClient: Sendable {
                 retryable: envelope?.error.retryable
                     ?? Self.isRetryableChangeInspectionStatus(result.status),
                 details: envelope?.error.details ?? [:]
+            )
+        }
+        guard markerRange != nil else {
+            throw KwtWorktreeError.malformedChangeStatus(
+                host: host.displayName
             )
         }
         do {

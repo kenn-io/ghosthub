@@ -130,7 +130,7 @@ struct KwtSSHCommandClient: Sendable {
             : output.stderr
         return AccountCommandOutput(
             status: 255,
-            stdout: "",
+            stdout: output.stdout,
             stderr: marker + diagnostic
         )
     }

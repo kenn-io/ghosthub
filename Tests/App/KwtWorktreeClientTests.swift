@@ -443,6 +443,49 @@ struct KwtWorktreeClientTests {
         }
     }
 
+    @Test("remote changes preserve typed SSH failure details and retry policy", arguments: [
+        ("ssh_interaction_required", false),
+        ("ssh_configuration_changed", false),
+        ("ssh_acquisition_timed_out", true),
+    ])
+    func remoteChangesPreserveTypedSSHFailure(code: String, retryable: Bool) async {
+        let sshClient = KwtSSHCommandClient(
+            runner: { _, _, _ in
+                AccountCommandOutput(
+                    status: 1,
+                    stdout: """
+                    {"error":{"code":"\(code)","message":"SSH command failed.","retryable":\(
+                        retryable
+                    )}}
+                    """,
+                    stderr: ""
+                )
+            },
+            binaryPath: "/bundle/kwt"
+        )
+        let client = KwtWorktreeClient(remoteRunner: { host, command, route in
+            await sshClient.run(
+                on: host, command: command, timeout: 5,
+                expectedRouteIdentity: route
+            )
+        })
+
+        await #expect {
+            try await client.changes(
+                worktreePath: "/srv/widget",
+                expectedRepository: "example.test/team/widget",
+                expectedGeneration: String(repeating: "a", count: 32),
+                expectedRouteIdentity: "sha256:reviewed-route",
+                on: .ssh(SSHHostInfo(user: nil, hostname: "build.example.test", port: nil))
+            )
+        } throws: { error in
+            error as? KwtWorktreeError == .changeInspectionFailed(
+                host: "build.example.test", status: 255, code: code,
+                message: "SSH command failed.", retryable: retryable, details: [:]
+            )
+        }
+    }
+
     @Test(
         "marked malformed transport failures remain retryable",
         arguments: [Int32(255), AccountCommandRunner.timedOutStatus]
