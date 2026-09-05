@@ -151,6 +151,7 @@ final class WorkspaceInventoryStore {
     private var appDidBecomeActiveCancellable: AnyCancellable?
     private var appDidResignActiveCancellable: AnyCancellable?
     private var subscribers: [UUID: Subscriber] = [:]
+    private var mutationHosts: [WorktreeMutationCoordinator.Scope: Set<CommandHost>] = [:]
     private var kwtTasks: [CommandHost: Task<Void, Never>] = [:]
     private var tmuxTasks: [CommandHost: Task<Void, Never>] = [:]
     private var kwtGenerations: [CommandHost: UInt64] = [:]
@@ -209,6 +210,10 @@ final class WorkspaceInventoryStore {
             wantsKwt: wantsKwt,
             wantsTmux: wantsTmux
         )
+        // A scene can subscribe after a mutation has already begun.
+        for scope in mutationCoordinator.scopes where mutationHosts[scope]?.isEmpty != false {
+            mutationHosts[scope] = commandHosts(for: scope)
+        }
         let currentKwtHosts = subscribedKwtHosts()
         let currentTmuxHosts = subscribedTmuxHosts()
         invalidateKwtHosts(previousKwtHosts.subtracting(currentKwtHosts))
@@ -511,17 +516,25 @@ final class WorkspaceInventoryStore {
                 after: inventory
             )
         }
+        var projectTombstones = kwtProjectRemovalTombstonesByHost[host] ?? []
+        if recordsSuccessfulLoad {
+            let active = activeProjectRemovalTombstones(
+                projectTombstones,
+                after: inventory
+            )
+            // Worktree exclusions belong to the removed registration too.
+            for expired in projectTombstones.subtracting(active) {
+                tombstones.removeValue(forKey: KwtSnapshotMerger.removalTombstoneKey(
+                    repository: expired.repository,
+                    path: expired.path
+                ))
+            }
+            projectTombstones = active
+        }
         if tombstones.isEmpty {
             kwtRemovalTombstonesByHost.removeValue(forKey: host)
         } else {
             kwtRemovalTombstonesByHost[host] = tombstones
-        }
-        var projectTombstones = kwtProjectRemovalTombstonesByHost[host] ?? []
-        if recordsSuccessfulLoad {
-            projectTombstones = activeProjectRemovalTombstones(
-                projectTombstones,
-                after: inventory
-            )
         }
         if projectTombstones.isEmpty {
             kwtProjectRemovalTombstonesByHost.removeValue(forKey: host)
@@ -613,11 +626,8 @@ final class WorkspaceInventoryStore {
         hostID: UUID,
         on commandHost: CommandHost
     ) -> Bool {
-        let endpointHostIDs = Set(subscribers.values.flatMap(\.registrations)
-            .filter { $0.commandHost == commandHost }
-            .map(\.hostID))
         let activeScopes = fencingScopes.filter {
-            endpointHostIDs.contains($0.hostID)
+            commandHosts(for: $0).contains(commandHost)
         }
         return activeScopes.count == 1
             && activeScopes.first?.hostID == hostID
@@ -720,8 +730,16 @@ final class WorkspaceInventoryStore {
     }
 
     private func isKwtFenced(_ host: CommandHost) -> Bool {
-        let hostIDs = Set(registrations(for: host).map(\.hostID))
-        return fencingScopes.contains { hostIDs.contains($0.hostID) }
+        fencingScopes.contains { commandHosts(for: $0).contains(host) }
+    }
+
+    private func commandHosts(for scope: WorktreeMutationCoordinator.Scope) -> Set<CommandHost> {
+        if let hosts = mutationHosts[scope], !hosts.isEmpty {
+            return hosts
+        }
+        return Set(subscribers.values.flatMap(\.registrations)
+            .filter { $0.hostID == scope.hostID }
+            .map(\.commandHost))
     }
 
     private func mutationEvent(
@@ -730,17 +748,15 @@ final class WorkspaceInventoryStore {
         switch event.phase {
         case .began:
             fenceGenerationsByHostID[event.scope.hostID, default: 0] &+= 1
-            let hosts = Set(subscribers.values.flatMap(\.registrations)
-                .filter { $0.hostID == event.scope.hostID }
-                .map(\.commandHost))
+            let hosts = commandHosts(for: event.scope)
+            mutationHosts[event.scope] = hosts
             for host in hosts {
                 kwtMutationEpochsByHost[host, default: 0] &+= 1
             }
             invalidateKwtHosts(hosts)
         case .ended:
-            let hosts = Set(subscribers.values.flatMap(\.registrations)
-                .filter { $0.hostID == event.scope.hostID }
-                .map(\.commandHost))
+            let hosts = commandHosts(for: event.scope)
+            mutationHosts.removeValue(forKey: event.scope)
             let tmuxHosts = hosts.intersection(subscribedTmuxHosts())
             invalidateTmuxHosts(tmuxHosts)
             for host in tmuxHosts {
@@ -782,17 +798,12 @@ final class WorkspaceInventoryStore {
                     applyRemovalTombstonesToCachedInventory(on: host)
                 }
             }
-            guard !fencingScopes.contains(where: {
-                $0.hostID == event.scope.hostID
-            }) else { return }
             guard !fenceIsSatisfied else { return }
             for host in hosts where subscribedKwtHosts().contains(host) {
                 requestKwt(host)
             }
         case .quarantined:
-            let hosts = Set(subscribers.values.flatMap(\.registrations)
-                .filter { $0.hostID == event.scope.hostID }
-                .map(\.commandHost))
+            let hosts = commandHosts(for: event.scope)
             invalidateKwtHosts(hosts)
             for host in hosts where subscribedKwtHosts().contains(host) {
                 requestKwt(host)

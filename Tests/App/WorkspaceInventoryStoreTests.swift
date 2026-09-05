@@ -2589,10 +2589,18 @@ struct WorkspaceInventoryStoreTests {
         #expect(loadCount.load() == 1)
     }
 
-    @Test("authoritative registration clears a removal with no cached fingerprint")
-    func authoritativeRegistrationClearsUnknownFingerprint() async {
+    @Test(
+        "authoritative registration clears project and worktree removals",
+        arguments: ["", "old-registration"]
+    )
+    func authoritativeRegistrationClearsRemovalTombstones(cachedFingerprint: String) async {
         let repository = "example/repository"
         let path = "/test/repository"
+        let worktree = KwtWorktreeRecord(
+            path: path + "/feature", branch: "feature", commitHash: "abc123",
+            isMain: false, createdAt: nil, generation: "existing-worktree",
+            repository: repository, sessionName: "kwt-feature"
+        )
         let inventory = KwtHostInventory(projects: [KwtProjectInventory(
             project: KwtProjectRecord(
                 repository: repository,
@@ -2601,7 +2609,7 @@ struct WorkspaceInventoryStoreTests {
                 lastTouched: nil,
                 registrationFingerprint: "new-registration"
             ),
-            worktrees: [],
+            worktrees: [worktree],
             warning: nil
         )])
         let coordinator = WorktreeMutationCoordinator()
@@ -2618,6 +2626,11 @@ struct WorkspaceInventoryStoreTests {
         )
         let subscriberID = UUID()
         defer { store.removeSubscriber(id: subscriberID) }
+        if !cachedFingerprint.isEmpty {
+            var cached = inventory
+            cached.projects[0].project.registrationFingerprint = cachedFingerprint
+            store.publishKwtInventory(cached, on: .local, mutation: nil)
+        }
         #expect(coordinator.acquire(hostID: hostID, projectIdentity: repository))
         store.updateSubscriber(
             id: subscriberID,
@@ -2629,21 +2642,118 @@ struct WorkspaceInventoryStoreTests {
         )
         coordinator.release(
             hostID: hostID, projectIdentity: repository,
+            removalTombstones: [KwtWorktreeIdentity(
+                path: worktree.path,
+                generation: "existing-worktree"
+            )],
             removesProject: true, projectPath: path
         )
-        #expect(store.projectRemovalTombstones(on: .local).first?.registrationFingerprint == "")
+        #expect(store.projectRemovalTombstones(on: .local).first?
+            .registrationFingerprint == cachedFingerprint)
 
         store.publishKwtInventory(
             inventory, on: .local, mutation: nil, recordsSuccessfulLoad: false
         )
-        #expect(store.snapshot.kwtByHost[.local]?.inventory?.projects.isEmpty == true)
         #expect(!store.projectRemovalTombstones(on: .local).isEmpty)
+        #expect(store.snapshot.kwtByHost[.local]?.inventory?.projects.flatMap(\.worktrees)
+            .isEmpty == true)
 
         store.refreshKwt(for: subscriberID)
         loadGate.open()
         await waitUntilMainActor { store.snapshot.kwtByHost[.local]?.isFresh == true }
         #expect(store.snapshot.kwtByHost[.local]?.inventory?.projects == inventory.projects)
         #expect(store.projectRemovalTombstones(on: .local).isEmpty)
+    }
+
+    @Test(
+        "mutation completion follows its endpoint after the originating host disappears",
+        arguments: [false, true]
+    )
+    func mutationCompletionRetainsEndpoint(retargetsHost: Bool) async {
+        let coordinator = WorktreeMutationCoordinator()
+        var project = legacyProject(
+            name: "Repository",
+            path: "/test/repository",
+            repository: "example/repository"
+        )
+        let worktree = KwtWorktreeRecord(
+            path: "/test/repository/feature", branch: "feature", commitHash: "abc123",
+            isMain: false, createdAt: nil, generation: "existing-worktree",
+            repository: "example/repository", sessionName: "kwt-feature"
+        )
+        project.worktrees = [worktree]
+        let inventory = KwtHostInventory(projects: [project])
+        let kwtLoads = LockedValue(0)
+        let tmuxLoads = LockedValue(0)
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in
+                kwtLoads.withLock { $0 += 1 }
+                return inventory
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in
+                tmuxLoads.withLock { $0 += 1 }
+                return .success([])
+            },
+            mutationCoordinator: coordinator
+        )
+        let originID = UUID()
+        let aliasID = UUID()
+        let hostID = UUID()
+        let otherHost = CommandHost.ssh(SSHHostInfo(
+            user: "test",
+            hostname: "example.invalid",
+            port: nil,
+            platform: .posix
+        ))
+        defer {
+            store.removeSubscriber(id: originID)
+            store.removeSubscriber(id: aliasID)
+        }
+        store.publishKwtInventory(inventory, on: .local, mutation: nil)
+        for (subscriberID, registeredHostID) in [(originID, hostID), (aliasID, UUID())] {
+            store.updateSubscriber(
+                id: subscriberID,
+                registrations: [.init(
+                    hostID: registeredHostID,
+                    commandHost: .local,
+                    provisioningHost: nil
+                )],
+                wantsKwt: true, wantsTmux: true
+            )
+        }
+        await waitUntilMainActor { store.snapshot.tmuxByHost[.local]?.isFresh == true }
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: "example/repository"))
+        store.removeSubscriber(id: originID)
+        if retargetsHost {
+            store.updateSubscriber(
+                id: originID,
+                registrations: [.init(
+                    hostID: hostID,
+                    commandHost: otherHost,
+                    provisioningHost: nil
+                )],
+                wantsKwt: false, wantsTmux: false
+            )
+        }
+
+        coordinator.release(
+            hostID: hostID, projectIdentity: "example/repository",
+            removalTombstones: [KwtWorktreeIdentity(
+                path: worktree.path,
+                generation: "existing-worktree"
+            )],
+            projectPath: "/test/repository"
+        )
+
+        #expect(store.snapshot.kwtByHost[.local]?.inventory?.projects.first?.worktrees
+            .isEmpty == true)
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[.local]?.isFresh == true && tmuxLoads.load() == 2
+        }
+        #expect(kwtLoads.load() == 1)
+        #expect(store.removalTombstones(on: otherHost).isEmpty)
     }
 
     @Test("a repository registered again elsewhere escapes its tombstone")
