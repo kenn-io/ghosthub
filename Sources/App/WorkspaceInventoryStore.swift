@@ -594,7 +594,13 @@ final class WorkspaceInventoryStore {
     ) -> Set<ProjectRemovalTombstone> {
         guard inventory.projectsWarning == nil else { return tombstones }
         return tombstones.filter { tombstone in
-            inventory.projects.contains { tombstone.matches($0.project) }
+            inventory.projects.contains {
+                // A fresh registration fingerprint supersedes a removal
+                // whose registration was unknown to the shared cache.
+                tombstone.matches($0.project)
+                    && (!tombstone.registrationFingerprint.isEmpty
+                        || $0.project.registrationFingerprint.isEmpty)
+            }
         }
     }
 

@@ -1889,7 +1889,8 @@ struct WorkspaceInventoryStoreTests {
 
     @Test("an empty-identity project tombstone hides only its own path")
     func emptyIdentityTombstoneHidesOnlyItsOwnPath() async {
-        let removed = legacyProject(name: "Removed", path: "/test/removed")
+        var removed = legacyProject(name: "Removed", path: "/test/removed")
+        removed.project.registrationFingerprint = ""
         let kept = legacyProject(name: "Kept", path: "/test/kept")
         let inventory = KwtHostInventory(projects: [removed, kept])
         let coordinator = WorktreeMutationCoordinator()
@@ -1939,19 +1940,20 @@ struct WorkspaceInventoryStoreTests {
         let legacy = KwtHostInventory(projects: [
             legacyProject(name: "Repository", path: path),
         ])
-        let canonical = KwtHostInventory(projects: [
+        var canonical = KwtHostInventory(projects: [
             legacyProject(
                 name: "Repository",
                 path: path,
                 repository: "example/repository"
             ),
         ])
+        canonical.projects[0].project.registrationFingerprint = ""
         let coordinator = WorktreeMutationCoordinator()
         let loadCount = LockedValue(0)
         let hostID = UUID()
         let store = WorkspaceInventoryStore(
             refreshInterval: .seconds(3_600),
-            kwtLoader: { _ in
+            kwtLoader: { [canonical] _ in
                 loadCount.withLock { $0 += 1 }
                 return canonical
             },
@@ -2585,6 +2587,63 @@ struct WorkspaceInventoryStoreTests {
                 && store.snapshot.kwtByHost[.local]?.isFresh == true
         }
         #expect(loadCount.load() == 1)
+    }
+
+    @Test("authoritative registration clears a removal with no cached fingerprint")
+    func authoritativeRegistrationClearsUnknownFingerprint() async {
+        let repository = "example/repository"
+        let path = "/test/repository"
+        let inventory = KwtHostInventory(projects: [KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: repository,
+                name: "Repository",
+                path: path,
+                lastTouched: nil,
+                registrationFingerprint: "new-registration"
+            ),
+            worktrees: [],
+            warning: nil
+        )])
+        let coordinator = WorktreeMutationCoordinator()
+        let loadGate = AsyncGate()
+        let hostID = UUID()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                await loadGate.wait()
+                return inventory
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let subscriberID = UUID()
+        defer { store.removeSubscriber(id: subscriberID) }
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: repository))
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID, commandHost: .local, provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: false
+        )
+        coordinator.release(
+            hostID: hostID, projectIdentity: repository,
+            removesProject: true, projectPath: path
+        )
+        #expect(store.projectRemovalTombstones(on: .local).first?.registrationFingerprint == "")
+
+        store.publishKwtInventory(
+            inventory, on: .local, mutation: nil, recordsSuccessfulLoad: false
+        )
+        #expect(store.snapshot.kwtByHost[.local]?.inventory?.projects.isEmpty == true)
+        #expect(!store.projectRemovalTombstones(on: .local).isEmpty)
+
+        store.refreshKwt(for: subscriberID)
+        loadGate.open()
+        await waitUntilMainActor { store.snapshot.kwtByHost[.local]?.isFresh == true }
+        #expect(store.snapshot.kwtByHost[.local]?.inventory?.projects == inventory.projects)
+        #expect(store.projectRemovalTombstones(on: .local).isEmpty)
     }
 
     @Test("a repository registered again elsewhere escapes its tombstone")
