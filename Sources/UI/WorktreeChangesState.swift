@@ -54,7 +54,9 @@ public struct WorktreeChangesIdentity: Hashable, Sendable {
             projectID: project.id,
             registrationFingerprint: project.registrationFingerprint,
             repository: project.scopedKey,
-            path: worktree.path,
+            path: WorktreeChangePath.key(
+                worktree.path, usesWindowsPaths: host.platform == .windows
+            ),
             generation: generation,
             usesWindowsPaths: host.platform == .windows
         )
@@ -67,7 +69,7 @@ public struct WorktreeChangesIdentity: Hashable, Sendable {
         guard Self.resolve(worktreeID: worktreeID, in: snapshot) == self
         else { return false }
         return result.repository == repository
-            && Self.pathsMatch(
+            && WorktreeChangePath.matches(
                 result.path,
                 path,
                 usesWindowsPaths: usesWindowsPaths
@@ -86,18 +88,6 @@ public struct WorktreeChangesIdentity: Hashable, Sendable {
             ) != nil
         }
         return path.hasPrefix("/")
-    }
-
-    private static func pathsMatch(
-        _ lhs: String,
-        _ rhs: String,
-        usesWindowsPaths: Bool
-    ) -> Bool {
-        guard usesWindowsPaths else { return lhs == rhs }
-        return lhs.replacingOccurrences(of: "/", with: "\\")
-            .caseInsensitiveCompare(
-                rhs.replacingOccurrences(of: "/", with: "\\")
-            ) == .orderedSame
     }
 
     private static func canonicalGeneration(_ value: String?) -> String? {

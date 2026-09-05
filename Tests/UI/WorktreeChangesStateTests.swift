@@ -303,6 +303,46 @@ struct WorktreeChangesStateTests {
         #expect(identity.matches(result: result, in: snapshot))
     }
 
+    @MainActor
+    @Test("Windows path spelling changes retain polling identity and cached files", arguments: [
+        (#"C:\Worktrees\Topic"#, "c:/worktrees/topic"),
+        (#"C:\Worktrees\Σ"#, "c:/worktrees/ς"),
+    ])
+    func windowsPathRefreshRetainsIdentity(path: String, refreshedPath: String) throws {
+        let fixture = try changesFixture()
+        var snapshot = fixture.snapshot
+        snapshot.hosts[0].platform = .windows
+        snapshot.worktrees[0].path = path
+        let identity = try #require(WorktreeChangesIdentity.resolve(
+            worktreeID: fixture.worktree.id, in: snapshot
+        ))
+        let store = WorktreeChangesStore()
+        store.setExpanded(true, worktreeID: fixture.worktree.id)
+        let request = try #require(store.beginRequest(for: identity))
+        let result = WorktreeFileChanges(
+            repository: identity.repository,
+            path: path,
+            generation: identity.generation,
+            state: .clean, summary: .clean, files: [], observedAt: "now"
+        )
+        store.finishRequest(
+            request,
+            for: identity,
+            result: .success(result),
+            publishResult: true,
+            filesChanged: true
+        )
+        snapshot.worktrees[0].path = refreshedPath
+        let refreshed = try #require(WorktreeChangesIdentity.resolve(
+            worktreeID: fixture.worktree.id, in: snapshot
+        ))
+        #expect(refreshed == identity)
+        #expect(Set([identity, refreshed]).count == 1)
+        #expect(identity.matches(result: result, in: snapshot))
+        #expect(store.entry(for: refreshed).hasSuccessfulValue)
+        #expect(result.path == path)
+    }
+
     @Test("Windows identity accepts drive paths and slash differences")
     func windowsIdentityValidation() throws {
         let hostID = UUID()

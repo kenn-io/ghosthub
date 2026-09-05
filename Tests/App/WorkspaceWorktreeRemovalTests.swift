@@ -37,7 +37,7 @@ struct WorkspaceWorktreeRemovalTests {
             kwtForceWorktreeRemover: { _, _, _, _, _ in
                 forcedRemovals.withLock { $0 += 1 }
             },
-            kwtWorktreeChangeReader: { path, repository, generation, _ in
+            kwtWorktreeChangeReader: { path, repository, generation, _, _ in
                 inspectedIdentities.withLock {
                     $0.append("\(path)|\(repository)|\(generation)")
                 }
@@ -97,7 +97,7 @@ struct WorkspaceWorktreeRemovalTests {
             kwtForceWorktreeRemover: { _, _, _, _, _ in
                 forcedRemovals.withLock { $0 += 1 }
             },
-            kwtWorktreeChangeReader: { _, _, _, _ in
+            kwtWorktreeChangeReader: { _, _, _, _, _ in
                 throw KwtWorktreeError.changeInspectionFailed(
                     host: "local",
                     status: AccountCommandRunner.outputExceededStatus,

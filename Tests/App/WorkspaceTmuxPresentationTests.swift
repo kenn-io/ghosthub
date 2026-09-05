@@ -2017,7 +2017,7 @@ extension WorkspaceTmuxDiscoveryTests {
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            kwtWorktreeChangeReader: { _, _, _, _ in throw failure }
+            kwtWorktreeChangeReader: { _, _, _, _, _ in throw failure }
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,

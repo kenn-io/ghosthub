@@ -46,7 +46,10 @@ enum WorktreeChangesLoaderAuthority {
               !worktree.isStale,
               worktree.hostID == requested.hostID,
               worktree.projectID == requested.projectID,
-              worktree.path == requested.path,
+              WorktreeChangePath.matches(
+                  worktree.path, requested.path,
+                  usesWindowsPaths: snapshot.host(id: worktree.hostID)?.platform == .windows
+              ),
               worktree.generation == requested.generation,
               let generation = WorktreeGeneration.canonical(
                   worktree.generation

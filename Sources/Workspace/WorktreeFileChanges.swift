@@ -1,3 +1,20 @@
+import Foundation
+
+public enum WorktreeChangePath {
+    public static func key(_ path: String, usesWindowsPaths: Bool) -> String {
+        guard usesWindowsPaths else { return path }
+        return path.replacingOccurrences(of: "/", with: "\\")
+            .folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+    }
+
+    public static func matches(
+        _ lhs: String, _ rhs: String, usesWindowsPaths: Bool
+    ) -> Bool {
+        key(lhs, usesWindowsPaths: usesWindowsPaths)
+            == key(rhs, usesWindowsPaths: usesWindowsPaths)
+    }
+}
+
 public enum WorktreeFileState: String, Codable, CaseIterable, Sendable {
     case modified
     case added

@@ -361,7 +361,7 @@ func makeModel(
     kwtForceWorktreeRemover:
     @escaping WorkspaceSceneModel.KwtWorktreeRemover = { _, _, _, _, _ in },
     kwtWorktreeChangeReader:
-    @escaping WorkspaceSceneModel.KwtWorktreeChangeReader = { _, _, _, _ in
+    @escaping WorkspaceSceneModel.KwtWorktreeChangeReader = { _, _, _, _, _ in
         .clean
     },
     kwtWorktreeChangesReader:
@@ -656,9 +656,15 @@ func makeModel(
                     host
                 )
             }
+            let routeIdentity: String?
+            switch host {
+            case .local: routeIdentity = nil
+            case let .ssh(info):
+                routeIdentity = try await sshRouteIdentityResolver(info)
+            }
             return ReviewedTmuxSessionIdentity(
                 identity: identity,
-                routeIdentity: nil
+                routeIdentity: routeIdentity
             )
         },
         tmuxSessionStyler: tmuxSessionStyler,

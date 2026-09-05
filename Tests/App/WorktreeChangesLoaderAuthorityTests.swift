@@ -195,6 +195,38 @@ struct WorktreeChangesLoaderAuthorityTests {
         await model.shutdown()
     }
 
+    @MainActor
+    @Test("Windows refresh accepts equivalent paths and reads the original inventory spelling")
+    func windowsRefreshPreservesReadPath() async throws {
+        let fixture = makeFixture()
+        let localHost = HostSummary.fixture()
+        var snapshot = fixture.snapshot
+        snapshot.hosts[0].kind = .remote
+        snapshot.hosts[0].platform = .windows
+        snapshot.hosts[0].sshDestination = "user-a@builder.example.test"
+        snapshot.hosts.append(localHost)
+        snapshot.worktrees[0].path = #"C:\Worktrees\Topic"#
+        var requested = snapshot.worktrees[0]
+        requested.path = "c:/worktrees/topic"
+        let paths = LockedValue<[String]>([])
+        let model = try makeModel(
+            database: try WorkspaceDatabase.inMemory(),
+            localHostID: localHost.id,
+            snapshot: snapshot,
+            kwtWorktreeChangesReader: { path, repository, generation, _, _ in
+                paths.withLock { $0.append(path) }
+                return WorktreeFileChanges(
+                    repository: repository, path: path, generation: generation,
+                    state: .clean, summary: .clean, files: [], observedAt: "now"
+                )
+            }
+        )
+        let result = try await model.loadWorktreeChanges(requested)
+        #expect(paths.load() == [#"C:\Worktrees\Topic"#])
+        #expect(result.path == #"C:\Worktrees\Topic"#)
+        await model.shutdown()
+    }
+
     private func makeFixture() -> AuthorityFixture {
         let host = HostSummary.fixture()
         var project = ProjectSummary.fixture(hostID: host.id)

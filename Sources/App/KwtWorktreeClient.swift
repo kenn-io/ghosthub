@@ -495,15 +495,9 @@ struct KwtWorktreeClient: Sendable {
         matches expected: String,
         platform: SSHHostInfo.Platform
     ) -> Bool {
-        switch platform {
-        case .posix:
-            actual == expected
-        case .windows:
-            actual.replacingOccurrences(of: "/", with: "\\")
-                .caseInsensitiveCompare(
-                    expected.replacingOccurrences(of: "/", with: "\\")
-                ) == .orderedSame
-        }
+        WorktreeChangePath.matches(
+            actual, expected, usesWindowsPaths: platform == .windows
+        )
     }
 
     static func command(
