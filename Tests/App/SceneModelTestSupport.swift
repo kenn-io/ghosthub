@@ -302,6 +302,7 @@ func makeModel(
     database: WorkspaceDatabase,
     localHostID: UUID,
     snapshot: WorkspaceSnapshot? = nil,
+    workspaceInventoryStore: WorkspaceInventoryStore? = nil,
     configuration: WorkspaceConfiguration = .defaults(),
     terminalRuntime: LibghosttyRuntime = .shared,
     notificationService: any NotificationService = NotificationServiceStub(),
@@ -553,6 +554,13 @@ func makeModel(
         SessionReconnectSupervisor.defaultProbeDeadline,
     startServices: Bool = false
 ) throws -> WorkspaceSceneModel {
+    let resolvedWorkspaceInventoryStore = workspaceInventoryStore
+        ?? WorkspaceInventoryStore(
+            kwtLoader: kwtInventoryLoader,
+            kwtProvisioner: kwtRemoteProvisioner,
+            tmuxLoader: tmuxSessionDiscovery,
+            mutationCoordinator: worktreeMutationCoordinator
+        )
     return try WorkspaceSceneModel(
         database: database,
         workspaceConfiguration: configuration,
@@ -586,6 +594,7 @@ func makeModel(
         kwtWorktreeChangeReader: kwtWorktreeChangeReader,
         sshRouteIdentityResolver: sshRouteIdentityResolver,
         worktreeMutationCoordinator: worktreeMutationCoordinator,
+        workspaceInventoryStore: resolvedWorkspaceInventoryStore,
         herdrLifecycleCoordinator: herdrLifecycleCoordinator,
         zellijSessionKillCoordinator: zellijSessionKillCoordinator,
         herdrSessionRecordReader: herdrSessionRecordReader,

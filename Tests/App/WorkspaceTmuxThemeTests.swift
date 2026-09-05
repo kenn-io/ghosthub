@@ -309,6 +309,7 @@ struct WorkspaceTmuxThemeTests {
 
         generalDiscoveryCanFindSession.store(true)
         scene.model.startTmuxSessionDiscovery()
+        scene.model.refreshTmuxSessionDiscovery()
         await waitUntilMainActor {
             scene.model.pendingCreatedTmuxSessionCount == 0
                 && appliedIdentities.load() == [sessionIdentity]

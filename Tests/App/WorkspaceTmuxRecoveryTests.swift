@@ -1,6 +1,7 @@
 import GhosthubTransport
 import Combine
 import Foundation
+import GhosthubPersistence
 import Synchronization
 import GhosthubSettings
 import GhosthubTerminal
@@ -103,14 +104,23 @@ extension WorkspaceTmuxDiscoveryTests {
         let surfaceStore = RecordingNativeSessionSurfaceStore(
             closeOnRegistrationCode: 255
         )
+        let coordinator = WorktreeMutationCoordinator()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in KwtHostInventory(projects: []) },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
+            workspaceInventoryStore: store,
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            worktreeMutationCoordinator: coordinator,
             tmuxSessionValidationDiscovery: { _, _ in
                 .success([
                     DiscoveredTmuxSession(
@@ -126,6 +136,18 @@ extension WorkspaceTmuxDiscoveryTests {
             },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
+        let second = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: environment.localHostID,
+            snapshot: WorkspaceSnapshot(
+                hosts: environment.snapshot.hosts,
+                projects: [],
+                worktrees: []
+            ),
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator
+        )
+        second.startTmuxSessionDiscovery()
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.remoteHost.id,
             name: "release-work"
@@ -139,7 +161,16 @@ extension WorkspaceTmuxDiscoveryTests {
 
         #expect(surfaceStore.requestedConfigurations.count >= 2)
         #expect(model.activeBorrowedTmuxSessionIsConnected)
+        await waitUntilMainActor {
+            second.snapshot.host(id: environment.remoteHost.id)?
+                .tmuxSessions.map(\.name) == ["release-work"]
+        }
+        #expect(
+            second.snapshot.host(id: environment.remoteHost.id)?
+                .tmuxSessions.map(\.name) == ["release-work"]
+        )
         await model.shutdown()
+        await second.shutdown()
     }
 
     @MainActor

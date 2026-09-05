@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import GhosthubPersistence
 import GhosthubSettings
 import GhosthubTransport
 import GhosthubUI
@@ -258,12 +259,7 @@ struct WorkspaceWorktreeCreationTests {
         )
 
         secondModel.startKwtInventory()
-        for _ in 0 ..< 1_000 {
-            if await inventoryRace.firstCallStarted {
-                break
-            }
-            await Task.yield()
-        }
+        await waitUntilMainActor { await inventoryRace.firstCallStarted }
         #expect(await inventoryRace.firstCallStarted)
 
         let mutation = Task { @MainActor in
@@ -275,25 +271,17 @@ struct WorkspaceWorktreeCreationTests {
                 )
             )
         }
-        for _ in 0 ..< 1_000 {
-            if await mutationHold.started {
-                break
-            }
-            await Task.yield()
-        }
+        await waitUntilMainActor { await mutationHold.started }
         #expect(await mutationHold.started)
         await inventoryRace.releaseFirstCall()
         await mutationHold.release()
         await mutation.value
 
-        for _ in 0 ..< 10_000 {
-            if await inventoryRace.calls >= 2,
-               secondModel.snapshot.worktrees.contains(where: {
-                   $0.branch == "feature/refreshed"
-               }) {
-                break
-            }
-            await Task.yield()
+        await waitUntilMainActor {
+            await inventoryRace.calls >= 2
+                && secondModel.snapshot.worktrees.contains(where: {
+                    $0.branch == "feature/refreshed"
+                })
         }
         #expect(await inventoryRace.calls >= 2)
         #expect(secondModel.snapshot.worktrees.contains {
@@ -665,6 +653,14 @@ struct WorkspaceWorktreeCreationTests {
             isPrimary: true,
             tmuxSessionName: "kwt-workspace-kwt"
         ))
+        snapshot.directoryWorkspaces.append(DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            name: "scratch",
+            path: "/tmp/scratch",
+            tmuxSessionName: "kwt-directory-scratch",
+            sessionLive: false
+        ))
         let workspace = PullRequestWorkspace(
             id: "workspace-32",
             repository: "github.com/kenn-io/ghosthub",
@@ -688,16 +684,30 @@ struct WorkspaceWorktreeCreationTests {
             isImported: true,
             workspace: workspace
         )
+        let coordinator = WorktreeMutationCoordinator()
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                throw KwtInventoryError.commandFailed(
+                    host: "this Mac",
+                    status: 1
+                )
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
+            workspaceInventoryStore: store,
             kwtInventoryLoader: { _ in
                 throw KwtInventoryError.commandFailed(
                     host: "this Mac",
                     status: 1
                 )
             },
+            worktreeMutationCoordinator: coordinator,
             kwtPullRequestImporter: { id, identity, _ in
                 #expect(id == candidate.id)
                 #expect(identity == "github.com/kenn-io/ghosthub")
@@ -732,7 +742,32 @@ struct WorkspaceWorktreeCreationTests {
         #expect(imported.pullRequestState == .open)
         #expect(model.snapshot.project(id: unrelatedProjectID) != nil)
         #expect(model.snapshot.worktree(id: unrelatedWorktreeID) != nil)
+        #expect(model.snapshot.directoryWorkspaces.contains {
+            $0.path == "/tmp/scratch"
+        })
+
+        let second = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: environment.host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: snapshot.hosts,
+                projects: [],
+                worktrees: []
+            ),
+            workspaceInventoryStore: store,
+            worktreeMutationCoordinator: coordinator
+        )
+        second.startKwtInventory()
+        await waitUntilMainActor {
+            second.snapshot.worktrees.contains {
+                $0.path == workspace.path
+            }
+        }
+        #expect(second.snapshot.worktrees.contains {
+            $0.path == workspace.path
+        })
         await model.shutdown()
+        await second.shutdown()
     }
 
     private func inventory(

@@ -1996,6 +1996,272 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("Quarantine resolution hides a legacy-identity record at the removed path")
+    func quarantineResolutionHidesLegacyRecordAtRemovedPath() async throws {
+        let environment = try setupStandardEnvironment()
+        let snapshot = environment.snapshot
+        let project = try #require(snapshot.projects.first)
+        let worktree = try #require(snapshot.worktrees.first)
+        let coordinator = WorktreeMutationCoordinator()
+        #expect(coordinator.acquire(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey
+        ))
+        coordinator.prepareRemoval(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey,
+            worktrees: [WorktreeMutationCoordinator.RemovalTombstone(
+                path: worktree.path,
+                generation: worktree.generation ?? ""
+            )],
+            presentationTargets: []
+        )
+        coordinator.quarantineProjectRemoval(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey,
+            projectPath: project.rootPath,
+            host: .local
+        )
+        let legacy = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "",
+                    name: project.name,
+                    path: project.rootPath,
+                    lastTouched: nil
+                ),
+                worktrees: [],
+                warning: nil
+            ),
+        ])
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in legacy },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            workspaceInventoryStore: store,
+            kwtInventoryLoader: { _ in legacy },
+            worktreeMutationCoordinator: coordinator
+        )
+
+        model.startKwtInventory()
+
+        await waitUntilMainActor { coordinator.scopes.isEmpty }
+        await waitUntilMainActor {
+            !model.snapshot.projects.contains {
+                $0.rootPath == project.rootPath
+            }
+        }
+        #expect(!model.snapshot.projects.contains {
+            $0.rootPath == project.rootPath
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Removing a legacy-identity project keeps other legacy projects")
+    func removingLegacyProjectKeepsOtherLegacyProjects() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        let removed = ProjectSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            scopedKey: "",
+            name: "Removed",
+            rootPath: "/tmp/legacy-removed"
+        )
+        let kept = ProjectSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            scopedKey: "",
+            name: "Kept",
+            rootPath: "/tmp/legacy-kept"
+        )
+        snapshot.projects.append(contentsOf: [removed, kept])
+        let coordinator = WorktreeMutationCoordinator()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            worktreeMutationCoordinator: coordinator
+        )
+        #expect(coordinator.acquire(
+            hostID: environment.host.id,
+            projectIdentity: ""
+        ))
+
+        coordinator.release(
+            hostID: environment.host.id,
+            projectIdentity: "",
+            removesProject: true,
+            allowsRemovalRestoration: false,
+            projectPath: removed.rootPath
+        )
+
+        #expect(model.snapshot.project(id: removed.id) == nil)
+        #expect(model.snapshot.project(id: kept.id) != nil)
+        #expect(model.snapshot.project(id: environment.project.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Removing a canonical project removes its legacy-identity record")
+    func removingCanonicalProjectRemovesLegacyRecord() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        let project = try #require(snapshot.projects.first)
+        let legacyTwin = ProjectSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            scopedKey: "",
+            name: project.name,
+            rootPath: project.rootPath
+        )
+        let other = ProjectSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            scopedKey: "",
+            name: "Other",
+            rootPath: "/tmp/legacy-other"
+        )
+        snapshot.projects.append(contentsOf: [legacyTwin, other])
+        let coordinator = WorktreeMutationCoordinator()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            worktreeMutationCoordinator: coordinator
+        )
+        #expect(coordinator.acquire(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey
+        ))
+
+        coordinator.release(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey,
+            removesProject: true,
+            allowsRemovalRestoration: false,
+            projectPath: project.rootPath
+        )
+
+        #expect(model.snapshot.project(id: project.id) == nil)
+        #expect(model.snapshot.project(id: legacyTwin.id) == nil)
+        #expect(model.snapshot.project(id: other.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Removing a project keeps the same repository registered elsewhere")
+    func removingProjectKeepsSameRepositoryElsewhere() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        let project = try #require(snapshot.projects.first)
+        let elsewhere = ProjectSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            scopedKey: project.scopedKey,
+            name: project.name,
+            rootPath: "/tmp/ghosthub-elsewhere"
+        )
+        snapshot.projects.append(elsewhere)
+        let coordinator = WorktreeMutationCoordinator()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            worktreeMutationCoordinator: coordinator
+        )
+        #expect(coordinator.acquire(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey
+        ))
+
+        coordinator.release(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey,
+            removesProject: true,
+            allowsRemovalRestoration: false,
+            projectPath: project.rootPath
+        )
+
+        #expect(model.snapshot.project(id: project.id) == nil)
+        #expect(model.snapshot.project(id: elsewhere.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Quarantine resolution ignores the same repository at another path")
+    func quarantineResolutionIgnoresSameRepositoryElsewhere() async throws {
+        let environment = try setupStandardEnvironment()
+        let snapshot = environment.snapshot
+        let project = try #require(snapshot.projects.first)
+        let worktree = try #require(snapshot.worktrees.first)
+        let coordinator = WorktreeMutationCoordinator()
+        #expect(coordinator.acquire(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey
+        ))
+        coordinator.prepareRemoval(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey,
+            worktrees: [WorktreeMutationCoordinator.RemovalTombstone(
+                path: worktree.path,
+                generation: worktree.generation ?? ""
+            )],
+            presentationTargets: []
+        )
+        coordinator.quarantineProjectRemoval(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey,
+            projectPath: project.rootPath,
+            host: .local
+        )
+        var elsewhere = project
+        elsewhere.rootPath = "/tmp/ghosthub-elsewhere"
+        let inventory = WorkspaceTmuxTestSupport.inventory(
+            project: elsewhere,
+            worktrees: []
+        )
+        let removed = LockedValue<Bool?>(nil)
+        let events = coordinator.events.sink { event in
+            if event.phase == .ended {
+                removed.store(event.removesProject)
+            }
+        }
+        defer { events.cancel() }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in inventory },
+            worktreeMutationCoordinator: coordinator
+        )
+
+        model.startKwtInventory()
+
+        await waitUntilMainActor { coordinator.scopes.isEmpty }
+        // The quarantined project was removed rather than restored onto the
+        // registration elsewhere.
+        #expect(removed.load() == true)
+        await waitUntilMainActor {
+            model.snapshot.projects.contains {
+                $0.rootPath == elsewhere.rootPath
+            }
+        }
+        #expect(!model.snapshot.projects.contains {
+            $0.rootPath == project.rootPath
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("Replacement endpoint cannot classify an old quarantine as removed")
     func replacementEndpointDoesNotResolveOldQuarantine() async throws {
         let environment = try setupRemoteEnvironment()

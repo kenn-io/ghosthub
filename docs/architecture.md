@@ -1117,12 +1117,26 @@ Zellij's unformatted session list is independently authoritative for active
 Zellij sessions. Exited entries are excluded. Missing Zellij is silent, while
 malformed output or another failure produces only a host-scoped warning.
 Zellij fleet sweeps accumulate their host results and publish the completed
-runtime inventory once. Tmux and Herdr publish host-scoped runtime results as
-hosts complete. Session-only publication uses the runtime overlay, which cannot
-reconcile kwt projects or worktrees and cannot normalize their paths. The full
-overlay remains reserved for authoritative kwt changes. Application activation
-starts neither inventory discovery nor process sampling; explicit refresh and
-lifecycle reconciliation own those costs.
+runtime inventory once. Herdr publishes host-scoped runtime results as hosts
+complete. The macOS app owns KWT and tmux fleet inventory in one process-wide
+cache keyed by resolved command host. Workspace scenes subscribe with their
+stable host identities and apply cached results through their scene-local
+reconciliation guards. The first subscriber refreshes both lanes, one cadence
+refreshes them every 30 seconds while the app is active, and reactivation
+refreshes them immediately. Failed refreshes retain the last successful rows
+while revoking freshness and publishing host-scoped warnings. The cache also
+owns the refresh that follows a worktree mutation: an authoritative
+post-mutation KWT publication satisfies it, and tmux is reloaded once for the
+mutated host. A mutation captures the cache's mutation epoch for its host when
+it acquires its scope; a publication whose epoch predates a later mutation on
+that host is rejected, and the fence-end reload reconciles instead. Inventory
+loaded for removal preflight or failed-removal classification stays local to
+the mutating scene and still excludes the cache's active removal tombstones. Scene-local tmux probes capture the cache's refresh epoch before
+they run and publish to it only when no newer shared refresh has started since.
+Herdr and Zellij inventories remain scene-owned. Session-only publication uses the runtime
+overlay, which cannot reconcile KWT projects or worktrees and cannot normalize
+their paths. The full overlay remains reserved for authoritative KWT changes.
+Application activation still does not start process sampling.
 
 Ghosthub local persistence stores app-owned state:
 
