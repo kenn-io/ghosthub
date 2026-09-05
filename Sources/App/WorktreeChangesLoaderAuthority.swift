@@ -81,6 +81,8 @@ enum WorktreeChangesLoaderAuthority {
 }
 
 extension KwtRemoteInstallError: WorktreeChangesRetryClassifying {
+    var requiresInventoryRefresh: Bool { false }
+
     var isRetryable: Bool {
         let status: Int32
         switch self {
@@ -99,12 +101,16 @@ extension KwtRemoteInstallError: WorktreeChangesRetryClassifying {
 }
 
 extension KwtSSHLeaseError: WorktreeChangesRetryClassifying {
+    var requiresInventoryRefresh: Bool { false }
+
     var isRetryable: Bool {
         SSHConnectionFailure.retryableTransportFailure(self) != nil
     }
 }
 
 extension KwtSSHRouteError: WorktreeChangesRetryClassifying {
+    var requiresInventoryRefresh: Bool { false }
+
     var isRetryable: Bool {
         guard case let .commandFailed(status) = self else { return false }
         return status == AccountCommandRunner.timedOutStatus

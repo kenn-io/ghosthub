@@ -2,12 +2,98 @@ import Foundation
 import GhosthubPersistence
 import GhosthubTransport
 import GhosthubTmux
+import GhosthubUI
 import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
 @Suite("worktree changes loader authority")
 struct WorktreeChangesLoaderAuthorityTests {
+    @MainActor
+    @Test(
+        "registration changes stop stale polling until inventory supplies a new identity",
+        arguments: [false, true]
+    )
+    func registrationChangeWaitsForInventoryRefresh(manualRefreshDuringRead: Bool) async throws {
+        let fixture = makeFixture()
+        var snapshot = fixture.snapshot
+        let oldGeneration = try #require(fixture.worktree.generation)
+        let newGeneration = String(repeating: "f", count: 32)
+        let reads = LockedValue<[String]>([])
+        let delays = LockedValue<[Duration]>([])
+        let client = KwtWorktreeClient(localRunner: { _, command in
+            if command.contains(oldGeneration) {
+                return (1, """
+                GHOSTHUB_KWT_JSON
+                {"error":{"code":"registration_changed","message":"Worktree registration changed.","retryable":true}}
+                """)
+            }
+            return (0, """
+            GHOSTHUB_KWT_JSON
+            {"worktree":{"repository":"\(fixture.project.scopedKey)","path":"\(fixture.worktree
+                .path)","generation":"\(
+                newGeneration
+            )"},"changes":{"state":"clean","summary":{"modified":0,"added":0,"deleted":0,"untracked":0,"staged":0,"conflicts":0},"files":[]},"observed_at":"now"}
+            """)
+        })
+        let store = WorktreeChangesStore()
+        store.setExpanded(true, worktreeID: fixture.worktree.id)
+        let oldIdentity = try #require(WorktreeChangesIdentity.resolve(
+            worktreeID: fixture.worktree.id, in: snapshot
+        ))
+        let poll = {
+            let worktree = snapshot.worktrees[0]
+            let identity = try #require(WorktreeChangesIdentity.resolve(
+                worktreeID: worktree.id, in: snapshot
+            ))
+            await WorktreeChangesPollLoop.run(
+                identity: identity, worktree: worktree, store: store,
+                currentSnapshot: { snapshot }, isEligible: { true },
+                load: { requested in
+                    let generation = try #require(requested.generation)
+                    reads.withLock { $0.append(generation) }
+                    if manualRefreshDuringRead, generation == oldGeneration {
+                        await MainActor.run {
+                            store.requestManualRefresh(for: oldIdentity, refreshInventory: {
+                                Issue.record("The in-flight read has not failed yet")
+                            })
+                        }
+                    }
+                    return try await client.changes(
+                        worktreePath: requested.path,
+                        expectedRepository: fixture.project.scopedKey,
+                        expectedGeneration: generation, on: .local
+                    )
+                },
+                sleep: { duration in
+                    delays.withLock { $0.append(duration) }
+                    throw CancellationError()
+                }
+            )
+        }
+
+        try await poll()
+        try await poll()
+        #expect(reads.load() == [oldGeneration])
+        #expect(delays.load().isEmpty)
+        #expect(store.entry(for: oldIdentity).requiresManualRefresh)
+        #expect(!store.entry(for: oldIdentity).isLoading)
+        #expect(store.entry(for: oldIdentity).errorMessage?
+            .contains("Refresh workspace inventory") == true)
+
+        store.requestManualRefresh(for: oldIdentity, refreshInventory: {
+            snapshot.worktrees[0].generation = newGeneration
+        })
+        let newIdentity = try #require(WorktreeChangesIdentity.resolve(
+            worktreeID: fixture.worktree.id, in: snapshot
+        ))
+        store.prune(keeping: [newIdentity])
+        try await poll()
+        #expect(reads.load() == [oldGeneration, newGeneration])
+        #expect(store.entry(for: newIdentity).hasSuccessfulValue)
+        #expect(!store.entry(for: newIdentity).requiresManualRefresh)
+    }
+
     @Test("current inventory supplies the exact guarded target")
     func currentTarget() async throws {
         let fixture = makeFixture()

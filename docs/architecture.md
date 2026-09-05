@@ -585,6 +585,10 @@ a replacement waits for that cleanup before starting. Retryable failures use
 bounded exponential backoff with identity-stable jitter, while non-retryable
 failures wait for explicit Refresh. A later read failure retains the last
 successful rows as stale.
+Registration-change errors stop polling even when Kwt marks them retryable:
+the captured identity is no longer valid. In that state the panel's Refresh
+action reloads workspace inventory, and a newly resolved identity restarts
+inspection.
 Both the requested identity and the response are checked against current
 inventory before publication, so a moved worktree, changed registration, or
 reconfigured host cannot publish results into an obsolete row.

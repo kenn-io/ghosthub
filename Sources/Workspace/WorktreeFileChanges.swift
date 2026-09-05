@@ -27,6 +27,7 @@ public enum WorktreeFileState: String, Codable, CaseIterable, Sendable {
 
 public protocol WorktreeChangesRetryClassifying: Error {
     var isRetryable: Bool { get }
+    var requiresInventoryRefresh: Bool { get }
 }
 
 public struct WorktreeFileChange: Codable, Equatable, Sendable {

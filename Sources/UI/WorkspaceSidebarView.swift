@@ -1670,7 +1670,10 @@ struct WorkspaceSidebarView: View {
             WorktreeChangesView(
                 entry: entry,
                 onRefresh: {
-                    worktreeChanges.requestManualRefresh(for: identity)
+                    worktreeChanges.requestManualRefresh(
+                        for: identity,
+                        refreshInventory: onRefreshInventory
+                    )
                 }
             )
             .task(id: taskID) {

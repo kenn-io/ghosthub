@@ -120,6 +120,7 @@ public struct WorktreeChangesEntry: Equatable, Sendable {
     public var errorMessage: String?
     public var isStale = false
     public var requiresManualRefresh = false
+    public var requiresInventoryRefresh = false
     public var manualRefreshRevision: UInt64 = 0
     public var resumeRevision: UInt64 = 0
 
@@ -133,6 +134,7 @@ public struct WorktreeChangesEntry: Equatable, Sendable {
             && errorMessage == other.errorMessage
             && isStale == other.isStale
             && requiresManualRefresh == other.requiresManualRefresh
+            && requiresInventoryRefresh == other.requiresInventoryRefresh
             && manualRefreshRevision == other.manualRefreshRevision
             && resumeRevision == other.resumeRevision
     }
@@ -252,9 +254,16 @@ public final class WorktreeChangesStore: ObservableObject {
                     completedEntry.errorMessage = nil
                     completedEntry.isStale = false
                     completedEntry.requiresManualRefresh = false
+                    completedEntry.requiresInventoryRefresh = false
                 case let .failure(error):
                     completedEntry.errorMessage = error.localizedDescription
                     completedEntry.isStale = completedEntry.hasSuccessfulValue
+                    completedEntry.requiresInventoryRefresh = (
+                        error as? any WorktreeChangesRetryClassifying
+                    )?.requiresInventoryRefresh ?? false
+                    if completedEntry.requiresInventoryRefresh {
+                        completedEntry.isLoading = false
+                    }
                     completedEntry.requiresManualRefresh = !(
                         (error as? any WorktreeChangesRetryClassifying)?
                             .isRetryable ?? true
@@ -269,7 +278,8 @@ public final class WorktreeChangesStore: ObservableObject {
         for waitingIdentity in waitingIdentities {
             restartAfterInFlight.remove(waitingIdentity)
             var waitingEntry = entry(for: waitingIdentity)
-            if manualRestartAfterInFlight.remove(waitingIdentity) != nil {
+            if manualRestartAfterInFlight.remove(waitingIdentity) != nil,
+               !waitingEntry.requiresInventoryRefresh {
                 waitingEntry.requiresManualRefresh = false
             }
             waitingEntry.resumeRevision &+= 1
@@ -277,8 +287,15 @@ public final class WorktreeChangesStore: ObservableObject {
         }
     }
 
-    public func requestManualRefresh(for identity: WorktreeChangesIdentity) {
+    public func requestManualRefresh(
+        for identity: WorktreeChangesIdentity,
+        refreshInventory: () -> Void
+    ) {
         var entry = entry(for: identity)
+        guard !entry.requiresInventoryRefresh else {
+            refreshInventory()
+            return
+        }
         entry.isLoading = true
         entry.requiresManualRefresh = false
         guard activeRequestByWorktreeID[identity.worktreeID] == nil else {

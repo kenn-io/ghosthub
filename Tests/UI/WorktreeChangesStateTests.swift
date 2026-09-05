@@ -110,7 +110,9 @@ struct WorktreeChangesStateTests {
 
         #expect(!store.entry(for: fixture.identity).isLoading)
 
-        store.requestManualRefresh(for: fixture.identity)
+        store.requestManualRefresh(for: fixture.identity, refreshInventory: {
+            Issue.record("Ordinary refresh should not reload inventory")
+        })
         #expect(store.entry(for: fixture.identity).isLoading)
         store.finishRequest(
             request,
@@ -532,7 +534,9 @@ struct WorktreeChangesStateTests {
         #expect(await loader.loadCount == 1)
         #expect(!store.entry(for: fixture.identity).hasSuccessfulValue)
 
-        store.requestManualRefresh(for: fixture.identity)
+        store.requestManualRefresh(for: fixture.identity, refreshInventory: {
+            Issue.record("Ordinary refresh should not reload inventory")
+        })
         await poll()
 
         #expect(await loader.loadCount == 2)
@@ -871,6 +875,7 @@ private final class ChangeCounter: @unchecked Sendable {
 private struct ClassifiedTestFailure:
     Error, LocalizedError, WorktreeChangesRetryClassifying {
     let isRetryable: Bool
+    var requiresInventoryRefresh: Bool { false }
     var errorDescription: String? { "read failed" }
 }
 

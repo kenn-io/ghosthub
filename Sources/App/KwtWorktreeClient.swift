@@ -73,6 +73,10 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
             retryable,
             _
         ):
+            if requiresInventoryRefresh {
+                return "Worktree registration changed. Refresh workspace inventory"
+                    + " to inspect the current worktree."
+            }
             let detail = message
                 ?? "kwt could not inspect worktree changes on \(host)"
                 + " (status \(status))."
@@ -88,11 +92,19 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
 }
 
 extension KwtWorktreeError: WorktreeChangesRetryClassifying {
+    var requiresInventoryRefresh: Bool {
+        guard case let .changeInspectionFailed(_, _, code, _, _, _) = self
+        else { return false }
+        return code == "registration_changed"
+    }
+
     var isRetryable: Bool {
         if case let .changeInspectionFailed(
             _, _, _, _, retryable, _
         ) = self {
-            return retryable
+            // Kwt permits retry after resolving a fresh registration. Polling
+            // with the same captured identity cannot recover from this error.
+            return retryable && !requiresInventoryRefresh
         }
         return false
     }

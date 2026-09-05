@@ -116,6 +116,10 @@ permanent failure waits for **Refresh**. Use **Refresh** for an immediate read
 or the disclosure chevron to hide the panel. If a later read fails, Ghosthub
 keeps the last successful rows visible and marks them stale.
 
+If Kwt reports that the worktree registration changed, automatic retries stop.
+Select the panel's **Refresh** button to refresh workspace inventory. The panel
+resumes inspection when inventory supplies the current worktree identity.
+
 This view is deliberately read-only. Kwt supplies the semantic file status;
 Ghosthub does not calculate or display diffs and does not offer per-file Git
 actions.

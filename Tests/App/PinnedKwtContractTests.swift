@@ -423,12 +423,14 @@ struct PinnedKwtContractTests {
                 on: .local
             )
         } throws: { error in
-            guard case let .changeInspectionFailed(
-                _, status, code, _, retryable, _
-            ) = error as? KwtWorktreeError else { return false }
+            guard let inspectionError = error as? KwtWorktreeError,
+                  case let .changeInspectionFailed(
+                      _, status, code, _, retryable, _
+                  ) = inspectionError else { return false }
             return status == 1
                 && code == "registration_changed"
                 && retryable
+                && !inspectionError.isRetryable
         }
     }
 
