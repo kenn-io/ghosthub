@@ -6,6 +6,31 @@ import Testing
 
 @Suite("worktree changes read coordinator")
 struct WorktreeChangesReadCoordinatorTests {
+    @Test("an already canceled caller never starts an inspection")
+    func cancellationBeforeRegistration() async {
+        let coordinator = WorktreeChangesReadCoordinator(globalLimit: 1, perHostLimit: 1)
+        let identity = changesIdentity(hostID: UUID(), index: 1)
+        let started = LockedValue(false)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await coordinator.load(identity: identity) {
+                started.withLock { $0 = true }
+                return WorktreeFileChanges(
+                    repository: identity.repository, path: identity.path,
+                    generation: identity.generation, state: .clean,
+                    summary: .clean, files: [], observedAt: "now"
+                )
+            }
+        }
+        switch await task.result {
+        case .success:
+            Issue.record("An already canceled caller should receive cancellation")
+        case let .failure(error):
+            #expect(error is CancellationError)
+        }
+        #expect(!started.load())
+    }
+
     @Test("reads are bounded per host")
     func boundedHostConcurrency() async throws {
         let coordinator = WorktreeChangesReadCoordinator(

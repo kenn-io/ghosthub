@@ -10,6 +10,43 @@ import Testing
 @Suite("worktree changes loader authority")
 struct WorktreeChangesLoaderAuthorityTests {
     @MainActor
+    @Test("malformed successful inspection waits for manual refresh", arguments: [
+        "GHOSTHUB_KWT_JSON\nnot-json", "missing marker",
+    ])
+    func malformedInspectionStopsPolling(output: String) async throws {
+        let fixture = makeFixture()
+        let reads = LockedValue(0)
+        let client = KwtWorktreeClient(localRunner: { _, _ in
+            reads.withLock { $0 += 1 }
+            return (0, output)
+        })
+        let identity = try #require(WorktreeChangesIdentity.resolve(
+            worktreeID: fixture.worktree.id, in: fixture.snapshot
+        ))
+        let store = WorktreeChangesStore()
+        store.setExpanded(true, worktreeID: fixture.worktree.id)
+        for _ in 0 ..< 2 {
+            await WorktreeChangesPollLoop.run(
+                identity: identity, worktree: fixture.worktree, store: store,
+                currentSnapshot: { fixture.snapshot }, isEligible: { true },
+                load: { worktree in
+                    try await client.changes(
+                        worktreePath: worktree.path,
+                        expectedRepository: identity.repository,
+                        expectedGeneration: identity.generation, on: .local
+                    )
+                },
+                sleep: { _ in
+                    Issue.record("Malformed inspection must not schedule a retry")
+                    throw CancellationError()
+                }
+            )
+        }
+        #expect(reads.load() == 1)
+        #expect(store.entry(for: identity).requiresManualRefresh)
+    }
+
+    @MainActor
     @Test(
         "registration changes stop stale polling until inventory supplies a new identity",
         arguments: [false, true]

@@ -53,6 +53,10 @@ actor WorktreeChangesReadCoordinator {
         let key = WaiterKey(identity: identity, id: UUID())
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
                 enqueue(
                     key: key,
                     operation: operation,
