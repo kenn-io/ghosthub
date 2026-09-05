@@ -102,6 +102,19 @@ struct KwtDirectoryWorkspaceRecord: Codable, Equatable, Sendable {
     }
 }
 
+extension KwtDirectoryWorkspaceRecord {
+    init(_ workspace: DirectoryWorkspaceSummary) {
+        self.init(
+            name: workspace.name,
+            path: workspace.path,
+            sessionName: workspace.tmuxSessionName,
+            sessionLive: workspace.sessionLive,
+            tmuxSocketName: workspace.tmuxSocketName,
+            tmuxAttachMode: workspace.tmuxAttachMode
+        )
+    }
+}
+
 struct KwtProjectInventory: Equatable, Sendable {
     var project: KwtProjectRecord
     var worktrees: [KwtWorktreeRecord]
@@ -166,8 +179,22 @@ struct KwtHostInventory: Equatable, Sendable {
                             }
                         })
                 }
-                let exclusions =
-                    excludingWorktrees[item.project.repository] ?? []
+                // Removals from a legacy-empty project are keyed by its path.
+                // A legacy-empty record cannot name its repository, so every
+                // repository-keyed removal applies to it as well.
+                var exclusions = excludingWorktrees[
+                    KwtSnapshotMerger.removalPathKey(item.project.path)
+                ] ?? []
+                if item.project.repository.isEmpty {
+                    for (key, identities) in excludingWorktrees
+                        where !KwtSnapshotMerger.isRemovalPathKey(key) {
+                        exclusions.formUnion(identities)
+                    }
+                } else {
+                    exclusions.formUnion(
+                        excludingWorktrees[item.project.repository] ?? []
+                    )
+                }
                 retained.worktrees.removeAll { worktree in
                     exclusions.contains {
                         $0.matches(
@@ -751,16 +778,7 @@ enum KwtSnapshotMerger {
         )
         let directoryRecords = inventory.directoryWorkspaceWarning != nil
             && inventory.directoryWorkspaces.isEmpty
-            ? existingDirectoryWorkspaces.map {
-                KwtDirectoryWorkspaceRecord(
-                    name: $0.name,
-                    path: $0.path,
-                    sessionName: $0.tmuxSessionName,
-                    sessionLive: $0.sessionLive,
-                    tmuxSocketName: $0.tmuxSocketName,
-                    tmuxAttachMode: $0.tmuxAttachMode
-                )
-            }
+            ? existingDirectoryWorkspaces.map(KwtDirectoryWorkspaceRecord.init)
             : inventory.directoryWorkspaces
         let directoryWorkspaces = directoryRecords.map { record in
             let recordPath = normalizePath(record.path)
@@ -915,7 +933,32 @@ enum KwtSnapshotMerger {
         return updated
     }
 
-    private static func normalizedPath(_ path: String) -> String {
+    /// The key worktree removal tombstones live under: the project's
+    /// normalized path when known, since a worktree belongs to exactly one
+    /// registration, else the repository identity.
+    static func removalTombstoneKey(
+        repository: String,
+        path: String?
+    ) -> String {
+        guard let path else { return repository }
+        return removalPathKey(path)
+    }
+
+    /// Path keys carry an explicit marker so no repository identity, on any
+    /// platform's path syntax, can be mistaken for one.
+    static func removalPathKey(_ path: String) -> String {
+        removalPathKeyMarker + normalizedPath(path)
+    }
+
+    static func isRemovalPathKey(_ key: String) -> Bool {
+        key.hasPrefix(removalPathKeyMarker)
+    }
+
+    private static let removalPathKeyMarker = "path\u{0}"
+
+    /// Lexically normalizes a host path so equivalent spellings compare
+    /// equal without touching any filesystem.
+    static func normalizedPath(_ path: String) -> String {
         guard path.contains("/") else { return path }
         let isAbsolute = path.hasPrefix("/")
         var components: [Substring] = []
