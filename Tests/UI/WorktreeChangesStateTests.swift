@@ -189,10 +189,47 @@ struct WorktreeChangesStateTests {
             counter.increment()
         }
 
-        store.prune(keeping: [fixture.identity])
+        store.prune(in: fixture.snapshot)
 
         #expect(counter.value == 0)
         withExtendedLifetime(observation) {}
+    }
+
+    @MainActor
+    @Test("unused changes state does not request inventory for pruning")
+    func unusedPruneSkipsInventory() {
+        let store = WorktreeChangesStore()
+        store.prune(in: {
+            Issue.record("Unused changes state should not inspect inventory")
+            return WorkspaceSnapshot(hosts: [], projects: [], worktrees: [])
+        }())
+    }
+
+    @MainActor
+    @Test("inventory pruning retains valid cached files and removes obsolete registrations")
+    func inventoryPrunesTrackedChanges() throws {
+        let fixture = try changesFixture()
+        let store = WorktreeChangesStore()
+        store.setExpanded(true, worktreeID: fixture.worktree.id)
+        let request = try #require(store.beginRequest(for: fixture.identity))
+        store.finishRequest(
+            request, for: fixture.identity, result: .success(fixture.result),
+            publishResult: true, filesChanged: true
+        )
+        store.setExpanded(false, worktreeID: fixture.worktree.id)
+        store.prune(in: fixture.snapshot)
+        #expect(store.entry(for: fixture.identity).hasSuccessfulValue)
+
+        var snapshot = fixture.snapshot
+        snapshot.projects[0].registrationFingerprint = "new-registration"
+        store.setExpanded(true, worktreeID: fixture.worktree.id)
+        store.prune(in: snapshot)
+        #expect(store.isExpanded(fixture.worktree.id))
+        #expect(!store.entry(for: fixture.identity).hasSuccessfulValue)
+
+        snapshot.worktrees = []
+        store.prune(in: snapshot)
+        #expect(!store.isExpanded(fixture.worktree.id))
     }
 
     @Test("file comparison detects only exact snapshot changes")

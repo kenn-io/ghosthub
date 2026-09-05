@@ -308,6 +308,26 @@ public final class WorktreeChangesStore: ObservableObject {
         entries[identity] = entry
     }
 
+    public func prune(in snapshot: @autoclosure () -> WorkspaceSnapshot) {
+        let trackedWorktreeIDs = expandedWorktreeIDs
+            .union(entries.keys.map(\.worktreeID))
+            .union(activeRequestByWorktreeID.keys)
+            .union(collapsedWorktreeIDs)
+        guard !trackedWorktreeIDs.isEmpty else { return }
+        let snapshot = snapshot()
+        let hostsByID = snapshot.hostsByID
+        let projectsByID = snapshot.projectsByID
+        let identities = Set(snapshot.worktrees.compactMap { worktree -> WorktreeChangesIdentity? in
+            guard trackedWorktreeIDs.contains(worktree.id) else { return nil }
+            return WorktreeChangesIdentity.resolve(
+                worktree: worktree,
+                host: hostsByID[worktree.hostID],
+                project: projectsByID[worktree.projectID]
+            )
+        })
+        prune(keeping: identities)
+    }
+
     public func prune(keeping identities: Set<WorktreeChangesIdentity>) {
         let worktreeIDs = Set(identities.map(\.worktreeID))
         let retainedEntries = entries.filter {

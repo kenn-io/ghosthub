@@ -2239,18 +2239,7 @@ struct WorkspaceSidebarView: View {
             inventoryWarningsByHost: inventoryWarningsByHost
         )
         else { return }
-        let hostsByID = snapshot.hostsByID
-        let projectsByID = snapshot.projectsByID
-        let worktreeChangeIdentities = Set(
-            snapshot.worktrees.compactMap { worktree in
-                WorktreeChangesIdentity.resolve(
-                    worktree: worktree,
-                    host: hostsByID[worktree.hostID],
-                    project: projectsByID[worktree.projectID]
-                )
-            }
-        )
-        worktreeChanges.prune(keeping: worktreeChangeIdentities)
+        worktreeChanges.prune(in: snapshot)
         var worktreeOrder = WorkspaceSidebarOrder(
             rawValue: worktreeOrderRawValue
         )
