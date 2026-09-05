@@ -3,10 +3,51 @@ import Foundation
 import GhosthubTmux
 import GhosthubWorkspace
 import Testing
+import GhosthubTestSupport
 @testable import GhosthubApp
 
 @Suite("kwt worktree creation")
 struct KwtWorktreeClientTests {
+    @Test("only changed-file inspection accepts large helper output", arguments: [0, 2])
+    func outputBudgetDependsOnOperation(mebibytes: Int) async throws {
+        let fixture = try TempDirectoryFixture()
+        let shell = try fixture.createExecutable(
+            name: "shell", content: "#!/bin/sh\nexec /bin/sh -c \"$2\"\n"
+        )
+        let helper = try fixture.createExecutable(name: "kwt", content: """
+        #!/bin/sh
+        /bin/dd if=/dev/zero bs=1048576 count=\(mebibytes) 2>/dev/null | /usr/bin/tr '\\000' ' '
+        if [ "$1" = changes ]; then
+            printf '%s\\n' '{"worktree":{"repository":"example.com/project","path":"/worktrees/topic","generation":"0123456789abcdef0123456789abcdef"},"changes":{"state":"clean","summary":{"modified":0,"added":0,"deleted":0,"untracked":0,"staged":0,"conflicts":0},"files":[]},"observed_at":"now"}'
+        fi
+        """)
+        let client = KwtWorktreeClient(
+            localBinaryPath: helper.path, loginShellProvider: { shell.path }
+        )
+        let create = {
+            try await client.create(
+                request: WorktreeCreateRequest(
+                    projectID: UUID(), branchName: "topic", createsBranch: true
+                ),
+                projectPath: fixture.url.path, on: .local
+            )
+        }
+        if mebibytes == 0 {
+            try await create()
+        } else {
+            await #expect(throws: KwtWorktreeError.commandFailed(
+                host: "localhost", status: AccountCommandRunner.outputExceededStatus
+            )) {
+                try await create()
+            }
+        }
+        let changes = try await client.changes(
+            worktreePath: "/worktrees/topic", expectedRepository: "example.com/project",
+            expectedGeneration: "0123456789abcdef0123456789abcdef", on: .local
+        )
+        #expect(changes.state == .clean)
+    }
+
     @Test("local creation delegates path and session creation to kwt")
     func localCreation() async throws {
         let recorder = CommandRecorder()

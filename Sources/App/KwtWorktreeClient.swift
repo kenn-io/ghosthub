@@ -115,7 +115,7 @@ extension KwtWorktreeError: WorktreeChangesRetryClassifying {
 /// implementation.
 struct KwtWorktreeClient: Sendable {
     private static let jsonMarker = "GHOSTHUB_KWT_JSON\n"
-    private static let maximumOutputBytes = 16 * 1_024 * 1_024
+    private static let maximumChangeOutputBytes = 16 * 1_024 * 1_024
     typealias LocalRunner = @Sendable (
         _ shell: String, _ command: String
     ) -> (status: Int32, stdout: String)
@@ -142,19 +142,16 @@ struct KwtWorktreeClient: Sendable {
         loginShellProvider: @escaping @Sendable () -> String =
             AccountCommandRunner.loginShell
     ) {
-        let maximumOutputBytes = Self.maximumOutputBytes
+        let maximumChangeOutputBytes = Self.maximumChangeOutputBytes
         self.localRunner = localRunner ?? { shell, command in
             AccountCommandRunner.runLoginShell(
                 shell: shell,
                 command: command,
-                timeout: processTimeout,
-                maximumOutputBytes: maximumOutputBytes
+                timeout: processTimeout
             )
         }
         self.remoteRunner = remoteRunner ?? { host, command, expectedRouteIdentity in
-            await KwtSSHCommandClient(
-                maximumOutputBytes: maximumOutputBytes
-            ).run(
+            await KwtSSHCommandClient().run(
                 on: host,
                 command: command,
                 timeout: processTimeout,
@@ -166,13 +163,13 @@ struct KwtWorktreeClient: Sendable {
                 shell: shell,
                 command: command,
                 timeout: changeInspectionTimeout,
-                maximumOutputBytes: maximumOutputBytes
+                maximumOutputBytes: maximumChangeOutputBytes
             )
         }
         changeRemoteRunner = remoteRunner ?? {
             host, command, expectedRouteIdentity in
             await KwtSSHCommandClient(
-                maximumOutputBytes: maximumOutputBytes
+                maximumOutputBytes: maximumChangeOutputBytes
             ).run(
                 on: host,
                 command: command,
