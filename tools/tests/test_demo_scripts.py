@@ -32,6 +32,7 @@ WEBSITE_ASSET_NAMES = (
     "guide-exe-dev.png",
     "guide-worktree.png",
     "guide-worktree-window-counts.png",
+    "guide-worktree-changes.png",
     "guide-project-removal.png",
     "guide-quick-launch.png",
     "guide-terminal.png",
@@ -60,6 +61,65 @@ def run_bash(script: str, *, env: dict[str, str] | None = None) -> subprocess.Co
         capture_output=True,
         check=False,
     )
+
+
+def test_demo_kwt_reports_generation_fenced_worktree_changes(tmp_path: Path) -> None:
+    scratch = tmp_path / "demo"
+    repository = scratch / "repos" / "ghosthub"
+    repository.mkdir(parents=True)
+    worktree = scratch / "worktrees" / "ghosthub" / "fix-reconnect-backoff"
+    worktree.mkdir(parents=True)
+    env = {**os.environ, "GHOSTHUB_DEMO_SCRATCH": str(scratch)}
+    helper = DEMO / "bin" / "kwt"
+
+    inventory = subprocess.run(
+        [str(helper), "list"],
+        cwd=repository,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    records = json.loads(inventory.stdout)
+    record = next(item for item in records if item["path"] == str(worktree))
+    assert record["tmux_attach_mode"] == "direct"
+
+    result = subprocess.run(
+        [
+            str(helper),
+            "changes",
+            str(worktree),
+            "--expected-repository",
+            record["repository"],
+            "--expected-generation",
+            record["generation"],
+            "--json",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    changes = json.loads(result.stdout)
+
+    assert changes["worktree"] == {
+        "repository": record["repository"],
+        "path": str(worktree),
+        "generation": record["generation"],
+    }
+    assert changes["changes"]["summary"] == {
+        "modified": 1,
+        "added": 1,
+        "deleted": 0,
+        "untracked": 1,
+        "staged": 1,
+        "conflicts": 0,
+    }
+    assert [item["path"] for item in changes["changes"]["files"]] == [
+        "README.md",
+        "Tests/ReconnectBackoffTests.swift",
+        "reconnect-notes.md",
+    ]
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="demo scripts target macOS stat")
@@ -1359,7 +1419,7 @@ def test_fetched_asset_ref_is_authoritative_and_atomic(tmp_path: Path) -> None:
         "case \"$1\" in\n"
         "  fetch) exit 0 ;;\n"
         "  cat-file)\n"
-        "    [[ \"$3\" == \"FETCH_HEAD:guide-worktree.png\" ]] && exit 1\n"
+        "    [[ \"$3\" == \"FETCH_HEAD:guide-worktree-changes.png\" ]] && exit 1\n"
         "    exit 0\n"
         "    ;;\n"
         "  show) printf 'fetched-%s' \"${2#*:}\"; exit 0 ;;\n"

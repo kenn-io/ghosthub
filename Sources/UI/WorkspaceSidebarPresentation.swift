@@ -146,10 +146,11 @@ struct WorkspaceWorktreeRemovalActionPresentation: Equatable {
     init(
         isRemovable: Bool,
         isRowHovered: Bool,
-        isActionHovered: Bool
+        isActionHovered: Bool,
+        isFocused: Bool
     ) {
         isVisible = isRemovable
-            && (isRowHovered || isActionHovered)
+            && (isRowHovered || isActionHovered || isFocused)
         reservedWidth = isRemovable ? Self.controlWidth : 0
         hitTargetWidth = isRemovable ? Self.controlWidth : 0
     }
@@ -322,6 +323,18 @@ enum WorkspaceSidebarHierarchy {
 
     static func indent(level: Int) -> CGFloat {
         CGFloat(max(0, level)) * step
+    }
+}
+
+struct WorkspaceWorktreeDisclosurePresentation: Equatable {
+    let leadingIndent: CGFloat
+    let contentIndentLevel: Int
+
+    init(rowIndentLevel: Int) {
+        leadingIndent = WorkspaceSidebarHierarchy.indent(
+            level: rowIndentLevel
+        )
+        contentIndentLevel = 0
     }
 }
 

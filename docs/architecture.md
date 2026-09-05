@@ -290,12 +290,15 @@ present, and reads KWT's machine-readable no-fetch Git status for the exact
 path. Uncommitted changes turn the action into an explicit force confirmation.
 Ghosthub reads the status again before terminating the session, so changes
 that appeared after an ordinary confirmation require a new force
-confirmation. It then terminates only that freshly confirmed tmux identity and
-delegates an absence-guarded removal to pinned KWT. KWT revalidates the
-project, generation, and socket under its lifecycle lock and refuses removal
-if the workspace session reappears before deleting the checkout. If ordinary
-removal discovers still newer uncommitted changes after Ghosthub terminates the
-session, Ghosthub restores the session and requires force confirmation.
+confirmation. If the bounded inspection cannot enumerate an unusually large
+change set, Ghosthub conservatively requires force confirmation instead of
+blocking removal or claiming that the checkout is clean. It then terminates
+only that freshly confirmed tmux identity and delegates an absence-guarded
+removal to pinned KWT. KWT revalidates the project, generation, and socket
+under its lifecycle lock and refuses removal if the workspace session
+reappears before deleting the checkout. If ordinary removal discovers still
+newer uncommitted changes after Ghosthub terminates the session, Ghosthub
+restores the session and requires force confirmation.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
@@ -580,6 +583,32 @@ identity, worktree metadata, and exact tmux session names. Read failures that
 kwt marks retryable use cancellation-aware 1-, 4-, and 15-second backoff before
 Ghosthub publishes a warning. Non-retryable failures remain single-attempt,
 and each retry repeats only the failed idempotent read.
+Each worktree row can also expand an ephemeral, read-only changed-file panel.
+The panel invokes the exact pinned kwt helper with the current repository,
+absolute path, and durable worktree generation as guards. Kwt remains the
+authority for Git status parsing and returns semantic staged and working-tree
+states; Ghosthub does not run Git, calculate diffs, or persist the result.
+Only mounted panels in a visible sidebar of the active key window poll, with
+one non-overlapping request per panel and a five-second delay after each
+completed successful read. A shared ephemeral broker coalesces identical
+reads and permits at most four inspections across the app and two per host.
+When the final caller leaves, cancellation reaches the helper process group;
+a replacement waits for that cleanup before starting. Retryable failures use
+bounded exponential backoff with identity-stable jitter, while non-retryable
+failures wait for explicit Refresh. A later read failure retains the last
+successful rows as stale.
+Registration-change errors stop polling even when Kwt marks them retryable:
+the captured identity is no longer valid. In that state the panel's Refresh
+action reloads workspace inventory, and a newly resolved identity restarts
+inspection.
+Both the requested identity and the response are checked against current
+inventory before publication, so a moved worktree, changed registration, or
+reconfigured host cannot publish results into an obsolete row.
+Kwt's raw Git-status limit remains authoritative; Ghosthub gives the expanded
+JSON response separate bounded transport headroom and reports transport
+overflow as a non-retryable inspection error. The panel presents files in
+pages of 200, suppresses unchanged refresh publications, and retains at most
+eight collapsed snapshots per scene.
 On a macOS or Linux host with no existing kwt registry, the user adds one
 absolute repository path at a time through **Add Project**. Ghosthub delegates
 registration to `kwt projects add --json`, then refreshes ordinary kwt
@@ -1098,8 +1127,8 @@ Kwt's project and worktree JSON surfaces are authoritative for workspace
 identity and exact tmux session names. Direct tmux discovery is authoritative
 for the remaining live sessions on each host and for the eventual result of an
 explicit named-session creation request. A worktree open does not infer live
-session state from kwt inventory: it uses kwt's exact-path start-only command
-to converge the session before attachment.
+session state from kwt inventory: it uses
+kwt's exact-path start-only command to converge the session before attachment.
 On the Rust Windows path, the revision-pinned helper receives the selected
 repository identity, registration fingerprint, exact path, generation, and
 computed session name. KWT revalidates them atomically under its project

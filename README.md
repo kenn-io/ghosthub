@@ -145,7 +145,8 @@ hosts cannot populate the sidebar.
 Expand your Mac in the sidebar and select an existing tmux session. Use the
 host's **+** menu to create a named session. Closing its Ghosthub window or tab
 only detaches. To end a standalone session, hover its sidebar row and click the
-**×**; worktree-backed sessions keep **Kill Session…** in their action menu.
+**×**; for a worktree-backed session, Control-click its worktree row and choose
+**Kill Session…**.
 Both paths confirm the exact host and session before terminating it. If a bare
 session exits on its own, **Reopen** creates the same named session again.
 
@@ -190,7 +191,14 @@ local tracking branch when needed; unmatched input creates a new branch.
 Selecting the primary checkout or a linked worktree creates or repairs its
 canonical tmux session when needed, then attaches an ordinary tmux client.
 
-To remove a non-primary worktree, hover its sidebar row and click the **×**.
+Use the disclosure chevron beside a worktree to expand its staged, working-tree,
+and untracked files without selecting or opening the worktree. Expanded panels
+refresh automatically and can be refreshed or collapsed independently. Ghosthub
+displays Kwt's semantic status only; it does not show diffs or provide file
+actions.
+
+To remove a non-primary worktree, hover over its row and select the **×**, or
+Control-click the row and choose **Remove Worktree…**.
 After confirmation, Ghosthub terminates that worktree's verified live tmux
 session if needed and asks kwt to remove the checkout. The Git branch is kept.
 

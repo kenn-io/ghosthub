@@ -1713,8 +1713,10 @@ struct WorkspaceHerdrPresentationTests {
             return
         }
         await waitUntilMainActor {
-            store.requestedConfigurations.count == 2
-                && model.activeBorrowedHerdrConnectionState == .connected
+            model.activeBorrowedHerdrConnectionState == .connected
+                && store.requestedConfigurations.last?.command?.contains(
+                    "/tmp/replacement-herdr-config"
+                ) == true
         }
 
         #expect(deadAttempts.withLock { $0 } == 1)

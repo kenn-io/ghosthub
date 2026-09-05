@@ -25,6 +25,7 @@ assets=(
   guide-exe-dev.png
   guide-worktree.png
   guide-worktree-window-counts.png
+  guide-worktree-changes.png
   guide-project-removal.png
   guide-quick-launch.png
   guide-terminal.png

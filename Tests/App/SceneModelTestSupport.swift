@@ -361,8 +361,21 @@ func makeModel(
     kwtForceWorktreeRemover:
     @escaping WorkspaceSceneModel.KwtWorktreeRemover = { _, _, _, _, _ in },
     kwtWorktreeChangeReader:
-    @escaping WorkspaceSceneModel.KwtWorktreeChangeReader = { _, _, _ in
+    @escaping WorkspaceSceneModel.KwtWorktreeChangeReader = { _, _, _, _, _ in
         .clean
+    },
+    kwtWorktreeChangesReader:
+    @escaping WorkspaceSceneModel.KwtWorktreeChangesReader = {
+        path, repository, generation, _, _ in
+        WorktreeFileChanges(
+            repository: repository,
+            path: path,
+            generation: generation,
+            state: .clean,
+            summary: .clean,
+            files: [],
+            observedAt: "now"
+        )
     },
     sshRouteIdentityResolver:
     @escaping WorkspaceSceneModel.SSHRouteIdentityResolver = { _ in
@@ -584,6 +597,7 @@ func makeModel(
         kwtWorktreeRemover: kwtWorktreeRemover,
         kwtForceWorktreeRemover: kwtForceWorktreeRemover,
         kwtWorktreeChangeReader: kwtWorktreeChangeReader,
+        kwtWorktreeChangesReader: kwtWorktreeChangesReader,
         sshRouteIdentityResolver: sshRouteIdentityResolver,
         worktreeMutationCoordinator: worktreeMutationCoordinator,
         herdrLifecycleCoordinator: herdrLifecycleCoordinator,
@@ -642,9 +656,15 @@ func makeModel(
                     host
                 )
             }
+            let routeIdentity: String?
+            switch host {
+            case .local: routeIdentity = nil
+            case let .ssh(info):
+                routeIdentity = try await sshRouteIdentityResolver(info)
+            }
             return ReviewedTmuxSessionIdentity(
                 identity: identity,
-                routeIdentity: nil
+                routeIdentity: routeIdentity
             )
         },
         tmuxSessionStyler: tmuxSessionStyler,

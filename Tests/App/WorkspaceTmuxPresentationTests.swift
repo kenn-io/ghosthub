@@ -2001,9 +2001,13 @@ extension WorkspaceTmuxDiscoveryTests {
             ),
         ]
         let surfaceStore = SceneTmuxSurfaceStoreStub()
-        let failure = KwtWorktreeError.changeStatusFailed(
+        let failure = KwtWorktreeError.changeInspectionFailed(
             host: environment.host.name,
-            status: 127
+            status: 127,
+            code: nil,
+            message: nil,
+            retryable: false,
+            details: [:]
         )
         let model = try makeModel(
             database: environment.database,
@@ -2013,7 +2017,7 @@ extension WorkspaceTmuxDiscoveryTests {
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            kwtWorktreeChangeReader: { _, _, _ in throw failure }
+            kwtWorktreeChangeReader: { _, _, _, _, _ in throw failure }
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
