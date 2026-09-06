@@ -22,8 +22,9 @@ struct UpdateRelaunchWindowPlacementTests {
         )
         defer { window.orderOut(nil) }
         var state = WorkspaceWindowState.fresh()
+        let rightmostScreenEdge = try #require(NSScreen.screens.map { $0.frame.maxX }.max())
         state.frame = WorkspaceWindowFrame(
-            x: try #require(NSScreen.screens.map { $0.frame.maxX }.max()) + 2000,
+            x: Double(rightmostScreenEdge) + 2000,
             y: screen.visibleFrame.minY + 50,
             width: screen.visibleFrame.width + 200,
             height: 300

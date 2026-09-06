@@ -101,7 +101,12 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         }
 
         guard case let .match(total, selected) = controller.result else {
-            return XCTFail("expected libghostty to publish a Find match")
+            let visibleMatches = viewportText().components(separatedBy: "needle").count - 1
+            return XCTFail(
+                "expected libghostty to publish a Find match; "
+                    + "result=\(controller.result), working=\(controller.isWorking), "
+                    + "visible matches=\(visibleMatches)"
+            )
         }
         XCTAssertEqual(total, 3)
         XCTAssertNil(selected)
