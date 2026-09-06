@@ -108,7 +108,10 @@ tmux presentation. A directory workspace resolves by its authoritative kwt
 registry path on the same host. SwiftUI and macOS normally
 remain responsible for restoring scene count, native tab groups, and window
 geometry. Before a Sparkle relaunch, Ghosthub also atomically records the
-ordered logical descriptors in a one-shot manifest under `~/.ghosthub/`. The
+ordered logical descriptors and ordinary window frames in a one-shot manifest
+under `~/.ghosthub/`. Frames are captured from live windows immediately before
+update termination and follow the same logical window identity as the session.
+The
 app collects initial and late native scene values until AppKit reports that
 native window restoration has finished and every restored workspace window has
 registered its SwiftUI scene. Ghosthub requires the scenes' optional bindings to
@@ -122,7 +125,11 @@ tokens rather than saved window IDs, preventing SwiftUI from coalescing them wit
 a late native scene; a displaced request is retargeted and issued again with the
 same token. The manifest remains until every saved descriptor has begun
 restoration in exactly one live assigned scene. Native restoration therefore
-still owns geometry and tab grouping without dropping or duplicating a session.
+still owns Spaces, full-screen restoration, and tab grouping. Ghosthub applies
+each saved ordinary window frame when the corresponding NSWindow is available,
+including replayed scenes and late identity corrections, without activating or
+ordering the window. A disconnected display's frame is constrained to an
+available display.
 After assignment, the scene model owns the complete logical descriptor; delayed
 native payloads that share its window UUID but contain stale navigation or
 presentation data are rewritten before they can become persisted scene state.
@@ -346,6 +353,16 @@ without a packaged feed and public key disable the update command instead of
 contacting a release service. The app menu exposes **Check for Updates…**, and
 Sparkle performs automatic background checks using its standard native UI and
 installation flow.
+
+A manual check refreshes an already offered or downloaded update against the
+current channel feed. The probe verifies the feed signature with the bundled
+key and checks the single full release's platform requirements before replacing
+the queued offer. If a newer compatible build exists, Ghosthub replies through
+Sparkle's cancellation interface and waits for that update cycle to finish
+before requesting a fresh Sparkle check. Sparkle still selects, verifies,
+downloads, and installs the update. A failed or cancelled probe retains the
+existing offer. Nightly versions use Sparkle's display formatter to show the
+UTC date and build number without changing bundle version metadata.
 
 When the user accepts Sparkle's **Install and Relaunch**, Ghosthub captures
 every live scene descriptor into the updater relaunch manifest before it

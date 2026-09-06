@@ -78,10 +78,22 @@ saved presentation only when it can confirm the exact tmux, running Herdr, or
 active Zellij
 session. Offline SSH hosts continue retrying as inventory refreshes.
 
-During an update relaunch, Ghosthub recreates saved windows if macOS does not
-return them. A window that previously had no terminal attached restores its
+During an update relaunch, Ghosthub saves each ordinary window's position and
+size along with its session, and recreates saved windows if macOS does not
+return them. If a display was disconnected, its windows return to an available
+display. macOS manages desktop Spaces, full-screen windows, and native tab
+groups; Ghosthub does not move windows between Spaces. Frame restoration applies
+to updates started from a build that includes this capture behavior.
+
+A window that previously had no terminal attached restores its
 navigation state without creating a worktree session. Select the worktree when
 you are ready to attach.
+
+**Ghosthub → Check for Updates…** checks for a newer compatible release even
+when an earlier update is already waiting to install. If a newer release is
+found, it replaces that queued offer. If the check fails, the earlier update
+remains available. Nightly update dialogs identify releases by date and build
+number so that builds sharing a release version are distinguishable.
 
 ## Rearrange navigation
 

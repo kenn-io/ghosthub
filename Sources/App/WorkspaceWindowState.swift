@@ -140,6 +140,13 @@ enum WorkspaceWindowTitle {
     }
 }
 
+struct WorkspaceWindowFrame: Codable, Hashable, Sendable {
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+}
+
 struct WorkspaceWindowState: Codable, Hashable, Sendable {
     var windowID: UUID
     var navigation: WorkspaceNavigationDescriptor?
@@ -147,6 +154,8 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
     var herdr: WorkspaceHerdrDescriptor? = nil
     var zellij: WorkspaceZellijDescriptor? = nil
     var customTitle: String? = nil
+    /// Captured immediately before an update, independently of native Resume.
+    var frame: WorkspaceWindowFrame? = nil
 
     static func fresh(windowID: UUID = UUID()) -> Self {
         Self(windowID: windowID, navigation: nil, tmux: nil)

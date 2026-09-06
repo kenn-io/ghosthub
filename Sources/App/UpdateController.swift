@@ -57,6 +57,7 @@ struct UpdateConfiguration: Equatable {
 
 @MainActor
 final class UpdateInstallationDelegate: NSObject, SPUUpdaterDelegate {
+    var updateCycleFinished: () -> Void = {}
     private var prepareRelaunch: () -> Void
     private var cancelRelaunch: () -> Void
     private var authorizeTermination: () -> Void
@@ -133,37 +134,59 @@ final class UpdateInstallationDelegate: NSObject, SPUUpdaterDelegate {
         error: (any Error)?
     ) {
         updateSessionDidFinish(error: error != nil)
+        updateCycleFinished()
     }
 }
 
 @MainActor
 final class UpdateController {
     private let installationDelegate: UpdateInstallationDelegate?
-    private let controller: SPUStandardUpdaterController?
+    private let updater: SPUUpdater?
+    private let userDriver: UpdateUserDriver?
+    private let versionDisplay: NightlyUpdateVersionDisplay?
     private var didStart = false
 
     init(
         infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:]
     ) {
-        guard UpdateConfiguration(
+        let configuration = UpdateConfiguration(
             infoDictionary: infoDictionary
-        ).isReady else {
+        )
+        guard configuration.isReady else {
             installationDelegate = nil
-            controller = nil
+            updater = nil
+            userDriver = nil
+            versionDisplay = nil
             return
         }
 
         let installationDelegate = UpdateInstallationDelegate()
         self.installationDelegate = installationDelegate
-        controller = SPUStandardUpdaterController(
-            startingUpdater: false,
-            updaterDelegate: installationDelegate,
-            userDriverDelegate: nil
+        let versionDisplay = infoDictionary["GhosthubReleaseChannel"] as? String == "nightly"
+            ? NightlyUpdateVersionDisplay(infoDictionary: infoDictionary) : nil
+        self.versionDisplay = versionDisplay
+        let feed = UpdateFeed(configuration: configuration)
+        let userDriver = UpdateUserDriver(
+            hostBundle: .main,
+            delegate: versionDisplay,
+            latestVersion: { try await feed.latestVersion() }
         )
+        self.userDriver = userDriver
+        let updater = SPUUpdater(
+            hostBundle: .main,
+            applicationBundle: .main,
+            userDriver: userDriver,
+            delegate: installationDelegate
+        )
+        self.updater = updater
+        userDriver.updater = updater
+        installationDelegate.updateCycleFinished = { [weak userDriver] in
+            userDriver?.updateCycleDidFinish()
+        }
     }
 
     var isAvailable: Bool {
-        controller != nil
+        updater != nil
     }
 
     func configureRelaunch(
@@ -181,14 +204,19 @@ final class UpdateController {
     }
 
     func start() {
-        guard !didStart, let controller else { return }
-        didStart = true
-        controller.startUpdater()
+        guard !didStart, let updater else { return }
+        do {
+            try updater.start()
+            didStart = true
+        } catch {
+            userDriver?.showUpdaterError(error, acknowledgement: {})
+        }
     }
 
     func checkForUpdates() {
         start()
-        controller?.checkForUpdates(nil)
+        guard didStart else { return }
+        userDriver?.checkForUpdates()
     }
 }
 #endif

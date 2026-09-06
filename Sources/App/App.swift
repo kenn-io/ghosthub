@@ -219,9 +219,13 @@ struct GhosthubApp: App {
             #if canImport(AppKit)
             CommandGroup(replacing: .appInfo) {
                 Button("About Ghosthub") {
-                    let options = ApplicationVersion.aboutPanelVersion().map {
+                    var options = ApplicationVersion.aboutPanelVersion().map {
                         [NSApplication.AboutPanelOptionKey.version: $0]
                     } ?? [:]
+                    options[NSApplication.AboutPanelOptionKey(rawValue: "Copyright")] = (Bundle.main
+                        .object(
+                            forInfoDictionaryKey: "NSHumanReadableCopyright"
+                        ) as? String)?.replacingOccurrences(of: "LLC. ", with: "LLC.\n")
                     NSApplication.shared.orderFrontStandardAboutPanel(
                         options: options
                     )
