@@ -68,8 +68,9 @@ final class WorkspaceSceneModel: ObservableObject {
         String, String, String, String?, CommandHost
     ) async throws -> Void
     typealias KwtWorktreeChangeReader = @Sendable (
-        String, String, CommandHost
+        String, String, String, String?, CommandHost
     ) async throws -> WorktreeChangeSummary
+    typealias KwtWorktreeChangesReader = WorktreeChangesLoaderAuthority.Reader
     typealias SSHRouteIdentityResolver = @Sendable (
         SSHHostInfo
     ) async throws -> String
@@ -889,6 +890,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let kwtWorktreeRemover: KwtWorktreeRemover
     private let kwtForceWorktreeRemover: KwtWorktreeRemover
     private let kwtWorktreeChangeReader: KwtWorktreeChangeReader
+    private let kwtWorktreeChangesReader: KwtWorktreeChangesReader
     private let sshRouteIdentityResolver: SSHRouteIdentityResolver
     private let kwtBranchLister: KwtBranchLister
     private let kwtPullRequestLister: KwtPullRequestLister
@@ -1146,10 +1148,22 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         kwtWorktreeChangeReader: @escaping KwtWorktreeChangeReader = {
-            worktreePath, projectPath, host in
+            worktreePath, repository, generation, routeIdentity, host in
             try await KwtWorktreeClient().changes(
                 worktreePath: worktreePath,
-                projectPath: projectPath,
+                expectedRepository: repository,
+                expectedGeneration: generation,
+                expectedRouteIdentity: routeIdentity,
+                on: host
+            ).summary
+        },
+        kwtWorktreeChangesReader: @escaping KwtWorktreeChangesReader = {
+            worktreePath, repository, generation, routeIdentity, host in
+            try await KwtWorktreeClient().changes(
+                worktreePath: worktreePath,
+                expectedRepository: repository,
+                expectedGeneration: generation,
+                expectedRouteIdentity: routeIdentity,
                 on: host
             )
         },
@@ -1468,6 +1482,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.kwtWorktreeRemover = kwtWorktreeRemover
         self.kwtForceWorktreeRemover = kwtForceWorktreeRemover
         self.kwtWorktreeChangeReader = kwtWorktreeChangeReader
+        self.kwtWorktreeChangesReader = kwtWorktreeChangesReader
         self.sshRouteIdentityResolver = sshRouteIdentityResolver
         self.kwtBranchLister = kwtBranchLister
         self.kwtPullRequestLister = kwtPullRequestLister
@@ -2761,6 +2776,50 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    func loadWorktreeChanges(
+        _ requested: WorktreeSummary
+    ) async throws -> WorktreeFileChanges {
+        guard let worktree = snapshot.worktree(id: requested.id),
+              !worktree.isStale,
+              worktree.hostID == requested.hostID,
+              worktree.projectID == requested.projectID,
+              WorktreeChangePath.matches(
+                  worktree.path, requested.path,
+                  usesWindowsPaths: snapshot.host(id: worktree.hostID)?.platform == .windows
+              ),
+              worktree.generation == requested.generation,
+              let capturedHost = snapshot.host(id: worktree.hostID),
+              let capturedTarget = CommandHostResolver.resolve(capturedHost)
+        else {
+            throw KwtWorktreeError.worktreeUnavailable
+        }
+        do {
+            try await ensureRemoteKwtForOperation(hostID: worktree.hostID)
+            guard let currentHost = snapshot.host(id: worktree.hostID),
+                  currentHost.platform == capturedHost.platform,
+                  CommandHostResolver.resolve(currentHost) == capturedTarget
+            else {
+                throw KwtWorktreeError.worktreeUnavailable
+            }
+            return try await WorktreeChangesLoaderAuthority.load(
+                requested: requested,
+                in: snapshot,
+                resolveRouteIdentity: { [sshRouteIdentityResolver] host in
+                    switch host {
+                    case .local:
+                        nil
+                    case let .ssh(info):
+                        try await sshRouteIdentityResolver(info)
+                    }
+                },
+                read: kwtWorktreeChangesReader
+            )
+        } catch {
+            recordKwtUnavailability(error, hostID: worktree.hostID)
+            throw error
+        }
+    }
+
     func prepareWorktreeRemoval(
         _ worktreeID: UUID,
         refreshSessionIdentity: Bool = false
@@ -2778,7 +2837,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard snapshot.canRemoveWorktree(worktree) else {
             throw KwtWorktreeError.worktreeUnavailable
         }
-        guard WorktreeGeneration.isCanonical(
+        guard let generation = WorktreeGeneration.canonical(
             worktree.generation
         ) else {
             throw KwtWorktreeError.removalIdentityUnavailable
@@ -2788,7 +2847,11 @@ final class WorkspaceSceneModel: ObservableObject {
         else {
             throw KwtWorktreeError.removalIdentityUnavailable
         }
-        let changes: WorktreeChangeSummary
+        let changeInspection: (
+            summary: WorktreeChangeSummary,
+            isComplete: Bool
+        )
+        let routeIdentity: String?
         do {
             try await ensureRemoteKwtForOperation(hostID: project.hostID)
             guard validatedProjectOperationTarget(
@@ -2797,9 +2860,17 @@ final class WorkspaceSceneModel: ObservableObject {
             ) != nil else {
                 throw KwtWorktreeError.removalHostChanged
             }
-            changes = try await kwtWorktreeChangeReader(
+            switch host {
+            case .local:
+                routeIdentity = nil
+            case let .ssh(info):
+                routeIdentity = try await sshRouteIdentityResolver(info)
+            }
+            changeInspection = try await worktreeRemovalChangeInspection(
                 worktree.path,
-                project.rootPath,
+                project.scopedKey,
+                generation,
+                routeIdentity,
                 host
             )
         } catch {
@@ -2843,16 +2914,14 @@ final class WorkspaceSceneModel: ObservableObject {
         } else {
             sessionKillRequest = nil
         }
-        let routeIdentity: String?
-        switch host {
-        case .local:
-            routeIdentity = nil
-        case let .ssh(info):
-            if let sessionRouteIdentity = sessionKillRequest?.routeIdentity {
-                routeIdentity = sessionRouteIdentity
-            } else {
-                routeIdentity = try await sshRouteIdentityResolver(info)
-            }
+        if let sessionKillRequest,
+           sessionKillRequest.routeIdentity != routeIdentity {
+            throw KwtWorktreeError.removalHostChanged
+        }
+        guard validatedProjectOperationTarget(project, capturedHost: host) != nil,
+              try await removalRouteIdentityMatches(routeIdentity, on: host)
+        else {
+            throw KwtWorktreeError.removalHostChanged
         }
         return WorktreeRemovalRequest(
             worktree: worktree,
@@ -2860,7 +2929,8 @@ final class WorkspaceSceneModel: ObservableObject {
             confirmedHost: hostSummary,
             routeIdentity: routeIdentity,
             sessionKillRequest: sessionKillRequest,
-            changes: changes
+            changes: changeInspection.summary,
+            changeInspectionComplete: changeInspection.isComplete
         )
     }
 
@@ -2969,13 +3039,19 @@ final class WorkspaceSceneModel: ObservableObject {
             throw KwtWorktreeError.removalTargetChanged
         }
         if !checkoutAlreadyAbsent {
-            let currentChanges: WorktreeChangeSummary
+            let currentChangeInspection: (
+                summary: WorktreeChangeSummary,
+                isComplete: Bool
+            )
             do {
-                currentChanges = try await kwtWorktreeChangeReader(
-                    worktree.path,
-                    project.rootPath,
-                    confirmedHost
-                )
+                currentChangeInspection = try await
+                    worktreeRemovalChangeInspection(
+                        worktree.path,
+                        project.scopedKey,
+                        generation,
+                        request.routeIdentity,
+                        confirmedHost
+                    )
             } catch {
                 recordKwtUnavailability(error, hostID: project.hostID)
                 throw error
@@ -2983,8 +3059,9 @@ final class WorkspaceSceneModel: ObservableObject {
             guard removalHostEndpointMatches(request) else {
                 throw KwtWorktreeError.removalHostChanged
             }
-            if currentChanges.hasUncommittedChanges,
-               !request.forceRemoval {
+            if !currentChangeInspection.isComplete
+                || currentChangeInspection.summary.hasUncommittedChanges,
+                !request.forceRemoval {
                 throw KwtWorktreeError.removalChangesChanged
             }
         }
@@ -3079,29 +3156,36 @@ final class WorkspaceSceneModel: ObservableObject {
                     } else {
                         shouldReadChanges = false
                     }
-                    let changes: WorktreeChangeSummary?
+                    let changeInspection: (
+                        summary: WorktreeChangeSummary,
+                        isComplete: Bool
+                    )?
                     if shouldReadChanges {
                         do {
-                            changes = try await kwtWorktreeChangeReader(
-                                worktree.path,
-                                project.rootPath,
-                                confirmedHost
-                            )
+                            changeInspection = try await
+                                worktreeRemovalChangeInspection(
+                                    worktree.path,
+                                    project.scopedKey,
+                                    generation,
+                                    request.routeIdentity,
+                                    confirmedHost
+                                )
                         } catch {
                             recordKwtUnavailability(
                                 error,
                                 hostID: project.hostID
                             )
-                            changes = nil
+                            changeInspection = nil
                         }
                     } else {
-                        changes = nil
+                        changeInspection = nil
                     }
                     if shouldReadChanges,
-                       let changes,
+                       let changeInspection,
                        removalHostEndpointMatches(request),
                        !terminatedSession || killedRestorationTarget != nil,
-                       changes.hasUncommittedChanges {
+                       !changeInspection.isComplete
+                       || changeInspection.summary.hasUncommittedChanges {
                         throw KwtWorktreeError.removalChangesChanged
                     }
                     throw removalError
@@ -3463,6 +3547,42 @@ final class WorkspaceSceneModel: ObservableObject {
         return try await prepareWorktreeRemoval(worktree.id)
     }
 
+    private func worktreeRemovalChangeInspection(
+        _ worktreePath: String,
+        _ repository: String,
+        _ generation: String,
+        _ routeIdentity: String?,
+        _ host: CommandHost
+    ) async throws -> (
+        summary: WorktreeChangeSummary,
+        isComplete: Bool
+    ) {
+        let inspection: (summary: WorktreeChangeSummary, isComplete: Bool)
+        do {
+            inspection = try await (
+                kwtWorktreeChangeReader(
+                    worktreePath,
+                    repository,
+                    generation,
+                    routeIdentity,
+                    host
+                ),
+                true
+            )
+        } catch let error as KwtWorktreeError {
+            guard case let .changeInspectionFailed(
+                _, _, code, _, _, _
+            ) = error,
+                code == "response_too_large"
+            else { throw error }
+            inspection = (.clean, false)
+        }
+        guard try await removalRouteIdentityMatches(routeIdentity, on: host) else {
+            throw KwtWorktreeError.removalHostChanged
+        }
+        return inspection
+    }
+
     private func currentRemovalTarget(
         for request: WorktreeRemovalRequest
     ) -> WorktreeSummary? {
@@ -3565,6 +3685,8 @@ final class WorkspaceSceneModel: ObservableObject {
         ) || updatedRequest.routeIdentity != request.routeIdentity
             || updatedRequest.sessionKillRequest != request.sessionKillRequest
             || updatedRequest.changes != request.changes
+            || updatedRequest.changeInspectionComplete
+            != request.changeInspectionComplete
     }
 
     private func removalHostEndpointMatches(
@@ -5408,7 +5530,7 @@ final class WorkspaceSceneModel: ObservableObject {
             return true
         }
         if let worktreeError = error as? KwtWorktreeError,
-           case .changeStatusFailed(_, 127) = worktreeError {
+           case .changeInspectionFailed(_, 127, _, _, _, _) = worktreeError {
             return true
         }
         if let pullRequestError = error as? KwtPullRequestError,

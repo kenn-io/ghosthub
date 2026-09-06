@@ -155,6 +155,13 @@ make_worktree ghosthub pr-142-fleet-sidebar
 make_worktree agentsview add-session-filters
 make_worktree msgvault pr-87-imap-sync
 
+changes_worktree="$scratch/worktrees/ghosthub/fix-reconnect-backoff"
+printf '\nDocument the reconnect fallback.\n' >> "$changes_worktree/README.md"
+mkdir -p "$changes_worktree/Tests"
+printf '// Reconnect backoff coverage\n' > "$changes_worktree/Tests/ReconnectBackoffTests.swift"
+"${git_c[@]}" -C "$changes_worktree" add Tests/ReconnectBackoffTests.swift
+printf '# Reconnect notes\n' > "$changes_worktree/reconnect-notes.md"
+
 echo "==> staging local tmux sessions (socket dir: $TMUX_TMPDIR)"
 
 # Pane shells use an explicit zsh with both HOME and ZDOTDIR isolated so the

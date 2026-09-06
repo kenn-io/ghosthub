@@ -13,11 +13,13 @@ struct KwtSSHCommandClient: Sendable {
     private let runner: Runner
     private let binaryPath: String?
     private let environment: [String: String]
+    private let maximumOutputBytes: Int
 
     init(
         runner: Runner? = nil,
         binaryPath: String? = KwtBinaryLocator.bundledPath(),
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        maximumOutputBytes: Int = AccountCommandRunner.defaultMaximumOutputBytes
     ) {
         let processEnvironment = environment
             ?? KwtSSHRuntimeEnvironment.resolved()
@@ -29,11 +31,13 @@ struct KwtSSHCommandClient: Sendable {
                 executable: executable,
                 arguments: arguments,
                 timeout: timeout,
-                environmentOverrides: environmentOverrides
+                environmentOverrides: environmentOverrides,
+                maximumOutputBytes: maximumOutputBytes
             )
         }
         self.binaryPath = binaryPath
         self.environment = processEnvironment
+        self.maximumOutputBytes = maximumOutputBytes
     }
 
     func run(
@@ -45,7 +49,9 @@ struct KwtSSHCommandClient: Sendable {
         let demoArguments = demoSSHIsolationArguments(environment: environment)
         if !demoArguments.isEmpty {
             return await Self.runDetached {
-                AccountCommandRunner().runRemoteLoginShell(
+                AccountCommandRunner(
+                    maximumOutputBytes: maximumOutputBytes
+                ).runRemoteLoginShell(
                     host: host,
                     connectionArguments: demoArguments,
                     command: command,
@@ -124,7 +130,7 @@ struct KwtSSHCommandClient: Sendable {
             : output.stderr
         return AccountCommandOutput(
             status: 255,
-            stdout: "",
+            stdout: output.stdout,
             stderr: marker + diagnostic
         )
     }

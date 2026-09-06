@@ -66,7 +66,8 @@ struct KwtSSHLeaseClientTests {
         #!/bin/sh
         termination_result=\(shellQuotedCommandArgument(terminationResult.path))
         handle_term() {
-            printf '%s\n' terminated > "$termination_result"
+            printf '%s\n' terminated > "$termination_result.pending"
+            mv -f "$termination_result.pending" "$termination_result"
             exit 0
         }
         trap handle_term TERM
@@ -74,7 +75,8 @@ struct KwtSSHLeaseClientTests {
         while [ ! -f \(shellQuotedCommandArgument(cancellationProbe.path)) ]; do
             sleep 0.01
         done
-        printf '%s\n' survived > \(shellQuotedCommandArgument(terminationResult.path))
+        printf '%s\n' survived > "$termination_result.pending"
+        mv -f "$termination_result.pending" "$termination_result"
         """
         let helper = try fixture.createExecutable(name: "kwt", content: script)
         let task = Task {
@@ -100,11 +102,9 @@ struct KwtSSHLeaseClientTests {
         while !FileManager.default.fileExists(atPath: terminationResult.path) {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(
-            try String(contentsOf: terminationResult, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                == "terminated"
-        )
+        let termination = try String(contentsOf: terminationResult, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(termination == "terminated")
     }
 
     @Test("rejects a masterless presentation lease with a stable error")

@@ -1100,6 +1100,9 @@ struct WorkspaceWindow: View {
                 currentWorkspaceSnapshot: { [sceneModel] in
                     sceneModel.snapshot
                 },
+                loadWorktreeChanges: { [sceneModel] requested in
+                    try await sceneModel.loadWorktreeChanges(requested)
+                },
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshWorkspaceInventory()
                 },

@@ -20,6 +20,22 @@ struct WorkspaceAlertTests {
         #expect(request.worktreeRemovalMessage.contains("permanently discards"))
     }
 
+    @Test("incomplete change inspection requires a precise force warning")
+    func incompleteChangeInspectionPresentation() {
+        let host = HostSummary.fixture()
+        let project = ProjectSummary.fixture(hostID: host.id)
+        let request = WorktreeRemovalRequest(
+            worktree: .fixture(hostID: host.id, projectID: project.id),
+            project: project,
+            confirmedHost: host,
+            changeInspectionComplete: false
+        )
+
+        #expect(request.worktreeRemovalActionTitle == "Force Remove Worktree")
+        #expect(request.worktreeRemovalMessage.contains("could not enumerate"))
+        #expect(request.worktreeRemovalMessage.contains("may permanently discard"))
+    }
+
     @Test("workspace actions share one alert identity domain")
     func workspaceActionsShareAlertIdentityDomain() {
         let session = WorkspaceAlert.sessionKillFailure(

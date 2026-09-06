@@ -31,9 +31,9 @@ worktree() {
   fi
   cat <<EOF
   {"path": "$path", "branch": "$branch", "commit_hash": "$hash",
-   "is_main": $main, "created_at": "$created",
+   "is_main": $main, "created_at": "$created", "generation": "${hash:0:32}",
    "repository": "github.com/kenn-io/$project",
-   "session_name": "$project--${branch//\//-}"}
+   "session_name": "$project--${branch//\//-}", "tmux_attach_mode": "direct"}
 EOF
 }
 
@@ -113,6 +113,34 @@ EOF
   esac
 }
 
+changes_json() {
+  if [[ "$#" -ne 7 || "${3:-}" != "--expected-repository" \
+      || "${5:-}" != "--expected-generation" || "${7:-}" != "--json" ]]; then
+    echo "faux kwt: unsupported changes command" >&2
+    exit 64
+  fi
+  local path="$2" expected_repository="$4" expected_generation="$6"
+  local repository generation
+  case "$path" in
+    "$scratch/worktrees/ghosthub/fix-reconnect-backoff")
+      repository="github.com/kenn-io/ghosthub"
+      generation="8f27ac41d5b9e6038c2d17f4ab60e95c"
+      ;;
+    *)
+      echo "faux kwt: unknown demo worktree: $path" >&2
+      exit 64
+      ;;
+  esac
+  if [[ "$expected_repository" != "$repository" \
+      || "$expected_generation" != "$generation" ]]; then
+    echo "faux kwt: demo worktree identity changed" >&2
+    exit 1
+  fi
+  cat <<EOF
+{"worktree":{"repository":"$repository","path":"$path","generation":"$generation"},"changes":{"state":"staged","summary":{"modified":1,"added":1,"deleted":0,"untracked":1,"staged":1,"conflicts":0},"files":[{"path":"README.md","worktree":"modified"},{"path":"Tests/ReconnectBackoffTests.swift","index":"added"},{"path":"reconnect-notes.md","worktree":"untracked"}]},"observed_at":"2026-08-26T15:04:05Z"}
+EOF
+}
+
 open_worktree() {
   local path="${2:-}" relative project branch session
   case "$path" in
@@ -146,6 +174,7 @@ case "${1:-}" in
     fi
     ;;
   branches) branches_json ;;
+  changes) changes_json "$@" ;;
   open) open_worktree "$@" ;;
   *)
     echo "faux kwt: unsupported command: ${1:-<none>}" >&2

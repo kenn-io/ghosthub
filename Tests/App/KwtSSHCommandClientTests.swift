@@ -105,7 +105,9 @@ struct KwtSSHCommandClientTests {
         )
 
         #expect(output.status == 255)
-        #expect(output.stdout.isEmpty)
+        #expect(output
+            .stdout ==
+            #"{"error":{"code":"ssh_interaction_required","message":"SSH interaction is required","retryable":false}}"#)
         #expect(output.stderr.hasPrefix(
             SSHConnectionArgumentsSnapshot.failureMarker
                 + "ssh_interaction_required\n"

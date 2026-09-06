@@ -87,7 +87,7 @@ struct AccountCommandRunner: Sendable {
     static let timedOutStatus: Int32 = -124
     static let outputExceededStatus: Int32 = -125
     static let cancelledStatus: Int32 = -130
-    private static let maximumOutputBytes = 1 * 1_024 * 1_024
+    static let defaultMaximumOutputBytes = 1 * 1_024 * 1_024
     private static let sessionOpenRetryDelays: [useconds_t] = [100_000, 250_000]
 
     typealias ProcessRunner = @Sendable (
@@ -101,10 +101,20 @@ struct AccountCommandRunner: Sendable {
     private let loginShellProvider: @Sendable () -> String
 
     init(
-        processRunner: @escaping ProcessRunner = Self.runProcess,
+        processRunner: ProcessRunner? = nil,
+        maximumOutputBytes: Int = Self.defaultMaximumOutputBytes,
         loginShellProvider: @escaping @Sendable () -> String = Self.loginShell
     ) {
-        self.processRunner = processRunner
+        self.processRunner = processRunner ?? {
+            executable, arguments, timeout, environmentOverrides in
+            Self.runProcess(
+                executable: executable,
+                arguments: arguments,
+                timeout: timeout,
+                environmentOverrides: environmentOverrides,
+                maximumOutputBytes: maximumOutputBytes
+            )
+        }
         self.loginShellProvider = loginShellProvider
     }
 
@@ -161,9 +171,11 @@ struct AccountCommandRunner: Sendable {
         command: String,
         timeout: TimeInterval,
         captureStandardError: Bool = false,
-        environmentOverrides: [String: String] = [:]
+        environmentOverrides: [String: String] = [:],
+        maximumOutputBytes: Int = defaultMaximumOutputBytes
     ) -> (status: Int32, stdout: String) {
         let output = AccountCommandRunner(
+            maximumOutputBytes: maximumOutputBytes,
             loginShellProvider: { shell }
         ).runLocalLoginShell(
             command: command,
@@ -184,7 +196,8 @@ struct AccountCommandRunner: Sendable {
         timeout: TimeInterval,
         captureStandardError: Bool = false,
         accountShell: String = loginShell(),
-        environmentOverrides: [String: String] = [:]
+        environmentOverrides: [String: String] = [:],
+        maximumOutputBytes: Int = defaultMaximumOutputBytes
     ) -> (status: Int32, stdout: String) {
         let command = ([executable] + arguments)
             .map(shellQuotedCommandArgument)
@@ -194,7 +207,8 @@ struct AccountCommandRunner: Sendable {
             command: command,
             timeout: timeout,
             captureStandardError: captureStandardError,
-            environmentOverrides: environmentOverrides
+            environmentOverrides: environmentOverrides,
+            maximumOutputBytes: maximumOutputBytes
         )
     }
 
@@ -223,7 +237,8 @@ struct AccountCommandRunner: Sendable {
         executable: String,
         arguments: [String],
         timeout: TimeInterval,
-        environmentOverrides: [String: String] = [:]
+        environmentOverrides: [String: String] = [:],
+        maximumOutputBytes: Int = defaultMaximumOutputBytes
     ) -> AccountCommandOutput {
         var outputDescriptors = [Int32](repeating: -1, count: 2)
         guard outputDescriptors.withUnsafeMutableBufferPointer({ descriptors in
@@ -321,10 +336,10 @@ struct AccountCommandRunner: Sendable {
             return AccountCommandOutput(status: 127, stdout: "", stderr: "")
         }
         let output = AccountCommandOutputCollector(
-            limit: maximumOutputBytes
+            limit: max(0, maximumOutputBytes)
         )
         let errorOutput = AccountCommandOutputCollector(
-            limit: maximumOutputBytes
+            limit: max(0, maximumOutputBytes)
         )
         var readBuffer = [UInt8](repeating: 0, count: 64 * 1_024)
         let deadline = Date().addingTimeInterval(timeout)

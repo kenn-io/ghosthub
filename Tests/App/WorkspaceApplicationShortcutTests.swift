@@ -57,17 +57,15 @@ struct WorkspaceApplicationShortcutTests {
 
         model.isFocusedWindow = true
         model.isLogViewerPresented = true
-        _ = try #require(model.logViewerTerminalView())
-        let logSurface = try #require(
-            model.terminalCoordinator.surfaceEntries().first {
-                $0.key.target == .logViewer
-            }?.view
-        )
         let logController = TerminalFindController(
             isAvailable: true,
             sessionProvider: { nil }
         )
-        logSurface.terminalFindController = logController
+        model.terminalCoordinator.onSurfaceCreated = { key, surface in
+            if key.target == .logViewer {
+                surface.terminalFindController = logController
+            }
+        }
         let logView = try #require(model.logViewerTerminalView())
         let hostingView = NSHostingView(rootView: logView)
         hostingView.frame = NSRect(x: 0, y: 0, width: 800, height: 600)

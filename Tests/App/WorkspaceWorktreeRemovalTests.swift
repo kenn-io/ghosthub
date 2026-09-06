@@ -16,6 +16,7 @@ struct WorkspaceWorktreeRemovalTests {
         let fixture = try removalFixture()
         let environment = fixture.environment
         let reads = LockedValue(0)
+        let inspectedIdentities = LockedValue<[String]>([])
         let loads = LockedValue(0)
         let normalRemovals = LockedValue(0)
         let forcedRemovals = LockedValue(0)
@@ -36,7 +37,10 @@ struct WorkspaceWorktreeRemovalTests {
             kwtForceWorktreeRemover: { _, _, _, _, _ in
                 forcedRemovals.withLock { $0 += 1 }
             },
-            kwtWorktreeChangeReader: { _, _, _ in
+            kwtWorktreeChangeReader: { path, repository, generation, _, _ in
+                inspectedIdentities.withLock {
+                    $0.append("\(path)|\(repository)|\(generation)")
+                }
                 reads.withLock { $0 += 1 }
                 return reads.load() == 1
                     ? .clean
@@ -63,6 +67,55 @@ struct WorkspaceWorktreeRemovalTests {
 
         #expect(try await model.resolveWorktreeRemoval(updatedRequest) == .removed)
         #expect(normalRemovals.load() == 0)
+        #expect(forcedRemovals.load() == 1)
+        #expect(inspectedIdentities.load().allSatisfy {
+            $0 == fixture.removable.path
+                + "|" + environment.project.scopedKey
+                + "|" + stableWorktreeGeneration
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("oversized change inspection still permits confirmed force removal")
+    func oversizedChangeInspectionPermitsForceRemoval() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let loads = LockedValue(0)
+        let forcedRemovals = LockedValue(0)
+        let afterRemoval = inventory(environment)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? fixture.beforeRemoval
+                    : afterRemoval
+            },
+            kwtForceWorktreeRemover: { _, _, _, _, _ in
+                forcedRemovals.withLock { $0 += 1 }
+            },
+            kwtWorktreeChangeReader: { _, _, _, _, _ in
+                throw KwtWorktreeError.changeInspectionFailed(
+                    host: "local",
+                    status: AccountCommandRunner.outputExceededStatus,
+                    code: "response_too_large",
+                    message: "kwt returned too many changed files to display.",
+                    retryable: false,
+                    details: [:]
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(
+            fixture.removable.id
+        )
+
+        #expect(request.forceRemoval)
+        #expect(!request.changeInspectionComplete)
+        #expect(try await model.resolveWorktreeRemoval(request) == .removed)
         #expect(forcedRemovals.load() == 1)
         await model.shutdown()
     }

@@ -282,6 +282,31 @@ capture_worktree_window_counts() {
   sleep 0.5
 }
 
+capture_worktree_changes() {
+  # The changed-file poll intentionally pauses while its window is inactive.
+  # Reassert the fixed frame here so this focused capture starts with a key
+  # workspace window even when the invoking terminal regained focus.
+  demo_input frame
+  demo_input click "32,489"
+  sleep 0.5
+  demo_input click "32,450"
+  sleep 0.5
+  demo_input click "32,412"
+  sleep 1
+  demo_input click "55,340"
+  sleep 3
+  capture_state guide-worktree-changes.png
+  # Restore the initial disclosure state for the remaining guide captures.
+  demo_input click "55,340"
+  sleep 0.5
+  demo_input click "32,412"
+  sleep 0.5
+  demo_input click "32,450"
+  sleep 0.5
+  demo_input click "32,489"
+  sleep 0.5
+}
+
 capture_window_title() {
   demo_input rename-window
   sleep 1
@@ -322,6 +347,12 @@ if [[ "${GHOSTHUB_DEMO_WORKTREE_COUNTS_ONLY:-}" == "1" ]]; then
   exit 0
 fi
 
+if [[ "${GHOSTHUB_DEMO_WORKTREE_CHANGES_ONLY:-}" == "1" ]]; then
+  echo "==> guide: worktree changes"
+  capture_worktree_changes
+  exit 0
+fi
+
 if [[ "${GHOSTHUB_DEMO_PROJECT_REMOVAL_ONLY:-}" == "1" ]]; then
   echo "==> guide: project removal"
   capture_project_removal
@@ -358,6 +389,9 @@ demo_input escape
 
 echo "==> guide: worktree window counts"
 capture_worktree_window_counts
+
+echo "==> guide: worktree changes"
+capture_worktree_changes
 
 echo "==> guide: project removal"
 capture_project_removal

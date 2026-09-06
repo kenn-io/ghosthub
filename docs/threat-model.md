@@ -244,6 +244,15 @@ signed release input. Their output must still be validated for compatibility
 and correctness, but deliberate compromise of those programs or their on-disk
 state is outside the security model.
 
+Expanded worktree change panels read only semantic file-status records through
+Ghosthub's exact pinned kwt helper. The worktree path, repository identity, and
+durable generation are supplied as guards and revalidated against current
+inventory after the read. Returned file paths and rename origins are displayed
+as untrusted text; they are never executed, opened, used as navigation targets,
+or passed to a mutation. Ghosthub does not request diff content, fetch from the
+network, or store these records. Polling stops when the panel is unmounted, the
+sidebar is hidden, the app is inactive, or the owning window loses key status.
+
 Pull-request import is an explicit user mutation delegated to the bundled local
 kwt or Ghosthub's exact managed kwt revision on the selected remote host.
 Configuring a remote macOS or Linux host authorizes Ghosthub to install and

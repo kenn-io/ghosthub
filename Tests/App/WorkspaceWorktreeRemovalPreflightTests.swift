@@ -10,6 +10,53 @@ import Testing
 
 extension WorkspaceWorktreeRemovalTests {
     @MainActor
+    @Test("removal rejects route drift during each change inspection", arguments: [1, 2])
+    func inspectionRejectsRouteDrift(pass: Int) async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.scopedKey = worktree.path
+        worktree.generation = stableWorktreeGeneration
+        worktree.tmuxSessionName = "kwt-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let beforeRemoval = inventory(environment, including: worktree)
+        let route = LockedValue("sha256:reviewed-route")
+        let reads = LockedValue(0)
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            kwtWorktreeChangeReader: { _, _, _, expectedRoute, _ in
+                #expect(expectedRoute == "sha256:reviewed-route")
+                reads.withLock { $0 += 1 }
+                if reads.load() == pass {
+                    route.store("sha256:replacement-route")
+                }
+                return .clean
+            },
+            sshRouteIdentityResolver: { _ in route.load() },
+            tmuxSessionIdentityReviewer: { _, _, _ in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: "Builder", session: "kwt-feature"
+                )
+            }
+        )
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
+            let request = try await model.prepareWorktreeRemoval(worktree.id)
+            if pass == 2 {
+                try await model.removeWorktree(request)
+            }
+        }
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("remote removal carries its reviewed SSH route into execution")
     func remoteRemovalUsesReviewedRoute() async throws {
         let environment = try setupRemoteEnvironment()
@@ -21,6 +68,7 @@ extension WorkspaceWorktreeRemovalTests {
         snapshot.worktrees = [worktree]
         let reviewedWorktree = worktree
         let executedRoute = LockedValue<String?>(nil)
+        let inspectedRoutes = LockedValue<[String?]>([])
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -30,6 +78,10 @@ extension WorkspaceWorktreeRemovalTests {
             },
             kwtWorktreeRemover: { _, _, _, routeIdentity, _ in
                 executedRoute.withLock { $0 = routeIdentity }
+            },
+            kwtWorktreeChangeReader: { _, _, _, routeIdentity, _ in
+                inspectedRoutes.withLock { $0.append(routeIdentity) }
+                return .clean
             },
             sshRouteIdentityResolver: { host in
                 #expect(host.hostname == "office-linux")
@@ -55,6 +107,7 @@ extension WorkspaceWorktreeRemovalTests {
         try await model.removeWorktree(request)
 
         #expect(executedRoute.load() == "sha256:reviewed-route")
+        #expect(inspectedRoutes.load() == ["sha256:reviewed-route", "sha256:reviewed-route"])
         await model.shutdown()
     }
 

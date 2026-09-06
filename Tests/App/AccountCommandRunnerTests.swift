@@ -265,4 +265,25 @@ struct AccountCommandRunnerTests {
 
         #expect(sanitized == ["PATH": "/usr/bin"])
     }
+
+    @Test("callers can reserve bounded headroom for expanded protocols")
+    func configurableOutputLimit() {
+        let rejected = AccountCommandRunner.runProcess(
+            executable: "/usr/bin/printf",
+            arguments: ["123456789"],
+            timeout: 1,
+            maximumOutputBytes: 8
+        )
+        let accepted = AccountCommandRunner.runProcess(
+            executable: "/usr/bin/printf",
+            arguments: ["123456789"],
+            timeout: 1,
+            maximumOutputBytes: 16
+        )
+
+        #expect(rejected.status == AccountCommandRunner.outputExceededStatus)
+        #expect(rejected.stdout.isEmpty)
+        #expect(accepted.status == 0)
+        #expect(accepted.stdout == "123456789")
+    }
 }
