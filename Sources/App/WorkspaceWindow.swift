@@ -722,6 +722,7 @@ struct WorkspaceWindow: View {
     @Binding var windowState: WorkspaceWindowState?
     let updateRelaunchRestorer: UpdateRelaunchRestorer
     let openRelaunchWindow: (WorkspaceWindowState) -> Void
+    @State private var updateRelaunchPlacement = UpdateRelaunchWindowPlacement()
     #endif
     @State private var windowStateBuffer = WorkspaceWindowStateBuffer()
     @State private var updateRelaunchSceneID = UUID()
@@ -1337,6 +1338,7 @@ struct WorkspaceWindow: View {
                 onRenameWindow: requestWindowTitleRename,
                 onWindowChanged: { window in
                     sceneModel.workspaceWindow = window
+                    updateRelaunchPlacement.bind(window)
                 }
             )
         )
@@ -1474,7 +1476,7 @@ struct WorkspaceWindow: View {
             #endif
             registry.register(
                 sceneModel,
-                captureRestorationState: captureWindowState
+                captureRestorationState: captureUpdateRelaunchState
             )
             if terminalRuntime.configReloadNotice?.kind == .error {
                 visibleConfigReloadNotice =
@@ -1537,6 +1539,7 @@ struct WorkspaceWindow: View {
         _ state: WorkspaceWindowState
     ) {
         updateRelaunchWindowID = state.windowID
+        updateRelaunchPlacement.restore(state)
         _ = windowStateBuffer.beginAppearance(with: state)
         if windowState != state {
             windowStateBuffer.prepareToPresent(state)
@@ -1549,6 +1552,17 @@ struct WorkspaceWindow: View {
         refreshWindowState()
     }
     #endif
+
+    private func captureUpdateRelaunchState() -> WorkspaceWindowState {
+        let state = captureWindowState()
+        #if canImport(AppKit)
+        return UpdateRelaunchWindowPlacement.capture(
+            state, window: sceneModel.workspaceWindow
+        )
+        #else
+        return state
+        #endif
+    }
 
     private func captureWindowState() -> WorkspaceWindowState {
         let state = sceneModel.restorationState(

@@ -480,6 +480,19 @@ public `kenn-io/ghosthub-nightly` distribution repository. The canonical
 `kenn-io/ghosthub` repository receives no nightly tag or release, and the
 channel is not linked from ghosthub.ai or consumed by Homebrew.
 
+Sparkle's nightly update dialogs display the build date and numeric build
+number, including when multiple builds share the same release version or date.
+This is display formatting only: `CFBundleShortVersionString` still comes from
+`RELEASE_VERSION`, and `CFBundleVersion` remains the commit-count build number.
+Manual checks refresh queued offers against the current signed, single-release
+feed before replacing them. An unavailable or incompatible newer release leaves
+the existing offer available.
+
+Update relaunches capture ordinary window frames with their session descriptors.
+This capture must run in the app being replaced, so the first update from a
+build predating frame capture cannot provide those frames. macOS retains
+ownership of native Spaces, full-screen restoration, and tab groups.
+
 `.github/workflows/nightly.yml` runs at 08:00 UTC and exits before allocating a
 macOS runner when the current `main` source revision is already the completed
 channel revision. A manual `workflow_dispatch` with `force: true` rebuilds that
