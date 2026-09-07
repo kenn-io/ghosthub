@@ -5,30 +5,75 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-07
+
+Find text in your terminal, see which files changed in a worktree, and paste
+images into remote tmux sessions. This release also adds macOS Sequoia support
+and makes remote connections and multi-window work smoother.
+
+### Added
+
+- Search the active terminal with **Command-F**. Use **Command-G** to move
+  toward older matches and **Shift-Command-G** toward newer ones. Find works
+  in standalone terminals and local or remote tmux 3.4+ panes, including their
+  history. Herdr, Zellij, and Windows psmux are not supported yet.
+- Expand a worktree to see staged, unstaged, and untracked files without
+  leaving the sidebar or opening its terminal session.
+- Paste a Mac clipboard image into a remote tmux session with **Command-V**.
+  Ghosthub uploads a PNG to the remote host and pastes its path, ready for
+  tools that accept image files. If the clipboard also contains text,
+  Ghosthub pastes the text instead.
+- Choose **Always Live** session previews to connect and preview discovered
+  tmux sessions on reachable macOS and Linux hosts without opening each one.
+  This mode requires tmux 3.4+ and uses more CPU, memory, and SSH connections.
+- Give a window or tab a custom name with **Window → Rename Window…**, or
+  click its title. The name returns after relaunch and leaves the underlying
+  session name unchanged.
+- Open a project's visible worktrees together with **Open All Worktrees as
+  Tabs** in the project's context menu.
+- Make window backgrounds translucent with `background-opacity` and
+  `background-blur` in `ghostty.conf`. Full-screen windows and macOS Increase
+  Contrast keep backgrounds opaque.
+
 ### Changed
 
-- Remote SSH connections are now resolved, reviewed, and owned by Ghosthub's
-  revision-pinned kwt helper instead of an app-managed OpenSSH master.
-  Host-key trust and authentication prompts appear in native sheets during
-  the connection that needs them, and remote connections are shared while
-  windows use them rather than held for the whole app session; kwt applies
-  its idle policy after the last owner releases one.
-- Ghosthub keeps its SSH kwt daemon state in a dedicated `~/.ghosthub/ssh/kwt`
-  directory, separate from the account's ordinary kwt registry state.
-- Kwt-managed worktree and directory sessions now use kwt's dedicated tmux
-  server. Ghosthub follows kwt's explicit direct or protected attachment mode
-  instead of guessing policy from the socket name.
-- Apple Silicon releases now support macOS 15 (Sequoia) and newer, with the
-  packaged application and libghostty runtime checked on a hosted Sequoia
-  runner before release changes merge.
+- Run Ghosthub on Apple Silicon Macs with **macOS 15 (Sequoia) or newer**.
+- Review SSH host keys and answer authentication prompts in native sheets
+  that identify the host or jump host asking. Windows share connections while
+  they need them, and idle connections can close after the last user leaves.
+- Worktrees and registered directories use kwt's dedicated tmux server.
+  To inspect those sessions from a shell, use `tmux -L kwt list-sessions`.
+  Imported pull requests keep their separate protected sessions.
+- Worktrees and tmux sessions created outside Ghosthub appear in every window
+  as inventory refreshes. Windows share those requests instead of each
+  repeating them.
+- Choose exactly which Tailscale hosts to import; the picker starts with
+  none selected.
+- Remove a dirty worktree after reviewing and explicitly confirming that its
+  uncommitted changes will be discarded. The Git branch is kept.
 
 ### Fixed
 
-- Remote inventory retries a transient OpenSSH session-channel refusal instead
-  of reporting the host as unreachable when concurrent commands briefly fill
-  the server's multiplexed-session limit.
-- SSH transport outages stay in automatic session reconnect instead of opening
-  an authentication sheet that interrupts work and waits for manual retry.
+- **Check for Updates…** can replace an update waiting to install with a
+  newer release. Nightly update dialogs show the date and build number.
+- Updates preserve ordinary window positions and sizes when updating from a
+  build with window-position capture. Windows move onto an available display
+  if their original display was disconnected; macOS still controls Spaces,
+  full-screen windows, and tab groups.
+- **Command-W** closes only the active session in a workspace. Other opened
+  sessions stay connected. Use **Shift-Command-W** to close the whole window.
+- Brief SSH outages reconnect automatically without unnecessary password
+  prompts. Temporary inventory failures retry, and remote helper maintenance
+  no longer interrupts ordinary terminal recovery.
+- Hidden tmux clients and previews no longer shrink shared terminal windows.
+- Copying terminal output no longer deadlocks terminal input.
+- Terminal programs can request macOS permission to use Photos, the camera,
+  microphone, and other resources that require your consent.
+- Terminal memory and lifetime fixes reduce leaks and crashes.
+- Switching windows avoids unnecessary sidebar rebuilds. Resizing and
+  dragging the titlebar no longer rebuilds its controls or opens Rename by
+  accident, and translucent windows keep the configured titlebar opacity.
+- Settings headings and the Hosts selector stay visible while details scroll.
 
 ## [0.9.0] - 2026-08-15
 
@@ -354,7 +399,8 @@ test, and documentation-only changes are omitted.
   and SSH tmux session discovery, automatic reconnect, and kwt-backed project
   and worktree navigation.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/kenn-io/ghosthub/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kenn-io/ghosthub/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/kenn-io/ghosthub/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/kenn-io/ghosthub/compare/v0.8.0...v0.8.1

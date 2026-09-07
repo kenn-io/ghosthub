@@ -15,9 +15,10 @@ local operation fails instead of drifting to another installation. Remote
 hosts use one of six pinned, CGO-disabled variants sealed under
 `Contents/Resources/KwtRemote`: Darwin, Linux, and Windows, each for amd64 and
 arm64.
-Ghosthub uploads a variant only after the user chooses Install or Update,
-verifies its SHA-256 remotely, and invokes the exact revisioned path under
-`~/.ghosthub/helpers/kwt/`; it never replaces or resolves a system `kwt`.
+On configured remote macOS and Linux hosts, Ghosthub automatically installs
+or updates the matching helper during project inventory and before operations
+that need it. It verifies the SHA-256 remotely and invokes the exact revisioned
+path under `~/.ghosthub/helpers/kwt/`; it never replaces a system `kwt`.
 Experimental Windows installation follows the same pinning contract through
 PowerShell, placing the matching PE helper at
 `%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe`. These Windows
@@ -322,7 +323,10 @@ No cross-repository token is required. The workflow uses its short-lived
 ## Candidate run
 
 Release preparation updates `RELEASE_VERSION` and adds the matching dated
-`CHANGELOG.md` section. Every packaging entry point reads that one file by
+`CHANGELOG.md` section. Write the notes in plain language, starting with what
+people can do or what now works better. Omit internal build and test work;
+keep technical details only when users need them to understand a limit or
+adjust their workflow. Every packaging entry point reads the version file by
 default. The Makefile passes its resolved version explicitly to the standalone
 DMG and appcast scripts, and the release workflow rejects a tag whose version
 does not match `RELEASE_VERSION`. Do not duplicate the current version in
@@ -493,8 +497,8 @@ This capture must run in the app being replaced, so the first update from a
 build predating frame capture cannot provide those frames. macOS retains
 ownership of native Spaces, full-screen restoration, and tab groups.
 
-`.github/workflows/nightly.yml` runs at 08:00 UTC and exits before allocating a
-macOS runner when the current `main` source revision is already the completed
+`.github/workflows/nightly.yml` is scheduled for 08:00 UTC. It exits before
+allocating a macOS runner when the current `main` source revision is already the completed
 channel revision. A manual `workflow_dispatch` with `force: true` rebuilds that
 same source for recovery. Every attempt receives a unique release tag and
 immutable asset URL:
@@ -503,6 +507,30 @@ immutable asset URL:
 nightly-<build>-<run>-<attempt>
 https://github.com/kenn-io/ghosthub-nightly/releases/download/<tag>/<dmg>
 ```
+
+### Check a missing nightly
+
+Check the latest published release and the most recent workflow runs once:
+
+```sh
+gh release view --repo kenn-io/ghosthub-nightly
+gh run list --repo kenn-io/ghosthub --workflow nightly.yml --limit 5
+```
+
+Compare the release's source commit with `main`. A successful older run means
+that source was published; it does not show whether a newer scheduled run
+started. If no new run exists, check that the workflow is active. If a run
+failed, inspect that run's failed job before changing the publishing path.
+Check `channel.json` and `appcast.xml` under the latest release to confirm what
+installed nightly clients are offered. Older clients may display the shared
+release version even when the nightly build number has increased.
+
+When a fresh nightly is explicitly requested, dispatch the workflow from
+`main` with the default `force: false`. Use `force: true` only to rebuild the
+same published source for recovery. Do not change stable release tags or
+feeds to repair the nightly channel.
+
+### Publication and retention
 
 The attempt component is mandatory even for a same-day retry: damaged bytes are
 never replaced at an existing immutable URL. Publication first verifies the

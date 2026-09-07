@@ -63,6 +63,23 @@ def run_bash(script: str, *, env: dict[str, str] | None = None) -> subprocess.Co
     )
 
 
+@pytest.mark.parametrize(
+    "hostname",
+    ["build-node.demo.example", "studio-mini.demo.example", "windows-lab.demo.example"],
+)
+def test_demo_kwt_resolves_tailscale_user(tmp_path: Path, hostname: str) -> None:
+    result = subprocess.run(
+        [str(DEMO / "bin" / "kwt"), "ssh", "resolve", "--json", hostname],
+        env={**os.environ, "GHOSTHUB_DEMO_SCRATCH": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    route = json.loads(result.stdout)
+    assert route["logical_target"] == {"hostname": hostname}
+    assert route["targets"][-1]["effective_target"]["user"] == "demo"
+
+
 def test_demo_kwt_reports_generation_fenced_worktree_changes(tmp_path: Path) -> None:
     scratch = tmp_path / "demo"
     repository = scratch / "repos" / "ghosthub"

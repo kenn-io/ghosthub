@@ -1,21 +1,21 @@
 # Ghosthub
 
-> Ghosthub is the multiplexer-native macOS terminal for all your multiplexers. Today it supports local and remote tmux, Herdr, and Zellij sessions, with optional Git worktree management.
+> Ghosthub opens local and remote tmux, Herdr, and Zellij sessions in one native Mac app, with optional Git worktree management.
 
 Ghosthub is alpha software. The Overview is a short visual tour; the Docs links below are comprehensive task-oriented references. Markdown versions are canonical for machine readers.
 
 ## Docs
 
-- [Documentation overview](https://ghosthub.ai/docs.md): Mental model and documentation map
+- [Documentation overview](https://ghosthub.ai/docs.md): How Ghosthub organizes your work and where to find help
 - [Getting started](https://ghosthub.ai/docs/getting-started.md): Requirements, installation, and first session
 - [Changelog](https://ghosthub.ai/docs/changelog.md): User-facing changes in each Ghosthub release
 - [Sessions](https://ghosthub.ai/docs/sessions.md): Create, attach, detach, and manage tmux, Herdr, and Zellij sessions
 - [Remote hosts](https://ghosthub.ai/docs/remote-hosts.md): SSH and exe.dev setup, trust, authentication, reconnect, and supported hosts
-- [Projects and worktrees](https://ghosthub.ai/docs/projects-worktrees.md): Register repositories and manage branch- or pull-request-backed worktrees
+- [Projects and worktrees](https://ghosthub.ai/docs/projects-worktrees.md): Register repositories, manage branch and pull-request worktrees, and inspect changed files
 - [Windows and navigation](https://ghosthub.ai/docs/windows-navigation.md): Sidebar, Command Palette, windows, tabs, and restoration
-- [Terminal configuration](https://ghosthub.ai/docs/terminal-configuration.md): Ghosthub-owned libghostty configuration and tmux themes
-- [Keyboard shortcuts](https://ghosthub.ai/docs/keyboard-shortcuts.md): Application, workspace, tmux, and Herdr pane-splitting shortcuts
-- [Privacy](https://ghosthub.ai/docs/privacy.md): Anonymous usage data and local state
+- [Terminal configuration](https://ghosthub.ai/docs/terminal-configuration.md): Fonts, colors, transparency, session previews, and remote clipboard use
+- [Keyboard shortcuts](https://ghosthub.ai/docs/keyboard-shortcuts.md): Navigation, terminal Find, and tmux and Herdr pane-splitting shortcuts
+- [Privacy](https://ghosthub.ai/docs/privacy.md): Anonymous usage data, macOS permission prompts, and local state
 - [Troubleshooting](https://ghosthub.ai/docs/troubleshooting.md): Common local, SSH, multiplexer, and worktree problems
 
 ## Other
