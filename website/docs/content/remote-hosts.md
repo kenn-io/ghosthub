@@ -114,6 +114,11 @@ If SSH needs authentication or host-key review, the presentation changes to
 same reconnect supervisor. If you dismiss it, choose **Review Connection** to
 open it again.
 
+If the connection still fails, Ghosthub shows OpenSSH's explanation and exit
+status. For example, `Permission denied (publickey)` means account
+authentication failed. Trusting a host key confirms the server's identity;
+it does not sign you in. Check the account and SSH key used for that host.
+
 ## Managed kwt helper
 
 Tmux-only hosts do not need kwt. To show projects and worktrees on a remote
