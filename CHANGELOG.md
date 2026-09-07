@@ -5,6 +5,25 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Added
+
+- Register repositories arranged as a `.bare/` directory with sibling
+  worktrees. New worktrees keep that layout.
+
+### Fixed
+
+- New SSH hosts show a host-key trust review instead of asking for a password
+  when OpenSSH sends its standard confirmation question without a prompt hint.
+- Imported pull-request worktrees keep both sides of text conflicts when a
+  later merge conflicts.
+
+### Upgrade notes
+
+- Pull-request imports require Git 2.42.0 or newer on macOS and Linux, or
+  Git for Windows 2.53.0.windows.3 or newer, on the host that owns the project.
+- Restart any separately running kwt processes after upgrading before using
+  `kwt doctor --fix` to clean up old worktree-creation locks.
+
 ## [0.10.0] - 2026-09-07
 
 Find text in your terminal, see which files changed in a worktree, and paste
