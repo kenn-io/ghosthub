@@ -49,9 +49,8 @@ When opacity is below 1, workspace windows and their chrome become
 translucent at the configured opacity, and blur is applied behind the window.
 Increased contrast (**System Settings → Accessibility → Display**) forces an
 opaque window, and native fullscreen always stays opaque. There is no
-separate Ghosthub setting; effective values come from your loaded
-configuration graph rooted at `ghostty.conf`, so a project `terminal.conf` or
-a `config-file` include can override the root.
+separate Ghosthub setting. A project `terminal.conf` or a file loaded with
+`config-file` can override these values.
 
 ## Shell startup
 
@@ -93,6 +92,8 @@ its automatic attachment. You can still open that session normally. Windows/
 psmux sessions are not attached automatically because psmux has no non-sizing
 client mode.
 
+![Ghosthub sidebar with Always Live tmux previews](assets/guide-session-previews.png)
+
 Efficient and Live preview only clients you opened. Always Live deliberately
 opens one retained tmux or SSH client for each discovered POSIX session.
 Preview rendering never adds a second client, persists terminal pixels to
@@ -123,10 +124,23 @@ remains authoritative.
 Theme application is not available for the Console Panel or native Windows
 sessions.
 
+![Ghosthub Appearance settings with the tmux theme picker](assets/guide-terminal.png)
+
 ## Clipboard behavior
 
-Remote tmux copy mode can copy text to the Mac clipboard through OSC 52. Paste
-uses the configured terminal shortcut and libghostty's safe paste path.
+Remote tmux copy mode can copy text to the Mac clipboard through OSC 52, a
+terminal command for clipboard access. The `clipboard-write` setting controls
+whether those writes are allowed. Remote programs cannot read your Mac
+clipboard through OSC 52. Your explicit paste shortcut still works.
+
+To send an image to a tool in a remote macOS or Linux tmux session, copy the
+image on your Mac and press ++cmd+v++. Ghosthub uploads a PNG to
+`~/.ghosthub/paste-images/` on that host and pastes its absolute path into the
+active pane. If the clipboard also contains text, Ghosthub pastes the text
+instead. ++ctrl+v++ keeps its normal terminal meaning. Uploading another image
+also removes cached images older than seven days.
+
+See [Sessions](sessions.md#attach-and-detach) for the terminal controls.
 
 ## Quit behavior
 

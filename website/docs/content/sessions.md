@@ -5,19 +5,16 @@ icon: lucide/square-terminal
 
 # Sessions
 
-Ghosthub keeps four host inventories independent. Standalone tmux sessions
-appear under **Tmux Sessions**, running and stopped Herdr sessions appear under **Herdr
-Sessions**, active Zellij sessions appear under **Zellij Sessions**, and
-tmux-backed kwt worktrees and registered directories appear under **Projects**,
-in that order. Registered directories are flat rows after the repository
-hierarchies. Missing Herdr or Zellij installations are normal: Ghosthub simply
-omits those groups without showing a warning.
+Expand a host in the sidebar to see its sessions:
 
-Ghosthub treats every supported multiplexer as a first-class peer. It discovers
-each backend independently and presents its ordinary client beside the others;
-tmux, Herdr, and Zellij can all be active on the same host fleet. Each continues
-to own its own windows or tabs, panes, layout, history, key bindings, plugins,
-and processes.
+- **Tmux Sessions** lists standalone tmux sessions.
+- **Herdr Sessions** lists running and stopped Herdr sessions.
+- **Zellij Sessions** lists active Zellij sessions.
+- **Projects** lists Git worktrees and registered directories with tmux sessions.
+
+If Herdr or Zellij is not installed, its group is hidden. You can use all three
+multiplexers on the same host. Each keeps its own panes, layout, history, key
+bindings, and running programs.
 
 ![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](assets/guide-sessions.png)
 
@@ -133,7 +130,7 @@ The modes trade resource use for freshness:
 Expansion choices stay in memory for each workspace window, including while
 the mode is Off, and reset when that window closes. Hiding the sidebar or
 briefly switching away from Ghosthub stops live rendering until it is visible
-and active again. Always Live keeps its policy-owned clients connected during
+and active again. Always Live keeps its automatically opened clients connected during
 that pause.
 
 Efficient and Live never attach to unopened sessions. Always Live deliberately

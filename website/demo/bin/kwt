@@ -162,7 +162,36 @@ open_worktree() {
   exec tmux new-session -A -s "$session" -c "$path"
 }
 
+resolve_ssh() {
+  if [[ "$#" -ne 4 || "$2" != "resolve" || "$3" != "--json" ]]; then
+    echo "faux kwt: unsupported SSH command" >&2
+    exit 64
+  fi
+  local hostname="$4"
+  case "$hostname" in
+    build-node.demo.example|studio-mini.demo.example|windows-lab.demo.example) ;;
+    *) echo "faux kwt: unknown demo SSH host" >&2; exit 64 ;;
+  esac
+  # Tailscale's picker resolves users through kwt. Return the synthetic user
+  # instead of letting an unsupported command fall back to the Mac account.
+  cat <<EOF
+{
+  "logical_target": {"hostname": "$hostname"},
+  "targets": [{
+    "logical_target": {"hostname": "$hostname"},
+    "effective_target": {"hostname": "$hostname", "user": "demo", "port": 22},
+    "display_target": "demo@$hostname",
+    "projection": {"arguments": ["-F", "$scratch/ssh/config"]}
+  }],
+  "route_identity": "demo-$hostname",
+  "projection_policy": "kwt.openssh.projection.v1",
+  "observed_at": "2026-07-21T14:02:11Z"
+}
+EOF
+}
+
 case "${1:-}" in
+  ssh) resolve_ssh "$@" ;;
   projects) projects_json ;;
   list) list_json ;;
   workspace)

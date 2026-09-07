@@ -15,8 +15,7 @@ support them.
 A macOS or Linux host needs:
 
 - a working OpenSSH server
-- tmux 3.2 or newer
-- Herdr 0.8 or Zellij 0.44 when you want those session backends
+- at least one supported multiplexer: tmux 3.2+, Herdr 0.8+, or Zellij 0.44+
 - a destination that your Mac's OpenSSH configuration can resolve
 
 Ghosthub checks the remote multiplexer version when attaching. Cmd-D and
@@ -76,6 +75,8 @@ regard to case, and are managed in exe.dev.
 An unreachable host does not block discovery or use of the rest of the fleet.
 An expanded, reachable host with no projects, tmux sessions, Herdr sessions, or Zellij sessions
 says so in the sidebar.
+
+![Ghosthub Host Settings with the connection test and remote host details](assets/guide-hosts.png)
 
 ## Host-key trust
 

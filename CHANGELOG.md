@@ -5,356 +5,387 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
-### Changed
+## [0.10.0] - 2026-09-07
 
-- Remote SSH connections are now resolved, reviewed, and owned by Ghosthub's
-  revision-pinned kwt helper instead of an app-managed OpenSSH master.
-  Host-key trust and authentication prompts appear in native sheets during
-  the connection that needs them, and remote connections are shared while
-  windows use them rather than held for the whole app session; kwt applies
-  its idle policy after the last owner releases one.
-- Ghosthub keeps its SSH kwt daemon state in a dedicated `~/.ghosthub/ssh/kwt`
-  directory, separate from the account's ordinary kwt registry state.
-- Kwt-managed worktree and directory sessions now use kwt's dedicated tmux
-  server. Ghosthub follows kwt's explicit direct or protected attachment mode
-  instead of guessing policy from the socket name.
-- Apple Silicon releases now support macOS 15 (Sequoia) and newer, with the
-  packaged application and libghostty runtime checked on a hosted Sequoia
-  runner before release changes merge.
-
-### Fixed
-
-- Remote inventory retries a transient OpenSSH session-channel refusal instead
-  of reporting the host as unreachable when concurrent commands briefly fill
-  the server's multiplexed-session limit.
-- SSH transport outages stay in automatic session reconnect instead of opening
-  an authentication sheet that interrupts work and waits for manual retry.
-
-## [0.9.0] - 2026-08-15
+Find text in your terminal, see which files changed in a worktree, and paste
+images into remote tmux sessions. This release also adds macOS Sequoia support
+and makes remote connections and multi-window work smoother.
 
 ### Added
 
-- Optional **Efficient** and **Live** bitmap previews show tmux sessions that
-  are already open in a workspace without creating another tmux or SSH client.
-  Preview rendering is off by default, identity-fenced across reconnects, and
-  bounded to four inactive live surfaces across the app.
-- Worktree rows show a compact count of the tmux windows in each confirmed
-  live session, with the existing running or agent indicator retained when an
-  authoritative count is unavailable.
-- **Command-1** through **Command-8** select numbered native workspace tabs,
-  while **Command-9** selects the last tab. Explicit Ghosthub shortcut
-  assignments still take precedence.
+- Search the active terminal with **Command-F**. Use **Command-G** to move
+  toward older matches and **Shift-Command-G** toward newer ones. Find works
+  in standalone terminals and local or remote tmux 3.4+ panes, including their
+  history. Herdr, Zellij, and Windows psmux are not supported yet.
+- Expand a worktree to see staged, unstaged, and untracked files without
+  leaving the sidebar or opening its terminal session.
+- Paste a Mac clipboard image into a remote tmux session with **Command-V**.
+  Ghosthub uploads a PNG to the remote host and pastes its path, ready for
+  tools that accept image files. If the clipboard also contains text,
+  Ghosthub pastes the text instead.
+- Choose **Always Live** session previews to connect and preview discovered
+  tmux sessions on reachable macOS and Linux hosts without opening each one.
+  This mode requires tmux 3.4+ and uses more CPU, memory, and SSH connections.
+- Give a window or tab a custom name with **Window → Rename Window…**, or
+  click its title. The name returns after relaunch and leaves the underlying
+  session name unchanged.
+- Open a project's visible worktrees together with **Open All Worktrees as
+  Tabs** in the project's context menu.
+- Make window backgrounds translucent with `background-opacity` and
+  `background-blur` in `ghostty.conf`. Full-screen windows and macOS Increase
+  Contrast keep backgrounds opaque.
 
 ### Changed
 
-- Native tabs and titlebars for kwt worktrees use readable project and
-  worktree names, while attachments continue to use kwt's exact session
-  identity. Newly created worktree sessions also use kwt's shorter,
-  hash-suffixed names.
-- Ghosthub enables tmux mouse mode when attaching to POSIX sessions, so wheel
-  scrolling enters tmux copy mode with the backend's own mouse bindings.
-- A client-local contrast floor keeps inherited ANSI colors legible against
-  light tmux backgrounds without changing shared session colors or overriding
-  an explicit `minimum-contrast` setting.
+- Run Ghosthub on Apple Silicon Macs with **macOS 15 (Sequoia) or newer**.
+- Review SSH host keys and answer authentication prompts in native sheets
+  that identify the host or jump host asking. Windows share connections while
+  they need them, and idle connections can close after the last user leaves.
+- Worktrees and registered directories use kwt's dedicated tmux server.
+  To inspect those sessions from a shell, use `tmux -L kwt list-sessions`.
+  Imported pull requests keep their separate protected sessions.
+- Worktrees and tmux sessions created outside Ghosthub appear in every window
+  as inventory refreshes. Windows share those requests instead of each
+  repeating them.
+- Choose exactly which Tailscale hosts to import; the picker starts with
+  none selected.
+- Remove a dirty worktree after reviewing and explicitly confirming that its
+  uncommitted changes will be discarded. The Git branch is kept.
 
 ### Fixed
 
-- Ghostty's built-in color schemes now ship with Ghosthub, so `theme =
-  Catppuccin Macchiato` and every other bundled name resolves without first
-  copying theme files into `~/.config/ghostty/themes`. Bundled shell
-  integration and the `xterm-ghostty` terminfo database ship alongside them.
-- Multi-window shortcut evaluation no longer risks a release-build crash, and
-  sibling navigation now follows the active workspace window reliably.
-- Quit confirmation no longer blocks the main thread or leaves Ghosthub
-  beachballed when quitting from the menu, **Command-Q**, or a terminal action.
-- Remote tmux, Herdr, and Zellij recovery waits through a lid-closed wake with
-  no active display and resumes when a terminal surface can be created again.
-- **Command-click** reliably opens highlighted terminal links, including after
-  pointer movement or dragging.
+- **Check for Updates…** can replace an update waiting to install with a
+  newer release. Nightly update dialogs show the date and build number.
+- Updates preserve ordinary window positions and sizes when updating from a
+  build with window-position capture. Windows move onto an available display
+  if their original display was disconnected; macOS still controls Spaces,
+  full-screen windows, and tab groups.
+- **Command-W** closes only the active session in a workspace. Other opened
+  sessions stay connected. Use **Shift-Command-W** to close the whole window.
+- Brief SSH outages reconnect automatically without unnecessary password
+  prompts. Temporary inventory failures retry, and remote helper maintenance
+  no longer interrupts ordinary terminal recovery.
+- Hidden tmux clients and previews no longer shrink shared terminal windows.
+- Copying terminal output no longer deadlocks terminal input.
+- Terminal programs can request macOS permission to use Photos, the camera,
+  microphone, and other resources that require your consent.
+- Terminal memory and lifetime fixes reduce leaks and crashes.
+- Switching windows avoids unnecessary sidebar rebuilds. Resizing and
+  dragging the titlebar no longer rebuilds its controls or opens Rename by
+  accident, and translucent windows keep the configured titlebar opacity.
+- Settings headings and the Hosts selector stay visible while details scroll.
+
+## [0.9.0] - 2026-08-15
+
+Preview running work in the sidebar, switch tabs with numbered shortcuts,
+and read clearer worktree names and terminal colors.
+
+### Added
+
+- See previews of tmux sessions you have already opened. **Efficient** shows
+  a still image; **Live** refreshes up to four inactive previews across the
+  app. Previews are off by default, stay matched to the right session after
+  reconnecting, and reuse existing connections.
+- See how many tmux windows are running in each worktree. When the count is
+  unavailable, the row keeps its running or agent indicator.
+- Switch tabs with **Command-1** through **Command-8**, or jump to the last
+  tab with **Command-9**. Your custom Ghosthub shortcuts take precedence.
+
+### Changed
+
+- Identify worktrees by readable project and worktree names in tabs and
+  titlebars. New worktree sessions also get shorter names with a unique suffix.
+- Scroll through tmux history with the mouse wheel on macOS and Linux hosts.
+  Ghosthub enables tmux mouse mode and uses its existing mouse bindings.
+- Terminal text stays readable on light tmux backgrounds without changing
+  colors for other clients. An explicit `minimum-contrast` setting still wins.
+
+### Fixed
+
+- Use built-in Ghostty color schemes, such as `theme = Catppuccin Macchiato`,
+  without downloading or copying theme files. Ghosthub also includes the
+  shell integration and terminal definitions those terminals need.
+- Keyboard shortcuts no longer risk a crash when multiple windows are open,
+  and session navigation follows the active window.
+- Quitting no longer freezes Ghosthub while it asks for confirmation.
+- Remote tmux, Herdr, and Zellij sessions resume recovery when a display
+  becomes available after the Mac wakes with its lid closed.
+- **Command-click** reliably opens highlighted terminal links, including
+  after moving or dragging the pointer.
 
 ## [0.8.2] - 2026-08-11
 
 ### Fixed
 
-- Configurable **Command-B** and **Command-Shift-P** shortcuts remain
-  registered across window-focus and sheet transitions, dispatch exactly once,
-  and no longer act beneath an open sheet.
+- **Command-B** and **Command-Shift-P** keep working after switching windows
+  or closing a dialog. Each shortcut acts once and does not operate on the
+  window behind an open dialog.
 
 ## [0.8.1] - 2026-08-11
 
 ### Fixed
 
-- **Command-B** now toggles the sidebar exactly once instead of briefly
-  animating it closed and immediately reopening it.
-- Switching between Ghosthub windows no longer rebuilds every open window's
-  scene, removing the remaining activation lag in multi-window workflows.
+- **Command-B** toggles the sidebar once instead of briefly closing it and
+  immediately reopening it.
+- Switching between Ghosthub windows is faster, especially with several
+  windows open.
 
 ## [0.8.0] - 2026-08-11
 
+Use Zellij alongside tmux and Herdr, remove projects without deleting their
+files, and show only the exe.dev machines you need.
+
 ### Added
 
-- Zellij joins Ghosthub's all-multiplexer fleet as a first-class peer on the
-  local Mac and remote macOS and Linux hosts. Ghosthub discovers active
-  sessions, creates or attaches through the ordinary Zellij client, reconnects
-  remote attachments after transport loss, and provides a confirmed Kill
-  Session action without exposing resurrection or pane management.
-- Registered projects can be removed from Ghosthub without deleting their
-  repositories, worktrees, or tmux sessions, including when the checkout is
-  already missing. Ghosthub revalidates the exact kwt registration before
-  removing it.
-- exe.dev accounts can limit discovery to VMs carrying specific exe.dev tags,
-  so a fleet of dozens of VMs shows only the ones you work in.
+- Create, open, and kill Zellij sessions on your Mac or remote macOS and Linux
+  hosts. Remote sessions reconnect after a lost connection. Killing a session
+  requires confirmation; restoring exited sessions and managing panes remain
+  tasks for Zellij itself.
+- Remove a project from Ghosthub without deleting its repository, worktrees,
+  or tmux sessions, even if the checkout is already missing. Ghosthub checks
+  that the project registration still matches before removing it.
+- Filter exe.dev machines by tag so larger accounts show only the machines
+  you work with.
 
 ### Changed
 
-- **Control-Tab** and **Control-Shift-Tab** cycle visible sibling worktrees,
-  directory workspaces, or tmux, running Herdr, and active Zellij sessions.
-  These and numbered sibling shortcuts can be customized in Keyboard Settings
-  or `config.toml`.
+- Use **Control-Tab** and **Control-Shift-Tab** to cycle through visible
+  workspaces or sessions in the same group. Customize these and numbered
+  navigation shortcuts in Keyboard Settings or `config.toml`.
 
 ### Fixed
 
-- Returning focus to Ghosthub no longer starts a fresh fleet inventory sweep
-  or process sample, keeping window activation responsive as the number of
-  hosts and workspaces grows.
-- Zellij reconnect, restoration, and confirmed kill recovery now stop when SSH
-  settings, host identity, or exact session state changes instead of resuming a
-  stale attachment.
+- Returning to Ghosthub stays responsive with many hosts and workspaces.
+- Zellij recovery stops when the host, SSH settings, or session changes,
+  instead of reconnecting using outdated details.
 
 ## [0.7.0] - 2026-08-09
 
+Manage Herdr sessions and exe.dev machines alongside your tmux work, and
+keep tmux sessions connected while switching between them.
+
 ### Added
 
-- Herdr sessions are now first-class peers to tmux sessions on the local Mac
-  and remote macOS and Linux hosts. Ghosthub discovers running and stopped
-  sessions, supports whole-session create, restart, stop, and delete actions,
-  and can split the active Herdr pane with native shortcuts on Herdr 0.8 or
-  later.
-- Optional exe.dev integrations discover running VMs as SSH hosts without
-  duplicating them in manual host settings.
-- macOS and Linux hosts can save launch profiles for starting new tmux sessions
-  with a chosen command, including commands that require an interactive
-  terminal.
-- **Command-D** and **Command-Shift-D** split the active tmux or Herdr pane to
-  the right or down when the connected multiplexer supports native splitting.
-- Recently active tmux sessions show an activity indicator after they have
-  been opened during the current Ghosthub launch.
-- Comprehensive searchable documentation is now available at
-  [ghosthub.ai/docs](https://ghosthub.ai/docs/), with Markdown versions for
-  machine readers.
+- Create, open, restart, stop, and delete Herdr sessions on your Mac or remote
+  macOS and Linux hosts. Running and stopped sessions appear in the sidebar.
+- Discover running exe.dev machines as SSH hosts without adding them again
+  in Host Settings.
+- Save a command as a launch profile for new tmux sessions on macOS and Linux,
+  including commands that need an interactive terminal.
+- Split the active tmux or Herdr pane right with **Command-D**, or down with
+  **Command-Shift-D**, when the multiplexer supports it. Herdr requires 0.8+.
+- Spot recently active tmux sessions by their sidebar indicator after you
+  have opened them during the current Ghosthub launch.
+- Search the documentation at [ghosthub.ai/docs](https://ghosthub.ai/docs/).
+  Markdown versions are also available for machine readers.
 
 ### Changed
 
-- Tmux presentations stay connected while navigating between sessions in the
-  same window, and remote presentations automatically reconnect after
-  transient SSH failures.
-- Registered kwt directory workspaces appear alongside project worktrees.
-  Worktree rows show confirmed live-session state, while duplicate entries are
-  hidden from **Tmux Sessions** by default.
-- Ghosthub automatically installs or updates its revision-pinned kwt helper on
-  configured remote macOS and Linux hosts. Windows helper installation remains
-  explicit while those executables are unsigned.
-- Homebrew is now the primary installation path, with the notarized DMG kept as
-  a direct alternative.
+- Tmux sessions stay connected while you switch between them in the same
+  window. Remote sessions reconnect automatically after brief SSH failures.
+- Find registered kwt directories alongside project worktrees. Worktrees
+  show whether their sessions are running, and duplicate entries are hidden
+  from **Tmux Sessions** by default.
+- Remote macOS and Linux hosts automatically receive the matching kwt helper
+  when needed. Windows helper installation still requires an explicit action
+  because those executables are unsigned.
+- Install through Homebrew or download the notarized DMG directly.
 
 ### Fixed
 
-- Worktree removal now revalidates identity immediately before deletion,
-  avoids destructive action when inventory is incomplete, and restores the
-  correct presentation if removal fails or the worktree moved concurrently.
-- Sidebar transitions resize the terminal smoothly without repeated terminal
-  grid reflow.
+- Worktree removal stops if Ghosthub cannot confirm what it would delete.
+  If removal fails or the worktree moves during the operation, Ghosthub
+  restores the correct terminal view.
+- Opening and closing the sidebar resizes the terminal smoothly.
 
 ## [0.6.0] - 2026-08-04
 
+Set up SSH hosts inside Ghosthub and arrange sessions in the order you use them.
+
 ### Added
 
-- SSH host setup now stays inside Ghosthub: unseen host keys are reviewed with
-  their exact destination and fingerprint, while password and
-  keyboard-interactive challenges use a native secure-entry sheet. Session-only
-  credentials can authenticate direct hosts and supported ProxyJump routes
-  without being written to disk.
+- Review new SSH host keys and enter passwords or other authentication
+  responses inside Ghosthub. Prompts show the destination and key fingerprint.
+  Credentials stay in memory for the session and also work with supported
+  SSH jump-host routes.
 
 ### Changed
 
-- Worktrees within a project and standalone tmux sessions within a host can be
-  reordered by dragging. Ghosthub preserves that order across launches and
-  inventory changes and uses it for keyboard navigation and the Command
-  Palette.
-- Tailscale imports preserve full MagicDNS identities and use the effective
-  OpenSSH user when configured, falling back to the current macOS user.
-- Sidebar resizing is smoother, and the active host and session title remain
-  visible when the sidebar width changes.
-- The terminal font picker lists fixed-width fonts while retaining a configured
-  font that is temporarily unavailable.
+- Drag worktrees within a project or tmux sessions within a host to reorder
+  them. The order survives relaunches and is used by keyboard navigation and
+  the Command Palette.
+- Imported Tailscale hosts keep their full MagicDNS names and use the username
+  from your SSH configuration, or your Mac username if none is configured.
+- Resize the sidebar smoothly while keeping the active host and session
+  title visible.
+- Choose from fixed-width terminal fonts. A configured font stays selected
+  even when it is temporarily unavailable.
 
 ### Fixed
 
-- Fresh launches now open a workspace window when macOS has no restorable
-  window state.
-- Remote connections preserve explicit SSH ports, reuse authenticated
-  connections for inventory, tmux, and helper installation, and report normal
-  tmux detachment separately from authentication or transport failures.
+- Launching Ghosthub opens a workspace even when macOS has no saved windows.
+- Remote connections honor custom SSH ports and reuse your authenticated
+  connection for sessions and host checks. A normal tmux disconnect is no
+  longer reported as an authentication or connection failure.
 
 ## [0.5.3] - 2026-08-02
 
 ### Changed
 
-- No user-facing behavior changes. This signed follow-up release provides an
-  update target for validating that 0.5.2 preserves open workspace windows and
-  exact tmux attachments during updater relaunch.
+- No user-facing changes. This release was published to check that updating
+  from 0.5.2 reopens the same workspace windows and tmux sessions.
 
 ## [0.5.2] - 2026-08-02
 
 ### Fixed
 
-- Update relaunches now restore every open workspace window with its prior
-  navigation and exact tmux attachment while preserving macOS window geometry
-  and tab grouping, without blank, duplicated, swapped, or dropped windows.
+- Updating reopens your workspace windows with their previous navigation and
+  tmux sessions, without blank, duplicate, swapped, or missing windows. The
+  release also addressed macOS window size, position, and tab restoration.
 
 ## [0.5.1] - 2026-08-02
 
 ### Fixed
 
-- Installing an update and reopening saved windows no longer crashes when
-  macOS temporarily withholds a window's restoration state; Ghosthub waits for
-  the restored workspace and exact tmux attachment instead of replacing it
-  with a fresh window.
-- **Command-B** and the compact titlebar control now toggle the sidebar only in
-  the focused window.
+- Installing an update no longer crashes when macOS is slow to restore saved
+  windows. Ghosthub waits for the original workspace and tmux session instead
+  of opening a fresh window.
+- **Command-B** and the titlebar sidebar button affect only the focused window.
 
 ## [0.5.0] - 2026-08-02
 
+Hide sessions you do not need, apply a theme to the current session, and
+return to your work after updating.
+
 ### Added
 
-- Standalone tmux sessions can be hidden from navigation with case-sensitive
-  wildcard patterns managed in **Settings → Worktrees**.
-- **Apply Theme to Current Session** immediately updates the active tmux
-  session without enabling the persistent shared-session theme override.
-- Quit confirmation can be disabled in Terminal Settings.
+- Hide standalone tmux sessions with case-sensitive wildcard patterns in
+  **Settings → Worktrees**.
+- Use **Apply Theme to Current Session** to change that session's appearance
+  without turning on automatic theme changes for shared sessions.
+- Turn off quit confirmation in Terminal Settings.
 
 ### Changed
 
-- Closing the final workspace window leaves Ghosthub running so a new window
-  can be opened without relaunching the app.
-- Sparkle-authorized relaunches preserve native window restoration and reopen
-  each exact prior tmux attachment that can be confirmed, including reconnects
-  to temporarily offline SSH hosts.
-- The **Follow ghostty.conf** tmux theme now uses libghostty's effective light
-  or dark foreground and background colors when styling sessions.
+- Close the last workspace window and open another without relaunching Ghosthub.
+- After an update, Ghosthub reopens previous windows and tmux sessions it can
+  confirm, and reconnects when temporarily offline SSH hosts return.
+- **Follow ghostty.conf** uses your configured light or dark terminal colors
+  for the tmux theme.
 
 ### Fixed
 
-- Remote tmux attachment again follows the account login-shell environment,
-  honors OpenSSH authentication and connection sharing, and allows remote
-  copy-mode to write to the Mac clipboard through OSC 52.
-- HTTPS pull-request imports can use the host's configured Git credential
-  helpers, and removing an already-missing worktree still reconciles its exact
-  live tmux session.
-- Tailscale host discovery works in packaged builds.
-- Large sidebars and live terminal resizing no longer trigger SwiftUI layout
-  stalls or excessive resize churn.
-- Terminal configuration notices no longer replay after a successful reload,
-  and cursors stop blinking when their window is in the background.
+- Remote tmux sessions use the account's normal login-shell environment and
+  SSH authentication settings. Copying text in remote tmux copy mode can send
+  it to the Mac clipboard through OSC 52, the terminal clipboard protocol.
+- Import pull requests over HTTPS using the host's configured Git credentials.
+  Removing an already-missing worktree still handles its running tmux session.
+- Discover Tailscale hosts in packaged builds.
+- Large sidebars and terminal resizing no longer cause layout stalls.
+- Configuration notices stop repeating after a successful reload, and cursors
+  stop blinking in background windows.
 
 ## [0.4.0] - 2026-07-30
 
+Create worktrees from existing branches, remove worktrees from the sidebar,
+and try sessions on Windows hosts.
+
 ### Added
 
-- Existing local and remote branches can be selected when creating a
-  worktree, including source-qualified choices when multiple remotes contain
-  the same branch name.
-- Non-primary worktrees can be removed from the sidebar with confirmation.
-  Ghosthub terminates a verified live tmux session before delegating removal
-  to kwt, while preserving the Git branch.
-- Experimental native Windows hosts can connect over SSH through psmux,
-  discover and attach sessions, and install revision-pinned Windows kwt
-  helpers.
+- Choose an existing local or remote branch when creating a worktree. Branches
+  with the same name show which remote they come from.
+- Remove worktrees other than the primary checkout after confirmation.
+  Ghosthub stops the matching tmux session and removes the worktree through
+  kwt, keeping the Git branch.
+- Connect to experimental Windows hosts over SSH, discover and open psmux
+  sessions, and install the matching Windows kwt helper.
 
 ### Changed
 
-- Project and worktree nesting is clearer in the sidebar, and registered
-  primary checkouts open normally even when they live outside kwt's global
-  worktree directory.
-- Standalone tmux sessions use a direct hover removal control, while
-  worktree-backed sessions keep distinct session and worktree lifecycle
-  actions.
-- Tmux Theme colors apply automatically only to new sessions created by
-  Ghosthub. Existing local and remote sessions retain their own appearance
-  unless **Apply theme to shared tmux sessions** is enabled.
-- Development builds show the nearest release tag, commit distance, revision,
-  and dirty state in About while preserving valid numeric macOS bundle
-  versions.
+- See project and worktree nesting more clearly. Primary checkouts open even
+  when they are outside kwt's usual worktree directory.
+- Hover over a standalone tmux session to reveal its removal control.
+  Worktrees have separate actions for ending the session and removing files.
+- Themes apply automatically to new sessions created by Ghosthub. Existing
+  sessions keep their appearance unless you enable **Apply theme to shared
+  tmux sessions**.
+- Identify development builds in About by their nearest release, commit, and
+  whether they include uncommitted changes.
 
 ### Fixed
 
-- Closing or disconnecting a tmux attachment no longer implies that the
-  server-side session ended. When a bare session does end, Ghosthub offers to
-  reopen that exact named session.
-- Generated terminal configuration is self-contained and reload failures are
-  reported without showing misleading errors after successful automatic
-  reloads.
-- Worktree creation, removal, and inventory refreshes are coordinated across
-  windows so stale rows and sessions do not reappear after mutations.
+- Disconnecting from tmux no longer makes Ghosthub treat the session as ended.
+  If a standalone session does end, Ghosthub offers to reopen it by name.
+- Terminal configuration reloads report failures without showing errors after
+  a successful reload.
+- Created or removed worktrees stay in sync across windows; outdated rows and
+  sessions no longer reappear after those actions.
 
 ## [0.3.0] - 2026-07-28
 
+Open native tabs, import pull requests as worktrees, and add projects on
+local or remote hosts.
+
 ### Added
 
-- Native macOS workspace tabs with `⌘T`, alongside independent windows with
-  `⌘N`.
-- Pull-request discovery and worktree import through kwt.
-- Managed kwt helpers for Darwin and Linux on amd64 and arm64 remote hosts,
-  installed only after explicit permission.
-- **Add Project** for registering one local or remote checkout without
-  filesystem scanning or a system kwt installation.
-- Confirmed **Kill Session** actions in session menus and the Command Palette.
-- Privacy-bounded anonymous daily activity telemetry with a Settings opt-out.
+- Open a native macOS tab with **Command-T** or a separate window with
+  **Command-N**.
+- Browse pull requests and import them as worktrees through kwt.
+- Install the matching kwt helper on Intel or ARM macOS and Linux hosts after
+  granting permission.
+- Register a local or remote checkout with **Add Project**, without scanning
+  the filesystem or installing kwt yourself.
+- End sessions with a confirmed **Kill Session** action in menus or the
+  Command Palette.
+- Anonymous daily usage reporting, which you can turn off in Settings.
 
 ### Changed
 
-- Worktrees remain available when their canonical tmux session is not running;
-  opening one creates or repairs the session before attachment.
-- Remote-host onboarding now includes connection verification, actionable
-  error details, empty-host guidance, and clearer host grouping.
-- Tool discovery supports non-POSIX account shells such as fish.
+- Open a worktree even when its tmux session is stopped. Ghosthub starts or
+  repairs the session as needed.
+- Test remote connections during setup and get clearer errors and guidance
+  when a host has no projects or sessions.
+- Find remote tools when the account uses a shell such as fish.
 
 ## [0.2.1] - 2026-07-23
 
 ### Added
 
-- Automatic terminal configuration reloads and an explicit
-  **Reload Configuration** command with diagnostics.
+- Terminal configuration changes reload automatically. Use **Reload
+  Configuration** to reload manually and see any errors.
 
 ### Changed
 
-- Restored native paste behavior inside tmux-backed terminals.
-- Tmux status and message areas now follow Ghosthub terminal colors.
-- Improved project action discoverability, window sizing, and detach/quit
-  behavior.
+- Paste works normally again in tmux terminals.
+- Tmux status and message areas match Ghosthub's terminal colors.
+- Project actions are easier to find, with improved window sizing and
+  disconnect and quit behavior.
 
 ## [0.2.0] - 2026-07-23
 
 ### Added
 
-- Signed automatic updates and a native **Check for Updates…** flow powered by
-  Sparkle.
+- Install signed updates inside Ghosthub, or look for one with
+  **Check for Updates…**.
 
 ## [0.1.1] - 2026-07-22
 
 ### Changed
 
-- Remote inventory failures now degrade per host without blocking usable local
-  or cached sessions.
-- Improved compact window sizing and application license metadata.
+- An unreachable remote host no longer blocks local sessions or sessions
+  Ghosthub has already discovered.
+- Smaller windows fit better, and the app shows clearer license information.
 
 ## [0.1.0] - 2026-07-22
 
-- Initial development release with native libghostty terminal surfaces, local
-  and SSH tmux session discovery, automatic reconnect, and kwt-backed project
-  and worktree navigation.
+### Added
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.9.0...HEAD
+- Open local and remote tmux sessions in a native Mac terminal, reconnect
+  automatically after lost connections, and navigate projects and worktrees
+  managed by kwt.
+
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/kenn-io/ghosthub/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kenn-io/ghosthub/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/kenn-io/ghosthub/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/kenn-io/ghosthub/compare/v0.8.0...v0.8.1

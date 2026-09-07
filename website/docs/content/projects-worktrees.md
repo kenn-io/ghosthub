@@ -120,9 +120,8 @@ If Kwt reports that the worktree registration changed, automatic retries stop.
 Select the panel's **Refresh** button to refresh workspace inventory. The panel
 resumes inspection when inventory supplies the current worktree identity.
 
-This view is deliberately read-only. Kwt supplies the semantic file status;
-Ghosthub does not calculate or display diffs and does not offer per-file Git
-actions.
+The panel shows file status only. Use your editor or Git tools to read diffs,
+stage changes, or commit them.
 
 ## Create a worktree from a branch
 
@@ -174,9 +173,10 @@ covered by the confirmation. If the worktree or session changes while the
 confirmation is open, Ghosthub stops and presents the current removal details
 for fresh confirmation instead of continuing automatically.
 
-If an unusually large change set exceeds the bounded inspection, Ghosthub
-cannot enumerate every changed file and requires an explicit force
-confirmation instead of treating the checkout as clean or blocking removal.
+If a worktree has uncommitted changes, review the warning before confirming
+forced removal. This discards those changes. If there are too many changed
+files to list, Ghosthub says the inspection is incomplete and still requires
+that explicit confirmation.
 
 After removal, the owning project remains selected. Ghosthub does not select
 another worktree or open its tmux session on your behalf.

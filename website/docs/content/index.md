@@ -28,14 +28,11 @@ start with the [five-minute Overview](https://ghosthub.ai/overview/).
 | Understand anonymous usage reporting and stored data | [Privacy](/docs/privacy/) |
 | Diagnose a connection, multiplexer, or worktree problem | [Troubleshooting](/docs/troubleshooting/) |
 
-## The important mental model
+## How Ghosthub organizes your work
 
-Ghosthub is a client and presentation layer for all multiplexers, not a
-replacement for them. Every supported backend is a first-class peer and can
-run beside the others on the same hosts. The model is intentionally open to
-future backends, including the [terminal multiplexer Superlogical is
-building](https://www.superlogical.com/) once it has a public integration
-surface.
+A terminal multiplexer keeps sessions running when you close a terminal or
+lose a connection. Ghosthub opens those sessions and helps you switch between
+them. Tmux, Herdr, and Zellij can run beside each other on the same host.
 
 - **Hosts** are the local Mac or machines reached over SSH.
 - **Sessions** are ordinary tmux sessions, running/stopped Herdr sessions, or
@@ -43,19 +40,15 @@ surface.
   They do not need a Git repository.
 - **Projects** are Git repositories registered with
   [kwt](https://kwt.sh) on a particular host.
-- **Worktrees** are project checkouts with an exact, canonical tmux session
-  name supplied by kwt.
+- **Worktrees** are separate checkouts of a project's branches. Each has a
+  tmux session managed by kwt.
 
-Tmux continues to own its windows, panes, layout, history, and processes. Herdr
-continues to own its workspaces, tabs, panes, history, key bindings, and
-processes. Closing a Ghosthub presentation detaches from a session; it does not
-end the backend session. Ghosthub offers separate whole-session lifecycle
-actions while leaving each multiplexer's internal model intact. Zellij owns
-its tabs, panes, layout, history, plugins, and processes.
+Each multiplexer keeps control of its panes, layout, history, key bindings,
+and processes. Closing a Ghosthub terminal disconnects its client and leaves
+the session running. To end a session, use a separate confirmed **Kill
+Session…** or Herdr **Stop Session…** action.
 
-Ghosthub uses an ordinary local or SSH client for every attachment. It does not
-use tmux control mode, Herdr's remote transport, or reconstruct any
-multiplexer's terminal state in Swift.
+![Ghosthub with local and remote sessions and project worktrees](assets/hero.png)
 
 ## Human and machine-readable pages
 

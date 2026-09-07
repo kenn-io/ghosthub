@@ -29,6 +29,16 @@ tmux -V
 tmux list-sessions
 ```
 
+For worktrees and registered directories managed by kwt, inspect its separate
+tmux server:
+
+```sh
+tmux -L kwt list-sessions
+```
+
+Imported pull requests use separate protected sessions. Open those through
+their worktree rows in Ghosthub.
+
 An expanded host with no discovered tmux, Herdr, or Zellij sessions or projects reports
 that it is empty. Project inventory is separate from SSH reachability. A
 managed kwt maintenance failure stays silent until you request a project or

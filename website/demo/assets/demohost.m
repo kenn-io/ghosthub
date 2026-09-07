@@ -793,7 +793,9 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
       dispatch_after(
           dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
           dispatch_get_main_queue(), ^{
-        if (!DemoInsertText(text)) {
+        NSSearchField *field = DemoFindSearchField(window.contentView);
+        if (field == nil || ![window makeFirstResponder:field] ||
+            !DemoInsertText(text)) {
           [self acknowledge:requestID
                     success:NO
                     message:@"Find field did not accept text"];

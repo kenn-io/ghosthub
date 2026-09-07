@@ -113,6 +113,9 @@ layer, as subject to direct iteration.
   release updates only `RELEASE_VERSION` and `CHANGELOG.md`; Makefiles, shell
   scripts, workflows, tests, and documentation must read that file or use an
   `X.Y.Z` placeholder, never duplicate the current version literal.
+- Write changelogs and release notes in plain language. Lead with what people
+  can do or what now works better. Include implementation details only when
+  they explain a useful constraint or a change users need to act on.
 - For Python build tooling and tests, use `uv` rather than bare `python`, `pip`, or ad hoc virtualenv state.
 - Prefer Makefile targets over raw multi-flag test commands; if a Python or test invocation is complex enough to be copied around, add a `make` target for it.
 - Use `kata` for task management (see Issue Tracking below).

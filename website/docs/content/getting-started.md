@@ -10,7 +10,7 @@ icon: lucide/rocket
 Ghosthub currently requires:
 
 - an Apple Silicon Mac
-- macOS 26 (Tahoe) or newer
+- macOS 15 (Sequoia) or newer
 - tmux 3.2 or newer for tmux sessions
 - Herdr 0.8.0 or newer for Herdr sessions
 - Zellij 0.44 or newer for Zellij sessions
@@ -25,9 +25,8 @@ When Zellij is available, Ghosthub discovers its active sessions and excludes
 exited/resurrectable entries. Experimental Windows hosts support neither Herdr
 nor Zellij.
 
-Ghosthub is a home for all supported multiplexers, not a competing session
-format. Keep using tmux and tmux-backed worktrees wherever they fit, and run
-Herdr or Zellij wherever each fits from the same Ghosthub host sidebar.
+You can use tmux, Herdr, and Zellij on the same host. Each keeps its own panes,
+key bindings, and running programs.
 
 Native Windows hosts are experimental and have additional requirements. See
 [Remote Hosts](remote-hosts.md#experimental-windows-hosts).
@@ -75,6 +74,8 @@ Ghosthub attaches the ordinary whole-session client for that backend. Existing
 tmux windows and panes, Herdr workspaces, or Zellij tabs and panes stay under their
 backend's control. Closing the presentation detaches without stopping the
 server.
+
+![Ghosthub sidebar with local and remote session groups](assets/guide-sessions.png)
 
 ## Create a session
 

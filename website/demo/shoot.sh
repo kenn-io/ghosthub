@@ -174,9 +174,9 @@ capture_state() {
 }
 
 capture_find() {
-  demo_input click "80,820"
+  palette "add-session-filters"
   sleep 10
-  demo_input expect-window-title "agentsview--add-session-filters"
+  demo_input expect-window-title "agentsview / add-session-filters"
   demo_input click "600,600"
   sleep 0.5
   palette "find in terminal"

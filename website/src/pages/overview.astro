@@ -11,6 +11,7 @@ import sessionPreviews from '../assets/guide-session-previews.png';
 import sessions from '../assets/guide-sessions.png';
 import terminal from '../assets/guide-terminal.png';
 import worktree from '../assets/guide-worktree.png';
+import worktreeChanges from '../assets/guide-worktree-changes.png';
 import { RELEASES_URL } from '../config';
 
 const title = 'Ghosthub overview';
@@ -28,6 +29,8 @@ const imageAlt = {
   hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
   worktree:
     'Ghosthub new worktree sheet listing available local and remote branches',
+  worktreeChanges:
+    'Ghosthub sidebar showing staged, modified, and untracked worktree files',
   commandPalette: 'Ghosthub Command Palette filtered to a reconnect worktree',
   commandCenter:
     'Four real Ghosthub windows arranged in a tight two-by-two matrix, each attached to a different tmux session with its sidebar collapsed',
@@ -44,20 +47,13 @@ const imageAlt = {
       <p class="eyebrow">Five-minute overview</p>
       <h1>Meet Ghosthub</h1>
       <p class="lead">
-        Ghosthub is the native macOS terminal for all your multiplexers. Today,
-        it brings tmux, Herdr, and Zellij sessions, plus optional tmux-backed
-        worktrees, into one local and remote fleet without replacing the tools
-        that own them.
+        Open your tmux, Herdr, and Zellij sessions in one native Mac app.
+        Work locally or over SSH, switch between running sessions, and add Git
+        worktrees when you want a separate checkout for each branch.
       </p>
       <p>
-        Ghosthub handles discovery, presentation, SSH keepalives, and reconnect
-        while every multiplexer keeps its own panes, layout, history, key
-        bindings, and processes.
-      </p>
-      <p>
-        That backend-open model is ready for the multiplexers still to come,
-        including the <a href="https://www.superlogical.com/">terminal multiplexer
-        Superlogical is building</a>, once they publish an integration surface.
+        Your multiplexer keeps its panes, history, key bindings, and running
+        programs. Ghosthub finds sessions and reconnects when SSH drops.
       </p>
       <p class="docs-callout">
         Ready for setup and operating details? Visit the <a href="/docs/">Docs</a>.
@@ -70,7 +66,7 @@ const imageAlt = {
       </p>
       <div class="requirements" aria-label="Requirements">
         <span>Apple Silicon</span>
-        <span>macOS 26+</span>
+        <span>macOS 15+</span>
         <span>tmux 3.2+, Herdr 0.8+, and/or Zellij 0.44+</span>
       </div>
       <InstallCommand />
@@ -94,14 +90,13 @@ const imageAlt = {
         <div>
           <h2>Your session fleet in one place</h2>
           <p>
-            Every supported multiplexer appears as a first-class peer for each
-            host. Open tmux, Herdr, or Zellij with its ordinary client, create
-            sessions wherever that backend is available, and keep tmux-backed
-            project work visible in the same hierarchy.
+            Find tmux, Herdr, and Zellij sessions under each host in the sidebar.
+            Select one to open it, or create a new session with the group's
+            plus button. Projects and their worktrees appear alongside them.
           </p>
           <p>
-            Ghosthub detaches when you close a presentation. Explicit lifecycle
-            actions remain separate. <a href="/docs/sessions/">Explore session behavior</a>.
+            Close a terminal and its session keeps running. Ending a session
+            requires a separate confirmation. <a href="/docs/sessions/">Explore session behavior</a>.
           </p>
         </div>
       </div>
@@ -122,13 +117,13 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">02</p>
         <div>
-          <h2>Glance at opened tmux sessions</h2>
+          <h2>Keep an eye on running tmux sessions</h2>
           <p>
-            Expand optional GPU-rendered previews beside tmux sessions you
-            already opened. Efficient mode keeps the latest captured frame;
-            Live mode refreshes a bounded set. Always Live can connect and
-            expand every discovered tmux session on POSIX hosts for an
-            at-a-glance fleet view without taking focus from your active terminal.
+            Expand a sidebar preview to see a tmux session without switching
+            to it. Efficient keeps a still image; Live refreshes up to four
+            inactive previews. Always Live opens and previews discovered tmux
+            sessions on macOS and Linux hosts automatically. It requires tmux
+            3.4+ and uses more system resources and SSH connections.
           </p>
           <p><a href="/docs/sessions/#preview-opened-tmux-sessions">Explore session previews</a>.</p>
         </div>
@@ -182,6 +177,11 @@ const imageAlt = {
             counts, while native tabs use readable project and worktree names.
             Git is optional for standalone tmux and Herdr or Zellij sessions.
           </p>
+          <p>
+            Expand a worktree to see staged, modified, and untracked files
+            without opening its terminal. To open the whole project together,
+            choose <strong>Open All Worktrees as Tabs</strong> from its context menu.
+          </p>
           <p><a href="/docs/projects-worktrees/">Explore projects and worktrees</a>.</p>
         </div>
       </div>
@@ -190,6 +190,16 @@ const imageAlt = {
           <Image
             src={worktree}
             alt={imageAlt.worktree}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
+      </figure>
+      <figure class="container window">
+        <ZoomableImage label={imageAlt.worktreeChanges}>
+          <Image
+            src={worktreeChanges}
+            alt={imageAlt.worktreeChanges}
             widths={imageWidths}
             sizes={imageSizes}
           />
@@ -233,6 +243,11 @@ const imageAlt = {
             frame. Jump directly between native tabs with Command-1 through
             Command-8, or use Command-9 for the last tab.
           </p>
+          <p>
+            Give each window a useful name with <strong>Window → Rename
+            Window…</strong>. Names return after relaunch. Command-W closes the
+            active session; Shift-Command-W closes the whole window.
+          </p>
           <p><a href="/docs/windows-navigation/">Explore windows and navigation</a>.</p>
         </div>
       </div>
@@ -264,9 +279,9 @@ const imageAlt = {
         <div>
           <h2>Make the terminal yours</h2>
           <p>
-            Ghosthub uses libghostty with its own isolated configuration. Tune
-            fonts and colors without inheriting Ghostty.app state, and
-            optionally style new tmux sessions created by Ghosthub.
+            Set fonts, colors, background opacity, and blur in Ghosthub's own
+            <code>ghostty.conf</code>. Ghostty.app settings stay separate.
+            You can also choose a theme for new tmux sessions in Settings.
           </p>
           <p><a href="/docs/terminal-configuration/">Explore terminal configuration</a>.</p>
         </div>
@@ -286,24 +301,11 @@ const imageAlt = {
 
   <section class="finish">
     <div class="container narrow">
-      <p class="eyebrow">Privacy</p>
-      <h2>Anonymous usage data</h2>
-      <p>
-        Packaged builds send at most one anonymous application-active event per
-        day, with no host, repository, session, path, command, or terminal data.
-        Disable it any time in Settings. <a href="/docs/privacy/">Read the privacy details</a>.
-      </p>
-    </div>
-  </section>
-
-  <section class="finish">
-    <div class="container narrow">
       <p class="eyebrow">That’s it</p>
       <h2>Bring the tools you already use</h2>
       <p>
-        Ghosthub is a home for all multiplexers rather than a replacement for
-        one. Your tmux, Herdr, and Zellij sessions remain ordinary backend
-        sessions, available from their own clients even when Ghosthub is closed.
+        Your tmux, Herdr, and Zellij sessions stay available from their own
+        clients, even when Ghosthub is closed.
       </p>
       <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
     </div>

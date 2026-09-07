@@ -20,6 +20,13 @@ terminal data. PostHog person profiles and GeoIP enrichment are disabled.
 Turn reporting off at any time under **Settings → Privacy → Share anonymous
 usage data**.
 
+## macOS permissions
+
+Programs running in a Ghosthub terminal may ask macOS for access to Photos,
+the camera, microphone, contacts, calendars, or other resources. macOS names
+Ghosthub in those prompts because it is the terminal app running the program.
+Review what the program needs before granting access.
+
 ## Local state
 
 Ghosthub's mutable application state lives under:
