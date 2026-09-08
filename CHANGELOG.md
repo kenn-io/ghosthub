@@ -5,6 +5,34 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-07
+
+Review new SSH host keys in the right dialog and see why a connection fails.
+This release also supports repositories with sibling worktrees and preserves
+more information when imported pull requests have merge conflicts.
+
+### Added
+
+- Register repositories arranged as a `.bare/` directory with sibling
+  worktrees. New worktrees keep that layout.
+
+### Fixed
+
+- New SSH hosts show a host-key trust review instead of asking for a password
+  when OpenSSH sends its standard confirmation question without a prompt hint.
+- Failed SSH connections show OpenSSH's explanation and exit status. If
+  account authentication fails after you trust a host, you can now see the
+  reason, such as `Permission denied (publickey)`.
+- Imported pull-request worktrees keep both sides of text conflicts when a
+  later merge conflicts.
+
+### Upgrade notes
+
+- Pull-request imports require Git 2.42.0 or newer on macOS and Linux, or
+  Git for Windows 2.53.0.windows.3 or newer, on the host that owns the project.
+- Restart any separately running kwt processes after upgrading before using
+  `kwt doctor --fix` to clean up old worktree-creation locks.
+
 ## [0.10.0] - 2026-09-07
 
 Find text in your terminal, see which files changed in a worktree, and paste
@@ -384,7 +412,8 @@ local or remote hosts.
   automatically after lost connections, and navigate projects and worktrees
   managed by kwt.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/kenn-io/ghosthub/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/kenn-io/ghosthub/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kenn-io/ghosthub/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/kenn-io/ghosthub/compare/v0.8.1...v0.8.2

@@ -24,6 +24,10 @@ Start with an existing Git checkout on the target host.
 Ghosthub registers that one path through kwt and refreshes inventory. It does
 not scan the machine or edit kwt configuration itself.
 
+Repositories arranged as a `.bare/` directory with sibling worktrees are also
+supported. Enter the containing directory or any worktree's path. New worktrees
+stay beside the existing ones; the `.bare/` directory is not a worktree row.
+
 Ghosthub automatically maintains the
 [managed kwt helper](remote-hosts.md#managed-kwt-helper) on configured remote
 macOS and Linux hosts. Before a project or worktree operation, Ghosthub repairs
@@ -138,8 +142,10 @@ branch creates a new branch.
 
 ## Import a GitHub pull request
 
-Pull-request import requires the [GitHub CLI](https://cli.github.com/) on the
-host that contains the project—not merely on the Mac running Ghosthub.
+Pull-request import requires the [GitHub CLI](https://cli.github.com/) and
+Git 2.42.0 or newer on the macOS or Linux host that contains the project.
+For native Windows hosts, it requires Git for Windows 2.53.0.windows.3 or newer.
+Install these tools on the project host, even when Ghosthub runs on another Mac.
 
 On that host:
 
