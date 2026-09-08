@@ -770,7 +770,7 @@ struct TmuxPaneSplitterTests {
         let targetSocketName = targetServer.socketName
         let launcherSocketName = launcherServer.socketName
         let token = UUID().uuidString.lowercased()
-        let tokenPath = try testClientTokenPath(token)
+        let tokenPath = try testClientTokenPath(token, directory: directory)
         defer {
             targetServer.stop()
             launcherServer.stop()
@@ -802,7 +802,11 @@ struct TmuxPaneSplitterTests {
             host: .local,
             socketName: targetSocketName,
             launchMode: .attachOnly
-        ).attachCommand(tmuxPath: tmuxPath, clientTTYToken: token)
+        ).attachCommand(
+            tmuxPath: tmuxPath,
+            clientTTYToken: token,
+            localClientTTYDirectory: directory.path
+        )
         let process = Process()
         let input = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
@@ -826,6 +830,15 @@ struct TmuxPaneSplitterTests {
             at: tokenPath,
             whileRunning: process
         )
+        // The TTY is published before attachment starts. Wait for the hook's
+        // rename before querying the session identity.
+        let renamedSession = [
+            tmuxPath, "-L", targetSocketName, "has-session", "-t",
+            "=inherited-renamed:",
+        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        await waitUntil {
+            tmuxLoginShell.run(command: renamedSession, timeout: 5).status == 0
+        }
         let targetIdentity = [
             tmuxPath, "-L", targetSocketName, "display-message", "-p", "-t",
             "=inherited-renamed:",
@@ -848,7 +861,8 @@ struct TmuxPaneSplitterTests {
                 sessionName: "inherited-target",
                 socketName: targetSocketName,
                 sshConnectionArguments: [],
-                clientToken: token
+                clientToken: token,
+                clientTTYDirectory: directory.path
             )
         ).get()
         #expect(published.split(whereSeparator: \.isNewline).count == 1)
