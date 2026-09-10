@@ -20,6 +20,60 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct ActivationWorkGateTests {
+    @Test("activation preference refresh does not redraw unchanged windows", arguments: [100, 500])
+    func activationPreferenceRefreshDoesNotRedrawWindows(sessionCount: Int) {
+        let gate = GateEnvironment(sessionCount: sessionCount)
+        defer { gate.close() }
+
+        RenderWorkCounters.beginRecording()
+        for _ in 0 ..< Budget.switches {
+            // Telemetry reloads this shared preference on application activation.
+            gate.settingsStore.refreshShareAnonymousUsageData()
+            gate.settle()
+        }
+        let counts = RenderWorkCounters.endRecording()
+        #expect(counts.rootBodyEvaluations == 0)
+        #expect(counts.sidebarSectionComputations == 0)
+    }
+
+    @Test("collapsing a sidebar group affects only its window")
+    func sidebarDisclosureIsWindowLocal() throws {
+        let app = NSApplication.shared
+        let wasEnhanced = app.value(forKey: "accessibilityEnhancedUserInterface")
+        app.setValue(true, forKey: "accessibilityEnhancedUserInterface")
+        defer { app.setValue(wasEnhanced, forKey: "accessibilityEnhancedUserInterface") }
+        let gate = GateEnvironment()
+        defer { gate.close() }
+        let identifier = "sidebar-section-disclosure-sessions:\(gate.snapshot.hosts[0].id.uuidString)"
+        /// SwiftUI nodes expose these accessors without adopting the full
+        /// NSAccessibilityProtocol, so traverse them through Cocoa's KVC API.
+        func disclosure(in element: NSObject) -> NSObject? {
+            let id = element.responds(to: NSSelectorFromString("accessibilityIdentifier"))
+                ? element.value(forKey: "accessibilityIdentifier") as? String : nil
+            if id == identifier {
+                return element
+            }
+            let children = element.responds(to: NSSelectorFromString("accessibilityChildren"))
+                ? element.value(forKey: "accessibilityChildren") as? [NSObject] : nil
+            for child in children ?? [] {
+                if let match = disclosure(in: child) {
+                    return match
+                }
+            }
+            return nil
+        }
+        let first = try #require(disclosure(in: gate.hostingViews[0]))
+        let second = try #require(disclosure(in: gate.hostingViews[1]))
+        #expect(first.value(forKey: "accessibilityValue") as? String == "Expanded")
+        #expect(second.value(forKey: "accessibilityValue") as? String == "Expanded")
+
+        _ = first.perform(NSSelectorFromString("accessibilityPerformPress"))
+        gate.activateWindow(1)
+
+        #expect(first.value(forKey: "accessibilityValue") as? String == "Collapsed")
+        #expect(second.value(forKey: "accessibilityValue") as? String == "Expanded")
+    }
+
     /// Budgets are a ratchet at the measured baseline plus 30%: 10 switches
     /// cost exactly 20 root body evaluations (one per window per switch)
     /// and no sidebar section recomputation. The headroom absorbs a stray
@@ -79,22 +133,25 @@ private final class GateEnvironment {
 
     private let windowModels: [GateWindowModel]
     private let windows: [NSWindow]
-    private let hostingViews: [NSHostingView<GateHarness>]
-    private let settingsStore: SettingsStore
+    let hostingViews: [NSHostingView<GateHarness>]
+    let settingsStore: SettingsStore
     private let tempRoot: URL
     private let defaults: UserDefaults
     private let defaultsSuiteName: String
     private let sidebarToggleTarget = NSObject()
 
-    init() {
-        let sessionNames = ["alpha", "beta", "gamma", "delta"]
+    init(sessionCount: Int = 4) {
+        let sessionNames = (0 ..< sessionCount).map { "session-\($0)" }
         let environment = makeWorkspaceEnvironment(
             hostConfig: { host in
-                host.tmuxSessions = sessionNames.map {
+                host.tmuxSessions = sessionNames.enumerated().map { index, name in
                     TmuxSessionSummary(
-                        name: $0,
+                        name: name,
                         managed: false,
-                        windows: []
+                        windows: [],
+                        serverPID: "101",
+                        sessionID: "$\(index)",
+                        createdAt: "1000"
                     )
                 }
             },
@@ -184,7 +241,7 @@ private final class GateEnvironment {
         try? FileManager.default.removeItem(at: tempRoot)
     }
 
-    private func settle(for duration: TimeInterval = 0.05) {
+    func settle(for duration: TimeInterval = 0.05) {
         for hostingView in hostingViews {
             hostingView.layoutSubtreeIfNeeded()
         }

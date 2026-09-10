@@ -307,7 +307,9 @@ public final class SettingsStore: ObservableObject {
         let enabled = Self.loadShareAnonymousUsageData(
             using: userDefaults
         )
-        shareAnonymousUsageData = enabled
+        if shareAnonymousUsageData != enabled {
+            shareAnonymousUsageData = enabled
+        }
         return enabled
     }
 

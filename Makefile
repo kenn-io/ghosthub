@@ -321,11 +321,10 @@ test-kwt-contract: ensure-kwt ensure-tmux
 		sh tools/run_with_timeout.sh 600 sh tools/run_swift_tests.sh \
 			$(SWIFT) test --filter PinnedKwtContractTests
 
-# Bounds the render work a key-window switch may trigger; catches
-# focus-driven view invalidation regressions in seconds.
+# Bounds window redraws and checks activation-triggered settings and preview work.
 test-activation-gate:
 	@sh tools/run_swift_tests.sh $(SWIFT) test \
-		--disable-xctest --filter ActivationWorkGateTests
+		--filter 'ActivationWorkGateTests|SettingsStoreTests/testRefreshingAnonymousUsageDataPublishesOnlyChanges|TerminalSurfacePreviewTests/testApplicationReactivationDefersParkedRenderingUntilKeySceneResume|TerminalSurfacePreviewTests/testReacquisitionWaitsForAvailableParkingWithoutPolling'
 
 # Essential workflow smoke for kwt inventory and ordinary tmux attachment.
 test-essential-workflows: test-kwt-contract

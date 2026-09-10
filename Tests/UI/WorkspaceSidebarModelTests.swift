@@ -455,7 +455,7 @@ struct WorkspaceSidebarModelTests {
     }
 
     @Test("sidebar disclosure defaults expose fleet before project contents")
-    func sidebarDisclosureStateRoundTrips() {
+    func sidebarDisclosureDefaultsAndToggles() {
         let hostID = UUID()
         let projectID = UUID()
         let hostKey = WorkspaceSidebarDisclosureState.host(hostID)
@@ -474,19 +474,15 @@ struct WorkspaceSidebarModelTests {
 
         state.toggle(projectsKey)
         state.toggle(projectKey)
-        let restored = WorkspaceSidebarDisclosureState(
-            rawValue: state.rawValue
-        )
-        #expect(restored.isExpanded(hostKey))
-        #expect(restored.isExpanded(projectsKey))
-        #expect(restored.isExpanded(projectKey))
+        #expect(state.isExpanded(hostKey))
+        #expect(state.isExpanded(projectsKey))
+        #expect(state.isExpanded(projectKey))
 
-        var reopened = restored
-        reopened.toggle(projectKey)
-        #expect(!reopened.isExpanded(projectKey))
-        reopened.toggle(projectsKey)
-        #expect(!reopened.isExpanded(projectsKey))
-        #expect(reopened.rawValue.isEmpty)
+        state.toggle(projectKey)
+        #expect(!state.isExpanded(projectKey))
+        state.toggle(projectsKey)
+        #expect(!state.isExpanded(projectsKey))
+        #expect(state == WorkspaceSidebarDisclosureState())
     }
 
     @Test("Herdr ordering has its own persisted storage key")
@@ -523,29 +519,6 @@ struct WorkspaceSidebarModelTests {
         #expect(stopped?.herdrSessionState == .stopped)
         #expect(stopped?.herdrSessionIsDefault == false)
         #expect(stopped?.subtitle == "Stopped")
-    }
-
-    @Test("legacy collapsed sidebar items migrate into disclosure overrides")
-    func sidebarDisclosureStateMigratesLegacyKey() {
-        let hostKey = WorkspaceSidebarDisclosureState.host(UUID())
-        let sessionKey = WorkspaceSidebarDisclosureState.sessions(UUID())
-        let legacy = [hostKey, sessionKey].joined(separator: "\n")
-
-        let migrated = WorkspaceSidebarDisclosureState.migratedRawValue(
-            current: "",
-            legacyCollapsedKeys: legacy
-        )
-        let state = WorkspaceSidebarDisclosureState(rawValue: migrated)
-
-        #expect(!state.isExpanded(hostKey))
-        #expect(!state.isExpanded(sessionKey))
-        #expect(migrated.contains("-\(hostKey)"))
-        #expect(
-            WorkspaceSidebarDisclosureState.migratedRawValue(
-                current: "+\(hostKey)",
-                legacyCollapsedKeys: legacy
-            ) == "+\(hostKey)"
-        )
     }
 
     @Test("selected kwt worktree resolves directly to its native tmux session")

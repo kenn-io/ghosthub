@@ -1104,22 +1104,29 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertNil(view.superview)
     }
 
-    func testApplicationActivitySuspendsAndRestoresParkedSurfaceRendering()
-        throws {
+    func testApplicationReactivationDefersParkedRenderingUntilKeySceneResume()
+        async throws {
+        // Exercise a visible window even when WindowServer occludes test windows.
+        final class VisibleWindow: NSWindow {
+            override var occlusionState: NSWindow.OcclusionState { .visible }
+        }
+        let surface = try makeSurface()
+        let secondSurface = try makeSurface()
         let originalOcclusionSetter = TerminalSurfaceView.occlusionSetter
-        var occlusionStates: [Bool] = []
-        TerminalSurfaceView.occlusionSetter = { surface, visible in
-            occlusionStates.append(visible)
-            originalOcclusionSetter(surface, visible)
+        var occlusionStates: [(visible: Bool, mounted: Bool)] = []
+        TerminalSurfaceView.occlusionSetter = { handle, visible in
+            if handle == surface.surfaceHandle {
+                occlusionStates.append((visible, surface.superview != nil))
+            }
+            originalOcclusionSetter(handle, visible)
         }
         defer {
             TerminalSurfaceView.occlusionSetter = originalOcclusionSetter
         }
 
-        let surface = try makeSurface()
         surface.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
         let root = NSView(frame: surface.frame)
-        let window = NSWindow(
+        let window = VisibleWindow(
             contentRect: root.frame,
             styleMask: [.titled],
             backing: .buffered,
@@ -1135,11 +1142,12 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             name: "parked-activity",
             socketName: nil
         )
+        var sceneIsKey = true
         let coordinator = TmuxSessionPreviewCoordinator(
             mode: .live,
-            budget: LivePreviewBudget(limit: 1),
+            budget: LivePreviewBudget(limit: 2),
             capture: { _, _ in nil },
-            isKeyWindow: { true }
+            isKeyWindow: { sceneIsKey }
         )
         defer { coordinator.shutdown() }
         coordinator.installParkingHost(parkingHost)
@@ -1161,22 +1169,157 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         ))
         coordinator.setExpanded(true, for: key)
         XCTAssertTrue(parkingHost.contains(surface))
+        let secondKey = TmuxPreviewKey(
+            hostID: key.hostID,
+            name: "second-parked-activity",
+            socketName: nil
+        )
+        coordinator.register(.init(
+            key: secondKey,
+            surface: { secondSurface },
+            handleID: { UUID() },
+            generation: { nil },
+            identity: {
+                TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$2",
+                    createdAt: "1000"
+                )
+            },
+            connectionState: { .connected },
+            isActive: { false },
+            activate: {}
+        ))
         occlusionStates.removeAll()
 
         coordinator.applicationDidResignActive()
 
         XCTAssertTrue(parkingHost.contains(surface))
-        XCTAssertEqual(occlusionStates.last, false)
+        XCTAssertEqual(occlusionStates.last?.visible, false)
         let resignationEventCount = occlusionStates.count
 
         coordinator.applicationDidBecomeActive()
 
         XCTAssertTrue(parkingHost.contains(surface))
-        XCTAssertGreaterThan(occlusionStates.count, resignationEventCount)
-        XCTAssertEqual(
-            occlusionStates.last,
-            TerminalSurfaceView.resolvedOcclusionVisibility(for: window)
-        )
+        XCTAssertEqual(occlusionStates.count, resignationEventCount)
+        coordinator.setExpanded(true, for: secondKey)
+        XCTAssertEqual(occlusionStates.count, resignationEventCount)
+        XCTAssertFalse(parkingHost.contains(secondSurface))
+        let resumeDeadline = Date().addingTimeInterval(2)
+        while !occlusionStates.contains(where: \.visible),
+              Date() < resumeDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(occlusionStates.contains(where: \.visible))
+
+        coordinator.applicationDidResignActive()
+        sceneIsKey = false
+        occlusionStates.removeAll()
+
+        coordinator.applicationDidBecomeActive()
+
+        // Unmounting may report occlusion, but a non-key scene must never
+        // resume its still-mounted fleet, even in a headless WindowServer.
+        XCTAssertTrue(occlusionStates.allSatisfy { !$0.mounted && !$0.visible })
+        XCTAssertFalse(parkingHost.contains(surface))
+    }
+
+    func testReacquisitionWaitsForAvailableParkingWithoutPolling() async throws {
+        for missingHost in [true, false] {
+            let surface = try makeSurface()
+            let activeSurface = try makeSurface()
+            let root = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+            let window = NSWindow(
+                contentRect: root.frame,
+                styleMask: [.titled],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = root
+            window.orderFront(nil)
+            defer { window.orderOut(nil) }
+            let host = LivePreviewParkingHost(frame: root.bounds)
+            root.addSubview(host)
+            let sleeps = OSAllocatedUnfairLock(initialState: [Duration]())
+            var capturedKeys: [TmuxPreviewKey] = []
+            let coordinator = TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                capture: { presentation, _ in
+                    capturedKeys.append(presentation.key)
+                    return nil
+                },
+                isKeyWindow: { true },
+                sleep: { duration in
+                    sleeps.withLock { $0.append(duration) }
+                    try await Task.sleep(for: duration)
+                },
+                activationDelay: .milliseconds(20)
+            )
+            defer { coordinator.shutdown() }
+            coordinator.applicationDidResignActive()
+            if !missingHost {
+                coordinator.installParkingHost(host)
+            }
+            let key = TmuxPreviewKey(hostID: UUID(), name: "waiting-preview", socketName: nil)
+            let activeKey = TmuxPreviewKey(
+                hostID: key.hostID,
+                name: "active-preview",
+                socketName: nil
+            )
+            let handleID = UUID()
+            let activeHandleID = UUID()
+            var surfaceAvailable = missingHost
+            coordinator.register(.init(
+                key: key,
+                surface: { surfaceAvailable ? surface : nil },
+                handleID: { handleID },
+                generation: { nil },
+                identity: {
+                    TmuxSessionIdentity(serverPID: "101", sessionID: "$1", createdAt: "1000")
+                },
+                connectionState: { .connected },
+                isActive: { false },
+                activate: {}
+            ))
+            coordinator.register(.init(
+                key: activeKey,
+                surface: { activeSurface },
+                handleID: { activeHandleID },
+                generation: { nil },
+                identity: {
+                    TmuxSessionIdentity(serverPID: "101", sessionID: "$2", createdAt: "1000")
+                },
+                connectionState: { .connected },
+                isActive: { true },
+                activate: {}
+            ))
+            coordinator.setExpanded(true, for: key)
+            coordinator.setExpanded(true, for: activeKey)
+            coordinator.applicationDidBecomeActive()
+            let captureDeadline = Date().addingTimeInterval(2)
+            while capturedKeys.count < 2, Date() < captureDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            XCTAssertGreaterThanOrEqual(capturedKeys.filter { $0 == activeKey }.count, 2)
+            let parkingSleeps = sleeps.withLock {
+                $0.filter { $0 == .milliseconds(20) || $0 == .milliseconds(10) }
+            }
+            XCTAssertEqual(parkingSleeps, [.milliseconds(20)])
+            XCTAssertFalse(host.contains(surface))
+            surfaceAvailable = true
+            if missingHost {
+                coordinator.installParkingHost(host)
+            } else {
+                coordinator.presentationDidChange(key)
+            }
+            XCTAssertFalse(host.contains(surface))
+            let deadline = Date().addingTimeInterval(2)
+            while !host.contains(surface), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertTrue(host.contains(surface))
+        }
     }
 
     func testParkingAppliesTheRequestedTmuxGridAndRestoresGeometry() throws {
