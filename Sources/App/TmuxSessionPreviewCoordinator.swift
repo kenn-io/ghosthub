@@ -445,7 +445,6 @@ final class TmuxSessionPreviewCoordinator {
     func applicationDidBecomeActive() {
         guard !isApplicationActive else { return }
         isApplicationActive = true
-        parkingHost?.setRenderingSuspended(false)
         retryDeferredEfficientCaptures()
         retryDeferredNavigationCaptures()
         presentations.keys.forEach(publish)
@@ -963,6 +962,9 @@ final class TmuxSessionPreviewCoordinator {
     /// synchronously resize libghostty, so activation deliberately performs
     /// only one of these operations per main-thread turn.
     private func parkEligiblePresentations(limit: Int?) -> Bool {
+        // Retained previews resume through the same eligibility checks and
+        // activation delay as new parking, after the interactive window returns.
+        parkingHost?.setRenderingSuspended(false)
         var parkedCount = 0
         var hasRemaining = false
         for key in presentations.keys {

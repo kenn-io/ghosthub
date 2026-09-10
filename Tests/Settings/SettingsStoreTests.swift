@@ -483,6 +483,35 @@ final class SettingsStoreTests {
     }
 
     @Test
+    func testRefreshingAnonymousUsageDataPublishesOnlyChanges() {
+        let store = makeSUT()
+        let otherStore = makeSUT()
+        var invalidations = 0
+        var values: [Bool] = []
+        let objectObservation = store.objectWillChange.sink {
+            invalidations += 1
+        }
+        let valueObservation = store.$shareAnonymousUsageData
+            .dropFirst()
+            .sink { values.append($0) }
+        defer {
+            objectObservation.cancel()
+            valueObservation.cancel()
+        }
+
+        #expect(store.refreshShareAnonymousUsageData())
+        #expect(invalidations == 0)
+        #expect(values.isEmpty)
+
+        otherStore.setShareAnonymousUsageData(false)
+        #expect(!store.refreshShareAnonymousUsageData())
+        #expect(!store.shareAnonymousUsageData)
+        #expect(!store.refreshShareAnonymousUsageData())
+        #expect(invalidations == 1)
+        #expect(values == [false])
+    }
+
+    @Test
     func testUpdatingTerminalPreferencesWritesManagedConfigBlock() throws {
         let store = makeSUT()
 

@@ -1081,22 +1081,26 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertNil(view.superview)
     }
 
-    func testApplicationActivitySuspendsAndRestoresParkedSurfaceRendering()
-        throws {
+    func testApplicationReactivationDefersParkedRenderingUntilKeySceneResume()
+        async throws {
+        // Exercise a visible window even when WindowServer occludes test windows.
+        final class VisibleWindow: NSWindow {
+            override var occlusionState: NSWindow.OcclusionState { .visible }
+        }
+        let surface = try makeSurface()
         let originalOcclusionSetter = TerminalSurfaceView.occlusionSetter
-        var occlusionStates: [Bool] = []
-        TerminalSurfaceView.occlusionSetter = { surface, visible in
-            occlusionStates.append(visible)
-            originalOcclusionSetter(surface, visible)
+        var occlusionStates: [(visible: Bool, mounted: Bool)] = []
+        TerminalSurfaceView.occlusionSetter = { handle, visible in
+            occlusionStates.append((visible, surface.superview != nil))
+            originalOcclusionSetter(handle, visible)
         }
         defer {
             TerminalSurfaceView.occlusionSetter = originalOcclusionSetter
         }
 
-        let surface = try makeSurface()
         surface.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
         let root = NSView(frame: surface.frame)
-        let window = NSWindow(
+        let window = VisibleWindow(
             contentRect: root.frame,
             styleMask: [.titled],
             backing: .buffered,
@@ -1112,11 +1116,12 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             name: "parked-activity",
             socketName: nil
         )
+        var sceneIsKey = true
         let coordinator = TmuxSessionPreviewCoordinator(
             mode: .live,
             budget: LivePreviewBudget(limit: 1),
             capture: { _, _ in nil },
-            isKeyWindow: { true }
+            isKeyWindow: { sceneIsKey }
         )
         defer { coordinator.shutdown() }
         coordinator.installParkingHost(parkingHost)
@@ -1143,17 +1148,30 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         coordinator.applicationDidResignActive()
 
         XCTAssertTrue(parkingHost.contains(surface))
-        XCTAssertEqual(occlusionStates.last, false)
+        XCTAssertEqual(occlusionStates.last?.visible, false)
         let resignationEventCount = occlusionStates.count
 
         coordinator.applicationDidBecomeActive()
 
         XCTAssertTrue(parkingHost.contains(surface))
-        XCTAssertGreaterThan(occlusionStates.count, resignationEventCount)
-        XCTAssertEqual(
-            occlusionStates.last,
-            TerminalSurfaceView.resolvedOcclusionVisibility(for: window)
-        )
+        XCTAssertEqual(occlusionStates.count, resignationEventCount)
+        let resumeDeadline = Date().addingTimeInterval(2)
+        while !occlusionStates.contains(where: \.visible),
+              Date() < resumeDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(occlusionStates.contains(where: \.visible))
+
+        coordinator.applicationDidResignActive()
+        sceneIsKey = false
+        occlusionStates.removeAll()
+
+        coordinator.applicationDidBecomeActive()
+
+        // Unmounting may report occlusion, but a non-key scene must never
+        // resume its still-mounted fleet, even in a headless WindowServer.
+        XCTAssertTrue(occlusionStates.allSatisfy { !$0.mounted && !$0.visible })
+        XCTAssertFalse(parkingHost.contains(surface))
     }
 
     func testParkingAppliesTheRequestedTmuxGridAndRestoresGeometry() throws {

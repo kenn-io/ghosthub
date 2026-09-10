@@ -990,6 +990,8 @@ Off and Efficient modes schedule no preview work when a window becomes key,
 and Off does not mount the hidden parking host. Live and Always Live coalesce
 delayed parking reconciliation for newly available surfaces in the key scene;
 already parked surfaces remain mounted across application deactivation.
+Their rendering resumes after the same activation delay and eligibility checks;
+non-key scenes release retained parking while rendering remains suspended.
 Selecting an ordinary parked
 preview unparks and activates its retained surface synchronously. Selecting an
 Always Live client promotes its verified retained attachment to normal sizing

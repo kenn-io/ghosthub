@@ -20,6 +20,22 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct ActivationWorkGateTests {
+    @Test("activation preference refresh does not redraw unchanged windows", arguments: [100, 500])
+    func activationPreferenceRefreshDoesNotRedrawWindows(sessionCount: Int) {
+        let gate = GateEnvironment(sessionCount: sessionCount)
+        defer { gate.close() }
+
+        RenderWorkCounters.beginRecording()
+        for _ in 0 ..< Budget.switches {
+            // Telemetry reloads this shared preference on application activation.
+            gate.settingsStore.refreshShareAnonymousUsageData()
+            gate.settle()
+        }
+        let counts = RenderWorkCounters.endRecording()
+        #expect(counts.rootBodyEvaluations == 0)
+        #expect(counts.sidebarSectionComputations == 0)
+    }
+
     @Test("collapsing a sidebar group affects only its window")
     func sidebarDisclosureIsWindowLocal() throws {
         let app = NSApplication.shared
@@ -118,21 +134,24 @@ private final class GateEnvironment {
     private let windowModels: [GateWindowModel]
     private let windows: [NSWindow]
     let hostingViews: [NSHostingView<GateHarness>]
-    private let settingsStore: SettingsStore
+    let settingsStore: SettingsStore
     private let tempRoot: URL
     private let defaults: UserDefaults
     private let defaultsSuiteName: String
     private let sidebarToggleTarget = NSObject()
 
-    init() {
-        let sessionNames = ["alpha", "beta", "gamma", "delta"]
+    init(sessionCount: Int = 4) {
+        let sessionNames = (0 ..< sessionCount).map { "session-\($0)" }
         let environment = makeWorkspaceEnvironment(
             hostConfig: { host in
-                host.tmuxSessions = sessionNames.map {
+                host.tmuxSessions = sessionNames.enumerated().map { index, name in
                     TmuxSessionSummary(
-                        name: $0,
+                        name: name,
                         managed: false,
-                        windows: []
+                        windows: [],
+                        serverPID: "101",
+                        sessionID: "$\(index)",
+                        createdAt: "1000"
                     )
                 }
             },
@@ -222,7 +241,7 @@ private final class GateEnvironment {
         try? FileManager.default.removeItem(at: tempRoot)
     }
 
-    private func settle(for duration: TimeInterval = 0.05) {
+    func settle(for duration: TimeInterval = 0.05) {
         for hostingView in hostingViews {
             hostingView.layoutSubtreeIfNeeded()
         }

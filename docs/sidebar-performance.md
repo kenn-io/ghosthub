@@ -29,6 +29,37 @@ collapsed both; it now changes only the targeted window. Disclosure state is
 stored as parsed sets, eliminating the old per-check string parsing. The
 app-wide disclosure preference predates `4c8bd7ed`.
 
+## Application reactivation
+
+Packaged builds check the persisted telemetry preference on each application
+activation. `SettingsStore.refreshShareAnonymousUsageData` previously assigned
+its published property even when the value was unchanged. Both `WorkspaceWindow`
+and `RootView` observe this shared store, so the assignment invalidated every
+window. The refresh now publishes only a changed preference; changes made by
+another process still take effect.
+
+The activation gate hosts two `RootView` windows with 100 or 500 synthetic tmux
+sessions per window, using stable session identities and expanded session groups.
+Ten unchanged preference refreshes caused 20 root-body evaluations at both sizes
+before the fix and zero afterward. Section computations remained zero. This
+measures the refresh invoked by telemetry, without sending telemetry events.
+
+Retained live previews also resumed rendering synchronously on application
+reactivation, before checking whether their scene was key. A non-key scene then
+suspended and unparked those same surfaces. Rendering now resumes through the
+existing delayed parking path after checking application activity, sidebar
+visibility, preview mode, and scene focus. Efficient capture retries retain their
+existing behavior. The terminal regression exercises a real libghostty surface
+with controlled window visibility: no synchronous resume, eventual key-scene
+resume, and no mounted-surface resume in a non-key scene.
+
+`make test-activation-gate` now includes both regressions. These are deterministic
+work checks, not end-to-end Command-Tab latency measurements. The broader
+first-responder and latency benchmark remains tracked by `360m`; row construction
+and hover measurements remain `s921`. Resource sampling already defers its first
+sample on reactivation. Inventory still refreshes on return to the app, preserving
+the existing freshness and stale-load replacement contracts.
+
 ## Inventory updates
 
 `WorkspaceInventoryStore` publishes on each loading transition and each result.
