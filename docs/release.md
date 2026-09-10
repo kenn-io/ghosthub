@@ -508,6 +508,9 @@ nightly-<build>-<run>-<attempt>
 https://github.com/kenn-io/ghosthub-nightly/releases/download/<tag>/<dmg>
 ```
 
+Nightly notes retain commit hashes beside their subjects, separated by a
+regular space. Tabs can collapse against the hash in Sparkle's Markdown view.
+
 ### Check a missing nightly
 
 Check the latest published release and the most recent workflow runs once:

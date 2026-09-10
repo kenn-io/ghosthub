@@ -55,7 +55,7 @@ def commit_subjects(
         str(repo_path),
         "log",
         "--reverse",
-        "--format=%h%x09%s",
+        "--format=%h %s",
     ]
     if maximum is not None:
         command.extend(["-n", str(maximum)])

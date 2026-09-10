@@ -5,6 +5,24 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-09-10
+
+Keep each window's sidebar arranged independently and return to the app with
+less redraw work. Mission Control also shows terminal contents again.
+
+### Fixed
+
+- Expanding or collapsing sidebar groups affects only that window or tab.
+  New windows start with the default expansion; inventory, ordering, and
+  settings remain shared.
+- Sidebar refreshes skip unchanged host data, and returning to the app avoids
+  unnecessary redraws. Live previews resume after the active window returns
+  instead of doing their rendering work immediately during activation.
+- Mission Control previews retain the last terminal frame when a window is
+  hidden or inactive.
+- Nightly update notes keep a readable space between each Git hash and its
+  commit description.
+
 ## [0.10.1] - 2026-09-07
 
 Review new SSH host keys in the right dialog and see why a connection fails.
