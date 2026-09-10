@@ -49,7 +49,10 @@ reactivation, before checking whether their scene was key. A non-key scene then
 suspended and unparked those same surfaces. Rendering now resumes through the
 existing delayed parking path after checking application activity, sidebar
 visibility, preview mode, and scene focus. Efficient capture retries retain their
-existing behavior. The terminal regression exercises a real libghostty surface
+existing behavior. Preview changes that cancel the timer preserve pending
+reacquisition and reschedule the delay; cancellation does not permit immediate
+rendering or mounting the remaining fleet at once. The terminal regression
+exercises a real libghostty surface
 with controlled window visibility: no synchronous resume, eventual key-scene
 resume, and no mounted-surface resume in a non-key scene.
 

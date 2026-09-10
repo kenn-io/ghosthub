@@ -1088,10 +1088,13 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             override var occlusionState: NSWindow.OcclusionState { .visible }
         }
         let surface = try makeSurface()
+        let secondSurface = try makeSurface()
         let originalOcclusionSetter = TerminalSurfaceView.occlusionSetter
         var occlusionStates: [(visible: Bool, mounted: Bool)] = []
         TerminalSurfaceView.occlusionSetter = { handle, visible in
-            occlusionStates.append((visible, surface.superview != nil))
+            if handle == surface.surfaceHandle {
+                occlusionStates.append((visible, surface.superview != nil))
+            }
             originalOcclusionSetter(handle, visible)
         }
         defer {
@@ -1119,7 +1122,7 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         var sceneIsKey = true
         let coordinator = TmuxSessionPreviewCoordinator(
             mode: .live,
-            budget: LivePreviewBudget(limit: 1),
+            budget: LivePreviewBudget(limit: 2),
             capture: { _, _ in nil },
             isKeyWindow: { sceneIsKey }
         )
@@ -1143,6 +1146,27 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         ))
         coordinator.setExpanded(true, for: key)
         XCTAssertTrue(parkingHost.contains(surface))
+        let secondKey = TmuxPreviewKey(
+            hostID: key.hostID,
+            name: "second-parked-activity",
+            socketName: nil
+        )
+        coordinator.register(.init(
+            key: secondKey,
+            surface: { secondSurface },
+            handleID: { UUID() },
+            generation: { nil },
+            identity: {
+                TmuxSessionIdentity(
+                    serverPID: "101",
+                    sessionID: "$2",
+                    createdAt: "1000"
+                )
+            },
+            connectionState: { .connected },
+            isActive: { false },
+            activate: {}
+        ))
         occlusionStates.removeAll()
 
         coordinator.applicationDidResignActive()
@@ -1155,6 +1179,9 @@ final class TerminalSurfacePreviewTests: XCTestCase {
 
         XCTAssertTrue(parkingHost.contains(surface))
         XCTAssertEqual(occlusionStates.count, resignationEventCount)
+        coordinator.setExpanded(true, for: secondKey)
+        XCTAssertEqual(occlusionStates.count, resignationEventCount)
+        XCTAssertFalse(parkingHost.contains(secondSurface))
         let resumeDeadline = Date().addingTimeInterval(2)
         while !occlusionStates.contains(where: \.visible),
               Date() < resumeDeadline {

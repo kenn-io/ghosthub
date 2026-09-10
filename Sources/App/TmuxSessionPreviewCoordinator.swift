@@ -153,6 +153,7 @@ final class TmuxSessionPreviewCoordinator {
     private var liveTask: Task<Void, Never>?
     private var activationTask: Task<Void, Never>?
     private var activationGeneration: UInt64 = 0
+    private var needsParkingReacquisition = false
     private var isInvokingActivation = false
     private var navigationGeneration: UInt64 = 0
     private var budgetCancellable: AnyCancellable?
@@ -445,6 +446,7 @@ final class TmuxSessionPreviewCoordinator {
     func applicationDidBecomeActive() {
         guard !isApplicationActive else { return }
         isApplicationActive = true
+        needsParkingReacquisition = true
         retryDeferredEfficientCaptures()
         retryDeferredNavigationCaptures()
         presentations.keys.forEach(publish)
@@ -467,6 +469,7 @@ final class TmuxSessionPreviewCoordinator {
             presentations.keys.forEach(publish)
             return
         }
+        needsParkingReacquisition = true
         presentations.keys.forEach(publish)
         scheduleParkingReacquisition()
         restartLiveTaskIfNeeded()
@@ -522,9 +525,11 @@ final class TmuxSessionPreviewCoordinator {
     }
 
     private func scheduleParkingReacquisition() {
-        guard mode.usesLiveRefresh,
+        guard !isShutDown,
+              mode.usesLiveRefresh,
               isApplicationActive,
               isSidebarVisible,
+              sceneIsKeyWindow(),
               activationTask == nil
         else { return }
         invalidateActivationDelay()
@@ -547,7 +552,10 @@ final class TmuxSessionPreviewCoordinator {
                   isSidebarVisible,
                   mode.usesLiveRefresh,
                   sceneIsKeyWindow() {
-                guard reacquireNextParkingSurface() else { return }
+                guard reacquireNextParkingSurface() else {
+                    needsParkingReacquisition = false
+                    return
+                }
                 do {
                     try await sleep(parkingInterval)
                 } catch {
@@ -715,7 +723,7 @@ final class TmuxSessionPreviewCoordinator {
             isParkingHostChanging = false
         }
         parkingHost = host
-        host.setRenderingSuspended(!isApplicationActive)
+        host.setRenderingSuspended(!isApplicationActive || needsParkingReacquisition)
         reconcileEligibility()
     }
 
@@ -910,9 +918,11 @@ final class TmuxSessionPreviewCoordinator {
             return
         }
 
-        // App activation owns incremental reacquisition while its task is
-        // alive. Other presentation updates may still invalidate parking, but
-        // must not mount the remaining fleet in the same main-thread turn.
+        // Preview changes can cancel the timer without completing reacquisition.
+        // Keep the gate closed and reschedule before allowing ordinary parking.
+        if needsParkingReacquisition {
+            scheduleParkingReacquisition()
+        }
         guard activationTask == nil else {
             restartLiveTaskIfNeeded()
             return
@@ -1056,6 +1066,9 @@ final class TmuxSessionPreviewCoordinator {
     }
 
     private func restartLiveTaskIfNeeded() {
+        if needsParkingReacquisition {
+            scheduleParkingReacquisition()
+        }
         let shouldRun = !isShutDown
             && mode.usesLiveRefresh
             && isApplicationActive

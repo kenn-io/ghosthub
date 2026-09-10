@@ -1275,7 +1275,50 @@ struct TmuxSessionPreviewCoordinatorTests {
         }
 
         #expect(harness.parks.count == 1)
+        let added = harness.presentation(index: 3, isActive: false)
+        harness.coordinator.register(added)
+        harness.coordinator.setExpanded(true, for: added.key)
+        #expect(harness.parks.count == 1)
+        await waitUntilMainActor { harness.parks.count == 2 }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(harness.parks.count == 2)
         harness.coordinator.applicationDidResignActive()
+    }
+
+    @Test(
+        "preview changes preserve delayed reacquisition",
+        arguments: [SessionPreviewMode.live, .alwaysLive]
+    )
+    func previewChangesPreserveDelayedReacquisition(mode: SessionPreviewMode) async {
+        let harness = PreviewCoordinatorHarness(mode: mode)
+        defer { harness.coordinator.shutdown() }
+        let first = harness.presentation(index: 0, isActive: false)
+        let second = harness.presentation(index: 1, isActive: false)
+        harness.coordinator.applicationDidResignActive()
+        harness.coordinator.register(first)
+        harness.coordinator.register(second)
+        harness.coordinator.setExpanded(true, for: first.key)
+        harness.coordinator.applicationDidBecomeActive()
+
+        harness.coordinator.setExpanded(true, for: second.key)
+        #expect(harness.parks.isEmpty)
+        harness.coordinator.setMode(mode == .live ? .alwaysLive : .live)
+        #expect(harness.parks.isEmpty)
+        harness.coordinator.prepareToActivate(second.key) {
+            harness.setActive(true, for: second.key)
+        }
+        #expect(harness.parks.isEmpty)
+        harness.coordinator.remove(second.key, reason: .close)
+        harness.coordinator.presentationDidChange(first.key)
+        #expect(harness.parks.isEmpty)
+        harness.coordinator.setSidebarVisible(false)
+        harness.coordinator.setSidebarVisible(true)
+        #expect(harness.parks.isEmpty)
+
+        await waitUntilMainActor { harness.parks.contains(first.key) }
+        #expect(harness.parks == [first.key])
     }
 
     @Test("invalidating a suspended capture prevents stale publication")
@@ -1593,6 +1636,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         let presentation = harness.presentation(index: 0, isActive: false)
         harness.coordinator.register(presentation)
         harness.coordinator.setExpanded(true, for: presentation.key)
+        await waitUntilMainActor { harness.parks == [presentation.key] }
         #expect(harness.parks == [presentation.key])
 
         NotificationCenter.default.post(
