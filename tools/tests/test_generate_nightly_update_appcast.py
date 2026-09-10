@@ -10,6 +10,17 @@ from nightly_release_notes import render_notes
 PUBLIC_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
 
 
+@pytest.fixture(autouse=True)
+def isolated_git_environment(monkeypatch, tmp_path):
+    for name in tuple(os.environ):
+        if name.startswith("GIT_"):
+            monkeypatch.delenv(name)
+    config = tmp_path / "gitconfig"
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
 def git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", repo, *args],
@@ -38,7 +49,7 @@ def make_git_history(tmp_path: Path) -> tuple[Path, str, str, str]:
 
 
 def test_notes_cover_each_commit_after_the_previous_nightly(tmp_path):
-    repo, previous_sha, _, source_sha = make_git_history(tmp_path)
+    repo, previous_sha, first_sha, source_sha = make_git_history(tmp_path)
 
     notes = render_notes(
         repository="kenn-io/ghosthub",
@@ -49,8 +60,10 @@ def test_notes_cover_each_commit_after_the_previous_nightly(tmp_path):
     )
 
     assert f"Ghosthub Nightly · 2026-08-13 · {source_sha[:8]}" in notes
-    assert "Fix attachment" in notes
-    assert "Reduce refresh work" in notes
+    assert notes.splitlines()[-2:] == [
+        f"- {git(repo, 'rev-parse', '--short', first_sha)} Fix attachment",
+        f"- {git(repo, 'rev-parse', '--short', source_sha)} Reduce refresh work",
+    ]
     assert "Initial source" not in notes
     assert (
         f"https://github.com/kenn-io/ghosthub/compare/"
