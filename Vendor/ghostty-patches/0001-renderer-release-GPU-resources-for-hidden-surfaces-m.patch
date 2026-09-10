@@ -37,7 +37,8 @@ I didn't include it.
  src/renderer/OpenGL.zig  |   6 +++
  src/renderer/Thread.zig  |  10 +---
  src/renderer/generic.zig | 111 +++++++++++++++++++++++++++------------
- 4 files changed, 93 insertions(+), 43 deletions(-)
+ src/renderer/metal/Target.zig | 5 ++++-
+ 5 files changed, 97 insertions(+), 44 deletions(-)
 
 diff --git a/src/apprt.zig b/src/apprt.zig
 index c467f1801..ffc3af287 100644
@@ -46,7 +47,7 @@ index c467f1801..ffc3af287 100644
 @@ -51,6 +51,15 @@ pub const runtime = switch (build_config.artifact) {
  pub const App = runtime.App;
  pub const Surface = runtime.Surface;
- 
+
 +/// True if all GPU operations (drawing, resource creation and
 +/// destruction) must happen on the app thread. This is the case
 +/// when the graphics context is owned by the app thread (GTK's
@@ -66,7 +67,7 @@ index 4b01da0c5..40c11f606 100644
 @@ -335,6 +335,12 @@ pub fn presentLastTarget(self: *OpenGL) !void {
      if (self.last_target) |target| try self.present(target);
  }
- 
+
 +/// Called when the renderer released its GPU resources; the last
 +/// presented target is deinited with them so we must drop our copy.
 +pub fn gpuResourcesReleased(self: *OpenGL) void {
@@ -81,7 +82,7 @@ index 508721379..995a70d0a 100644
 --- a/src/renderer/Thread.zig
 +++ b/src/renderer/Thread.zig
 @@ -21,14 +21,6 @@ const CURSOR_BLINK_INTERVAL = 600;
- 
+
  /// Whether calls to `drawFrame` must be done from the app thread.
  ///
 -/// If this is `true` then we send a `redraw_surface` message to the apprt
@@ -98,7 +99,7 @@ index 508721379..995a70d0a 100644
 @@ -499,7 +491,7 @@ fn drawFrame(self: *Thread, now: bool) void {
      // when we're forced to via `now`.
      if (!now and self.renderer.hasVsync()) return;
- 
+
 -    if (must_draw_from_app_thread) {
 +    if (apprt.must_draw_from_app_thread) {
          _ = self.app_mailbox.push(
@@ -111,7 +112,7 @@ index ff632f64a..a17e24aa5 100644
 @@ -202,8 +202,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
          /// Health of the most recently completed frame.
          health: std.atomic.Value(Health) = .{ .raw = .healthy },
- 
+
 -        /// Our swap chain (multiple buffering)
 -        swap_chain: SwapChain,
 +        /// True when we have a graphics context that can create GPU
@@ -123,13 +124,13 @@ index ff632f64a..a17e24aa5 100644
 +        /// (`releaseGpuResources`) or because the display is
 +        /// unrealized. Rebuilt on the next `drawFrame`.
 +        swap_chain: ?SwapChain,
- 
+
          /// This value is used to force-update swap chain targets in the
          /// event of a config change that requires it (such as blending mode).
 @@ -254,14 +261,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              /// frame state struct so we can start working on a new frame.
              frame_sema: std.Thread.Semaphore = .{ .permits = buf_count },
- 
+
 -            /// Set to true when deinited, if you try to deinit a defunct
 -            /// swap chain it will just be ignored, to prevent double-free.
 -            ///
@@ -140,10 +141,10 @@ index ff632f64a..a17e24aa5 100644
 -
              pub fn init(api: GraphicsAPI, custom_shaders: bool) !SwapChain {
                  var result: SwapChain = .{ .frames = undefined };
- 
+
 @@ -274,9 +273,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              }
- 
+
              pub fn deinit(self: *SwapChain) void {
 -                if (self.defunct) return;
 -                self.defunct = true;
@@ -170,12 +171,12 @@ index ff632f64a..a17e24aa5 100644
              if (self.search_matches) |*m| m.arena.deinit();
 -            self.swap_chain.deinit();
 +            if (self.swap_chain) |*sc| sc.deinit();
- 
+
              if (DisplayLink != void) {
                  if (self.display_link) |display_link| {
 @@ -947,9 +940,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              defer self.draw_mutex.unlock();
- 
+
              // We assume that the swap chain was deinited in
 -            // `displayUnrealized`, in which case it should be
 -            // marked defunct. If not, we have a problem.
@@ -183,7 +184,7 @@ index ff632f64a..a17e24aa5 100644
 +            // `displayUnrealized`. If not, we have a problem.
 +            assert(self.swap_chain == null);
 +            assert(!self.display_realized);
- 
+
              // We reinitialize our shaders and our swap chain.
              try self.initShaders();
 @@ -957,6 +950,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
@@ -197,7 +198,7 @@ index ff632f64a..a17e24aa5 100644
 @@ -975,11 +969,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              self.draw_mutex.lock();
              defer self.draw_mutex.unlock();
- 
+
 -            // We deinit our swap chain and shaders.
 -            //
 -            // This will mark them as defunct so that they
@@ -212,7 +213,7 @@ index ff632f64a..a17e24aa5 100644
 +            self.display_realized = false;
              self.shaders.deinit(self.alloc);
          }
- 
+
 @@ -1062,6 +1058,29 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                      display_link.stop() catch {};
                  }
@@ -241,10 +242,10 @@ index ff632f64a..a17e24aa5 100644
 +                }
 +            }
          }
- 
+
          /// Set the new font grid.
 @@ -1076,11 +1095,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
- 
+
              // Update all our textures so that they sync on the next frame.
              // We can modify this without a lock because the GPU does not
 -            // touch this data.
@@ -256,13 +257,13 @@ index ff632f64a..a17e24aa5 100644
                  frame.color_modified = 0;
 -            }
 +            };
- 
+
              // Get our metrics from the grid. This doesn't require a lock because
              // the metrics are never recalculated.
 @@ -1468,6 +1488,25 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              // then drawing is absurd, so we just return.
              if (surface_size.width == 0 or surface_size.height == 0) return;
- 
+
 +            // If we have no graphics context we can't draw. This is
 +            // only the case while unrealized (GTK); displayRealized
 +            // rebuilds the swap chain.
@@ -295,7 +296,7 @@ index ff632f64a..a17e24aa5 100644
                  sync;
 @@ -1490,9 +1530,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              self.cells_rebuilt = false;
- 
+
              // Wait for a frame to be available.
 -            const frame = try self.swap_chain.nextFrame();
 -            errdefer self.swap_chain.releaseFrame();
@@ -303,13 +304,13 @@ index ff632f64a..a17e24aa5 100644
 +            const frame = swap_chain.nextFrame();
 +            errdefer swap_chain.releaseFrame();
 +            // log.debug("drawing frame index={}", .{swap_chain.frame_index});
- 
+
              // If we need to reinitialize our shaders, do so.
              if (self.reinitialize_shaders) {
 @@ -1737,8 +1777,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                  }, .{ .forever = {} });
              }
- 
+
 -            // Always release our semaphore
 -            self.swap_chain.releaseFrame();
 +            // Always release our semaphore. The swap chain is
@@ -318,5 +319,17 @@ index ff632f64a..a17e24aa5 100644
 +            // callback is what signals that completion.
 +            self.swap_chain.?.releaseFrame();
          }
- 
+
          /// Call this any time the background image path changes.
+diff --git a/src/renderer/metal/Target.zig b/src/renderer/metal/Target.zig
+--- a/src/renderer/metal/Target.zig
++++ b/src/renderer/metal/Target.zig
+@@ -124,4 +124,7 @@
+ pub fn deinit(self: *Self) void {
+-    self.surface.deinit();
++    // Core Animation may still own the presented image while the window is
++    // occluded. Drop our reference without emptying those retained pixels,
++    // which Mission Control also needs for windows on other Spaces.
++    self.surface.release();
+     self.texture.release();
+ }
