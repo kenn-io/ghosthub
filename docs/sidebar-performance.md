@@ -51,12 +51,15 @@ existing delayed parking path after checking application activity, sidebar
 visibility, preview mode, and scene focus. Efficient capture retries retain their
 existing behavior. Preview changes that cancel the timer preserve pending
 reacquisition and reschedule the delay; cancellation does not permit immediate
-rendering or mounting the remaining fleet at once. The terminal regression
-exercises a real libghostty surface
-with controlled window visibility: no synchronous resume, eventual key-scene
-resume, and no mounted-surface resume in a non-key scene.
+rendering or mounting the remaining fleet at once. Only successful mounts consume
+a parking slot. If the parking host or a surface is unavailable, reacquisition
+stays pending and pauses until a host or presentation event reschedules the delay.
+Healthy previews continue their regular captures without polling for missing
+views. The terminal regressions use real libghostty surfaces to check delayed
+key-scene resume, no mounted-surface resume in a non-key scene, and deferred
+mounting when a missing host or surface becomes available.
 
-`make test-activation-gate` now includes both regressions. These are deterministic
+`make test-activation-gate` includes these regressions. These are deterministic
 work checks, not end-to-end Command-Tab latency measurements. The broader
 first-responder and latency benchmark remains tracked by `360m`; row construction
 and hover measurements remain `s921`. Resource sampling already defers its first

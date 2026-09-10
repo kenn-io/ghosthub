@@ -552,10 +552,11 @@ final class TmuxSessionPreviewCoordinator {
                   isSidebarVisible,
                   mode.usesLiveRefresh,
                   sceneIsKeyWindow() {
-                guard reacquireNextParkingSurface() else {
-                    needsParkingReacquisition = false
-                    return
-                }
+                guard prepareParkingEligibility() else { return }
+                let result = parkEligiblePresentations(limit: 1)
+                needsParkingReacquisition = result.pending
+                // Wait for a host or presentation event when nothing can mount.
+                guard result.pending, result.parked > 0 else { return }
                 do {
                     try await sleep(parkingInterval)
                 } catch {
@@ -690,6 +691,9 @@ final class TmuxSessionPreviewCoordinator {
             parkingBlockedKeys.remove(key)
             publish(key)
         }
+        if needsParkingReacquisition {
+            scheduleParkingReacquisition()
+        }
         restartLiveTaskIfNeeded()
     }
 
@@ -743,7 +747,10 @@ final class TmuxSessionPreviewCoordinator {
               !isParkingHostChanging
         else { return }
         presentations.keys.forEach(requestIdentityIfNeeded)
-        reconcileEligibility()
+        // Missing views resume parking from readiness events, not capture ticks.
+        if !needsParkingReacquisition {
+            reconcileEligibility()
+        }
         for key in presentations.keys where isExpanded(key) {
             guard let presentation = presentations[key],
                   isConnected(presentation),
@@ -922,19 +929,12 @@ final class TmuxSessionPreviewCoordinator {
         // Keep the gate closed and reschedule before allowing ordinary parking.
         if needsParkingReacquisition {
             scheduleParkingReacquisition()
-        }
-        guard activationTask == nil else {
             restartLiveTaskIfNeeded()
             return
         }
 
         _ = parkEligiblePresentations(limit: nil)
         restartLiveTaskIfNeeded()
-    }
-
-    private func reacquireNextParkingSurface() -> Bool {
-        guard prepareParkingEligibility() else { return false }
-        return parkEligiblePresentations(limit: 1)
     }
 
     private func prepareParkingEligibility() -> Bool {
@@ -967,11 +967,10 @@ final class TmuxSessionPreviewCoordinator {
         return true
     }
 
-    /// Parks at most `limit` new surfaces and reports whether another eligible
-    /// surface remains. Parking reparents an AppKit terminal view and can
-    /// synchronously resize libghostty, so activation deliberately performs
-    /// only one of these operations per main-thread turn.
-    private func parkEligiblePresentations(limit: Int?) -> Bool {
+    /// Reports actual mounts and any remaining eligible surfaces. Reparenting
+    /// can synchronously resize libghostty, so activation deliberately mounts
+    /// only one surface per main-thread turn.
+    private func parkEligiblePresentations(limit: Int?) -> (parked: Int, pending: Bool) {
         // Retained previews resume through the same eligibility checks and
         // activation delay as new parking, after the interactive window returns.
         parkingHost?.setRenderingSuspended(false)
@@ -987,8 +986,11 @@ final class TmuxSessionPreviewCoordinator {
                         hasRemaining = true
                     } else {
                         do {
-                            try park(key, presentation: presentation)
-                            parkedCount += 1
+                            if try park(key, presentation: presentation) {
+                                parkedCount += 1
+                            } else {
+                                hasRemaining = true
+                            }
                         } catch {
                             parkingBlockedKeys.insert(key)
                             budget.release(requestID(for: key))
@@ -1001,7 +1003,7 @@ final class TmuxSessionPreviewCoordinator {
             )
             publish(key)
         }
-        return hasRemaining
+        return (parkedCount, hasRemaining)
     }
 
     private func canPark(
@@ -1031,19 +1033,20 @@ final class TmuxSessionPreviewCoordinator {
     private func park(
         _ key: TmuxPreviewKey,
         presentation: Presentation
-    ) throws {
-        guard !parkedKeys.contains(key) else { return }
+    ) throws -> Bool {
+        guard !parkedKeys.contains(key) else { return false }
         if let injectedPark {
             try injectedPark(presentation)
         } else {
             guard let host = parkingHost,
                   let surface = presentation.surface()
-            else { return }
+            else { return false }
             try host.park(surface)
             parkedSurfaces[key] = surface
         }
         parkedKeys.insert(key)
         publish(key)
+        return true
     }
 
     private func unparkAndRelease(_ key: TmuxPreviewKey) {
@@ -1066,16 +1069,18 @@ final class TmuxSessionPreviewCoordinator {
     }
 
     private func restartLiveTaskIfNeeded() {
-        if needsParkingReacquisition {
-            scheduleParkingReacquisition()
-        }
         let shouldRun = !isShutDown
             && mode.usesLiveRefresh
             && isApplicationActive
             && isSidebarVisible
             && sceneIsKeyWindow()
             && activationTask == nil
-            && presentations.keys.contains(where: isExpanded)
+            && presentations.keys.contains { key in
+                isExpanded(key)
+                    && (!needsParkingReacquisition
+                        || presentations[key]?.isActive() == true
+                        || parkedKeys.contains(key))
+            }
         guard shouldRun else {
             liveTask?.cancel()
             liveTask = nil
