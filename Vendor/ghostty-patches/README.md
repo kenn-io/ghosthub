@@ -12,6 +12,12 @@ here are the additional long-lived terminal-memory fixes not included there.
 | `0004` | `896aca499001f42e132f456ebc9cdfed616cf1fb` | [#13245](https://github.com/ghostty-org/ghostty/pull/13245) | Return free-listed terminal page memory to macOS or Linux instead of retaining the high-water footprint. |
 
 The first patch is adapted to the semaphore and display-link APIs in `v1.3.1`.
+Its Metal target cleanup releases its IOSurface reference without forcibly
+emptying the image: Core Animation still owns the last presented frame for
+Mission Control and other Spaces. Hidden surfaces still release their swap
+chains, buffers, and textures; the presented image lasts until its final owner
+releases it. `TerminalSurfacePreviewTests.testHiddenWindowPreservesPresentedTerminalFrame`
+checks this against the built library.
 The page-list source changes match their upstream commits; the fourth patch omits
 unrelated test context that landed between the pinned release and that commit.
 

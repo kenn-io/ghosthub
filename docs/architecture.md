@@ -189,6 +189,11 @@ Swift should stay focused on native app behavior and terminal hosting. Shared
 pure domain models belong in `Sources/Workspace`; external workspace state is
 consumed through kwt's machine-readable CLI surfaces.
 
+Hidden terminal surfaces release their renderer's GPU swap chain, buffers, and
+textures. Core Animation retains the last presented IOSurface until it replaces
+or releases the layer contents. Renderer cleanup must not purge that retained
+image: macOS uses it for Mission Control previews of windows on other Spaces.
+
 ### Windows and Linux Rust applications
 
 The first Rust product slice is a native Windows GPUI application attaching to

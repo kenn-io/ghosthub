@@ -223,6 +223,29 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertNotNil(view.surfaceHandle)
     }
 
+    func testHiddenWindowPreservesPresentedTerminalFrame() async throws {
+        let view = try makeSurface()
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        try waitForIOSurface(in: view)
+
+        window.orderOut(nil)
+        // Let the renderer process the real window's occlusion notification
+        // and release its swap chain before inspecting the presented image.
+        try await Task.sleep(for: .milliseconds(300))
+
+        let ioSurface = try XCTUnwrap(view.layer?.contents as? IOSurface)
+        var state: IOSurfacePurgeabilityState = []
+        XCTAssertEqual(
+            ioSurface.setPurgeable(.purgeableKeepCurrent, oldState: &state),
+            kIOReturnSuccess
+        )
+        XCTAssertEqual(
+            state, [],
+            "The image retained by Core Animation must survive hidden-surface cleanup"
+        )
+    }
+
     func testPreviewDisplaysGPUFramesThroughCoreAnimation() throws {
         let firstSurface = try makeIOSurface(width: 400, height: 300)
         let replacementSurface = try makeIOSurface(width: 800, height: 400)
