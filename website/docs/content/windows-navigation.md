@@ -21,6 +21,12 @@ moving away from Herdr or Zellij detaches only its presentation and leaves its s
 running. Stopped Herdr rows are dimmed and labeled **Stopped**. Expand a host
 to see its current inventory and connection diagnostics.
 
+Each open window or tab keeps its own expanded and collapsed groups. Expanding
+a host or project in one window leaves other windows as you arranged them.
+New windows start with hosts and session groups expanded and projects collapsed.
+
+![Ghosthub sidebar with host and session groups](assets/guide-sessions.png)
+
 Press ++cmd+b++ to hide or show the sidebar. Hiding it gives the terminal
 the full window while preserving its session attachment.
 

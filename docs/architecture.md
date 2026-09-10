@@ -96,6 +96,13 @@ window's native tab group. AppKit owns the tab bar, tab movement, and window
 merging; Ghosthub does not render a custom tab strip or project tmux windows
 into native UI.
 
+Sidebar hierarchy expansion belongs to each open scene. Expanding or collapsing
+a host, session group, Projects group, or project never changes another window.
+New scenes start with hosts and session groups expanded and projects collapsed.
+The parsed disclosure sets remain in view state across sidebar hiding and focus
+changes; they are not app-wide preferences or part of restored scene descriptors.
+Saved row ordering and explicit Settings preferences remain app-wide.
+
 The workspace `WindowGroup` is data-backed. Each scene continuously captures a
 small logical descriptor containing stable host and project keys, the durable
 kwt worktree generation or registered directory path, and an exact tmux

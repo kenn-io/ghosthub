@@ -231,10 +231,7 @@ struct WorkspaceSidebarView: View {
     @State private var tmuxPreviewExpansion =
         TmuxSessionPreviewExpansionState()
     @State private var tmuxPreviewMountState = TmuxSessionPreviewMountState()
-    @AppStorage("workspaceSidebarDisclosureStateV2")
-    private var disclosureState = ""
-    @AppStorage("workspaceSidebarCollapsedItems")
-    private var legacyCollapsedItems = ""
+    @State private var disclosureState = WorkspaceSidebarDisclosureState()
     @Binding private var worktreeOrderRawValue: String
     @Binding private var tmuxSessionOrderRawValue: String
     @Binding private var herdrSessionOrderRawValue: String
@@ -446,9 +443,6 @@ struct WorkspaceSidebarView: View {
                     .padding(.horizontal, 8)
                 }
             }
-        }
-        .onAppear {
-            migrateDisclosureStateIfNeeded()
         }
         .onChange(of: inventoryRefreshComplete) { _, isComplete in
             if isComplete {
@@ -2203,30 +2197,11 @@ struct WorkspaceSidebarView: View {
     }
 
     private func isExpanded(_ key: String) -> Bool {
-        WorkspaceSidebarDisclosureState(rawValue: resolvedDisclosureState)
-            .isExpanded(key)
+        disclosureState.isExpanded(key)
     }
 
     private func toggle(_ key: String) {
-        var state = WorkspaceSidebarDisclosureState(
-            rawValue: resolvedDisclosureState
-        )
-        state.toggle(key)
-        disclosureState = state.rawValue
-    }
-
-    private var resolvedDisclosureState: String {
-        WorkspaceSidebarDisclosureState.migratedRawValue(
-            current: disclosureState,
-            legacyCollapsedKeys: legacyCollapsedItems
-        )
-    }
-
-    private func migrateDisclosureStateIfNeeded() {
-        let migrated = resolvedDisclosureState
-        guard migrated != disclosureState else { return }
-        disclosureState = migrated
-        legacyCollapsedItems = ""
+        disclosureState.toggle(key)
     }
 
     private func pruneSidebarOrders() {

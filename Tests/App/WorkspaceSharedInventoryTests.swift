@@ -10,6 +10,83 @@ import Testing
 @Suite("Shared workspace inventory", .serialized)
 @MainActor
 struct WorkspaceSharedInventoryTests {
+    @Test("refresh progress does not republish unchanged sidebar warnings or state")
+    func refreshDoesNotRepublishUnchangedSidebarState() async throws {
+        let environment = try setupStandardEnvironment()
+        let inventory = WorkspaceTmuxTestSupport.inventory(
+            project: environment.snapshot.projects[0],
+            worktrees: environment.snapshot.worktrees
+        )
+        let refresh = AsyncGate()
+        defer { refresh.open() }
+        let store = WorkspaceInventoryStore(
+            kwtLoader: { _ in
+                await refresh.wait()
+                return inventory
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        store.publishKwtInventory(inventory, on: .local, mutation: nil)
+        let first = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            workspaceInventoryStore: store
+        )
+        let second = try makeModel(
+            database: WorkspaceDatabase.inMemory(),
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            workspaceInventoryStore: store
+        )
+        first.startKwtInventory()
+        second.startKwtInventory()
+        first.startTmuxSessionDiscovery()
+        second.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            first.isWorkspaceInventoryRefreshComplete
+                && second.isWorkspaceInventoryRefreshComplete
+        }
+        var unchangedPublications = 0
+        var sceneChanges = 0
+        var subscriptions: Set<AnyCancellable> = []
+        for model in [first, second] {
+            model.objectWillChange.sink {
+                sceneChanges += 1
+            }.store(in: &subscriptions)
+            model.$workspaceInventoryWarning.dropFirst().sink { _ in
+                unchangedPublications += 1
+            }.store(in: &subscriptions)
+            model.$workspaceInventoryWarningsByHost.dropFirst().sink { _ in
+                unchangedPublications += 1
+            }.store(in: &subscriptions)
+            model.$workspaceInventoryState.dropFirst().sink { _ in
+                unchangedPublications += 1
+            }.store(in: &subscriptions)
+        }
+        first.refreshKwtInventory()
+        #expect(unchangedPublications == 0)
+        #expect(sceneChanges == 2)
+        #expect(!first.isWorkspaceInventoryRefreshComplete)
+        #expect(!second.isWorkspaceInventoryRefreshComplete)
+        await waitUntilMainActor {
+            first.inventoryRefreshProgress.tmuxCompleted
+                && second.inventoryRefreshProgress.tmuxCompleted
+        }
+        sceneChanges = 0
+        refresh.open()
+        await waitUntilMainActor {
+            first.isWorkspaceInventoryRefreshComplete
+                && second.isWorkspaceInventoryRefreshComplete
+        }
+        #expect(sceneChanges >= 2)
+        #expect(unchangedPublications == 0)
+        await first.shutdown()
+        await second.shutdown()
+    }
+
     @Test("endpoint aliases each receive the shared cached result")
     func endpointAliasesReceiveSharedResult() async throws {
         let localID = UUID()

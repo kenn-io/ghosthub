@@ -217,6 +217,7 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var workspaceInventoryWarning: String?
     @Published private(set) var workspaceInventoryWarningsByHost:
         [UUID: String] = [:]
+    private var publishedInventoryRefreshComplete = false
     private var kwtInventoryEnabled = false
     private var kwtInventoriesByHost: [UUID: KwtHostInventory] = [:]
     private var kwtAvailabilityByHost: [UUID: Bool] = [:]
@@ -4280,6 +4281,8 @@ final class WorkspaceSceneModel: ObservableObject {
         defer { isConsumingSharedInventory = false }
         var successfulKwtHosts: [(UUID, CommandHost, KwtHostInventory)] = []
         var successfulTmuxHostIDs: Set<UUID> = []
+        var updatedKwtHostIDs: Set<UUID> = []
+        var updatedHostIDs: Set<UUID> = []
 
         for (hostID, commandHost) in inventoryHosts {
             let applicationKey = SharedInventoryApplicationKey(
@@ -4310,6 +4313,8 @@ final class WorkspaceSceneModel: ObservableObject {
                         publishToStore: false,
                         recordsSuccessfulLoad: recordsSuccessfulLoad
                     )
+                    updatedKwtHostIDs.insert(hostID)
+                    updatedHostIDs.insert(hostID)
                     if recordsSuccessfulLoad {
                         successfulKwtHosts.append((
                             hostID,
@@ -4329,12 +4334,14 @@ final class WorkspaceSceneModel: ObservableObject {
                     case .idle, .loading, .loaded:
                         break
                     case .provisioningFailed:
+                        updatedHostIDs.insert(hostID)
                         kwtAvailabilityByHost[hostID] = false
                         kwtInventoryFailuresByHost.removeValue(
                             forKey: hostID
                         )
                     case let .failed(error):
                         if isRemoteKwtUnavailable(error, hostID: hostID) {
+                            updatedHostIDs.insert(hostID)
                             kwtAvailabilityByHost[hostID] = false
                             kwtInventoryFailuresByHost.removeValue(
                                 forKey: hostID
@@ -4363,6 +4370,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         publish: false
                     )
                     successfulTmuxHostIDs.insert(hostID)
+                    updatedHostIDs.insert(hostID)
                 }
                 if entry.observationRevision
                     > appliedTmuxObservationRevisions[
@@ -4373,6 +4381,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         entry.observationRevision
                     _ = beginTmuxDiscoveryObservation(hostID: hostID)
                     if case let .failed(error) = entry.state {
+                        updatedHostIDs.insert(hostID)
                         applyTmuxDiscoveryResult(
                             .failure(error),
                             hostID: hostID,
@@ -4384,7 +4393,18 @@ final class WorkspaceSceneModel: ObservableObject {
         }
 
         applySharedInventoryProgress(shared)
-        applyInventoryOverlayIfNeeded()
+        // Loading/progress publications carry no new rows. Reapply only the
+        // hosts that changed, leaving successful-observation callbacks below
+        // intact even when the returned inventory is equal to the cache.
+        for hostID in updatedHostIDs {
+            applyHostInventoryOverlayIfNeeded(
+                hostID: hostID,
+                includeKwtInventory: updatedKwtHostIDs.contains(hostID)
+            )
+        }
+        if updatedHostIDs.isEmpty {
+            attemptPendingRestoration()
+        }
         for (hostID, commandHost, inventory) in successfulKwtHosts {
             reconcileRetainedTmuxPresentations(
                 afterAuthoritativeInventoryFor: hostID
@@ -6086,6 +6106,13 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func updateWorkspaceInventoryState() {
+        // Completion is derived from private discovery state. Notify the UI
+        // when it changes even if the rows, warnings, and load state are equal.
+        let refreshComplete = isWorkspaceInventoryRefreshComplete
+        if publishedInventoryRefreshComplete != refreshComplete {
+            objectWillChange.send()
+            publishedInventoryRefreshComplete = refreshComplete
+        }
         let projectWarnings = kwtInventoriesByHost.values
             .flatMap(\.projects)
             .compactMap { item in
@@ -6110,7 +6137,7 @@ final class WorkspaceSceneModel: ObservableObject {
             .union(directoryWarningsByHost.keys)
             .union(herdrDiscoveryFailuresByHost.keys)
             .union(zellijDiscoveryFailuresByHost.keys)
-        workspaceInventoryWarningsByHost = Dictionary(
+        let warningsByHost = [UUID: String](
             uniqueKeysWithValues: hostIDs.compactMap { hostID in
                 let warnings = [
                     kwtInventoryFailuresByHost[hostID],
@@ -6125,9 +6152,15 @@ final class WorkspaceSceneModel: ObservableObject {
                 return (hostID, unique.joined(separator: "\n"))
             }
         )
-        workspaceInventoryWarning = uniqueProjectWarnings.isEmpty
+        if workspaceInventoryWarningsByHost != warningsByHost {
+            workspaceInventoryWarningsByHost = warningsByHost
+        }
+        let warning = uniqueProjectWarnings.isEmpty
             ? nil
             : uniqueProjectWarnings.joined(separator: "\n")
+        if workspaceInventoryWarning != warning {
+            workspaceInventoryWarning = warning
+        }
         let hasVisibleInventory = !snapshot.projects.isEmpty
             || !snapshot.directoryWorkspaces.isEmpty
             || snapshot.hosts.contains { !$0.tmuxSessions.isEmpty }
@@ -6142,25 +6175,27 @@ final class WorkspaceSceneModel: ObservableObject {
             || isTmuxDiscoveryLoading
             || isHerdrDiscoveryLoading
             || isZellijDiscoveryLoading
-        if hasPendingSources, !hasVisibleInventory {
-            workspaceInventoryState = .loading
-            return
-        }
         let localWarnings = [
             kwtInventoryFailuresByHost[localHostID],
             tmuxDiscoveryFailuresByHost[localHostID],
         ].compactMap { $0 }
-        if !hasPendingSources,
-           !hasCachedInventory,
-           !localWarnings.isEmpty {
-            workspaceInventoryState = .failed(
+        let state: WorkspaceInventoryState
+        if hasPendingSources, !hasVisibleInventory {
+            state = .loading
+        } else if !hasPendingSources,
+                  !hasCachedInventory,
+                  !localWarnings.isEmpty {
+            state = .failed(
                 Array(Set(localWarnings)).sorted().joined(separator: "\n")
             )
-            return
+        } else {
+            // Remote discovery is additive. Its failure belongs to that host
+            // and must never replace the workspace with a blocking error.
+            state = .loaded
         }
-        // Remote discovery is additive. Its failure belongs to that host and
-        // must never replace the workspace with a blocking error.
-        workspaceInventoryState = .loaded
+        if workspaceInventoryState != state {
+            workspaceInventoryState = state
+        }
     }
 
     func logViewerTerminalView() -> AnyView? {
