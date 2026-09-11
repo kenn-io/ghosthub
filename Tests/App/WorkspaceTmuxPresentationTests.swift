@@ -949,16 +949,15 @@ extension WorkspaceTmuxDiscoveryTests {
     @MainActor
     @Test("directory ownership rebind restarts an active reconnect")
     func directoryOwnershipRebindRestartsActiveReconnect() async throws {
-        let discoveries = TmuxDiscoveryResultQueue([
+        let session = DiscoveredTmuxSession(
+            name: "release-work",
+            windowCount: 1,
+            createdAt: nil,
+            managed: false
+        )
+        let reconnectProbes = TmuxDiscoveryResultQueue([
             .failure(.probeTimedOut(shell: "build-box")),
-            .success([
-                DiscoveredTmuxSession(
-                    name: "release-work",
-                    windowCount: 1,
-                    createdAt: nil,
-                    managed: false
-                ),
-            ]),
+            .success([session]),
         ])
         let environment = try setupRemoteTmuxEnvironment()
         let directory = DirectoryWorkspaceSummary(
@@ -980,7 +979,11 @@ extension WorkspaceTmuxDiscoveryTests {
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
+            // Initial workspace confirmation must not consume reconnect results.
+            tmuxSessionDiscovery: { _ in .success([session]) },
+            tmuxSessionValidationDiscovery: { _, _ in
+                reconnectProbes.removeFirst()
+            },
             tmuxReconnectIntervals: [.seconds(60)]
         )
         let canonical = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -994,9 +997,12 @@ extension WorkspaceTmuxDiscoveryTests {
 
         model.openBorrowedTmuxSession(canonical)
         await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
         surfaceStore.surface.closeObservers.values.first?(false, 255)
         await waitUntilMainActor {
-            discoveries.count == 1
+            reconnectProbes.count == 1
                 && model.activeBorrowedTmuxRecoveryState?.isReconnecting
                 == true
         }
@@ -1005,7 +1011,7 @@ extension WorkspaceTmuxDiscoveryTests {
         model.reconnectActiveTmuxSessionNow()
 
         await waitUntilMainActor {
-            discoveries.count == 2
+            reconnectProbes.count == 2
                 && surfaceStore.requestCount == 2
                 && model.activeBorrowedTmuxSessionIsConnected
         }
