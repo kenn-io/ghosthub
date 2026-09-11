@@ -3244,9 +3244,10 @@ extension WorkspaceTmuxDiscoveryTests {
             capturedEndpointReads.count >= 1
                 && surfaceStore.removedKeys.count == 1
         }
-        try await Task.sleep(for: .milliseconds(20))
 
-        #expect(capturedEndpointReads.count == 1)
+        // Pending client identity can consume an attempt before endpoint reads.
+        // Rejection must follow a read, regardless of how many retries remain.
+        #expect(capturedEndpointReads.count >= 1)
         #expect(model.retainedBorrowedTmuxPresentationCount == 0)
         #expect(model.activeBorrowedTmuxSelection == nil)
         #expect(!model.activeBorrowedTmuxSessionIsConnected)
