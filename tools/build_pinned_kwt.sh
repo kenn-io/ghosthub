@@ -180,6 +180,21 @@ else
 fi
 
 mkdir -p "$(dirname "$output")"
+# Fill the shared module cache separately so a transient download failure can
+# retry without repeating compilation or hiding a compiler error.
+(
+  cd "$source_dir"
+  for attempt in 1 2 3; do
+    if go mod download; then
+      exit 0
+    fi
+    if [[ "$attempt" -eq 3 ]]; then
+      exit 1
+    fi
+    printf 'kwt dependency download failed; retrying after %s seconds.\n' "$attempt" >&2
+    sleep "$attempt"
+  done
+)
 kwt_revision_time="$(
   TZ=UTC git -C "$source_dir" show -s \
     --date=format-local:'%Y-%m-%dT%H:%M:%SZ' \

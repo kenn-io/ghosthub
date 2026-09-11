@@ -11,6 +11,17 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolate_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in os.environ:
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key)
+    config = tmp_path / "gitconfig"
+    config.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
 def bootstrap_fixture(tmp_path: Path) -> tuple[Path, str, str, Path]:
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -56,6 +67,9 @@ def bootstrap_fixture(tmp_path: Path) -> tuple[Path, str, str, Path]:
     fake_go.write_text(
         """#!/bin/sh
 set -eu
+if [ "$*" = "mod download" ]; then
+  exit 0
+fi
 if [ "$#" -eq 2 ] && [ "$1" = "env" ]; then
   case "$2" in
     GOOS) printf 'darwin\\n' ;;
@@ -124,6 +138,65 @@ chmod +x "$output"
     )
     fake_go.chmod(fake_go.stat().st_mode | stat.S_IXUSR)
     return repository, revision, second_revision, fake_bin
+
+
+@pytest.mark.parametrize(
+    "download_failures,build_fails", [(2, False), (3, False), (0, True)]
+)
+def test_dependency_download_retries_are_bounded(
+    tmp_path: Path, download_failures: int, build_fails: bool
+) -> None:
+    repository, revision, _, fake_bin = bootstrap_fixture(tmp_path)
+    fake_go = fake_bin / "go"
+    successful_go = fake_bin / "successful-go"
+    fake_go.rename(successful_go)
+    calls = tmp_path / "go-calls"
+    fake_go.write_text(
+        """#!/bin/sh
+set -eu
+printf '%s\\n' "$1" >> "$GO_CALLS"
+if [ "$*" = "mod download" ]; then
+  attempts=$(grep -c '^mod$' "$GO_CALLS")
+  if [ "$attempts" -le "$DOWNLOAD_FAILURES" ]; then
+    echo 'dependency download: stream error: INTERNAL_ERROR; received from peer' >&2
+    exit 1
+  fi
+elif [ "$1" = "build" ] && [ "$BUILD_FAILS" = 1 ]; then
+  echo 'compiler error' >&2
+  exit 1
+fi
+exec "$(dirname "$0")/successful-go" "$@"
+"""
+    )
+    fake_go.chmod(0o755)
+    output = tmp_path / "output" / "kwt"
+    result = subprocess.run(
+        [
+            "bash",
+            "tools/build_pinned_kwt.sh",
+            str(repository),
+            revision,
+            str(tmp_path / "source"),
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "GO_CALLS": str(calls),
+            "DOWNLOAD_FAILURES": str(download_failures),
+            "BUILD_FAILS": str(int(build_fails)),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    commands = calls.read_text().splitlines()
+    assert commands.count("mod") == min(download_failures + 1, 3)
+    assert commands.count("build") == int(download_failures < 3)
+    succeeds = download_failures < 3 and not build_fails
+    assert (result.returncode == 0) == succeeds, result.stderr
+    assert Path(f"{output}.revision").exists() == succeeds
 
 
 def test_failed_initial_clone_does_not_block_retry(tmp_path: Path) -> None:
