@@ -519,10 +519,11 @@ struct WorkspaceSidebarView: View {
                     )
                 )
                 if isExpanded(sessionsKey) {
+                    let groupItems = sidebarDragItems(section.tmuxSessionRows)
                     ForEach(section.tmuxSessionRows) { row in
                         tmuxSessionButton(
                             row,
-                            orderedRows: section.tmuxSessionRows
+                            groupItems: groupItems
                         )
                     }
                 }
@@ -542,10 +543,11 @@ struct WorkspaceSidebarView: View {
                         )
                     )
                     if isExpanded(herdrSessionsKey) {
+                        let groupItems = sidebarDragItems(section.herdrSessionRows)
                         ForEach(section.herdrSessionRows) { row in
                             herdrSessionButton(
                                 row,
-                                orderedRows: section.herdrSessionRows
+                                groupItems: groupItems
                             )
                         }
                     }
@@ -566,10 +568,11 @@ struct WorkspaceSidebarView: View {
                         )
                     )
                     if isExpanded(zellijSessionsKey) {
+                        let groupItems = sidebarDragItems(section.zellijSessionRows)
                         ForEach(section.zellijSessionRows) { row in
                             zellijSessionButton(
                                 row,
-                                orderedRows: section.zellijSessionRows
+                                groupItems: groupItems
                             )
                         }
                     }
@@ -646,11 +649,11 @@ struct WorkspaceSidebarView: View {
                                     }
                                 }
                                 if isExpanded(projectKey) {
+                                    let groupItems = sidebarDragItems(project.worktreeRows)
                                     ForEach(project.worktreeRows) { row in
                                         worktreeButton(
                                             row,
-                                            projectWorktreeIDs:
-                                            project.worktrees.map(\.id)
+                                            groupItems: groupItems
                                         )
                                     }
                                 }
@@ -760,9 +763,23 @@ struct WorkspaceSidebarView: View {
 
     // MARK: - Row builders
 
+    private func sidebarDragItems(_ rows: [WorkspaceSidebarRow]) -> [WorkspaceSidebarDragItem] {
+        let items: [WorkspaceSidebarDragItem] = rows.compactMap { row in
+            switch row.target {
+            case let .worktree(id): .worktree(id)
+            case let .tmuxSession(hostID, name): .tmuxSession(hostID: hostID, name: name)
+            case let .herdrSession(hostID, name): .herdrSession(hostID: hostID, name: name)
+            case let .zellijSession(hostID, name): .zellijSession(hostID: hostID, name: name)
+            default: nil
+            }
+        }
+        RenderWorkCounters.countSidebarDragItems(items.count)
+        return items
+    }
+
     private func tmuxSessionButton(
         _ row: WorkspaceSidebarRow,
-        orderedRows: [WorkspaceSidebarRow]
+        groupItems: [WorkspaceSidebarDragItem]
     ) -> some View {
         guard case let .tmuxSession(hostID, name) = row.target else {
             return AnyView(sidebarButton(row))
@@ -771,16 +788,6 @@ struct WorkspaceSidebarView: View {
             hostID: hostID,
             name: name
         )
-        let groupItems: [WorkspaceSidebarDragItem] = orderedRows.compactMap {
-            orderedRow in
-            guard case let .tmuxSession(orderedHostID, orderedName) =
-                orderedRow.target
-            else { return nil }
-            return WorkspaceSidebarDragItem.tmuxSession(
-                hostID: orderedHostID,
-                name: orderedName
-            )
-        }
         let content = AnyView(reorderableRow(
             sidebarButton(row),
             item: item,
@@ -794,7 +801,7 @@ struct WorkspaceSidebarView: View {
 
     private func herdrSessionButton(
         _ row: WorkspaceSidebarRow,
-        orderedRows: [WorkspaceSidebarRow]
+        groupItems: [WorkspaceSidebarDragItem]
     ) -> some View {
         guard case let .herdrSession(hostID, name) = row.target else {
             return AnyView(sidebarButton(row))
@@ -803,16 +810,6 @@ struct WorkspaceSidebarView: View {
             hostID: hostID,
             name: name
         )
-        let groupItems: [WorkspaceSidebarDragItem] = orderedRows.compactMap {
-            orderedRow in
-            guard case let .herdrSession(orderedHostID, orderedName) =
-                orderedRow.target
-            else { return nil }
-            return WorkspaceSidebarDragItem.herdrSession(
-                hostID: orderedHostID,
-                name: orderedName
-            )
-        }
         return AnyView(
             reorderableRow(
                 sidebarButton(row),
@@ -827,7 +824,7 @@ struct WorkspaceSidebarView: View {
 
     private func zellijSessionButton(
         _ row: WorkspaceSidebarRow,
-        orderedRows: [WorkspaceSidebarRow]
+        groupItems: [WorkspaceSidebarDragItem]
     ) -> some View {
         guard case let .zellijSession(hostID, name) = row.target else {
             return AnyView(sidebarButton(row))
@@ -836,16 +833,6 @@ struct WorkspaceSidebarView: View {
             hostID: hostID,
             name: name
         )
-        let groupItems: [WorkspaceSidebarDragItem] = orderedRows.compactMap {
-            orderedRow in
-            guard case let .zellijSession(orderedHostID, orderedName) =
-                orderedRow.target
-            else { return nil }
-            return WorkspaceSidebarDragItem.zellijSession(
-                hostID: orderedHostID,
-                name: orderedName
-            )
-        }
         return AnyView(
             reorderableRow(
                 sidebarButton(row),
@@ -862,6 +849,7 @@ struct WorkspaceSidebarView: View {
         _ row: WorkspaceSidebarRow,
         reservedTrailingActionWidth: CGFloat = 0
     ) -> some View {
+        RenderWorkCounters.countSidebarRowEvaluation()
         let tmuxSession = tmuxSessionSelection(for: row)
         let runningTmuxSession = tmuxSession.flatMap {
             WorkspaceSidebarModel.canRequestKill(
@@ -872,18 +860,15 @@ struct WorkspaceSidebarView: View {
                 activeTmuxSessionIsConnected
             ) ? $0 : nil
         }
-        let herdrActions = WorkspaceSidebarRowActionModel.actions(
-            for: row,
-            in: snapshot,
-            pendingHerdrSessions: pendingHerdrSessions
-        ).filter {
-            if case .killTmuxSession = $0 {
-                return false
-            }
-            if case .killZellijSession = $0 {
-                return false
-            }
-            return true
+        let herdrActions: [WorkspaceSidebarRowAction]
+        if case .herdrSession = row.target {
+            herdrActions = WorkspaceSidebarRowActionModel.actions(
+                for: row,
+                in: snapshot,
+                pendingHerdrSessions: pendingHerdrSessions
+            )
+        } else {
+            herdrActions = []
         }
         let herdrSelection: WorkspaceHerdrSessionSelection? = {
             guard case let .herdrSession(hostID, name) = row.target else {
@@ -1432,7 +1417,7 @@ struct WorkspaceSidebarView: View {
 
     private func worktreeButton(
         _ row: WorkspaceSidebarRow,
-        projectWorktreeIDs: [UUID]
+        groupItems: [WorkspaceSidebarDragItem]
     ) -> some View {
         guard case let .worktree(worktreeID) = row.target,
               let worktree = snapshot.worktree(id: worktreeID)
@@ -1572,9 +1557,7 @@ struct WorkspaceSidebarView: View {
             .modifier(
                 WorkspaceSidebarReorderModifier(
                     item: .worktree(worktreeID),
-                    groupItems: projectWorktreeIDs.map {
-                        .worktree($0)
-                    },
+                    groupItems: groupItems,
                     orderRawValue: worktreeOrderRawValue,
                     draggedItem: $draggedSidebarItem,
                     indicator: $reorderIndicator,
@@ -1688,6 +1671,7 @@ struct WorkspaceSidebarView: View {
         _ row: WorkspaceSidebarRow,
         content: AnyView
     ) -> AnyView {
+        guard sessionPreviewMode != .off else { return content }
         guard let tmuxSession = tmuxSessionSelection(for: row),
               TmuxSessionPreviewRowPresentation.canDisclose(
                   mode: sessionPreviewMode,

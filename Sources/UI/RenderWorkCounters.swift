@@ -11,6 +11,8 @@ enum RenderWorkCounters {
     struct Counts {
         var rootBodyEvaluations = 0
         var sidebarSectionComputations = 0
+        var sidebarRowEvaluations = 0
+        var sidebarDragItems = 0
         fileprivate var isRecording = false
     }
 
@@ -34,6 +36,20 @@ enum RenderWorkCounters {
 
     static func beginRecording() {
         state.withLock { $0 = Counts(isRecording: true) }
+    }
+
+    static func countSidebarRowEvaluation() {
+        state.withLock {
+            guard $0.isRecording else { return }
+            $0.sidebarRowEvaluations += 1
+        }
+    }
+
+    static func countSidebarDragItems(_ count: Int) {
+        state.withLock {
+            guard $0.isRecording else { return }
+            $0.sidebarDragItems += count
+        }
     }
 
     static func endRecording() -> Counts {

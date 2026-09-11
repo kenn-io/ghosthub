@@ -4,6 +4,9 @@ import Foundation
 import GhosttyKit
 @testable import GhosthubApp
 import GhosthubTestSupport
+import GhosthubSettings
+import GhosthubTmux
+import GhosthubTransport
 import GhosthubUI
 import GhosthubWorkspace
 import SwiftUI
@@ -77,6 +80,17 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             ofItemAtPath: scriptURL.path
         )
         return scriptURL
+    }
+
+    private func pythonCommand(_ arguments: String...) throws -> String {
+        let executable = try XCTUnwrap(
+            ProcessInfo.processInfo.environment["GHOSTHUB_TEST_PYTHON"],
+            "Run terminal probes through tools/run_swift_tests.sh (make swift-test)."
+        )
+        // Python also uses argv[0] to locate its standard library. Let env
+        // receive libghostty's login prefix and launch Python normally.
+        return (["/usr/bin/env", executable] + arguments)
+            .map(shellQuotedCommandArgument).joined(separator: " ")
     }
 
     private func makeRawInputProbeScript(readBytes: Int) -> URL {
@@ -693,7 +707,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         let window = hostBuilder(view, CGSize(width: 800, height: 600))
@@ -1378,6 +1392,182 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
+    /// Report-only: key dispatch to PTY echo in libghostty's text viewport.
+    /// This does not measure compositor presentation or physical display latency.
+    func testInputLatencyBenchmark() async throws {
+        guard ProcessInfo.processInfo.environment["GHOSTHUB_BENCHMARK_INPUT"] == "1" else {
+            throw XCTSkip("Run make benchmark-input in a macOS desktop session.")
+        }
+        defer { fflush(nil) } // The GUI launcher remains alive until its controller stops it.
+        let appHandle = try requireAppHandle()
+        let probe = makeExecutableScript("""
+        import os, sys, termios, tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            print("<READY>", flush=True)
+            count = 0
+            while True:
+                data = os.read(fd, 1)
+                if not data:
+                    break
+                print(f"\\r<ECHO:{count}:{data.hex()}>", end="", flush=True)
+                count += 1
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        """)
+        defer { try? FileManager.default.removeItem(at: probe) }
+        let probeCommand = try pythonCommand(probe.path)
+        let tmuxPath = try XCTUnwrap(ProcessInfo.processInfo.environment["PATH"]?
+            .split(separator: ":")
+            .map { String($0) + "/tmux" }
+            .first { FileManager.default.isExecutableFile(atPath: $0) })
+        let server = try TestTmuxServer(
+            tmuxPath: tmuxPath,
+            socket: .runOwned(purpose: "input-latency")
+        )
+        defer { server.stop() }
+        let suite = "InputLatency-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (pipeline, configRoot) = makeIsolatedPipeline()
+        defer { try? FileManager.default.removeItem(at: configRoot) }
+        let settings = SettingsStore(configPipeline: pipeline, userDefaults: defaults)
+        settings.setSessionPreviewMode(.off)
+        let otherWindow = makeTestWindow(contentView: NSView(), requiresActiveApplication: true)
+        defer { otherWindow.orderOut(nil) }
+        for nativeTmux in [false, true] {
+            for (rowCount, sidebarVisible) in [(100, true), (500, true), (500, false)] {
+                let name = "input-\(rowCount)-\(sidebarVisible)"
+                let command: String
+                if nativeTmux {
+                    try server.createSession(name, command: probeCommand)
+                    command = TmuxAttachmentInfo(
+                        sessionName: name, host: .local,
+                        socketName: server.socketName, launchMode: .attachOnly
+                    ).attachCommand(tmuxPath: tmuxPath)
+                } else {
+                    command = probeCommand
+                }
+                let view = makeSurface(
+                    app: appHandle,
+                    configuration: TerminalSurfaceConfiguration(command: command)
+                )
+                let hostID = UUID()
+                var host = HostSummary(
+                    id: hostID,
+                    name: "This Mac",
+                    kind: .selfHost,
+                    platform: .macOS
+                )
+                host.tmuxSessions = (0 ..< rowCount).map {
+                    TmuxSessionSummary(
+                        name: $0 == 0 ? name : "session-\($0)",
+                        managed: false,
+                        windows: [],
+                        serverPID: "101",
+                        sessionID: "$\($0)",
+                        createdAt: "1000"
+                    )
+                }
+                let snapshot = WorkspaceSnapshot(hosts: [host], projects: [], worktrees: [])
+                let root = RootView(
+                    display: WorkspaceDisplayState(
+                        snapshot: snapshot,
+                        activeTmuxSession: WorkspaceTmuxSessionSelection(
+                            hostID: hostID,
+                            name: name
+                        )
+                    ),
+                    content: ContentBuilders(tmuxSessionContentBuilder: { _, _, _, _ in
+                        AnyView(TerminalSurfaceSwiftUIView(surfaceView: view))
+                    }),
+                    settingsStore: settings,
+                    selection: .constant(WorkspaceSelection(selectedHostID: hostID)),
+                    columnVisibility: .constant(sidebarVisible ? .all : .detailOnly),
+                    isCommandPalettePresented: .constant(false)
+                ).defaultAppStorage(defaults)
+                let window = makeTestWindow(contentView: NSHostingView(rootView: root))
+                defer { window.orderOut(nil) }
+                window.makeFirstResponder(view)
+                view.focusDidChange(true)
+                waitForProbeReady(in: view)
+                XCTAssertTrue(readViewportText(from: view).contains("<READY>"))
+                var sequence = 0
+                for refocus in [false, true] {
+                    if refocus {
+                        otherWindow.makeKeyAndOrderFront(nil)
+                        try await Task.sleep(for: .milliseconds(20))
+                        guard otherWindow.isKeyWindow else {
+                            print(
+                                "INPUT backend=\(nativeTmux ? "tmux" : "pty") rows=\(rowCount) sidebar=\(sidebarVisible) refocus=unavailable (no key-window delivery)"
+                            )
+                            continue
+                        }
+                    }
+                    var echoSamples: [Double] = []
+                    var dispatchSamples: [Double] = []
+                    var longestPump = 0.0
+                    // Five warmups, then 30 measured keystrokes per scenario.
+                    for index in 0 ..< 35 {
+                        if refocus {
+                            otherWindow.makeKeyAndOrderFront(nil)
+                            XCTAssertTrue(
+                                otherWindow.isKeyWindow,
+                                "Refocus requires key-window delivery."
+                            )
+                            try await Task.sleep(for: .milliseconds(20))
+                        }
+                        let start = ProcessInfo.processInfo.systemUptime
+                        if refocus {
+                            window.makeKeyAndOrderFront(nil)
+                            XCTAssertTrue(window.isKeyWindow, "Terminal window did not become key.")
+                        }
+                        XCTAssertTrue(window.firstResponder === view)
+                        window.sendEvent(makeKeyEvent(
+                            characters: "x",
+                            charactersIgnoringModifiers: "x",
+                            modifiers: [],
+                            keyCode: 7,
+                            windowNumber: window.windowNumber
+                        ))
+                        let dispatched = ProcessInfo.processInfo.systemUptime
+                        let marker = "<ECHO:\(sequence):78>"
+                        sequence += 1
+                        while !readViewportText(from: view).contains(marker),
+                              ProcessInfo.processInfo.systemUptime - start < 2 {
+                            let pumpStart = ProcessInfo.processInfo.systemUptime
+                            try await Task.sleep(for: .milliseconds(1))
+                            if index >= 5 {
+                                longestPump = max(
+                                    longestPump,
+                                    ProcessInfo.processInfo.systemUptime - pumpStart
+                                )
+                            }
+                        }
+                        let echoed = ProcessInfo.processInfo.systemUptime
+                        XCTAssertTrue(
+                            readViewportText(from: view).contains(marker),
+                            "Missing \(marker)"
+                        )
+                        if index >= 5 {
+                            echoSamples.append((echoed - start) * 1000)
+                            dispatchSamples.append((dispatched - start) * 1000)
+                        }
+                    }
+                    echoSamples.sort()
+                    dispatchSamples.sort()
+                    print(
+                        "INPUT backend=\(nativeTmux ? "tmux" : "pty") rows=\(rowCount) sidebar=\(sidebarVisible) refocus=\(refocus) samples=30 echo_ms_p50=\(echoSamples[14]) echo_ms_p95=\(echoSamples[28]) dispatch_ms_p95=\(dispatchSamples[28]) longest_pump_ms=\(longestPump * 1000)"
+                    )
+                }
+                await view.shutdown()
+                window.orderOut(nil)
+            }
+        }
+    }
+
     func testControlASendsSOHToPTY() throws {
         try assertPTYReceives(
             readBytes: 1,
@@ -1597,7 +1787,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     func testForeignLauncherVariablesDoNotLeakIntoChildShell() throws {
         let appHandle = try requireAppHandle()
 
-        withTemporaryEnvironment([
+        try withTemporaryEnvironment([
             "EDITOR": "vim",
             "KITTY_WINDOW_ID": "123",
             "KITTY_PID": "456",
@@ -1617,7 +1807,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             let view = makeSurface(
                 app: appHandle,
                 configuration: TerminalSurfaceConfiguration(
-                    command: "python3 '\(scriptURL.path)'"
+                    command: try pythonCommand(scriptURL.path)
                 )
             )
             _ = hostInWindow(view, size: CGSize(width: 800, height: 600))
@@ -1660,7 +1850,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 -c 'import time; time.sleep(10)'"
+                command: try pythonCommand("-c", "import time; time.sleep(10)")
             )
         )
         _ = hostInWindow(view, size: CGSize(width: 800, height: 600))
@@ -2263,7 +2453,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         var sunkData: [Data] = []
@@ -2359,7 +2549,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         var sunkData: [Data] = []
@@ -2401,7 +2591,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         var sunkData: [Data] = []
@@ -2442,7 +2632,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         var sunkData: [Data] = []
@@ -2535,7 +2725,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         let png = Data([0x89, 0x50, 0x4E, 0x47])
@@ -2570,7 +2760,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         var receivedImage: TerminalClipboardImage?
@@ -2603,7 +2793,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         view.remoteImagePasteHandler = { _ in }
@@ -2655,7 +2845,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         var receivedImage: TerminalClipboardImage?
@@ -2699,7 +2889,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         view.blocksClipboardReads = true
@@ -2811,7 +3001,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         view.blocksClipboardReads = true
@@ -2886,7 +3076,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         view.blocksClipboardReads = true
@@ -2949,7 +3139,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         view.blocksClipboardReads = true
@@ -3001,7 +3191,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         view.blocksClipboardReads = true
@@ -3048,7 +3238,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let view = makeSurface(
             app: appHandle,
             configuration: TerminalSurfaceConfiguration(
-                command: "python3 '\(scriptURL.path)'"
+                command: try pythonCommand(scriptURL.path)
             )
         )
         view.blocksClipboardReads = true

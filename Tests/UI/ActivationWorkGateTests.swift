@@ -74,6 +74,27 @@ struct ActivationWorkGateTests {
         #expect(second.value(forKey: "accessibilityValue") as? String == "Expanded")
     }
 
+    @Test("session selection builds sibling drag items once per group", arguments: [100, 500])
+    func sidebarSelectionWork(sessionCount: Int) {
+        let gate = GateEnvironment(sessionCount: sessionCount)
+        defer { gate.close() }
+        var samples: [Double] = []
+        RenderWorkCounters.beginRecording()
+        for index in 0 ..< 10 {
+            let start = ProcessInfo.processInfo.systemUptime
+            gate.selectSession(index + 2)
+            samples.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+        }
+        let counts = RenderWorkCounters.endRecording()
+        samples.sort()
+        print(
+            "SIDEBAR rows=\(sessionCount) selection_ms p50=\(samples[4]) p95=\(samples[9]) rows_built=\(counts.sidebarRowEvaluations) drag_items=\(counts.sidebarDragItems)"
+        )
+        #expect(counts.sidebarRowEvaluations > 0)
+        #expect(counts.sidebarSectionComputations == 0)
+        #expect(counts.sidebarDragItems <= counts.sidebarRowEvaluations * 2)
+    }
+
     /// Budgets are a ratchet at the measured baseline plus 30%: 10 switches
     /// cost exactly 20 root body evaluations (one per window per switch)
     /// and no sidebar section recomputation. The headroom absorbs a stray
@@ -88,9 +109,9 @@ struct ActivationWorkGateTests {
         static let sidebarSectionComputations = 0
     }
 
-    @Test("key-window switching stays within the render work budget")
-    func keyWindowSwitchingStaysWithinRenderWorkBudget() {
-        let gate = GateEnvironment()
+    @Test("key-window switching stays within the render work budget", arguments: [100, 500])
+    func keyWindowSwitchingStaysWithinRenderWorkBudget(sessionCount: Int) {
+        let gate = GateEnvironment(sessionCount: sessionCount)
         defer { gate.close() }
 
         RenderWorkCounters.beginRecording()
@@ -231,6 +252,20 @@ private final class GateEnvironment {
             model.isActive = modelIndex == index
         }
         settle()
+    }
+
+    func selectSession(_ index: Int) {
+        let model = windowModels[0]
+        let session = WorkspaceTmuxSessionSelection(
+            hostID: snapshot.hosts[0].id,
+            name: "session-\(index)"
+        )
+        model.selection.select(
+            .tmuxSession(hostID: session.hostID, name: session.name),
+            in: snapshot
+        )
+        model.activeSession = session
+        settle(for: 0.001)
     }
 
     func close() {

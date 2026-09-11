@@ -61,6 +61,8 @@ tmux_tmpdir="$(mktemp -d "$test_root/run.$$.XXXXXX")"
 test_run_id=${tmux_tmpdir##*.}
 export TMUX_TMPDIR="$tmux_tmpdir"
 export GHOSTHUB_TEST_TMUX_RUN_ID="$test_run_id"
+GHOSTHUB_TEST_PYTHON="$(uv python find)"
+export GHOSTHUB_TEST_PYTHON
 export GHOSTTY_RESOURCES_DIR="$ghostty_resources"
 
 # shellcheck disable=SC2329  # invoked by stop_launcher below

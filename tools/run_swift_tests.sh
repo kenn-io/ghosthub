@@ -131,6 +131,10 @@ trap 'forward_signal HUP' HUP
 
 export TMUX_TMPDIR="$tmux_tmpdir"
 export GHOSTHUB_TEST_TMUX_RUN_ID="$run_id"
+# libghostty gives direct commands a login-style argv[0]. Version-manager
+# shims can reject that name, so probes need a concrete Python interpreter.
+GHOSTHUB_TEST_PYTHON=$(uv python find)
+export GHOSTHUB_TEST_PYTHON
 # Swift Testing schedules test bodies independently of SwiftPM's worker flag.
 # Bound that executor so process and cancellation tests are not starved by the
 # full package starting at once. Callers can override the cap when needed.

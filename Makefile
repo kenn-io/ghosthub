@@ -326,6 +326,12 @@ test-activation-gate:
 	@sh tools/run_swift_tests.sh $(SWIFT) test \
 		--filter 'ActivationWorkGateTests|SettingsStoreTests/testRefreshingAnonymousUsageDataPublishesOnlyChanges|TerminalSurfacePreviewTests/testApplicationReactivationDefersParkedRenderingUntilKeySceneResume|TerminalSurfacePreviewTests/testReacquisitionWaitsForAvailableParkingWithoutPolling'
 
+# Report input latency without enforcing machine-dependent timing thresholds.
+.PHONY: benchmark-input
+benchmark-input:
+	@GHOSTHUB_BENCHMARK_INPUT=1 sh tools/run_swift_tests.sh $(SWIFT) test \
+		--filter TerminalSurfaceViewInputTests/testInputLatencyBenchmark
+
 # Essential workflow smoke for kwt inventory and ordinary tmux attachment.
 test-essential-workflows: test-kwt-contract
 	@set -euo pipefail; \
