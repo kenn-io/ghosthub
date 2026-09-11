@@ -100,18 +100,26 @@ struct WorktreeChangesReadCoordinatorTests {
         )
         let probe = ConcurrentReadProbe()
         let identity = changesIdentity(hostID: UUID(), index: 1)
+        let secondStarted = AsyncGate()
         let first = Task {
             try await coordinator.load(identity: identity) {
                 try await probe.load(identity)
             }
         }
+        await probe.waitUntilStarted(1)
+
         let second = Task {
-            try await coordinator.load(identity: identity) {
-                try await probe.load(identity)
-            }
+            try await { (coordinator: isolated WorktreeChangesReadCoordinator) in
+                // Stay on this actor from signaling through load registration;
+                // the first read cannot finish on it before the second joins.
+                secondStarted.open()
+                return try await coordinator.load(identity: identity) {
+                    try await probe.load(identity)
+                }
+            }(coordinator)
         }
 
-        await probe.waitUntilStarted(1)
+        await secondStarted.wait()
         #expect(await probe.startedCount == 1)
         await probe.releaseAll()
         _ = try await first.value
