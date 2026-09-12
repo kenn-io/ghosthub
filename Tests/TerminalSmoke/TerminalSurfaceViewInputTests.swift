@@ -7,7 +7,7 @@ import GhosthubTestSupport
 import GhosthubSettings
 import GhosthubTmux
 import GhosthubTransport
-import GhosthubUI
+@testable import GhosthubUI
 import GhosthubWorkspace
 import SwiftUI
 import XCTest
@@ -1399,6 +1399,47 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             throw XCTSkip("Run make benchmark-input in a macOS desktop session.")
         }
         defer { fflush(nil) } // The GUI launcher remains alive until its controller stops it.
+        defer { _ = RenderWorkCounters.endRecording() }
+
+        @MainActor
+        final class Inventory: ObservableObject {
+            @Published var snapshot: WorkspaceSnapshot {
+                didSet { revision &+= 1 }
+            }
+            private(set) var revision: UInt64 = 0
+            let sectionCache = WorkspaceSidebarSectionCache()
+
+            init(snapshot: WorkspaceSnapshot) {
+                self.snapshot = snapshot
+            }
+        }
+
+        struct InputRoot: View {
+            @ObservedObject var inventory: Inventory
+            let activeSession: WorkspaceTmuxSessionSelection
+            let surface: TerminalSurfaceView
+            let settings: SettingsStore
+            let sidebarVisible: Bool
+
+            var body: some View {
+                RootView(
+                    display: WorkspaceDisplayState(
+                        snapshot: inventory.snapshot,
+                        sidebarSectionCache: inventory.sectionCache,
+                        sidebarSnapshotRevision: inventory.revision,
+                        activeTmuxSession: activeSession
+                    ),
+                    content: ContentBuilders(tmuxSessionContentBuilder: { _, _, _, _ in
+                        AnyView(TerminalSurfaceSwiftUIView(surfaceView: surface))
+                    }),
+                    settingsStore: settings,
+                    selection: .constant(WorkspaceSelection(selectedHostID: activeSession.hostID)),
+                    columnVisibility: .constant(sidebarVisible ? .all : .detailOnly),
+                    isCommandPalettePresented: .constant(false)
+                )
+            }
+        }
+
         let appHandle = try requireAppHandle()
         let probe = makeExecutableScript("""
         import os, sys, termios, tty
@@ -1472,21 +1513,13 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                     )
                 }
                 let snapshot = WorkspaceSnapshot(hosts: [host], projects: [], worktrees: [])
-                let root = RootView(
-                    display: WorkspaceDisplayState(
-                        snapshot: snapshot,
-                        activeTmuxSession: WorkspaceTmuxSessionSelection(
-                            hostID: hostID,
-                            name: name
-                        )
-                    ),
-                    content: ContentBuilders(tmuxSessionContentBuilder: { _, _, _, _ in
-                        AnyView(TerminalSurfaceSwiftUIView(surfaceView: view))
-                    }),
-                    settingsStore: settings,
-                    selection: .constant(WorkspaceSelection(selectedHostID: hostID)),
-                    columnVisibility: .constant(sidebarVisible ? .all : .detailOnly),
-                    isCommandPalettePresented: .constant(false)
+                let inventory = Inventory(snapshot: snapshot)
+                let root = InputRoot(
+                    inventory: inventory,
+                    activeSession: WorkspaceTmuxSessionSelection(hostID: hostID, name: name),
+                    surface: view,
+                    settings: settings,
+                    sidebarVisible: sidebarVisible
                 ).defaultAppStorage(defaults)
                 let window = makeTestWindow(contentView: NSHostingView(rootView: root))
                 defer { window.orderOut(nil) }
@@ -1494,8 +1527,19 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 view.focusDidChange(true)
                 waitForProbeReady(in: view)
                 XCTAssertTrue(readViewportText(from: view).contains("<READY>"))
+                let terminalX = view.convert(view.bounds, to: window.contentView).minX
+                if sidebarVisible {
+                    XCTAssertGreaterThan(terminalX, 100, "The sidebar must occupy window space.")
+                } else {
+                    XCTAssertEqual(
+                        terminalX,
+                        0,
+                        accuracy: 1,
+                        "The terminal must fill the hidden sidebar's space."
+                    )
+                }
                 var sequence = 0
-                for refocus in [false, true] {
+                for (refocus, refreshInventory) in [(false, false), (false, true), (true, false)] {
                     if refocus {
                         otherWindow.makeKeyAndOrderFront(nil)
                         try await Task.sleep(for: .milliseconds(20))
@@ -1508,7 +1552,9 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                     }
                     var echoSamples: [Double] = []
                     var dispatchSamples: [Double] = []
+                    var inventorySamples: [Double] = []
                     var longestPump = 0.0
+                    RenderWorkCounters.beginRecording()
                     // Five warmups, then 30 measured keystrokes per scenario.
                     for index in 0 ..< 35 {
                         if refocus {
@@ -1533,6 +1579,22 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                             windowNumber: window.windowNumber
                         ))
                         let dispatched = ProcessInfo.processInfo.systemUptime
+                        if refreshInventory {
+                            // Deliberately overlap every key with a changed inventory
+                            // publication; this is a stress case, not a refresh cadence.
+                            var updated = inventory.snapshot
+                            updated.hosts[0].tmuxSessions[rowCount - 1]
+                                .windows = (0 ... (index % 2)).map {
+                                    TmuxWindowSummary(id: "@\($0)", index: $0, name: "shell-\($0)")
+                                }
+                            inventory.snapshot = updated
+                            window.contentView?.layoutSubtreeIfNeeded()
+                            if index >= 5 {
+                                inventorySamples.append(
+                                    (ProcessInfo.processInfo.systemUptime - dispatched) * 1000
+                                )
+                            }
+                        }
                         let marker = "<ECHO:\(sequence):78>"
                         sequence += 1
                         while !readViewportText(from: view).contains(marker),
@@ -1558,8 +1620,17 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                     }
                     echoSamples.sort()
                     dispatchSamples.sort()
+                    inventorySamples.sort()
+                    let counts = RenderWorkCounters.endRecording()
+                    if refreshInventory {
+                        XCTAssertGreaterThan(counts.rootBodyEvaluations, 0)
+                        if sidebarVisible {
+                            XCTAssertGreaterThan(counts.sidebarSectionComputations, 0)
+                            XCTAssertGreaterThan(counts.sidebarRowEvaluations, 0)
+                        }
+                    }
                     print(
-                        "INPUT backend=\(nativeTmux ? "tmux" : "pty") rows=\(rowCount) sidebar=\(sidebarVisible) refocus=\(refocus) samples=30 echo_ms_p50=\(echoSamples[14]) echo_ms_p95=\(echoSamples[28]) dispatch_ms_p95=\(dispatchSamples[28]) longest_pump_ms=\(longestPump * 1000)"
+                        "INPUT backend=\(nativeTmux ? "tmux" : "pty") rows=\(rowCount) sidebar=\(sidebarVisible) refocus=\(refocus) inventory_updates=\(refreshInventory) samples=30 echo_ms_p50=\(echoSamples[14]) echo_ms_p95=\(echoSamples[28]) dispatch_ms_p95=\(dispatchSamples[28]) longest_pump_ms=\(longestPump * 1000) inventory_ms_p50=\(inventorySamples.isEmpty ? 0 : inventorySamples[14]) inventory_ms_p95=\(inventorySamples.isEmpty ? 0 : inventorySamples[28]) redraws=\(counts.rootBodyEvaluations) sections=\(counts.sidebarSectionComputations) row_evaluations=\(counts.sidebarRowEvaluations)"
                     )
                 }
                 await view.shutdown()

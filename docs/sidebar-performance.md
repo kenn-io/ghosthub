@@ -254,3 +254,43 @@ Repeating the local input benchmark with lazy sidebar rows on September 12
 gave median text-viewport echo times of 1.2–2.2 ms and p95 below 2.3 ms.
 Window-refocus delivery remained unavailable. The steady small-line workload
 still did not reproduce the reported typing lag.
+
+### Input overlapping changed inventory (September 12)
+
+The benchmark now also changes an offscreen session's window count immediately
+after each key dispatch, publishes the snapshot through an observed model, and
+forces hosting-view layout before looking for the echo. It uses the normal
+sidebar section cache and advances its snapshot revision on each publication.
+This deliberately overlaps every key with refresh work; it does not represent
+the app's refresh frequency or include inventory loading and scene reconciliation.
+
+The comparison temporarily restores the eager tmux rows from merged PR #245,
+then repeats with the pending lazy layout. Both use Debug builds, previews Off,
+960 × 640 windows, five warmup keys, and 30 measured keys per phase. Timings below
+measure snapshot publication and layout on the main thread after key dispatch.
+
+| Sessions | Sidebar | Direct PTY, eager → lazy | Native tmux, eager → lazy |
+| --- | --- | ---: | ---: |
+| 100 | Shown | 19.9 → 3.4 ms | 21.1 → 3.4 ms |
+| 500 | Shown | 134.9 → 5.2 ms | 136.1 → 5.2 ms |
+| 500 | Hidden | 135.7 → 5.2 ms | 128.0 → 5.3 ms |
+
+These are representative medians. Across all 35 publications, eager rows
+evaluate 3,535/17,535 times at 100/500 sessions; lazy rows evaluate 455 times at
+either size. Each phase recomputes sections 35 times. Terminal geometry checks
+confirm that the hidden-sidebar case gives its space back to the terminal.
+Hiding moves the sidebar out of view and makes it transparent; its mounted
+content still updates. Hiding alone therefore does not isolate sidebar work.
+
+The measured echo interval includes this forced layout and the subsequent
+text-viewport read. It does not establish when the echo first became available
+during layout, when a frame reached the display, or how long real keyboard
+events waited before dispatch. A zero polling delay means the first read after
+layout already found the echo. The unchanged-inventory phases still report
+roughly 1–2 ms median echo times with no counted root or row evaluations.
+Key-window transitions remain unavailable in this runner.
+
+This comparison reproduces expensive main-thread inventory rendering with
+previews Off and shows that lazy rows reduce it. It does not establish that
+inventory refresh is the cause of the reported everyday typing lag. Changed-file
+publication, application activation, and display timing remain unmeasured here.
