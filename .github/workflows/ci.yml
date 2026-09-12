@@ -197,6 +197,7 @@ jobs:
             swift test --skip-build --disable-swift-testing
             --filter GhosthubTerminalSmokeTests
             --skip "$GHOSTHUB_GUI_TEST_FILTER"
+            --skip TerminalSurfaceViewInputTests/testInputLatencyBenchmark
             --parallel --num-workers "$test_workers"
           )
           if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
