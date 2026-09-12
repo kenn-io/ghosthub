@@ -637,7 +637,9 @@ Kwt's raw Git-status limit remains authoritative; Ghosthub gives the expanded
 JSON response separate bounded transport headroom and reports transport
 overflow as a non-retryable inspection error. The panel presents files in
 pages of 200, suppresses unchanged refresh publications, and retains at most
-eight collapsed snapshots per scene.
+eight collapsed snapshots per scene. The sidebar owns expansion and cached
+results, but native property observation keeps file-result updates within the
+mounted Changes panels rather than rebuilding unrelated sidebar rows.
 On a macOS or Linux host with no existing kwt registry, the user adds one
 absolute repository path at a time through **Add Project**. Ghosthub delegates
 registration to `kwt projects add --json`, then refreshes ordinary kwt

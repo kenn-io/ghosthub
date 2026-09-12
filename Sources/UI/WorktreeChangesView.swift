@@ -113,6 +113,56 @@ public struct WorktreeChangesPage: Equatable, Sendable {
     public let nextRequestedCount: Int
 }
 
+/// Observe file results here so polling does not rebuild unrelated sidebar rows.
+/// The sidebar retains the store and expansion across panel unmounts.
+struct WorktreeChangesPanel: View {
+    let identity: WorktreeChangesIdentity
+    let worktree: WorktreeSummary
+    let store: WorktreeChangesStore
+    let isEligible: Bool
+    let currentSnapshot: @MainActor () -> WorkspaceSnapshot
+    let load: WorktreeChangesLoader
+    let sleep: WorktreeChangesSleep
+    let refreshInventory: () -> Void
+
+    private struct TaskID: Hashable {
+        let identity: WorktreeChangesIdentity
+        let isEligible: Bool
+        let manualRefreshRevision: UInt64
+        let resumeRevision: UInt64
+    }
+
+    var body: some View {
+        let entry = store.entry(for: identity)
+        let taskID = TaskID(
+            identity: identity,
+            isEligible: isEligible,
+            manualRefreshRevision: entry.manualRefreshRevision,
+            resumeRevision: entry.resumeRevision
+        )
+        WorktreeChangesView(
+            entry: entry,
+            onRefresh: {
+                store.requestManualRefresh(
+                    for: identity,
+                    refreshInventory: refreshInventory
+                )
+            }
+        )
+        .task(id: taskID) {
+            await WorktreeChangesPollLoop.run(
+                identity: identity,
+                worktree: worktree,
+                store: store,
+                currentSnapshot: currentSnapshot,
+                isEligible: { isEligible },
+                load: load,
+                sleep: sleep
+            )
+        }
+    }
+}
+
 public struct WorktreeChangesView: View {
     public let entry: WorktreeChangesEntry
     public let onRefresh: (() -> Void)?

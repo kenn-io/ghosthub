@@ -198,14 +198,46 @@ to the measured selection time have not been isolated.
    terminal sessions per worktree. Populated saved ordering rebuilds its full
    position index per group. Group inputs once per computation before adding
    more retained caches.
-4. **Changed-file updates observe at sidebar scope.** `WorktreeChangesStore`
-   publishes its entry dictionary to the sidebar. A changed panel can invalidate
-   unrelated rows. Unchanged successful polls already suppress publication;
-   blaming every five-second poll would be incorrect.
+4. **Multiple expanded Changes panels share result observation.** Each panel
+   observes the store's entry dictionary. A changed result can reevaluate other
+   mounted panels, although unrelated sidebar rows no longer rebuild. Measure
+   several expanded panels before introducing finer observation per worktree.
 
-Hover, scrolling latency, preview-enabled projects, and one changed-file result
+Hover, scrolling latency, preview-enabled projects, and multiple changed-file panels
 still need separate interaction measurements under `s921`. The broader
 activation side-effect and causality contract remains under `360m`.
+
+## Changed-file publication (September 12)
+
+A hosted sidebar with 100/500 synthetic worktrees opens one project's first
+Changes panel through accessibility. Previews are Off. The real polling loop
+reads synthetic results through its loader boundary; a controlled sleep releases
+one poll at a time. Ten identical results provide the control, followed by ten
+results that each change one displayed filename. The test checks the resulting
+accessibility label after every result. It also checks manual Refresh and loading
+again after collapsing and reopening the panel.
+
+| Worktrees | Identical result, before → after | Changed result, before → after | Unrelated rows, before → after |
+| --- | ---: | ---: | ---: |
+| 100 | 2.1 → 2.1 ms | 17.7 → 4.5 ms | 390 → 0 |
+| 500 | 2.2 → 2.1 ms | 19.1 → 4.5 ms | 390 → 0 |
+
+Times are representative medians from Debug builds on macOS 26.6.2 with a
+320 × 700 sidebar and enhanced accessibility enabled. They include releasing
+the poll, its asynchronous comparison/publication, a requested 1 ms polling
+sleep, and hosting-view layout. Counts cover ten results. Identical results
+rebuild zero rows before and after; section computations remain zero throughout.
+These are not display-presentation measurements and exclude the real helper,
+network, and normal five-second polling interval.
+
+Previously the sidebar observed every store publication. Native property
+observation now tracks expansion at sidebar scope and results in a child
+Changes panel, which also owns the existing polling task. The sidebar still
+retains expansion and cached results across unmounts. Identity checks, retry
+policy, and request coordination are unchanged. The row-work regression fails
+before this change and passes afterward, while checking that filenames update.
+This establishes the rendering cost of a changed result; it does not attribute
+the reported everyday typing lag to changed-file polling.
 
 ## Terminal input probes
 

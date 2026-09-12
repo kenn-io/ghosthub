@@ -1,6 +1,6 @@
-import Combine
 import Foundation
 import GhosthubWorkspace
+import Observation
 
 public struct WorktreeChangesIdentity: Hashable, Sendable {
     public let worktreeID: UUID
@@ -157,15 +157,20 @@ public typealias WorktreeChangesLoader = @Sendable (
 public typealias WorktreeChangesSleep = @Sendable (Duration) async throws -> Void
 
 @MainActor
-public final class WorktreeChangesStore: ObservableObject {
+@Observable
+public final class WorktreeChangesStore {
     private static let collapsedSnapshotLimit = 8
 
-    @Published public private(set) var expandedWorktreeIDs: Set<UUID> = []
-    @Published public private(set) var entries:
+    public private(set) var expandedWorktreeIDs: Set<UUID> = []
+    public private(set) var entries:
         [WorktreeChangesIdentity: WorktreeChangesEntry] = [:]
+    @ObservationIgnored
     private var activeRequestByWorktreeID: [UUID: UUID] = [:]
+    @ObservationIgnored
     private var restartAfterInFlight: Set<WorktreeChangesIdentity> = []
+    @ObservationIgnored
     private var manualRestartAfterInFlight: Set<WorktreeChangesIdentity> = []
+    @ObservationIgnored
     private var collapsedWorktreeIDs: [UUID] = []
 
     public init() {}

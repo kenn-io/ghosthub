@@ -169,6 +169,172 @@ struct ActivationWorkGateTests {
         #expect(restoredChanges.value(forKey: "accessibilityValue") as? String == "Expanded")
     }
 
+    @Test("changed-file polls isolate their sidebar render work", arguments: [100, 500])
+    func changedFilePublication(worktreeCount: Int) async throws {
+        @MainActor
+        final class Polls {
+            var fileNumber = 0
+            var completed = 0
+        }
+        let polls = Polls()
+        let (refreshes, trigger) = AsyncStream<Void>.makeStream()
+        defer { trigger.finish() }
+        let fixture = makeWorkspaceEnvironment(
+            projectConfig: { $0.scopedKey = "example.com/team/project" },
+            worktrees: (0 ..< worktreeCount).map { index in
+                { worktree in
+                    worktree.name = "worktree-\(index)"
+                    worktree.path = "/tmp/sidebar-fixture/worktree-\(index)"
+                    worktree.generation = String(repeating: "a", count: 32)
+                }
+            }
+        )
+        let suite = "ChangedFileRendering-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let sidebar = WorkspaceSidebarView(
+            snapshot: fixture.snapshot,
+            sectionCache: WorkspaceSidebarSectionCache(),
+            selection: .constant(fixture.selection),
+            visibility: .default,
+            isWorktreeChangesPollingEligible: true,
+            loadWorktreeChanges: { worktree in
+                let number = await polls.fileNumber
+                return WorktreeFileChanges(
+                    repository: fixture.project.scopedKey,
+                    path: worktree.path,
+                    generation: worktree.generation!,
+                    state: .modified,
+                    summary: WorktreeChangeSummary(modified: 1),
+                    files: [WorktreeFileChange(
+                        path: "file-\(number).swift", originalPath: nil, index: nil,
+                        worktree: .modified
+                    )],
+                    observedAt: "now"
+                )
+            },
+            worktreeChangesSleep: { _ in
+                await MainActor.run { polls.completed += 1 }
+                var iterator = refreshes.makeAsyncIterator()
+                guard await iterator.next() != nil else { throw CancellationError() }
+            }
+        ).defaultAppStorage(defaults)
+        let app = NSApplication.shared
+        let wasEnhanced = app.value(forKey: "accessibilityEnhancedUserInterface")
+        app.setValue(true, forKey: "accessibilityEnhancedUserInterface")
+        defer { app.setValue(wasEnhanced, forKey: "accessibilityEnhancedUserInterface") }
+        let hostingView = NSHostingView(rootView: sidebar)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 700),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = hostingView
+        window.orderFront(nil)
+        defer {
+            window.contentView = nil
+            window.orderOut(nil)
+            _ = RenderWorkCounters.endRecording()
+        }
+        for (identifier, attribute) in [
+            (
+                "sidebar-section-disclosure-projects:\(fixture.host.id.uuidString)",
+                "accessibilityIdentifier"
+            ),
+            ("Expand \(fixture.project.sidebarTitle)", "accessibilityLabel"),
+            (
+                "worktree-changes-disclosure-\(fixture.worktrees[0].id.uuidString)",
+                "accessibilityIdentifier"
+            ),
+        ] {
+            hostingView.layoutSubtreeIfNeeded()
+            let disclosure = try #require(accessibilityElement(
+                identifier,
+                attribute: attribute,
+                in: hostingView
+            ))
+            _ = disclosure.perform(NSSelectorFromString("accessibilityPerformPress"))
+        }
+        func waitForPoll(_ count: Int) async throws {
+            for _ in 0 ..< 2000 {
+                if polls.completed >= count {
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            throw NSError(domain: "ChangedFileRendering", code: 1)
+        }
+        try await waitForPoll(1)
+        hostingView.layoutSubtreeIfNeeded()
+        for changed in [false, true] {
+            var samples: [Double] = []
+            var rows = 0
+            for _ in 0 ..< 10 {
+                if changed {
+                    polls.fileNumber += 1
+                }
+                let next = polls.completed + 1
+                RenderWorkCounters.beginRecording()
+                let start = ProcessInfo.processInfo.systemUptime
+                trigger.yield(())
+                try await waitForPoll(next)
+                hostingView.layoutSubtreeIfNeeded()
+                samples.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+                let counts = RenderWorkCounters.endRecording()
+                rows += counts.sidebarRowEvaluations
+                #expect(counts.sidebarSectionComputations == 0)
+                let label = "file-\(polls.fileNumber).swift, working tree modified"
+                #expect(accessibilityElement(
+                    label,
+                    attribute: "accessibilityLabel",
+                    in: hostingView
+                ) != nil)
+            }
+            samples.sort()
+            print(
+                "CHANGES worktrees=\(worktreeCount) changed=\(changed) p50_ms=\(samples[4]) p95_ms=\(samples[9]) rows_built=\(rows)"
+            )
+            #expect(rows == 0)
+        }
+
+        // Refresh and remount must still reach the loader after moving the
+        // polling task into a child view. Keep these outside the timed samples.
+        polls.fileNumber += 1
+        var next = polls.completed + 1
+        let refresh = try #require(accessibilityElement(
+            "worktree-changes-refresh",
+            in: hostingView
+        ))
+        _ = refresh.perform(NSSelectorFromString("accessibilityPerformPress"))
+        try await waitForPoll(next)
+        hostingView.layoutSubtreeIfNeeded()
+        #expect(accessibilityElement(
+            "file-\(polls.fileNumber).swift, working tree modified",
+            attribute: "accessibilityLabel", in: hostingView
+        ) != nil)
+
+        let changesID = "worktree-changes-disclosure-\(fixture.worktrees[0].id.uuidString)"
+        for expanded in [false, true] {
+            if expanded {
+                polls.fileNumber += 1
+            }
+            next = polls.completed + 1
+            let disclosure = try #require(accessibilityElement(changesID, in: hostingView))
+            _ = disclosure.perform(NSSelectorFromString("accessibilityPerformPress"))
+            hostingView.layoutSubtreeIfNeeded()
+            #expect(accessibilityElement(changesID, in: hostingView)?
+                .value(forKey: "accessibilityValue") as? String ==
+                (expanded ? "Expanded" : "Collapsed"))
+            if expanded {
+                try await waitForPoll(next)
+                hostingView.layoutSubtreeIfNeeded()
+                #expect(accessibilityElement(
+                    "file-\(polls.fileNumber).swift, working tree modified",
+                    attribute: "accessibilityLabel", in: hostingView
+                ) != nil)
+            }
+        }
+    }
+
     /// Budgets are a ratchet at the measured baseline plus 30%: 10 switches
     /// cost exactly 20 root body evaluations (one per window per switch)
     /// and no sidebar section recomputation. The headroom absorbs a stray

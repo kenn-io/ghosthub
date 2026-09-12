@@ -145,13 +145,6 @@ private struct WorkspaceSidebarReorderIndicator: Equatable {
     let placement: WorkspaceSidebarDropPlacement
 }
 
-private struct WorktreeChangesTaskID: Hashable {
-    let identity: WorktreeChangesIdentity
-    let isEligible: Bool
-    let manualRefreshRevision: UInt64
-    let resumeRevision: UInt64
-}
-
 // MARK: - WorkspaceSidebarView
 
 struct WorkspaceSidebarView: View {
@@ -223,7 +216,7 @@ struct WorkspaceSidebarView: View {
     @State private var hoveredWorktreeActionID: UUID?
     @FocusState private var focusedWorktreeActionID: UUID?
     @State private var worktreeHoverDismissTask: Task<Void, Never>?
-    @StateObject private var worktreeChanges = WorktreeChangesStore()
+    @State private var worktreeChanges = WorktreeChangesStore()
     @State private var hoveredProjectID: UUID?
     @State private var draggedSidebarItem: WorkspaceSidebarDragItem?
     @State private var reorderIndicator:
@@ -1654,35 +1647,16 @@ struct WorkspaceSidebarView: View {
                 onRefresh: nil
             ))
         }
-        let entry = worktreeChanges.entry(for: identity)
-        let taskID = WorktreeChangesTaskID(
+        return AnyView(WorktreeChangesPanel(
             identity: identity,
+            worktree: worktree,
+            store: worktreeChanges,
             isEligible: isWorktreeChangesPollingEligible,
-            manualRefreshRevision: entry.manualRefreshRevision,
-            resumeRevision: entry.resumeRevision
-        )
-        return AnyView(
-            WorktreeChangesView(
-                entry: entry,
-                onRefresh: {
-                    worktreeChanges.requestManualRefresh(
-                        for: identity,
-                        refreshInventory: onRefreshInventory
-                    )
-                }
-            )
-            .task(id: taskID) {
-                await WorktreeChangesPollLoop.run(
-                    identity: identity,
-                    worktree: worktree,
-                    store: worktreeChanges,
-                    currentSnapshot: currentSnapshot,
-                    isEligible: { isWorktreeChangesPollingEligible },
-                    load: loadWorktreeChanges,
-                    sleep: worktreeChangesSleep
-                )
-            }
-        )
+            currentSnapshot: currentSnapshot,
+            load: loadWorktreeChanges,
+            sleep: worktreeChangesSleep,
+            refreshInventory: onRefreshInventory
+        ))
     }
 
     private func tmuxPreviewRow(
