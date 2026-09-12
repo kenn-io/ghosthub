@@ -13,6 +13,7 @@ private let requiredLauncherEnvironmentNames = [
     "SHELL",
     "TMUX_TMPDIR",
     "GHOSTHUB_TEST_TMUX_RUN_ID",
+    "GHOSTHUB_TEST_PYTHON",
     "GHOSTTY_RESOURCES_DIR",
 ]
 
@@ -20,6 +21,7 @@ private let optionalLauncherEnvironmentNames = [
     "RUNNER_ENVIRONMENT",
     "CI",
     "GITHUB_ACTIONS",
+    "GHOSTHUB_BENCHMARK_INPUT",
 ]
 
 struct LauncherEnvironmentError: Error, CustomStringConvertible {

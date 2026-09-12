@@ -51,6 +51,7 @@ struct WorkspaceSidebarOrder: Equatable {
         _ items: [Item],
         identifiedBy identifier: (Item) -> String
     ) -> [Item] {
+        guard !itemIDs.isEmpty, items.count > 1 else { return items }
         let positions = Dictionary(
             uniqueKeysWithValues: itemIDs.enumerated().map {
                 ($0.element, $0.offset)

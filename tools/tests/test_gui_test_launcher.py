@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -53,6 +54,7 @@ def test_launcher_environment_supplies_xctest_runtime_paths(
                     "SHELL": "/bin/zsh",
                     "TMUX_TMPDIR": "/tmp/tmux",
                     "GHOSTHUB_TEST_TMUX_RUN_ID": "run-id",
+                    "GHOSTHUB_TEST_PYTHON": CommandLine.arguments[1],
                     "GHOSTTY_RESOURCES_DIR": "/tmp/resources",
                     "DYLD_LIBRARY_PATH": "/untrusted/library",
                     "DYLD_FRAMEWORK_PATH": "/untrusted/framework",
@@ -74,6 +76,17 @@ def test_launcher_environment_supplies_xctest_runtime_paths(
                 else {
                     throw NSError(domain: "LauncherEnvironmentProbe", code: 1)
                 }
+                let python = Process()
+                python.executableURL = URL(fileURLWithPath: environment["GHOSTHUB_TEST_PYTHON"]!)
+                python.arguments = ["-c", "import encodings; print('PROBE_READY')"]
+                let output = Pipe()
+                python.standardOutput = output
+                try python.run()
+                python.waitUntilExit()
+                let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                guard python.terminationStatus == 0, text.trimmingCharacters(in: .whitespacesAndNewlines) == "PROBE_READY" else {
+                    throw NSError(domain: "LauncherEnvironmentProbe", code: 2)
+                }
             }
         }
         """
@@ -92,7 +105,7 @@ def test_launcher_environment_supplies_xctest_runtime_paths(
         text=True,
     )
     assert compilation.returncode == 0, compilation.stderr
-    subprocess.run([str(probe)], check=True)
+    subprocess.run([str(probe), sys.executable], check=True)
 
 
 def test_already_regular_activation_policy_is_accepted(tmp_path: Path) -> None:
