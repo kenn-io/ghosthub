@@ -520,11 +520,18 @@ struct WorkspaceSidebarView: View {
                 )
                 if isExpanded(sessionsKey) {
                     let groupItems = sidebarDragItems(section.tmuxSessionRows)
-                    ForEach(section.tmuxSessionRows) { row in
+                    let rows = ForEach(section.tmuxSessionRows) { row in
                         tmuxSessionButton(
                             row,
                             groupItems: groupItems
                         )
+                    }
+                    if sessionPreviewMode == .off {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            rows
+                        }
+                    } else {
+                        rows
                     }
                 }
                 if WorkspaceSidebarSectionActionModel.isVisible(
@@ -650,11 +657,22 @@ struct WorkspaceSidebarView: View {
                                 }
                                 if isExpanded(projectKey) {
                                     let groupItems = sidebarDragItems(project.worktreeRows)
-                                    ForEach(project.worktreeRows) { row in
+                                    let rows = ForEach(project.worktreeRows) { row in
                                         worktreeButton(
                                             row,
                                             groupItems: groupItems
                                         )
+                                    }
+                                    if sessionPreviewMode == .off {
+                                        LazyVStack(alignment: .leading, spacing: 2) {
+                                            rows
+                                        }
+                                    } else {
+                                        // Preview mounts control capture and parking eligibility;
+                                        // retain them while expanded, including offscreen tiles.
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            rows
+                                        }
                                     }
                                 }
                             }

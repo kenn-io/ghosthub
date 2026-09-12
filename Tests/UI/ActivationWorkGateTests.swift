@@ -45,25 +45,8 @@ struct ActivationWorkGateTests {
         let gate = GateEnvironment()
         defer { gate.close() }
         let identifier = "sidebar-section-disclosure-sessions:\(gate.snapshot.hosts[0].id.uuidString)"
-        /// SwiftUI nodes expose these accessors without adopting the full
-        /// NSAccessibilityProtocol, so traverse them through Cocoa's KVC API.
-        func disclosure(in element: NSObject) -> NSObject? {
-            let id = element.responds(to: NSSelectorFromString("accessibilityIdentifier"))
-                ? element.value(forKey: "accessibilityIdentifier") as? String : nil
-            if id == identifier {
-                return element
-            }
-            let children = element.responds(to: NSSelectorFromString("accessibilityChildren"))
-                ? element.value(forKey: "accessibilityChildren") as? [NSObject] : nil
-            for child in children ?? [] {
-                if let match = disclosure(in: child) {
-                    return match
-                }
-            }
-            return nil
-        }
-        let first = try #require(disclosure(in: gate.hostingViews[0]))
-        let second = try #require(disclosure(in: gate.hostingViews[1]))
+        let first = try #require(accessibilityElement(identifier, in: gate.hostingViews[0]))
+        let second = try #require(accessibilityElement(identifier, in: gate.hostingViews[1]))
         #expect(first.value(forKey: "accessibilityValue") as? String == "Expanded")
         #expect(second.value(forKey: "accessibilityValue") as? String == "Expanded")
 
@@ -74,8 +57,8 @@ struct ActivationWorkGateTests {
         #expect(second.value(forKey: "accessibilityValue") as? String == "Expanded")
     }
 
-    @Test("session selection builds sibling drag items once per group", arguments: [100, 500])
-    func sidebarSelectionWork(sessionCount: Int) {
+    @Test("session selection builds only rows near the viewport", arguments: [100, 500])
+    func sidebarSelectionWork(sessionCount: Int) throws {
         let gate = GateEnvironment(sessionCount: sessionCount)
         defer { gate.close() }
         var samples: [Double] = []
@@ -91,8 +74,99 @@ struct ActivationWorkGateTests {
             "SIDEBAR rows=\(sessionCount) selection_ms p50=\(samples[4]) p95=\(samples[9]) rows_built=\(counts.sidebarRowEvaluations) drag_items=\(counts.sidebarDragItems)"
         )
         #expect(counts.sidebarRowEvaluations > 0)
+        #expect(counts.sidebarRowEvaluations <= 250)
         #expect(counts.sidebarSectionComputations == 0)
-        #expect(counts.sidebarDragItems <= counts.sidebarRowEvaluations * 2)
+        #expect(counts.sidebarDragItems <= sessionCount * 20)
+
+        let app = NSApplication.shared
+        let wasEnhanced = app.value(forKey: "accessibilityEnhancedUserInterface")
+        app.setValue(true, forKey: "accessibilityEnhancedUserInterface")
+        defer { app.setValue(wasEnhanced, forKey: "accessibilityEnhancedUserInterface") }
+        try gate.scrollSidebar(toBottom: true)
+        try gate.pressSidebarRow(named: "session-\(sessionCount - 1)")
+    }
+
+    @Test("Always Live keeps offscreen previews mounted while scrolling")
+    func alwaysLivePreviewsRemainMounted() throws {
+        let gate = GateEnvironment(sessionCount: 100, previewMode: .alwaysLive)
+        defer { gate.close() }
+        #expect(gate.windowModels[0].expandedPreviewIDs.count == 100)
+        try gate.scrollSidebar(toBottom: true)
+        #expect(gate.windowModels[0].expandedPreviewIDs.count == 100)
+        try gate.scrollSidebar(toBottom: false)
+        #expect(gate.windowModels[0].expandedPreviewIDs.count == 100)
+    }
+
+    @Test("expanded projects construct only worktree rows near the viewport", arguments: [100, 500])
+    func expandedWorktreeInteractions(worktreeCount: Int) throws {
+        let app = NSApplication.shared
+        let wasEnhanced = app.value(forKey: "accessibilityEnhancedUserInterface")
+        app.setValue(true, forKey: "accessibilityEnhancedUserInterface")
+        defer { app.setValue(wasEnhanced, forKey: "accessibilityEnhancedUserInterface") }
+        let gate = GateEnvironment(worktreeCount: worktreeCount)
+        defer { gate.close() }
+        let projectsID = "sidebar-section-disclosure-projects:\(gate.snapshot.hosts[0].id.uuidString)"
+        let projects = try #require(accessibilityElement(projectsID, in: gate.hostingViews[0]))
+        _ = projects.perform(NSSelectorFromString("accessibilityPerformPress"))
+        gate.settle()
+        #expect(projects.value(forKey: "accessibilityValue") as? String == "Expanded")
+        let projectLabel = "Expand \(gate.snapshot.projects[0].sidebarTitle)"
+        let project = try #require(accessibilityElement(
+            projectLabel,
+            attribute: "accessibilityLabel",
+            in: gate.hostingViews[0]
+        ))
+        RenderWorkCounters.beginRecording()
+        let start = ProcessInfo.processInfo.systemUptime
+        _ = project.perform(NSSelectorFromString("accessibilityPerformPress"))
+        gate.settle(for: 0.001)
+        let disclosureMS = (ProcessInfo.processInfo.systemUptime - start) * 1000
+        let disclosureCounts = RenderWorkCounters.endRecording()
+        #expect(project.value(forKey: "accessibilityValue") as? String == "Expanded")
+        #expect(disclosureCounts.sidebarRowEvaluations > 0)
+        // A 1000 × 700 window constructs 105 rows including prefetch and
+        // repeated layout, at both inventory sizes. Allow framework headroom.
+        #expect(disclosureCounts.sidebarRowEvaluations <= 140)
+        #expect(disclosureCounts.sidebarDragItems <= (worktreeCount + 4) * 4)
+        print(
+            "WORKTREES rows=\(worktreeCount) disclosure_ms=\(disclosureMS) rows_built=\(disclosureCounts.sidebarRowEvaluations)"
+        )
+
+        var samples: [Double] = []
+        RenderWorkCounters.beginRecording()
+        for index in 1 ... 10 {
+            let start = ProcessInfo.processInfo.systemUptime
+            gate.selectWorktree(index)
+            samples.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+        }
+        let counts = RenderWorkCounters.endRecording()
+        samples.sort()
+        print(
+            "WORKTREES rows=\(worktreeCount) selection_ms_p50=\(samples[4]) selection_ms_p95=\(samples[9]) rows_built=\(counts.sidebarRowEvaluations) drag_items=\(counts.sidebarDragItems)"
+        )
+        #expect(counts.sidebarRowEvaluations > 0)
+        #expect(counts.sidebarRowEvaluations <= 100 * 10)
+        #expect(counts.sidebarSectionComputations == 0)
+        #expect(counts.sidebarDragItems <= (worktreeCount + 4) * 4 * 10)
+
+        let firstWorktree = gate.snapshot.worktrees[0]
+        let changesID = "worktree-changes-disclosure-\(firstWorktree.id.uuidString)"
+        let changes = try #require(accessibilityElement(changesID, in: gate.hostingViews[0]))
+        _ = changes.perform(NSSelectorFromString("accessibilityPerformPress"))
+        gate.settle()
+        #expect(accessibilityElement(changesID, in: gate.hostingViews[0])?
+            .value(forKey: "accessibilityValue") as? String == "Expanded")
+
+        try gate.scrollSidebar(toBottom: true)
+        let lastWorktree = try #require(gate.snapshot.worktrees.last)
+        try gate.pressSidebarRow(named: lastWorktree.name)
+
+        try gate.scrollSidebar(toBottom: false)
+        let restoredChanges = try #require(accessibilityElement(
+            changesID,
+            in: gate.hostingViews[0]
+        ))
+        #expect(restoredChanges.value(forKey: "accessibilityValue") as? String == "Expanded")
     }
 
     /// Budgets are a ratchet at the measured baseline plus 30%: 10 switches
@@ -146,13 +220,35 @@ struct ActivationWorkGateTests {
     }
 }
 
+/// SwiftUI nodes expose these accessors without adopting NSAccessibilityProtocol.
+@MainActor
+private func accessibilityElement(
+    _ identifier: String,
+    attribute: String = "accessibilityIdentifier",
+    in element: NSObject
+) -> NSObject? {
+    let id = element.responds(to: NSSelectorFromString(attribute))
+        ? element.value(forKey: attribute) as? String : nil
+    if id == identifier {
+        return element
+    }
+    let children = element.responds(to: NSSelectorFromString("accessibilityChildren"))
+        ? element.value(forKey: "accessibilityChildren") as? [NSObject] : nil
+    for child in children ?? [] {
+        if let match = accessibilityElement(identifier, attribute: attribute, in: child) {
+            return match
+        }
+    }
+    return nil
+}
+
 // MARK: - Harness
 
 @MainActor
 private final class GateEnvironment {
     let snapshot: WorkspaceSnapshot
 
-    private let windowModels: [GateWindowModel]
+    let windowModels: [GateWindowModel]
     private let windows: [NSWindow]
     let hostingViews: [NSHostingView<GateHarness>]
     let settingsStore: SettingsStore
@@ -161,11 +257,12 @@ private final class GateEnvironment {
     private let defaultsSuiteName: String
     private let sidebarToggleTarget = NSObject()
 
-    init(sessionCount: Int = 4) {
+    init(sessionCount: Int = 4, worktreeCount: Int = 3, previewMode: SessionPreviewMode = .off) {
+        let worktreeNames = (0 ..< worktreeCount).map { "worktree-\($0)" }
         let sessionNames = (0 ..< sessionCount).map { "session-\($0)" }
         let environment = makeWorkspaceEnvironment(
             hostConfig: { host in
-                host.tmuxSessions = sessionNames.enumerated().map { index, name in
+                host.tmuxSessions = (sessionNames + worktreeNames).enumerated().map { index, name in
                     TmuxSessionSummary(
                         name: name,
                         managed: false,
@@ -176,14 +273,15 @@ private final class GateEnvironment {
                     )
                 }
             },
-            worktrees: [
-                { $0.name = "main"
-                    $0.branch = "main" },
-                { $0.name = "feature-a"
-                    $0.branch = "feature-a" },
-                { $0.name = "feature-b"
-                    $0.branch = "feature-b" },
-            ]
+            worktrees: worktreeNames.map { name in
+                { worktree in
+                    worktree.name = name
+                    worktree.branch = name
+                    worktree.path = "/tmp/sidebar-fixture/\(name)"
+                    worktree.tmuxSessionName = name
+                    worktree.tmuxAttachMode = .direct
+                }
+            }
         )
         snapshot = environment.snapshot
 
@@ -219,7 +317,8 @@ private final class GateEnvironment {
                     hostID: environment.host.id,
                     name: sessionNames[index]
                 ),
-                isActive: index == 0
+                isActive: index == 0,
+                previewMode: previewMode
             )
             let hostingView = NSHostingView(
                 rootView: GateHarness(
@@ -268,6 +367,44 @@ private final class GateEnvironment {
         settle(for: 0.001)
     }
 
+    func selectWorktree(_ index: Int) {
+        let model = windowModels[0]
+        let worktree = snapshot.worktrees[index]
+        model.selection.select(.worktree(worktree.id), in: snapshot)
+        model.activeSession = WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        settle(for: 0.001)
+    }
+
+    func scrollSidebar(toBottom: Bool) throws {
+        let scrollView = try #require(viewDescendants(of: hostingViews[0])
+            .compactMap { $0 as? NSScrollView }
+            .first { ($0.documentView?.bounds.height ?? 0) > $0.contentView.bounds.height })
+        let document = try #require(scrollView.documentView)
+        scrollView.contentView.scroll(to: NSPoint(
+            x: 0,
+            y: toBottom ? document.bounds.height - scrollView.contentView.bounds.height : 0
+        ))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        settle()
+    }
+
+    func pressSidebarRow(named name: String) throws {
+        let row = try #require(accessibilityElement(
+            name,
+            attribute: "accessibilityLabel",
+            in: hostingViews[0]
+        ))
+        _ = row.perform(NSSelectorFromString("accessibilityPerformPress"))
+        settle()
+        let selectedRow = try #require(accessibilityElement(
+            name,
+            attribute: "accessibilityLabel",
+            in: hostingViews[0]
+        ))
+        #expect((selectedRow.value(forKey: "accessibilityValue") as? String)?
+            .contains("Selected") == true)
+    }
+
     func close() {
         for window in windows {
             window.orderOut(nil)
@@ -291,6 +428,9 @@ private final class GateEnvironment {
 private final class GateWindowModel: ObservableObject {
     let snapshot: WorkspaceSnapshot
     let sidebarSectionCache = WorkspaceSidebarSectionCache()
+    let previewMode: SessionPreviewMode
+    let previewableSessionIDs: Set<String>
+    var expandedPreviewIDs: Set<String> = []
     @Published var selection: WorkspaceSelection
     @Published var activeSession: WorkspaceTmuxSessionSelection?
     @Published var columnVisibility: NavigationSplitViewVisibility = .all
@@ -301,12 +441,18 @@ private final class GateWindowModel: ObservableObject {
         snapshot: WorkspaceSnapshot,
         selection: WorkspaceSelection,
         activeSession: WorkspaceTmuxSessionSelection,
-        isActive: Bool
+        isActive: Bool,
+        previewMode: SessionPreviewMode
     ) {
         self.snapshot = snapshot
         self.selection = selection
         self.activeSession = activeSession
         self.isActive = isActive
+        self.previewMode = previewMode
+        previewableSessionIDs = Set(snapshot.hosts.flatMap { host in
+            host.tmuxSessions
+                .map { WorkspaceTmuxSessionSelection(hostID: host.id, name: $0.name).id }
+        })
     }
 }
 
@@ -321,11 +467,26 @@ private struct GateHarness: View {
             display: WorkspaceDisplayState(
                 snapshot: model.snapshot,
                 sidebarSectionCache: model.sidebarSectionCache,
-                activeTmuxSession: model.activeSession
+                activeTmuxSession: model.activeSession,
+                previewableTmuxSessionIDs: model.previewableSessionIDs,
+                sessionPreviewMode: model.previewMode
             ),
             content: ContentBuilders(
                 tmuxSessionContentBuilder: { _, _, _, _ in
                     AnyView(Color.clear)
+                },
+                tmuxSessionPreviewBuilder: { _, _ in
+                    AnyView(Color.clear.frame(height: 40))
+                }
+            ),
+            handlers: InteractionHandlers(
+                openTmuxSession: { model.activeSession = $0 },
+                setTmuxSessionPreviewExpanded: { session, expanded in
+                    if expanded {
+                        model.expandedPreviewIDs.insert(session.id)
+                    } else {
+                        model.expandedPreviewIDs.remove(session.id)
+                    }
                 }
             ),
             sidebarToggleTarget: sidebarToggleTarget,

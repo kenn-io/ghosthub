@@ -116,10 +116,67 @@ rows skip session resolution when previews are off, and empty saved ordering
 preserves input order without sorting. Existing ordering and lifecycle action
 coverage remains in place.
 
-`ActivationWorkGateTests.sidebarSelectionWork` bounds drag construction relative
-to actual row evaluations at both sizes. The old implementation fails at both
-sizes. Window activation also runs against 100 and 500 sessions while retaining
-the existing root/section budgets. Timing output is report-only.
+The initial `ActivationWorkGateTests.sidebarSelectionWork` gate bounded drag
+construction relative to actual row evaluations at both sizes. Window activation
+also runs against 100 and 500 sessions while retaining the existing root/section
+budgets. Timing output is report-only.
+
+## Expanded worktree projects (September 11)
+
+A second fixture opens a project with 100 or 500 synthetic worktrees in the
+same two-window harness. Previews are off. Disclosure uses an accessibility
+press with enhanced accessibility enabled; these timings are not ordinary
+mouse-click or visible-frame measurements. The baseline is `87c7009e` with
+the same fixture. Selection again includes publication, a 1 ms run-loop turn,
+and layout.
+
+| Worktrees | Disclosure before | After | Selection median before | After |
+| --- | ---: | ---: | ---: | ---: |
+| 100 | 797 ms | 189 ms | 121 ms | 42 ms |
+| 500 | 13,101 ms | 187 ms | 779 ms | 45 ms |
+
+Sampling the baseline test worker during disclosure found most main-thread
+work in SwiftUI accessibility focus updates and responder traversal. Wrapping
+each expanded project's worktrees in a native `LazyVStack` reduced disclosure
+row evaluations from 312/1,512 to 105 at both sizes. Ten selections now evaluate
+740 rows at either size, down from 2,120/10,120. Sibling drag metadata still
+includes the full project, preserving reorder targets.
+
+Lazy layout applies only when previews are off. Preview-enabled modes keep
+their expanded rows mounted because preview lifetime also controls capture
+and parking eligibility. This patch does not change that contract. Changed-file
+expansion and cached results belong to the sidebar; an offscreen panel's polling
+task stops and resumes on remount, as it already does on ancestor collapse.
+
+`ActivationWorkGateTests.expandedWorktreeInteractions` bounds row construction
+independently of inventory size, scrolls to the final worktree and selects it
+through accessibility, then checks that an expanded Changes panel survives
+scrolling away and back. Timing output remains report-only.
+
+## Session row layout (September 12)
+
+The same native lazy layout now applies to expanded tmux session groups when
+previews are off. The baseline is merged PR #245 (`12fbebc5`), with the worktree
+layout change above applied. The fixture still uses two 1000 × 700 windows and
+times ten selections, including the 1 ms run-loop turn and layout.
+
+| Sessions | Selection median before | After | Row evaluations before | After |
+| --- | ---: | ---: | ---: | ---: |
+| 100 | 19.7 ms | 5.9 ms | 1,111 | 165 |
+| 500 | 130.9 ms | 6.5 ms | 5,511 | 165 |
+
+The selection gate now bounds row construction independently of inventory size
+and separately bounds the full sibling drag list. It scrolls to the final session
+and selects it through accessibility, checking that deferred rows remain reachable.
+An Always Live check mounts 100 synthetic preview views through the real sidebar
+callbacks and verifies that scrolling does not release their eligibility. This
+UI fixture does not open terminal clients; the activation gate separately checks
+the real coordinator and libghostty surfaces.
+
+Synthetic mouse-enter and mouse-move events did not trigger SwiftUI hover updates
+in this session. Those samples were rejected because no row work occurred; they
+do not establish that hover is free or that its latency improved. Actual hover,
+display presentation, and typing latency still need separate measurements.
 
 ## Remaining rendering costs
 
@@ -131,11 +188,11 @@ to the measured selection time have not been isolated.
    same worktree repeatedly. Reuse known row data where it preserves the active
    connection and protected-workspace contracts.
 2. **Hover invalidates the whole sidebar.** Hover state and dismissal tasks
-   belong to `WorkspaceSidebarView`; nested ordinary `VStack` containers eagerly
-   construct expanded groups. Row views can own hover state, following the
-   existing `ProjectRemovalButton` pattern. Measure row construction and layout
-   before changing virtualization; an outer `LazyVStack` alone leaves eager
-   descendants.
+   belong to `WorkspaceSidebarView`. Herdr and Zellij groups, and preview-enabled
+   tmux and worktree groups, still eagerly construct expanded rows. Row views can
+   own hover state, following the existing `ProjectRemovalButton` pattern.
+   Measure row construction and layout before changing virtualization; an outer
+   `LazyVStack` alone leaves eager descendants.
 3. **Section-cache misses scan the fleet repeatedly.**
    `WorkspaceSidebarModel.sections` filters all worktrees per project and all
    terminal sessions per worktree. Populated saved ordering rebuilds its full
@@ -146,8 +203,8 @@ to the measured selection time have not been isolated.
    unrelated rows. Unchanged successful polls already suppress publication;
    blaming every five-second poll would be incorrect.
 
-Expanded worktree projects, hover, disclosure, scrolling, and one changed-file
-result still need separate interaction measurements under `s921`. The broader
+Hover, scrolling latency, preview-enabled projects, and one changed-file result
+still need separate interaction measurements under `s921`. The broader
 activation side-effect and causality contract remains under `360m`.
 
 ## Terminal input probes
@@ -192,3 +249,8 @@ text-viewport observations, not visible-frame timings. Window-refocus delivery
 was unavailable, including through the AppKit launcher; that launcher's process
 inspection/cleanup also failed after its benchmark test passed. No activation
 latency conclusion is drawn from those attempts.
+
+Repeating the local input benchmark with lazy sidebar rows on September 12
+gave median text-viewport echo times of 1.2–2.2 ms and p95 below 2.3 ms.
+Window-refocus delivery remained unavailable. The steady small-line workload
+still did not reproduce the reported typing lag.
