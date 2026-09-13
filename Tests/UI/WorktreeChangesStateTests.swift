@@ -1,4 +1,4 @@
-import Combine
+import Observation
 import Darwin
 import Foundation
 import GhosthubWorkspace
@@ -153,7 +153,10 @@ struct WorktreeChangesStateTests {
             filesChanged: true
         )
         let counter = ChangeCounter()
-        let observation = store.objectWillChange.sink {
+        withObservationTracking {
+            _ = store.entries
+            _ = store.expandedWorktreeIDs
+        } onChange: {
             counter.increment()
         }
 
@@ -167,7 +170,6 @@ struct WorktreeChangesStateTests {
         )
 
         #expect(counter.value == 0)
-        withExtendedLifetime(observation) {}
     }
 
     @MainActor
@@ -185,14 +187,16 @@ struct WorktreeChangesStateTests {
             filesChanged: true
         )
         let counter = ChangeCounter()
-        let observation = store.objectWillChange.sink {
+        withObservationTracking {
+            _ = store.entries
+            _ = store.expandedWorktreeIDs
+        } onChange: {
             counter.increment()
         }
 
         store.prune(in: fixture.snapshot)
 
         #expect(counter.value == 0)
-        withExtendedLifetime(observation) {}
     }
 
     @MainActor

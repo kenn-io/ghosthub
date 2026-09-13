@@ -97,13 +97,13 @@ func makeIsolatedPipeline() -> (LibghosttyConfigPipeline, URL) {
     )
 }
 
-func makeIsolatedSurfacePipeline() -> (LibghosttyConfigPipeline, URL) {
+func makeIsolatedSurfacePipeline(windowVsync: Bool = false) -> (LibghosttyConfigPipeline, URL) {
     let (pipeline, tempRoot) = makeIsolatedPipeline()
     try! FileManager.default.createDirectory(
         at: pipeline.paths.configDirectory,
         withIntermediateDirectories: true
     )
-    try! "window-vsync = false\n".write(
+    try! "window-vsync = \(windowVsync)\n".write(
         to: pipeline.paths.terminalAppearanceConfigFile,
         atomically: true,
         encoding: .utf8

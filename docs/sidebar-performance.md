@@ -1,194 +1,167 @@
-# Sidebar performance review
+# Sidebar performance
 
-Reviewed September 10, 2026, against `dedc40b2`, including the inventory
-sharing change in `4c8bd7ed`.
+Measurements collected September 10–13, 2026. Timings are representative Debug
+samples on Apple Silicon with macOS 26.6.2, not CI timing thresholds or physical
+display latency. The intermittent typing lag reported in local and remote
+sessions with previews Off is no longer apparent to the reporter; its cause
+remains unconfirmed and further investigation is paused.
 
-## Measured refresh work
+## Sidebar changes
 
-A deterministic test opens two scene models with the same populated inventory
-store and holds the next inventory load. It calls `refreshKwtInventory` and counts work
-before any new result returns. Temporary instrumentation in
-`HostInventoryOverlay.apply` counts cached-host merges; Combine subscriptions
-count warning and load-state publications. The test does not connect to real
-hosts or open terminal clients.
+Expanded tmux session and worktree groups use native `LazyVStack` layout only
+when previews are Off. This limits row construction to the viewport and nearby
+rows. Preview-enabled groups stay mounted because their lifetime controls
+capture and parking eligibility. Full sibling drag lists still include
+offscreen rows, and expansion and cached Changes results remain sidebar-owned.
+An offscreen Changes panel stops polling and resumes on remount, as it already
+does when an ancestor group collapses.
 
-| Work before a loader returns | Before | After |
+`WorktreeChangesStore` uses native property observation. The sidebar observes
+expansion, while `WorktreeChangesPanel` observes results and owns the existing
+polling task. A changed filename therefore does not rebuild unrelated rows.
+Identity validation, retry policy, and request coordination are unchanged.
+
+| Workload | Items | Before | After |
+| --- | ---: | ---: | ---: |
+| Tmux selection and layout | 100 | 19.7 ms | 5.9 ms |
+| Tmux selection and layout | 500 | 130.9 ms | 6.5 ms |
+| Worktree selection and layout | 100 | 121 ms | 42 ms |
+| Worktree selection and layout | 500 | 779 ms | 45 ms |
+| Worktree disclosure through accessibility | 100 | 797 ms | 189 ms |
+| Worktree disclosure through accessibility | 500 | 13,101 ms | 187 ms |
+| Changed-file publication and layout | 100 | 17.7 ms | 4.5 ms |
+| Changed-file publication and layout | 500 | 19.1 ms | 4.5 ms |
+
+The selection fixtures host two 1000 × 700 `RootView` windows with isolated
+preferences and ten selections. Timings include publication, a requested 1 ms
+run-loop turn, and layout. Tmux selection compares eager rows from merged
+PR #245 (`12fbebc5`) with lazy layout; the worktree baseline is `87c7009e`.
+Worktree disclosure enables enhanced accessibility and is not an ordinary
+mouse-click measurement. Baseline sampling found substantial SwiftUI
+accessibility focus and responder-traversal work.
+
+Across ten tmux selections, row evaluations fell from 1,111/5,511 at 100/500
+sessions to 165 at both sizes. Worktree disclosure row evaluations fell from
+312/1,512 to 105; worktree selections fell from 2,120/10,120 to 740.
+
+The Changes fixture hosts a 320 × 700 sidebar with enhanced accessibility. It
+uses the real polling loop, synthetic loader results, and a controlled sleep
+to release ten identical results followed by ten changed filenames. Timing
+includes asynchronous comparison/publication, a requested 1 ms polling sleep,
+and layout. Ten changed results previously rebuilt 390 unrelated rows and now
+rebuild zero. Identical results rebuild zero rows before and after and take
+about 2.1 ms. Section computations remain zero. This excludes real helper and
+network work and the normal five-second polling interval.
+
+## Regression checks and nightly acceptance
+
+Run `make test-activation-gate` and
+`make swift-test SWIFT_TEST_FILTER=WorktreeChanges` for the relevant checks.
+`ActivationWorkGateTests` bounds row construction independently of inventory
+size, selects the final offscreen session and worktree through accessibility,
+and checks that Changes expansion survives scrolling away and back. The Changes
+fixture checks displayed filenames, manual Refresh, collapse, and reopening.
+An Always Live fixture keeps 100 synthetic preview views mounted while scrolling;
+separate terminal tests exercise real preview coordinators and libghostty.
+
+The deterministic activation fixture drives SwiftUI's control-active state;
+it does not establish real Command-Tab latency or app-scene behavior above the
+hosted view. Synthetic mouse events did not trigger SwiftUI hover updates in
+this runner, so those samples were rejected.
+
+The reporter previously encountered crashes with lazy sidebar components.
+This change has no verified reproducer for that earlier failure. Passing the
+focused checks does not establish long-running stability: use nightly builds
+with normal multi-window work, scrolling, selection, and group expansion before
+including these changes in a stable release. Crash stability during that trial
+remains unverified.
+
+## Terminal input benchmark
+
+Run `make benchmark-input` after bootstrapping libghostty. It uses temporary
+preferences/configuration and the standard private tmux fixture, shuts down its
+surfaces, and never attaches to existing sessions. The opt-in benchmark is
+excluded from ordinary CI smoke selection; it reports timings without imposing
+machine-dependent thresholds.
+
+Scenarios cover a direct local PTY and a native tmux client, 100/500 sidebar
+sessions, shown/hidden sidebar states, and previews Off. Five warmups precede
+30 measured keys. Keys enter through `NSApplication.sendEvent`; each phase
+checks that all 35 keys reach both installed application shortcut monitors.
+
+The Python probe echoes a numbered response and alternates a separate cell
+between black and white. Every key waits for the expected text and the matching
+pixel in the terminal layer's IOSurface before the next key is sent. Zero
+padding, opaque backgrounds, and actual cell dimensions locate the marker.
+Reported timings cover dispatch, text-viewport observation, rendered-layer
+observation, and the longest main-actor echo-poll wait. Polling requests a 1 ms
+sleep; the echo-poll metric excludes the later frame wait.
+
+In the pinned Metal implementation, a completed command buffer publishes its
+IOSurface to the layer, dispatching to the main queue for asynchronous frames.
+Observing those model-layer pixels includes polling/readback overhead. It does
+not measure compositor consumption, scanout, physical-keyboard latency, or an
+event waiting before dispatch.
+
+The inventory-overlap phases change an offscreen session's window count after
+each key, publish through the real sidebar cache/revision path, and force
+layout. This is a stress case, not normal refresh cadence; it excludes inventory
+loading and full scene reconciliation. Hiding the sidebar returns its space to
+the terminal but leaves its content mounted and updating.
+
+| Main-thread inventory publication and layout | Eager rows | Lazy rows |
 | --- | ---: | ---: |
-| Cached-host merges | 8 | 0 |
-| Unchanged sidebar warning/state publications | 24 | 0 |
+| 100 sessions, shown, PTY/tmux | 19.9–21.1 ms | 3.4 ms |
+| 500 sessions, shown/hidden, PTY/tmux | 128.0–136.1 ms | 5.2–5.3 ms |
 
-The retained regression test is
-`WorkspaceSharedInventoryTests.refreshDoesNotRepublishUnchangedSidebarState`.
-The merge instrumentation was temporary; snapshot equality alone cannot count
-unnecessary merges. These are work counts, not elapsed-time or frame-rate
-measurements. They do not establish that every source of perceived lag is gone.
+These comparisons temporarily restored the eager rows from PR #245 in the same
+fixture. Across 35 updates, row evaluations fell from 3,535/17,535 at 100/500
+sessions to 455 at either size; each phase recomputed sections 35 times.
 
-The disclosure regression separately hosts two real `RootView` windows sharing
-the same preferences. Pressing a session group's disclosure in one previously
-collapsed both; it now changes only the targeted window. Disclosure state is
-stored as parsed sets, eliminating the old per-check string parsing. The
-app-wide disclosure preference predates `4c8bd7ed`.
+With application dispatch and vsync disabled, representative rendered-layer
+medians were 1.3–1.6 ms steady and 7.9–8.2 ms during 500-session inventory overlap.
+Dispatch p95 stayed below 0.1 ms, and steady phases rebuilt zero sidebar rows.
+A temporary 1,000-key probe measured shortcut translation at about 1 microsecond
+for one monitor and 9 microseconds for ten; it did not justify a production
+shortcut change. No production renderer or key-handling settings were changed.
 
-## Application reactivation
+Earlier runs reported zero active displays via `CGGetActiveDisplayList`, and a
+vsync-enabled surface failed to initialize. The benchmark reports
+`vsync=true unavailable (active_displays=0)` for that precondition and checks
+the loaded vsync value for runtimes it creates. Other initialization failures
+still fail. On September 13, the runner reported one active display and the
+benchmark passed all 24 steady/overlap phases across both vsync settings. With
+vsync enabled, steady rendered-layer medians were 8.3–8.4 ms and inventory-overlap
+medians were 7.8–8.4 ms. These are model-layer observations, not physical display
+latency. Key-window delivery remained unavailable, so inter-window refocus and
+Command-Tab remain unverified.
 
-Packaged builds check the persisted telemetry preference on each application
-activation. `SettingsStore.refreshShareAnonymousUsageData` previously assigned
-its published property even when the value was unchanged. Both `WorkspaceWindow`
-and `RootView` observe this shared store, so the assignment invalidated every
-window. The refresh now publishes only a changed preference; changes made by
-another process still take effect.
+The first September 13 run timed out waiting for one tmux probe's initial text
+and pixel marker. The unchanged rerun passed; the readiness failure's cause is
+unconfirmed. This does not establish long-running app stability.
 
-The activation gate hosts two `RootView` windows with 100 or 500 synthetic tmux
-sessions per window, using stable session identities and expanded session groups.
-Ten unchanged preference refreshes caused 20 root-body evaluations at both sizes
-before the fix and zero afterward. Section computations remained zero. This
-measures the refresh invoked by telemetry, without sending telemetry events.
+## Earlier shipped improvements
 
-Retained live previews also resumed rendering synchronously on application
-reactivation, before checking whether their scene was key. A non-key scene then
-suspended and unparked those same surfaces. Rendering now resumes through the
-existing delayed parking path after checking application activity, sidebar
-visibility, preview mode, and scene focus. Efficient capture retries retain their
-existing behavior. Preview changes that cancel the timer preserve pending
-reacquisition and reschedule the delay; cancellation does not permit immediate
-rendering or mounting the remaining fleet at once. Only successful mounts consume
-a parking slot. If the parking host or a surface is unavailable, reacquisition
-stays pending and pauses until a host or presentation event reschedules the delay.
-Healthy previews continue their regular captures without polling for missing
-views. The terminal regressions use real libghostty surfaces to check delayed
-key-scene resume, no mounted-surface resume in a non-key scene, and deferred
-mounting when a missing host or surface becomes available.
+PR #242 stopped loading-only inventory publications from reapplying cached
+hosts, retained window-local disclosure state, and delayed live-preview resume
+until the scene is eligible. Two-scene refresh instrumentation counted eight
+cached-host merges and 24 unchanged warning/state publications before a loader
+returned; both fell to zero. Only successful preview mounts consume parking
+slots, and failed mounts release their budget request while reacquisition stays
+pending. Ten unchanged activation preference refreshes fell from 20 root-view
+evaluations to zero. These are work counts, not activation latency.
 
-`make test-activation-gate` includes these regressions. These are deterministic
-work checks, not end-to-end Command-Tab latency measurements. The broader
-first-responder and latency benchmark remains tracked by `360m`; row construction
-and hover measurements remain `s921`. Resource sampling already defers its first
-sample on reactivation. Inventory still refreshes on return to the app, preserving
-the existing freshness and stale-load replacement contracts.
+PR #245 built sibling drag metadata once per group, avoided unused row work,
+and repaired Python-backed input probes by selecting Python through uv and
+launching through `/usr/bin/env`. At 500 sessions, drag items across ten
+selections fell from 2,750,000 to 5,500 and selection/layout fell from 186 ms to
+131 ms. The lazy-row comparison above starts from that improved baseline.
 
-## Inventory updates
+## Remaining scope
 
-`WorkspaceInventoryStore` publishes on each loading transition and each result.
-Previously, `WorkspaceSceneModel.consumeSharedInventory` reapplied every cached
-host on every publication, even when its revision checks found no new inventory.
-This regressed the host-scoped application used before `4c8bd7ed`. With H hosts
-and W windows, an ordinary successful KWT/tmux refresh cycle could perform
-4 × W × H² cached-host merges. Explicit refresh adds invalidation publications.
-
-Consumption now applies only hosts with new inventory or availability state.
-Loading-only transitions still update progress and attempt restoration.
-Successful observations still reconcile retained presentations and quarantined
-removals, including when inventory content is unchanged. Warning and load-state
-properties publish only when their values change.
-Actual refresh-completion transitions still notify each scene, including a
-refresh that returns identical data, so sidebar cleanup sees completion.
-
-A worktree selection also records its last-viewed time in persistence and
-replaces the scene snapshot. The unchanged-host branch then refreshes its
-subscription and reapplies cached inventory. Removing the unconditional merge
-from consumption eliminates one of the two full overlays formerly reached by
-that path. Identical subscriber registration still recomputes subscriber host
-sets; avoiding that work is a smaller remaining opportunity.
-
-## Expanded-row measurements (September 11)
-
-The follow-up compares ten session selections at 100 and 500 stable synthetic
-sessions per host. Two real `RootView` windows use isolated preferences; tmux
-groups are expanded, previews are off, and selection changes in one window.
-The baseline is `ec8f8d4b` plus the same measurement instrumentation. The
-measurements use a Debug build on Apple Silicon with macOS 26.6.2.
-
-| Sessions | Drag items built before | After | Selection median before | After |
-| --- | ---: | ---: | ---: | ---: |
-| 100 | 110,000 | 1,100 | 22 ms | 20 ms |
-| 500 | 2,750,000 | 5,500 | 186 ms | 131 ms |
-
-These are representative samples, not timing thresholds. The timed interval
-includes selection publication, a 1 ms run-loop turn, and hosting-view layout;
-it does not establish display presentation time. Row evaluations remain 1,111
-and 5,511 respectively. Cached sections are not recomputed. The remaining
-131 ms at 500 rows is still too expensive for frequent interaction.
-
-The sidebar now builds one sibling drag array per expanded group, including
-worktrees, and shares it among the group's rows. It constructs Herdr actions
-only for Herdr rows, avoiding a discarded second tmux killability scan. Preview
-rows skip session resolution when previews are off, and empty saved ordering
-preserves input order without sorting. Existing ordering and lifecycle action
-coverage remains in place.
-
-`ActivationWorkGateTests.sidebarSelectionWork` bounds drag construction relative
-to actual row evaluations at both sizes. The old implementation fails at both
-sizes. Window activation also runs against 100 and 500 sessions while retaining
-the existing root/section budgets. Timing output is report-only.
-
-## Remaining rendering costs
-
-These costs are established by source inspection. Their individual contributions
-to the measured selection time have not been isolated.
-
-1. **Rows repeat linear inventory lookups.** Each tmux row still scans the host's
-   sessions for killability. Worktree and enabled-preview builders resolve the
-   same worktree repeatedly. Reuse known row data where it preserves the active
-   connection and protected-workspace contracts.
-2. **Hover invalidates the whole sidebar.** Hover state and dismissal tasks
-   belong to `WorkspaceSidebarView`; nested ordinary `VStack` containers eagerly
-   construct expanded groups. Row views can own hover state, following the
-   existing `ProjectRemovalButton` pattern. Measure row construction and layout
-   before changing virtualization; an outer `LazyVStack` alone leaves eager
-   descendants.
-3. **Section-cache misses scan the fleet repeatedly.**
-   `WorkspaceSidebarModel.sections` filters all worktrees per project and all
-   terminal sessions per worktree. Populated saved ordering rebuilds its full
-   position index per group. Group inputs once per computation before adding
-   more retained caches.
-4. **Changed-file updates observe at sidebar scope.** `WorktreeChangesStore`
-   publishes its entry dictionary to the sidebar. A changed panel can invalidate
-   unrelated rows. Unchanged successful polls already suppress publication;
-   blaming every five-second poll would be incorrect.
-
-Expanded worktree projects, hover, disclosure, scrolling, and one changed-file
-result still need separate interaction measurements under `s921`. The broader
-activation side-effect and causality contract remains under `360m`.
-
-## Terminal input probes
-
-The input smoke tests previously launched bare `python3`. With a mise shim,
-libghostty's login-style argument zero became `-python3`, and the probe exited
-before reading input. A direct Python path also needs a normal argument zero to
-locate its standard library. Both test launchers now select Python with
-`uv python find`; the tests launch it through `/usr/bin/env`. Production shell
-startup and shell integration are unchanged. The real Ctrl-A and Option-D
-regressions fail before this change and pass afterward.
-
-Run `make benchmark-input` after bootstrapping libghostty to measure a local
-PTY and an isolated native tmux client with 100/500 sidebar sessions, previews
-off, and the sidebar shown/hidden. It uses the standard Swift test runner,
-temporary preferences/configuration, and the standard private tmux server
-fixture. It does not attach to existing sessions. The test shuts down every
-terminal surface before returning.
-
-For each scenario, five warmup keystrokes precede 30 measured `x` events. A raw
-Python probe writes a small, uniquely numbered response on the current line.
-The benchmark reports key-dispatch and key-to-libghostty-text-viewport timing,
-plus the longest main-actor polling delay. Polling requests a 1 ms sleep, so
-scheduler delay sets a lower bound on observed echo time. The benchmark does
-not time Core Animation presentation or physical display refresh, and the
-terminal smoke runtime disables vsync.
-
-Window-refocus samples require both windows to actually become key. If this
-session cannot deliver key-window transitions, the report explicitly says
-`refocus=unavailable`; a retained first responder alone is insufficient proof.
-These switches are between test windows, not Command-Tab from another app.
-Refocus timing starts before making the terminal window key, so its dispatch
-and echo measurements include the activation work.
-Remote transport, active preview workloads, real application activation,
-full-screen terminal workloads, and display presentation remain under `w8v8`.
-
-On September 11, the six steady-input scenarios reported median echo times of
-1.2–2.2 ms and p95 times of 2.2–2.3 ms. Dispatch p95 stayed below 0.08 ms;
-the longest polling delay was 4.3 ms, including its requested sleep. This
-small-line echo workload did not reproduce the reported typing lag. These are
-text-viewport observations, not visible-frame timings. Window-refocus delivery
-was unavailable, including through the AppKit launcher; that launcher's process
-inspection/cleanup also failed after its benchmark test passed. No activation
-latency conclusion is drawn from those attempts.
+The source still contains repeated row lookups, sidebar-owned hover state,
+fleet scans on section-cache misses, and shared result observation between
+multiple mounted Changes panels. Their costs need separate measurements before
+further changes. Eager preview-enabled, Herdr, and Zellij groups are outside the
+lazy-layout change. Row/hover work remains tracked by `s921`, activation by
+`360m`, and typing latency by `w8v8`; none is claimed fully resolved here.

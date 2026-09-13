@@ -145,13 +145,6 @@ private struct WorkspaceSidebarReorderIndicator: Equatable {
     let placement: WorkspaceSidebarDropPlacement
 }
 
-private struct WorktreeChangesTaskID: Hashable {
-    let identity: WorktreeChangesIdentity
-    let isEligible: Bool
-    let manualRefreshRevision: UInt64
-    let resumeRevision: UInt64
-}
-
 // MARK: - WorkspaceSidebarView
 
 struct WorkspaceSidebarView: View {
@@ -223,7 +216,7 @@ struct WorkspaceSidebarView: View {
     @State private var hoveredWorktreeActionID: UUID?
     @FocusState private var focusedWorktreeActionID: UUID?
     @State private var worktreeHoverDismissTask: Task<Void, Never>?
-    @StateObject private var worktreeChanges = WorktreeChangesStore()
+    @State private var worktreeChanges = WorktreeChangesStore()
     @State private var hoveredProjectID: UUID?
     @State private var draggedSidebarItem: WorkspaceSidebarDragItem?
     @State private var reorderIndicator:
@@ -520,11 +513,18 @@ struct WorkspaceSidebarView: View {
                 )
                 if isExpanded(sessionsKey) {
                     let groupItems = sidebarDragItems(section.tmuxSessionRows)
-                    ForEach(section.tmuxSessionRows) { row in
+                    let rows = ForEach(section.tmuxSessionRows) { row in
                         tmuxSessionButton(
                             row,
                             groupItems: groupItems
                         )
+                    }
+                    if sessionPreviewMode == .off {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            rows
+                        }
+                    } else {
+                        rows
                     }
                 }
                 if WorkspaceSidebarSectionActionModel.isVisible(
@@ -650,11 +650,22 @@ struct WorkspaceSidebarView: View {
                                 }
                                 if isExpanded(projectKey) {
                                     let groupItems = sidebarDragItems(project.worktreeRows)
-                                    ForEach(project.worktreeRows) { row in
+                                    let rows = ForEach(project.worktreeRows) { row in
                                         worktreeButton(
                                             row,
                                             groupItems: groupItems
                                         )
+                                    }
+                                    if sessionPreviewMode == .off {
+                                        LazyVStack(alignment: .leading, spacing: 2) {
+                                            rows
+                                        }
+                                    } else {
+                                        // Preview mounts control capture and parking eligibility;
+                                        // retain them while expanded, including offscreen tiles.
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            rows
+                                        }
                                     }
                                 }
                             }
@@ -1636,35 +1647,16 @@ struct WorkspaceSidebarView: View {
                 onRefresh: nil
             ))
         }
-        let entry = worktreeChanges.entry(for: identity)
-        let taskID = WorktreeChangesTaskID(
+        return AnyView(WorktreeChangesPanel(
             identity: identity,
+            worktree: worktree,
+            store: worktreeChanges,
             isEligible: isWorktreeChangesPollingEligible,
-            manualRefreshRevision: entry.manualRefreshRevision,
-            resumeRevision: entry.resumeRevision
-        )
-        return AnyView(
-            WorktreeChangesView(
-                entry: entry,
-                onRefresh: {
-                    worktreeChanges.requestManualRefresh(
-                        for: identity,
-                        refreshInventory: onRefreshInventory
-                    )
-                }
-            )
-            .task(id: taskID) {
-                await WorktreeChangesPollLoop.run(
-                    identity: identity,
-                    worktree: worktree,
-                    store: worktreeChanges,
-                    currentSnapshot: currentSnapshot,
-                    isEligible: { isWorktreeChangesPollingEligible },
-                    load: loadWorktreeChanges,
-                    sleep: worktreeChangesSleep
-                )
-            }
-        )
+            currentSnapshot: currentSnapshot,
+            load: loadWorktreeChanges,
+            sleep: worktreeChangesSleep,
+            refreshInventory: onRefreshInventory
+        ))
     }
 
     private func tmuxPreviewRow(
