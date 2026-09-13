@@ -1,6 +1,7 @@
 import GhosthubTransport
 import Foundation
 import GhosthubTmux
+import GhosthubWorkspace
 
 indirect enum KwtProjectErrorDetail: Codable, Equatable, Sendable {
     case string(String)
@@ -101,11 +102,13 @@ struct KwtProjectRegistryClient: Sendable {
     private enum Operation: String {
         case register = "add"
         case unregister = "remove"
+        case recover
 
         var successStatus: String {
             switch self {
             case .register: "registered"
             case .unregister: "unregistered"
+            case .recover: "recovered"
             }
         }
     }
@@ -182,9 +185,27 @@ struct KwtProjectRegistryClient: Sendable {
         )
     }
 
+    func recover(
+        project: ProjectSummary,
+        to destination: String,
+        expectedRouteIdentity: String?,
+        on host: CommandHost
+    ) async throws -> KwtProjectRecord {
+        try await mutate(
+            .recover,
+            projectPath: project.rootPath,
+            destination: destination,
+            expectedRepository: project.scopedKey,
+            expectedRegistration: project.registrationFingerprint,
+            expectedRouteIdentity: expectedRouteIdentity,
+            on: host
+        )
+    }
+
     private func mutate(
         _ operation: Operation,
         projectPath: String,
+        destination: String? = nil,
         expectedRepository: String? = nil,
         expectedRegistration: String? = nil,
         expectedRouteIdentity: String? = nil,
@@ -195,6 +216,7 @@ struct KwtProjectRegistryClient: Sendable {
             let command = try Self.command(
                 operation: operation,
                 projectPath: projectPath,
+                destination: destination,
                 expectedRepository: expectedRepository,
                 expectedRegistration: expectedRegistration,
                 binaryPrelude: KwtBinaryLocator.commandPrelude(
@@ -219,6 +241,7 @@ struct KwtProjectRegistryClient: Sendable {
             return try await mutate(
                 operation,
                 projectPath: projectPath,
+                destination: destination,
                 expectedRepository: expectedRepository,
                 expectedRegistration: expectedRegistration,
                 expectedRouteIdentity: expectedRouteIdentity,
@@ -230,6 +253,7 @@ struct KwtProjectRegistryClient: Sendable {
     private func mutate(
         _ operation: Operation,
         projectPath: String,
+        destination: String? = nil,
         expectedRepository: String? = nil,
         expectedRegistration: String? = nil,
         expectedRouteIdentity: String? = nil,
@@ -238,6 +262,7 @@ struct KwtProjectRegistryClient: Sendable {
         let command = try Self.command(
             operation: operation,
             projectPath: projectPath,
+            destination: destination,
             expectedRepository: expectedRepository,
             expectedRegistration: expectedRegistration,
             binaryPrelude: KwtBinaryLocator.remoteCommandPrelude(
@@ -247,7 +272,7 @@ struct KwtProjectRegistryClient: Sendable {
         let result = try await commandLease.withConnection(
             on: .ssh(host)
         ) { connection in
-            guard operation != .unregister
+            guard operation == .register
                 || connection?.routeIdentity == expectedRouteIdentity
             else {
                 throw KwtProjectCommandError.routeChanged(
@@ -269,6 +294,7 @@ struct KwtProjectRegistryClient: Sendable {
     private static func command(
         operation: Operation,
         projectPath: String,
+        destination: String?,
         expectedRepository: String?,
         expectedRegistration: String?,
         binaryPrelude: String
@@ -278,7 +304,13 @@ struct KwtProjectRegistryClient: Sendable {
         }
         var arguments = "projects \(operation.rawValue) "
             + shellQuotedCommandArgument(projectPath)
-        if operation == .unregister {
+        if let destination {
+            guard destination.hasPrefix("/") else {
+                throw KwtProjectCommandError.invalidProjectPath
+            }
+            arguments += " --to " + shellQuotedCommandArgument(destination)
+        }
+        if operation != .register {
             guard let expectedRepository,
                   let expectedRegistration,
                   !expectedRegistration.isEmpty
@@ -332,6 +364,18 @@ struct KwtProjectRegistryClient: Sendable {
             )
         }
         do {
+            if expectedStatus == "recovered" {
+                let response = try JSONDecoder().decode(KwtProjectRecoveryResponse.self, from: data)
+                guard ["recovered", "available"].contains(response.status),
+                      response.project.pathIssue == nil else {
+                    throw KwtProjectCommandError.commandFailed(
+                        host: hostLabel, status: 1, code: "project_unavailable",
+                        message: "The project folder is still unavailable. Check its location and access permissions.",
+                        retryable: false, details: [:]
+                    )
+                }
+                return response.project
+            }
             let response = try JSONDecoder().decode(
                 ProjectMutationResponse.self,
                 from: data

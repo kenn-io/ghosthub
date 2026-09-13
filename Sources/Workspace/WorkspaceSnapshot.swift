@@ -54,6 +54,7 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
     public func canCreateWorktree(in project: ProjectSummary) -> Bool {
         !project.isSynthesized
             && !project.isStale
+            && project.pathIssue == nil
             && host(id: project.hostID)?.canCreateWorktree == true
     }
 
@@ -62,7 +63,8 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
               !worktree.isStale,
               let project = project(id: worktree.projectID),
               !project.isSynthesized,
-              !project.isStale
+              !project.isStale,
+              project.pathIssue == nil
         else { return false }
         return host(id: project.hostID)?.canDeleteWorktree == true
     }
@@ -70,6 +72,7 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
     public func canImportPullRequest(in project: ProjectSummary) -> Bool {
         !project.isSynthesized
             && !project.isStale
+            && project.pathIssue == nil
             && project.scopedKey.lowercased().hasPrefix("github.com/")
             && host(id: project.hostID)?.canImportPullRequest == true
     }

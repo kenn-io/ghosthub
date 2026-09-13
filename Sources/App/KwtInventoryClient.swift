@@ -16,19 +16,22 @@ struct KwtProjectRecord: Decodable, Equatable, Sendable {
     var path: String
     var lastTouched: String?
     var registrationFingerprint: String
+    var pathIssue: ProjectPathIssue?
 
     init(
         repository: String,
         name: String,
         path: String,
         lastTouched: String?,
-        registrationFingerprint: String = ""
+        registrationFingerprint: String = "",
+        pathIssue: ProjectPathIssue? = nil
     ) {
         self.repository = repository
         self.name = name
         self.path = path
         self.lastTouched = lastTouched
         self.registrationFingerprint = registrationFingerprint
+        self.pathIssue = pathIssue
     }
 
     init(from decoder: Decoder) throws {
@@ -44,6 +47,7 @@ struct KwtProjectRecord: Decodable, Equatable, Sendable {
             String.self,
             forKey: .registrationFingerprint
         )
+        pathIssue = try container.decodeIfPresent(ProjectPathIssue.self, forKey: .pathIssue)
         guard !registrationFingerprint.isEmpty else {
             throw DecodingError.dataCorruptedError(
                 forKey: .registrationFingerprint,
@@ -58,6 +62,7 @@ struct KwtProjectRecord: Decodable, Equatable, Sendable {
         case repository, name, path
         case lastTouched = "last_touched"
         case registrationFingerprint = "registration_fingerprint"
+        case pathIssue = "path_issue"
     }
 }
 
@@ -119,6 +124,8 @@ struct KwtProjectInventory: Equatable, Sendable {
     var project: KwtProjectRecord
     var worktrees: [KwtWorktreeRecord]
     var warning: String?
+
+    var isComplete: Bool { warning == nil && project.pathIssue == nil }
 }
 
 struct KwtHostInventory: Equatable, Sendable {
@@ -158,7 +165,7 @@ struct KwtHostInventory: Equatable, Sendable {
         return KwtHostInventory(
             projects: retainedProjects.map { item in
                 var retained = item
-                if item.warning != nil,
+                if !item.isComplete,
                    let prior = previous?.projects.first(where: {
                        if item.project.repository.isEmpty,
                           $0.project.repository.isEmpty {
@@ -278,6 +285,7 @@ struct KwtInventoryClient: Sendable {
     private let localBinaryPath: String?
     private let remoteBinaryRevision: String?
     private let retryDelays: [Duration]
+    private let recoveryAttempts: ProjectRecoveryAttempts
 
     init(
         localRunner: LocalRunner? = nil,
@@ -289,6 +297,7 @@ struct KwtInventoryClient: Sendable {
         retryDelays: [Duration] = [
             .seconds(1), .seconds(4), .seconds(15),
         ],
+        recoveryAttempts: ProjectRecoveryAttempts = .shared,
         loginShellProvider: @escaping @Sendable () -> String =
             AccountCommandRunner.loginShell
     ) {
@@ -312,6 +321,7 @@ struct KwtInventoryClient: Sendable {
         self.localBinaryPath = localBinaryPath
         self.remoteBinaryRevision = remoteBinaryRevision
         self.retryDelays = retryDelays
+        self.recoveryAttempts = recoveryAttempts
     }
 
     func load(from host: CommandHost) async throws -> KwtHostInventory {
@@ -429,6 +439,9 @@ struct KwtInventoryClient: Sendable {
             throw projectsError
         }
 
+        if projectsWarning == nil {
+            await recoveryAttempts.retainRegistrations(projects, on: host)
+        }
         let indexed: [(Int, KwtProjectInventory, Bool)]
         switch host {
         case .local:
@@ -498,6 +511,30 @@ struct KwtInventoryClient: Sendable {
         hostLabel: String,
         windowsKwtRelativePath: String?
     ) async throws -> (Int, KwtProjectInventory, Bool) {
+        var project = project
+        if project.pathIssue != nil {
+            let recovery = try await recoverProject(
+                project,
+                on: host,
+                arguments: sshConnectionArguments,
+                hostLabel: hostLabel
+            )
+            if recovery.connectionUnusable {
+                return (
+                    index,
+                    KwtProjectInventory(project: project, worktrees: [], warning: nil),
+                    true
+                )
+            }
+            project = recovery.project
+        }
+        if project.pathIssue != nil {
+            return (
+                index,
+                KwtProjectInventory(project: project, worktrees: [], warning: nil),
+                false
+            )
+        }
         let result = try await run(
             host: host,
             sshConnectionArguments: sshConnectionArguments,
@@ -508,11 +545,36 @@ struct KwtInventoryClient: Sendable {
                 windowsKwtRelativePath: windowsKwtRelativePath
             )
         )
+        if result.status != 0, result.stdout.contains("GHOSTHUB_KWT_PROJECT_PATH_UNAVAILABLE\n") {
+            project.pathIssue = .unavailable
+            let recovery = try await recoverProject(
+                project,
+                on: host,
+                arguments: sshConnectionArguments,
+                hostLabel: hostLabel
+            )
+            if recovery.project.pathIssue == nil {
+                return try await loadProject(
+                    index: index,
+                    project: recovery.project,
+                    host: host,
+                    sshConnectionArguments: sshConnectionArguments,
+                    hostLabel: hostLabel,
+                    windowsKwtRelativePath: windowsKwtRelativePath
+                )
+            }
+            return (
+                index,
+                KwtProjectInventory(project: project, worktrees: [], warning: nil),
+                recovery.connectionUnusable
+            )
+        }
         do {
             let worktrees: [KwtWorktreeRecord] = try decode(
                 result,
                 hostLabel: hostLabel
             )
+            await recoveryAttempts.finish(project, on: host)
             return (
                 index,
                 KwtProjectInventory(
@@ -533,6 +595,34 @@ struct KwtInventoryClient: Sendable {
                 Self.indicatesUnusableConnection(result)
             )
         }
+    }
+
+    private func recoverProject(
+        _ project: KwtProjectRecord,
+        on host: CommandHost,
+        arguments: [String]?,
+        hostLabel: String
+    ) async throws -> (project: KwtProjectRecord, connectionUnusable: Bool) {
+        guard platform(for: host) != .windows,
+              await recoveryAttempts.begin(project, on: host) else {
+            return (project, false)
+        }
+        let commandArguments = [
+            "projects", "recover", project.path,
+            "--expected-repository", project.repository,
+            "--expected-registration", project.registrationFingerprint, "--json",
+        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        let result = try await run(
+            host: host, sshConnectionArguments: arguments,
+            command: binaryPrelude(for: host)
+                + "printf 'GHOSTHUB_KWT_JSON\\n'; exec \"$ghosthub_kwt_path\" \(commandArguments)"
+        )
+        if let response: KwtProjectRecoveryResponse = try? decode(result, hostLabel: hostLabel),
+           ["recovered", "available"].contains(response.status),
+           response.project.repository == project.repository {
+            return (response.project, false)
+        }
+        return (project, Self.indicatesUnusableConnection(result))
     }
 
     private func binaryPrelude(for host: CommandHost) -> String {
@@ -685,7 +775,8 @@ struct KwtInventoryClient: Sendable {
             )
         }
         return binaryPrelude
-            + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
+            + "cd -- \(shellQuotedCommandArgument(projectPath)) || { "
+            + "printf 'GHOSTHUB_KWT_PROJECT_PATH_UNAVAILABLE\\n'; exit 1; }; "
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" list --json"
     }
@@ -849,12 +940,13 @@ enum KwtSnapshotMerger {
             project.name = record.name
             project.rootPath = record.path
             project.registrationFingerprint = record.registrationFingerprint
+            project.pathIssue = record.pathIssue
             project.isStale = false
             project.kind = .repository
             project.isSynthesized = false
             projects.append(project)
 
-            if item.warning != nil, item.worktrees.isEmpty {
+            if !item.isComplete, item.worktrees.isEmpty {
                 worktrees.append(
                     contentsOf: (existingProject.flatMap {
                         existingWorktreesByProject[$0.id]

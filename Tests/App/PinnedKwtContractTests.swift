@@ -237,8 +237,11 @@ struct PinnedKwtContractTests {
         }
     }
 
-    @Test("exact helper round-trips project lifecycle through daemon inventory")
-    func projectLifecycle() async throws {
+    @Test(
+        "exact helper round-trips project lifecycle through daemon inventory",
+        arguments: [false, true]
+    )
+    func projectLifecycle(recover: Bool) async throws {
         guard ProcessInfo.processInfo.environment[
             "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
         ] == "1" else { return }
@@ -281,6 +284,19 @@ struct PinnedKwtContractTests {
         }
 
         try initializeRepository(repository)
+        let remote = AccountCommandRunner.runProcess(
+            executable: "/usr/bin/git",
+            arguments: [
+                "-C",
+                repository.path,
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/widget.git",
+            ],
+            timeout: 10
+        )
+        try #require(remote.status == 0, Comment(rawValue: remote.stderr))
 
         let registry = KwtProjectRegistryClient(
             localRunner: runKwtCommand,
@@ -311,6 +327,35 @@ struct PinnedKwtContractTests {
             at: repository,
             to: movedRepository
         )
+        if recover {
+            let recoveredPath = URL(fileURLWithPath: registered.path)
+                .deletingLastPathComponent()
+                .appendingPathComponent(movedRepository.lastPathComponent).path
+            let missing = try await inventoryClient.load(from: .local)
+            let unavailable = try #require(missing.projects.first)
+            #expect(unavailable.project.pathIssue != nil)
+            #expect(unavailable.warning == nil)
+            #expect(!unavailable.isComplete)
+            let summary = ProjectSummary(
+                id: UUID(), hostID: UUID(), scopedKey: project.project.repository,
+                name: project.project.name, rootPath: project.project.path,
+                registrationFingerprint: project.project.registrationFingerprint,
+                pathIssue: unavailable.project.pathIssue
+            )
+            let recovered = try await registry.recover(
+                project: summary, to: movedRepository.path,
+                expectedRouteIdentity: nil, on: .local
+            )
+            #expect(recovered.path == recoveredPath)
+            #expect(recovered.repository == project.project.repository)
+            #expect(recovered.registrationFingerprint != project.project.registrationFingerprint)
+            let refreshed = try await inventoryClient.load(from: .local)
+            let available = try #require(refreshed.projects.first)
+            #expect(available.isComplete)
+            #expect(available.project.path == recoveredPath)
+            #expect(available.worktrees.contains { $0.isMain && $0.path == recoveredPath })
+            return
+        }
         let removed = try await registry.unregister(
             projectPath: project.project.path,
             expectedRepository: project.project.repository,

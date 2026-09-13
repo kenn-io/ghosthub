@@ -683,6 +683,23 @@ inventory failures stay private, retain the current scene's cached project
 inventory, and never replace usable terminal inventory with a host or
 workspace-wide error. Ghosthub has no Middleman runtime or API dependency.
 
+Kwt project inventory carries an optional `path_issue` for a missing or
+inaccessible folder. These projects retain their cached worktrees, but cannot
+authorize new project mutations or prove worktree removal. The sidebar shows
+folder recovery on the affected project instead of a generic inventory error.
+The POSIX command wrapper also classifies a directory change that fails after
+listing, so a concurrent move takes the same quiet path.
+
+Each registration gets one automatic `kwt projects recover` attempt while
+unavailable. The helper reuses doctor inspection to relocate only that
+registration when its destination is unambiguous; it never runs broad doctor
+cleanup. A successful worktree read clears the attempt, and removed or changed
+registrations drop their previous attempts. Locate Folder sends an explicit
+destination with the observed repository and registration fingerprint through
+the existing command-host and SSH-route checks. Kwt owns the final registry
+transaction. The app preserves unresolved registrations and does not scan the
+host filesystem itself.
+
 An enabled exe.dev account is a host-inventory provider, not a terminal
 backend. Ghosthub invokes the account's configured OpenSSH destination with
 `ls --json`, then treats each running VM as an ordinary Linux SSH host using

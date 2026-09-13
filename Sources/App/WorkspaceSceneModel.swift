@@ -86,6 +86,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias KwtProjectRegistration = @Sendable (
         String, CommandHost
     ) async throws -> KwtProjectRecord
+    typealias KwtProjectRecovery = @Sendable (
+        ProjectSummary, String, String?, CommandHost
+    ) async throws -> KwtProjectRecord
     typealias KwtProjectRemoval = @Sendable (
         String, String, String, String?, CommandHost
     ) async throws -> KwtProjectRecord
@@ -897,6 +900,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let kwtPullRequestLister: KwtPullRequestLister
     private let kwtPullRequestImporter: KwtPullRequestImporter
     private let kwtProjectRegistration: KwtProjectRegistration
+    private let kwtProjectRecovery: KwtProjectRecovery
     private let kwtProjectRemoval: KwtProjectRemoval
     private let tmuxSessionDiscovery: TmuxSessionDiscovery
     private let tmuxSessionValidationDiscovery:
@@ -1240,6 +1244,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
+        kwtProjectRecovery: @escaping KwtProjectRecovery = { project, destination, route, host in
+            try await KwtProjectRegistryClient().recover(
+                project: project, to: destination, expectedRouteIdentity: route, on: host
+            )
+        },
         kwtProjectRemoval: @escaping KwtProjectRemoval = {
             projectPath, expectedRepository, expectedRegistration,
             routeIdentity, host in
@@ -1489,6 +1498,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.kwtPullRequestLister = kwtPullRequestLister
         self.kwtPullRequestImporter = kwtPullRequestImporter
         self.kwtProjectRegistration = kwtProjectRegistration
+        self.kwtProjectRecovery = kwtProjectRecovery
         self.kwtProjectRemoval = kwtProjectRemoval
         self.tmuxSessionDiscovery = tmuxSessionDiscovery
         self.tmuxSessionValidationDiscovery =
@@ -3364,7 +3374,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
                 // An incomplete worktree list cannot prove removal, but it
                 // cannot vouch for a restoration endpoint either.
-                guard item.warning == nil else {
+                guard item.isComplete else {
                     return (false, true, nil)
                 }
                 let survives = item.worktrees.contains { record in
@@ -5425,10 +5435,10 @@ final class WorkspaceSceneModel: ObservableObject {
                     == normalizedWorkspacePath(projectPath)
             } ?? inventory.projects.first {
                 $0.project.repository == scope.projectIdentity
-                    && $0.warning != nil
+                    && !$0.isComplete
             }
             if let item = survivor {
-                if item.warning != nil {
+                if !item.isComplete {
                     guard normalizedWorkspacePath(item.project.path)
                         == normalizedWorkspacePath(projectPath)
                     else { continue }
@@ -7236,6 +7246,50 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: host.kind == .remote ? host.id : nil,
             revalidatingHostID: host.id
         )
+    }
+
+    func recoverProject(
+        _ project: ProjectSummary,
+        to destination: String,
+        on host: HostSummary
+    ) async -> Result<String, HostProbeError> {
+        guard let target = CommandHostResolver.resolve(host),
+              validatedProjectRemovalTarget(
+                  project, confirmedHostID: host.id, capturedTarget: target
+              ) != nil
+        else {
+            return .failure(
+                .message("The project or host changed. Reopen Locate Folder and try again.")
+            )
+        }
+        let registryHost = projectRegistryHost(for: target)
+        guard worktreeMutationCoordinator.acquireProjectRegistry(host: registryHost) else {
+            return .failure(.message("Another project or worktree change is already in progress."))
+        }
+        defer { worktreeMutationCoordinator.releaseProjectRegistry(host: registryHost) }
+        do {
+            let route: String?
+            if case let .ssh(info) = target {
+                if let configured = configuredSSHHost(for: host.id) {
+                    try await ensureRemoteKwtForOperation(on: configured, hostID: host.id)
+                }
+                route = try await sshRouteIdentityResolver(info)
+            } else {
+                route = nil
+            }
+            guard validatedProjectRemovalTarget(
+                project, confirmedHostID: host.id, capturedTarget: target
+            ) != nil else {
+                return .failure(
+                    .message("The project or host changed. Reopen Locate Folder and try again.")
+                )
+            }
+            let recovered = try await kwtProjectRecovery(project, destination, route, target)
+            noteProjectRegistration(recovered, on: target)
+            return .success(recovered.name)
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
     }
 
     /// Announces a registration once per command host; the store applies it

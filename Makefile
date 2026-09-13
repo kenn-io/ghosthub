@@ -332,6 +332,12 @@ benchmark-input:
 	@GHOSTHUB_BENCHMARK_INPUT=1 sh tools/run_swift_tests.sh $(SWIFT) test \
 		--filter TerminalSurfaceViewInputTests/testInputLatencyBenchmark
 
+.PHONY: screenshot-project-recovery
+screenshot-project-recovery:
+	@test -n "$(SCREENSHOT_PATH)" || { printf 'Set SCREENSHOT_PATH to an output PNG.\n' >&2; exit 2; }
+	@GHOSTHUB_PROJECT_RECOVERY_SCREENSHOT="$(SCREENSHOT_PATH)" \
+		sh tools/run_swift_tests.sh $(SWIFT) test --filter ProjectRecoveryScreenshotTests
+
 # Essential workflow smoke for kwt inventory and ordinary tmux attachment.
 test-essential-workflows: test-kwt-contract
 	@set -euo pipefail; \

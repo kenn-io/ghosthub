@@ -38,6 +38,29 @@ for native Windows hosts.
 If the SSH destination changes while the Add Project sheet is open, close the
 sheet and start again so the confirmation applies to the current host.
 
+## Find a moved project
+
+When a project folder moves or is renamed, Ghosthub asks kwt to look for its
+new location among repositories it already knows about. One unambiguous match
+updates the project automatically. Ghosthub attempts this once while that
+registration remains unavailable; normal refreshes still notice when the
+original folder returns.
+
+An unresolved project shows a folder question-mark button beside its name.
+Other projects and terminal sessions remain usable. Select that button, or
+Control-click the project and choose **Locate Folder…**. On this Mac, use
+**Choose Folder…** or enter the new absolute path. For a remote host, enter the
+path on that host. Select the main checkout of the same repository, then
+select **Use Folder**.
+
+![Locate Folder sheet for a moved project](https://raw.githubusercontent.com/kenn-io/ghosthub/refs/heads/website-assets/guide-project-recovery.png)
+
+Recovery preserves the registration until it can verify the new location.
+Automatic matching requires a repository identity; multiple matching clones
+need an explicit choice. If the project has no stable repository identity,
+remove its old registration and add its new location. **Remove Project…** is
+also available when you no longer want the project listed.
+
 ## Remove a project
 
 Hover over a project row and select its × control, or Control-click the row
