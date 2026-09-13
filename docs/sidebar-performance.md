@@ -256,14 +256,20 @@ temporary preferences/configuration, and the standard private tmux server
 fixture. It does not attach to existing sessions. The test shuts down every
 terminal surface before returning.
 
+Keys enter through `NSApplication.sendEvent` with two installed application
+shortcut monitors, matching the per-scene production setup. Each phase checks
+that all 35 keys reach both monitors. This covers application dispatch and
+shortcut translation as well as window/terminal handling; event queueing before
+dispatch remains outside the measurement.
+
 For each scenario, five warmup keystrokes precede 30 measured `x` events. A raw
 Python probe writes a small, uniquely numbered response. The benchmark reports
 key-dispatch and key-to-libghostty-text-viewport timing, plus the longest
 main-actor echo-poll delay (`longest_echo_poll_ms`). Polling requests a 1 ms
 sleep, so scheduler delay sets a lower bound on observed echo time. The
-rendered-layer extension below also
-checks pixels and attempts both vsync settings. Normal terminal smoke tests
-continue to disable vsync; production defaults are unchanged.
+rendered-layer extension below also checks pixels and attempts both vsync
+settings. Normal terminal smoke tests continue to disable vsync; production
+defaults are unchanged.
 
 Window-refocus samples require both windows to actually become key. If this
 session cannot deliver key-window transitions, the report explicitly says
@@ -371,3 +377,20 @@ Run `make benchmark-input` in an active macOS desktop to obtain the missing
 vsync samples; that path remains unverified here. The current results do not
 justify changing production renderer settings or establish the cause of the
 reported everyday typing lag.
+
+### Application event dispatch (September 12)
+
+The user reports lag in both local and remote sessions with previews Off.
+The earlier benchmark dispatched directly to the terminal window, bypassing
+application event monitors. With application dispatch and two real shortcut
+monitors installed, all 12 available PTY/tmux phases passed. Median rendered
+layer timing was 1.3–1.6 ms steady and 7.9–8.2 ms during 500-session inventory
+overlap. Dispatch p95 stayed below 0.1 ms. These measurements still use the
+synthetic sidebar fixture and vsync disabled, not the full application scene.
+
+A separate temporary probe called the real shortcut monitor for 1,000 ordinary
+letter events. Median processing took about 1 microsecond with one monitor and
+9 microseconds across ten monitors. Each monitor did translate and look up every
+key, but that cost does not explain millisecond-scale lag in this probe. No
+production shortcut change was justified. Background scene reconciliation,
+output-heavy workloads, event queueing, and production-vsync timing remain open.

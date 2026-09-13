@@ -1480,6 +1480,20 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         settings.setSessionPreviewMode(.off)
         let otherWindow = makeTestWindow(contentView: NSView(), requiresActiveApplication: true)
         defer { otherWindow.orderOut(nil) }
+        // Production installs one application shortcut monitor per scene.
+        var shortcutLookups = 0
+        let shortcutMonitors = (0 ..< 2).map { _ in
+            ShortcutMonitor(
+                shortcuts: {
+                    shortcutLookups += 1
+                    return ApplicationShortcutCatalog.compiledDefaults
+                },
+                perform: { _ in false }
+            )
+        }
+        shortcutMonitors.forEach { $0.install() }
+        defer { shortcutMonitors.forEach { $0.uninstall() } }
+        print("INPUT dispatch=application shortcut_monitors=\(shortcutMonitors.count)")
         for (nativeTmux, windowVsync) in [
             (false, false),
             (true, false),
@@ -1606,6 +1620,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                     var frameSamples: [Double] = []
                     var longestEchoPoll = 0.0
                     let initialWakeups = runtime.runtimeState.wakeupCount
+                    let initialShortcutLookups = shortcutLookups
                     RenderWorkCounters.beginRecording()
                     // Five warmups, then 30 measured keystrokes per scenario.
                     for index in 0 ..< 35 {
@@ -1623,7 +1638,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                             XCTAssertTrue(window.isKeyWindow, "Terminal window did not become key.")
                         }
                         XCTAssertTrue(window.firstResponder === view)
-                        window.sendEvent(makeKeyEvent(
+                        NSApplication.shared.sendEvent(makeKeyEvent(
                             characters: "x",
                             charactersIgnoringModifiers: "x",
                             modifiers: [],
@@ -1685,6 +1700,11 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                     inventorySamples.sort()
                     frameSamples.sort()
                     let counts = RenderWorkCounters.endRecording()
+                    XCTAssertEqual(
+                        shortcutLookups - initialShortcutLookups,
+                        35 * shortcutMonitors.count,
+                        "Every sampled key must pass through each scene's shortcut monitor."
+                    )
                     if refreshInventory {
                         XCTAssertGreaterThan(counts.rootBodyEvaluations, 0)
                         if sidebarVisible {
