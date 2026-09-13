@@ -9,6 +9,7 @@ import GhosthubTmux
 import GhosthubTransport
 @testable import GhosthubUI
 import GhosthubWorkspace
+import IOSurface
 import SwiftUI
 import XCTest
 @testable import GhosthubTerminal
@@ -203,9 +204,10 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     }
 
     private func runtimeWithTerminalConfig(
-        _ contents: String
+        _ contents: String,
+        windowVsync: Bool = false
     ) throws -> LibghosttyRuntime {
-        let (pipeline, _) = makeIsolatedSurfacePipeline()
+        let (pipeline, _) = makeIsolatedSurfacePipeline(windowVsync: windowVsync)
         try FileManager.default.createDirectory(
             at: pipeline.paths.configDirectory,
             withIntermediateDirectories: true
@@ -1392,7 +1394,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    /// Report-only: key dispatch to PTY echo in libghostty's text viewport.
+    /// Report-only: key dispatch to PTY echo and rendered layer contents.
     /// This does not measure compositor presentation or physical display latency.
     func testInputLatencyBenchmark() async throws {
         guard ProcessInfo.processInfo.environment["GHOSTHUB_BENCHMARK_INPUT"] == "1" else {
@@ -1440,20 +1442,20 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             }
         }
 
-        let appHandle = try requireAppHandle()
         let probe = makeExecutableScript("""
         import os, sys, termios, tty
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
-            print("<READY>", flush=True)
+            print("\\x1b[3;1H\\x1b[48;2;0;0;0m \\x1b[0m\\x1b[1;1H<READY>", end="", flush=True)
             count = 0
             while True:
                 data = os.read(fd, 1)
                 if not data:
                     break
-                print(f"\\r<ECHO:{count}:{data.hex()}>", end="", flush=True)
+                color = 255 if count % 2 == 0 else 0
+                print(f"\\x1b[3;1H\\x1b[48;2;{color};{color};{color}m \\x1b[0m\\x1b[1;1H<ECHO:{count}:{data.hex()}>", end="", flush=True)
                 count += 1
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
@@ -1478,9 +1480,32 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         settings.setSessionPreviewMode(.off)
         let otherWindow = makeTestWindow(contentView: NSView(), requiresActiveApplication: true)
         defer { otherWindow.orderOut(nil) }
-        for nativeTmux in [false, true] {
+        for (nativeTmux, windowVsync) in [
+            (false, false),
+            (true, false),
+            (false, true),
+            (true, true),
+        ] {
+            if windowVsync, DisplayAvailability.activeCount() == 0 {
+                print(
+                    "INPUT backend=\(nativeTmux ? "tmux" : "pty") vsync=true unavailable (active_displays=0)"
+                )
+                continue
+            }
+            let runtime = try runtimeWithTerminalConfig(
+                "window-padding-x = 0\nwindow-padding-y = 0\nbackground-opacity = 1\n",
+                windowVsync: windowVsync
+            )
+            let appHandle = try requireAppHandle(from: runtime)
+            let config = try XCTUnwrap(runtime.unsafeConfigHandle)
+            let key = "window-vsync"
+            var configuredVsync = !windowVsync
+            XCTAssertTrue(key.withCString {
+                ghostty_config_get(config, &configuredVsync, $0, UInt(key.utf8.count))
+            })
+            XCTAssertEqual(configuredVsync, windowVsync)
             for (rowCount, sidebarVisible) in [(100, true), (500, true), (500, false)] {
-                let name = "input-\(rowCount)-\(sidebarVisible)"
+                let name = "input-\(rowCount)-\(sidebarVisible)-\(windowVsync)"
                 let command: String
                 if nativeTmux {
                     try server.createSession(name, command: probeCommand)
@@ -1523,10 +1548,35 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 ).defaultAppStorage(defaults)
                 let window = makeTestWindow(contentView: NSHostingView(rootView: root))
                 defer { window.orderOut(nil) }
+                _ = try XCTUnwrap(view.surfaceHandle, "Benchmark surface must initialize.")
                 window.makeFirstResponder(view)
                 view.focusDidChange(true)
                 waitForProbeReady(in: view)
                 XCTAssertTrue(readViewportText(from: view).contains("<READY>"))
+                let size = try XCTUnwrap(view.surfaceSize)
+                let pixelX = Int(size.cell_width_px / 2)
+                let pixelY = Int(size.cell_height_px * 2 + size.cell_height_px / 2)
+                func hasRenderedMarker(white: Bool) -> Bool {
+                    guard let frame = view.layer?.contents as? IOSurface,
+                          IOSurfaceGetWidth(frame) > pixelX,
+                          IOSurfaceGetHeight(frame) > pixelY,
+                          IOSurfaceGetBytesPerElement(frame) == 4,
+                          IOSurfaceLock(frame, [.readOnly], nil) == kIOReturnSuccess
+                    else { return false }
+                    defer { IOSurfaceUnlock(frame, [.readOnly], nil) }
+                    let base = IOSurfaceGetBaseAddress(frame)
+                    let pixel = base.assumingMemoryBound(to: UInt8.self)
+                        + pixelY * IOSurfaceGetBytesPerRow(frame) + pixelX * 4
+                    return (0 ..< 3).allSatisfy { white ? pixel[$0] > 240 : pixel[$0] < 15 }
+                }
+                let frameDeadline = ProcessInfo.processInfo.systemUptime + 2
+                while !hasRenderedMarker(white: false),
+                      ProcessInfo.processInfo.systemUptime < frameDeadline {
+                    try await Task.sleep(for: .milliseconds(1))
+                }
+                guard hasRenderedMarker(white: false) else {
+                    return XCTFail("The initial black marker did not reach the terminal layer.")
+                }
                 let terminalX = view.convert(view.bounds, to: window.contentView).minX
                 if sidebarVisible {
                     XCTAssertGreaterThan(terminalX, 100, "The sidebar must occupy window space.")
@@ -1545,7 +1595,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                         try await Task.sleep(for: .milliseconds(20))
                         guard otherWindow.isKeyWindow else {
                             print(
-                                "INPUT backend=\(nativeTmux ? "tmux" : "pty") rows=\(rowCount) sidebar=\(sidebarVisible) refocus=unavailable (no key-window delivery)"
+                                "INPUT backend=\(nativeTmux ? "tmux" : "pty") vsync=\(windowVsync) rows=\(rowCount) sidebar=\(sidebarVisible) refocus=unavailable (no key-window delivery)"
                             )
                             continue
                         }
@@ -1553,7 +1603,9 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                     var echoSamples: [Double] = []
                     var dispatchSamples: [Double] = []
                     var inventorySamples: [Double] = []
-                    var longestPump = 0.0
+                    var frameSamples: [Double] = []
+                    var longestEchoPoll = 0.0
+                    let initialWakeups = runtime.runtimeState.wakeupCount
                     RenderWorkCounters.beginRecording()
                     // Five warmups, then 30 measured keystrokes per scenario.
                     for index in 0 ..< 35 {
@@ -1595,6 +1647,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                                 )
                             }
                         }
+                        let white = sequence % 2 == 0
                         let marker = "<ECHO:\(sequence):78>"
                         sequence += 1
                         while !readViewportText(from: view).contains(marker),
@@ -1602,8 +1655,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                             let pumpStart = ProcessInfo.processInfo.systemUptime
                             try await Task.sleep(for: .milliseconds(1))
                             if index >= 5 {
-                                longestPump = max(
-                                    longestPump,
+                                longestEchoPoll = max(
+                                    longestEchoPoll,
                                     ProcessInfo.processInfo.systemUptime - pumpStart
                                 )
                             }
@@ -1613,14 +1666,24 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                             readViewportText(from: view).contains(marker),
                             "Missing \(marker)"
                         )
+                        while !hasRenderedMarker(white: white),
+                              ProcessInfo.processInfo.systemUptime - start < 2 {
+                            try await Task.sleep(for: .milliseconds(1))
+                        }
+                        let rendered = ProcessInfo.processInfo.systemUptime
+                        guard hasRenderedMarker(white: white) else {
+                            return XCTFail("Missing rendered marker for \(marker)")
+                        }
                         if index >= 5 {
                             echoSamples.append((echoed - start) * 1000)
                             dispatchSamples.append((dispatched - start) * 1000)
+                            frameSamples.append((rendered - start) * 1000)
                         }
                     }
                     echoSamples.sort()
                     dispatchSamples.sort()
                     inventorySamples.sort()
+                    frameSamples.sort()
                     let counts = RenderWorkCounters.endRecording()
                     if refreshInventory {
                         XCTAssertGreaterThan(counts.rootBodyEvaluations, 0)
@@ -1630,7 +1693,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                         }
                     }
                     print(
-                        "INPUT backend=\(nativeTmux ? "tmux" : "pty") rows=\(rowCount) sidebar=\(sidebarVisible) refocus=\(refocus) inventory_updates=\(refreshInventory) samples=30 echo_ms_p50=\(echoSamples[14]) echo_ms_p95=\(echoSamples[28]) dispatch_ms_p95=\(dispatchSamples[28]) longest_pump_ms=\(longestPump * 1000) inventory_ms_p50=\(inventorySamples.isEmpty ? 0 : inventorySamples[14]) inventory_ms_p95=\(inventorySamples.isEmpty ? 0 : inventorySamples[28]) redraws=\(counts.rootBodyEvaluations) sections=\(counts.sidebarSectionComputations) row_evaluations=\(counts.sidebarRowEvaluations)"
+                        "INPUT backend=\(nativeTmux ? "tmux" : "pty") vsync=\(windowVsync) rows=\(rowCount) sidebar=\(sidebarVisible) refocus=\(refocus) inventory_updates=\(refreshInventory) samples=30 echo_ms_p50=\(echoSamples[14]) echo_ms_p95=\(echoSamples[28]) frame_ms_p50=\(frameSamples[14]) frame_ms_p95=\(frameSamples[28]) dispatch_ms_p95=\(dispatchSamples[28]) longest_echo_poll_ms=\(longestEchoPoll * 1000) inventory_ms_p50=\(inventorySamples.isEmpty ? 0 : inventorySamples[14]) inventory_ms_p95=\(inventorySamples.isEmpty ? 0 : inventorySamples[28]) redraws=\(counts.rootBodyEvaluations) sections=\(counts.sidebarSectionComputations) row_evaluations=\(counts.sidebarRowEvaluations) wakeups=\(runtime.runtimeState.wakeupCount - initialWakeups)"
                     )
                 }
                 await view.shutdown()

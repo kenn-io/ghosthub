@@ -257,12 +257,13 @@ fixture. It does not attach to existing sessions. The test shuts down every
 terminal surface before returning.
 
 For each scenario, five warmup keystrokes precede 30 measured `x` events. A raw
-Python probe writes a small, uniquely numbered response on the current line.
-The benchmark reports key-dispatch and key-to-libghostty-text-viewport timing,
-plus the longest main-actor polling delay. Polling requests a 1 ms sleep, so
-scheduler delay sets a lower bound on observed echo time. The benchmark does
-not time Core Animation presentation or physical display refresh, and the
-terminal smoke runtime disables vsync.
+Python probe writes a small, uniquely numbered response. The benchmark reports
+key-dispatch and key-to-libghostty-text-viewport timing, plus the longest
+main-actor echo-poll delay (`longest_echo_poll_ms`). Polling requests a 1 ms
+sleep, so scheduler delay sets a lower bound on observed echo time. The
+rendered-layer extension below also
+checks pixels and attempts both vsync settings. Normal terminal smoke tests
+continue to disable vsync; production defaults are unchanged.
 
 Window-refocus samples require both windows to actually become key. If this
 session cannot deliver key-window transitions, the report explicitly says
@@ -326,3 +327,47 @@ This comparison reproduces expensive main-thread inventory rendering with
 previews Off and shows that lazy rows reduce it. It does not establish that
 inventory refresh is the cause of the reported everyday typing lag. Changed-file
 publication, application activation, and display timing remain unmeasured here.
+
+### Rendered-layer probe (September 12)
+
+The raw probe now also alternates one cell on the third line between black and
+white for each key. The test first waits for the initial black cell, then checks
+each response's opposite color in the IOSurface held by the terminal layer's
+`contents`. The marker is separate from the text and cursor. Isolated test
+configuration sets zero padding and an opaque background so the pixel position
+comes directly from the actual cell dimensions. Each key waits for both its
+numbered text response and its rendered marker before sending the next key.
+
+In the pinned libghostty Metal path, the command-buffer completion callback
+assigns the completed IOSurface to the layer, dispatching to the main queue for
+asynchronous frames. `frame_ms` measures when the test observes those pixels in
+the layer's model contents. It includes polling/readback overhead and any forced
+inventory layout. The echo-poll metric excludes these later frame-poll waits.
+It does not measure compositor consumption, display scanout,
+physical-keyboard latency, or the age of an event waiting before dispatch.
+
+Representative Debug results with previews Off and vsync disabled:
+
+| Workload | Text response median | Rendered-layer median |
+| --- | ---: | ---: |
+| Steady input, all PTY/tmux scenarios | 1.1–2.2 ms | 1.2–2.3 ms |
+| Inventory overlap, 100 sessions shown | 4.2–4.3 ms | 6.2–6.4 ms |
+| Inventory overlap, 500 sessions shown/hidden | 5.7–6.5 ms | 7.9–8.4 ms |
+
+Each phase records 35 keys, including five warmups. Steady input caused no root,
+section, or sidebar-row evaluations. The runtime recorded 37 wakeup callbacks
+for the PTY phases and 57–60 for tmux; inventory-overlap phases recorded 35.
+These counts measure callbacks processed, not their execution cost or queue depth.
+The workload now includes the colored cell and waits for rendering, so these
+samples are not an exact repeat of the earlier text-only workload.
+
+The vsync-enabled surface failed to initialize in this runner. A direct
+`CGGetActiveDisplayList` query returned success with zero active displays,
+matching libghostty's display-link initialization precondition. The benchmark
+now reports `vsync=true unavailable (active_displays=0)` in that condition;
+other initialization failures still fail the test. It checks the loaded vsync
+value for runtimes it creates. Key-window delivery also remains unavailable.
+Run `make benchmark-input` in an active macOS desktop to obtain the missing
+vsync samples; that path remains unverified here. The current results do not
+justify changing production renderer settings or establish the cause of the
+reported everyday typing lag.
