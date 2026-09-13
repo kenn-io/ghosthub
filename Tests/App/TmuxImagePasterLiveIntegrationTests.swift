@@ -30,7 +30,7 @@ struct TmuxImagePasterLiveIntegrationTests {
             fileNameProvider: { fileName }
         ).paste(
             image,
-            on: host,
+            on: .ssh(host),
             connectionArguments: ["-F", sshConfig]
         )
         let remotePath = try result.get()

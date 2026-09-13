@@ -133,11 +133,11 @@ terminal command for clipboard access. The `clipboard-write` setting controls
 whether those writes are allowed. Remote programs cannot read your Mac
 clipboard through OSC 52. Your explicit paste shortcut still works.
 
-To send an image to a tool in a remote macOS or Linux tmux session, copy the
-image on your Mac and press ++cmd+v++. Ghosthub uploads a PNG to
+To send an image to a tool in a local or remote macOS or Linux tmux session,
+copy the image on your Mac and press ++cmd+v++. Ghosthub saves a PNG to
 `~/.ghosthub/paste-images/` on that host and pastes its absolute path into the
 active pane. If the clipboard also contains text, Ghosthub pastes the text
-instead. ++ctrl+v++ keeps its normal terminal meaning. Uploading another image
+instead. ++ctrl+v++ keeps its normal terminal meaning. Pasting another image
 also removes cached images older than seven days.
 
 See [Sessions](sessions.md#attach-and-detach) for the terminal controls.

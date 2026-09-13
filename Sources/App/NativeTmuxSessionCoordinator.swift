@@ -1231,9 +1231,10 @@ final class NativeTmuxSessionCoordinator {
         attachment: NativeTmuxAttachment
     ) {
         surface.remoteImagePasteHandler = nil
-        guard case let .ssh(host) = attachment.host,
-              host.platform == .posix
-        else { return }
+        if case let .ssh(host) = attachment.host, host.platform != .posix {
+            return
+        }
+        let host = attachment.host
         let connectionArguments = attachment.sshConnectionSnapshot.arguments
         let attachmentID = attachment.id
         surface.remoteImagePasteHandler = { [weak self, weak surface] image in
@@ -1251,7 +1252,7 @@ final class NativeTmuxSessionCoordinator {
 
     private func startImagePaste(
         _ image: TerminalClipboardImage,
-        host: SSHHostInfo,
+        host: CommandHost,
         connectionArguments: [String],
         surface: any NativeSessionPaneSurfacing,
         handle: BorrowedTmuxSessionHandle,
@@ -1276,7 +1277,7 @@ final class NativeTmuxSessionCoordinator {
             case let .success(path):
                 guard surface.pasteProgrammaticInput(path) else {
                     presentTerminalOperationError(
-                        "Ghosthub could not deliver the uploaded image path to the terminal.",
+                        "Ghosthub could not deliver the image path to the terminal.",
                         on: surface,
                         handle: handle,
                         attachmentID: attachmentID

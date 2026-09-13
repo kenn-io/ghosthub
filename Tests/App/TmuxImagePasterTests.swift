@@ -6,7 +6,7 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
-@Suite("Remote tmux image paste")
+@Suite("Tmux image paste")
 struct TmuxImagePasterTests {
     @Test("allows larger clipboard images more upload time within a cap")
     func uploadTimeoutScalesWithImageSize() {
@@ -18,31 +18,28 @@ struct TmuxImagePasterTests {
         #expect(TmuxImagePaster.uploadTimeout(byteCount: .max) == 600)
     }
 
-    @Test("stages image bytes and reports the remote cache path")
-    func uploadCommandStagesImage() throws {
+    @Test("local image paste stages image bytes and reports the cache path")
+    func localImagePasteStagesImage() async throws {
         let fixture = try TempDirectoryFixture()
-        let input = fixture.childURL("clipboard source.png")
         let imageDirectory = fixture.childURL("paste images")
         let target = imageDirectory.appendingPathComponent("paste-test.png")
         let image = Data([0x89, 0x50, 0x4E, 0x47, 0x01, 0x02])
-        try image.write(to: input)
-        let command = TmuxImagePaster.uploadCommand(
+        let command = TmuxImagePaster.stageCommand(
             fileName: target.lastPathComponent,
             imageDirectory: imageDirectory.path
         )
-        let output = AccountCommandRunner().runLocalLoginShell(
-            command: """
-            (
-            \(command)
-            ) < \(shellQuotedCommandArgument(input.path))
-            """,
+        let output = await TmuxImagePaster.run(
+            host: .local,
+            connectionArguments: [],
+            command: command,
+            image: image,
             timeout: 10
         )
 
         #expect(output.status == 0, Comment(rawValue: output.stderr))
         #expect(try Data(contentsOf: target) == image)
         #expect(
-            TmuxImagePaster.uploadedPath(
+            TmuxImagePaster.stagedPath(
                 from: output.stdout,
                 fileName: target.lastPathComponent
             ) == target.path
@@ -66,7 +63,7 @@ struct TmuxImagePasterTests {
     @Test("uploads PNG bytes through the frozen SSH route and accepts its path")
     func uploadsImageAndReturnsRemotePath() async throws {
         struct Invocation: Sendable {
-            let host: SSHHostInfo
+            let host: CommandHost
             let connectionArguments: [String]
             let image: Data
             let timeout: TimeInterval
@@ -99,12 +96,12 @@ struct TmuxImagePasterTests {
 
         let path = try await paster.paste(
             image,
-            on: host,
+            on: .ssh(host),
             connectionArguments: ["-F", "/tmp/ghosthub-ssh-config"]
         ).get()
 
         #expect(path == "/home/dev/.ghosthub/paste-images/paste-test.png")
-        #expect(invocation.load()?.host == host)
+        #expect(invocation.load()?.host == .ssh(host))
         #expect(
             invocation.load()?.connectionArguments
                 == ["-F", "/tmp/ghosthub-ssh-config"]
@@ -133,11 +130,11 @@ struct TmuxImagePasterTests {
 
         let result = await paster.paste(
             TerminalClipboardImage(pngData: Data([1])),
-            on: SSHHostInfo(
+            on: .ssh(SSHHostInfo(
                 user: nil,
                 hostname: "builder.example.test",
                 port: nil
-            ),
+            )),
             connectionArguments: []
         )
 

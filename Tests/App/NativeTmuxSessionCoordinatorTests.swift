@@ -41,16 +41,14 @@ private func splitMismatchMarker(in command: String) -> String? {
 @Suite("Native tmux connection identity", .serialized)
 @MainActor
 struct NativeTmuxSessionCoordinatorTests {
-    @Test("remote image paste uploads through the attachment route and pastes its path")
-    func remoteImagePasteUsesAttachmentRoute() async throws {
-        let uploaded = LockedValue<(SSHHostInfo, [String], Data)?>(nil)
+    @Test("image paste uses the attachment host and pastes its path", arguments: [
+        CommandHost.local,
+        CommandHost.ssh(SSHHostInfo(user: "dev", hostname: "builder.example.test", port: nil)),
+    ])
+    func imagePasteUsesAttachmentRoute(host: CommandHost) async throws {
+        let uploaded = LockedValue<(CommandHost, [String], Data)?>(nil)
         let store = RecordingNativeSessionSurfaceStore()
-        let host = SSHHostInfo(
-            user: "dev",
-            hostname: "builder.example.test",
-            port: nil
-        )
-        let connectionArguments = ["-F", "/tmp/ghosthub ssh/config"]
+        let connectionArguments = host == .local ? [] : ["-F", "/tmp/ghosthub ssh/config"]
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -73,7 +71,7 @@ struct NativeTmuxSessionCoordinatorTests {
                     }
                     return AccountCommandOutput(
                         status: 0,
-                        stdout: "GHOSTHUB_IMAGE_PASTE\t/home/dev/.ghosthub/paste-images/paste-test.png\n",
+                        stdout: "GHOSTHUB_IMAGE_PASTE\t/tmp/paste-images/paste-test.png\n",
                         stderr: ""
                     )
                 },
@@ -85,7 +83,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let handle = coordinator.attach(
             hostID: UUID(),
             name: "agent",
-            host: .ssh(host),
+            host: host,
             sessionIdentity: coordinatorSplitIdentity
         )
         await waitUntilMainActor { ready }
@@ -101,7 +99,7 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(uploaded.load()?.2 == png)
         #expect(
             store.surface.programmaticPastes
-                == ["/home/dev/.ghosthub/paste-images/paste-test.png"]
+                == ["/tmp/paste-images/paste-test.png"]
         )
         await coordinator.shutdown()
     }
