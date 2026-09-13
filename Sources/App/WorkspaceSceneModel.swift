@@ -3448,12 +3448,13 @@ final class WorkspaceSceneModel: ObservableObject {
             $0.project.path == request.project.rootPath
         }
         // An incomplete owning repository cannot prove anything about the
-        // target, so its warning outranks every identity conclusion below,
+        // target, so its failure outranks every identity conclusion below,
         // including a repository/path conflict.
-        if let repositoryItem, let warning = repositoryItem.warning {
+        if let repositoryItem, !repositoryItem.isComplete {
             throw KwtWorktreeError.removalPreflightUnavailable(
                 host: request.confirmedHost.name,
-                message: warning
+                message: repositoryItem.warning
+                    ?? "The folder for \(repositoryItem.project.name) is unavailable. Locate it before removing a worktree."
             )
         }
         if let repositoryItem,
@@ -3468,11 +3469,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         guard let item = repositoryItem else {
             // A path-only match is a different repository at the confirmed
-            // location; only its warning is worth surfacing before failing.
-            if let warning = pathItem?.warning {
+            // location; an incomplete inventory cannot verify that change.
+            if let pathItem, !pathItem.isComplete {
                 throw KwtWorktreeError.removalPreflightUnavailable(
                     host: request.confirmedHost.name,
-                    message: warning
+                    message: pathItem.warning
+                        ?? "The folder for \(pathItem.project.name) is unavailable. Locate it before removing a worktree."
                 )
             }
             applyAuthoritativeKwtInventory(
@@ -3515,10 +3517,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 throw KwtWorktreeError.removalTargetChanged
             }
-            if let warning = inventory.projects.compactMap(\.warning).first {
+            if let incomplete = inventory.projects.first(where: { !$0.isComplete }) {
                 throw KwtWorktreeError.removalPreflightUnavailable(
                     host: request.confirmedHost.name,
-                    message: warning
+                    message: incomplete.warning
+                        ?? "The folder for \(incomplete.project.name) is unavailable. Locate it before removing a worktree."
                 )
             }
             return nil
@@ -5464,7 +5467,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 normalizedWorkspacePath($0.project.path)
                     == normalizedWorkspacePath(projectPath)
             }) {
-                guard replacement.warning == nil else { continue }
+                guard replacement.isComplete else { continue }
             }
             worktreeMutationCoordinator.release(
                 hostID: scope.hostID,
@@ -7755,7 +7758,7 @@ final class WorkspaceSceneModel: ObservableObject {
             if let repositoryItem = inventory.projects.first(where: {
                 $0.project.repository == project.scopedKey
             }) {
-                guard repositoryItem.warning == nil else {
+                guard repositoryItem.isComplete else {
                     return .unverified
                 }
                 applyAuthoritativeKwtInventory(

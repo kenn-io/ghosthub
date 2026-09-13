@@ -2972,6 +2972,7 @@ struct WorkspaceTmuxDiscoveryTests {
         case unavailable
         case globalWarning
         case projectWarning
+        case projectPathIssue
         case pathDrift
     }
 
