@@ -200,8 +200,8 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Routes clipboard paste through tmux's paste buffer so tmux can honor
     /// the pane application's bracketed-paste mode.
     public var tmuxPanePasteSink: ((Data) -> Void)?
-    /// Installed by remote session coordinators that can copy a Mac clipboard
-    /// image to the session host. The uploaded image is returned to the
+    /// Installed by session coordinators that can copy a Mac clipboard
+    /// image to the session host. The saved image is returned to the
     /// terminal as an ordinary path paste, preserving the application's
     /// bracketed-paste and image-path handling.
     public var remoteImagePasteHandler: ((TerminalClipboardImage) -> Void)?
@@ -1604,7 +1604,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     ) -> Bool {
         guard let surface else { return false }
 
-        if handleRemoteImagePaste(action: action, event: event) {
+        if handleImagePaste(action: action, event: event) {
             return true
         }
 
@@ -1831,7 +1831,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             && event.charactersIgnoringModifiers?.lowercased() == "v"
     }
 
-    private func handleRemoteImagePaste(
+    private func handleImagePaste(
         action: ghostty_input_action_e,
         event: NSEvent
     ) -> Bool {

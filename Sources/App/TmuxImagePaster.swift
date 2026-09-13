@@ -8,7 +8,7 @@ struct TmuxImagePasteFailure: Error, Equatable, LocalizedError, Sendable {
     let diagnostic: String
 
     var errorDescription: String? {
-        var message = "Ghosthub could not paste the clipboard image into the remote session."
+        var message = "Ghosthub could not paste the clipboard image into the session."
         if !diagnostic.isEmpty {
             message += " \(diagnostic)"
         }
@@ -18,9 +18,9 @@ struct TmuxImagePasteFailure: Error, Equatable, LocalizedError, Sendable {
 
 struct TmuxImagePaster: Sendable {
     typealias Runner = @Sendable (
-        _ host: SSHHostInfo,
+        _ host: CommandHost,
         _ connectionArguments: [String],
-        _ remoteCommand: String,
+        _ command: String,
         _ image: Data,
         _ timeout: TimeInterval
     ) async -> AccountCommandOutput
@@ -41,10 +41,10 @@ struct TmuxImagePaster: Sendable {
 
     func paste(
         _ image: TerminalClipboardImage,
-        on host: SSHHostInfo,
+        on host: CommandHost,
         connectionArguments: [String]
     ) async -> Result<String, TmuxImagePasteFailure> {
-        guard host.platform == .posix else {
+        if case let .ssh(host) = host, host.platform != .posix {
             return .failure(.init(
                 status: 64,
                 diagnostic: "Image paste is unavailable on this host platform."
@@ -54,7 +54,7 @@ struct TmuxImagePaster: Sendable {
         let output = await runner(
             host,
             connectionArguments,
-            Self.uploadCommand(fileName: fileName),
+            Self.stageCommand(fileName: fileName),
             image.pngData,
             Self.uploadTimeout(byteCount: image.pngData.count)
         )
@@ -66,19 +66,19 @@ struct TmuxImagePaster: Sendable {
                 )
             ))
         }
-        guard let path = Self.uploadedPath(
+        guard let path = Self.stagedPath(
             from: output.stdout,
             fileName: fileName
         ) else {
             return .failure(.init(
                 status: 65,
-                diagnostic: "The remote host did not confirm the uploaded image path."
+                diagnostic: "The session host did not confirm the saved image path."
             ))
         }
         return .success(path)
     }
 
-    static func uploadCommand(
+    static func stageCommand(
         fileName: String,
         imageDirectory: String? = nil
     ) -> String {
@@ -103,7 +103,7 @@ struct TmuxImagePaster: Sendable {
         """
     }
 
-    static func uploadedPath(
+    static func stagedPath(
         from output: String,
         fileName: String
     ) -> String? {
@@ -137,10 +137,10 @@ struct TmuxImagePaster: Sendable {
         )
     }
 
-    private static func run(
-        host: SSHHostInfo,
+    static func run(
+        host: CommandHost,
         connectionArguments: [String],
-        remoteCommand: String,
+        command: String,
         image: Data,
         timeout: TimeInterval
     ) async -> AccountCommandOutput {
@@ -167,31 +167,43 @@ struct TmuxImagePaster: Sendable {
                     ofItemAtPath: localImage.path
                 )
 
-                var arguments = [
-                    "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                ]
-                arguments += connectionArguments
-                if let port = host.port {
-                    arguments += ["-p", String(port)]
+                switch host {
+                case .local:
+                    return AccountCommandRunner.runProcess(
+                        executable: "/bin/sh",
+                        arguments: [
+                            "-c",
+                            "(\n\(command)\n) < " + shellQuotedCommandArgument(localImage.path),
+                        ],
+                        timeout: timeout
+                    )
+                case let .ssh(host):
+                    var arguments = [
+                        "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                    ]
+                    arguments += connectionArguments
+                    if let port = host.port {
+                        arguments += ["-p", String(port)]
+                    }
+                    let destination = host.user.map { "\($0)@\(host.hostname)" }
+                        ?? host.hostname
+                    arguments += [
+                        "--",
+                        destination,
+                        AccountCommandRunner.remoteLoginCommand(
+                            host: host,
+                            command: command
+                        ),
+                    ]
+                    let invocation = (["/usr/bin/ssh"] + arguments)
+                        .map(shellQuotedCommandArgument)
+                        .joined(separator: " ")
+                        + " < " + shellQuotedCommandArgument(localImage.path)
+                    return AccountCommandRunner().runLocalLoginShell(
+                        command: invocation,
+                        timeout: timeout
+                    )
                 }
-                let destination = host.user.map { "\($0)@\(host.hostname)" }
-                    ?? host.hostname
-                arguments += [
-                    "--",
-                    destination,
-                    AccountCommandRunner.remoteLoginCommand(
-                        host: host,
-                        command: remoteCommand
-                    ),
-                ]
-                let invocation = (["/usr/bin/ssh"] + arguments)
-                    .map(shellQuotedCommandArgument)
-                    .joined(separator: " ")
-                    + " < " + shellQuotedCommandArgument(localImage.path)
-                return AccountCommandRunner().runLocalLoginShell(
-                    command: invocation,
-                    timeout: timeout
-                )
             } catch {
                 try? FileManager.default.removeItem(at: directory)
                 return AccountCommandOutput(

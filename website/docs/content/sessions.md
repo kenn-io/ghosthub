@@ -48,13 +48,13 @@ uses tmux's vanilla configuration. Mouse mode is a shared session option, so
 other attached clients see it too; tmux's own mouse bindings remain in charge.
 Native Windows/psmux keeps its existing mouse-reporting limitation.
 
-When Codex, Claude, or another terminal tool is running in a remote macOS or
-Linux tmux session, press ++cmd+v++ with an image-only Mac clipboard to paste
-the image. Ghosthub copies it into the remote account's Ghosthub cache and
-pastes its remote file path into the active pane, so the tool can attach it as
-if its clipboard were local. When the clipboard also contains text,
+When Codex, Claude, or another terminal tool is running in a local or remote
+macOS or Linux tmux session, press ++cmd+v++ with an image-only Mac clipboard
+to paste the image. Ghosthub saves it in `~/.ghosthub/paste-images/` on the
+session's host and pastes its absolute file path into the active pane, so the
+tool can attach the image. When the clipboard also contains text,
 ++cmd+v++ pastes the text normally. ++ctrl+v++ is always passed through to the
-remote program.
+terminal program.
 
 Hold ++cmd++ while pointing at a highlighted terminal link, then click to open
 it in the default macOS application.
