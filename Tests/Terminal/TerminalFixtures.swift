@@ -4,35 +4,6 @@ import GhosthubTestSupport
 import Testing
 @testable import GhosthubTerminalSupport
 
-// MARK: - Runtime Callbacks Spy
-
-final class RuntimeCallbacksSpy {
-    var recordedClipboardLocation: LibghosttyClipboardLocation?
-    var recordedCloseProcessAlive: Bool?
-
-    var callbacks: LibghosttySurfaceRuntimeCallbacks {
-        LibghosttySurfaceRuntimeCallbacks(
-            readClipboard: { [weak self] loc, _ in
-                self?.recordedClipboardLocation = loc
-            },
-            closeSurface: { [weak self] alive in
-                self?.recordedCloseProcessAlive = alive
-            }
-        )
-    }
-}
-
-// MARK: - Dummy Runtime Callbacks
-
-extension LibghosttySurfaceRuntimeCallbacks {
-    static var dummy: LibghosttySurfaceRuntimeCallbacks {
-        .init(
-            readClipboard: { _, _ in },
-            closeSurface: { _ in }
-        )
-    }
-}
-
 // MARK: - Mock Libghostty Layout
 
 struct MockLibghosttyLayout {

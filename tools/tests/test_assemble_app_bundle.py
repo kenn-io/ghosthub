@@ -91,7 +91,6 @@ def make_release_inputs(
     ghostty_license = licenses_dir / "ghostty-MIT.txt"
     grdb_license = licenses_dir / "GRDB-MIT.txt"
     inventory = licenses_dir / "THIRD-PARTY-NOTICES.md"
-    marked_license = licenses_dir / "Marked-MIT.txt"
     sparkle_license = licenses_dir / "Sparkle-LICENSE.txt"
     kwt_license.write_text("Apache License 2.0", encoding="utf-8")
     kwt_notice.write_text("Copyright 2026 Kenn Software LLC", encoding="utf-8")
@@ -99,7 +98,6 @@ def make_release_inputs(
     ghostty_license.write_text("Ghostty MIT License", encoding="utf-8")
     grdb_license.write_text("GRDB MIT License", encoding="utf-8")
     inventory.write_text("# Third-party notices", encoding="utf-8")
-    marked_license.write_text("Marked MIT License", encoding="utf-8")
     sparkle_license.write_text("Sparkle licenses", encoding="utf-8")
 
     sparkle_version = (
@@ -156,7 +154,6 @@ def test_release_license_inventory_covers_compiled_dependencies():
         "kwt-Apache-2.0.txt",
         "kwt-NOTICE.txt",
         "fantastty-MIT.txt",
-        "Marked-MIT.txt",
         "Sparkle-LICENSE.txt",
     }
 
@@ -180,11 +177,6 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         source_bin_dir,
     )
 
-    write_bundle(
-        source_bin_dir,
-        "Ghosthub_GhosthubUI.bundle",
-        {"Assets/example.txt": "ui"},
-    )
     write_bundle(
         source_bin_dir,
         "GRDB_GRDB.bundle",
@@ -245,7 +237,6 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
     assert (licenses / "THIRD-PARTY-NOTICES.md").read_text() == (
         "# Third-party notices"
     )
-    assert (licenses / "Marked-MIT.txt").read_text() == "Marked MIT License"
     assert (licenses / "Sparkle-LICENSE.txt").read_text() == (
         "Sparkle licenses"
     )
@@ -268,10 +259,9 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         app_root
         / "Contents"
         / "Resources"
-        / "Ghosthub_GhosthubUI.bundle"
-        / "Assets"
-        / "example.txt"
-    ).read_text() == "ui"
+        / "GRDB_GRDB.bundle"
+        / "Info.plist"
+    ).read_text() == "grdb"
     sparkle = app_root / "Contents" / "Frameworks" / "Sparkle.framework"
     assert (sparkle / "Sparkle").is_symlink()
     assert (sparkle / "Versions" / "Current").is_symlink()
@@ -310,11 +300,6 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
         source_bin_dir,
     )
 
-    write_bundle(
-        source_bin_dir,
-        "Ghosthub_GhosthubUI.bundle",
-        {"Assets/example.txt": "ui"},
-    )
     write_bundle(
         source_bin_dir,
         "GRDB_GRDB.bundle",
@@ -401,11 +386,6 @@ def test_nightly_info_plist_uses_nightly_update_configuration(tmp_path):
     app_license, kwt_binary, kwt_variants_dir, licenses_dir = make_release_inputs(
         tmp_path,
         source_bin_dir,
-    )
-    write_bundle(
-        source_bin_dir,
-        "Ghosthub_GhosthubUI.bundle",
-        {"Assets/example.txt": "ui"},
     )
     write_bundle(
         source_bin_dir,
@@ -545,11 +525,6 @@ def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
         source_bin_dir,
     )
 
-    write_bundle(
-        source_bin_dir,
-        "Ghosthub_GhosthubUI.bundle",
-        {"Assets/example.txt": "ui"},
-    )
     write_bundle(
         source_bin_dir,
         "GRDB_GRDB.bundle",

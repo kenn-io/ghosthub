@@ -29,7 +29,7 @@ def write_bundle(source_bin_dir: Path, name: str, files: dict[str, str]) -> Path
     return bundle_dir
 
 
-def test_stage_bundles_copies_resources_inside_contents(tmp_path):
+def test_stage_bundles_copies_only_required_resources_inside_contents(tmp_path):
     source_bin_dir = tmp_path / "bin"
     app_root = tmp_path / "Ghosthub.app"
     resources_dir = app_root / "Contents" / "Resources"
@@ -38,13 +38,13 @@ def test_stage_bundles_copies_resources_inside_contents(tmp_path):
 
     write_bundle(
         source_bin_dir,
-        "Ghosthub_GhosthubUI.bundle",
-        {"claude.pdf": "pdf"},
+        "Unused.bundle",
+        {"unused.txt": "stale build output"},
     )
     write_bundle(
         source_bin_dir,
         "GRDB_GRDB.bundle",
-        {"Info.plist": "plist"},
+        {"Info.plist": "plist", "PrivacyInfo.xcprivacy": "privacy manifest"},
     )
 
     staged = stage.stage_bundles(
@@ -52,13 +52,12 @@ def test_stage_bundles_copies_resources_inside_contents(tmp_path):
         resources_dir=resources_dir,
     )
 
-    staged_bundle = resources_dir / "Ghosthub_GhosthubUI.bundle"
+    staged_bundle = resources_dir / "GRDB_GRDB.bundle"
 
-    assert staged == [
-        resources_dir / "GRDB_GRDB.bundle",
-        staged_bundle,
-    ]
-    assert (staged_bundle / "claude.pdf").read_text(encoding="utf-8") == "pdf"
+    assert staged == [staged_bundle]
+    assert list(resources_dir.iterdir()) == [staged_bundle]
+    assert (staged_bundle / "Info.plist").read_text(encoding="utf-8") == "plist"
+    assert (staged_bundle / "PrivacyInfo.xcprivacy").read_text() == "privacy manifest"
     assert list(app_root.iterdir()) == [app_root / "Contents"]
 
 
@@ -74,12 +73,6 @@ def test_stage_bundles_replaces_existing_resource_bundle(tmp_path):
         "GRDB_GRDB.bundle",
         {"Info.plist": "new"},
     )
-    write_bundle(
-        source_bin_dir,
-        "Ghosthub_GhosthubUI.bundle",
-        {"claude.pdf": "pdf"},
-    )
-
     existing_bundle = resources_dir / "GRDB_GRDB.bundle"
     existing_bundle.mkdir()
     (existing_bundle / "Info.plist").write_text("old", encoding="utf-8")
@@ -99,12 +92,6 @@ def test_stage_bundles_fails_when_expected_bundle_is_missing(tmp_path):
     resources_dir = app_root / "Contents" / "Resources"
     source_bin_dir.mkdir(parents=True)
     resources_dir.mkdir(parents=True)
-
-    write_bundle(
-        source_bin_dir,
-        "Ghosthub_GhosthubUI.bundle",
-        {"claude.pdf": "pdf"},
-    )
 
     try:
         stage.stage_bundles(

@@ -24,7 +24,3 @@ public struct TmuxSessionPreferences: Equatable, Sendable {
         self.hiddenSessionPatterns = hiddenSessionPatterns
     }
 }
-
-public struct AgentPreferences: Equatable, Sendable {
-    public init() {}
-}

@@ -7,12 +7,7 @@ import shutil
 import stat
 from pathlib import Path
 
-REQUIRED_BUNDLE_NAMES = frozenset(
-    {
-        "Ghosthub_GhosthubUI.bundle",
-        "GRDB_GRDB.bundle",
-    }
-)
+REQUIRED_BUNDLE_NAMES = frozenset({"GRDB_GRDB.bundle"})
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,10 +43,9 @@ def stage_bundles(
 ) -> list[Path]:
     resources_dir.mkdir(parents=True, exist_ok=True)
 
-    discovered_bundle_paths = sorted(source_bin_dir.glob("*.bundle"))
-    discovered_bundle_names = {path.name for path in discovered_bundle_paths}
+    bundle_paths = [source_bin_dir / name for name in sorted(required_bundle_names)]
     missing_bundle_names = sorted(
-        required_bundle_names - discovered_bundle_names
+        path.name for path in bundle_paths if not path.is_dir()
     )
     if missing_bundle_names:
         missing = ", ".join(missing_bundle_names)
@@ -60,7 +54,7 @@ def stage_bundles(
         )
 
     staged: list[Path] = []
-    for bundle_path in discovered_bundle_paths:
+    for bundle_path in bundle_paths:
         destination = resources_dir / bundle_path.name
         if destination.exists() or destination.is_symlink():
             remove_path(destination)
