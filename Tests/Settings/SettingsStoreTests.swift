@@ -170,7 +170,6 @@ final class SettingsStoreTests {
         #expect(!store.terminalPreferences.allowShellIntegrationToControlCursor)
         #expect(store.terminalPreferences.hideMouseWhileTyping)
         #expect(store.terminalPreferences.copySelectionToClipboard)
-        #expect(store.terminalPreferences.showPaneResourceUsage)
         #expect(
             store.terminalAppearancePreferences
                 == SettingsStore.defaultTerminalAppearancePreferences
@@ -519,7 +518,6 @@ final class SettingsStoreTests {
         store.setAllowShellIntegrationToControlCursor(false)
         store.setHideMouseWhileTyping(false)
         store.setCopySelectionToClipboard(false)
-        store.setShowPaneResourceUsage(false)
 
         let contents = try readGlobalConfig()
 
@@ -541,7 +539,6 @@ final class SettingsStoreTests {
         let managedBlock = extractManagedBlock(from: contents)
         #expect(managedBlock.contains("macos-option-as-alt") == false)
         #expect(managedBlock.contains("shell-integration-features = no-cursor"))
-        #expect(!store.terminalPreferences.showPaneResourceUsage)
         #expect(store.lastErrorMessage == nil)
     }
 
@@ -606,7 +603,6 @@ final class SettingsStoreTests {
         store.setHideRootCheckout(true)
         store.setShowHiddenWorktreesByDefault(true)
         store.setHideKwtManagedSessions(false)
-        store.setShowPaneResourceUsage(false)
         store.setTerminalTheme(.clearDark)
         store.setTerminalThemeAppliesToTmuxSessions(true)
         store.setUseCustomTerminalFont(true)
@@ -624,7 +620,6 @@ final class SettingsStoreTests {
         #expect(reloaded.worktreePreferences.hideRootCheckout)
         #expect(reloaded.worktreePreferences.showHiddenWorktreesByDefault)
         #expect(!reloaded.worktreePreferences.hideKwtManagedSessions)
-        #expect(!reloaded.terminalPreferences.showPaneResourceUsage)
         #expect(reloaded.terminalAppearancePreferences.theme == .clearDark)
         #expect(
             reloaded.terminalAppearancePreferences
@@ -732,7 +727,7 @@ final class SettingsStoreTests {
                 configKey: "office",
                 name: "Office Studio",
                 platform: .macOS,
-                sshDestination: "wesm@office-studio"
+                sshDestination: "user-a@host-a.example"
             ),
             SSHHost(
                 configKey: "lab",
@@ -746,7 +741,7 @@ final class SettingsStoreTests {
         let hostUpdates = reloaded.sshHosts
         #expect(hostUpdates.count == 2)
         #expect(hostUpdates[0].configKey == "office")
-        #expect(hostUpdates[0].sshDestination == "wesm@office-studio")
+        #expect(hostUpdates[0].sshDestination == "user-a@host-a.example")
         #expect(store.sshHosts.count == 2)
     }
 

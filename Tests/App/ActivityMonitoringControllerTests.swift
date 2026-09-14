@@ -6,37 +6,6 @@ import GhosthubWorkspace
 
 @MainActor
 final class ActivityMonitoringControllerTests: XCTestCase {
-    func testControlModeProcessRootNeverFallsBackToSilentSurfaceChild() {
-        XCTAssertEqual(
-            ActivityMonitoringController.processRootPID(
-                controlModeRoot: .local(4_242),
-                surfaceChildPID: 99
-            ),
-            4_242
-        )
-        XCTAssertNil(
-            ActivityMonitoringController.processRootPID(
-                controlModeRoot: .unavailable,
-                surfaceChildPID: 99
-            )
-        )
-        XCTAssertEqual(
-            ActivityMonitoringController.processRootPID(
-                controlModeRoot: nil,
-                surfaceChildPID: 99
-            ),
-            99
-        )
-    }
-
-    func testOutputFlushIntervalStaysInsideRecentOutputWindow() {
-        XCTAssertLessThan(
-            ActivityMonitoringController
-                .outputFlushIntervalSeconds,
-            WorkspaceActivityTiming.recentOutputWindow
-        )
-    }
-
     func testRefreshActivityStatePostsIdleNotificationOnceAndUpdatesDockBadge() throws {
         let env = try setupStandardEnvironment()
         let staleOutput = Date(
@@ -169,31 +138,6 @@ final class ActivityMonitoringControllerTests: XCTestCase {
             notificationService.dockBadgeCounts,
             [0]
         )
-    }
-
-    func testUnchangedActivityRefreshDoesNotPublish() throws {
-        let env = try setupStandardEnvironment()
-        let model = try makeModel(
-            database: env.database,
-            localHostID: env.host.id,
-            snapshot: env.snapshot
-        )
-        let now = Date(
-            timeIntervalSinceReferenceDate: 800_000_000
-        )
-
-        model.activityController.refreshActivityState(now: now)
-        var updateCount = 0
-        let updates = model.activityController.objectWillChange.sink {
-            updateCount += 1
-        }
-
-        model.activityController.refreshActivityState(
-            now: now.addingTimeInterval(1)
-        )
-
-        XCTAssertEqual(updateCount, 0)
-        withExtendedLifetime(updates) {}
     }
 
 }

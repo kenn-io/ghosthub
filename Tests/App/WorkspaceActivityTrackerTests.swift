@@ -60,35 +60,6 @@ struct WorkspaceActivityTrackerTests {
         #expect(evaluation.nextNotifiedWorktreeIDs.isEmpty)
     }
 
-    @Test("builds pane agent activities from leaf session state")
-    func buildsPaneAgentActivitiesFromLeafSessionState() {
-        let leafID = UUID()
-        let lastOutputAt = fixture.now.addingTimeInterval(5)
-        let snapshot = fixture.makeSnapshot(
-            lastOutputAt: lastOutputAt,
-            branch: "feature/sidebar",
-            lastViewedAt: fixture.now
-        )
-
-        let evaluation = WorkspaceActivityTracker.evaluate(
-            now: lastOutputAt.addingTimeInterval(1),
-            input: makeInput(
-                snapshot: snapshot,
-                recognizedAgentBySessionID: [fixture.sessionID: .claude],
-                leafSessionIDsByWorktreeID: [
-                    fixture.worktreeID: [leafID: fixture.sessionID],
-                ]
-            )
-        )
-
-        #expect(
-            evaluation.paneAgentActivities[leafID] == PaneAgentActivity(
-                agent: .claude,
-                activityState: .needsAttention
-            )
-        )
-    }
-
     @Test("idle attention uses agent-specific route when recognized agent sessions exist")
     func idleAttentionUsesAgentRouteForRecognizedAgentSessions() {
         let sessionID = UUID()
@@ -263,8 +234,7 @@ private func makeInput(
     selectedWorktreeID: UUID? = nil,
     suppressSelectedWorktreeNotifications: Bool = false,
     notifiedIdleWorktreeIDs: Set<UUID> = [],
-    recognizedAgentBySessionID: [UUID: WorkspaceKnownAgent] = [:],
-    leafSessionIDsByWorktreeID: [UUID: [UUID: UUID]] = [:]
+    recognizedAgentBySessionID: [UUID: WorkspaceKnownAgent] = [:]
 ) -> ActivityEvaluationInput {
     ActivityEvaluationInput(
         snapshot: snapshot,
@@ -275,10 +245,7 @@ private func makeInput(
         workspaceConfiguration: .defaults(),
         sessionHintsByID: [:],
         recognizedAgentBySessionID: recognizedAgentBySessionID,
-        currentRecognizedAgentSessionIDs: [],
-        leafSessionIDsByWorktreeID: leafSessionIDsByWorktreeID,
-        activeAgentLeafIDs: [],
-        activeProcessLeafIDs: []
+        currentRecognizedAgentSessionIDs: []
     )
 }
 

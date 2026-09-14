@@ -95,8 +95,7 @@ struct ManagedBlockEditorTests {
             cursorStyle: .bar,
             allowShellIntegrationToControlCursor: false,
             hideMouseWhileTyping: true,
-            copySelectionToClipboard: true,
-            showPaneResourceUsage: false
+            copySelectionToClipboard: true
         )
 
         let result = ManagedBlockEditor.renderManagedTerminalBlock(
@@ -122,8 +121,7 @@ struct ManagedBlockEditorTests {
             cursorStyle: .block,
             allowShellIntegrationToControlCursor: true,
             hideMouseWhileTyping: false,
-            copySelectionToClipboard: false,
-            showPaneResourceUsage: false
+            copySelectionToClipboard: false
         )
 
         let result = ManagedBlockEditor.renderManagedTerminalBlock(

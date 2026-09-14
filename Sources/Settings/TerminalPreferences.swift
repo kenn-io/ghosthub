@@ -24,7 +24,6 @@ public struct TerminalPreferences: Equatable, Sendable {
     public var allowShellIntegrationToControlCursor: Bool
     public var hideMouseWhileTyping: Bool
     public var copySelectionToClipboard: Bool
-    public var showPaneResourceUsage: Bool
     public var confirmPaneClose: Bool
 
     public init(
@@ -32,7 +31,6 @@ public struct TerminalPreferences: Equatable, Sendable {
         allowShellIntegrationToControlCursor: Bool,
         hideMouseWhileTyping: Bool,
         copySelectionToClipboard: Bool,
-        showPaneResourceUsage: Bool,
         confirmPaneClose: Bool = true
     ) {
         self.cursorStyle = cursorStyle
@@ -40,7 +38,6 @@ public struct TerminalPreferences: Equatable, Sendable {
             allowShellIntegrationToControlCursor
         self.hideMouseWhileTyping = hideMouseWhileTyping
         self.copySelectionToClipboard = copySelectionToClipboard
-        self.showPaneResourceUsage = showPaneResourceUsage
         self.confirmPaneClose = confirmPaneClose
     }
 }

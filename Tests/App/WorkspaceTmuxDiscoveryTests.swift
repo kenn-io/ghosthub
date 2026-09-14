@@ -1887,7 +1887,7 @@ struct WorkspaceTmuxDiscoveryTests {
         model.startTmuxSessionDiscovery()
         await waitUntilMainActor { discoveries.count == 1 }
 
-        model.handleApplicationDidBecomeActiveForResourceMonitoring()
+        model.handleApplicationDidBecomeActive()
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(discoveries.count == 1)

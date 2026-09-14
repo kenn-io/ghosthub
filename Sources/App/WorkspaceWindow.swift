@@ -761,24 +761,6 @@ struct WorkspaceWindow: View {
                 sidebarSectionCache: sceneModel.sidebarSectionCache,
                 sidebarSnapshotRevision:
                 sceneModel.sidebarSnapshotRevision,
-                workspaceResourceSummary:
-                sceneModel.workspaceResourceSummary,
-                activatedWorktreeIDs:
-                sceneModel.activatedWorktreeIDs,
-                activeAgentWorktreeIDs:
-                sceneModel.activeAgentWorktreeIDs,
-                activeProcessWorktreeIDs:
-                sceneModel.activeProcessWorktreeIDs,
-                paneResourceSamples:
-                sceneModel.paneResourceSamples,
-                paneAgentActivities:
-                sceneModel.paneAgentActivities,
-                activityReferenceDate:
-                sceneModel.activityReferenceDate,
-                idleThresholdsBySessionID:
-                sceneModel.sessionIdleThresholdsByID,
-                defaultIdleThresholdSeconds:
-                sceneModel.defaultIdleThresholdSeconds,
                 isWorkspaceInventoryLoading:
                 sceneModel.workspaceInventoryState == .loading,
                 isWorkspaceInventoryRefreshComplete:

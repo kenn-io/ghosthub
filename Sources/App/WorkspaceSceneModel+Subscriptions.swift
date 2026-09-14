@@ -24,12 +24,12 @@ extension WorkspaceSceneModel {
         appDidBecomeActiveCancellable = center
             .publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
-                self?.handleApplicationDidBecomeActiveForResourceMonitoring()
+                self?.handleApplicationDidBecomeActive()
             }
         appDidResignActiveCancellable = center
             .publisher(for: NSApplication.willResignActiveNotification)
             .sink { [weak self] _ in
-                self?.handleApplicationDidResignActiveForResourceMonitoring()
+                self?.handleApplicationDidResignActive()
             }
         #endif
     }
@@ -49,18 +49,14 @@ extension WorkspaceSceneModel {
         #endif
     }
 
-    func handleApplicationDidBecomeActiveForResourceMonitoring() {
+    func handleApplicationDidBecomeActive() {
         isAppActive = true
         tmuxSessionPreviewCoordinator.applicationDidBecomeActive()
-        activityController
-            .handleApplicationDidBecomeActiveForResourceMonitoring()
     }
 
-    func handleApplicationDidResignActiveForResourceMonitoring() {
+    func handleApplicationDidResignActive() {
         isAppActive = false
         tmuxSessionPreviewCoordinator.applicationDidResignActive()
-        activityController
-            .handleApplicationDidResignActiveForResourceMonitoring()
     }
 
     private func handleChildExit(

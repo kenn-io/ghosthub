@@ -286,24 +286,6 @@ final class WorkspaceSceneModel: ObservableObject {
             && zellijDiscoveryFailuresByHost.isEmpty
     }
 
-    var workspaceResourceSummary: WorkspaceResourceSummary {
-        activityController.workspaceResourceSummary
-    }
-    var paneResourceSamples: [UUID: WorkspaceResourceSample] {
-        activityController.paneResourceSamples
-    }
-    var paneAgentActivities: [UUID: PaneAgentActivity] {
-        activityController.paneAgentActivities
-    }
-    var activatedWorktreeIDs: Set<UUID> {
-        activityController.activatedWorktreeIDs
-    }
-    var activeAgentWorktreeIDs: Set<UUID> {
-        activityController.activeAgentWorktreeIDs
-    }
-    var activeProcessWorktreeIDs: Set<UUID> {
-        activityController.activeProcessWorktreeIDs
-    }
     let panelRoutingService: PanelRoutingService
 
     var isSidePanelVisible: Bool {
@@ -799,10 +781,6 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
-    var activityReferenceDate: Date {
-        activityController.activityReferenceDate
-    }
-
     /// Set by `WorkspaceWindow` to indicate this scene model's
     /// window is the key window.  Used to disambiguate app-wide
     /// events (keyboard shortcuts, split actions without source
@@ -827,14 +805,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 tmuxSessionPreviewCoordinator.cancelPendingActivation()
             }
             syncTerminalConfig()
-            activityController
-                .refreshWorkspaceResourceSummary()
-            if let worktreeID = selection.selectedWorktreeID {
-                activityController
-                    .activateWorktreeForResourceMonitoringIfNeeded(
-                        worktreeID
-                    )
-            }
             if selection.selectedWorktreeID
                 != oldValue.selectedWorktreeID {
                 recordSelectedWorktreeView()
@@ -997,7 +967,6 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         return nativeZellijSessionCoordinatorBacking
     }
-    private var activityCancellable: AnyCancellable?
     private var tmuxSessionActivityCancellable: AnyCancellable?
     private var panelRoutingCancellable: AnyCancellable?
     var isAppActive = true
@@ -1012,16 +981,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 count += 1
             }
         }
-    }
-    var sessionIdleThresholdsByID: [UUID: Int] {
-        return WorkspaceActivityTracker.idleThresholdsBySessionID(
-            sessions: snapshot.sessions,
-            defaultIdleThresholdSeconds: defaultIdleThresholdSeconds,
-            workspaceConfiguration: workspaceConfiguration,
-            sessionHintsByID: [:],
-            recognizedAgentBySessionID:
-            activityController.recognizedAgentBySessionID
-        )
     }
     var defaultIdleThresholdSeconds: Int {
         workspaceConfiguration.notifications.idleThresholdSeconds
@@ -1779,11 +1738,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 self?.defaultIdleThresholdSeconds ?? 30
             },
             isApplicationActiveProvider: { [weak self] in
-                self?.isApplicationActiveForResourceMonitoring
+                self?.isApplicationActive
                     ?? true
-            },
-            surfaceEntriesProvider: { [weak self] in
-                self?.terminalCoordinator.surfaceEntries() ?? []
             },
             surfaceKeyForIdentityProvider: {
                 [weak self] identity in
@@ -1792,8 +1748,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             },
             sessionIDForKeyProvider: { _ in nil },
-            controlModeProcessRootProvider: { _ in nil },
-            leafSessionIDsByWorktreeIDProvider: { [:] },
             updateLastOutputAtHandler: {
                 [weak self] sessionID, date in
                 try self?.database.terminalSessions
@@ -1817,21 +1771,6 @@ final class WorkspaceSceneModel: ObservableObject {
                         at: date
                     )
             },
-            updateLastAgentActivityHandler: {
-                [weak self] worktreeID, hostID, date in
-                guard let self else { return }
-                let wt = self.snapshot.worktree(id: worktreeID)
-                let host = self.snapshot.host(id: hostID)
-                let hostKey = host?.configKey ?? ""
-                let scopedKey = wt?.scopedKey
-                    ?? "worktree:\(worktreeID.uuidString)"
-                try self.database.presentationState
-                    .upsertLastAgentActivity(
-                        hostID: hostKey,
-                        scopedKey: scopedKey,
-                        at: date
-                    )
-            },
             fetchEnrichedSnapshotHandler: { [weak self] in
                 guard let self else {
                     return WorkspaceSnapshot.empty
@@ -1843,23 +1782,8 @@ final class WorkspaceSceneModel: ObservableObject {
             },
             renderTrackerDrainProvider: { [weak self] in
                 self?.terminalRuntime.renderTracker.drain() ?? [:]
-            },
-            aliveSessions: { [weak self] in
-                self?.snapshot.sessions.filter(\.isAlive) ?? []
             }
         )
-        activityController.installResourceSamplingCoordinator(
-            makeResourceSamplingCoordinator()
-        )
-        if let worktreeID = normalizedSelection.selectedWorktreeID {
-            activityController
-                .activateWorktreeForResourceMonitoringIfNeeded(
-                    worktreeID
-                )
-        }
-        activityCancellable = activityController.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
         tmuxSessionActivityCancellable = tmuxSessionActivityController?
             .objectWillChange.sink { [weak self] _ in
                 self?.objectWillChange.send()
@@ -1948,13 +1872,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 startZellijSessionDiscovery()
                 startKwtInventory()
                 syncTerminalConfig()
-                startResourceMonitoringLoop()
                 activityController.startOutputFlushLoop()
                 subscribeChildExitEvents()
                 subscribeAppActivity()
                 subscribeDisplayAvailability()
-                activityController
-                    .refreshWorkspaceResourceSummary()
                 installShortcutMonitor()
                 Task {
                     await notificationService
@@ -1962,8 +1883,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             } else {
                 reconcileInventoryHosts()
-                activityController
-                    .refreshWorkspaceResourceSummary()
             }
         }
     }
@@ -1971,7 +1890,6 @@ final class WorkspaceSceneModel: ObservableObject {
     deinit {
         // Cancel Combine subscriptions first so no new events
         // arrive from child controllers during teardown.
-        activityCancellable?.cancel()
         tmuxSessionActivityCancellable?.cancel()
         panelRoutingCancellable?.cancel()
         configuredSSHHostsCancellable?.cancel()
@@ -8045,23 +7963,6 @@ final class WorkspaceSceneModel: ObservableObject {
             force: true,
             notifyOnSuccess: true
         )
-    }
-
-    private func makeResourceSamplingCoordinator() -> ResourceSamplingCoordinator {
-        ResourceSamplingCoordinator(
-            rootsProvider: { [weak self] in
-                self?.activityController
-                    .processRootsForResourceMonitoring() ?? []
-            },
-            snapshotHandler: { [weak self] snapshot, roots in
-                self?.activityController
-                    .applyResourceSnapshot(snapshot, roots: roots)
-            }
-        )
-    }
-
-    private func startResourceMonitoringLoop() {
-        activityController.startResourceMonitoringLoop()
     }
 
     func setSidePanelVisible(_ isVisible: Bool) {
@@ -14364,7 +14265,7 @@ final class WorkspaceSceneModel: ObservableObject {
         return current ?? .attach
     }
 
-    private var isApplicationActiveForResourceMonitoring: Bool {
+    private var isApplicationActive: Bool {
         #if canImport(AppKit)
         NSApplication.shared.isActive
         #else
