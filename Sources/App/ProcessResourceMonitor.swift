@@ -356,18 +356,13 @@ final class ProcessResourceMonitor {
 
         while true {
             var buffer = Array(repeating: pid_t(0), count: capacity)
-            let byteCount = proc_listchildpids(
+            let count = Int(proc_listchildpids(
                 parentPID,
                 &buffer,
                 Int32(buffer.count * MemoryLayout<pid_t>.size)
-            )
+            ))
 
-            if byteCount <= 0 {
-                return []
-            }
-
-            let count = Int(byteCount) / MemoryLayout<pid_t>.size
-            if count == 0 {
+            if count <= 0 {
                 return []
             }
             if count < capacity {

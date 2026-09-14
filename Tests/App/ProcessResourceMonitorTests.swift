@@ -5,6 +5,38 @@ import Testing
 @testable import GhosthubApp
 
 struct ProcessResourceMonitorTests {
+    @Test("sample includes real children beyond the initial PID buffer")
+    func sampleIncludesRealChildrenBeyondInitialBuffer() throws {
+        var children: [(process: Process, input: Pipe)] = []
+        defer {
+            for child in children {
+                try? child.input.fileHandleForWriting.close()
+            }
+            for child in children {
+                child.process.waitUntilExit()
+            }
+        }
+
+        for _ in 0 ..< 20 {
+            let input = Pipe()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/cat")
+            process.standardInput = input
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            children.append((process, input))
+        }
+
+        // Exercise native enumeration without a process snapshot masking
+        // missing children. Each cat stays alive until teardown closes stdin.
+        let monitor = ProcessResourceMonitor(processSnapshotProvider: { [:] })
+        let result = monitor.sample(state: ProcessSamplingState())
+        let sampledPIDs = Set(result.nextState.previousTotalCPUTimeByPID.keys)
+        let childPIDs = Set(children.map { $0.process.processIdentifier })
+        #expect(childPIDs.isSubset(of: sampledPIDs))
+    }
+
     @Test("sample captures working directories only for managed session roots")
     func sampleCapturesWorkingDirectoryOnlyForManagedSessionRoots() {
         let worktreeID = UUID()
