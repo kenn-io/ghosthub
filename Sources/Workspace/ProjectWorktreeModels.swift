@@ -69,6 +69,11 @@ public struct CheckDetailItem: Codable, Equatable, Sendable {
     }
 }
 
+public enum ProjectPathIssue: String, Codable, Sendable {
+    case missing
+    case unavailable
+}
+
 public struct ProjectSummary: Identifiable, Equatable, Sendable {
     public let id: UUID
     public var hostID: UUID
@@ -79,6 +84,7 @@ public struct ProjectSummary: Identifiable, Equatable, Sendable {
     public var rootPath: String
     /// Opaque kwt registry observation required to authorize removal.
     public var registrationFingerprint: String
+    public var pathIssue: ProjectPathIssue?
     public var isStale: Bool
     public var repositoryKind: ProjectRepositoryKind
     public var kind: ProjectKind
@@ -99,6 +105,7 @@ public struct ProjectSummary: Identifiable, Equatable, Sendable {
         name: String,
         rootPath: String,
         registrationFingerprint: String = "",
+        pathIssue: ProjectPathIssue? = nil,
         isStale: Bool = false,
         repositoryKind: ProjectRepositoryKind = .standard,
         kind: ProjectKind = .repository,
@@ -114,6 +121,7 @@ public struct ProjectSummary: Identifiable, Equatable, Sendable {
         self.name = name
         self.rootPath = rootPath
         self.registrationFingerprint = registrationFingerprint
+        self.pathIssue = pathIssue
         self.isStale = isStale
         self.repositoryKind = repositoryKind
         self.kind = kind

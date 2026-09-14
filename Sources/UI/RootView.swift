@@ -48,6 +48,7 @@ public struct RootView: View {
     @State private var zellijCreationTask: Task<Void, Never>?
     @State private var zellijCreationRevision: UInt64 = 0
     @State private var addProjectHost: HostSummary?
+    @State private var recoveringProject: ProjectSummary?
     @State private var workspaceAlert: WorkspaceAlert?
     @State private var pendingWorktreeRemoval: WorktreeRemovalRequest?
     /// Retain the first confirmed generation for every runtime ID encountered
@@ -280,6 +281,22 @@ public struct RootView: View {
                     onCancel: { addProjectHost = nil },
                     onAdded: { addProjectHost = nil }
                 )
+            }
+            .sheet(item: $recoveringProject) { project in
+                if let host = snapshot.host(id: project.hostID) {
+                    AddProjectSheet(
+                        host: host,
+                        recoveringProject: project,
+                        onAdd: { path in
+                            guard let recover = handlers.recoverProject else {
+                                return .failure(.message("Project recovery is unavailable."))
+                            }
+                            return await recover(host, project, path)
+                        },
+                        onCancel: { recoveringProject = nil },
+                        onAdded: { recoveringProject = nil }
+                    )
+                }
             }
             .alert(item: $workspaceAlert) { alert in
                 workspaceAlertView(alert)
@@ -725,6 +742,7 @@ public struct RootView: View {
             },
             loadWorktreeChanges: handlers.loadWorktreeChanges,
             onRequestRemoveProject: requestProjectRemoval,
+            onLocateProject: { recoveringProject = $0 },
             onOpenProjectWorktreesAsTabs: { project, worktrees in
                 handlers.openProjectWorktreesAsTabs?(project, worktrees)
             },

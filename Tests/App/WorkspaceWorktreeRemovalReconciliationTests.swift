@@ -940,8 +940,14 @@ extension WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("an unrelated project warning prevents absent-target removal")
-    func unrelatedProjectWarningPreventsAbsentTargetRemoval() async throws {
+    @Test(
+        "incomplete project inventory prevents absent-target removal",
+        arguments: [true, false], [nil, .missing, .unavailable] as [ProjectPathIssue?]
+    )
+    func incompleteProjectPreventsAbsentTargetRemoval(
+        ownsTarget: Bool,
+        pathIssue: ProjectPathIssue?
+    ) async throws {
         let fixture = try removalFixture(
             path: "/tmp/project-a-feature",
             sessionName: "kwt-project-a-feature"
@@ -952,16 +958,23 @@ extension WorkspaceWorktreeRemovalTests {
         let hostSummary = try #require(snapshot.host(id: environment.host.id))
         let warning = "Another project inventory is temporarily unavailable."
         var warningInventory = inventory(environment)
-        warningInventory.projects.append(KwtProjectInventory(
+        let incomplete = KwtProjectInventory(
             project: KwtProjectRecord(
-                repository: "example.com/acme/unavailable",
+                repository: ownsTarget
+                    ? environment.project.scopedKey : "example.com/acme/unavailable",
                 name: "unavailable",
-                path: "/tmp/project-b",
-                lastTouched: nil
+                path: ownsTarget ? environment.project.rootPath : "/tmp/project-b",
+                lastTouched: nil,
+                pathIssue: pathIssue
             ),
             worktrees: [],
-            warning: warning
-        ))
+            warning: pathIssue == nil ? warning : nil
+        )
+        if ownsTarget {
+            warningInventory.projects[0] = incomplete
+        } else {
+            warningInventory.projects.append(incomplete)
+        }
         let preflight = warningInventory
         let kills = LockedValue(0)
         let removals = LockedValue(0)
@@ -985,7 +998,8 @@ extension WorkspaceWorktreeRemovalTests {
         )
         let expected = KwtWorktreeError.removalPreflightUnavailable(
             host: hostSummary.name,
-            message: warning
+            message: pathIssue == nil ? warning
+                : "The folder for unavailable is unavailable. Locate it before removing a worktree."
         )
 
         let request = try await model.prepareWorktreeRemoval(removable.id)

@@ -177,7 +177,7 @@ final class WorktreeMutationCoordinator {
                 retiredProtectedEndpointsByScope.removeValue(forKey: scope)
                 continue
             }
-            guard project.warning == nil,
+            guard project.isComplete,
                   let retired = retiredProtectedEndpointsByScope[scope]
             else { continue }
             let remaining = retired.filter { endpoint in

@@ -1,9 +1,11 @@
+import AppKit
 import GhosthubSettings
 import GhosthubWorkspace
 import SwiftUI
 
 struct AddProjectSheet: View {
     let host: HostSummary
+    var recoveringProject: ProjectSummary?
     let onAdd: (String) async -> Result<String, HostProbeError>
     let onCancel: () -> Void
     let onAdded: () -> Void
@@ -14,7 +16,9 @@ struct AddProjectSheet: View {
     @FocusState private var isPathFieldFocused: Bool
 
     private var normalizedPath: String {
-        projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        recoveringProject == nil
+            ? projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            : projectPath
     }
 
     private var isAbsolutePath: Bool {
@@ -24,7 +28,7 @@ struct AddProjectSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Add Project")
+                Text(recoveringProject == nil ? "Add Project" : "Locate Folder")
                     .font(.headline)
                 Spacer()
                 Label(
@@ -40,11 +44,13 @@ struct AddProjectSheet: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 10) {
-                Text(
+                Text(recoveringProject.map {
+                    "The folder for \($0.name) is unavailable at \($0.rootPath). Enter the new location of its main checkout."
+                } ?? (
                     "Enter the absolute path of an existing Git checkout."
                         + " Ghosthub delegates registration to kwt and does"
                         + " not scan the host."
-                )
+                ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -56,6 +62,22 @@ struct AddProjectSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($isPathFieldFocused)
                 .onSubmit(addProject)
+
+                if recoveringProject != nil, host.kind == .selfHost {
+                    Button("Choose Folder…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseDirectories = true
+                        panel.canChooseFiles = false
+                        panel.allowsMultipleSelection = false
+                        panel.canCreateDirectories = false
+                        panel.begin { response in
+                            if response == .OK, let url = panel.url {
+                                projectPath = url.path
+                            }
+                        }
+                    }
+                    .disabled(isAdding)
+                }
 
                 if let errorMessage {
                     Text(errorMessage)
@@ -77,11 +99,13 @@ struct AddProjectSheet: View {
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.cancelAction)
                     .disabled(isAdding)
-                Button(isAdding ? "Adding…" : "Add Project") {
-                    addProject()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(isAdding || !isAbsolutePath)
+                Button(recoveringProject == nil
+                    ? (isAdding ? "Adding…" : "Add Project")
+                    : (isAdding ? "Locating…" : "Use Folder")) {
+                        addProject()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isAdding || !isAbsolutePath)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

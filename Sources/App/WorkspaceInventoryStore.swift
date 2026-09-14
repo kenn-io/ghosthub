@@ -581,7 +581,7 @@ final class WorkspaceInventoryStore {
                     || item.project.repository.isEmpty
             }
             guard !projects.isEmpty else { return }
-            if projects.contains(where: { $0.warning != nil }) {
+            if projects.contains(where: { !$0.isComplete }) {
                 active[entry.key] = entry.value
                 return
             }
@@ -619,7 +619,7 @@ final class WorkspaceInventoryStore {
 
     private static func isAuthoritative(_ inventory: KwtHostInventory) -> Bool {
         inventory.projectsWarning == nil
-            && inventory.projects.allSatisfy { $0.warning == nil }
+            && inventory.projects.allSatisfy(\.isComplete)
     }
 
     private func isSoleActiveMutation(

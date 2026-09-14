@@ -489,6 +489,8 @@ public struct InteractionHandlers {
         ((UUID, SSHAuthenticationHandoff) async -> Void)?
     public let registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
+    public let recoverProject:
+        ((HostSummary, ProjectSummary, String) async -> Result<String, HostProbeError>)?
     public let prepareProjectRemoval:
         ((ProjectSummary, HostSummary) async throws
             -> ProjectRemovalRequest)?
@@ -582,6 +584,8 @@ public struct InteractionHandlers {
         ((UUID, SSHAuthenticationHandoff) async -> Void)? = nil,
         registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
+        recoverProject:
+        ((HostSummary, ProjectSummary, String) async -> Result<String, HostProbeError>)? = nil,
         prepareProjectRemoval:
         ((ProjectSummary, HostSummary) async throws
             -> ProjectRemovalRequest)? = nil,
@@ -647,6 +651,7 @@ public struct InteractionHandlers {
         self.cancelSSHAuthentication = cancelSSHAuthentication
         self.completeSSHAuthentication = completeSSHAuthentication
         self.registerProject = registerProject
+        self.recoverProject = recoverProject
         self.prepareProjectRemoval = prepareProjectRemoval
         self.unregisterProject = unregisterProject
         self.openProjectWorktreesAsTabs = openProjectWorktreesAsTabs

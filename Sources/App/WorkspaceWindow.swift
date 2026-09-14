@@ -1154,6 +1154,9 @@ struct WorkspaceWindow: View {
                 registerProject: { [sceneModel] host, path in
                     await sceneModel.registerProject(path, on: host)
                 },
+                recoverProject: { [sceneModel] host, project, path in
+                    await sceneModel.recoverProject(project, to: path, on: host)
+                },
                 prepareProjectRemoval: { [sceneModel] project, host in
                     try await sceneModel.prepareProjectRemoval(
                         project,

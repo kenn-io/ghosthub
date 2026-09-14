@@ -190,6 +190,7 @@ struct WorkspaceSidebarView: View {
     let loadWorktreeChanges: WorktreeChangesLoader?
     let worktreeChangesSleep: WorktreeChangesSleep
     let onRequestRemoveProject: (ProjectSummary) -> Void
+    let onLocateProject: (ProjectSummary) -> Void
     let onOpenProjectWorktreesAsTabs:
         (ProjectSummary, [WorktreeSummary]) -> Void
     let canOpenProjectWorktreesAsTabs:
@@ -289,6 +290,7 @@ struct WorkspaceSidebarView: View {
         onRequestRemoveProject: @escaping (
             ProjectSummary
         ) -> Void = { _ in },
+        onLocateProject: @escaping (ProjectSummary) -> Void = { _ in },
         onOpenProjectWorktreesAsTabs: @escaping (
             ProjectSummary,
             [WorktreeSummary]
@@ -348,6 +350,7 @@ struct WorkspaceSidebarView: View {
         self.loadWorktreeChanges = loadWorktreeChanges
         self.worktreeChangesSleep = worktreeChangesSleep
         self.onRequestRemoveProject = onRequestRemoveProject
+        self.onLocateProject = onLocateProject
         self.onOpenProjectWorktreesAsTabs = onOpenProjectWorktreesAsTabs
         self.canOpenProjectWorktreesAsTabs =
             canOpenProjectWorktreesAsTabs
@@ -638,6 +641,11 @@ struct WorkspaceSidebarView: View {
                                         id: project.project.hostID
                                     )?.canRegisterProjects == true {
                                         Divider()
+                                        if project.project.pathIssue != nil {
+                                            Button("Locate Folder…") {
+                                                onLocateProject(project.project)
+                                            }
+                                        }
                                         Button(
                                             "Remove Project…",
                                             role: .destructive
@@ -1944,6 +1952,21 @@ struct WorkspaceSidebarView: View {
             )
 
             sidebarButton(project.row)
+
+            if project.project.pathIssue != nil {
+                Button {
+                    onLocateProject(project.project)
+                } label: {
+                    Image(systemName: "folder.badge.questionmark")
+                        .foregroundStyle(.orange)
+                        .frame(width: 28, height: 30)
+                }
+                .buttonStyle(.plain)
+                .help("Folder unavailable. Locate its new location.")
+                .accessibilityLabel("Locate folder for \(project.project.name)")
+                .accessibilityIdentifier("locate-project-folder")
+                .disabled(!canRemove)
+            }
 
             NativePopupMenuButton(
                 groups: [

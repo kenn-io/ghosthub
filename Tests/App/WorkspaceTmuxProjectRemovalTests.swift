@@ -486,8 +486,11 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("Generationless inventory preserves a matching retired endpoint")
-    func generationlessInventoryPreservesRetiredEndpoint() throws {
+    @Test(
+        "Incomplete inventory preserves a retired endpoint until absence is confirmed",
+        arguments: [nil, .missing, .unavailable] as [ProjectPathIssue?]
+    )
+    func incompleteInventoryPreservesRetiredEndpoint(pathIssue: ProjectPathIssue?) throws {
         let environment = try setupStandardEnvironment()
         let project = try #require(environment.snapshot.projects.first)
         var worktree = try #require(environment.snapshot.worktrees.first)
@@ -522,12 +525,22 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         coordinator.retireProtectedEndpoints(for: participant)
 
+        var inventory = WorkspaceTmuxTestSupport.inventory(
+            project: project, worktrees: pathIssue == nil ? [worktree] : []
+        )
+        inventory.projects[0].project.pathIssue = pathIssue
         coordinator.reconcileRetiredProtectedEndpoints(
-            after: WorkspaceTmuxTestSupport.inventory(project: project, worktrees: [worktree]),
+            after: inventory,
             hostID: project.hostID
         )
 
         #expect(coordinator.protectedEndpoints(in: scope) == [endpoint])
+
+        coordinator.reconcileRetiredProtectedEndpoints(
+            after: WorkspaceTmuxTestSupport.inventory(project: project, worktrees: []),
+            hostID: project.hostID
+        )
+        #expect(coordinator.protectedEndpoints(in: scope).isEmpty)
     }
 
     @MainActor
@@ -1486,6 +1499,11 @@ extension WorkspaceTmuxDiscoveryTests {
                         var warned = inventory
                         warned.projects[0].warning = "worktree lookup failed"
                         return warned
+                    case .projectPathIssue:
+                        var missing = inventory
+                        missing.projects[0].project.pathIssue = .missing
+                        missing.projects[0].worktrees = []
+                        return missing
                     case .pathDrift:
                         var moved = inventory
                         moved.projects[0].project.path = "/tmp/ghosthub-moved"
@@ -1539,7 +1557,7 @@ extension WorkspaceTmuxDiscoveryTests {
             #expect(result == .success(project.name))
             #expect(attachedModel.activeBorrowedTmuxSelection == nil)
             #expect(attachedModel.snapshot.project(id: project.id) == nil)
-        case .unavailable, .globalWarning, .projectWarning, .pathDrift:
+        case .unavailable, .globalWarning, .projectWarning, .projectPathIssue, .pathDrift:
             #expect(result == .failure(.message(
                 removalError.localizedDescription
             )))
@@ -1550,7 +1568,7 @@ extension WorkspaceTmuxDiscoveryTests {
         switch reconciliation {
         case .confirmedPresent, .confirmedAbsent:
             #expect(coordinator.scopes.isEmpty)
-        case .unavailable, .globalWarning, .projectWarning, .pathDrift:
+        case .unavailable, .globalWarning, .projectWarning, .projectPathIssue, .pathDrift:
             #expect(!coordinator.scopes.isEmpty)
         }
         await removalModel.shutdown()
@@ -1977,16 +1995,27 @@ extension WorkspaceTmuxDiscoveryTests {
                 ),
             ])
         }
+        var incomplete = inventory
+        incomplete.projects[0].project.pathIssue = .missing
+        let currentInventory = LockedValue(incomplete)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            kwtInventoryLoader: { _ in inventory },
+            kwtInventoryLoader: { _ in currentInventory.load() },
             worktreeMutationCoordinator: coordinator
         )
 
         model.startKwtInventory()
+        await waitUntilMainActor {
+            model.snapshot.projects.contains {
+                $0.scopedKey == expectedRepository && $0.pathIssue == .missing
+            }
+        }
+        #expect(!coordinator.scopes.isEmpty)
 
+        currentInventory.store(inventory)
+        model.refreshKwtInventory()
         await waitUntilMainActor { coordinator.scopes.isEmpty }
         #expect(model.snapshot.projects.contains {
             $0.scopedKey == expectedRepository
