@@ -30,7 +30,7 @@ struct WorkspaceZellijTests {
         model.startZellijSessionDiscovery()
         await waitUntilMainActor { discoveries.withLock { $0 } == 1 }
 
-        model.handleApplicationDidBecomeActiveForResourceMonitoring()
+        model.handleApplicationDidBecomeActive()
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(discoveries.withLock { $0 } == 1)

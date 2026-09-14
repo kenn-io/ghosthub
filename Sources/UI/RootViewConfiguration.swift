@@ -11,15 +11,6 @@ public struct WorkspaceDisplayState {
     public let snapshot: WorkspaceSnapshot
     public let sidebarSectionCache: WorkspaceSidebarSectionCache?
     public let sidebarSnapshotRevision: UInt64
-    public let workspaceResourceSummary: WorkspaceResourceSummary
-    public let activatedWorktreeIDs: Set<UUID>
-    public let activeAgentWorktreeIDs: Set<UUID>
-    public let activeProcessWorktreeIDs: Set<UUID>
-    public let paneResourceSamples: [UUID: WorkspaceResourceSample]
-    public let paneAgentActivities: [UUID: PaneAgentActivity]
-    public let activityReferenceDate: Date
-    public let idleThresholdsBySessionID: [UUID: Int]
-    public let defaultIdleThresholdSeconds: Int
     public let isWorkspaceInventoryLoading: Bool
     public let isWorkspaceInventoryRefreshComplete: Bool
     public let workspaceInventoryError: String?
@@ -47,15 +38,6 @@ public struct WorkspaceDisplayState {
         snapshot: WorkspaceSnapshot,
         sidebarSectionCache: WorkspaceSidebarSectionCache? = nil,
         sidebarSnapshotRevision: UInt64 = 0,
-        workspaceResourceSummary: WorkspaceResourceSummary = .empty,
-        activatedWorktreeIDs: Set<UUID> = [],
-        activeAgentWorktreeIDs: Set<UUID> = [],
-        activeProcessWorktreeIDs: Set<UUID> = [],
-        paneResourceSamples: [UUID: WorkspaceResourceSample] = [:],
-        paneAgentActivities: [UUID: PaneAgentActivity] = [:],
-        activityReferenceDate: Date = .now,
-        idleThresholdsBySessionID: [UUID: Int] = [:],
-        defaultIdleThresholdSeconds: Int = 300,
         isWorkspaceInventoryLoading: Bool = false,
         isWorkspaceInventoryRefreshComplete: Bool = false,
         workspaceInventoryError: String? = nil,
@@ -82,15 +64,6 @@ public struct WorkspaceDisplayState {
         self.snapshot = snapshot
         self.sidebarSectionCache = sidebarSectionCache
         self.sidebarSnapshotRevision = sidebarSnapshotRevision
-        self.workspaceResourceSummary = workspaceResourceSummary
-        self.activatedWorktreeIDs = activatedWorktreeIDs
-        self.activeAgentWorktreeIDs = activeAgentWorktreeIDs
-        self.activeProcessWorktreeIDs = activeProcessWorktreeIDs
-        self.paneResourceSamples = paneResourceSamples
-        self.paneAgentActivities = paneAgentActivities
-        self.activityReferenceDate = activityReferenceDate
-        self.idleThresholdsBySessionID = idleThresholdsBySessionID
-        self.defaultIdleThresholdSeconds = defaultIdleThresholdSeconds
         self.isWorkspaceInventoryLoading = isWorkspaceInventoryLoading
         self.isWorkspaceInventoryRefreshComplete =
             isWorkspaceInventoryRefreshComplete

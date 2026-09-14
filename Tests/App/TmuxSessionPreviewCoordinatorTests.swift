@@ -1616,7 +1616,7 @@ struct TmuxSessionPreviewCoordinatorTests {
         #expect(model.tmuxSessionPreviewCoordinator === harness.coordinator)
         #expect(harness.parks == [presentation.key])
 
-        model.handleApplicationDidResignActiveForResourceMonitoring()
+        model.handleApplicationDidResignActive()
 
         #expect(harness.parks == [presentation.key])
         #expect(harness.budget.granted.count == 1)

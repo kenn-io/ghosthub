@@ -51,6 +51,13 @@ glyph when no trustworthy count exists. Cached sessions do not
 remain live while a host is unreachable. Kwt-owned sessions are hidden from the separate tmux session
 group by default, with a Worktrees setting that exposes those duplicate
 entries.
+
+The macOS app does not display CPU or memory usage and does not periodically
+sample local process trees. Tmux working indicators and window counts come
+from the session activity controller described above. Output-based idle
+notifications and last-viewed timestamps remain separate from resource
+accounting.
+
 Tmux, Herdr, and Zellij sessions are each presented through their ordinary
 native whole-session client. The selected backend alone owns its internal
 layout. Each scene has at most one active interactive presentation.

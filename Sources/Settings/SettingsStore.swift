@@ -12,7 +12,6 @@ private extension Double {
 @MainActor
 public final class SettingsStore: ObservableObject {
     private enum DefaultsKey {
-        static let showPaneResourceUsage = "ghosthub.settings.terminal.showPaneResourceUsage"
         static let confirmPaneClose = "ghosthub.settings.terminal.confirmPaneClose"
         static let confirmBeforeQuitting =
             "ghosthub.settings.application.confirmBeforeQuitting"
@@ -56,7 +55,6 @@ public final class SettingsStore: ObservableObject {
         allowShellIntegrationToControlCursor: false,
         hideMouseWhileTyping: true,
         copySelectionToClipboard: true,
-        showPaneResourceUsage: true,
         confirmPaneClose: true
     )
 
@@ -418,13 +416,6 @@ public final class SettingsStore: ObservableObject {
         persistTerminalPreferences()
     }
 
-    public func setShowPaneResourceUsage(_ enabled: Bool) {
-        updateTerminalPreferences { preferences in
-            preferences.showPaneResourceUsage = enabled
-        }
-        userDefaults.set(enabled, forKey: DefaultsKey.showPaneResourceUsage)
-    }
-
     public func setConfirmPaneClose(_ enabled: Bool) {
         updateTerminalPreferences { preferences in
             preferences.confirmPaneClose = enabled
@@ -755,7 +746,6 @@ public final class SettingsStore: ObservableObject {
                 allowShellIntegrationToControlCursor: defaults.allowShellIntegrationToControlCursor,
                 hideMouseWhileTyping: defaults.hideMouseWhileTyping,
                 copySelectionToClipboard: defaults.copySelectionToClipboard,
-                showPaneResourceUsage: defaults.showPaneResourceUsage,
                 confirmPaneClose: confirmPaneClose
             )
         }
@@ -777,16 +767,11 @@ public final class SettingsStore: ObservableObject {
         let copySelectionToClipboard = TOMLConfigParser.parseCopyOnSelect(
             in: contents
         ) ?? defaults.copySelectionToClipboard
-        let showPaneResourceUsage = userDefaults.object(
-            forKey: DefaultsKey.showPaneResourceUsage
-        ) as? Bool ?? defaults.showPaneResourceUsage
-
         return TerminalPreferences(
             cursorStyle: cursorStyle,
             allowShellIntegrationToControlCursor: allowShellIntegrationToControlCursor,
             hideMouseWhileTyping: hideMouseWhileTyping,
             copySelectionToClipboard: copySelectionToClipboard,
-            showPaneResourceUsage: showPaneResourceUsage,
             confirmPaneClose: confirmPaneClose
         )
     }
