@@ -291,7 +291,6 @@ final class WorkspaceSceneModel: ObservableObject {
     var isSidePanelVisible: Bool {
         panelRoutingService.isSidePanelVisible
     }
-    @Published var preferredActiveSurfaceTarget: WorkspaceTerminalSurfaceTarget?
     @Published private var borrowedTmuxConnectionStates:
         [UUID: ConnectionState] = [:] {
         didSet {

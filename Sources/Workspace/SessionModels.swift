@@ -45,23 +45,6 @@ extension SessionBackendKind: Codable {
     }
 }
 
-public enum WorkspaceSessionBackendResolver {
-    public static func backend(
-        hostID: UUID,
-        worktreeID: UUID?,
-        in snapshot: WorkspaceSnapshot
-    ) -> SessionBackendKind {
-        if let worktreeID,
-           let worktree = snapshot.worktree(id: worktreeID) {
-            return worktree.sessionBackend
-        }
-        guard snapshot.host(id: hostID)?.kind == .remote else {
-            return .localPTY
-        }
-        return .remoteTmux
-    }
-}
-
 /// Session intent reported by host inventory's `runtimeKind` field:
 /// what the session is for, distinct from ``SessionBackendKind`` (how it is
 /// hosted). Legacy snapshots may still contain this vocabulary.

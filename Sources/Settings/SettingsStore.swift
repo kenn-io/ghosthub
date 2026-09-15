@@ -12,7 +12,6 @@ private extension Double {
 @MainActor
 public final class SettingsStore: ObservableObject {
     private enum DefaultsKey {
-        static let confirmPaneClose = "ghosthub.settings.terminal.confirmPaneClose"
         static let confirmBeforeQuitting =
             "ghosthub.settings.application.confirmBeforeQuitting"
         static let hideRootCheckout = "ghosthub.settings.worktrees.hideRootCheckout"
@@ -54,8 +53,7 @@ public final class SettingsStore: ObservableObject {
         cursorStyle: .block,
         allowShellIntegrationToControlCursor: false,
         hideMouseWhileTyping: true,
-        copySelectionToClipboard: true,
-        confirmPaneClose: true
+        copySelectionToClipboard: true
     )
 
     public static let defaultTerminalAppearancePreferences =
@@ -75,8 +73,6 @@ public final class SettingsStore: ObservableObject {
 
     public static let defaultTmuxSessionPreferences = TmuxSessionPreferences()
 
-    public static let defaultAgentPreferences = AgentPreferences()
-
     public static let defaultSessionPreviewMode: SessionPreviewMode = .off
 
     @Published public var selectedDomain: SettingsDomain = .appearance
@@ -90,7 +86,6 @@ public final class SettingsStore: ObservableObject {
     @Published public private(set) var sessionPreviewMode: SessionPreviewMode
     @Published public private(set) var worktreePreferences: WorktreePreferences
     @Published public private(set) var tmuxSessionPreferences: TmuxSessionPreferences
-    @Published public private(set) var agentPreferences: AgentPreferences
     @Published public private(set) var shareAnonymousUsageData: Bool
     @Published public private(set) var sshHosts: [SSHHost]
     @Published public private(set) var exeAccounts: [ExeAccount]
@@ -139,8 +134,7 @@ public final class SettingsStore: ObservableObject {
                 using: userDefaults
             )
         let loadedTerminal = Self.loadTerminalPreferences(
-            using: configPipeline,
-            userDefaults: userDefaults
+            using: configPipeline
         )
         let loadedSessionPreviewMode = Self.loadSessionPreviewMode(
             using: userDefaults
@@ -153,9 +147,6 @@ public final class SettingsStore: ObservableObject {
                 "config.toml",
                 isDirectory: false
             )
-        )
-        let loadedAgents = Self.loadAgentPreferences(
-            using: userDefaults
         )
         let loadedShareAnonymousUsageData =
             Self.loadShareAnonymousUsageData(
@@ -178,7 +169,6 @@ public final class SettingsStore: ObservableObject {
         sessionPreviewMode = loadedSessionPreviewMode
         worktreePreferences = loadedWorktrees
         tmuxSessionPreferences = loadedTmuxSessions
-        agentPreferences = loadedAgents
         shareAnonymousUsageData = loadedShareAnonymousUsageData
         sshHosts = loadedSSHHosts
         exeAccounts = loadedExeAccounts
@@ -210,8 +200,7 @@ public final class SettingsStore: ObservableObject {
                 using: userDefaults
             )
         terminalPreferences = Self.loadTerminalPreferences(
-            using: configPipeline,
-            userDefaults: userDefaults
+            using: configPipeline
         )
         sessionPreviewMode = Self.loadSessionPreviewMode(
             using: userDefaults
@@ -220,7 +209,6 @@ public final class SettingsStore: ObservableObject {
         tmuxSessionPreferences = Self.loadTmuxSessionPreferences(
             from: appConfigFile
         )
-        agentPreferences = Self.loadAgentPreferences(using: userDefaults)
         shareAnonymousUsageData =
             Self.loadShareAnonymousUsageData(
                 using: userDefaults
@@ -416,13 +404,6 @@ public final class SettingsStore: ObservableObject {
         persistTerminalPreferences()
     }
 
-    public func setConfirmPaneClose(_ enabled: Bool) {
-        updateTerminalPreferences { preferences in
-            preferences.confirmPaneClose = enabled
-        }
-        userDefaults.set(enabled, forKey: DefaultsKey.confirmPaneClose)
-    }
-
     public func setHideRootCheckout(_ enabled: Bool) {
         updateWorktreePreferences { preferences in
             preferences.hideRootCheckout = enabled
@@ -562,14 +543,6 @@ public final class SettingsStore: ObservableObject {
         var updated = worktreePreferences
         update(&updated)
         worktreePreferences = updated
-    }
-
-    private func updateAgentPreferences(
-        _ update: (inout AgentPreferences) -> Void
-    ) {
-        var updated = agentPreferences
-        update(&updated)
-        agentPreferences = updated
     }
 
     private func persistTerminalPreferences() {
@@ -726,13 +699,9 @@ public final class SettingsStore: ObservableObject {
     }
 
     private static func loadTerminalPreferences(
-        using configPipeline: LibghosttyConfigPipeline,
-        userDefaults: UserDefaults
+        using configPipeline: LibghosttyConfigPipeline
     ) -> TerminalPreferences {
         let defaults = defaultTerminalPreferences
-        let confirmPaneClose = userDefaults.object(
-            forKey: DefaultsKey.confirmPaneClose
-        ) as? Bool ?? defaults.confirmPaneClose
         let contents: String
         do {
             _ = try configPipeline.prepareGlobalConfig()
@@ -741,13 +710,7 @@ public final class SettingsStore: ObservableObject {
                 encoding: .utf8
             )
         } catch {
-            return TerminalPreferences(
-                cursorStyle: defaults.cursorStyle,
-                allowShellIntegrationToControlCursor: defaults.allowShellIntegrationToControlCursor,
-                hideMouseWhileTyping: defaults.hideMouseWhileTyping,
-                copySelectionToClipboard: defaults.copySelectionToClipboard,
-                confirmPaneClose: confirmPaneClose
-            )
+            return defaults
         }
 
         let cursorStyle = TOMLConfigParser.parseConfigValue(
@@ -771,8 +734,7 @@ public final class SettingsStore: ObservableObject {
             cursorStyle: cursorStyle,
             allowShellIntegrationToControlCursor: allowShellIntegrationToControlCursor,
             hideMouseWhileTyping: hideMouseWhileTyping,
-            copySelectionToClipboard: copySelectionToClipboard,
-            confirmPaneClose: confirmPaneClose
+            copySelectionToClipboard: copySelectionToClipboard
         )
     }
 
@@ -908,12 +870,6 @@ public final class SettingsStore: ObservableObject {
             }
             return trimmed
         }
-    }
-
-    private static func loadAgentPreferences(
-        using _: UserDefaults
-    ) -> AgentPreferences {
-        AgentPreferences()
     }
 
     private static func loadShareAnonymousUsageData(

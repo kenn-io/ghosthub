@@ -51,26 +51,6 @@ public enum WorkspaceKnownAgent: String, CaseIterable, Equatable, Sendable {
     }
 }
 
-public enum PaneAgentActivityState: Equatable, Sendable {
-    case idle
-    case active
-    case running
-    case needsAttention
-}
-
-public struct PaneAgentActivity: Equatable, Sendable {
-    public var agent: WorkspaceKnownAgent
-    public var activityState: PaneAgentActivityState
-
-    public init(
-        agent: WorkspaceKnownAgent,
-        activityState: PaneAgentActivityState
-    ) {
-        self.agent = agent
-        self.activityState = activityState
-    }
-}
-
 public struct WorkspaceActivitySessionHint: Equatable, Sendable {
     public var presetID: String?
     public var command: String?

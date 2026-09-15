@@ -118,10 +118,7 @@ var targets: [Target] = [
             "GhosthubWorkspace",
             "GhosthubTerminalSupport",
         ],
-        path: "Sources/UI",
-        resources: [
-            .process("Resources"),
-        ]
+        path: "Sources/UI"
     ),
     .target(
         name: "GhosthubTerminalSupport",

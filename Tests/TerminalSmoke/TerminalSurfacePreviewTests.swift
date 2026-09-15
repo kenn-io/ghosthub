@@ -51,13 +51,15 @@ final class TerminalSurfacePreviewTests: XCTestCase {
     }
 
     func testLibghosttyFindSearchesSurfaceOutput() async throws {
-        let view = try makeSurface()
+        // Keep one writer: an interactive shell can repaint injected output
+        // while it starts. This child prints the fixture and stays alive.
+        let command = #"printf 'needle one\nneedle two\nneedle three\n'; exec /bin/cat"#
+        let view = try makeSurface(configuration: TerminalSurfaceConfiguration(
+            command: "/usr/bin/env /bin/sh -c \(shellQuotedCommandArgument(command))"
+        ))
         view.installLibghosttyFindController()
         let window = hostInWindow(view)
         defer { window.orderOut(nil) }
-        XCTAssertTrue(view.injectOutput(Data(
-            "needle one\r\nneedle two\r\nneedle three\r\n".utf8
-        )))
         let viewportText = { () -> String in
             guard let surface = view.surfaceHandle else { return "" }
             var text = ghostty_text_s()
@@ -82,12 +84,15 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             defer { ghostty_surface_free_text(surface, &text) }
             return String(cString: text.text)
         }
+        let expectedOutput = "needle one\nneedle two\nneedle three"
         let outputDeadline = Date().addingTimeInterval(5)
-        while !viewportText().contains("needle three"),
+        while !viewportText().contains(expectedOutput),
               Date() < outputDeadline {
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(viewportText().contains("needle three"))
+        guard viewportText().contains(expectedOutput) else {
+            return XCTFail("expected the child to publish all three Find fixture lines")
+        }
 
         let controller = view.terminalFindController
         controller.open()
@@ -1713,12 +1718,14 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         XCTAssertFalse(surface.isParkedForPreview)
     }
 
-    private func makeSurface() throws -> TerminalSurfaceView {
+    private func makeSurface(
+        configuration: TerminalSurfaceConfiguration = TerminalSurfaceConfiguration()
+    ) throws -> TerminalSurfaceView {
         let runtime = retainedRuntime()
         let app = try XCTUnwrap(runtime.unsafeAppHandle)
         let view = TerminalSurfaceView(
             app: app,
-            configuration: TerminalSurfaceConfiguration()
+            configuration: configuration
         )
         _ = try XCTUnwrap(
             view.surfaceHandle,

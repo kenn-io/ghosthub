@@ -47,37 +47,6 @@ public struct LibghosttySurfaceCloseEvent: Equatable, Sendable {
     }
 }
 
-public enum LibghosttyClipboardLocation: Equatable, Sendable {
-    case standard
-    case selection
-    case unknown(Int32)
-}
-
-public final class LibghosttySurfaceRuntimeCallbacks {
-    public typealias ReadClipboardHandler = (LibghosttyClipboardLocation, UnsafeMutableRawPointer?)
-        -> Void
-    public typealias ConfirmReadClipboardHandler = (String, UnsafeMutableRawPointer?, Int32) -> Void
-    public typealias WriteClipboardHandler = (String, LibghosttyClipboardLocation, Bool) -> Void
-    public typealias CloseSurfaceHandler = (Bool) -> Void
-
-    public var readClipboard: ReadClipboardHandler?
-    public var confirmReadClipboard: ConfirmReadClipboardHandler?
-    public var writeClipboard: WriteClipboardHandler?
-    public var closeSurface: CloseSurfaceHandler?
-
-    public init(
-        readClipboard: ReadClipboardHandler? = nil,
-        confirmReadClipboard: ConfirmReadClipboardHandler? = nil,
-        writeClipboard: WriteClipboardHandler? = nil,
-        closeSurface: CloseSurfaceHandler? = nil
-    ) {
-        self.readClipboard = readClipboard
-        self.confirmReadClipboard = confirmReadClipboard
-        self.writeClipboard = writeClipboard
-        self.closeSurface = closeSurface
-    }
-}
-
 @MainActor
 public final class LibghosttyRuntimeState: ObservableObject {
     public private(set) var wakeupCount = 0

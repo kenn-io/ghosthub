@@ -744,9 +744,11 @@ keep that file aligned with the generated `Info.plist`. Do not replace the
 release signing order with recursive `codesign --deep` signing. Mach-O helpers
 require their own Developer ID signatures even when staged as non-executable
 resources; the Linux ELF variants do not. Sparkle remains under
-`Contents/Frameworks`, and SwiftPM resource bundles remain under
-`Contents/Resources`; placing compatibility symlinks at the `.app` root creates
-unsealed content that strict code-signing rejects. Ghosthub's AGPL license and
+`Contents/Frameworks`. SwiftPM resource staging copies only the required
+`GRDB_GRDB.bundle` into `Contents/Resources`, including its privacy manifest.
+It ignores unrelated bundles left in cached build output. Placing compatibility
+symlinks at the `.app` root creates unsealed content that strict code-signing
+rejects. Ghosthub's AGPL license and
 every third-party notice in `LICENSES` are staged during the same assembly step.
 
 `make debug-app` keeps the hardened runtime but adds the library-validation
