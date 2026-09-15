@@ -606,7 +606,7 @@ struct KwtSSHLeaseClient: Sendable {
         let executable = binaryPath ?? "/usr/bin/env"
         var arguments = binaryPath == nil ? ["kwt"] : []
         arguments.append(contentsOf: [
-            "ssh", "lease", "--json",
+            "ssh", "lease", "--json", "--open-browser=false",
             "--route-identity", route.routeIdentity,
             "--projection-policy", route.projectionPolicy,
             "--host-key-policy", hostKeyPolicy.rawValue,

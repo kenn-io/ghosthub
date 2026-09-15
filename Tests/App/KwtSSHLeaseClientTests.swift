@@ -301,7 +301,7 @@ struct KwtSSHLeaseClientTests {
         #expect(
             try String(contentsOf: arguments, encoding: .utf8)
                 .split(separator: "\n").map(String.init) == [
-                    "ssh", "lease", "--json",
+                    "ssh", "lease", "--json", "--open-browser=false",
                     "--route-identity", "sha256:route-observation",
                     "--projection-policy", "kwt.openssh.projection.v1",
                     "--host-key-policy", "review",
