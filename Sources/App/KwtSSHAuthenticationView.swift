@@ -81,6 +81,24 @@ struct KwtSSHAuthenticationView: View {
                         Spacer()
                         Button("Try Again") { session.retry() }
                     }
+                case let .browserAuthentication(url):
+                    Text("Browser authentication required")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(
+                        "Tailscale SSH requires an additional check. Open the authentication page and complete the sign-in. Ghosthub will continue automatically."
+                    )
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
+                    Text(url.absoluteString)
+                        .font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ProgressView("Waiting for authentication…")
+                    HStack {
+                        Button("Cancel", action: onCancel)
+                        Spacer()
+                        Link("Open Authentication Page", destination: url)
+                    }
                 case let .prompt(prompt):
                     Text(presentation.credentialWarning)
                         .font(.system(size: 12))

@@ -133,15 +133,23 @@ struct KwtSSHAcquisitionCoordinatorTests {
         _ = await first.result
     }
 
-    @Test("prompt ownership transfers without changing prompt identity")
-    func transfersPromptOwnership() async throws {
+    @Test("prompt ownership transfers without changing prompt identity", arguments: [false, true])
+    func transfersPromptOwnership(browser: Bool) async throws {
+        let notice = KwtSSHLeasePrompt(
+            id: Self.prompt.id,
+            kind: browser ? .browserAuthentication : Self.prompt.kind,
+            message: Self.prompt.message,
+            sensitive: false,
+            deadline: Self.prompt.deadline,
+            details: Self.prompt.details
+        )
         let firstStarted = AsyncStream<Void>.makeStream()
         let firstCanceled = AsyncStream<Void>.makeStream()
         let firstResponse = AsyncStream<String>.makeStream()
         let seen = LockedValue<[String]>([])
         let resolveCount = LockedValue(0)
         let pool = KwtSSHConnectionPool { route, prompt in
-            let response = try await prompt(Self.prompt)
+            let response = try await prompt(notice)
             seen.withLock { $0.append(response) }
             return KwtSSHTestLease(routeIdentity: route.routeIdentity)
         }
@@ -192,7 +200,7 @@ struct KwtSSHAcquisitionCoordinatorTests {
         let secondConnection = try await second.value
         let firstConnection = try await first.value
 
-        #expect(seen.load() == ["second-window"])
+        #expect(seen.load() == [browser ? "" : "second-window"])
         try await firstConnection.release()
         try await secondConnection.release()
     }

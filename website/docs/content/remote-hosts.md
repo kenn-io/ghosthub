@@ -101,6 +101,19 @@ If a host shows a caution icon, select it to review trust, authenticate, or
 retry. A successful ordinary host-inventory authentication refreshes inventory;
 it does not open a tmux, Herdr, or Zellij session by itself.
 
+### Tailscale browser checks
+
+When Tailscale SSH requires a browser check, choose **Open Authentication Page**
+in Ghosthub's authentication sheet and complete the sign-in. Ghosthub keeps
+that SSH attempt open and continues automatically after approval. If the check
+expires, retry the connection to request a fresh link.
+
+The sheet shows the host requesting approval, including a jump host when one
+is involved. You can also copy the displayed link into your browser. Cancel
+closes your connection attempt.
+
+![Ghosthub authentication sheet showing a Tailscale sign-in link and waiting status](assets/guide-ssh-browser-authentication.png)
+
 ## Automatic reconnect
 
 If an active SSH connection drops, Ghosthub shows **Connection interrupted**

@@ -8,6 +8,30 @@ import Testing
 
 @Suite("kwt SSH connection leases")
 struct KwtSSHLeaseClientTests {
+    @Test("browser authentication stays visible while the helper waits for approval")
+    func browserAuthentication() async throws {
+        let fixture = try TempDirectoryFixture()
+        let script = #"""
+        #!/bin/sh
+        printf '%s\n' '{"operation_id":"operation-1","sequence":1,"kind":"prompt","prompt":{"id":"browser","kind":"ssh_browser_authentication","message":"Complete the browser check","sensitive":false,"deadline":"2099-08-14T12:02:00Z","details":{"logical_target":{"hostname":"build.example.test"},"effective_target":{"hostname":"100.64.0.8","user":"deploy","port":2200},"display_target":"deploy@build.example.test:2200","hop_index":0,"hop_count":1,"method":"browser","authentication_url":"https://login.tailscale.com/a/example"}}}'
+        IFS= read -r response
+        sleep 2
+        printf '%s\n' '{"operation_id":"operation-1","sequence":2,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"sha256:route-observation","generation":42,"mode":"multiplexed","arguments":["-S","/tmp/control"]}}'
+        cat >/dev/null
+        """#
+        let helper = try fixture.createExecutable(name: "kwt", content: script)
+        let received = LockedValue(false)
+        let lease = try await KwtSSHLeaseClient(
+            binaryPath: helper.path,
+            inactivityTimeout: .seconds(1)
+        ).acquire(route: Self.route, prompt: { prompt in
+            received.store(prompt.kind.rawValue == "ssh_browser_authentication")
+            return ""
+        })
+        #expect(received.load())
+        try await lease.release()
+    }
+
     @Test("lease acquisition uses Ghosthub-owned kwt daemon state")
     func isolatesDaemonState() async throws {
         let fixture = try TempDirectoryFixture()

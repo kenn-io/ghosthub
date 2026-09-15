@@ -296,7 +296,7 @@ struct KwtSSHLiveIntegrationTests {
                 return "yes"
             }
             switch prompt.kind {
-            case .hostKey:
+            case .hostKey, .browserAuthentication:
                 throw KwtSSHLeaseError.malformedEvent
             case .authentication:
                 if promptNumber == 1 {

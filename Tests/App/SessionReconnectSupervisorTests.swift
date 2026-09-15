@@ -94,6 +94,32 @@ private actor FirstReconnectDeadline {
 @Suite("Session reconnect supervisor", .serialized)
 @MainActor
 struct SessionReconnectSupervisorTests {
+    @Test("browser authentication survives the reconnect probe deadline")
+    func waitsForBrowserAuthentication() async {
+        let attempts = ReconnectAttemptCounter()
+        let deadlines = ReconnectSleepRecorder()
+        let approval = AsyncStream<Void>.makeStream()
+        let supervisor = SessionReconnectSupervisor(
+            probeDeadline: .milliseconds(10),
+            probeSleep: { try await deadlines.sleep($0) }
+        )
+        supervisor.isWaitingForAuthentication = { true }
+        supervisor.start {
+            attempts.begin()
+            var iterator = approval.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            attempts.end(cancelled: Task.isCancelled)
+            return .stop
+        }
+        await waitUntil { await deadlines.count >= 3 }
+        #expect(supervisor.isRunning)
+        #expect(attempts.count == 1)
+        #expect(attempts.cancellations == 0)
+        approval.continuation.finish()
+        await waitUntilMainActor { !supervisor.isRunning }
+        #expect(attempts.cancellations == 0)
+    }
+
     @Test(
         "probe runtime counts against the attempt-start interval",
         arguments: [

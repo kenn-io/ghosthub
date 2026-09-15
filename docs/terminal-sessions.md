@@ -110,7 +110,10 @@ Presentation lease failures open a modal only when OpenSSH needs host review,
 authentication, or explicit configuration recovery. Ordinary transport
 failures return to the session reconnect supervisor, which keeps retrying in
 the background and exposes its immediate Reconnect Now action without taking
-window focus.
+window focus. Tailscale browser authentication shows a link in the recovery
+sheet and keeps the current reconnect attempt alive while approval is pending.
+Completing the browser check resumes that attempt automatically; an expired
+check reports an authentication timeout.
 Each workspace window retains every presentation it explicitly opens, keyed by
 the exact host, tmux socket, attachment mode, and session name. Navigating to
 another host,
