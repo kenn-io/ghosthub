@@ -8,6 +8,52 @@ import Testing
 @Suite("kwt SSH connection prompts")
 @MainActor
 struct KwtSSHConnectionSessionTests {
+    @Test(
+        "browser authentication requests presentation and completes without a credential response"
+    )
+    func browserAuthentication() async throws {
+        var details = Self.passwordPrompt.details
+        details.method = "browser"
+        details.authenticationURL = URL(string: "https://login.tailscale.com/a/example")
+        let prompt = KwtSSHLeasePrompt(
+            id: "browser", kind: .browserAuthentication,
+            message: "Complete the browser check", sensitive: false,
+            deadline: "2099-08-14T12:02:00Z", details: details
+        )
+        let approval = AsyncStream<Void>.makeStream()
+        let pool = KwtSSHConnectionPool { route, respond in
+            let response = try await respond(prompt)
+            #expect(response == "")
+            var iterator = approval.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            return KwtSSHTestLease(routeIdentity: route.routeIdentity)
+        }
+        let route = Self.route
+        let coordinator = KwtSSHAcquisitionCoordinator(resolve: { _ in route }, pool: pool)
+        let host = SSHHostInfo(user: nil, hostname: "build.example.test", port: nil)
+        let session = KwtSSHConnectionSession(
+            host: host, destination: host.hostname, coordinator: coordinator
+        )
+        let requirement = await session.pendingRequirement()
+        #expect(requirement.value?.requiresAuthentication == true)
+        #expect(session.needsPresentation)
+        #expect(session.isAwaitingBrowserAuthentication)
+        let url = try #require(details.authenticationURL)
+        #expect(session.state == .browserAuthentication(url))
+
+        let second = KwtSSHConnectionSession(
+            host: host, destination: host.hostname, coordinator: coordinator
+        )
+        _ = await second.pendingRequirement()
+        #expect(second.state == .browserAuthentication(url))
+
+        approval.continuation.finish()
+        await waitUntilMainActor { session.state == .connected && second.state == .connected }
+        #expect(!session.needsPresentation)
+        try await session.release()
+        try await second.release()
+    }
+
     @Test("one lease carries host review and multi-round authentication")
     func carriesHostReviewAndAuthentication() async throws {
         let responses = LockedValue<[String]>([])

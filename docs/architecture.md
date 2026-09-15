@@ -507,6 +507,14 @@ storage. OpenSSH persists accepted keys in the `UserKnownHostsFile` selected by
 the resolved configuration, so presentation leases and kwt-owned short-lived
 commands share the same trust store.
 
+Tailscale browser checks arrive as `ssh_browser_authentication` prompts with
+an authentication URL and deadline. Ghosthub passes `--open-browser=false` so
+its native sheet owns opening the URL. Every subscribed window can show the link,
+including windows joining an acquisition already waiting for approval. The
+empty prompt response acknowledges display only; kwt keeps the same OpenSSH
+attempt alive until approval, cancellation, or the deadline. Ghosthub uses
+that deadline instead of its ordinary acquisition and reconnect timeouts.
+
 Host Settings connection tests and host-scoped recovery acquire a kwt lease,
 present kwt's native prompts, run the exact probe through the reviewed lease
 arguments, and release their client ownership when the probe or review ends.

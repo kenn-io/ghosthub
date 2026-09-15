@@ -29,6 +29,7 @@ struct KwtSSHLeaseResult: Decodable, Equatable, Sendable {
 
 enum KwtSSHLeasePromptKind: String, Decodable, Equatable, Sendable {
     case authentication = "ssh_authentication"
+    case browserAuthentication = "ssh_browser_authentication"
     case hostKey = "ssh_host_key"
 }
 
@@ -45,6 +46,8 @@ struct KwtSSHLeasePromptDetails: Decodable, Equatable, Sendable {
     let hopIndex: Int
     let hopCount: Int
     let hostKey: KwtSSHHostKeyReview?
+    var method: String? = nil
+    var authenticationURL: URL? = nil
 
     private enum CodingKeys: String, CodingKey {
         case logicalTarget = "logical_target"
@@ -53,6 +56,8 @@ struct KwtSSHLeasePromptDetails: Decodable, Equatable, Sendable {
         case hopIndex = "hop_index"
         case hopCount = "hop_count"
         case hostKey = "host_key"
+        case method
+        case authenticationURL = "authentication_url"
     }
 }
 
@@ -524,14 +529,14 @@ private final class SSHLeaseInactivityWatchdog: @unchecked Sendable {
         self.timeout = timeout
     }
 
-    func arm() {
+    func arm(timeout override: Duration? = nil) {
         let token = lock.withLock {
             generation = UUID()
             task?.cancel()
             return generation
         }
         let scheduled = Task { [weak self] in
-            try? await Task.sleep(for: self?.timeout ?? .zero)
+            try? await Task.sleep(for: override ?? self?.timeout ?? .zero)
             guard !Task.isCancelled else { return }
             self?.expire(token)
         }
@@ -601,7 +606,7 @@ struct KwtSSHLeaseClient: Sendable {
         let executable = binaryPath ?? "/usr/bin/env"
         var arguments = binaryPath == nil ? ["kwt"] : []
         arguments.append(contentsOf: [
-            "ssh", "lease", "--json",
+            "ssh", "lease", "--json", "--open-browser=false",
             "--route-identity", route.routeIdentity,
             "--projection-policy", route.projectionPolicy,
             "--host-key-policy", hostKeyPolicy.rawValue,
@@ -644,6 +649,7 @@ struct KwtSSHLeaseClient: Sendable {
         )
         watchdog.arm()
 
+        var browserDeadline: Date?
         do {
             var operationID: String?
             var sequence: UInt64 = 0
@@ -669,7 +675,11 @@ struct KwtSSHLeaseClient: Sendable {
                 else {
                     throw KwtSSHLeaseError.malformedEvent
                 }
-                watchdog.arm()
+                if let browserDeadline {
+                    watchdog.arm(timeout: .seconds(max(0, browserDeadline.timeIntervalSinceNow)))
+                } else {
+                    watchdog.arm()
+                }
                 sequence = event.sequence
                 switch event.kind {
                 case .progress, .warning:
@@ -682,6 +692,9 @@ struct KwtSSHLeaseClient: Sendable {
                     }
                     watchdog.suspend()
                     let value = try await prompt(eventPrompt)
+                    if eventPrompt.kind == .browserAuthentication {
+                        browserDeadline = Self.promptDate(eventPrompt.deadline)
+                    }
                     var encoded = try JSONEncoder().encode(
                         KwtSSHLeasePromptResponse(
                             promptID: eventPrompt.id,
@@ -690,7 +703,14 @@ struct KwtSSHLeaseClient: Sendable {
                     )
                     encoded.append(0x0A)
                     try input.write(contentsOf: encoded)
-                    watchdog.arm()
+                    if let browserDeadline {
+                        watchdog.arm(timeout: .seconds(max(
+                            0,
+                            browserDeadline.timeIntervalSinceNow
+                        )))
+                    } else {
+                        watchdog.arm()
+                    }
                 case .complete:
                     if let failure = event.failure {
                         if failure.code == "ssh_configuration_changed" {
@@ -733,9 +753,18 @@ struct KwtSSHLeaseClient: Sendable {
                 status: process.terminationStatus
             )
         } catch {
-            let failure = watchdog.isExpired
-                ? KwtSSHLeaseError.acquisitionTimedOut
-                : error
+            let failure: Error
+            if watchdog.isExpired, browserDeadline != nil {
+                failure = KwtSSHLeaseError.operationFailed(
+                    code: "ssh_prompt_timed_out",
+                    message: "SSH browser authentication timed out. Try again for a new link.",
+                    retryable: false
+                )
+            } else {
+                failure = watchdog.isExpired
+                    ? KwtSSHLeaseError.acquisitionTimedOut
+                    : error
+            }
             watchdog.cancel()
             try? input.close()
             if process.isRunning {
@@ -850,7 +879,7 @@ struct KwtSSHLeaseClient: Sendable {
         switch prompt.kind {
         case .authentication:
             prompt.sensitive
-        case .hostKey:
+        case .hostKey, .browserAuthentication:
             !prompt.sensitive
         }
     }
@@ -861,6 +890,16 @@ struct KwtSSHLeaseClient: Sendable {
         switch prompt.kind {
         case .authentication:
             return prompt.details.hostKey == nil
+        case .browserAuthentication:
+            guard let url = prompt.details.authenticationURL else { return false }
+            return prompt.details.hostKey == nil
+                && prompt.details.method == "browser"
+                && url.scheme == "https"
+                && url.host == "login.tailscale.com"
+                && url.user == nil
+                && url.port == nil
+                && url.path.hasPrefix("/a/")
+                && url.path.count > 3
         case .hostKey:
             guard let hostKey = prompt.details.hostKey else { return false }
             return !hostKey.host.isEmpty
@@ -890,12 +929,16 @@ struct KwtSSHLeaseClient: Sendable {
     }
 
     private static func isRFC3339(_ value: String) -> Bool {
+        promptDate(value) != nil
+    }
+
+    private static func promptDate(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if formatter.date(from: value) != nil {
-            return true
+        if let date = formatter.date(from: value) {
+            return date
         }
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: value) != nil
+        return formatter.date(from: value)
     }
 }
