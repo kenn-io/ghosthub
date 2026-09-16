@@ -283,9 +283,9 @@ else
   XCODE=$(find_xcode "$XCODE_VERSION") || { warn "Xcode $XCODE_VERSION is still not installed."; exit 1; }
   say "✓ installed at $XCODE"
 fi
-# The Swift compiler in newer Xcodes (27.0 at the time of writing) cannot
-# type-check some existing @Test macro expansions, so when a newer Xcode is
-# selected, build with the validated one through DEVELOPER_DIR, as CI does.
+# Build with the Xcode CI validates. When another Xcode is selected, point
+# DEVELOPER_DIR at it for the remaining stages instead of changing
+# xcode-select.
 ACTIVE_XCODE_VERSION=$(xcodebuild -version 2>/dev/null | awk 'NR == 1 { print $2 }')
 if [[ "$ACTIVE_XCODE_VERSION" != 26.0* ]] && XCODE=$(find_xcode "$XCODE_VERSION"); then
   export DEVELOPER_DIR="$XCODE/Contents/Developer"
