@@ -6,7 +6,17 @@ Swift code and bootstraps libghostty locally.
 
 ## Prerequisites
 
-- Full Xcode install, not Command Line Tools only.
+`tools/dev_setup_wizard.sh` walks through everything in this section and the
+libghostty bootstrap, skipping steps that are already done. Run it when setting
+up a new machine or when `make bootstrap-libghostty` fails; the list below is
+what it checks.
+
+- Full Xcode install, not Command Line Tools only. Xcode 26.0.1 is the
+  release CI validates. Newer Xcodes have two known problems: their SDKs no
+  longer advertise plain `arm64-macos`, which the Zig build needs, and Xcode
+  27's Swift compiler cannot type-check some existing `@Test` macro
+  expansions. If a newer Xcode is selected, keep 26.0.1 installed alongside
+  it and build with `export DEVELOPER_DIR=/Applications/Xcode_26.0.1.app/Contents/Developer`.
 - Active developer directory pointing at that Xcode:
 
   ```bash
