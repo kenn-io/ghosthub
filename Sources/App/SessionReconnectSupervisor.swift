@@ -37,6 +37,7 @@ final class SessionReconnectSupervisor {
     private let sleep: Sleep
     private let probeSleep: Sleep
     private(set) var isRunning = false
+    var isWaitingForAuthentication: @MainActor @Sendable () -> Bool = { false }
     private var phase = Phase.idle
     private var generation = UUID()
     private var task: Task<Void, Never>?
@@ -152,13 +153,16 @@ final class SessionReconnectSupervisor {
     ) async -> SessionReconnectDecision {
         let deadline = probeDeadline
         let probeSleep = probeSleep
+        let isWaitingForAuthentication = isWaitingForAuthentication
         return await withTaskGroup(of: AttemptRace.self) { group in
             group.addTask {
                 await .decision(attempt())
             }
             group.addTask {
                 do {
-                    try await probeSleep(deadline)
+                    repeat {
+                        try await probeSleep(deadline)
+                    } while await isWaitingForAuthentication()
                     return .deadline
                 } catch {
                     return .cancelled

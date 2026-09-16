@@ -16,6 +16,7 @@ struct SSHAuthenticationPrompt: Equatable, Sendable {
 enum SSHAuthenticationSessionState: Equatable, Sendable {
     case starting
     case prompt(SSHAuthenticationPrompt)
+    case browserAuthentication(URL)
     case verifying
     case connected
     case configurationChanged

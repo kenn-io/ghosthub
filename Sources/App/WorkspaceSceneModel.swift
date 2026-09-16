@@ -6453,6 +6453,13 @@ final class WorkspaceSceneModel: ObservableObject {
         presentationSSHSession = presentationSSHSessions[sessionID]
     }
 
+    private func isWaitingForSSHBrowserAuthentication(on host: CommandHost) -> Bool {
+        guard case let .ssh(info) = host else { return false }
+        return presentationSSHSessions.values.contains {
+            $0.finalHost == info && $0.isAwaitingBrowserAuthentication
+        }
+    }
+
     private func removePresentationSSHSession(
         _ sessionID: UUID,
         cancel: Bool
@@ -6620,7 +6627,7 @@ final class WorkspaceSceneModel: ObservableObject {
             return .connected
         case .configurationChanged:
             return .reviewRequired
-        case .starting, .prompt, .verifying, .failed:
+        case .starting, .prompt, .browserAuthentication, .verifying, .failed:
             return .pending
         }
     }
@@ -6746,7 +6753,7 @@ final class WorkspaceSceneModel: ObservableObject {
             switch hostSSHSession.state {
             case .failed, .configurationChanged:
                 break
-            case .starting, .prompt, .verifying, .connected:
+            case .starting, .prompt, .browserAuthentication, .verifying, .connected:
                 if let ownerID {
                     hostSSHSessionOwnerID = ownerID
                 }
@@ -12157,6 +12164,9 @@ final class WorkspaceSceneModel: ObservableObject {
             reason: message
         )
         sessionConnectionRecoveryRequest = nil
+        zellijReconnectSupervisor.isWaitingForAuthentication = { [weak self] in
+            self?.isWaitingForSSHBrowserAuthentication(on: context.host) == true
+        }
         zellijReconnectSupervisor.start { [weak self] in
             guard let self else { return .stop }
             return await attemptZellijReconnect(context)
@@ -12516,6 +12526,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 + "Ghosthub will reconnect automatically."
         )
         sessionConnectionRecoveryRequest = nil
+        herdrReconnectSupervisor.isWaitingForAuthentication = { [weak self] in
+            self?.isWaitingForSSHBrowserAuthentication(on: context.host) == true
+        }
         herdrReconnectSupervisor.start { [weak self] in
             guard let self else { return .stop }
             return await attemptHerdrReconnect(context)
@@ -12725,6 +12738,9 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         presentation.recoveryRequest = nil
         publishActiveState(for: presentation)
+        presentation.reconnectSupervisor.isWaitingForAuthentication = { [weak self] in
+            self?.isWaitingForSSHBrowserAuthentication(on: context.host) == true
+        }
         let attempt: SessionReconnectSupervisor.Attempt = {
             [weak self, weak presentation] in
             guard let presentation else { return .stop }

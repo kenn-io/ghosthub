@@ -43,8 +43,14 @@ final class KwtSSHConnectionSession: ObservableObject {
 
     var finalHost: SSHHostInfo { request.host }
     var isAwaitingPrompt: Bool { pendingPrompt != nil }
+    var isAwaitingBrowserAuthentication: Bool {
+        if case .browserAuthentication = state {
+            return true
+        }
+        return false
+    }
     var needsPresentation: Bool {
-        if isAwaitingPrompt {
+        if isAwaitingPrompt || isAwaitingBrowserAuthentication {
             return true
         }
         switch state {
@@ -60,7 +66,7 @@ final class KwtSSHConnectionSession: ObservableObject {
             case .transport, .hostKeyChanged, .configurationChanged:
                 return false
             }
-        case .starting, .prompt, .verifying, .connected:
+        case .starting, .prompt, .browserAuthentication, .verifying, .connected:
             return false
         }
     }
@@ -200,6 +206,8 @@ final class KwtSSHConnectionSession: ObservableObject {
         case .prompt:
             guard pendingPrompt != nil else { return nil }
             return .success(.authentication)
+        case .browserAuthentication:
+            return .success(.authentication)
         case .connected:
             return .success(.none)
         case .configurationChanged:
@@ -293,6 +301,17 @@ final class KwtSSHConnectionSession: ObservableObject {
         }
         displayHost = Self.hostInfo(prompt.details.effectiveTarget)
         switch prompt.kind {
+        case .browserAuthentication:
+            guard let url = prompt.details.authenticationURL else {
+                throw KwtSSHLeaseError.malformedEvent
+            }
+            hostKeyConfirmation = nil
+            state = .browserAuthentication(url)
+            onPresentationRequired()
+            publishRequirement()
+            // Acknowledge display immediately. SSH completes authentication
+            // in the browser; no credential is sent back through this prompt.
+            return ""
         case .hostKey:
             guard let review = prompt.details.hostKey else {
                 throw KwtSSHLeaseError.malformedEvent

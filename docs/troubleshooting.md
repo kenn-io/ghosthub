@@ -91,6 +91,11 @@ diagnostic and offers **Retry**. Ghosthub shows interactive challenges in a
 native secure-entry sheet, confirms the connection before you continue, and
 shares that OpenSSH connection while windows use it; once the last owner
 releases it, kwt applies its own idle policy. The response is not saved.
+When Tailscale SSH requires a browser check, choose **Open Authentication Page**
+in Ghosthub's authentication sheet and complete the sign-in. Ghosthub keeps
+that SSH attempt open and continues automatically after approval. If the check
+expires, retry the connection to request a fresh link.
+
 Use **Test Connection** to verify authentication and that `tmux` is on the
 remote login-shell `PATH`.
 Kwt does not need a system installation: Ghosthub automatically installs or

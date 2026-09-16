@@ -22,6 +22,7 @@ assets=(
   guide-session-activity.png
   guide-hosts.png
   guide-tailscale-import.png
+  guide-ssh-browser-authentication.png
   guide-exe-dev.png
   guide-worktree.png
   guide-worktree-window-counts.png

@@ -47,6 +47,7 @@ actor KwtSSHAcquisitionCoordinator {
     private let pool: KwtSSHConnectionPool
     private var resolutions: [KwtSSHDestinationRequest: Resolution] = [:]
     private var subscribers: [UUID: Subscriber] = [:]
+    private var browserPrompts: [String: KwtSSHLeasePrompt] = [:]
     private var nextOrder: UInt64 = 0
 
     init(
@@ -85,6 +86,9 @@ actor KwtSSHAcquisitionCoordinator {
                 guard subscribers[subscriberID] != nil else {
                     throw CancellationError()
                 }
+                if canPresentPrompts, let notice = browserPrompts[route.routeIdentity] {
+                    _ = try await prompt(route, notice)
+                }
                 let connection = try await pool.acquire(
                     route: route,
                     subscriberID: subscriberID,
@@ -98,6 +102,7 @@ actor KwtSSHAcquisitionCoordinator {
                     }
                 )
                 subscribers.removeValue(forKey: subscriberID)
+                browserPrompts.removeValue(forKey: route.routeIdentity)
                 return connection
             } catch {
                 await cancel(
@@ -133,6 +138,9 @@ actor KwtSSHAcquisitionCoordinator {
             }
         }
         if let routeIdentity {
+            if !subscribers.values.contains(where: { $0.routeIdentity == routeIdentity }) {
+                browserPrompts.removeValue(forKey: routeIdentity)
+            }
             await pool.cancelAcquisition(
                 routeIdentity: routeIdentity,
                 subscriberID: subscriberID
@@ -181,6 +189,10 @@ actor KwtSSHAcquisitionCoordinator {
         route: KwtSSHRouteSnapshot,
         prompt: KwtSSHLeasePrompt
     ) async throws -> String {
+        if prompt.kind == .browserAuthentication {
+            browserPrompts[route.routeIdentity] = prompt
+        }
+        var deliveredBrowserPrompt = false
         var attempted: Set<UUID> = []
         while true {
             guard let candidate = subscribers
@@ -191,6 +203,9 @@ actor KwtSSHAcquisitionCoordinator {
                 })
                 .min(by: { $0.value.order < $1.value.order })
             else {
+                if deliveredBrowserPrompt {
+                    return ""
+                }
                 throw KwtSSHLeaseError.operationFailed(
                     code: "ssh_interaction_required",
                     message: "SSH authentication requires an active window.",
@@ -202,7 +217,11 @@ actor KwtSSHAcquisitionCoordinator {
                 let response = try await candidate.value.prompt(route, prompt)
                 guard subscribers[candidate.key]?.routeIdentity
                     == route.routeIdentity else { continue }
-                return response
+                if prompt.kind == .browserAuthentication {
+                    deliveredBrowserPrompt = true
+                } else {
+                    return response
+                }
             } catch let error as KwtSSHLeaseError
                 where error.code == "ssh_prompt_timed_out" {
                 throw error
