@@ -20,6 +20,9 @@ Swift code and bootstraps libghostty locally.
   `Vendor/ghostty.version.json` for libghostty bootstrap.
 - `git`, `xcodebuild`, and `xcrun`.
 
+`mise install` in the repository root installs the pinned Zig and Go from
+`mise.toml`; the other tools are installed manually.
+
 Complete Xcode's first-launch setup before bootstrapping:
 
 ```bash
