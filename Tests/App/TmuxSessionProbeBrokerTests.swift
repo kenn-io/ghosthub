@@ -87,6 +87,23 @@ private actor ProbeGate {
 @Suite("Tmux session probe broker")
 struct TmuxSessionProbeBrokerTests {
     @MainActor
+    @Test("default probes use available rows while kwt discovery fails")
+    func partialDiscoveryStillProbesDefault() async {
+        let broker = TmuxSessionProbeBroker(
+            discover: { _ in .failure(.kwtDiscoveryFailed(sessions: [.init(
+                name: "desk", windowCount: 1, createdAt: "1000", managed: false
+            )], status: 1)) },
+            exactProbe: { _ in .failure(.shellFailed(status: 1)) }
+        )
+        let host = SSHHostInfo(user: nil, hostname: "fixture", port: nil)
+        #expect(await broker.session(.init(host: host, name: "desk", socketName: nil)) == .present)
+        #expect(await broker
+            .session(.init(host: host, name: "missing", socketName: nil)) == .absent)
+        #expect(await broker.session(.init(host: host, name: "desk", socketName: "kwt"))
+            == .failure(.shellFailed(status: 1)))
+    }
+
+    @MainActor
     @Test("a kwt namesake does not satisfy a default socket probe")
     func defaultProbeRejectsKwtNamesake() async {
         let broker = TmuxSessionProbeBroker(

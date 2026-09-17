@@ -6,6 +6,7 @@ import GhosthubWorkspace
 enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
     case notFound(shell: String)
     case shellFailed(status: Int32)
+    case kwtDiscoveryFailed(sessions: [DiscoveredTmuxSession], status: Int32)
     case sshConnectionFailed(
         host: String,
         classification: SSHConnectionFailure.Classification
@@ -26,6 +27,9 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
         case let .shellFailed(status):
             return "The login shell exited with status \(status) while"
                 + " locating tmux. Check your shell startup files."
+        case let .kwtDiscoveryFailed(_, status):
+            return "The kwt tmux server could not be read (status \(status))."
+                + " Default-server sessions are available; kwt sessions may be out of date."
         case let .sshConnectionFailed(host, classification):
             return "\(classification.diagnostic.summary) Host: \(host). "
                 + classification.diagnostic.recoverySuggestion
@@ -60,6 +64,17 @@ struct DiscoveredTmuxSession: Equatable, Sendable {
     var activeWindowSize: TmuxGridSize?
     var previewClientSize: TmuxGridSize?
     var managed: Bool
+
+    var summary: TmuxSessionSummary {
+        TmuxSessionSummary(
+            name: name, socketName: socketName, managed: managed,
+            windows: (0 ..< windowCount).map {
+                TmuxWindowSummary(id: "discovered-\($0)", index: $0, name: "")
+            },
+            serverPID: serverPID, sessionID: sessionID, createdAt: createdAt,
+            activeWindowSize: activeWindowSize, previewClientSize: previewClientSize
+        )
+    }
 
     init(
         name: String,
@@ -345,6 +360,7 @@ struct TmuxBinaryResolver: Sendable {
             + "\"$ghosthub_tmux_path\" -V || exit $?"
 
     private static let discoveryPrefix = "GHOSTHUB_TMUX_SESSION"
+    private static let kwtFailureMarker = "GHOSTHUB_TMUX_KWT_UNAVAILABLE"
     private static let sessionPresentMarker =
         "GHOSTHUB_TMUX_SESSION_PRESENT"
     private static let sessionAbsentMarker =
@@ -362,6 +378,9 @@ struct TmuxBinaryResolver: Sendable {
         let queries = socketNames.map { socketName -> String in
             let prefix = TmuxSocketEnvironment.commandPrefix(socketName: socketName)
                 .map { shellQuotedCommandArgument($0) + " " }.joined()
+            let failure = socketName == "kwt"
+                ? "printf '%s\\t%s\\n' \(kwtFailureMarker) \"$ghosthub_tmux_status\""
+                : "exit \"$ghosthub_tmux_status\""
             return "; ghosthub_tmux_output=$(" + prefix
                 + "\"$ghosthub_tmux_path\" -L "
                 + shellQuotedCommandArgument(socketName ?? "default")
@@ -375,7 +394,7 @@ struct TmuxBinaryResolver: Sendable {
                 + "*\"no server running on \"*|"
                 + "*\"failed to connect to server: No such file or directory\"*|"
                 + "*\"error connecting to \"*\" (No such file or directory)\"*) "
-                + ": ;; *) exit \"$ghosthub_tmux_status\" ;; esac; fi"
+                + ": ;; *) \(failure) ;; esac; fi"
         }
         return probeCommand + queries.joined()
     }()
@@ -410,8 +429,11 @@ struct TmuxBinaryResolver: Sendable {
             if ($LASTEXITCODE -ne 0) {
                 exit $LASTEXITCODE
             }
-            """ + [nil, "kwt"].map { socketName in
-                """
+            """ + [nil, "kwt"].map { socketName -> String in
+                let failure = socketName == "kwt"
+                    ? "Write-Output \"\(kwtFailureMarker)`t$ghosthubMuxStatus\""
+                    : "exit $ghosthubMuxStatus"
+                return """
 
                 \(TmuxSocketEnvironment.powerShellPrelude(socketName: socketName))
                 $ghosthubMuxOutput = (& $ghosthubMux '-L' \(
@@ -426,7 +448,7 @@ struct TmuxBinaryResolver: Sendable {
                     [Console]::Error.Write($ghosthubMuxOutput)
                     if ($ghosthubMuxOutput -notmatch 'no server running on ' -and
                         $ghosthubMuxOutput -notmatch 'failed to connect to server: No such file or directory') {
-                        exit $ghosthubMuxStatus
+                        \(failure)
                     }
                 }
                 """
@@ -638,6 +660,13 @@ struct TmuxBinaryResolver: Sendable {
                     managed: !fields[9].isEmpty
                 )
             }
+        let failurePrefix = kwtFailureMarker + "\t"
+        if let failure = result.stdout.split(whereSeparator: \.isNewline)
+            .last(where: { $0.hasPrefix(failurePrefix) }),
+            let status = Int32(failure.dropFirst(failurePrefix.count)),
+            status != 0 {
+            return .failure(.kwtDiscoveryFailed(sessions: sessions, status: status))
+        }
         return .success(sessions)
     }
 

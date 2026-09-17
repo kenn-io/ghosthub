@@ -566,8 +566,9 @@ Ghosthub therefore
 executes `kwt open <exact-path>` as the initial attached tmux client. Git
 worktrees include all four `--expected-*` identity flags. Directory workspaces
 omit those flags because the pinned helper accepts guarded open only for Git
-worktrees; Ghosthub still checks the selected directory's registered session
-before launching. Kwt
+worktrees. Before showing a POSIX workspace terminal, Ghosthub compares its
+attached client's identity with the selected endpoint on both default and
+named sockets. Kwt
 idempotently repairs an existing session or creates the configured layout when
 it is absent, without an intermediate detached session that
 `destroy-unattached` could remove. Ghosthub uses this path even when cached

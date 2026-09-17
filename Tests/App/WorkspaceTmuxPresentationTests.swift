@@ -989,6 +989,9 @@ extension WorkspaceTmuxDiscoveryTests {
             tmuxSessionValidationDiscovery: { _, _ in
                 reconnectProbes.removeFirst()
             },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in
+                TmuxSessionIdentity(serverPID: "101", sessionID: "$1", createdAt: "1000")
+            },
             tmuxReconnectIntervals: [.seconds(60)]
         )
         let canonical = WorkspaceSidebarModel.tmuxSessionSelection(

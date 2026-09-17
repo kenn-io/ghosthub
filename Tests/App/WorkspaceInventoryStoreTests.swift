@@ -1357,7 +1357,7 @@ struct WorkspaceInventoryStoreTests {
             wantsKwt: false,
             wantsTmux: true
         )
-        store.publishTmuxSessions([probed], on: .local, epoch: staleEpoch)
+        store.publishTmuxDiscovery(.success([probed]), on: .local, epoch: staleEpoch)
         #expect(store.snapshot.tmuxByHost[.local]?.sessions == nil)
 
         firstLoad.open()
@@ -1369,7 +1369,7 @@ struct WorkspaceInventoryStoreTests {
         store.refreshTmux(for: subscriberID)
         let currentEpoch = store.tmuxRefreshEpoch(on: .local)
         await secondLoad.waitUntilWaiting()
-        store.publishTmuxSessions([probed], on: .local, epoch: currentEpoch)
+        store.publishTmuxDiscovery(.success([probed]), on: .local, epoch: currentEpoch)
         #expect(store.snapshot.tmuxByHost[.local]?.sessions == [probed])
         #expect(store.snapshot.tmuxByHost[.local]?.isFresh == true)
 

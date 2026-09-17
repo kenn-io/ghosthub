@@ -654,8 +654,8 @@ struct TmuxBinaryResolverTests {
         )
     }
 
-    @Test("default discovery preserves a generic tmux status one failure")
-    func discoveryCommandPreservesGenericFailure() throws {
+    @Test("discovery preserves available default sessions when kwt fails", arguments: [false, true])
+    func discoveryCommandPreservesGenericFailure(defaultAvailable: Bool) throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ghosthub-tmux-discovery-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
@@ -669,6 +669,10 @@ struct TmuxBinaryResolverTests {
         #!/bin/sh
         if [ "$1" = "-V" ]; then
           printf 'tmux 3.6a\n'
+          exit 0
+        fi
+        if [ "\(defaultAvailable)" = true ] && [ "$2" = default ]; then
+          printf 'GHOSTHUB_TMUX_SESSION\t\t1\t101\t$1\t1000\t80\t24\ton\t\tdesk\n'
           exit 0
         fi
         printf 'error connecting to tmux server (Permission denied)\n' >&2
@@ -695,10 +699,18 @@ struct TmuxBinaryResolverTests {
             loginShellProvider: { shell.path }
         )
 
-        #expect(
-            resolver.discoverSessions()
-                == .failure(.shellFailed(status: 1))
-        )
+        let result = resolver.discoverSessions()
+        if defaultAvailable {
+            guard case let .failure(.kwtDiscoveryFailed(sessions, status)) = result else {
+                Issue.record("expected default sessions with a kwt warning")
+                return
+            }
+            #expect(sessions.map(\.name) == ["desk"])
+            #expect(sessions.allSatisfy { $0.socketName == nil })
+            #expect(status == 1)
+        } else {
+            #expect(result == .failure(.shellFailed(status: 1)))
+        }
     }
 
     @Test("nonzero exit maps to notFound")

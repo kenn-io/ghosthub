@@ -3077,12 +3077,15 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("Direct workspace publishes only its captured endpoint")
-    func directWorkspacePublishesCapturedEndpoint() async throws {
+    @Test(
+        "Direct workspace publishes only its captured endpoint",
+        arguments: [nil, "kwt"] as [String?]
+    )
+    func directWorkspacePublishesCapturedEndpoint(socketName: String?) async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
-        snapshot.worktrees[0].tmuxSocketName = "kwt-main"
+        snapshot.worktrees[0].tmuxSocketName = socketName
         snapshot.worktrees[0].tmuxAttachMode = .direct
         let worktree = try #require(snapshot.worktrees.first)
         let selection = try #require(
@@ -3139,15 +3142,18 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("Windows direct workspace confirms its captured endpoint")
-    func windowsDirectWorkspacePublishesCapturedEndpoint() async throws {
+    @Test(
+        "Windows direct workspace confirms its captured endpoint",
+        arguments: [nil, "kwt"] as [String?]
+    )
+    func windowsDirectWorkspacePublishesCapturedEndpoint(socketName: String?) async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
         snapshot.hosts[0].platform = .windows
         snapshot.hosts[0].sshDestination = "operator@windows.example.test"
         snapshot.worktrees[0].path = #"C:\code\ghosthub"#
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
-        snapshot.worktrees[0].tmuxSocketName = "kwt"
+        snapshot.worktrees[0].tmuxSocketName = socketName
         snapshot.worktrees[0].tmuxAttachMode = .direct
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
@@ -3210,12 +3216,15 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("Direct workspace rejects a client attached to another endpoint")
-    func directWorkspaceRejectsUnconfirmedEndpoint() async throws {
+    @Test(
+        "Direct workspace rejects a client attached to another endpoint",
+        arguments: [nil, "kwt-main"] as [String?]
+    )
+    func directWorkspaceRejectsUnconfirmedEndpoint(socketName: String?) async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
-        snapshot.worktrees[0].tmuxSocketName = "kwt-main"
+        snapshot.worktrees[0].tmuxSocketName = socketName
         snapshot.worktrees[0].tmuxAttachMode = .direct
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
@@ -3233,6 +3242,11 @@ extension WorkspaceTmuxDiscoveryTests {
             sessionID: "$8",
             createdAt: "654"
         )
+        let discovered = DiscoveredTmuxSession(
+            name: selection.name, socketName: socketName, windowCount: 1,
+            serverPID: capturedIdentity.serverPID, sessionID: capturedIdentity.sessionID,
+            createdAt: capturedIdentity.createdAt, managed: true
+        )
         let capturedEndpointReads = Counter()
         let leaseArguments = ["-F", "/tmp/attachment-config"]
         let surfaceStore = SceneTmuxSurfaceStoreStub()
@@ -3246,6 +3260,7 @@ extension WorkspaceTmuxDiscoveryTests {
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            tmuxSessionDiscovery: { _ in .success([discovered]) },
             presentationSSHConnectionProvider: { _, _ in
                 testKwtSSHAttachment(arguments: leaseArguments)
             },

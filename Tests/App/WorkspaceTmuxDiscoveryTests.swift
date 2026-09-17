@@ -13,6 +13,84 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
+    @Test("a kwt discovery failure updates default rows and retains kwt rows until recovery")
+    @MainActor
+    func partialKwtDiscoveryRetainsRowsUntilRecovery() async throws {
+        let environment = try setupStandardEnvironment()
+        let old = DiscoveredTmuxSession(
+            name: "old", windowCount: 1, createdAt: "1000", managed: false
+        )
+        let fresh = DiscoveredTmuxSession(
+            name: "desk", windowCount: 2, createdAt: "2000", managed: false
+        )
+        let retained = DiscoveredTmuxSession(
+            name: "retained", socketName: "kwt", windowCount: 3,
+            createdAt: "1000", managed: false
+        )
+        let partial = TmuxBinaryError.kwtDiscoveryFailed(sessions: [fresh], status: 1)
+        let discoveries = TmuxDiscoveryResultQueue([
+            .success([old, retained]), .failure(partial), .success([fresh]),
+        ])
+        let recoveryGate = AsyncGate()
+        defer { recoveryGate.open() }
+        let inventory = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in KwtHostInventory(projects: []) },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in
+                if discoveries.count == 2 {
+                    await recoveryGate.wait()
+                }
+                return discoveries.removeFirst()
+            },
+            mutationCoordinator: WorktreeMutationCoordinator()
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            workspaceInventoryStore: inventory
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.host.id)?.tmuxSessions.count == 2
+        }
+
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.workspaceInventoryWarningsByHost[environment.host.id] != nil
+        }
+        #expect(model.snapshot.host(id: environment.host.id)?.tmuxSessions.map(\.name)
+            == ["desk", "retained"])
+        #expect(inventory.snapshot.tmuxByHost[.local]?.sessions == [fresh, retained])
+        #expect(inventory.snapshot.tmuxByHost[.local]?.isFresh == false)
+        #expect(model.workspaceInventoryWarningsByHost[environment.host.id]?
+            .contains(partial.localizedDescription) == true)
+
+        model.refreshTmuxSessionDiscovery()
+        await recoveryGate.waitUntilWaiting()
+        let secondScene = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            workspaceInventoryStore: inventory
+        )
+        secondScene.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            secondScene.workspaceInventoryWarningsByHost[environment.host.id] != nil
+        }
+        #expect(secondScene.snapshot.host(id: environment.host.id)?.tmuxSessions.map(\.name)
+            == ["desk", "retained"])
+        #expect(secondScene.snapshot.host(id: environment.host.id)?
+            .tmuxInventoryIsAuthoritative == false)
+        recoveryGate.open()
+        await waitUntilMainActor { inventory.snapshot.tmuxByHost[.local]?.isFresh == true }
+        #expect(model.snapshot.host(id: environment.host.id)?.tmuxSessions.map(\.name) == ["desk"])
+        #expect(model.workspaceInventoryWarningsByHost[environment.host.id] == nil)
+        await secondScene.shutdown()
+        await model.shutdown()
+    }
+
     @Test("hiding a named socket does not use a default-socket preview grid")
     @MainActor
     func namedSocketHidingDoesNotUseDefaultSocketPreviewGrid() async throws {
@@ -2009,9 +2087,9 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
-    @Test("successful creation reconciliation restores host discovery state")
+    @Test("creation reconciliation keeps available default sessions", arguments: [false, true])
     @MainActor
-    func successfulCreationReconciliationRestoresHostDiscoveryState()
+    func successfulCreationReconciliationRestoresHostDiscoveryState(kwtUnavailable: Bool)
         async throws {
         let environment = try setupRemoteTmuxEnvironment()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
@@ -2026,14 +2104,17 @@ struct WorkspaceTmuxDiscoveryTests {
             },
             tmuxSessionDiscovery: { _ in
                 _ = discoveries.increment()
-                return .success([
+                let sessions = [
                     DiscoveredTmuxSession(
                         name: "created-work",
                         windowCount: 2,
                         createdAt: "1721552400",
                         managed: false
                     ),
-                ])
+                ]
+                return kwtUnavailable
+                    ? .failure(.kwtDiscoveryFailed(sessions: sessions, status: 1))
+                    : .success(sessions)
             },
             createdSessionDiscoveryDelays: [.zero]
         )
@@ -2051,7 +2132,7 @@ struct WorkspaceTmuxDiscoveryTests {
                   )
             else { return false }
             return host.lastSeenAt != nil
-                && host.tmuxInventoryIsAuthoritative
+                && host.tmuxInventoryIsAuthoritative == !kwtUnavailable
                 && host.tmuxSessions.first(where: {
                     $0.name == "created-work"
                 })?.windows.count == 2
@@ -2062,7 +2143,10 @@ struct WorkspaceTmuxDiscoveryTests {
         )
         #expect(host.lastKnownReachable)
         #expect(host.lastSeenAt != nil)
-        #expect(host.tmuxInventoryIsAuthoritative)
+        #expect(host.tmuxInventoryIsAuthoritative == !kwtUnavailable)
+        #expect((model.workspaceInventoryWarningsByHost[environment.remoteHost.id] != nil)
+            == kwtUnavailable)
+        #expect(model.pendingCreatedTmuxSessionCount == 0)
         #expect(host.tmuxSessions.first(where: {
             $0.name == "created-work"
         })?.windows.count == 2)

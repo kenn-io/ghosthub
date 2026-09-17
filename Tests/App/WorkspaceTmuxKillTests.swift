@@ -193,6 +193,11 @@ extension WorkspaceTmuxDiscoveryTests {
         snapshot.worktrees[0].tmuxSessionName = sessionName
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        let identity = TmuxSessionIdentity(
+            serverPID: "31416",
+            sessionID: "$9",
+            createdAt: "1721552500"
+        )
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
@@ -202,8 +207,11 @@ extension WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity),
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             tmuxSessionKiller: { _, _, _ in },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in identity },
             createdSessionDiscoveryDelays: [.milliseconds(1)]
         )
 
@@ -244,8 +252,8 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("closing a worktree replaces the discovery its probe superseded")
-    func closingWorktreeReplacesSupersededDiscovery() async throws {
+    @Test("closing a worktree keeps pending discovery usable")
+    func closingWorktreeKeepsPendingDiscovery() async throws {
         let environment = try setupStandardEnvironment()
         let sessionName = "kwt-wt-ghosthub-main-12345678"
         let attempts = Counter()
@@ -274,6 +282,11 @@ extension WorkspaceTmuxDiscoveryTests {
             ),
         ]
         snapshot.hosts[0].tmuxInventoryIsAuthoritative = true
+        let identity = TmuxSessionIdentity(
+            serverPID: "31416",
+            sessionID: "$9",
+            createdAt: "1721552500"
+        )
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
@@ -283,12 +296,15 @@ extension WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity),
             tmuxSessionDiscovery: { _ in
                 if attempts.increment() == 1 {
                     blockedRefresh.wait()
                 }
                 return .success([discovered])
             },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in identity },
             createdSessionDiscoveryDelays: [.zero]
         )
         defer { blockedRefresh.release() }
@@ -308,8 +324,7 @@ extension WorkspaceTmuxDiscoveryTests {
         model.closeBorrowedTmuxSession(selection)
         blockedRefresh.release()
         await waitUntilMainActor(timeout: .seconds(1)) {
-            attempts.count >= 2
-                && model.snapshot.host(id: environment.host.id)?
+            model.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.first?.windows.count == 3
         }
 

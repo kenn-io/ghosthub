@@ -60,6 +60,7 @@ final class WorkspaceInventoryStore {
         var observationRevision: UInt64
         var state: TmuxLoadState
         var isFresh: Bool
+        var kwtFailureStatus: Int32?
 
         static let empty = TmuxEntry(
             sessions: nil,
@@ -332,21 +333,26 @@ final class WorkspaceInventoryStore {
     }
 
     /// The current tmux refresh epoch for a host. A scene-local probe captures
-    /// it before discovery and passes it back to `publishTmuxSessions`, which
+    /// it before discovery and passes it back to `publishTmuxDiscovery`, which
     /// drops the publication when a newer shared refresh has started since.
     func tmuxRefreshEpoch(on host: CommandHost) -> UInt64 {
         tmuxGenerations[host, default: 0]
     }
 
-    func publishTmuxSessions(
-        _ sessions: [DiscoveredTmuxSession],
+    func publishTmuxDiscovery(
+        _ result: Result<[DiscoveredTmuxSession], TmuxBinaryError>,
         on host: CommandHost,
         epoch: UInt64
     ) {
         guard tmuxGenerations[host, default: 0] == epoch else { return }
         tmuxGenerations[host, default: 0] &+= 1
         tmuxTasks.removeValue(forKey: host)?.cancel()
-        recordTmuxSuccess(sessions, host: host)
+        switch result {
+        case let .success(sessions):
+            recordTmuxSuccess(sessions, host: host)
+        case let .failure(error):
+            recordTmuxFailure(error, host: host)
+        }
     }
 
     func setApplicationActive(_ isActive: Bool) {
@@ -674,6 +680,7 @@ final class WorkspaceInventoryStore {
         entry.observationRevision = revision
         entry.state = .loaded
         entry.isFresh = true
+        entry.kwtFailureStatus = nil
         snapshot.tmuxByHost[host] = entry
     }
 
@@ -683,6 +690,11 @@ final class WorkspaceInventoryStore {
     ) {
         revision &+= 1
         var entry = snapshot.tmuxByHost[host] ?? .empty
+        if case let .kwtDiscoveryFailed(sessions, status) = error {
+            entry.sessions = sessions + (entry.sessions ?? []).filter { $0.socketName == "kwt" }
+            entry.inventoryRevision = revision
+            entry.kwtFailureStatus = status
+        }
         entry.observationRevision = revision
         entry.state = .failed(error)
         entry.isFresh = false
