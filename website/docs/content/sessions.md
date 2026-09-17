@@ -22,6 +22,10 @@ Other sessions on either tmux server appear under **Tmux Sessions** and open
 on the server where they were found. Use tmux's window chooser (normally
 prefix, then `w`) to switch windows within a session.
 
+If your shell sets `TMUX_TMPDIR`, Ghosthub still uses kwt's canonical server.
+To reach that server from the command line, use `env -u TMUX_TMPDIR tmux -L kwt`.
+The default server continues to use your shell's socket directory.
+
 ![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](assets/guide-sessions.png)
 
 ## Create a standalone session

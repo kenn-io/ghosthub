@@ -164,7 +164,8 @@ struct TmuxSessionActivityProbe: Sendable {
                 expectedIdentity: expectedIdentity
             )
         }
-        var baseArguments = [tmuxPath]
+        var baseArguments = TmuxSocketEnvironment.commandPrefix(socketName: selection.socketName)
+            + [tmuxPath]
         if let socketName = selection.socketName {
             baseArguments.append(contentsOf: ["-L", socketName])
         }
@@ -348,6 +349,7 @@ struct TmuxSessionActivityProbe: Sendable {
         $ErrorActionPreference = 'Stop'
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $OutputEncoding = [Console]::OutputEncoding
+        \(TmuxSocketEnvironment.powerShellPrelude(socketName: selection.socketName))
         $ghosthubActivityVersionOutput = (\(version) 2>&1 | Out-String).Trim()
         if (($LASTEXITCODE -ne 0) -or ($ghosthubActivityVersionOutput -notmatch '^tmux\\s+(\\d+)\\.(\\d+)(?:\\.(\\d+))?')) {
             exit 69

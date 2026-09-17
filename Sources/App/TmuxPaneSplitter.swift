@@ -384,7 +384,7 @@ struct TmuxPaneSplitter: Sendable {
                       || byte >= 97 && byte <= 122
               })
         else { return "exit 75" }
-        var arguments = [tmuxPath]
+        var arguments = TmuxSocketEnvironment.commandPrefix(socketName: socketName) + [tmuxPath]
         if let socketName, !socketName.isEmpty {
             arguments += ["-L", socketName]
         }

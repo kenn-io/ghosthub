@@ -307,9 +307,10 @@ Direct workspaces normally use kwt's dedicated `kwt` server, while a verified
 matching default-server session may be adopted during rollout. Worktree-owned
 presentations remain on their worktree row, and a genuinely separate
 same-named default-server session remains visible as unbound inventory. When
-WSL config selects an
-explicit `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery
-and attachment; cached rows never correlate sessions across those server roots.
+WSL config selects an explicit `TMUX_TMPDIR`, KWT commands receive that value.
+Like the pinned helper, direct operations on the canonical `kwt` socket clear
+`TMUX_TMPDIR`; default and other named sockets retain the account's override.
+Cached rows never correlate sessions across those server roots.
 In the macOS app, removing a generation-backed worktree is separately
 confirmed. Ghosthub captures the exact socket and live session identity, when
 present, and reads KWT's machine-readable no-fetch Git status for the exact

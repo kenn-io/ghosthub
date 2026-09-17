@@ -383,13 +383,15 @@ struct TmuxSessionKiller: Sendable {
                 "kill-session -t \(expectedIdentity.sessionID)"
             arguments[arguments.count - 1] =
                 "display-message -p \(identityMismatchMarker)"
-            return powerShellCommand(
-                arguments,
-                captureStandardError: true,
-                frameOutput: true
-            )
+            return TmuxSocketEnvironment
+                .powerShellPrelude(socketName: socketName) + powerShellCommand(
+                    arguments,
+                    captureStandardError: true,
+                    frameOutput: true
+                )
         }
-        return framedPOSIXCommand(arguments)
+        return framedPOSIXCommand(TmuxSocketEnvironment
+            .commandPrefix(socketName: socketName) + arguments)
     }
 
     private static func identityCommand(
@@ -410,9 +412,10 @@ struct TmuxSessionKiller: Sendable {
             identityMarker + "#{pid}\t#{session_id}\t#{session_created}",
         ])
         if platform == .windows {
-            return powerShellCommand(arguments)
+            return TmuxSocketEnvironment
+                .powerShellPrelude(socketName: socketName) + powerShellCommand(arguments)
         }
-        return arguments
+        return (TmuxSocketEnvironment.commandPrefix(socketName: socketName) + arguments)
             .map(shellQuotedCommandArgument)
             .joined(separator: " ")
     }
@@ -433,13 +436,15 @@ struct TmuxSessionKiller: Sendable {
             "=\(sessionName):",
         ])
         if platform == .windows {
-            return powerShellCommand(
-                arguments,
-                captureStandardError: true,
-                frameOutput: true
-            )
+            return TmuxSocketEnvironment
+                .powerShellPrelude(socketName: socketName) + powerShellCommand(
+                    arguments,
+                    captureStandardError: true,
+                    frameOutput: true
+                )
         }
-        return framedPOSIXCommand(arguments)
+        return framedPOSIXCommand(TmuxSocketEnvironment
+            .commandPrefix(socketName: socketName) + arguments)
     }
 
     static func isConfirmedAbsence(_ output: String) -> Bool {

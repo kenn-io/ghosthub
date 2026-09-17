@@ -2,6 +2,7 @@ import GhosthubTransport
 import Darwin
 import Foundation
 import GhosthubTmux
+import GhosthubUI
 import GhosthubTestSupport
 import GhosthubWorkspace
 import Testing
@@ -1213,19 +1214,48 @@ struct TmuxPathCacheTests {
 
 /// Fixed product socket names share the pinned-helper suite's serial ownership.
 extension PinnedKwtContractTests {
-    @Test("discovers loose sessions on default and kwt sockets")
+    @Test("kwt discovery and lifecycle ignore a custom socket directory")
     func discoversDefaultAndKwtSockets() async throws {
-        let resolver = TmuxBinaryResolver()
-        let tmuxPath = try resolver.resolveTmuxPath().get()
+        let environment = ProcessInfo.processInfo.environment
+        let tmuxPath = try #require(environment["GHOSTHUB_TEST_TMUX_BINARY"])
+        let runRoot = try #require(environment["TMUX_TMPDIR"])
+        let parent = URL(fileURLWithPath: runRoot).deletingLastPathComponent().path
+        var template = Array("\(parent)/run.\(getpid()).XXXXXX".utf8CString)
+        let customRoot = try #require(template.withUnsafeMutableBufferPointer { buffer in
+            mkdtemp(buffer.baseAddress!).map { String(cString: $0) }
+        })
+        defer { try? FileManager.default.removeItem(atPath: customRoot) }
+        var customEnvironment = environment
+        customEnvironment["TMUX_TMPDIR"] = customRoot
+        customEnvironment["GHOSTHUB_TEST_TMUX_RUN_ID"] = String(customRoot.suffix(6))
+        let bin = URL(fileURLWithPath: tmuxPath).deletingLastPathComponent().path
+        let runner: TmuxBinaryResolver.ProcessRunner = { shell, command in
+            AccountCommandRunner.runLoginShell(
+                shell: shell,
+                command: "export PATH=\(shellQuotedCommandArgument(bin)):$PATH; " + command,
+                timeout: 10,
+                environmentOverrides: ["TMUX_TMPDIR": customRoot]
+            )
+        }
+        let resolver = TmuxBinaryResolver(processRunner: runner)
         let kwt = try TestTmuxServer(tmuxPath: tmuxPath, socket: .productContract(name: "kwt"))
         let standard = try TestTmuxServer(
             tmuxPath: tmuxPath,
-            socket: .productContract(name: "default")
+            socket: .productContract(name: "default"),
+            environment: customEnvironment
         )
-        defer { kwt.stop()
+        let customKwt = try TestTmuxServer(
+            tmuxPath: tmuxPath,
+            socket: .productContract(name: "kwt"),
+            environment: customEnvironment
+        )
+        defer {
+            kwt.stop()
             standard.stop()
+            customKwt.stop()
         }
         try kwt.createSession("shared desk", command: "/bin/sleep 120")
+        try customKwt.createSession("wrong-root", command: "/bin/sleep 120")
 
         let kwtOnly = try resolver.discoverSessions().get()
         #expect(kwtOnly.map(\.name) == ["shared desk"])
@@ -1238,11 +1268,7 @@ extension PinnedKwtContractTests {
         #expect(Set(both.compactMap(\.serverPID)).count == 2)
 
         let remoteResolver = TmuxBinaryResolver(remoteProcessRunner: { _, _, command in
-            let result = AccountCommandRunner.runLoginShell(
-                shell: "/bin/zsh",
-                command: command,
-                timeout: 10
-            )
+            let result = runner("/bin/zsh", command)
             return (result.status, result.stdout, "")
         })
         let remote = try await remoteResolver.discoverSessions(on: SSHHostInfo(
@@ -1252,9 +1278,52 @@ extension PinnedKwtContractTests {
         )).get()
         #expect(remote == both)
 
-        kwt.stop()
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(), name: "shared desk", socketName: "kwt"
+        )
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success(tmuxPath) },
+            runner: { _, command in runner("/bin/zsh", command) }
+        )
+        let identity = try await killer.sessionIdentity(selection, on: .local)
+        #expect(identity.serverPID == kwtOnly.first?.serverPID)
+        let activity = TmuxSessionActivityProbe(
+            pathResolver: { _ in .success(tmuxPath) },
+            runner: { _, command in runner("/bin/zsh", command) }
+        )
+        guard case .sample = await activity.sample(
+            selection, expectedIdentity: identity, on: .local
+        ) else {
+            Issue.record("activity must read the canonical kwt session")
+            return
+        }
+        let style = TmuxPresentationCommand(
+            sessionName: selection.name, socketName: selection.socketName,
+            style: TmuxPresentationStyle(foreground: "#abcdef", background: "#123456")
+        )
+        #expect(runner("/bin/zsh", style.applyCommand(
+            tmuxPath: tmuxPath, expectedIdentity: identity
+        )).status == 0)
+        let option = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: kwt.connectionArguments + [
+                "show-options", "-wv", "-t", "=shared desk:", "window-style",
+            ],
+            timeout: 5
+        )
+        #expect(option.status == 0)
+        #expect(option.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            == "fg=#abcdef,bg=#123456")
+
+        try await killer.kill(selection, expectedIdentity: identity, on: .local)
         let defaultOnly = try resolver.discoverSessions().get()
         #expect(defaultOnly.map(\.name) == ["shared desk"])
         #expect(defaultOnly.map(\.socketName) == [nil])
+        let decoy = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: customKwt.connectionArguments + ["has-session", "-t", "=wrong-root"],
+            timeout: 5
+        )
+        #expect(decoy.status == 0)
     }
 }

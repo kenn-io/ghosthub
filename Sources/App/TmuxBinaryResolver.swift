@@ -360,7 +360,9 @@ struct TmuxBinaryResolver: Sendable {
     private static let discoveryCommand: String = {
         let socketNames: [String?] = [nil, "kwt"]
         let queries = socketNames.map { socketName -> String in
-            "; ghosthub_tmux_output=$("
+            let prefix = TmuxSocketEnvironment.commandPrefix(socketName: socketName)
+                .map { shellQuotedCommandArgument($0) + " " }.joined()
+            return "; ghosthub_tmux_output=$(" + prefix
                 + "\"$ghosthub_tmux_path\" -L "
                 + shellQuotedCommandArgument(socketName ?? "default")
                 + " list-sessions -F "
@@ -411,6 +413,7 @@ struct TmuxBinaryResolver: Sendable {
             """ + [nil, "kwt"].map { socketName in
                 """
 
+                \(TmuxSocketEnvironment.powerShellPrelude(socketName: socketName))
                 $ghosthubMuxOutput = (& $ghosthubMux '-L' \(
                     powerShellEncodedArgument(socketName ?? "default")
                 ) 'list-sessions' '-F' \(
@@ -446,8 +449,10 @@ struct TmuxBinaryResolver: Sendable {
             let command = arguments
                 .map(shellQuotedCommandArgument)
                 .joined(separator: " ")
+            let prefix = TmuxSocketEnvironment.commandPrefix(socketName: socketName)
+                .map { shellQuotedCommandArgument($0) + " " }.joined()
             return probeCommand
-                + "; ghosthub_probe_error=$("
+                + "; ghosthub_probe_error=$(" + prefix
                 + "\"$ghosthub_tmux_path\" \(command) 2>&1); "
                 + "ghosthub_probe_status=$?; "
                 + "if [ \"$ghosthub_probe_status\" -eq 0 ]; then "
@@ -475,6 +480,7 @@ struct TmuxBinaryResolver: Sendable {
             if ($LASTEXITCODE -ne 0) {
                 exit $LASTEXITCODE
             }
+            \(TmuxSocketEnvironment.powerShellPrelude(socketName: socketName))
             $ghosthubProbeError = (& $ghosthubMux \(command) 2>&1 | Out-String)
             $ghosthubProbeStatus = $LASTEXITCODE
             if ($ghosthubProbeStatus -eq 0) {

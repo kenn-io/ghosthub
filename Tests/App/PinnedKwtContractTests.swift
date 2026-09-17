@@ -27,7 +27,9 @@ struct PinnedKwtContractTests {
                 environmentOverrides: environment
             )
         }
-        let tmuxPath = try TmuxBinaryResolver().resolveTmuxPath().get()
+        let tmuxPath = try #require(ProcessInfo.processInfo.environment[
+            "GHOSTHUB_TEST_TMUX_BINARY"
+        ])
         let server = try TestTmuxServer(
             tmuxPath: tmuxPath, socket: .productContract(name: "kwt")
         )

@@ -581,8 +581,10 @@ reruns `kwt open` only if the interrupted establishment was never confirmed.
 Once attachment is confirmed, every later recovery remains attach-only. On
 POSIX hosts, every remote tmux phase (creation,
 attachment, open, and probe, styled or not) runs through the account login
-shell so settings such as `TMUX_TMPDIR` resolve the same tmux server as later
-styling and identity commands. On Windows, those phases use encoded
+shell. Discovery, attachment, probing, styling, pane actions, and kills clear
+`TMUX_TMPDIR` for the canonical `kwt` socket, matching the pinned helper;
+default and other named sockets retain the account's override. On Windows,
+those phases use encoded
 PowerShell commands within the same OpenSSH account environment. Unbound
 discovered sessions remain attach-only.
 Ghosthub does not expose rename, resize, or window operations. On an attached
