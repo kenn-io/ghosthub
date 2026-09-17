@@ -25,7 +25,7 @@ const STREAM_CHANNEL_DEPTH: usize = 16;
 const MAX_STREAM_LINE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENT_MESSAGE_BYTES: usize = 16 * 1024;
 const MAX_PROMPT_RESPONSE_BYTES: usize = 64 * 1024;
-const PROJECTION_POLICY_V1: &str = "kwt.openssh.projection.v1";
+const PROJECTION_POLICY_V2: &str = "kwt.openssh.projection.v2";
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct KwtSshExecutable(OsString);
@@ -360,7 +360,7 @@ impl SshRouteSnapshot {
                 "SSH route logical target does not match the request",
             ));
         }
-        if self.projection_policy != PROJECTION_POLICY_V1 {
+        if self.projection_policy != PROJECTION_POLICY_V2 {
             return Err(SshError::new(
                 DiagnosticKind::UnsupportedEnvironment,
                 format!(
@@ -1773,7 +1773,7 @@ mod tests {
             }
           ],
           "route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "projection_policy":"kwt.openssh.projection.v1",
+          "projection_policy":"kwt.openssh.projection.v2",
           "observed_at":"2026-08-15T12:00:00Z"
         }"#
         .to_vec()
@@ -2008,7 +2008,7 @@ mod tests {
                 "--route-identity",
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "--projection-policy",
-                "kwt.openssh.projection.v1",
+                "kwt.openssh.projection.v2",
                 "--host-key-policy",
                 "review",
                 "--user",

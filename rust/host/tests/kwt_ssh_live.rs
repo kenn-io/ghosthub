@@ -18,7 +18,7 @@ fn pinned_controller_resolves_the_native_ssh_contract() {
         .expect("resolve route through pinned KWT");
 
     assert_eq!(route.logical_target(), &requested);
-    assert_eq!(route.projection_policy(), "kwt.openssh.projection.v1");
+    assert_eq!(route.projection_policy(), "kwt.openssh.projection.v2");
     assert_eq!(route.route_identity().len(), 64);
     assert!(!route.targets().is_empty());
     assert_eq!(

@@ -700,6 +700,43 @@ final class SettingsStoreTests {
         #expect(store.lastErrorMessage == nil)
         let reloaded = makeSUT()
         #expect(reloaded.sshHosts.map(\.configKey) == ["office"])
+        #expect(try #require(reloaded.sshHosts.first).compression)
+    }
+
+    @Test(
+        "SSH compression survives settings edits and reloads",
+        arguments: [
+            ("", true),
+            (", \"compression\": true", true),
+            (", \"compression\": false", false),
+        ]
+    )
+    func testSSHCompressionPersists(
+        compressionField: String,
+        expected: Bool
+    ) throws {
+        defaults.set(Data("""
+        [{
+          "configKey": "remote",
+          "name": "Remote",
+          "platform": "linux",
+          "sshDestination": "dev@example.test"\(compressionField)
+        }]
+        """.utf8), forKey: "ghosthub.settings.hosts.ssh")
+
+        let store = makeSUT()
+        var draft = SettingsViewDraft(store: store)
+        #expect(try #require(draft.sshHosts.first).compression == expected)
+
+        draft.sshHosts[0].name = " Renamed Remote "
+        _ = draft.persist(to: store)
+        let reloaded = makeSUT()
+        #expect(try #require(reloaded.sshHosts.first).compression == expected)
+
+        draft = SettingsViewDraft(store: reloaded)
+        draft.sshHosts[0].compression.toggle()
+        #expect(draft.persist(to: reloaded).shouldRefreshHosts)
+        #expect(try #require(makeSUT().sshHosts.first).compression == !expected)
     }
 
     @Test

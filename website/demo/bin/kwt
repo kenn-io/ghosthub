@@ -163,11 +163,16 @@ open_worktree() {
 }
 
 resolve_ssh() {
-  if [[ "$#" -ne 4 || "$2" != "resolve" || "$3" != "--json" ]]; then
+  if [[ "$#" -ne 6 || "$2" != "resolve" || "$3" != "--json" || "$4" != "--compression" ]]; then
     echo "faux kwt: unsupported SSH command" >&2
     exit 64
   fi
-  local hostname="$4"
+  local hostname="$6" compression
+  case "$5" in
+    yes) compression=true ;;
+    no) compression=false ;;
+    *) echo "faux kwt: invalid compression" >&2; exit 64 ;;
+  esac
   case "$hostname" in
     build-node.demo.example|studio-mini.demo.example|windows-lab.demo.example) ;;
     *) echo "faux kwt: unknown demo SSH host" >&2; exit 64 ;;
@@ -176,6 +181,7 @@ resolve_ssh() {
   # instead of letting an unsupported command fall back to the Mac account.
   cat <<EOF
 {
+  "compression": $compression,
   "logical_target": {"hostname": "$hostname"},
   "targets": [{
     "logical_target": {"hostname": "$hostname"},
@@ -184,7 +190,7 @@ resolve_ssh() {
     "projection": {"arguments": ["-F", "$scratch/ssh/config"]}
   }],
   "route_identity": "demo-$hostname",
-  "projection_policy": "kwt.openssh.projection.v1",
+  "projection_policy": "kwt.openssh.projection.v2",
   "observed_at": "2026-07-21T14:02:11Z"
 }
 EOF

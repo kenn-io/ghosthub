@@ -611,6 +611,9 @@ struct KwtSSHLeaseClient: Sendable {
             "--projection-policy", route.projectionPolicy,
             "--host-key-policy", hostKeyPolicy.rawValue,
         ])
+        if let compression = route.compression {
+            arguments.append(contentsOf: ["--compression", compression ? "yes" : "no"])
+        }
         if let user = route.logicalTarget.user {
             arguments.append(contentsOf: ["--user", user])
         }

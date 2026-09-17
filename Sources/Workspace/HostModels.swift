@@ -398,6 +398,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     public var kind: HostKind
     public var platform: HostPlatform
     public var sshDestination: String?
+    public var sshCompression: Bool
     public var preferredTransport: HostTransport
     public var lastKnownReachable: Bool
     public var lastSeenAt: Date?
@@ -425,6 +426,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         kind: HostKind,
         platform: HostPlatform,
         sshDestination: String? = nil,
+        sshCompression: Bool = true,
         preferredTransport: HostTransport = .ssh,
         lastKnownReachable: Bool = true,
         lastSeenAt: Date? = nil,
@@ -451,6 +453,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         self.kind = kind
         self.platform = platform
         self.sshDestination = sshDestination
+        self.sshCompression = sshCompression
         self.preferredTransport = preferredTransport
         self.lastKnownReachable = lastKnownReachable
         self.lastSeenAt = lastSeenAt

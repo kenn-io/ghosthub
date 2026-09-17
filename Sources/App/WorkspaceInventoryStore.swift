@@ -210,8 +210,9 @@ final class WorkspaceInventoryStore {
             wantsKwt: wantsKwt,
             wantsTmux: wantsTmux
         )
-        // A scene can subscribe after a mutation has already begun.
-        for scope in mutationCoordinator.scopes where mutationHosts[scope]?.isEmpty != false {
+        // Retain transport variants of the captured endpoint until the
+        // mutation ends, including scenes subscribing after it began.
+        for scope in mutationCoordinator.scopes {
             mutationHosts[scope] = commandHosts(for: scope)
         }
         let currentKwtHosts = subscribedKwtHosts()
@@ -734,12 +735,15 @@ final class WorkspaceInventoryStore {
     }
 
     private func commandHosts(for scope: WorktreeMutationCoordinator.Scope) -> Set<CommandHost> {
-        if let hosts = mutationHosts[scope], !hosts.isEmpty {
-            return hosts
-        }
-        return Set(subscribers.values.flatMap(\.registrations)
+        let registeredHosts = Set(subscribers.values.flatMap(\.registrations)
             .filter { $0.hostID == scope.hostID }
             .map(\.commandHost))
+        guard let capturedHosts = mutationHosts[scope], !capturedHosts.isEmpty else {
+            return registeredHosts
+        }
+        return capturedHosts.union(registeredHosts.filter { registered in
+            capturedHosts.contains { $0.hasSameEndpoint(as: registered) }
+        })
     }
 
     private func mutationEvent(

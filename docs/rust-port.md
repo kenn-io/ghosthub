@@ -834,7 +834,7 @@ authorize its replacement. The selected distro's OpenSSH configuration,
 known-hosts files, agents, and credentials are authoritative. There is no
 fallback to native Windows OpenSSH, a masterless KWT lease, or an unguarded
 direct SSH client. The host accepts only projection policy
-`kwt.openssh.projection.v1`, and treats its route identity and ordered target
+`kwt.openssh.projection.v2`, and treats its route identity and ordered target
 list as one immutable reviewed snapshot. Owner-private projection lines may be
 retained in memory for validation but are redacted from Rust debug output and
 never reconstructed by Ghosthub.

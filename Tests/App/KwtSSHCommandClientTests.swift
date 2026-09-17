@@ -38,8 +38,11 @@ struct KwtSSHCommandClientTests {
         #expect(output.stdout == "inventory\n")
     }
 
-    @Test("remote commands pass intent to kwt instead of receiving SSH arguments")
-    func runsThroughKwt() async {
+    @Test(
+        "remote commands pass intent to kwt instead of receiving SSH arguments",
+        arguments: [true, false]
+    )
+    func runsThroughKwt(compression: Bool) async {
         let captured = Mutex<(String, [String], TimeInterval)?>(nil)
         let client = KwtSSHCommandClient(
             runner: { executable, arguments, timeout in
@@ -56,7 +59,8 @@ struct KwtSSHCommandClientTests {
             user: "deploy",
             hostname: "build.example.test",
             port: 2200,
-            platform: .posix
+            platform: .posix,
+            compression: compression
         )
 
         let output = await client.run(
@@ -72,6 +76,7 @@ struct KwtSSHCommandClientTests {
         #expect(captured.withLock { $0?.1 } == [
             "ssh", "exec", "--quiet", "--json",
             "--host-key-policy", "strict",
+            "--compression", compression ? "yes" : "no",
             "--route-identity", "sha256:reviewed-route",
             "--user", "deploy",
             "--port", "2200",

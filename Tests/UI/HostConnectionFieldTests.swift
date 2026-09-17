@@ -41,6 +41,29 @@ struct HostConnectionFieldTests {
 
 @Suite("Host operation identity")
 struct HostOperationTargetTests {
+    @Test("changing compression invalidates pending host results")
+    func compressionInvalidatesPendingResults() {
+        var draft = SSHHostDraft(
+            configKey: "remote",
+            name: "Remote",
+            platform: .linux,
+            sshDestination: "dev@example.test"
+        )
+        #expect(draft.compression)
+        let target = HostOperationTarget(draft)
+        #expect(target.isCurrent(
+            selectedDraftID: draft.id,
+            drafts: [draft]
+        ))
+
+        draft.compression.toggle()
+
+        #expect(!target.isCurrent(
+            selectedDraftID: draft.id,
+            drafts: [draft]
+        ))
+    }
+
     @Test("results apply only to the selected unchanged endpoint")
     func matchesSelectedEndpoint() {
         let draft = SSHHostDraft(

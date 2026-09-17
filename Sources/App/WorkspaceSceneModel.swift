@@ -5338,7 +5338,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 scope.hostID == hostID
             }
         for (scope, quarantine) in quarantines {
-            guard quarantine.host == sourceHost else {
+            guard quarantine.host.hasSameEndpoint(as: sourceHost)
+            else {
                 worktreeMutationCoordinator.release(
                     hostID: scope.hostID,
                     projectIdentity: scope.projectIdentity,
@@ -6236,7 +6237,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         for (scope, quarantine) in worktreeMutationCoordinator
             .quarantinedProjectRemovals
-            where resolvedEndpoints[scope.hostID] != quarantine.host {
+            where resolvedEndpoints[scope.hostID]?.hasSameEndpoint(as: quarantine.host) != true {
             worktreeMutationCoordinator.release(
                 hostID: scope.hostID,
                 projectIdentity: scope.projectIdentity,
@@ -6596,7 +6597,8 @@ final class WorkspaceSceneModel: ObservableObject {
     ) -> AnyView? {
         guard let resolved = resolvedSSHHost(host) else { return nil }
         guard hostSSHSessionDestination == resolved.destination,
-              let session = hostSSHSession
+              let session = hostSSHSession,
+              session.finalHost == resolved.info
         else { return nil }
         hostSSHSessionSurfaceID = surfaceID
         return AnyView(
@@ -6622,6 +6624,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard hostSSHSessionDestination == resolved.destination,
               let session = hostSSHSession
         else { return .pending }
+        guard session.finalHost == resolved.info else { return .reviewRequired }
         switch session.state {
         case .connected:
             return .connected
@@ -6749,7 +6752,8 @@ final class WorkspaceSceneModel: ObservableObject {
         ownerID: UUID? = nil
     ) -> KwtSSHConnectionSession {
         if hostSSHSessionDestination == resolved.destination,
-           let hostSSHSession {
+           let hostSSHSession,
+           hostSSHSession.finalHost == resolved.info {
             switch hostSSHSession.state {
             case .failed, .configurationChanged:
                 break
@@ -6780,7 +6784,8 @@ final class WorkspaceSceneModel: ObservableObject {
             configKey: host.configKey,
             name: host.name,
             platform: host.platform,
-            sshDestination: destination
+            sshDestination: destination,
+            compression: host.sshCompression
         )
     }
 
@@ -6830,7 +6835,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 user: parsed.user,
                 hostname: parsed.hostname,
                 port: parsed.port,
-                platform: host.platform == .windows ? .windows : .posix
+                platform: host.platform == .windows ? .windows : .posix,
+                compression: host.compression
             ),
             destination
         )
@@ -7135,7 +7141,8 @@ final class WorkspaceSceneModel: ObservableObject {
             user: sshHost.user,
             hostname: sshHost.hostname,
             port: sshHost.port,
-            platform: host.platform == .windows ? .windows : .posix
+            platform: host.platform == .windows ? .windows : .posix,
+            compression: host.compression
         ))
         var provisioningHost = host
         provisioningHost.sshDestination = destination
@@ -7622,7 +7629,7 @@ final class WorkspaceSceneModel: ObservableObject {
         on host: CommandHost
     ) -> Bool {
         guard snapshot.host(id: project.hostID)
-            .flatMap(CommandHostResolver.resolve) == host
+            .flatMap(CommandHostResolver.resolve)?.hasSameEndpoint(as: host) == true
         else { return false }
         worktreeMutationCoordinator.quarantineProjectRemoval(
             hostID: project.hostID,
@@ -7640,6 +7647,8 @@ final class WorkspaceSceneModel: ObservableObject {
         case .local:
             CommandHost.local
         case let .ssh(info):
+            // Registry mutations concern the endpoint, regardless of the
+            // compression used to reach it.
             CommandHost.ssh(SSHHostInfo(
                 user: info.user,
                 hostname: info.hostname.lowercased(),

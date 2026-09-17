@@ -17,17 +17,20 @@ public struct SSHHostInfo: Codable, Hashable, Sendable {
     public let hostname: String
     public let port: Int?
     public let platform: Platform
+    public let compression: Bool
 
     public init(
         user: String?,
         hostname: String,
         port: Int?,
-        platform: Platform = .posix
+        platform: Platform = .posix,
+        compression: Bool = true
     ) {
         self.user = user
         self.hostname = hostname
         self.port = port
         self.platform = platform
+        self.compression = compression
     }
 
     public var displayName: String {
@@ -40,6 +43,20 @@ public struct SSHHostInfo: Codable, Hashable, Sendable {
 public enum CommandHost: Codable, Hashable, Sendable {
     case local
     case ssh(SSHHostInfo)
+
+    public func hasSameEndpoint(as other: CommandHost) -> Bool {
+        switch (self, other) {
+        case (.local, .local):
+            true
+        case let (.ssh(lhs), .ssh(rhs)):
+            lhs.user == rhs.user
+                && lhs.hostname == rhs.hostname
+                && lhs.port == rhs.port
+                && lhs.platform == rhs.platform
+        default:
+            false
+        }
+    }
 
     public var displayName: String {
         switch self {

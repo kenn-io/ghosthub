@@ -459,6 +459,15 @@ ordered route snapshot. The snapshot carries a digest of the complete resolved
 route and a versioned, allowlisted execution projection for each hop. Direct
 and Tailscale-discovered destinations use the same contract.
 
+SSH compression is enabled by default and configurable per host in Settings.
+Ghosthub sends the explicit choice to kwt for resolution, leases, and commands;
+kwt applies it to the destination while jump hosts retain their own OpenSSH
+settings. The choice travels in the route snapshot for revalidation and its
+effective value contributes to route identity. Applying a changed setting
+releases existing attachments; reopening a session acquires the new route.
+Transport preferences do not change the endpoint used for project-registry
+mutation fences or removal quarantine.
+
 Long-lived remote tmux, Herdr, and Zellij presentations acquire multiplexed
 SSH leases from kwt. Kwt owns the OpenSSH master, route revalidation, ProxyJump
 chain, askpass transport, host-key prompt parsing, generation, idle policy, and

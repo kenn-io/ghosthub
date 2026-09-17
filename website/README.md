@@ -69,6 +69,11 @@ process through every documented UI state:
     GHOSTHUB_DEMO_EXE_ONLY=1 ./shoot.sh /tmp/ghosthub-website-assets
     ./teardown.sh   # always run: stops demo processes and removes scratch state
 
+To refresh just the Hosts settings screenshot, run
+`make screenshot-host-settings SCREENSHOT_PATH=/absolute/path/guide-hosts.png`
+from the repository root. This renders native Settings with a synthetic host
+and isolated preferences, without starting a remote server.
+
 The staged app receives an explicit demo-only OpenSSH configuration and
 known-hosts file under the guarded scratch directory. Discovery and attachment
 therefore cannot inherit the developer's SSH aliases, proxies, or host trust.

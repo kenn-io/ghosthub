@@ -69,6 +69,7 @@ struct KwtSSHRouteSnapshot: Decodable, Equatable, Sendable {
     let routeIdentity: String
     let projectionPolicy: String
     let observedAt: String
+    var compression: Bool? = nil
 
     private enum CodingKeys: String, CodingKey {
         case logicalTarget = "logical_target"
@@ -76,6 +77,7 @@ struct KwtSSHRouteSnapshot: Decodable, Equatable, Sendable {
         case routeIdentity = "route_identity"
         case projectionPolicy = "projection_policy"
         case observedAt = "observed_at"
+        case compression
     }
 }
 
@@ -106,7 +108,7 @@ struct KwtSSHRouteClient: Sendable {
         _ timeout: TimeInterval
     ) -> AccountCommandOutput
 
-    static let supportedProjectionPolicy = "kwt.openssh.projection.v1"
+    static let supportedProjectionPolicy = "kwt.openssh.projection.v2"
 
     private let runner: Runner
     private let binaryPath: String?
@@ -142,6 +144,7 @@ struct KwtSSHRouteClient: Sendable {
         let executable = binaryPath ?? "/usr/bin/env"
         var arguments = binaryPath == nil ? ["kwt"] : []
         arguments.append(contentsOf: ["ssh", "resolve", "--json"])
+        arguments.append(contentsOf: ["--compression", host.compression ? "yes" : "no"])
         if let user = host.user {
             arguments.append(contentsOf: ["--user", user])
         }
@@ -170,6 +173,7 @@ struct KwtSSHRouteClient: Sendable {
         }
         let requestedTarget = KwtSSHTarget(host)
         guard snapshot.logicalTarget == requestedTarget,
+              snapshot.compression == host.compression,
               snapshot.targets.last?.logicalTarget == requestedTarget,
               !snapshot.targets.isEmpty,
               !snapshot.routeIdentity.isEmpty,
