@@ -357,8 +357,9 @@ struct TmuxBinaryResolver: Sendable {
             + "\t#{@ghosthub_owner}\t#{session_name}"
     }
 
-    private static let discoveryCommand = probeCommand
-        + [nil, "kwt"].map { socketName in
+    private static let discoveryCommand: String = {
+        let socketNames: [String?] = [nil, "kwt"]
+        let queries = socketNames.map { socketName -> String in
             "; ghosthub_tmux_output=$("
                 + "\"$ghosthub_tmux_path\" -L "
                 + shellQuotedCommandArgument(socketName ?? "default")
@@ -373,7 +374,9 @@ struct TmuxBinaryResolver: Sendable {
                 + "*\"failed to connect to server: No such file or directory\"*|"
                 + "*\"error connecting to \"*\" (No such file or directory)\"*) "
                 + ": ;; *) exit \"$ghosthub_tmux_status\" ;; esac; fi"
-        }.joined()
+        }
+        return probeCommand + queries.joined()
+    }()
 
     private static func probeCommand(
         for platform: SSHHostInfo.Platform
