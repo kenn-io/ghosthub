@@ -297,6 +297,10 @@ check-libghostty:
 test-libghostty-bootstrap:
 	@$(UV) run --frozen --group dev pytest tools/tests/test_libghostty_bootstrap.py
 
+.PHONY: test-dev-setup
+test-dev-setup:
+	@$(UV) run --frozen --group dev pytest tools/tests/test_dev_setup_wizard.py
+
 test-terminal-fallback:
 	@GHOSTHUB_FORCE_TERMINAL_UNAVAILABLE=1 $(SWIFT) build --scratch-path .build/terminal-unavailable
 

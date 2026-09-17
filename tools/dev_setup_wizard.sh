@@ -188,6 +188,7 @@ TOTAL_STAGES=5
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The Xcode release CI validates against; see .github/workflows/ci.yml.
 XCODE_VERSION="26.0.1"
+APPLICATIONS_DIR="/Applications"
 
 # sdk_supports_arm64 SDK_PATH — true when the SDK's primary libSystem stub
 # advertises plain arm64-macos, the same test tools/libghostty_bootstrap.py
@@ -201,7 +202,7 @@ sdk_supports_arm64() {
 # compatible_sdk — path of any installed SDK the bootstrap would accept.
 compatible_sdk() {
   local sdk
-  for sdk in /Applications/Xcode*.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX*.sdk \
+  for sdk in "$APPLICATIONS_DIR"/Xcode*.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX*.sdk \
              /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk; do
     [[ -d "$sdk" ]] || continue
     if sdk_supports_arm64 "$sdk"; then printf '%s' "$sdk"; return 0; fi
@@ -209,122 +210,159 @@ compatible_sdk() {
   return 1
 }
 
+xcode_version() {
+  /usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null
+}
+
 # find_xcode VERSION — path of an installed Xcode with that marketing version.
 find_xcode() {
   local app
-  for app in /Applications/Xcode*.app; do
+  for app in "$APPLICATIONS_DIR"/Xcode*.app; do
     [[ -d "$app" ]] || continue
-    if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null)" == "$1" ]]; then
+    if [[ "$(xcode_version "$app")" == "$1" ]]; then
       printf '%s' "$app"; return 0
     fi
   done
   return 1
 }
 
-banner "Ghosthub developer setup"
+mise_exec() (
+  cd "$REPO_ROOT"
+  mise exec -- "$@"
+)
 
-# ── 1. Command-line tools ────────────────────────────────────────────────
-stage "Command-line tools"
-say "Ghosthub needs git, xcodebuild, uv, Go, and the pinned Zig (mise.toml)."
-missing=()
-for tool in git xcodebuild xcrun uv; do
-  command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
-done
-if ((${#missing[@]})); then
-  warn "Not on PATH: ${missing[*]}"
-  say "Install uv from https://docs.astral.sh/uv/ and Xcode from the App Store, then re-run."
-  exit 1
-fi
-if command -v mise >/dev/null 2>&1; then
-  say "Running mise install for the Zig and Go versions in mise.toml…"
-  ( cd "$REPO_ROOT" && mise install )
-else
-  warn "mise is not installed (https://mise.jdx.dev). Install Zig $(tr -d '"' < "$REPO_ROOT/mise.toml" | awk -F' = ' '/^zig/ {print $2}') and Go by hand, then re-run."
-  exit 1
-fi
-say "✓ tools present."
-
-# ── 2. A supported Xcode ─────────────────────────────────────────────────
-stage "A supported Xcode"
-if SDK=$(compatible_sdk); then
-  say "✓ $SDK advertises arm64-macos; the bootstrap can use it."
-else
-  say "No installed macOS SDK advertises plain arm64-macos, which the pinned Zig"
-  say "build needs. Newer Xcode SDKs (26.5 onward) dropped it, so Xcode $XCODE_VERSION"
-  say "is installed alongside the current one; xcode-select is not changed."
-  if command -v xcodes >/dev/null 2>&1 && xcodes version >/dev/null 2>&1; then
-    APPLE_ID=$(defaults read MobileMeAccounts Accounts 2>/dev/null | grep -m1 AccountID | sed 's/.*= "\{0,1\}\([^";]*\)"\{0,1\};/\1/' || true)
-    if [[ -n "$APPLE_ID" ]]; then
-      say "Apple ID: $APPLE_ID (this Mac's iCloud account)."
-      export XCODES_USERNAME="$APPLE_ID"
-      step "xcodes asks for that account's password and 2FA code, then downloads ~3 GB."
-    else
-      step "xcodes asks for your Apple ID, password, and 2FA code, then downloads ~3 GB."
-    fi
-    xcodes install "$XCODE_VERSION" --no-superuser || warn "xcodes failed — falling back to a manual download."
+install_xcode_app() {
+  local source="$1" destination="$2" parent
+  parent=$(dirname "$destination")
+  [[ "$(xcode_version "$source")" == "$XCODE_VERSION" ]] || {
+    warn "The downloaded app is not Xcode $XCODE_VERSION. Download that exact release."
+    return 1
+  }
+  [[ ! -e "$destination" && ! -L "$destination" ]] || {
+    warn "$destination already exists. Move it aside before re-running setup."
+    return 1
+  }
+  if [[ -w "$parent" && -x "$parent" ]]; then
+    mv -f "$source" "$destination"
   else
-    note "Tip: 'mise use -g xcodes@latest' automates this download next time."
+    say "Your account cannot write to $parent. Moving Xcode there requires administrator access."
+    if ! confirm "Move Xcode to $destination using sudo?"; then
+      warn "Installation canceled. The expanded app remains at $source."
+      return 1
+    fi
+    sudo mv -f "$source" "$destination"
   fi
-  if ! find_xcode "$XCODE_VERSION" >/dev/null; then
-    open_url "https://developer.apple.com/download/all/?q=Xcode%20$XCODE_VERSION"
-    step "Sign in, download Xcode $XCODE_VERSION (.xip) to ~/Downloads."
-    pause "Press Enter when the download has finished."
-    XIP=$(ls -t "$HOME"/Downloads/Xcode*.xip 2>/dev/null | head -n1 || true)
-    [[ -n "$XIP" ]] || { warn "No Xcode*.xip in ~/Downloads."; exit 1; }
-    # xip always produces Xcode.app, which may already exist, so expand in a
-    # scratch folder and move the result under its own name.
-    EXPAND_DIR=$(mktemp -d "$HOME/xcode-expand.XXXXXX")
-    say "Expanding $XIP in $EXPAND_DIR (several minutes)…"
-    ( cd "$EXPAND_DIR" && xip -x "$XIP" )
-    [[ -d "$EXPAND_DIR/Xcode.app" ]] || { warn "xip did not produce Xcode.app."; exit 1; }
-    mv -f "$EXPAND_DIR/Xcode.app" "/Applications/Xcode_$XCODE_VERSION.app"
-    rmdir "$EXPAND_DIR" 2>/dev/null || true
+}
+
+main() {
+  banner "Ghosthub developer setup"
+
+  # ── 1. Command-line tools ────────────────────────────────────────────────
+  stage "Command-line tools"
+  say "Ghosthub needs git, xcodebuild, uv, Go, and the pinned Zig (mise.toml)."
+  missing=()
+  for tool in git xcodebuild xcrun uv; do
+    command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+  done
+  if ((${#missing[@]})); then
+    warn "Not on PATH: ${missing[*]}"
+    say "Install uv from https://docs.astral.sh/uv/ and Xcode from the App Store, then re-run."
+    exit 1
   fi
-  XCODE=$(find_xcode "$XCODE_VERSION") || { warn "Xcode $XCODE_VERSION is still not installed."; exit 1; }
-  say "✓ installed at $XCODE"
-fi
-# Build with the Xcode CI validates. When another Xcode is selected, point
-# DEVELOPER_DIR at it for the remaining stages instead of changing
-# xcode-select.
-ACTIVE_XCODE_VERSION=$(xcodebuild -version 2>/dev/null | awk 'NR == 1 { print $2 }')
-if [[ "$ACTIVE_XCODE_VERSION" != 26.0* ]] && XCODE=$(find_xcode "$XCODE_VERSION"); then
+  if command -v mise >/dev/null 2>&1; then
+    say "Running mise install for the Zig and Go versions in mise.toml…"
+    ( cd "$REPO_ROOT" && mise install )
+  else
+    warn "Install mise from https://mise.jdx.dev, then re-run this wizard."
+    exit 1
+  fi
+  mise_exec go version
+  mise_exec zig version
+  say "✓ tools present."
+
+  # ── 2. A supported Xcode ─────────────────────────────────────────────────
+  stage "A supported Xcode"
+  if ! XCODE=$(find_xcode "$XCODE_VERSION"); then
+    say "Xcode $XCODE_VERSION is required to match CI, even if a compatible SDK is installed."
+    say "It will be installed alongside other Xcode versions; xcode-select is not changed."
+    if command -v xcodes >/dev/null 2>&1 && xcodes version >/dev/null 2>&1; then
+      APPLE_ID=$(defaults read MobileMeAccounts Accounts 2>/dev/null | grep -m1 AccountID | sed 's/.*= "\{0,1\}\([^";]*\)"\{0,1\};/\1/' || true)
+      if [[ -n "$APPLE_ID" ]]; then
+        say "Apple ID: $APPLE_ID (this Mac's iCloud account)."
+        export XCODES_USERNAME="$APPLE_ID"
+        step "xcodes asks for that account's password and 2FA code, then downloads ~3 GB."
+      else
+        step "xcodes asks for your Apple ID, password, and 2FA code, then downloads ~3 GB."
+      fi
+      xcodes install "$XCODE_VERSION" --no-superuser || warn "xcodes failed — falling back to a manual download."
+    else
+      note "Tip: 'mise use -g xcodes@latest' automates this download next time."
+    fi
+    if ! find_xcode "$XCODE_VERSION" >/dev/null; then
+      open_url "https://developer.apple.com/download/all/?q=Xcode%20$XCODE_VERSION"
+      step "Sign in, download Xcode $XCODE_VERSION (.xip) to ~/Downloads."
+      pause "Press Enter when the download has finished."
+      XIP=$(ls -t "$HOME"/Downloads/Xcode*.xip 2>/dev/null | head -n1 || true)
+      [[ -n "$XIP" ]] || { warn "No Xcode*.xip in ~/Downloads."; exit 1; }
+      # xip always produces Xcode.app, which may already exist, so expand in a
+      # scratch folder and move the result under its own name.
+      EXPAND_DIR=$(mktemp -d "$HOME/xcode-expand.XXXXXX")
+      say "Expanding $XIP in $EXPAND_DIR (several minutes)…"
+      ( cd "$EXPAND_DIR" && xip -x "$XIP" )
+      [[ -d "$EXPAND_DIR/Xcode.app" ]] || { warn "xip did not produce Xcode.app."; exit 1; }
+      install_xcode_app "$EXPAND_DIR/Xcode.app" "$APPLICATIONS_DIR/Xcode_$XCODE_VERSION.app"
+      rmdir "$EXPAND_DIR" 2>/dev/null || true
+    fi
+    XCODE=$(find_xcode "$XCODE_VERSION") || { warn "Xcode $XCODE_VERSION is still not installed."; exit 1; }
+    say "✓ installed at $XCODE"
+  fi
+  # Scope the exact Xcode selection to this wizard and its child processes.
   export DEVELOPER_DIR="$XCODE/Contents/Developer"
-  say "Selected Xcode is $ACTIVE_XCODE_VERSION; the remaining stages use Xcode $XCODE_VERSION."
-  note "For your own shell: export DEVELOPER_DIR=$DEVELOPER_DIR"
-  SKIPPED+=("export DEVELOPER_DIR=$DEVELOPER_DIR before make build / make swift-test")
-fi
-
-# ── 3. Xcode first launch and Metal toolchain ────────────────────────────
-stage "Xcode first launch and Metal toolchain"
-say "Accept licenses and install packages for every Xcode the bootstrap may use."
-for app in /Applications/Xcode*.app; do
-  [[ -d "$app" ]] || continue
-  if ! DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -checkFirstLaunchStatus >/dev/null 2>&1; then
-    step "$app needs its first-launch setup (sudo will prompt)."
-    sudo DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -runFirstLaunch
+  say "✓ remaining stages use Xcode $XCODE_VERSION at $XCODE."
+  printf -v XCODE_EXPORT 'export DEVELOPER_DIR=%q' "$DEVELOPER_DIR"
+  note "For later builds in your own shell: $XCODE_EXPORT"
+  SKIPPED+=("$XCODE_EXPORT before mise exec -- make build / mise exec -- make swift-test")
+  # SDK compatibility is a separate bootstrap requirement, not Xcode selection.
+  if SDK=$(compatible_sdk); then
+    say "✓ $SDK advertises arm64-macos; the bootstrap can use it."
   fi
-done
-# `xcrun --find metal` succeeds on a stub that refuses to run, so ask the
-# compiler for its version instead.
-if xcrun -sdk macosx metal --version >/dev/null 2>&1; then
-  say "✓ Metal toolchain present for the selected Xcode."
-else
-  say "Downloading the Metal toolchain for the selected Xcode…"
-  xcodebuild -downloadComponent MetalToolchain
-  xcrun --kill-cache
-  xcrun --sdk macosx --find metal >/dev/null
+
+  # ── 3. Xcode first launch and Metal toolchain ────────────────────────────
+  stage "Xcode first launch and Metal toolchain"
+  say "Accept licenses and install packages for every Xcode the bootstrap may use."
+  for app in "$APPLICATIONS_DIR"/Xcode*.app; do
+    [[ -d "$app" ]] || continue
+    if ! DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -checkFirstLaunchStatus >/dev/null 2>&1; then
+      step "$app needs its first-launch setup (sudo will prompt)."
+      sudo DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -runFirstLaunch
+    fi
+  done
+  # `xcrun --find metal` succeeds on a stub that refuses to run, so ask the
+  # compiler for its version instead.
+  if xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+    say "✓ Metal toolchain present for the selected Xcode."
+  else
+    say "Downloading the Metal toolchain for the selected Xcode…"
+    xcodebuild -downloadComponent MetalToolchain
+    xcrun --kill-cache
+    xcrun --sdk macosx --find metal >/dev/null
+  fi
+
+  # ── 4. libghostty ────────────────────────────────────────────────────────
+  stage "Bootstrap libghostty"
+  say "mise exec -- make bootstrap-libghostty builds the pinned Ghostty source with Zig (several minutes)."
+  mise_exec make bootstrap-libghostty
+  mise_exec make check-libghostty
+  say "✓ libghostty artifacts staged."
+
+  # ── 5. Build ─────────────────────────────────────────────────────────────
+  stage "Build Ghosthub"
+  mise_exec make build
+  say "✓ make build passed. Next: mise exec -- make run-app, mise exec -- make swift-test, mise exec -- make test-essential-workflows."
+
+  finish
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi
-
-# ── 4. libghostty ────────────────────────────────────────────────────────
-stage "Bootstrap libghostty"
-say "make bootstrap-libghostty builds the pinned Ghostty source with Zig (several minutes)."
-( cd "$REPO_ROOT" && make bootstrap-libghostty )
-( cd "$REPO_ROOT" && make check-libghostty )
-say "✓ libghostty artifacts staged."
-
-# ── 5. Build ─────────────────────────────────────────────────────────────
-stage "Build Ghosthub"
-( cd "$REPO_ROOT" && make build )
-say "✓ make build passed. Next: make run-app, make swift-test, make test-essential-workflows."
-
-finish

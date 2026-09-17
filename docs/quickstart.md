@@ -8,17 +8,22 @@ Swift code and bootstraps libghostty locally.
 
 `tools/dev_setup_wizard.sh` walks through everything in this section and the
 libghostty bootstrap, skipping steps that are already done. Run it when setting
-up a new machine or when `make bootstrap-libghostty` fails; the list below is
-what it checks.
+up a new machine or when `mise exec -- make bootstrap-libghostty` fails; the list
+below is what it checks. The wizard uses mise for builds and selects Xcode only
+for its own process. It leaves the system-wide `xcode-select` setting unchanged.
+When a manual Xcode install needs administrator access to `/Applications`, it
+explains the privileged move and asks for confirmation first.
 
 - Full Xcode install, not Command Line Tools only. Xcode 26.0.1 is the
   release CI validates; build with it. If another Xcode is selected, keep
   26.0.1 installed alongside it and build with
-  `export DEVELOPER_DIR=/Applications/Xcode_26.0.1.app/Contents/Developer`.
-- Active developer directory pointing at that Xcode:
+  `export DEVELOPER_DIR="/Applications/Xcode_26.0.1.app/Contents/Developer"`.
+  Set this in your own shell for later builds too, using the installed path
+  printed by the wizard.
+- Confirm the selected release is exactly 26.0.1:
 
   ```bash
-  xcode-select -p
+  xcodebuild -version
   ```
 
 - Metal Toolchain installed for the selected Xcode.
@@ -28,13 +33,22 @@ what it checks.
   `Vendor/ghostty.version.json` for libghostty bootstrap.
 - `git`, `xcodebuild`, and `xcrun`.
 
-`mise install` in the repository root installs the pinned Zig and Go from
-`mise.toml`; the other tools are installed manually.
+Install [mise](https://mise.jdx.dev), then run these commands in the repository
+root to install the pinned Zig and the Go version configured in `mise.toml`:
+
+```bash
+mise install
+mise exec -- go version
+mise exec -- zig version
+```
+
+`mise install` does not add tools to your shell's `PATH`. Use `mise exec --`
+for subsequent builds and checks as shown below; the wizard does this itself.
 
 Complete Xcode's first-launch setup before bootstrapping:
 
 ```bash
-sudo xcodebuild -runFirstLaunch
+sudo env DEVELOPER_DIR="$DEVELOPER_DIR" xcodebuild -runFirstLaunch
 xcodebuild -downloadComponent MetalToolchain
 xcrun --kill-cache
 xcrun --sdk macosx --find metal
@@ -50,9 +64,9 @@ or Command Line Tools. It does not change the system-wide Xcode selection. See
 ## Build and Launch
 
 ```bash
-make bootstrap-libghostty
-make build
-make run-app
+mise exec -- make bootstrap-libghostty
+mise exec -- make build
+mise exec -- make run-app
 ```
 
 `make bootstrap-libghostty` is idempotent. If the staged artifacts already
@@ -68,10 +82,10 @@ prepared kwt executable.
 ## Run Checks
 
 ```bash
-make swift-warning-check
-make swift-test
-make python-test
-make docs-build
+mise exec -- make swift-warning-check
+mise exec -- make swift-test
+mise exec -- make python-test
+mise exec -- make docs-build
 ```
 
 For changes touching terminal startup, shell environment, terminal config,
@@ -81,7 +95,7 @@ full terminal regression set listed in `AGENTS.md`.
 ## Install Hooks
 
 ```bash
-make install-hooks
+mise exec -- make install-hooks
 ```
 
 The hooks run formatting, basic file checks, and the Swift compiler warning
