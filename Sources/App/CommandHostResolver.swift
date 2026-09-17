@@ -16,7 +16,8 @@ enum CommandHostResolver {
                     user: info.user,
                     hostname: info.hostname,
                     port: info.port,
-                    platform: host.platform == .windows ? .windows : .posix
+                    platform: host.platform == .windows ? .windows : .posix,
+                    compression: host.sshCompression
                 )
             )
         }

@@ -7,6 +7,7 @@ public struct SSHHostDraft: Identifiable, Equatable, Sendable {
     public var name: String
     public var platform: HostPlatform
     public var sshDestination: String
+    public var compression: Bool
     public var launchProfiles: [TmuxLaunchProfile]
 
     public init(
@@ -15,6 +16,7 @@ public struct SSHHostDraft: Identifiable, Equatable, Sendable {
         name: String,
         platform: HostPlatform,
         sshDestination: String,
+        compression: Bool = true,
         launchProfiles: [TmuxLaunchProfile] = []
     ) {
         self.id = id
@@ -22,6 +24,7 @@ public struct SSHHostDraft: Identifiable, Equatable, Sendable {
         self.name = name
         self.platform = platform
         self.sshDestination = sshDestination
+        self.compression = compression
         self.launchProfiles = launchProfiles
     }
 
@@ -31,6 +34,7 @@ public struct SSHHostDraft: Identifiable, Equatable, Sendable {
             name: host.name,
             platform: host.platform,
             sshDestination: host.sshDestination,
+            compression: host.compression,
             launchProfiles: host.launchProfiles
         )
     }
@@ -41,6 +45,7 @@ public struct SSHHostDraft: Identifiable, Equatable, Sendable {
             name: name,
             platform: platform,
             sshDestination: sshDestination,
+            compression: compression,
             launchProfiles: launchProfiles
         )
     }

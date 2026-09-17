@@ -248,8 +248,8 @@ struct KwtSSHLeaseClientTests {
         )
     }
 
-    @Test("streams bound prompts and releases the daemon lease on close")
-    func streamsPromptsAndReleases() async throws {
+    @Test("streams bound prompts and releases the daemon lease on close", arguments: [true, false])
+    func streamsPromptsAndReleases(compression: Bool) async throws {
         let fixture = try TempDirectoryFixture()
         let helper = try fixture.createExecutable(
             name: "kwt",
@@ -261,7 +261,8 @@ struct KwtSSHLeaseClientTests {
 
         let prompts = LockedValue<[KwtSSHLeasePrompt]>([])
         let client = KwtSSHLeaseClient(binaryPath: helper.path)
-        let route = Self.route
+        var route = Self.route
+        route.compression = compression
         let lease = try await client.acquire(
             route: route,
             prompt: { prompt in
@@ -303,8 +304,9 @@ struct KwtSSHLeaseClientTests {
                 .split(separator: "\n").map(String.init) == [
                     "ssh", "lease", "--json", "--open-browser=false",
                     "--route-identity", "sha256:route-observation",
-                    "--projection-policy", "kwt.openssh.projection.v1",
+                    "--projection-policy", "kwt.openssh.projection.v2",
                     "--host-key-policy", "review",
+                    "--compression", compression ? "yes" : "no",
                     "--user", "deploy", "--port", "2200",
                     "build.example.test",
                 ]

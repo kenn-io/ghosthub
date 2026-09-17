@@ -72,6 +72,7 @@ struct KwtSSHCommandClient: Sendable {
         arguments += [
             "ssh", "exec", "--quiet", "--json",
             "--host-key-policy", "strict",
+            "--compression", host.compression ? "yes" : "no",
         ]
         if let expectedRouteIdentity {
             arguments += ["--route-identity", expectedRouteIdentity]

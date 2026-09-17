@@ -1198,8 +1198,8 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("stale review cancellation preserves the current SSH owner")
-    func staleReviewCancellationPreservesCurrentOwner() async throws {
+    @Test("stale review cancellation preserves the current SSH owner", arguments: [false, true])
+    func staleReviewCancellationPreservesCurrentOwner(changesCompression: Bool) async throws {
         let environment = try setupStandardEnvironment()
         let releases = LockedValue(0)
         let route = KwtSSHRouteSnapshot.fixture(
@@ -1235,17 +1235,28 @@ extension WorkspaceTmuxDiscoveryTests {
             for: host,
             reviewID: staleReviewID
         ).get() == .none)
+        var currentHost = host
+        currentHost.compression = !changesCompression
+        if changesCompression {
+            #expect(await model.isSSHAuthenticationReady(for: currentHost) == .reviewRequired)
+            #expect(model
+                .sshAuthenticationView(surfaceID: currentReviewID, for: currentHost) == nil)
+        }
         #expect(try await model.pendingSSHHostKeyConfirmation(
-            for: host,
+            for: currentHost,
             reviewID: currentReviewID
         ).get() == .none)
+        #expect(model.hostSSHSession?.finalHost.compression == currentHost.compression)
+        if changesCompression {
+            await waitUntil { releases.load() == 1 }
+        }
 
         model.cancelSSHAuthentication(surfaceID: staleReviewID)
         #expect(model.hostSSHSession != nil)
-        #expect(releases.load() == 0)
+        #expect(releases.load() == (changesCompression ? 1 : 0))
 
         model.cancelSSHAuthentication(surfaceID: currentReviewID)
-        await waitUntil { releases.load() == 1 }
+        await waitUntil { releases.load() == (changesCompression ? 2 : 1) }
         #expect(model.hostSSHSession == nil)
         await model.shutdown()
     }

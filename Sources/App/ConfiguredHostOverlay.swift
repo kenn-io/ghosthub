@@ -86,6 +86,7 @@ enum ConfiguredHostOverlay {
             host.kind = .remote
             host.platform = configured.platform
             host.sshDestination = configured.sshDestination
+            host.sshCompression = configured.compression
             host.preferredTransport = .ssh
             host.exeVM = entry.exeVM
             if invalidatedHostIDs.contains(host.id) {

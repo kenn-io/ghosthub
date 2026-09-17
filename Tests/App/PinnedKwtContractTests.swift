@@ -42,8 +42,11 @@ struct PinnedKwtContractTests {
         }
     }
 
-    @Test("exact helper resolves the SSH route snapshot consumed by Ghosthub")
-    func sshRouteSnapshot() throws {
+    @Test(
+        "exact helper resolves the SSH route snapshot consumed by Ghosthub",
+        arguments: [true, false]
+    )
+    func sshRouteSnapshot(compression: Bool) throws {
         guard ProcessInfo.processInfo.environment[
             "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
         ] == "1" else { return }
@@ -70,6 +73,7 @@ struct PinnedKwtContractTests {
             StrictHostKeyChecking yes
 
         Host tailscale-build
+            Compression \(compression ? "no" : "yes")
             HostName 100.64.0.8
             User operator
             Port 2222
@@ -122,10 +126,15 @@ struct PinnedKwtContractTests {
         let snapshot = try client.resolve(SSHHostInfo(
             user: nil,
             hostname: "tailscale-build",
-            port: nil
+            port: nil,
+            compression: compression
         ))
 
         #expect(snapshot.logicalTarget.hostname == "tailscale-build")
+        #expect(snapshot.compression == compression)
+        #expect(snapshot.targets.last?.projection.arguments.contains(
+            "Compression=\(compression ? "yes" : "no")"
+        ) == true)
         #expect(snapshot.targets.map(\.logicalTarget.hostname) == [
             "relay-v6", "tailscale-build",
         ])

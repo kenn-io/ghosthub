@@ -132,6 +132,20 @@ status. For example, `Permission denied (publickey)` means account
 authentication failed. Trusting a host key confirms the server's identity;
 it does not sign you in. Check the account and SSH key used for that host.
 
+## Slow connections
+
+For text-heavy terminals on a slow connection, SSH compression can reduce the
+amount of output sent over the network. Ghosthub enables it by default for
+remote hosts, including hosts you added before this setting was available.
+
+To change it for a host, open **Settings → Hosts**, select the host, and change
+**SSH compression**, then select **Done**. The setting takes effect on new SSH
+connections. Saving it releases the host's open attachments; remote sessions
+keep running. Reopen a session to attach with the new setting.
+
+You do not need to edit `~/.ssh/config`. Compression can reduce output
+congestion, but does not eliminate delays caused by an unreliable network.
+
 ## Managed kwt helper
 
 Tmux-only hosts do not need kwt. To show projects and worktrees on a remote

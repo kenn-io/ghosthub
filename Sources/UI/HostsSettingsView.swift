@@ -27,6 +27,7 @@ struct HostOperationTarget: Equatable, Identifiable, Sendable {
     let draftID: UUID
     let sshDestination: String
     let platform: HostPlatform
+    let compression: Bool
 
     var id: UUID { operationID }
 
@@ -35,6 +36,7 @@ struct HostOperationTarget: Equatable, Identifiable, Sendable {
         draftID = draft.id
         sshDestination = draft.sshDestination
         platform = draft.platform
+        compression = draft.compression
     }
 
     func isCurrent(
@@ -48,6 +50,7 @@ struct HostOperationTarget: Equatable, Identifiable, Sendable {
         }
         return draft.sshDestination == sshDestination
             && draft.platform == platform
+            && draft.compression == compression
     }
 }
 
@@ -438,6 +441,12 @@ public struct HostsSettingsView: View {
                                 .labelsHidden()
                             }
 
+                            Toggle("SSH compression", isOn: binding.compression)
+                                .help(
+                                    "Reduce network traffic. Select Done, then reopen sessions to use the new setting."
+                                )
+                                .accessibilityIdentifier("ssh-compression")
+
                             Text(
                                 "Ghosthub uses this connection to discover tmux"
                                     + " sessions and keep open attachments alive."
@@ -814,7 +823,8 @@ public struct HostsSettingsView: View {
     private func selectedSSHHostDraftBinding() -> (
         name: Binding<String>,
         sshDestination: Binding<String>,
-        platform: Binding<HostPlatform>
+        platform: Binding<HostPlatform>,
+        compression: Binding<Bool>
     )? {
         guard let index = selectedSSHHostDraftIndex else {
             return nil
@@ -839,6 +849,13 @@ public struct HostsSettingsView: View {
                 get: { sshHosts[index].platform },
                 set: {
                     sshHosts[index].platform = $0
+                    clearSSHHostProbeFeedback()
+                }
+            ),
+            compression: Binding(
+                get: { sshHosts[index].compression },
+                set: {
+                    sshHosts[index].compression = $0
                     clearSSHHostProbeFeedback()
                 }
             )

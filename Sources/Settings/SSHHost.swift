@@ -6,6 +6,7 @@ public struct SSHHost: Codable, Equatable, Sendable, Identifiable {
     public var name: String
     public var platform: HostPlatform
     public var sshDestination: String
+    public var compression: Bool
     public var launchProfiles: [TmuxLaunchProfile]
 
     public var id: String { configKey }
@@ -15,12 +16,14 @@ public struct SSHHost: Codable, Equatable, Sendable, Identifiable {
         name: String,
         platform: HostPlatform,
         sshDestination: String,
+        compression: Bool = true,
         launchProfiles: [TmuxLaunchProfile] = []
     ) {
         self.configKey = configKey
         self.name = name
         self.platform = platform
         self.sshDestination = sshDestination
+        self.compression = compression
         self.launchProfiles = launchProfiles
     }
 
@@ -29,6 +32,7 @@ public struct SSHHost: Codable, Equatable, Sendable, Identifiable {
         case name
         case platform
         case sshDestination
+        case compression
         case launchProfiles
     }
 
@@ -41,6 +45,10 @@ public struct SSHHost: Codable, Equatable, Sendable, Identifiable {
             String.self,
             forKey: .sshDestination
         )
+        compression = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .compression
+        ) ?? true
         launchProfiles = try container.decodeIfPresent(
             [TmuxLaunchProfile].self,
             forKey: .launchProfiles

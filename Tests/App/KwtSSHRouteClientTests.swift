@@ -30,15 +30,18 @@ struct KwtSSHRouteClientTests {
         ))
     }
 
-    @Test("bundled kwt resolves an ordered ProxyJump route")
-    func resolvesOrderedRoute() throws {
+    @Test("bundled kwt resolves an ordered ProxyJump route", arguments: [true, false])
+    func resolvesOrderedRoute(compression: Bool) throws {
         let invocation = LockedValue<(String, [String])?>(nil)
         let client = KwtSSHRouteClient(
             runner: { executable, arguments, _ in
                 invocation.store((executable, arguments))
                 return AccountCommandOutput(
                     status: 0,
-                    stdout: Self.routeJSON,
+                    stdout: Self.routeJSON.replacingOccurrences(
+                        of: "\"compression\": true",
+                        with: "\"compression\": \(compression)"
+                    ),
                     stderr: ""
                 )
             },
@@ -48,19 +51,22 @@ struct KwtSSHRouteClientTests {
         let snapshot = try client.resolve(SSHHostInfo(
             user: "deploy",
             hostname: "build.example.test",
-            port: 2200
+            port: 2200,
+            compression: compression
         ))
 
         #expect(invocation.load()?.0 ==
             "/Applications/Ghosthub.app/Contents/Helpers/kwt")
         #expect(invocation.load()?.1 == [
             "ssh", "resolve", "--json",
+            "--compression", compression ? "yes" : "no",
             "--user", "deploy",
             "--port", "2200",
             "build.example.test",
         ])
         #expect(snapshot.routeIdentity == "sha256:route-observation")
-        #expect(snapshot.projectionPolicy == "kwt.openssh.projection.v1")
+        #expect(snapshot.compression == compression)
+        #expect(snapshot.projectionPolicy == "kwt.openssh.projection.v2")
         #expect(snapshot.targets.map { $0.logicalTarget.hostname } == [
             "relay.example.test", "build.example.test",
         ])
@@ -126,8 +132,8 @@ struct KwtSSHRouteClientTests {
                 AccountCommandOutput(
                     status: 0,
                     stdout: Self.routeJSON.replacingOccurrences(
-                        of: "kwt.openssh.projection.v1",
-                        with: "kwt.openssh.projection.v2"
+                        of: "kwt.openssh.projection.v2",
+                        with: "kwt.openssh.projection.v1"
                     ),
                     stderr: ""
                 )
@@ -136,7 +142,7 @@ struct KwtSSHRouteClientTests {
         )
 
         #expect(throws: KwtSSHRouteError.unsupportedProjection(
-            "kwt.openssh.projection.v2"
+            "kwt.openssh.projection.v1"
         )) {
             try client.resolve(SSHHostInfo(
                 user: "deploy",
@@ -148,6 +154,7 @@ struct KwtSSHRouteClientTests {
 
     private static let routeJSON = #"""
     {
+      "compression": true,
       "logical_target": {
         "hostname": "build.example.test",
         "user": "deploy",
@@ -195,7 +202,7 @@ struct KwtSSHRouteClientTests {
         }
       ],
       "route_identity": "sha256:route-observation",
-      "projection_policy": "kwt.openssh.projection.v1",
+      "projection_policy": "kwt.openssh.projection.v2",
       "observed_at": "2026-08-13T19:00:00.123456Z"
     }
     """#

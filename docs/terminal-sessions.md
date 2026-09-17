@@ -643,6 +643,16 @@ failures remain retryable and are presented to the user.
 ## SSH Keepalive and Reconnect
 
 Remote clients use the user's OpenSSH configuration and add server keepalives.
+The bundled kwt uses execution policy `kwt.openssh.projection.v2`, including
+an explicit destination compression choice on route resolution, lease
+acquisition, and command execution. Ghosthub enables compression by default;
+Settings > Hosts provides a per-host **SSH compression** toggle that overrides
+the destination's OpenSSH setting without editing the user's configuration.
+Jump hosts retain their OpenSSH compression settings. Saving a changed toggle
+releases that host's attachments; subsequent connections use the new choice.
+Compression contributes to the route identity, so a connection with the other
+setting cannot be reused. An existing shared master cannot change compression
+in place.
 For native presentations, kwt owns the multiplexed connection and sends each
 OpenSSH prompt through its ordered operation stream. Ghosthub shows the exact
 challenge in a native secure-entry sheet and returns the session-only response

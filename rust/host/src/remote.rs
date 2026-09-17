@@ -1536,7 +1536,7 @@ mod tests {
                 "projection":{"arguments":["-F","/dev/null"],"private_config":[]}
               }],
               "route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "projection_policy":"kwt.openssh.projection.v1",
+              "projection_policy":"kwt.openssh.projection.v2",
               "observed_at":"2026-08-15T12:00:00Z"
             }"#,
             &target,

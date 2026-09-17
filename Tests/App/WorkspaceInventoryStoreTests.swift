@@ -448,6 +448,87 @@ struct WorkspaceInventoryStoreTests {
         await waitUntil { loadCount.load() == 1 }
     }
 
+    @Test(
+        "compression changes preserve mutation fences and completion",
+        arguments: [false, true]
+    )
+    func compressionChangePreservesMutationFence(returnsToOriginal: Bool) async {
+        let coordinator = WorktreeMutationCoordinator()
+        let loadGate = AsyncGate()
+        let loadedHosts = LockedValue<[CommandHost]>([])
+        let hostID = UUID()
+        let subscriberID = UUID()
+        let repository = "example/repository"
+        let compressed = CommandHost.ssh(SSHHostInfo(
+            user: "test", hostname: "example.invalid", port: nil
+        ))
+        let uncompressed = CommandHost.ssh(SSHHostInfo(
+            user: "test", hostname: "example.invalid", port: nil,
+            compression: false
+        ))
+        let store = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { host in
+                loadedHosts.withLock { $0.append(host) }
+                await loadGate.wait()
+                return KwtHostInventory(projects: [])
+            },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { _ in .success([]) },
+            mutationCoordinator: coordinator
+        )
+        defer {
+            loadGate.open()
+            store.removeSubscriber(id: subscriberID)
+        }
+        store.publishKwtInventory(
+            KwtHostInventory(projects: []), on: compressed, mutation: nil
+        )
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID, commandHost: compressed, provisioningHost: nil
+            )],
+            wantsKwt: true, wantsTmux: false
+        )
+        #expect(coordinator.acquire(hostID: hostID, projectIdentity: repository))
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: hostID, commandHost: uncompressed, provisioningHost: nil
+            )],
+            wantsKwt: true, wantsTmux: false
+        )
+        // Starting a load publishes its entry synchronously.
+        #expect(store.snapshot.kwtByHost[uncompressed] == nil)
+        if returnsToOriginal {
+            store.updateSubscriber(
+                id: subscriberID,
+                registrations: [.init(
+                    hostID: hostID, commandHost: compressed, provisioningHost: nil
+                )],
+                wantsKwt: true, wantsTmux: false
+            )
+        }
+
+        let removed = KwtWorktreeIdentity(
+            path: "/test/repository/removed", generation: "removed-generation"
+        )
+        coordinator.release(
+            hostID: hostID, projectIdentity: repository,
+            removalTombstones: [removed]
+        )
+        #expect(store.removalTombstones(on: compressed)[repository] == [removed])
+        #expect(store.removalTombstones(on: uncompressed)[repository] == [removed])
+        await loadGate.waitUntilWaiting()
+        let finalHost = returnsToOriginal ? compressed : uncompressed
+        #expect(loadedHosts.load() == [finalHost])
+        loadGate.open()
+        await waitUntilMainActor {
+            store.snapshot.kwtByHost[finalHost]?.isFresh == true
+        }
+    }
+
     @Test("project removal cancels an old load and reconciles once")
     func projectRemovalCancelsOldLoad() async throws {
         let coordinator = WorktreeMutationCoordinator()

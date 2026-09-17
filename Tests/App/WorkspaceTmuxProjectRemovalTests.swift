@@ -2340,7 +2340,7 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("Deleting a host releases an existing removal quarantine")
+    @Test("Compression changes preserve removal quarantine until the host is deleted")
     func deletedHostReleasesExistingRemovalQuarantine() async throws {
         let environment = try setupRemoteEnvironment()
         let project = try #require(environment.snapshot.projects.first)
@@ -2384,6 +2384,14 @@ extension WorkspaceTmuxDiscoveryTests {
             worktreeMutationCoordinator: coordinator,
             configuredSSHHostsProvider: { configuredHosts.value }
         )
+
+        var compressedHosts = configuredHosts.value
+        compressedHosts[0].compression = false
+        configuredHosts.send(compressedHosts)
+        model.refreshHosts()
+
+        #expect(!coordinator.scopes.isEmpty)
+        #expect(!coordinator.acquireProjectRegistry(host: registryHost))
 
         configuredHosts.send([])
         model.refreshHosts()
@@ -3597,8 +3605,8 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("Remove Project revalidates the host after unregistration")
-    func removeProjectRevalidatesHostAfterUnregistration() async throws {
+    @Test("Remove Project revalidates the host after unregistration", arguments: [true, false])
+    func removeProjectRevalidatesHostAfterUnregistration(compressionOnly: Bool) async throws {
         let environment = try setupRemoteEnvironment()
         let snapshot = environment.snapshot
         let project = try #require(snapshot.projects.first)
@@ -3646,21 +3654,20 @@ extension WorkspaceTmuxDiscoveryTests {
             )
         }
         await removalGate.waitUntilStarted()
-        configuredHosts.send([
-            SSHHost(
-                configKey: initialHost.configKey,
-                name: initialHost.name,
-                platform: initialHost.platform,
-                sshDestination: "wesm@replacement-office-linux"
-            ),
-        ])
+        var updatedHost = initialHost
+        if compressionOnly {
+            updatedHost.compression = false
+        } else {
+            updatedHost.sshDestination = "user@replacement.example.test"
+        }
+        configuredHosts.send([updatedHost])
         model.refreshHosts()
         await removalGate.release()
 
         #expect(await removalTask.value == .failure(.message(
             "The project or host connection changed. Try removing it again."
         )))
-        #expect(coordinator.scopes.isEmpty)
+        #expect(coordinator.scopes.isEmpty == !compressionOnly)
         let registryHost = WorktreeMutationCoordinator.ProjectRegistryHost(
             target: .ssh(SSHHostInfo(
                 user: "wesm",
@@ -3669,7 +3676,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 platform: .posix
             ))
         )
-        #expect(coordinator.acquireProjectRegistry(host: registryHost))
+        #expect(coordinator.acquireProjectRegistry(host: registryHost) == !compressionOnly)
         coordinator.releaseProjectRegistry(host: registryHost)
         await model.shutdown()
     }

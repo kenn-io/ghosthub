@@ -338,6 +338,12 @@ screenshot-project-recovery:
 	@GHOSTHUB_PROJECT_RECOVERY_SCREENSHOT="$(SCREENSHOT_PATH)" \
 		sh tools/run_swift_tests.sh $(SWIFT) test --filter ProjectRecoveryScreenshotTests
 
+.PHONY: screenshot-host-settings
+screenshot-host-settings:
+	@test -n "$(SCREENSHOT_PATH)" || { printf 'Set SCREENSHOT_PATH to an output PNG.\n' >&2; exit 2; }
+	@GHOSTHUB_HOST_SETTINGS_SCREENSHOT="$(SCREENSHOT_PATH)" \
+		sh tools/run_swift_tests.sh $(SWIFT) test --filter HostSettingsScreenshotTests
+
 # Essential workflow smoke for kwt inventory and ordinary tmux attachment.
 test-essential-workflows: test-kwt-contract
 	@set -euo pipefail; \

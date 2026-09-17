@@ -5,8 +5,11 @@ import Testing
 
 @Suite("kwt SSH acquisition coordination")
 struct KwtSSHAcquisitionCoordinatorTests {
-    @Test("same destinations share resolution and acquisition")
-    func sharesResolutionAndAcquisition() async throws {
+    @Test(
+        "destinations share acquisition only with the same compression choice",
+        arguments: [true, false]
+    )
+    func sharesResolutionAndAcquisition(sameCompression: Bool) async throws {
         let resolveCount = LockedValue(0)
         let acquireCount = LockedValue(0)
         let pool = KwtSSHConnectionPool { route, _ in
@@ -15,10 +18,10 @@ struct KwtSSHAcquisitionCoordinatorTests {
             return KwtSSHTestLease(routeIdentity: route.routeIdentity)
         }
         let coordinator = KwtSSHAcquisitionCoordinator(
-            resolve: { _ in
+            resolve: { request in
                 resolveCount.withLock { $0 += 1 }
                 try await Task.sleep(for: .milliseconds(30))
-                return Self.route
+                return .fixture(routeIdentity: "sha256:compression-\(request.host.compression)")
             },
             pool: pool
         )
@@ -30,15 +33,23 @@ struct KwtSSHAcquisitionCoordinatorTests {
             prompt: { _, _ in "" }
         )
         async let second = coordinator.acquire(
-            request: Self.request,
+            request: KwtSSHDestinationRequest(
+                destination: Self.request.destination,
+                host: SSHHostInfo(
+                    user: Self.request.host.user,
+                    hostname: Self.request.host.hostname,
+                    port: Self.request.host.port,
+                    compression: sameCompression
+                )
+            ),
             subscriberID: UUID(),
             canPresentPrompts: true,
             prompt: { _, _ in "" }
         )
         let connections = try await [first, second]
 
-        #expect(resolveCount.load() == 1)
-        #expect(acquireCount.load() == 1)
+        #expect(resolveCount.load() == (sameCompression ? 1 : 2))
+        #expect(acquireCount.load() == (sameCompression ? 1 : 2))
         try await connections[0].release()
         try await connections[1].release()
     }

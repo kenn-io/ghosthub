@@ -141,11 +141,17 @@ struct KwtRemoteInstaller: Sendable {
         on host: SSHHost,
         ifNeeded: Bool
     ) async throws {
-        guard let info = CommandHostResolver.parseSSHDestination(
+        guard let parsed = CommandHostResolver.parseSSHDestination(
             host.sshDestination
         ) else {
             throw KwtRemoteInstallError.invalidHost
         }
+        let info = SSHHostInfo(
+            user: parsed.user,
+            hostname: parsed.hostname,
+            port: parsed.port,
+            compression: host.compression
+        )
         let commandLease = commandLease
         try await commandLease.withConnection(on: .ssh(info)) { connection in
             guard let connection else {
