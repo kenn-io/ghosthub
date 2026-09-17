@@ -891,6 +891,82 @@ struct WorkspaceSidebarModelTests {
         )
     }
 
+    @Test("same-name tmux sessions keep socket-specific rows, counts, and ownership")
+    func tmuxRowsKeepSocketIdentity() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let defaultSelection = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        let kwtSelection = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "desk",
+            socketName: "kwt"
+        )
+        let sessions = [nil, "kwt"].map { socket in
+            TmuxSessionSummary(
+                name: "desk",
+                socketName: socket,
+                managed: false,
+                windows: [],
+                serverPID: socket == nil ? "101" : "202",
+                sessionID: "$1",
+                createdAt: "1000"
+            )
+        }
+        var worktree = WorktreeSummary.fixture(hostID: hostID, projectID: projectID)
+        worktree.tmuxSessionName = "desk"
+        worktree.tmuxSocketName = "kwt"
+        worktree.tmuxAttachMode = .direct
+        var snapshot = WorkspaceSnapshot.fixture(
+            hosts: [.fixture(id: hostID, tmuxSessions: sessions)],
+            projects: [.fixture(id: projectID, hostID: hostID)],
+            worktrees: [worktree]
+        )
+        let visible = WorkspaceSidebarModel.sections(in: snapshot)[0]
+        #expect(visible.tmuxSessionRows.map(\.target) == [.tmuxSession(
+            hostID: hostID,
+            name: "desk"
+        )])
+
+        let all = WorkspaceSidebarModel.sections(
+            in: snapshot,
+            tmuxSessionVisibility: .init(hideKwtManagedSessions: false),
+            connectedTmuxSessionIDs: [defaultSelection.id, kwtSelection.id],
+            liveTmuxWindowCounts: [defaultSelection.id: 2, kwtSelection.id: 5]
+        )[0]
+        #expect(Set(all.tmuxSessionRows.map(\.target)) == [
+            .tmuxSession(hostID: hostID, name: "desk"),
+            .tmuxSession(hostID: hostID, name: "desk", socketName: "kwt"),
+        ])
+        #expect(all.tmuxSessionRows.first { $0.target == .tmuxSession(
+            hostID: hostID,
+            name: "desk",
+            socketName: "kwt"
+        ) }?.subtitle == "5 windows")
+        #expect(all.projects[0].worktreeRows[0].worktreeStatus?.tmuxWindowCount == 5)
+        #expect(WorkspaceSidebarModel.canRequestKill(kwtSelection, in: snapshot))
+        snapshot.hosts[0].tmuxSessions.removeAll { $0.socketName == "kwt" }
+        #expect(!WorkspaceSidebarModel.canRequestKill(kwtSelection, in: snapshot))
+        #expect(WorkspaceSidebarModel.canRequestKill(defaultSelection, in: snapshot))
+
+        snapshot.hosts[0].tmuxSessions = sessions
+        snapshot.worktrees = []
+        snapshot.directoryWorkspaces = [.init(
+            id: UUID(),
+            hostID: hostID,
+            name: "desk",
+            path: "/workspaces/desk",
+            tmuxSessionName: "desk",
+            tmuxSocketName: "kwt",
+            tmuxAttachMode: .direct,
+            sessionLive: true
+        )]
+        #expect(WorkspaceSidebarModel.sections(in: snapshot)[0].tmuxSessionRows
+            .map(\.target) == [.tmuxSession(
+                hostID: hostID,
+                name: "desk"
+            )])
+    }
+
     @Test("direct named directory workspaces use endpoint liveness")
     func directNamedDirectoryWorkspaceUsesEndpointLiveness() {
         let hostID = UUID()

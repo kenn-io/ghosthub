@@ -461,7 +461,8 @@ public enum WorkspaceSidebarModel {
             return false
         }
         if selection.tmuxAttachMode == .direct,
-           selection.socketName != nil {
+           selection.socketName != nil,
+           selection.worktreeID != nil || selection.directoryWorkspaceID != nil {
             if let worktreeID = selection.worktreeID,
                let worktree = snapshot.worktree(id: worktreeID) {
                 return !worktree.isStale
@@ -486,7 +487,9 @@ public enum WorkspaceSidebarModel {
             return false
         }
         return snapshot.host(id: selection.hostID)?.tmuxSessions.contains {
-            $0.name == selection.name && $0.hasStableIdentity
+            $0.name == selection.name
+                && $0.socketName == selection.socketName
+                && $0.hasStableIdentity
         } == true
     }
 
@@ -532,25 +535,33 @@ public enum WorkspaceSidebarModel {
             rawValue: zellijSessionOrderRawValue
         )
         return snapshot.hosts.map { host in
-            let defaultServerSessionsByName = host.tmuxSessions.reduce(
+            let sessionsByEndpoint = host.tmuxSessions.reduce(
                 into: [String: TmuxSessionSummary]()
             ) { sessions, session in
-                sessions[session.name] = session
+                sessions[tmuxSessionOrderID(
+                    hostID: host.id,
+                    name: session.name,
+                    socketName: session.socketName
+                )] = session
             }
-            // Discovery only lists the host's default tmux server. A workspace
-            // on any named socket must not suppress an unrelated default-server
-            // session of the same name.
-            let defaultServerSessionNames = Set(
+            let workspaceSessionIDs = Set(
                 snapshot.worktrees.compactMap { worktree in
-                    worktree.hostID == host.id
-                        && worktree.tmuxAttachMode == .direct
-                        && worktree.tmuxSocketName == nil
-                        ? worktree.tmuxSessionName : nil
+                    guard worktree.hostID == host.id,
+                          worktree.tmuxAttachMode == .direct,
+                          let name = worktree.tmuxSessionName else { return nil as String? }
+                    return tmuxSessionOrderID(
+                        hostID: host.id,
+                        name: name,
+                        socketName: worktree.tmuxSocketName
+                    )
                 } + snapshot.directoryWorkspaces.compactMap { workspace in
-                    workspace.hostID == host.id
-                        && workspace.tmuxAttachMode == .direct
-                        && workspace.tmuxSocketName == nil
-                        ? workspace.tmuxSessionName : nil
+                    guard workspace.hostID == host.id,
+                          workspace.tmuxAttachMode == .direct else { return nil as String? }
+                    return tmuxSessionOrderID(
+                        hostID: host.id,
+                        name: workspace.tmuxSessionName,
+                        socketName: workspace.tmuxSocketName
+                    )
                 }
             )
             let projects = snapshot.projects
@@ -574,8 +585,8 @@ public enum WorkspaceSidebarModel {
                             for: worktree,
                             snapshot: snapshot,
                             host: host,
-                            defaultServerSessionsByName:
-                            defaultServerSessionsByName,
+                            sessionsByEndpoint:
+                            sessionsByEndpoint,
                             connectedTmuxSessionIDs:
                             connectedTmuxSessionIDs,
                             liveTmuxWindowCounts: liveTmuxWindowCounts
@@ -597,7 +608,11 @@ public enum WorkspaceSidebarModel {
                     host.tmuxSessions
                         .filter {
                             (!tmuxSessionVisibility.hideKwtManagedSessions
-                                || !defaultServerSessionNames.contains($0.name))
+                                || !workspaceSessionIDs.contains(tmuxSessionOrderID(
+                                    hostID: host.id,
+                                    name: $0.name,
+                                    socketName: $0.socketName
+                                )))
                                 && !tmuxSessionVisibility.isHidden($0.name)
                         }
                         .sorted {
@@ -607,7 +622,8 @@ public enum WorkspaceSidebarModel {
                     identifiedBy: {
                         tmuxSessionOrderID(
                             hostID: host.id,
-                            name: $0.name
+                            name: $0.name,
+                            socketName: $0.socketName
                         )
                     }
                 )
@@ -664,9 +680,13 @@ public enum WorkspaceSidebarModel {
 
     static func tmuxSessionOrderID(
         hostID: UUID,
-        name: String
+        name: String,
+        socketName: String? = nil
     ) -> String {
-        "\(hostID.uuidString):\(name)"
+        if let socketName {
+            return "\(hostID.uuidString):\(socketName):\(name)"
+        }
+        return "\(hostID.uuidString):\(name)"
     }
 
     static func herdrSessionOrderID(
@@ -719,7 +739,8 @@ public enum WorkspaceSidebarModel {
     ) -> WorkspaceSidebarRow {
         let selectionID = WorkspaceTmuxSessionSelection(
             hostID: hostID,
-            name: session.name
+            name: session.name,
+            socketName: session.socketName
         ).id
         let liveCount = connectedTmuxSessionIDs.contains(selectionID)
             ? liveTmuxWindowCounts[selectionID]
@@ -738,7 +759,11 @@ public enum WorkspaceSidebarModel {
             subtitle = "Tmux session"
         }
         return WorkspaceSidebarRow(
-            target: .tmuxSession(hostID: hostID, name: session.name),
+            target: .tmuxSession(
+                hostID: hostID,
+                name: session.name,
+                socketName: session.socketName
+            ),
             icon: .tmuxSession,
             title: session.name,
             subtitle: subtitle,
@@ -750,7 +775,7 @@ public enum WorkspaceSidebarModel {
         for worktree: WorktreeSummary,
         snapshot: WorkspaceSnapshot,
         host: HostSummary,
-        defaultServerSessionsByName: [String: TmuxSessionSummary],
+        sessionsByEndpoint: [String: TmuxSessionSummary],
         connectedTmuxSessionIDs: Set<String>,
         liveTmuxWindowCounts: [String: Int]
     ) -> WorkspaceSidebarRow {
@@ -760,11 +785,14 @@ public enum WorkspaceSidebarModel {
             connectedTmuxSessionIDs.contains($0.id)
         } == true
         let tmuxSession = worktree.tmuxAttachMode == .direct
-            && worktree.tmuxSocketName == nil
             && host.lastKnownReachable
             && host.tmuxInventoryIsAuthoritative
             ? worktree.tmuxSessionName.flatMap {
-                defaultServerSessionsByName[$0]
+                sessionsByEndpoint[tmuxSessionOrderID(
+                    hostID: host.id,
+                    name: $0,
+                    socketName: worktree.tmuxSocketName
+                )]
             }
             : nil
         let tmuxWindowCount = if hasConnectedPresentation,

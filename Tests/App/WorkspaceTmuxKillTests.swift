@@ -13,6 +13,50 @@ import Testing
 
 extension WorkspaceTmuxDiscoveryTests {
     @MainActor
+    @Test("loose kwt discovery carries its socket through opening and killing")
+    func looseKwtSessionKeepsSocket() async throws {
+        let environment = try setupStandardEnvironment()
+        let discovered = [nil, "kwt"].map { socket in
+            DiscoveredTmuxSession(
+                name: "desk",
+                socketName: socket,
+                windowCount: 1,
+                serverPID: socket == nil ? "101" : "202",
+                sessionID: "$1",
+                createdAt: "1000",
+                managed: false
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            tmuxSessionDiscovery: { _ in .success(discovered) },
+            tmuxSessionKiller: { selection, identity, _ in
+                #expect(selection.socketName == "kwt")
+                #expect(identity.serverPID == "202")
+            },
+            tmuxSessionIdentityReviewer: { _, identity, _ in
+                ReviewedTmuxSessionIdentity(identity: try #require(identity), routeIdentity: nil)
+            }
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { model.snapshot.hosts[0].tmuxSessions.count == 2 }
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "desk",
+            socketName: "kwt"
+        )
+        model.openBorrowedTmuxSession(selection)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection)?.socketName == "kwt")
+        let request = try await model.prepareTmuxSessionKill(selection)
+        #expect(request.serverPID == "202")
+        try await model.killTmuxSession(request)
+        #expect(model.snapshot.hosts[0].tmuxSessions.map(\.socketName) == [nil])
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("direct named directory kill uses exact endpoint review")
     func directNamedDirectoryKillUsesExactEndpointReview() async throws {
         let environment = try setupStandardEnvironment()

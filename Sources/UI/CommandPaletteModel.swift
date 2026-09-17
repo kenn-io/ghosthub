@@ -501,12 +501,13 @@ public enum CommandPaletteModel {
                 canRequestKill: Bool,
                 keywords: [String]
             )] = section.tmuxSessionRows.compactMap { row in
-                guard case let .tmuxSession(hostID, name) = row.target else {
+                guard case let .tmuxSession(hostID, name, socketName) = row.target else {
                     return nil
                 }
                 let session = WorkspaceTmuxSessionSelection(
                     hostID: hostID,
-                    name: name
+                    name: name,
+                    socketName: socketName
                 )
                 return (
                     session,
@@ -584,16 +585,8 @@ public enum CommandPaletteModel {
             let workspaceSessionIDs = Set(
                 workspaceSessions.map { $0.session.id }
             )
-            let workspaceDefaultServerNames = Set(
-                workspaceSessions.compactMap { item in
-                    item.session.tmuxAttachMode == .direct
-                        && item.session.socketName == nil
-                        ? item.session.name : nil
-                }
-            )
             return workspaceSessions + discovered.filter {
                 !workspaceSessionIDs.contains($0.session.id)
-                    && !workspaceDefaultServerNames.contains($0.session.name)
             }
         }
 

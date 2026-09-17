@@ -15,6 +15,37 @@ TIMEOUT_SCRIPT = SCRIPT.with_name("run_with_timeout.sh")
 PURGE_SCRIPT = SCRIPT.with_name("purge_test_tmux.sh")
 
 
+def test_pinned_helper_cannot_escape_test_socket_directory(tmp_path: Path) -> None:
+    if shutil.which("tmux") is None:
+        pytest.skip("tmux is unavailable")
+    helper = tmp_path / "kwt"
+    helper.write_text(
+        "#!/bin/sh\nset -eu\n"
+        'printf "%s\\n" "$TMUX_TMPDIR"\n'
+        'tmux -f /dev/null -L kwt new-session -d -s fixture "sleep 60"\n'
+        "unset TMUX_TMPDIR\n"
+        # Only query after stripping the override: a broken shim must not
+        # create a session outside the test directory while failing this test.
+        'exec tmux -L kwt display-message -p "#{socket_path}"\n'
+    )
+    helper.chmod(0o700)
+    result = subprocess.run(
+        ["sh", str(SCRIPT), "sh", "-c", 'exec "$GHOSTHUB_KWT_CONTRACT_BINARY"'],
+        env={
+            **os.environ,
+            "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS": "1",
+            "GHOSTHUB_KWT_CONTRACT_BINARY": str(helper),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    root, socket = map(Path, result.stdout.splitlines())
+    assert socket.resolve().is_relative_to(root.resolve())
+    assert not root.exists()
+
+
 @pytest.mark.parametrize(
     "ignores_term",
     [False, True],

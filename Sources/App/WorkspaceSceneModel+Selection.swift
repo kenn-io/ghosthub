@@ -178,7 +178,11 @@ extension WorkspaceSceneModel {
             if let directoryID = active.directoryWorkspaceID {
                 return .directoryWorkspace(directoryID)
             }
-            return .tmuxSession(hostID: active.hostID, name: active.name)
+            return .tmuxSession(
+                hostID: active.hostID,
+                name: active.name,
+                socketName: active.socketName
+            )
         }
         return selection.navigationTarget
     }
@@ -290,11 +294,11 @@ extension WorkspaceSceneModel {
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
             return true
-        case let .tmuxSession(hostID, name):
+        case let .tmuxSession(hostID, name, socketName):
             var updated = selection
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
-            openBorrowedTmuxSession(.init(hostID: hostID, name: name))
+            openBorrowedTmuxSession(.init(hostID: hostID, name: name, socketName: socketName))
             return true
         case let .herdrSession(hostID, name):
             guard snapshot.host(id: hostID)?.herdrSessions.contains(

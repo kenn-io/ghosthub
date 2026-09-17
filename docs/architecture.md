@@ -693,7 +693,11 @@ environment, while Ghosthub's own inventory and discovery commands execute
 under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not
 asked to interpret those commands. Windows commands execute through encoded
 noninteractive PowerShell.
-Direct tmux discovery provides every otherwise-unbound session. A remote host
+Direct tmux discovery queries both the default server and kwt's named `kwt`
+server. Session identity includes the socket throughout sidebar navigation,
+attachment, reconnect, and lifecycle actions; equal names on different servers
+remain separate sessions. Kwt ownership suppresses a generic row only when
+both the name and socket match a registered workspace. A remote host
 without kwt remains a valid tmux-only host. Passive remote kwt maintenance and
 inventory failures stay private, retain the current scene's cached project
 inventory, and never replace usable terminal inventory with a host or

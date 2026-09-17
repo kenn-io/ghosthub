@@ -83,6 +83,7 @@ public struct TmuxGridSize: Codable, Equatable, Sendable {
 
 public struct TmuxSessionSummary: Codable, Equatable, Sendable {
     public var name: String
+    public var socketName: String?
     public var managed: Bool
     public var worktreeKey: String?
     public var windows: [TmuxWindowSummary]
@@ -93,7 +94,7 @@ public struct TmuxSessionSummary: Codable, Equatable, Sendable {
     public var previewClientSize: TmuxGridSize?
 
     public init(
-        name: String, managed: Bool,
+        name: String, socketName: String? = nil, managed: Bool,
         worktreeKey: String? = nil,
         windows: [TmuxWindowSummary],
         serverPID: String? = nil,
@@ -103,6 +104,7 @@ public struct TmuxSessionSummary: Codable, Equatable, Sendable {
         previewClientSize: TmuxGridSize? = nil
     ) {
         self.name = name
+        self.socketName = socketName
         self.managed = managed
         self.worktreeKey = worktreeKey
         self.windows = windows

@@ -2,6 +2,7 @@ import GhosthubTransport
 import Darwin
 import Foundation
 import GhosthubTmux
+import GhosthubTestSupport
 import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
@@ -461,8 +462,8 @@ struct TmuxBinaryResolverTests {
                 stdout: """
                 /opt/homebrew/bin/tmux
                 tmux 3.7b
-                GHOSTHUB_TMUX_SESSION\t2\t101\t$1\t1783344091\t120\t36\ton\t\tproject-a
-                GHOSTHUB_TMUX_SESSION\t4\t101\t$2\t1783344092\t200\t50\t3\towner-token\tGhosthub\twork
+                GHOSTHUB_TMUX_SESSION\t\t2\t101\t$1\t1783344091\t120\t36\ton\t\tproject-a
+                GHOSTHUB_TMUX_SESSION\t\t4\t101\t$2\t1783344092\t200\t50\t3\towner-token\tGhosthub\twork
 
                 """
             )
@@ -490,32 +491,6 @@ struct TmuxBinaryResolverTests {
         )
     }
 
-    @Test("real zsh login shell discovers the current tmux server")
-    func realZshLoginShellDiscoversCurrentServer() throws {
-        guard ProcessInfo.processInfo.environment[
-            "GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS"
-        ] == "1" else { return }
-        guard FileManager.default.isExecutableFile(atPath: "/bin/zsh") else {
-            return
-        }
-        let expected = AccountCommandRunner.runLoginShell(
-            shell: "/bin/zsh",
-            command: "tmux list-sessions -F '#{session_name}' 2>/dev/null",
-            timeout: 5
-        )
-        guard expected.status == 0 else { return }
-
-        let resolver = TmuxBinaryResolver(
-            loginShellProvider: { "/bin/zsh" }
-        )
-        let discovered = try resolver.discoverSessions().get()
-        let expectedNames = Set(
-            expected.stdout.split(whereSeparator: \.isNewline).map(String.init)
-        )
-
-        #expect(Set(discovered.map(\.name)) == expectedNames)
-    }
-
     @Test("remote discovery uses the configured SSH host")
     func discoversRemoteSessions() async throws {
         let host = SSHHostInfo(
@@ -530,7 +505,7 @@ struct TmuxBinaryResolverTests {
                     stdout: """
                     /usr/local/bin/tmux
                     tmux 3.6
-                    GHOSTHUB_TMUX_SESSION\t3\t202\t$7\t99\t132\t42\toff\t\tremote-work
+                    GHOSTHUB_TMUX_SESSION\t\t3\t202\t$7\t99\t132\t42\toff\t\tremote-work
 
                     """,
 
@@ -573,7 +548,7 @@ struct TmuxBinaryResolverTests {
                     status: 0,
                     stdout: "C:\\Tools\\psmux\\tmux.exe\r\n"
                         + "tmux 3.6.7\r\n"
-                        + "GHOSTHUB_TMUX_SESSION\t2\t202\t$7"
+                        + "GHOSTHUB_TMUX_SESSION\t\t2\t202\t$7"
                         + "\t1783344091\t160\t48\t\t\twindows-work\r\n",
                     stderr: ""
                 )
@@ -1233,5 +1208,53 @@ struct TmuxPathCacheTests {
                 == "/opt/homebrew/bin/tmux"
         )
         #expect(counter.count == 2)
+    }
+}
+
+/// Fixed product socket names share the pinned-helper suite's serial ownership.
+extension PinnedKwtContractTests {
+    @Test("discovers loose sessions on default and kwt sockets")
+    func discoversDefaultAndKwtSockets() async throws {
+        let resolver = TmuxBinaryResolver()
+        let tmuxPath = try resolver.resolveTmuxPath().get()
+        let kwt = try TestTmuxServer(tmuxPath: tmuxPath, socket: .productContract(name: "kwt"))
+        let standard = try TestTmuxServer(
+            tmuxPath: tmuxPath,
+            socket: .productContract(name: "default")
+        )
+        defer { kwt.stop()
+            standard.stop()
+        }
+        try kwt.createSession("shared desk", command: "/bin/sleep 120")
+
+        let kwtOnly = try resolver.discoverSessions().get()
+        #expect(kwtOnly.map(\.name) == ["shared desk"])
+        #expect(kwtOnly.map(\.socketName) == ["kwt"])
+
+        try standard.createSession("shared desk", command: "/bin/sleep 120")
+        let both = try resolver.discoverSessions().get()
+        #expect(both.map(\.name) == ["shared desk", "shared desk"])
+        #expect(Set(both.map(\.socketName)) == Set([nil, "kwt"]))
+        #expect(Set(both.compactMap(\.serverPID)).count == 2)
+
+        let remoteResolver = TmuxBinaryResolver(remoteProcessRunner: { _, _, command in
+            let result = AccountCommandRunner.runLoginShell(
+                shell: "/bin/zsh",
+                command: command,
+                timeout: 10
+            )
+            return (result.status, result.stdout, "")
+        })
+        let remote = try await remoteResolver.discoverSessions(on: SSHHostInfo(
+            user: nil,
+            hostname: "fixture",
+            port: nil
+        )).get()
+        #expect(remote == both)
+
+        kwt.stop()
+        let defaultOnly = try resolver.discoverSessions().get()
+        #expect(defaultOnly.map(\.name) == ["shared desk"])
+        #expect(defaultOnly.map(\.socketName) == [nil])
     }
 }

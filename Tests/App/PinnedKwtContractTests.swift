@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import GhosthubTestSupport
+import GhosthubTmux
 import GhosthubTransport
 import GhosthubWorkspace
 import Testing
@@ -8,6 +9,93 @@ import Testing
 
 @Suite("Pinned kwt contract", .serialized)
 struct PinnedKwtContractTests {
+    @Test("directory workspace opens through the pinned helper", arguments: [false, true])
+    func directoryWorkspaceAttachment(existingSession: Bool) throws {
+        guard ProcessInfo.processInfo.environment[
+            "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
+        ] == "1" else { return }
+        let binary = try #require(ProcessInfo.processInfo.environment[
+            "GHOSTHUB_KWT_CONTRACT_BINARY"
+        ])
+        let fixture = try TempDirectoryFixture(shortPath: true)
+        let kwtHome = try fixture.createSubdirectory("kwt-home")
+        let workspace = try fixture.createSubdirectory("directory workspace")
+        let environment = ["KWT_HOME": kwtHome.path, "TERM": "xterm-256color"]
+        defer {
+            _ = AccountCommandRunner.runProcess(
+                executable: binary, arguments: ["daemon", "stop"], timeout: 10,
+                environmentOverrides: environment
+            )
+        }
+        let tmuxPath = try TmuxBinaryResolver().resolveTmuxPath().get()
+        let server = try TestTmuxServer(
+            tmuxPath: tmuxPath, socket: .productContract(name: "kwt")
+        )
+        defer { server.stop() }
+        // Start the fixture server without loading the account's tmux config.
+        try server.createSession("fixture", command: "/bin/sleep 60")
+        let shell = try fixture.createExecutable(name: "shell", content: """
+        #!/bin/sh
+        exec /bin/sleep 60
+        """)
+        let shellSetup = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: server.connectionArguments + [
+                "set-option", "-g", "default-shell", shell.path,
+            ], timeout: 2
+        )
+        try #require(shellSetup.status == 0, Comment(rawValue: shellSetup.stderr))
+        let registration = AccountCommandRunner.runProcess(
+            executable: binary,
+            arguments: ["workspace", "add", workspace.path, "--name", "desk"],
+            timeout: 10, environmentOverrides: environment
+        )
+        try #require(registration.status == 0, Comment(rawValue: registration.stderr))
+        let listing = AccountCommandRunner.runProcess(
+            executable: binary, arguments: ["workspace", "list", "--json"],
+            timeout: 10, environmentOverrides: environment
+        )
+        let record = try #require(JSONDecoder().decode(
+            [KwtDirectoryWorkspaceRecord].self, from: Data(listing.stdout.utf8)
+        ).first)
+        if existingSession {
+            let creation = AccountCommandRunner.runProcess(
+                executable: binary,
+                arguments: ["open", workspace.path, "--start-session", "--json"],
+                timeout: 15, environmentOverrides: environment
+            )
+            try #require(creation.status == 0, Comment(rawValue: creation.stderr))
+        }
+        // Exercise the generated open arguments with the exact helper, using
+        // its headless mode so this contract check does not need a terminal UI.
+        let headlessKwt = try fixture.createExecutable(name: "kwt-open", content: """
+        #!/bin/sh
+        exec \(shellQuotedCommandArgument(binary)) "$@" --start-session --json
+        """)
+        let command = TmuxAttachmentInfo(
+            sessionName: record.sessionName, host: .local,
+            socketName: record.tmuxSocketName, workspacePath: record.path,
+            kwtExpectedSessionName: record.sessionName
+        ).attachCommand(tmuxPath: tmuxPath, kwtPath: headlessKwt.path)
+        let result = AccountCommandRunner.runProcess(
+            executable: "/bin/sh", arguments: ["-c", command + " < /dev/null"],
+            timeout: 15, environmentOverrides: environment
+        )
+        try #require(result.status == 0, Comment(rawValue: result.stdout + result.stderr))
+        let endpoint = try JSONDecoder().decode(
+            [String: String].self, from: Data(result.stdout.utf8)
+        )
+        #expect(endpoint["session_name"] == record.sessionName)
+        #expect(endpoint["tmux_socket_name"] == record.tmuxSocketName)
+        let liveSession = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: server.connectionArguments + [
+                "has-session", "-t", "=\(record.sessionName)",
+            ], timeout: 2
+        )
+        #expect(liveSession.status == 0, Comment(rawValue: liveSession.stderr))
+    }
+
     enum RemovalGuard: CaseIterable, Sendable {
         case repositoryMismatch
         case liveProtectedSession

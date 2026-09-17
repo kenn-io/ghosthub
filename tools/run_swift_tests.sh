@@ -131,10 +131,39 @@ trap 'forward_signal HUP' HUP
 
 export TMUX_TMPDIR="$tmux_tmpdir"
 export GHOSTHUB_TEST_TMUX_RUN_ID="$run_id"
+# Git fixtures must not inherit repository redirection, signing, or hooks from
+# the launching shell or the account's Git configuration.
+for git_variable in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    unset "$git_variable"
+done
+GIT_CONFIG_GLOBAL="$tmux_tmpdir/gitconfig"
+: > "$GIT_CONFIG_GLOBAL"
+export GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM=1
 # libghostty gives direct commands a login-style argv[0]. Version-manager
 # shims can reject that name, so probes need a concrete Python interpreter.
 GHOSTHUB_TEST_PYTHON=$(uv python find)
 export GHOSTHUB_TEST_PYTHON
+# Kwt deliberately drops TMUX_TMPDIR for its named servers. Restore the test
+# socket directory at its tmux subprocess boundary, including after login shells.
+if [ "${GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS:-}" = 1 ]; then
+    "$GHOSTHUB_TEST_PYTHON" - "$tmux_tmpdir" "$GHOSTHUB_KWT_CONTRACT_BINARY" "$(command -v tmux)" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+root, kwt, tmux = sys.argv[1:]
+directory = Path(root) / "kwt-contract"
+directory.mkdir()
+for name, command in {
+    "kwt": f'export PATH={shlex.quote(str(directory))}:"$PATH"\nexec {shlex.quote(kwt)} "$@"',
+    "tmux": f'export TMUX_TMPDIR={shlex.quote(root)}\nexec {shlex.quote(tmux)} "$@"',
+}.items():
+    script = directory / name
+    script.write_text("#!/bin/sh\n" + command + "\n")
+    script.chmod(0o700)
+PY
+    export GHOSTHUB_KWT_CONTRACT_BINARY="$tmux_tmpdir/kwt-contract/kwt"
+fi
 # Swift Testing schedules test bodies independently of SwiftPM's worker flag.
 # Bound that executor so process and cancellation tests are not starved by the
 # full package starting at once. Callers can override the cap when needed.

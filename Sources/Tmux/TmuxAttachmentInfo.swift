@@ -720,7 +720,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             ]
         } else if let kwtExpectedSessionName {
             guard kwtExpectedSessionName == sessionName else { return nil }
-            arguments += ["--expected-session", kwtExpectedSessionName]
+            // KWT's expected-* flags apply only to Git worktrees, as a set.
         }
         return arguments
     }

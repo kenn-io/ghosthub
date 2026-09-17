@@ -881,6 +881,35 @@ struct CommandPaletteModelTests {
         #expect(kill.action == .killTmuxSession(expected))
     }
 
+    @Test("a kwt namesake retains its own command beside a default workspace")
+    func namedSocketCommandsRemainDistinct() throws {
+        let host = HostSummary.fixture(tmuxSessions: [.init(
+            name: "desk",
+            socketName: "kwt",
+            managed: false,
+            windows: []
+        )])
+        let project = ProjectSummary.fixture(hostID: host.id)
+        var worktree = WorktreeSummary.fixture(hostID: host.id, projectID: project.id)
+        worktree.tmuxSessionName = "desk"
+        let commands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(hosts: [host], projects: [project], worktrees: [worktree]),
+            selection: WorkspaceSelection(selectedHostID: host.id)
+        )
+        let opened = commands.compactMap { item -> WorkspaceTmuxSessionSelection? in
+            guard case let .openTmuxSession(session) = item.action else { return nil }
+            return session
+        }
+        #expect(Set(opened.map(\.socketName)) == Set([nil, "kwt"]))
+        #expect(opened
+            .contains(try #require(WorkspaceSidebarModel.tmuxSessionSelection(for: worktree))))
+        #expect(opened.contains(WorkspaceTmuxSessionSelection(
+            hostID: host.id,
+            name: "desk",
+            socketName: "kwt"
+        )))
+    }
+
     @Test("directory workspace supplies canonical lifecycle commands")
     func directoryWorkspaceSuppliesCanonicalLifecycleCommands() throws {
         let host = HostSummary.fixture(tmuxSessions: [.init(

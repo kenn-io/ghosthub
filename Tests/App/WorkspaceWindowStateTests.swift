@@ -816,26 +816,38 @@ struct WorkspaceWindowStateTests {
         )
     }
 
-    @Test("an unbound session persists only for host-level navigation")
-    func unboundSessionPersistsOnlyAtHostLevel() {
-        let fixture = RestorationFixture.local(sessionName: "editor")
+    @Test(
+        "unbound default and kwt sessions preserve their restoration endpoint",
+        arguments: [nil, "kwt"] as [String?]
+    )
+    func unboundSessionPersistsOnlyAtHostLevel(socketName: String?) {
+        let fixture = RestorationFixture.local(sessionName: "docbank")
         let unboundSession = WorkspaceTmuxSessionSelection(
             hostID: fixture.tmuxSelection.hostID,
-            name: "docbank"
+            name: "docbank",
+            socketName: socketName
         )
         let hostOnly = WorkspaceSelection(
             selectedHostID: fixture.selection.selectedHostID
         )
-
         let state = WorkspaceWindowState.capture(
             windowID: UUID(),
             selection: hostOnly,
             activeTmux: unboundSession,
             snapshot: fixture.snapshot
         )
-
-        #expect(state.tmux?.sessionName == "docbank")
         #expect(state.tmux?.owner == .unbound)
+        #expect(state.tmux?.socketName == socketName)
+        let restored = WorkspaceWindowRestorationResolver.resolve(state, in: fixture.snapshot)
+        if socketName != nil {
+            #expect(restored == .needsExactTmuxProbe(selection: hostOnly, tmux: unboundSession))
+        } else {
+            #expect(restored == .ready(selection: hostOnly, presentation: .tmux(unboundSession)))
+            var namesake = fixture.snapshot
+            namesake.hosts[0].tmuxSessions[0].socketName = "kwt"
+            #expect(WorkspaceWindowRestorationResolver
+                .resolve(state, in: namesake) == .pending(selection: hostOnly))
+        }
     }
 
     enum UnboundOverlapNavigation: CaseIterable, Sendable {

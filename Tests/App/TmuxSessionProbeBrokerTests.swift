@@ -87,6 +87,25 @@ private actor ProbeGate {
 @Suite("Tmux session probe broker")
 struct TmuxSessionProbeBrokerTests {
     @MainActor
+    @Test("a kwt namesake does not satisfy a default socket probe")
+    func defaultProbeRejectsKwtNamesake() async {
+        let broker = TmuxSessionProbeBroker(
+            discover: { _ in .success([.init(
+                name: "desk",
+                socketName: "kwt",
+                windowCount: 1,
+                createdAt: "1000",
+                managed: false
+            )]) },
+            exactProbe: { _ in .success(true) }
+        )
+        let host = SSHHostInfo(user: nil, hostname: "fixture", port: nil)
+        #expect(await broker.session(.init(host: host, name: "desk", socketName: nil)) == .absent)
+        #expect(await broker
+            .session(.init(host: host, name: "desk", socketName: "kwt")) == .present)
+    }
+
+    @MainActor
     @Test("concurrent default-socket consumers share one discovery")
     func coalescesDefaultDiscovery() async {
         let calls = ProbeCounter()

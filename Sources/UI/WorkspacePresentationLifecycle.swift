@@ -117,7 +117,11 @@ enum WorkspacePresentationLifecycle {
     ) -> WorkspaceSelection {
         var updated = current
         updated.select(
-            .tmuxSession(hostID: session.hostID, name: session.name),
+            .tmuxSession(
+                hostID: session.hostID,
+                name: session.name,
+                socketName: session.socketName
+            ),
             in: snapshot,
             visibility: visibility
         )
@@ -136,7 +140,11 @@ enum WorkspacePresentationLifecycle {
         } else if let directoryWorkspaceID = session.directoryWorkspaceID {
             target = .directoryWorkspace(directoryWorkspaceID)
         } else {
-            target = .tmuxSession(hostID: session.hostID, name: session.name)
+            target = .tmuxSession(
+                hostID: session.hostID,
+                name: session.name,
+                socketName: session.socketName
+            )
         }
 
         var updated = current
