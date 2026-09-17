@@ -308,13 +308,16 @@ matching default-server session may be adopted during rollout. Worktree-owned
 presentations remain on their worktree row, and a genuinely separate
 same-named default-server session remains visible as unbound inventory. When
 WSL config selects an explicit `TMUX_TMPDIR`, KWT commands receive that value.
-Like the pinned helper, direct operations on the canonical `kwt` socket clear
-`TMUX_TMPDIR`; default and other named sockets retain the account's override.
+
+In the Swift macOS app, direct operations on the canonical `kwt` socket clear
+`TMUX_TMPDIR`, like the pinned helper. Default and other named sockets retain
+the account's override.
 Cached rows never correlate sessions across those server roots.
 An unexpected kwt discovery failure retains cached kwt rows and publishes
 fresh default-server rows with a host warning. Default-session probes can use
 that partial inventory; it cannot confirm kwt absence or start Always Live
 previews. A complete refresh restores authoritative inventory.
+
 In the macOS app, removing a generation-backed worktree is separately
 confirmed. Ghosthub captures the exact socket and live session identity, when
 present, and reads KWT's machine-readable no-fetch Git status for the exact

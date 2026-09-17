@@ -5,7 +5,7 @@ icon: lucide/square-terminal
 
 # Sessions
 
-Expand a host in the sidebar to see its sessions:
+In Ghosthub's Swift macOS app, expand a host in the sidebar to see its sessions:
 
 - **Tmux Sessions** lists standalone tmux sessions on the default server and
   kwt's server (`tmux -L kwt`), including sessions created with `kwt tmux run`.
