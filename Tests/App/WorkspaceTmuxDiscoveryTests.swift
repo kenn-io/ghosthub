@@ -1188,14 +1188,15 @@ struct WorkspaceTmuxDiscoveryTests {
         ))
         mode.send(.live)
         releasePromotion.signal()
+        // Clearing the grid finishes promotion; restoring preview sizing and
+        // removing the inactive presentation still run asynchronously afterward.
         await waitUntilMainActor {
-            surfaceStore.surface.clearPreviewGridCount == 2
-        }
-        for _ in 0 ..< 20 {
-            await Task.yield()
+            model.retainedBorrowedTmuxPresentationCount == 0
+                && surfaceStore.removedKeys.count == 1
         }
 
         #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(surfaceStore.surface.clearPreviewGridCount == 2)
         #expect(model.retainedBorrowedTmuxPresentationCount == 0)
         #expect(surfaceStore.removedKeys.count == 1)
         await model.shutdown()
