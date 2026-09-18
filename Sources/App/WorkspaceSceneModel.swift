@@ -4294,12 +4294,26 @@ final class WorkspaceSceneModel: ObservableObject {
                     let sessions = entry.sessions {
                     appliedTmuxInventoryRevisions[applicationKey] =
                         entry.inventoryRevision
-                    applyTmuxDiscoveryResult(
-                        .success(sessions),
-                        hostID: hostID,
-                        publish: false
-                    )
-                    successfulTmuxHostIDs.insert(hostID)
+                    if let status = entry.kwtFailureStatus {
+                        // Seed retained rows for scenes joining a partial cache.
+                        // Keep its warning even while the next refresh is loading.
+                        tmuxSessionsByHost[hostID] = sessions.map(\.summary)
+                        applyTmuxDiscoveryResult(
+                            .failure(.kwtDiscoveryFailed(
+                                sessions: sessions.filter { $0.socketName == nil },
+                                status: status
+                            )),
+                            hostID: hostID,
+                            publish: false
+                        )
+                    } else {
+                        applyTmuxDiscoveryResult(
+                            .success(sessions),
+                            hostID: hostID,
+                            publish: false
+                        )
+                        successfulTmuxHostIDs.insert(hostID)
+                    }
                     updatedHostIDs.insert(hostID)
                 }
                 if entry.observationRevision
@@ -5931,14 +5945,20 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             return
         }
-        reconcileEndedTmuxSession(discovered, hostID: hostID)
+        let kwtUnavailable = if case .failure = result {
+            true
+        } else {
+            false
+        }
+        reconcileEndedTmuxSession(discovered, hostID: hostID, kwtAvailable: !kwtUnavailable)
         tmuxSessionsByHost[hostID] = reconciledTmuxSessions(
             discovered,
-            hostID: hostID
+            hostID: hostID,
+            preservingKwtSessions: kwtUnavailable
         )
         if let publishingEpoch, let commandHost = inventoryHosts[hostID] {
-            workspaceInventoryStore.publishTmuxSessions(
-                discovered,
+            workspaceInventoryStore.publishTmuxDiscovery(
+                result,
                 on: commandHost,
                 epoch: publishingEpoch
             )
@@ -5947,9 +5967,9 @@ final class WorkspaceSceneModel: ObservableObject {
             guard var context = presentation.reconnectContext,
                   context.phase == .establishingWorkspace,
                   context.selection.hostID == hostID,
-                  context.selection.socketName == nil,
                   discovered.contains(where: {
                       $0.name == context.selection.name
+                          && $0.socketName == context.selection.socketName
                   })
             else { continue }
             guard !Self.requiresKwtEndpointConfirmation(context) else {
@@ -5991,22 +6011,31 @@ final class WorkspaceSceneModel: ObservableObject {
                 ?? "Unknown host"
             tmuxDiscoveryFailuresByHost[hostID] =
                 "\(hostName): \(error.localizedDescription)"
+            if case let .kwtDiscoveryFailed(sessions, _) = error {
+                tmuxLastSeenByHost[hostID] = Date()
+                return sessions
+            }
             return nil
         }
     }
 
     private func reconcileEndedTmuxSession(
         _ discovered: [DiscoveredTmuxSession],
-        hostID: UUID
+        hostID: UUID,
+        kwtAvailable: Bool
     ) {
         for presentation in retainedTmuxPresentations.values {
             let selection = presentation.selection
             let handle = presentation.handle
             guard selection.hostID == hostID,
-                  selection.socketName == nil,
+                  selection.socketName == nil || (selection.socketName == "kwt" && kwtAvailable),
+                  selection.tmuxAttachMode != .protected,
                   nativeTmuxSessionCoordinator.hasClosedAttachment(handle)
             else { continue }
-            if discovered.contains(where: { $0.name == selection.name }) {
+            if discovered
+                .contains(where: {
+                    $0.name == selection.name && $0.socketName == selection.socketName
+                }) {
                 confirmedEndedTmuxSessionHandles.remove(handle.id)
             } else {
                 confirmedEndedTmuxSessionHandles.insert(handle.id)
@@ -8017,9 +8046,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 displayTitle: snapshot.worktrees.first {
                     $0.hostID == host.id
                         && $0.tmuxSessionName == sessionName
+                        && $0.tmuxSocketName == selection.socketName
                 }?.name ?? snapshot.directoryWorkspaces.first {
                     $0.hostID == host.id
                         && $0.tmuxSessionName == sessionName
+                        && $0.tmuxSocketName == selection.socketName
                 }?.name,
                 connectionState: borrowedTmuxConnectionStates[handle.id],
                 recoveryState: activeBorrowedTmuxRecoveryState,
@@ -8212,7 +8243,7 @@ final class WorkspaceSceneModel: ObservableObject {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
         let selections = sessions.map {
-            alwaysLiveTmuxSelection(hostID: hostID, name: $0.name)
+            alwaysLiveTmuxSelection(hostID: hostID, name: $0.name, socketName: $0.socketName)
         }
         let desiredKeys = Set(selections.map(TmuxPresentationKey.init))
         let desiredIdentities = Dictionary(uniqueKeysWithValues:
@@ -8317,12 +8348,13 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func alwaysLiveTmuxSelection(
         hostID: UUID,
-        name: String
+        name: String,
+        socketName: String?
     ) -> WorkspaceTmuxSessionSelection {
         if let worktree = snapshot.worktrees.first(where: {
             $0.hostID == hostID
                 && !$0.isStale
-                && $0.tmuxSocketName == nil
+                && $0.tmuxSocketName == socketName
                 && $0.tmuxAttachMode == .direct
                 && $0.tmuxSessionName == name
         }),
@@ -8333,13 +8365,13 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         if let workspace = snapshot.directoryWorkspaces.first(where: {
             $0.hostID == hostID
-                && $0.tmuxSocketName == nil
+                && $0.tmuxSocketName == socketName
                 && $0.tmuxAttachMode == .direct
                 && $0.tmuxSessionName == name
         }) {
             return WorkspaceSidebarModel.tmuxSessionSelection(for: workspace)
         }
-        return WorkspaceTmuxSessionSelection(hostID: hostID, name: name)
+        return WorkspaceTmuxSessionSelection(hostID: hostID, name: name, socketName: socketName)
     }
 
     private func closeAlwaysLiveManagedTmuxPresentations() {
@@ -9841,7 +9873,7 @@ final class WorkspaceSceneModel: ObservableObject {
             ?? snapshot.host(id: selection.hostID)?.tmuxSessions
             ?? []
         let sessionAlreadyKnown = knownSessions.contains {
-            $0.name == selection.name
+            $0.name == selection.name && $0.socketName == selection.socketName
         }
         let launchMode: TmuxAttachmentLaunchMode
         if selection.tmuxAttachMode == .protected
@@ -10418,11 +10450,10 @@ final class WorkspaceSceneModel: ObservableObject {
     private func previewGridSize(
         for selection: WorkspaceTmuxSessionSelection
     ) -> TmuxGridSize? {
-        guard selection.socketName == nil else { return nil }
         let sessions = tmuxSessionsByHost[selection.hostID]
             ?? snapshot.host(id: selection.hostID)?.tmuxSessions
         return sessions?.first {
-            $0.name == selection.name
+            $0.name == selection.name && $0.socketName == selection.socketName
         }?.previewClientSize
     }
 
@@ -11608,13 +11639,11 @@ final class WorkspaceSceneModel: ObservableObject {
         )?.selection {
             invalidateBorrowedTmuxSession(retainedTarget)
         }
-        if tmuxSelection.socketName == nil {
-            tmuxSessionsByHost[tmuxSelection.hostID]?.removeAll {
-                $0.name == tmuxSelection.name
-            }
-            applyInventoryOverlayIfNeeded()
-            updateWorkspaceInventoryState()
+        tmuxSessionsByHost[tmuxSelection.hostID]?.removeAll {
+            $0.name == tmuxSelection.name && $0.socketName == tmuxSelection.socketName
         }
+        applyInventoryOverlayIfNeeded()
+        updateWorkspaceInventoryState()
         if activeTargetAfterKill != nil {
             selection.select(
                 .host(tmuxSelection.hostID),
@@ -11700,9 +11729,8 @@ final class WorkspaceSceneModel: ObservableObject {
         hostSummary: HostSummary
     ) -> TmuxSessionIdentity? {
         guard selection.tmuxAttachMode != .protected,
-              selection.socketName == nil,
               let summary = hostSummary.tmuxSessions.first(where: {
-                  $0.name == selection.name
+                  $0.name == selection.name && $0.socketName == selection.socketName
               })
         else { return nil }
         return tmuxSessionIdentity(summary)
@@ -13086,9 +13114,10 @@ final class WorkspaceSceneModel: ObservableObject {
             connection.arguments
         )
         let outcome = switch result {
-        case let .success(sessions):
+        case let .success(sessions),
+             let .failure(.kwtDiscoveryFailed(sessions, _)):
             sessions.contains(where: {
-                $0.name == context.selection.name
+                $0.name == context.selection.name && $0.socketName == context.selection.socketName
             }) ? TmuxSessionProbeOutcome.present : .absent
         case let .failure(error):
             TmuxSessionProbeOutcome.failure(error)
@@ -13161,9 +13190,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 publishingEpoch: epoch
             )
             switch result {
-            case let .success(sessions):
+            case let .success(sessions),
+                 let .failure(.kwtDiscoveryFailed(sessions, _)):
                 guard sessions.contains(where: {
-                    $0.name == context.selection.name
+                    $0.name == context.selection.name && $0.socketName == context.selection
+                        .socketName
                 }) else { return .absent }
                 return .present
             case let .failure(error):
@@ -13590,8 +13621,6 @@ final class WorkspaceSceneModel: ObservableObject {
             context.selection.tmuxAttachMode == .protected
         let requiresEndpointConfirmation = Self
             .requiresKwtEndpointConfirmation(context)
-        let requiresClientEndpointConfirmation = Self
-            .requiresKwtClientEndpointConfirmation(context)
         let expectedConnectionState: ConnectionState =
             requiresEndpointConfirmation ? .connecting : .connected
         let settledDelay = createdSessionDiscoveryDelays.last(where: {
@@ -13616,7 +13645,7 @@ final class WorkspaceSceneModel: ObservableObject {
                       borrowedTmuxConnectionStates[handle.id]
                       == expectedConnectionState
                 else { return }
-                let outcome = if requiresClientEndpointConfirmation {
+                let outcome = if requiresEndpointConfirmation {
                     await kwtEndpointConfirmationOutcome(
                         for: presentation,
                         context: context
@@ -13638,7 +13667,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     releaseProtectedTmuxAttachmentScope(handleID: handle.id)
                     // Keep the identity kwt's endpoint check verified so a
                     // later attach-only reconnect stays fenced to it.
-                    if requiresClientEndpointConfirmation,
+                    if requiresEndpointConfirmation,
                        case let .resolved(identity) =
                        nativeTmuxSessionCoordinator
                            .attachedSessionIdentityResolution(handle) {
@@ -13649,6 +13678,7 @@ final class WorkspaceSceneModel: ObservableObject {
                             handle: handle,
                             state: .connected
                         )
+                        scheduleTmuxSessionDiscovery()
                     }
                     return
                 }
@@ -13672,13 +13702,6 @@ final class WorkspaceSceneModel: ObservableObject {
         context.phase == .establishingWorkspace
             && context.usesKwtWorkspaceCommand
             && context.selection.tmuxAttachMode == .direct
-    }
-
-    private static func requiresKwtClientEndpointConfirmation(
-        _ context: TmuxReconnectContext
-    ) -> Bool {
-        requiresKwtEndpointConfirmation(context)
-            && context.selection.socketName != nil
     }
 
     private func kwtEndpointConfirmationOutcome(
@@ -14035,13 +14058,15 @@ final class WorkspaceSceneModel: ObservableObject {
                     continue
                 }
                 switch result {
-                case let .success(discovered):
+                case let .success(discovered),
+                     let .failure(.kwtDiscoveryFailed(discovered, _)):
                     recordTmuxDiscoveryState(
-                        .success(discovered),
+                        result,
                         hostID: pending.selection.hostID
                     )
                     let found = discovered.contains {
-                        $0.name == pending.selection.name
+                        $0.name == pending.selection.name && $0.socketName == pending.selection
+                            .socketName
                     }
                     let isLastAttempt = index == delays.indices.last
                     if !found, isLastAttempt {
@@ -14049,15 +14074,21 @@ final class WorkspaceSceneModel: ObservableObject {
                             handleID
                         )
                     }
+                    let kwtUnavailable = if case .failure = result {
+                        true
+                    } else {
+                        false
+                    }
                     tmuxSessionsByHost[pending.selection.hostID] =
                         reconciledTmuxSessions(
                             discovered,
-                            hostID: pending.selection.hostID
+                            hostID: pending.selection.hostID,
+                            preservingKwtSessions: kwtUnavailable
                         )
                     applyInventoryOverlayIfNeeded()
                     updateWorkspaceInventoryState()
-                    workspaceInventoryStore.publishTmuxSessions(
-                        discovered,
+                    workspaceInventoryStore.publishTmuxDiscovery(
+                        result,
                         on: host,
                         epoch: epoch
                     )
@@ -14094,32 +14125,17 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func reconciledTmuxSessions(
         _ discovered: [DiscoveredTmuxSession],
-        hostID: UUID
+        hostID: UUID,
+        preservingKwtSessions: Bool = false
     ) -> [TmuxSessionSummary] {
-        var summaries = discovered.map { session in
-            TmuxSessionSummary(
-                name: session.name,
-                managed: session.managed,
-                windows: (0 ..< session.windowCount).map { offset in
-                    TmuxWindowSummary(
-                        id: "discovered-\(offset)",
-                        index: offset,
-                        name: ""
-                    )
-                },
-                serverPID: session.serverPID,
-                sessionID: session.sessionID,
-                createdAt: session.createdAt,
-                activeWindowSize: session.activeWindowSize,
-                previewClientSize: session.previewClientSize
-            )
-        }
-        let discoveredNames = Set(summaries.map(\.name))
+        var summaries = discovered.map(\.summary)
         let pendingForHost = pendingCreatedTmuxSessions.filter {
             $0.value.selection.hostID == hostID
         }
         for (handleID, pending) in pendingForHost {
-            if discoveredNames.contains(pending.selection.name) {
+            if summaries.contains(where: {
+                $0.name == pending.selection.name && $0.socketName == pending.selection.socketName
+            }) {
                 confirmPendingTmuxCreation(
                     handleID: handleID,
                     selection: pending.selection
@@ -14136,9 +14152,19 @@ final class WorkspaceSceneModel: ObservableObject {
             } else {
                 summaries.append(TmuxSessionSummary(
                     name: pending.selection.name,
+                    socketName: pending.selection.socketName,
                     managed: false,
                     windows: []
                 ))
+            }
+        }
+        if preservingKwtSessions {
+            let cached = tmuxSessionsByHost[hostID]
+                ?? snapshot.host(id: hostID)?.tmuxSessions ?? []
+            summaries += cached.filter { session in
+                session.socketName == "kwt" && !summaries.contains {
+                    $0.name == session.name && $0.socketName == session.socketName
+                }
             }
         }
         return summaries
@@ -14150,11 +14176,14 @@ final class WorkspaceSceneModel: ObservableObject {
         var sessions = tmuxSessionsByHost[selection.hostID]
             ?? snapshot.host(id: selection.hostID)?.tmuxSessions
             ?? []
-        guard !sessions.contains(where: { $0.name == selection.name }) else {
+        guard !sessions
+            .contains(where: { $0.name == selection.name && $0.socketName == selection.socketName
+            }) else {
             return false
         }
         sessions.append(TmuxSessionSummary(
             name: selection.name,
+            socketName: selection.socketName,
             managed: false,
             windows: []
         ))
@@ -14167,13 +14196,13 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceTmuxSessionSelection
     ) {
         tmuxSessionsByHost[selection.hostID]?.removeAll {
-            $0.name == selection.name
+            $0.name == selection.name && $0.socketName == selection.socketName
         }
         if let hostIndex = snapshot.hosts.firstIndex(where: {
             $0.id == selection.hostID
         }) {
             snapshot.hosts[hostIndex].tmuxSessions.removeAll {
-                $0.name == selection.name
+                $0.name == selection.name && $0.socketName == selection.socketName
             }
         }
         applyInventoryOverlayIfNeeded()

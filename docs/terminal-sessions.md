@@ -14,7 +14,9 @@ sources:
   read from kwt's supported JSON commands, including each workspace's exact
   `session_name`.
 - **unbound sessions:** every other session returned by direct `tmux
-  list-sessions` discovery on the host.
+  list-sessions` discovery on the host's default server or named `kwt` server.
+  Discovery preserves the socket, so equal names on those servers remain
+  separate targets.
 - **Herdr sessions:** running and stopped sessions returned by `herdr session list --json`
   on the local Mac and remote POSIX hosts.
 - **Zellij sessions:** active sessions returned by `zellij list-sessions
@@ -561,7 +563,12 @@ or windows.
 Kwt inventory includes every worktree and registered directory, whether or not
 its canonical tmux session is live. When the managed helper is available,
 Ghosthub therefore
-executes `kwt open <exact-path>` as the initial attached tmux client. Kwt
+executes `kwt open <exact-path>` as the initial attached tmux client. Git
+worktrees include all four `--expected-*` identity flags. Directory workspaces
+omit those flags because the pinned helper accepts guarded open only for Git
+worktrees. Before showing a POSIX workspace terminal, Ghosthub compares its
+attached client's identity with the selected endpoint on both default and
+named sockets. Kwt
 idempotently repairs an existing session or creates the configured layout when
 it is absent, without an intermediate detached session that
 `destroy-unattached` could remove. Ghosthub uses this path even when cached
@@ -575,8 +582,10 @@ reruns `kwt open` only if the interrupted establishment was never confirmed.
 Once attachment is confirmed, every later recovery remains attach-only. On
 POSIX hosts, every remote tmux phase (creation,
 attachment, open, and probe, styled or not) runs through the account login
-shell so settings such as `TMUX_TMPDIR` resolve the same tmux server as later
-styling and identity commands. On Windows, those phases use encoded
+shell. Discovery, attachment, probing, styling, pane actions, and kills clear
+`TMUX_TMPDIR` for the canonical `kwt` socket, matching the pinned helper;
+default and other named sockets retain the account's override. On Windows,
+those phases use encoded
 PowerShell commands within the same OpenSSH account environment. Unbound
 discovered sessions remain attach-only.
 Ghosthub does not expose rename, resize, or window operations. On an attached
@@ -828,11 +837,11 @@ unsigned Windows helper automatically.
 This restriction does not apply to the Rust app's WSL host, which executes the
 pinned Linux helper.
 
-Direct tmux discovery marks an adopted default-server worktree session as
-running when its exact kwt session name is present and the host remains
+Direct tmux discovery marks a worktree session on the default or `kwt` server as
+running when its exact kwt session name and socket are present and the host remains
 reachable. Cached
 inventory does not preserve the live indicator through a discovery failure.
-Kwt session names are removed from the generic session group by default and
+Kwt-owned session endpoints are removed from the generic session group by default and
 remain rendered under their project/worktree. Settings → Worktrees can expose
 those duplicate generic session entries. Every remaining tmux session is
 eligible for the host-level session group. Case-sensitive `*` and `?` wildcard

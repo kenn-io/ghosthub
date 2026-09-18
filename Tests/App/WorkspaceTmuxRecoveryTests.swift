@@ -1734,31 +1734,23 @@ extension WorkspaceTmuxDiscoveryTests {
         ]
         let firstProbe = BlockingGate()
         defer { firstProbe.release() }
-        let discoveries = Counter()
+        let identity = TmuxSessionIdentity(serverPID: "123", sessionID: "$1", createdAt: "456")
+        let identityReads = Counter()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity),
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
-            tmuxSessionDiscovery: { _ in
-                switch discoveries.increment() {
-                case 1:
+            tmuxSessionDiscovery: { _ in .success([]) },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in
+                if identityReads.increment() == 1 {
                     firstProbe.wait()
-                    return .success([])
-                case 2:
-                    return .success([])
-                default:
-                    return .success([
-                        DiscoveredTmuxSession(
-                            name: sessionName,
-                            windowCount: 1,
-                            createdAt: nil,
-                            managed: true
-                        ),
-                    ])
                 }
+                return identity
             },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -1816,12 +1808,14 @@ extension WorkspaceTmuxDiscoveryTests {
         ]
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let provisioningCalls = Counter()
-        let discoveryCalls = Counter()
+        let identity = TmuxSessionIdentity(serverPID: "123", sessionID: "$1", createdAt: "456")
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity),
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
@@ -1829,7 +1823,6 @@ extension WorkspaceTmuxDiscoveryTests {
                 _ = provisioningCalls.increment()
             },
             tmuxSessionDiscovery: { _ in
-                _ = discoveryCalls.increment()
                 return .success([
                     DiscoveredTmuxSession(
                         name: sessionName,
@@ -1845,6 +1838,7 @@ extension WorkspaceTmuxDiscoveryTests {
                     ),
                 ])
             },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in identity },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -1860,7 +1854,7 @@ extension WorkspaceTmuxDiscoveryTests {
             surfaceStore.lastConfiguration?.command?.contains("'open'")
                 == true
         )
-        await waitUntilMainActor { discoveryCalls.count >= 1 }
+        await waitUntilMainActor { model.activeBorrowedTmuxSessionIsConnected }
 
         surfaceStore.surface.closeObservers.values.first?(false, 127)
         await waitUntilMainActor {
@@ -1904,32 +1898,24 @@ extension WorkspaceTmuxDiscoveryTests {
         let sessionName = "kwt-ghosthub-main"
         let firstProbe = BlockingGate()
         defer { firstProbe.release() }
-        let discoveries = Counter()
+        let identity = TmuxSessionIdentity(serverPID: "123", sessionID: "$1", createdAt: "456")
+        let identityReads = Counter()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity),
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            tmuxSessionDiscovery: { _ in
-                switch discoveries.increment() {
-                case 1:
+            tmuxSessionDiscovery: { _ in .success([]) },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in
+                if identityReads.increment() == 1 {
                     firstProbe.wait()
-                    return .success([])
-                case 2, 3:
-                    return .success([])
-                default:
-                    return .success([
-                        DiscoveredTmuxSession(
-                            name: sessionName,
-                            windowCount: 1,
-                            createdAt: nil,
-                            managed: true
-                        ),
-                    ])
                 }
+                return identity
             },
             tmuxReconnectIntervals: [.seconds(10)]
         )
@@ -2490,30 +2476,22 @@ extension WorkspaceTmuxDiscoveryTests {
         let sessionName = "kwt-ghosthub-main"
         let firstProbe = BlockingGate()
         defer { firstProbe.release() }
-        let discoveries = Counter()
+        let identity = TmuxSessionIdentity(serverPID: "123", sessionID: "$1", createdAt: "456")
+        let identityReads = Counter()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity),
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
-            tmuxSessionDiscovery: { _ in
-                switch discoveries.increment() {
-                case 1:
+            tmuxSessionDiscovery: { _ in .success([]) },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in
+                if identityReads.increment() == 1 {
                     firstProbe.wait()
-                    return .success([])
-                case 2:
-                    return .success([])
-                default:
-                    return .success([
-                        DiscoveredTmuxSession(
-                            name: sessionName,
-                            windowCount: 1,
-                            createdAt: nil,
-                            managed: true
-                        ),
-                    ])
                 }
+                return identity
             },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -2553,8 +2531,9 @@ extension WorkspaceTmuxDiscoveryTests {
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let sessionName = "kwt-ghosthub-main"
+        let identityReads = Counter()
+        let identity = TmuxSessionIdentity(serverPID: "123", sessionID: "$1", createdAt: "456")
         let discoveries = TmuxDiscoveryResultQueue([
-            .success([]),
             .success([
                 DiscoveredTmuxSession(
                     name: sessionName,
@@ -2569,12 +2548,22 @@ extension WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity),
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             tmuxSessionValidationDiscovery: { _, _ in
                 discoveries.removeFirst()
             },
-            createdSessionDiscoveryDelays: [.seconds(10)],
+            tmuxRoutedSessionIdentityReader: { _, _, _ in
+                if identityReads.increment() == 1 {
+                    throw TmuxSessionKillError.sessionNotRunning(
+                        host: "test-host", session: sessionName
+                    )
+                }
+                return identity
+            },
+            createdSessionDiscoveryDelays: [.milliseconds(1), .seconds(10)],
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -2586,11 +2575,11 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
-        await waitUntilMainActor { discoveries.count == 1 }
+        await waitUntilMainActor { identityReads.count == 1 }
 
         surfaceStore.surface.closeObservers.values.first?(false, 255)
         await waitUntilMainActor {
-            discoveries.count == 2
+            discoveries.count == 1
                 && surfaceStore.requestCount == 2
                 && model.activeBorrowedTmuxSessionIsConnected
         }
@@ -3319,12 +3308,15 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("confirmed direct kwt endpoint fences the reconnect attach")
-    func confirmedDirectKwtEndpointFencesReconnect() async throws {
+    @Test(
+        "confirmed direct kwt endpoint fences the reconnect attach",
+        arguments: [nil, "kwt-main"] as [String?]
+    )
+    func confirmedDirectKwtEndpointFencesReconnect(socketName: String?) async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
-        snapshot.worktrees[0].tmuxSocketName = "kwt-main"
+        snapshot.worktrees[0].tmuxSocketName = socketName
         snapshot.worktrees[0].tmuxAttachMode = .direct
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
@@ -3351,6 +3343,11 @@ extension WorkspaceTmuxDiscoveryTests {
                     version: "tmux 3.3"
                 )
             },
+            tmuxSessionDiscovery: { _ in .success([DiscoveredTmuxSession(
+                name: selection.name, socketName: socketName, windowCount: 1,
+                serverPID: endpointIdentity.serverPID, sessionID: endpointIdentity.sessionID,
+                createdAt: endpointIdentity.createdAt, managed: true
+            )]) },
             presentationSSHConnectionProvider: { _, _ in
                 testKwtSSHAttachment(arguments: ["-F", "/tmp/attachment"])
             },

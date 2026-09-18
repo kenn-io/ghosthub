@@ -112,7 +112,7 @@ struct NewTmuxSessionSheet: View {
     }
 
     private var existingNames: Set<String> {
-        Set(selectedHost.tmuxSessions.map(\.name))
+        Set(selectedHost.tmuxSessions.filter { $0.socketName == nil }.map(\.name))
     }
 
     private var canCreate: Bool {

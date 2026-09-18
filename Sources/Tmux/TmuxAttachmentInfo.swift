@@ -720,7 +720,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             ]
         } else if let kwtExpectedSessionName {
             guard kwtExpectedSessionName == sessionName else { return nil }
-            arguments += ["--expected-session", kwtExpectedSessionName]
+            // KWT's expected-* flags apply only to Git worktrees, as a set.
         }
         return arguments
     }
@@ -1065,7 +1065,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         _ tmuxPath: String,
         _ arguments: [String]
     ) -> [String] {
-        var result = [tmuxPath]
+        var result = TmuxSocketEnvironment.commandPrefix(socketName: socketName) + [tmuxPath]
         if let socketName, !socketName.isEmpty {
             result.append(contentsOf: ["-L", socketName])
         }
@@ -1081,7 +1081,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             values += ["-L", socketName]
         }
         values += arguments
-        return "& " + values
+        return TmuxSocketEnvironment.powerShellPrelude(socketName: socketName) + "& " + values
             .map(powerShellEncodedArgument)
             .joined(separator: " ")
     }

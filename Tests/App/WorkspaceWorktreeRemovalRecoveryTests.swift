@@ -1634,6 +1634,7 @@ extension WorkspaceWorktreeRemovalTests {
             },
             tmuxSessionKiller: { _, _, _ in },
             tmuxSessionIdentityReader: { _, _ in sessionIdentity },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in sessionIdentity },
             sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(mode: .off)
         )
         let selection = try #require(

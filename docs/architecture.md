@@ -307,9 +307,17 @@ Direct workspaces normally use kwt's dedicated `kwt` server, while a verified
 matching default-server session may be adopted during rollout. Worktree-owned
 presentations remain on their worktree row, and a genuinely separate
 same-named default-server session remains visible as unbound inventory. When
-WSL config selects an
-explicit `TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery
-and attachment; cached rows never correlate sessions across those server roots.
+WSL config selects an explicit `TMUX_TMPDIR`, KWT commands receive that value.
+
+In the Swift macOS app, direct operations on the canonical `kwt` socket clear
+`TMUX_TMPDIR`, like the pinned helper. Default and other named sockets retain
+the account's override.
+Cached rows never correlate sessions across those server roots.
+An unexpected kwt discovery failure retains cached kwt rows and publishes
+fresh default-server rows with a host warning. Default-session probes can use
+that partial inventory; it cannot confirm kwt absence or start Always Live
+previews. A complete refresh restores authoritative inventory.
+
 In the macOS app, removing a generation-backed worktree is separately
 confirmed. Ghosthub captures the exact socket and live session identity, when
 present, and reads KWT's machine-readable no-fetch Git status for the exact
@@ -702,7 +710,11 @@ environment, while Ghosthub's own inventory and discovery commands execute
 under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not
 asked to interpret those commands. Windows commands execute through encoded
 noninteractive PowerShell.
-Direct tmux discovery provides every otherwise-unbound session. A remote host
+Direct tmux discovery queries both the default server and kwt's named `kwt`
+server. Session identity includes the socket throughout sidebar navigation,
+attachment, reconnect, and lifecycle actions; equal names on different servers
+remain separate sessions. Kwt ownership suppresses a generic row only when
+both the name and socket match a registered workspace. A remote host
 without kwt remains a valid tmux-only host. Passive remote kwt maintenance and
 inventory failures stay private, retain the current scene's cached project
 inventory, and never replace usable terminal inventory with a host or

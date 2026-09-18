@@ -107,8 +107,11 @@ final class TmuxSessionProbeBroker {
     ) async -> TmuxSessionProbeOutcome {
         guard target.socketName != nil else {
             switch await sessions(on: .ssh(target.host)) {
-            case let .success(sessions):
-                return sessions.contains(where: { $0.name == target.name })
+            case let .success(sessions),
+                 let .failure(.kwtDiscoveryFailed(sessions, _)):
+                return sessions
+                    .contains(where: { $0.name == target.name && $0.socketName == target.socketName
+                    })
                     ? .present
                     : .absent
             case let .failure(error):

@@ -92,7 +92,7 @@ enum TmuxAttachedClientGuard {
         socketName: String?,
         hookIndex: Int
     ) -> String {
-        var arguments = [tmuxPath]
+        var arguments = TmuxSocketEnvironment.commandPrefix(socketName: socketName) + [tmuxPath]
         if let socketName, !socketName.isEmpty {
             arguments += ["-L", socketName]
         }
@@ -106,7 +106,7 @@ enum TmuxAttachedClientGuard {
         tmuxPath: String,
         socketName: String?
     ) -> String {
-        var arguments = [tmuxPath]
+        var arguments = TmuxSocketEnvironment.commandPrefix(socketName: socketName) + [tmuxPath]
         if let socketName, !socketName.isEmpty {
             arguments += ["-L", socketName]
         }

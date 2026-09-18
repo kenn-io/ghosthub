@@ -13,6 +13,50 @@ import Testing
 
 extension WorkspaceTmuxDiscoveryTests {
     @MainActor
+    @Test("loose kwt discovery carries its socket through opening and killing")
+    func looseKwtSessionKeepsSocket() async throws {
+        let environment = try setupStandardEnvironment()
+        let discovered = [nil, "kwt"].map { socket in
+            DiscoveredTmuxSession(
+                name: "desk",
+                socketName: socket,
+                windowCount: 1,
+                serverPID: socket == nil ? "101" : "202",
+                sessionID: "$1",
+                createdAt: "1000",
+                managed: false
+            )
+        }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            tmuxSessionDiscovery: { _ in .success(discovered) },
+            tmuxSessionKiller: { selection, identity, _ in
+                #expect(selection.socketName == "kwt")
+                #expect(identity.serverPID == "202")
+            },
+            tmuxSessionIdentityReviewer: { _, identity, _ in
+                ReviewedTmuxSessionIdentity(identity: try #require(identity), routeIdentity: nil)
+            }
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { model.snapshot.hosts[0].tmuxSessions.count == 2 }
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "desk",
+            socketName: "kwt"
+        )
+        model.openBorrowedTmuxSession(selection)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection)?.socketName == "kwt")
+        let request = try await model.prepareTmuxSessionKill(selection)
+        #expect(request.serverPID == "202")
+        try await model.killTmuxSession(request)
+        #expect(model.snapshot.hosts[0].tmuxSessions.map(\.socketName) == [nil])
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("direct named directory kill uses exact endpoint review")
     func directNamedDirectoryKillUsesExactEndpointReview() async throws {
         let environment = try setupStandardEnvironment()
@@ -149,6 +193,11 @@ extension WorkspaceTmuxDiscoveryTests {
         snapshot.worktrees[0].tmuxSessionName = sessionName
         snapshot.worktrees[0].generation =
             "0123456789abcdef0123456789abcdef"
+        let identity = TmuxSessionIdentity(
+            serverPID: "31416",
+            sessionID: "$9",
+            createdAt: "1721552500"
+        )
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
@@ -158,8 +207,11 @@ extension WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity),
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             tmuxSessionKiller: { _, _, _ in },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in identity },
             createdSessionDiscoveryDelays: [.milliseconds(1)]
         )
 
@@ -200,8 +252,8 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("closing a worktree replaces the discovery its probe superseded")
-    func closingWorktreeReplacesSupersededDiscovery() async throws {
+    @Test("closing a worktree keeps pending discovery usable")
+    func closingWorktreeKeepsPendingDiscovery() async throws {
         let environment = try setupStandardEnvironment()
         let sessionName = "kwt-wt-ghosthub-main-12345678"
         let attempts = Counter()
@@ -230,6 +282,11 @@ extension WorkspaceTmuxDiscoveryTests {
             ),
         ]
         snapshot.hosts[0].tmuxInventoryIsAuthoritative = true
+        let identity = TmuxSessionIdentity(
+            serverPID: "31416",
+            sessionID: "$9",
+            createdAt: "1721552500"
+        )
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
@@ -239,12 +296,15 @@ extension WorkspaceTmuxDiscoveryTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: identity),
             tmuxSessionDiscovery: { _ in
                 if attempts.increment() == 1 {
                     blockedRefresh.wait()
                 }
                 return .success([discovered])
             },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in identity },
             createdSessionDiscoveryDelays: [.zero]
         )
         defer { blockedRefresh.release() }
@@ -264,8 +324,7 @@ extension WorkspaceTmuxDiscoveryTests {
         model.closeBorrowedTmuxSession(selection)
         blockedRefresh.release()
         await waitUntilMainActor(timeout: .seconds(1)) {
-            attempts.count >= 2
-                && model.snapshot.host(id: environment.host.id)?
+            model.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.first?.windows.count == 3
         }
 

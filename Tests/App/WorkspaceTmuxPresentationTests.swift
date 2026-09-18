@@ -989,6 +989,9 @@ extension WorkspaceTmuxDiscoveryTests {
             tmuxSessionValidationDiscovery: { _, _ in
                 reconnectProbes.removeFirst()
             },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in
+                TmuxSessionIdentity(serverPID: "101", sessionID: "$1", createdAt: "1000")
+            },
             tmuxReconnectIntervals: [.seconds(60)]
         )
         let canonical = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -1227,8 +1230,8 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("directory workspace open guards the selected KWT session")
-    func directoryWorkspaceOpenGuardsSelectedSession() async throws {
+    @Test("directory workspace opens its registered path through KWT")
+    func directoryWorkspaceOpensRegisteredPath() async throws {
         let environment = try setupStandardEnvironment()
         let directory = DirectoryWorkspaceSummary(
             id: UUID(),
@@ -1259,8 +1262,10 @@ extension WorkspaceTmuxDiscoveryTests {
         await launchActiveTmuxSurface(model, store: surfaceStore)
 
         let command = try #require(surfaceStore.lastConfiguration?.command)
-        #expect(command.contains("'--expected-session'"))
-        #expect(command.contains("'kwt-workspace-dir-hub'"))
+        #expect(command.contains("/test/kwt"))
+        #expect(command.contains("'open'"))
+        #expect(command.contains(directory.path))
+        #expect(model.activeBorrowedTmuxSelection == selection)
         await model.shutdown()
     }
 

@@ -189,7 +189,7 @@ public struct TmuxPresentationCommand: Equatable, Sendable {
         _ tmuxPath: String,
         _ arguments: String...
     ) -> [String] {
-        var result = [tmuxPath]
+        var result = TmuxSocketEnvironment.commandPrefix(socketName: socketName) + [tmuxPath]
         if let socketName, !socketName.isEmpty {
             result.append(contentsOf: ["-L", socketName])
         }

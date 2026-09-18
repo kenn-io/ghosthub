@@ -301,12 +301,13 @@ enum WorkspaceSidebarRowActionModel {
             ) == true else { return [] }
             return [.killZellijSession(selection)]
         }
-        guard case let .tmuxSession(hostID, name) = row.target else {
+        guard case let .tmuxSession(hostID, name, socketName) = row.target else {
             return []
         }
         let selection = WorkspaceTmuxSessionSelection(
             hostID: hostID,
-            name: name
+            name: name,
+            socketName: socketName
         )
         guard WorkspaceSidebarModel.canRequestKill(
             selection,

@@ -5,9 +5,10 @@ icon: lucide/square-terminal
 
 # Sessions
 
-Expand a host in the sidebar to see its sessions:
+In Ghosthub's Swift macOS app, expand a host in the sidebar to see its sessions:
 
-- **Tmux Sessions** lists standalone tmux sessions.
+- **Tmux Sessions** lists standalone tmux sessions on the default server and
+  kwt's server (`tmux -L kwt`), including sessions created with `kwt tmux run`.
 - **Herdr Sessions** lists running and stopped Herdr sessions.
 - **Zellij Sessions** lists active Zellij sessions.
 - **Projects** lists Git worktrees and registered directories with tmux sessions.
@@ -15,6 +16,19 @@ Expand a host in the sidebar to see its sessions:
 If Herdr or Zellij is not installed, its group is hidden. You can use all three
 multiplexers on the same host. Each keeps its own panes, layout, history, key
 bindings, and running programs.
+
+Sessions registered as worktrees or directories appear under **Projects**.
+Other sessions on either tmux server appear under **Tmux Sessions** and open
+on the server where they were found. Use tmux's window chooser (normally
+prefix, then `w`) to switch windows within a session.
+
+If your shell sets `TMUX_TMPDIR`, Ghosthub still uses kwt's canonical server.
+To reach that server from the command line, use `env -u TMUX_TMPDIR tmux -L kwt`.
+The default server continues to use your shell's socket directory.
+
+If Ghosthub cannot read the kwt server, it shows a warning beside the host.
+Default-server sessions still refresh, while kwt rows keep their last known
+state until discovery succeeds again.
 
 ![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](assets/guide-sessions.png)
 

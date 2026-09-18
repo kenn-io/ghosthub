@@ -248,7 +248,6 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                 guard selection.selectedProjectID == nil,
                       selection.selectedWorktreeID == nil,
                       selection.selectedDirectoryWorkspaceID == nil,
-                      active.socketName == nil,
                       active.tmuxAttachMode == nil
                 else { return nil }
                 owner = .unbound
@@ -504,7 +503,6 @@ enum WorkspaceWindowRestorationResolver {
             case .unbound:
                 guard navigation.worktreeGeneration == nil,
                       navigation.directoryWorkspacePath == nil,
-                      tmux.socketName == nil,
                       tmux.tmuxAttachMode == nil
                 else { return .invalid }
             case let .worktree(generation):
@@ -697,7 +695,7 @@ enum WorkspaceWindowRestorationResolver {
             return .pending(selection: selection)
         }
         guard host.tmuxSessions.contains(where: {
-            $0.name == tmux.sessionName
+            $0.name == tmux.sessionName && $0.socketName == tmux.socketName
         }) else {
             return .pending(selection: selection)
         }

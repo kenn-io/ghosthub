@@ -926,9 +926,10 @@ struct TmuxAttachmentInfoTests {
                 + powerShellEncodedArgument(#"C:\code\release work"#)
         ))
         #expect(script.contains("'--start-session' '--json'"))
-        #expect(script.contains(powerShellEncodedArgument(
-            "--expected-session"
-        )))
+        #expect(script.contains(
+            powerShellEncodedArgument(#"C:\code\release work"#)
+                + " '--start-session' '--json'"
+        ))
         #expect(script.contains("ConvertFrom-Json"))
         #expect(script.contains(
             powerShellEncodedArgument("release work")
@@ -966,9 +967,10 @@ struct TmuxAttachmentInfoTests {
         )
 
         let script = try Self.decodedPowerShellScript(from: command)
-        #expect(script.contains(powerShellEncodedArgument(
-            "--expected-session"
-        )))
+        #expect(script.contains(
+            powerShellEncodedArgument(#"C:\code\release work"#)
+                + " '--start-session' '--json'"
+        ))
         #expect(script.contains("'--start-session' '--json'"))
         #expect(script.contains("ConvertFrom-Json"))
         #expect(script.contains("tmux_socket_name"))

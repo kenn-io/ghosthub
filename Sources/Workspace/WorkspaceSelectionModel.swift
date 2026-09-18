@@ -8,7 +8,7 @@ public enum WorkspaceNavigationTarget: Hashable, Sendable {
     /// A host-scoped tmux session discovered independently of the project
     /// registry. Selection keeps the host current; the App layer owns one
     /// ordinary native tmux client presentation.
-    case tmuxSession(hostID: UUID, name: String)
+    case tmuxSession(hostID: UUID, name: String, socketName: String? = nil)
     /// A running Herdr session discovered independently of tmux and projects.
     /// Selection remains host-scoped; Herdr owns its internal workspace state.
     case herdrSession(hostID: UUID, name: String)
@@ -86,7 +86,7 @@ public extension WorkspaceSelection {
             selectedProjectID = nil
             selectedWorktreeID = nil
             selectedDirectoryWorkspaceID = workspace.id
-        case let .tmuxSession(hostID, _),
+        case let .tmuxSession(hostID, _, _),
              let .herdrSession(hostID, _),
              let .zellijSession(hostID, _):
             guard snapshot.host(id: hostID) != nil else {
