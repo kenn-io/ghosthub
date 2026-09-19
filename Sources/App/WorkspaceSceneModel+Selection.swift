@@ -209,6 +209,7 @@ extension WorkspaceSceneModel {
             tmuxSessionVisibility: tmuxSessionVisibility,
             connectedTmuxSessionIDs: connectedBorrowedTmuxSessionIDs,
             liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
+            hostOrderRawValue: WorkspaceSidebarOrderStorage.hostRawValue(),
             worktreeOrderRawValue: worktreeOrderRawValue,
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
             herdrSessionOrderRawValue: herdrSessionOrderRawValue,

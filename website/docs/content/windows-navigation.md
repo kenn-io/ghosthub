@@ -103,6 +103,10 @@ number so that builds sharing a release version are distinguishable.
 
 ## Rearrange navigation
 
+Drag a host header to move its entire sidebar section, including the local Mac.
+You can also drag configured SSH hosts in **Settings → Hosts**. Both views share
+one saved host order across windows and app launches. See [Reorder hosts](remote-hosts.md#reorder-hosts).
+
 Drag worktrees within a project, or reorder standalone tmux, Herdr, and Zellij sessions
 within their host groups. The insertion line previews the destination. Ghosthub
 remembers this display order without changing anything in Git, kwt, tmux,

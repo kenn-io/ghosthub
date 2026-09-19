@@ -57,12 +57,19 @@ private struct ProjectRemovalButton: View {
 }
 
 private enum WorkspaceSidebarDragItem: Equatable {
+    case host(String)
     case worktree(UUID)
     case tmuxSession(hostID: UUID, name: String, socketName: String?)
     case herdrSession(hostID: UUID, name: String)
     case zellijSession(hostID: UUID, name: String)
 
     init?(rawValue: String) {
+        if rawValue.hasPrefix("host:") {
+            let id = String(rawValue.dropFirst(5))
+            guard !id.isEmpty else { return nil }
+            self = .host(id)
+            return
+        }
         let parts = rawValue.split(
             separator: ":",
             maxSplits: 2,
@@ -113,6 +120,8 @@ private enum WorkspaceSidebarDragItem: Equatable {
 
     var rawValue: String {
         switch self {
+        case let .host(id):
+            return "host:\(id)"
         case let .worktree(id):
             return "worktree:\(id.uuidString)"
         case let .tmuxSession(hostID, name, socketName):
@@ -126,6 +135,8 @@ private enum WorkspaceSidebarDragItem: Equatable {
 
     var orderID: String {
         switch self {
+        case let .host(id):
+            return id
         case let .worktree(id):
             return id.uuidString
         case let .tmuxSession(hostID, name, socketName):
@@ -234,6 +245,7 @@ struct WorkspaceSidebarView: View {
         TmuxSessionPreviewExpansionState()
     @State private var tmuxPreviewMountState = TmuxSessionPreviewMountState()
     @State private var disclosureState = WorkspaceSidebarDisclosureState()
+    @Binding private var hostOrderRawValue: String
     @Binding private var worktreeOrderRawValue: String
     @Binding private var tmuxSessionOrderRawValue: String
     @Binding private var herdrSessionOrderRawValue: String
@@ -319,6 +331,8 @@ struct WorkspaceSidebarView: View {
         inventoryWarning: String? = nil,
         inventoryWarningsByHost: [UUID: String] = [:],
         inventoryRefreshComplete: Bool = false,
+        hostOrderRawValue: Binding<String> = .constant(WorkspaceSidebarOrderStorage
+            .defaultHostOrder),
         worktreeOrderRawValue: Binding<String> = .constant(""),
         tmuxSessionOrderRawValue: Binding<String> = .constant(""),
         herdrSessionOrderRawValue: Binding<String> = .constant(""),
@@ -374,6 +388,7 @@ struct WorkspaceSidebarView: View {
         self.inventoryWarning = inventoryWarning
         self.inventoryWarningsByHost = inventoryWarningsByHost
         self.inventoryRefreshComplete = inventoryRefreshComplete
+        _hostOrderRawValue = hostOrderRawValue
         _worktreeOrderRawValue = worktreeOrderRawValue
         _tmuxSessionOrderRawValue = tmuxSessionOrderRawValue
         _herdrSessionOrderRawValue = herdrSessionOrderRawValue
@@ -392,6 +407,7 @@ struct WorkspaceSidebarView: View {
                 tmuxSessionVisibility: tmuxSessionVisibility,
                 connectedTmuxSessionIDs: connectedTmuxSessionIDs,
                 liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
+                hostOrderRawValue: hostOrderRawValue,
                 worktreeOrderRawValue: worktreeOrderRawValue,
                 tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
                 herdrSessionOrderRawValue: herdrSessionOrderRawValue,
@@ -404,6 +420,7 @@ struct WorkspaceSidebarView: View {
                 tmuxSessionVisibility: tmuxSessionVisibility,
                 connectedTmuxSessionIDs: connectedTmuxSessionIDs,
                 liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
+                hostOrderRawValue: hostOrderRawValue,
                 worktreeOrderRawValue: worktreeOrderRawValue,
                 tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
                 herdrSessionOrderRawValue: herdrSessionOrderRawValue,
@@ -427,20 +444,7 @@ struct WorkspaceSidebarView: View {
                         spacing: 2
                     ) {
                         ForEach(sections) { section in
-                            let hostKey = WorkspaceSidebarDisclosureState.host(
-                                section.host.id
-                            )
-                            Section {
-                                hostContents(
-                                    section,
-                                    disclosureKey: hostKey
-                                )
-                            } header: {
-                                hostHeader(
-                                    section,
-                                    disclosureKey: hostKey
-                                )
-                            }
+                            hostSection(section)
                         }
                     }
                     .padding(.vertical, 6)
@@ -469,6 +473,44 @@ struct WorkspaceSidebarView: View {
             Button("Dismiss", role: .cancel) {}
         } message: { warning in
             Text(warning.message)
+        }
+    }
+
+    private func hostSection(_ section: WorkspaceSidebarSection) -> some View {
+        let hostKey = WorkspaceSidebarDisclosureState.host(section.host.id)
+        let item = WorkspaceSidebarDragItem.host(
+            WorkspaceSidebarModel.hostOrderID(section.host)
+        )
+        return reorderableRow(
+            VStack(alignment: .leading, spacing: 2) {
+                hostHeader(section, disclosureKey: hostKey)
+                    .onDrag {
+                        draggedSidebarItem = item
+                        return NSItemProvider(object: item.rawValue as NSString)
+                    }
+                    .accessibilityAction(named: "Move host up") {
+                        moveHost(section.host, by: -1)
+                    }
+                    .accessibilityAction(named: "Move host down") {
+                        moveHost(section.host, by: 1)
+                    }
+                hostContents(section, disclosureKey: hostKey)
+            },
+            item: item,
+            groupItems: sections.map { .host(WorkspaceSidebarModel.hostOrderID($0.host)) },
+            orderRawValue: hostOrderRawValue,
+            allowsDragging: false
+        ) { hostOrderRawValue = $0 }
+    }
+
+    private func moveHost(_ host: HostSummary, by offset: Int) {
+        let ids = sections.map { WorkspaceSidebarModel.hostOrderID($0.host) }
+        let id = WorkspaceSidebarModel.hostOrderID(host)
+        guard let index = ids.firstIndex(of: id), ids.indices.contains(index + offset)
+        else { return }
+        var order = WorkspaceSidebarOrder(rawValue: hostOrderRawValue)
+        if order.move(id, to: ids[index + offset], within: ids) {
+            hostOrderRawValue = order.rawValue
         }
     }
 
@@ -1803,6 +1845,7 @@ struct WorkspaceSidebarView: View {
         item: WorkspaceSidebarDragItem,
         groupItems: [WorkspaceSidebarDragItem],
         orderRawValue: String,
+        allowsDragging: Bool = true,
         updateOrder: @escaping (String) -> Void
     ) -> some View {
         content.modifier(
@@ -1812,6 +1855,7 @@ struct WorkspaceSidebarView: View {
                 orderRawValue: orderRawValue,
                 draggedItem: $draggedSidebarItem,
                 indicator: $reorderIndicator,
+                allowsDragging: allowsDragging,
                 updateOrder: updateOrder
             )
         )
@@ -1823,21 +1867,16 @@ struct WorkspaceSidebarView: View {
         let orderRawValue: String
         @Binding var draggedItem: WorkspaceSidebarDragItem?
         @Binding var indicator: WorkspaceSidebarReorderIndicator?
+        var allowsDragging = true
         let updateOrder: (String) -> Void
 
         func body(content: Content) -> some View {
-            content
-                .onDrag {
-                    draggedItem = item
-                    return NSItemProvider(
-                        object: item.rawValue as NSString
-                    )
-                }
+            draggableContent(content)
                 .dropDestination(for: String.self) { values, _ in
                     guard let rawValue = values.first,
                           let source = WorkspaceSidebarDragItem(
                               rawValue: rawValue
-                          )
+                          ), groupItems.contains(source)
                     else {
                         clearDragState()
                         return false
@@ -1863,6 +1902,18 @@ struct WorkspaceSidebarView: View {
                 .overlay {
                     insertionIndicator
                 }
+        }
+
+        @ViewBuilder
+        private func draggableContent(_ content: Content) -> some View {
+            if allowsDragging {
+                content.onDrag {
+                    draggedItem = item
+                    return NSItemProvider(object: item.rawValue as NSString)
+                }
+            } else {
+                content
+            }
         }
 
         @ViewBuilder

@@ -78,6 +78,18 @@ says so in the sidebar.
 
 ![Ghosthub Host Settings with the connection test and remote host details](assets/guide-hosts.png)
 
+## Reorder hosts
+
+Drag a host in the **Settings → Hosts** list to change its position. The sidebar
+updates immediately, and the order is saved across launches and shared by all
+Ghosthub windows. Connection edits still take effect when you select **Done**.
+
+You can also drag a host header in the sidebar to move its whole section,
+including the local Mac or an exe.dev host. The insertion line marks where the
+section will go. Settings shows configured SSH hosts in the same relative
+order; dragging there preserves the positions of hosts outside that list.
+Newly added hosts appear after the hosts you have arranged.
+
 ## Host-key trust
 
 When OpenSSH encounters an unseen key under an interactive trust policy,

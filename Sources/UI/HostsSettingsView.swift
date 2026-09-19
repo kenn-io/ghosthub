@@ -181,6 +181,8 @@ private struct TmuxLaunchProfileEditorRow: View {
 }
 
 public struct HostsSettingsView: View {
+    @AppStorage(WorkspaceSidebarOrderStorage.hostKey)
+    private var hostOrderRawValue = WorkspaceSidebarOrderStorage.defaultHostOrder
     @FocusState private var focusedConnectionField: HostConnectionField?
     @State private var remoteProjectPath = ""
     @State private var isRegisteringRemoteProject = false
@@ -340,7 +342,7 @@ public struct HostsSettingsView: View {
                 .controlSize(.regular)
 
                 List(selection: $selectedSSHHostDraftID) {
-                    ForEach(sshHosts) { host in
+                    ForEach(orderedHosts) { host in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(host.listDisplayName)
                                 .font(.system(
@@ -353,6 +355,16 @@ public struct HostsSettingsView: View {
                                 .truncationMode(.middle)
                         }
                         .tag(host.id)
+                    }
+                    .onMove { source, destination in
+                        var order = WorkspaceSidebarOrder(rawValue: hostOrderRawValue)
+                        order.move(
+                            fromOffsets: source, toOffset: destination,
+                            within: orderedHosts.map {
+                                WorkspaceSidebarModel.hostOrderID(configKey: $0.configKey)
+                            }
+                        )
+                        hostOrderRawValue = order.rawValue
                     }
                 }
                 .frame(minHeight: 300, maxHeight: .infinity)
@@ -873,6 +885,12 @@ public struct HostsSettingsView: View {
 
     // MARK: - Actions
 
+    private var orderedHosts: [SSHHostDraft] {
+        WorkspaceSidebarModel.orderedSSHHosts(
+            sshHosts, hostOrderRawValue: hostOrderRawValue
+        )
+    }
+
     private func addSSHHost() {
         applyDraftListState(
             SSHHostDraftListEditor.addingDefaultHost(
@@ -900,7 +918,7 @@ public struct HostsSettingsView: View {
     private func removeSelectedSSHHost() {
         applyDraftListState(
             SSHHostDraftListEditor.removingSelectedHost(
-                from: sshHosts,
+                from: orderedHosts,
                 selectedDraftID: selectedSSHHostDraftID
             )
         )
@@ -945,6 +963,9 @@ public struct HostsSettingsView: View {
     private func applyDraftListState(
         _ state: SSHHostDraftListState
     ) {
+        hostOrderRawValue = WorkspaceSidebarModel.updatingHostOrder(
+            hostOrderRawValue, from: sshHosts, to: state.drafts
+        )
         sshHosts = state.drafts
         selectedSSHHostDraftID = state.selectedDraftID
     }
