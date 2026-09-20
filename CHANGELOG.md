@@ -5,6 +5,8 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-20
+
 Arrange hosts in the order you want, find moved project folders, and open
 registered directories without getting stuck. This update also makes more tmux
 sessions visible and adds local clipboard image paste.
