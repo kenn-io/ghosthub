@@ -1,23 +1,10 @@
-# Ghosthub User Documentation
+# Ghosthub user documentation
 
-This directory contains the public, task-oriented documentation published at
-[ghosthub.ai/docs](https://ghosthub.ai/docs/). The visual
-[Overview](https://ghosthub.ai/overview/) is a short product tour; detailed
-instructions belong here.
+The Markdown files in `content/` are the public task guides at
+[ghosthub.ai/docs](https://ghosthub.ai/docs/). The
+[Overview](https://ghosthub.ai/overview/) is a short visual tour that links here
+for detailed steps and limits.
 
-Build the complete website from `website/`:
-
-```bash
-corepack pnpm build
-```
-
-Preview only the Zensical documentation while editing:
-
-```bash
-uv run --project docs zensical serve --config-file zensical.toml
-```
-
-Keep page sources flat in `content/`. A source named `sessions.md` is published
-as both `/docs/sessions/` and `/docs/sessions.md`. The landing page is published
-as `/docs/` and `/docs.md`. Add every public page to `zensical.toml` and
-`llms.txt`.
+Follow [Documentation publishing](../../docs/README.md) for page ownership,
+HTML and Markdown URLs, navigation, screenshots, release labels, and checks.
+Use the [website README](../README.md) for local previews, captures, and deployment.

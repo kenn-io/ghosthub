@@ -1,14 +1,13 @@
 ---
-description: Attach to tmux, Herdr, and Zellij sessions, reconnect safely, and manage whole-session lifecycle.
+description: Create, open, preview, and end tmux, Herdr, and Zellij sessions.
 icon: lucide/square-terminal
 ---
 
 # Sessions
 
-In Ghosthub's Swift macOS app, expand a host in the sidebar to see its sessions:
+Expand a host in the sidebar to find its sessions:
 
-- **Tmux Sessions** lists standalone tmux sessions on the default server and
-  kwt's server (`tmux -L kwt`), including sessions created with `kwt tmux run`.
+- **Tmux Sessions** lists tmux sessions that are not grouped under a project.
 - **Herdr Sessions** lists running and stopped Herdr sessions.
 - **Zellij Sessions** lists active Zellij sessions.
 - **Projects** lists Git worktrees and registered directories with tmux sessions.
@@ -17,20 +16,32 @@ If Herdr or Zellij is not installed, its group is hidden. You can use all three
 multiplexers on the same host. Each keeps its own panes, layout, history, key
 bindings, and running programs.
 
-Sessions registered as worktrees or directories appear under **Projects**.
-Other sessions on either tmux server appear under **Tmux Sessions** and open
-on the server where they were found. Use tmux's window chooser (normally
-prefix, then `w`) to switch windows within a session.
+![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](/docs/assets/guide-sessions.png)
 
-If your shell sets `TMUX_TMPDIR`, Ghosthub still uses kwt's canonical server.
-To reach that server from the command line, use `env -u TMUX_TMPDIR tmux -L kwt`.
-The default server continues to use your shell's socket directory.
+## Find tmux sessions on kwt's server
+
+**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
+
+Ghosthub checks the default tmux server and kwt's server. Sessions registered
+as worktrees or directories appear under **Projects**. Other sessions on either
+server appear under **Tmux Sessions**, including those created with
+`kwt tmux run`. Ghosthub opens each session on the server where it was found.
+It does not scan arbitrary named tmux servers.
+
+Use tmux's window chooser, normally prefix then `w`, to switch windows inside
+a session. To list sessions on kwt's server from a shell, run:
+
+```sh
+env -u TMUX_TMPDIR tmux -L kwt list-sessions
+```
+
+Kwt uses its own socket directory even if your shell sets `TMUX_TMPDIR`.
+Ghosthub's macOS app follows that rule. The default server continues to use
+your shell's socket directory.
 
 If Ghosthub cannot read the kwt server, it shows a warning beside the host.
-Default-server sessions still refresh, while kwt rows keep their last known
-state until discovery succeeds again.
-
-![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](assets/guide-sessions.png)
+Default-server sessions still refresh. Kwt rows keep their last known state
+until discovery succeeds again.
 
 ## Create a standalone session
 
@@ -39,6 +50,8 @@ state until discovery succeeds again.
 3. Enter a session name.
 
 A new tmux session remains usable from the `tmux` CLI and other tmux clients.
+To start a remote session with a saved command, use a
+[launch profile](launch-profiles.md).
 A new Herdr session is created with Herdr's own launch path and Ghosthub
 attaches immediately. The **Herdr Sessions** group and its creation action
 appear only when the host's `herdr session list --json` capability is
@@ -62,27 +75,6 @@ uses tmux's vanilla configuration. Mouse mode is a shared session option, so
 other attached clients see it too; tmux's own mouse bindings remain in charge.
 Native Windows/psmux keeps its existing mouse-reporting limitation.
 
-When Codex, Claude, or another terminal tool is running in a local or remote
-macOS or Linux tmux session, press ++cmd+v++ with an image-only Mac clipboard
-to paste the image. Ghosthub saves it in `~/.ghosthub/paste-images/` on the
-session's host and pastes its absolute file path into the active pane, so the
-tool can attach the image. When the clipboard also contains text,
-++cmd+v++ pastes the text normally. ++ctrl+v++ is always passed through to the
-terminal program.
-
-Hold ++cmd++ while pointing at a highlighted terminal link, then click to open
-it in the default macOS application.
-
-Press ++cmd+f++ to search the complete active pane history in a standalone
-terminal or a POSIX tmux 3.4-or-newer session. You can also run **Find in
-Terminal** from the Command Palette. Ghosthub shows the query and navigation
-controls, while libghostty or tmux owns matching, highlights, and viewport
-movement. Tmux copy mode is pane-wide, so other attached clients can observe
-or cancel it. Herdr, Zellij, Windows psmux, and older tmux versions do not offer
-partial client-buffer search.
-
-![Ghosthub Find bar searching the complete history of an active tmux pane](assets/guide-find.png)
-
 Switching to another host, worktree, or session hides an opened tmux terminal
 without detaching it. Each workspace keeps every tmux session you explicitly
 open connected, and returning to one reuses the same terminal and client.
@@ -101,29 +93,63 @@ detaches them all. None of these actions ends a tmux session or stops a Herdr
 or Zellij server. A normal Herdr or Zellij detach offers **Reconnect** and does
 not retry automatically.
 
-On a remote host, a dropped SSH transport enters automatic recovery. Ghosthub
+## Recover a connection
+
+On a remote host, a dropped SSH connection starts automatic recovery. Ghosthub
 probes the same exact session before each replacement client. Retry stops when
 the session disappears, Herdr becomes unavailable, or the client reports a
 non-transport failure. **Reconnect Now** skips the current delay; host-key or
-authentication problems open the existing connection review flow.
+authentication problems open the connection review. See
+[Automatic reconnect](remote-hosts.md#automatic-reconnect) for controls and errors.
+
+After relaunch, Ghosthub restores a remote Zellij session only while the
+selected SSH route still matches. If SSH settings change during that check,
+restoration stops instead of connecting to a different host.
 
 If macOS wakes while no display is active, Ghosthub waits instead of treating
 the missing terminal surface as a permanent attachment failure. Recovery
 resumes when a display becomes available, without replaying a saved tmux
 launch-profile command.
 
+## Paste text or images and open links
+
+Use **Command-V** to paste. For image files, text precedence, and cleanup, see
+[Clipboard behavior](terminal-configuration.md#clipboard-behavior).
+**Control-V** passes through to the terminal program.
+
+Hold **Command** and click a highlighted terminal link to open it in the
+default macOS application.
+
+## Find text in a terminal
+
+Press **Command-F** or choose **Find in Terminal** in the Command Palette.
+Search covers the active pane's full history in a standalone terminal or a
+macOS or Linux tmux 3.4+ session. Herdr, Zellij, Windows/psmux, and older tmux
+versions do not support Find.
+
+**Return** or **Command-G** goes toward older matches. **Shift-Return** or
+**Shift-Command-G** goes toward newer matches. **Escape**,
+**Shift-Command-F**, or the close button ends Find.
+
+Standalone terminal search does not wrap. Tmux controls wrapping and the
+first step after a direction change. Its copy mode is shared by the pane, so
+another attached client can see or cancel the search.
+
+![Find bar searching an active tmux pane's history](/docs/assets/guide-find.png)
+
 ## Preview opened tmux sessions
 
 Choose **Settings → Terminal → Session previews**, then select **Efficient**,
-**Live**, or **Always Live**. Efficient and Live add a disclosure control beside
+**Live**, or **Always Live**. Select **Done** to apply the mode.
+Efficient and Live add a disclosure control beside
 tmux sessions that you have already opened in that workspace. Expand it to show
-a GPU-rendered preview. Always Live connects every freshly discovered tmux
+a preview of the terminal. Always Live connects every freshly discovered tmux
 session on every reachable POSIX host and expands its tile automatically. Each
 tile follows its terminal's aspect ratio, preserving the complete frame
 without cropping.
 Selecting the preview follows the same route as selecting its session row.
 
-![Ghosthub sidebar showing Always Live previews expanded for discovered tmux sessions](assets/guide-session-previews.png)
+![Ghosthub sidebar showing Always Live previews expanded for discovered tmux sessions](/docs/assets/guide-session-previews.png)
 
 The modes trade resource use for freshness:
 
@@ -147,29 +173,19 @@ briefly switching away from Ghosthub stops live rendering until it is visible
 and active again. Always Live keeps its automatically opened clients connected during
 that pause.
 
-Efficient and Live never attach to unopened sessions. Always Live deliberately
-adds one ordinary retained tmux or SSH client per discovered POSIX session;
-switching away from it detaches only clients created by that policy. Every mode
-reuses a session's retained client for rendering and never creates a second
-preview client. Before a hidden Always Live client attaches, Ghosthub matches
-its terminal grid to the active tmux window and status rows. This keeps the
-server-side window unchanged even when the preview is its only client; the
-sidebar tile never dictates the session size. Opening one promotes its hidden
-non-sizing client to normal interactive sizing. Previews require a token-bound
-client identity, which is available for tmux 3.4 or newer on POSIX hosts.
-Always Live skips automatic attachment when tmux cannot provide that identity
-or setup fails; the session can still be opened normally.
-Windows/psmux sessions are not attached automatically because psmux has no
-non-sizing client mode.
-During reconnect, Ghosthub hides the cached frame behind a reconnecting
-placeholder until the replacement client proves the same tmux server, session,
-and creation identity. Closing the presentation, or detecting a replacement
-session under the same name, removes its frame.
+Efficient and Live preview only sessions you opened. Always Live adds a tmux
+client for each discovered session on reachable macOS and Linux hosts.
+Switching away from Always Live detaches only clients it opened automatically.
+Opening a preview lets you use that same client interactively.
 
-When Ghosthub restores a remote Zellij presentation after relaunch, it validates
-the active session using one frozen SSH route and rechecks that route before
-attaching. If the SSH configuration changed during validation, restoration
-stops instead of attaching to another endpoint.
+Previews require tmux 3.4 or newer. Always Live skips automatic attachment
+when setup fails or that version is unavailable; you can still open the
+session normally. Windows/psmux sessions are not attached automatically.
+Preview tiles do not resize the underlying tmux window.
+
+During reconnect, a placeholder replaces the old frame until Ghosthub
+confirms it has reached the same session. Detaching the client or finding a
+replacement session with the same name removes its preview.
 
 ## Activity indicators
 
@@ -178,7 +194,7 @@ launch. A small accent indicator appears beside its worktree or standalone
 session row when Ghosthub observes recent tmux scrollback progress, then
 clears about thirty seconds after output stops.
 
-![Ghosthub sidebar showing an accent activity indicator beside a standalone session that is producing output while another session is selected](assets/guide-session-activity.png)
+![Ghosthub sidebar showing an accent activity indicator beside a standalone session that is producing output while another session is selected](/docs/assets/guide-session-activity.png)
 
 Only genuine output counts. Switching panes, resizing the window, or a
 full-screen tool redrawing its prompt, spinner, or status display does not

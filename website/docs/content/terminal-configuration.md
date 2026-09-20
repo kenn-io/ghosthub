@@ -64,41 +64,9 @@ can unexpectedly change zsh keymaps. It sets `TERM_PROGRAM` to `ghosthub`.
 
 ## Session previews
 
-**Settings → Terminal → Session previews** controls optional sidebar previews
-for tmux presentations in each workspace window:
-
-- **Off** is the default and performs no preview rendering.
-- **Efficient** keeps the latest GPU-rendered frame captured on disclosure or
-  when you navigate away. It does not refresh in the background.
-- **Live** refreshes expanded tiles at no more than two frames per second.
-  Ghosthub limits live rendering to four inactive previews across all windows.
-- **Always Live** attaches every freshly discovered tmux session on every
-  reachable POSIX host, expands its tile by default, and removes the
-  four-preview limit. Individual tiles can still be collapsed without
-  disconnecting them.
-  Clients start incrementally. Ghosthub matches each hidden client's terminal
-  grid to the tmux window and status rows before attachment, so even a sole
-  preview client leaves the server-side window size unchanged.
-  Expect substantially higher CPU, GPU, memory, and SSH use.
-
-The preference takes effect when you close Settings. Each workspace window
-remembers its own expanded rows in memory, even while previews are Off. A tile
-follows its terminal's aspect ratio, preserving the complete
-frame without cropping.
-Reconnecting sessions show a placeholder until Ghosthub verifies that the
-replacement client is attached to the same server-side session.
-Tmux older than 3.4 cannot provide a safe client identity, so Always Live skips
-its automatic attachment. You can still open that session normally. Windows/
-psmux sessions are not attached automatically because psmux has no non-sizing
-client mode.
-
-![Ghosthub sidebar with Always Live tmux previews](assets/guide-session-previews.png)
-
-Efficient and Live preview only clients you opened. Always Live deliberately
-opens one retained tmux or SSH client for each discovered POSIX session.
-Preview rendering never adds a second client, persists terminal pixels to
-disk, copies terminal pixels through the CPU, or reconstructs tmux panes and
-layout.
+Use **Settings → Terminal → Session previews** to choose still or live tmux
+previews. See [Session previews](sessions.md#preview-opened-tmux-sessions)
+for the modes, minimum versions, and resource costs.
 
 ## Tmux themes
 
@@ -124,7 +92,7 @@ remains authoritative.
 Theme application is not available for the Console Panel or native Windows
 sessions.
 
-![Ghosthub Appearance settings with the tmux theme picker](assets/guide-terminal.png)
+![Ghosthub Appearance settings with the tmux theme picker](/docs/assets/guide-terminal.png)
 
 ## Clipboard behavior
 
@@ -133,6 +101,10 @@ terminal command for clipboard access. The `clipboard-write` setting controls
 whether those writes are allowed. Remote programs cannot read your Mac
 clipboard through OSC 52. Your explicit paste shortcut still works.
 
+**Unreleased:** image paste also works in local tmux sessions. Remote image
+paste is available in the latest stable release. See
+[release and nightly builds](getting-started.md#release-and-nightly-builds).
+
 To send an image to a tool in a local or remote macOS or Linux tmux session,
 copy the image on your Mac and press ++cmd+v++. Ghosthub saves a PNG to
 `~/.ghosthub/paste-images/` on that host and pastes its absolute path into the
@@ -140,7 +112,8 @@ active pane. If the clipboard also contains text, Ghosthub pastes the text
 instead. ++ctrl+v++ keeps its normal terminal meaning. Pasting another image
 also removes cached images older than seven days.
 
-See [Sessions](sessions.md#attach-and-detach) for the terminal controls.
+Image paste is not available for Herdr, Zellij, or native Windows/psmux
+sessions. See [Sessions](sessions.md#attach-and-detach) for terminal controls.
 
 ## Quit behavior
 

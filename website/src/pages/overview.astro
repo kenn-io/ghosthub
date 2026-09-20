@@ -16,8 +16,8 @@ import { RELEASES_URL } from '../config';
 
 const title = 'Ghosthub overview';
 const description =
-  'A visual overview of Ghosthub as the native terminal for all your multiplexers, '
-  + 'across SSH hosts, Git worktrees, native tabs, and windows.';
+  'Open local and remote tmux, Herdr, and Zellij sessions, manage Git worktrees, '
+  + 'and arrange your work in native Mac windows and tabs.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
@@ -56,7 +56,10 @@ const imageAlt = {
         programs. Ghosthub finds sessions and reconnects when SSH drops.
       </p>
       <p class="docs-callout">
-        Ready for setup and operating details? Visit the <a href="/docs/">Docs</a>.
+        For setup and step-by-step help, visit the <a href="/docs/">Docs</a>.
+        This tour and its screenshots follow <code>main</code>; see{' '}
+        <a href="/docs/getting-started/#release-and-nightly-builds">release and nightly builds</a>{' '}
+        for features newer than the stable download.
       </p>
       <p class="promise" aria-label="Automatic SSH reconnect plus exact session reattach">
         <span class="promise-icon" aria-hidden="true">↻</span>
@@ -74,7 +77,7 @@ const imageAlt = {
   </section>
 
   <nav class="contents container" aria-label="On this page">
-    <a href="#sessions"><b>01</b> Session fleet</a>
+    <a href="#sessions"><b>01</b> Sessions</a>
     <a href="#session-previews"><b>02</b> Session previews</a>
     <a href="#hosts"><b>03</b> Mac and SSH</a>
     <a href="#worktrees"><b>04</b> Project context</a>
@@ -88,7 +91,7 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">01</p>
         <div>
-          <h2>Your session fleet in one place</h2>
+          <h2>Your sessions in one place</h2>
           <p>
             Find tmux, Herdr, and Zellij sessions under each host in the sidebar.
             Select one to open it, or create a new session with the group's
@@ -146,12 +149,16 @@ const imageAlt = {
         <div>
           <h2>One view across Mac and SSH hosts</h2>
           <p>
-            Add destinations already understood by OpenSSH, including routed
-            hosts and exe.dev VMs. Ghosthub keeps remote presentations alive
-            through ordinary interruptions and reconnects to the exact running
-            session it can confirm.
+            Add a machine using its SSH address or an alias from your OpenSSH
+            configuration. You can also discover running exe.dev VMs. Ghosthub
+            shows login prompts and reconnects after ordinary network interruptions.
           </p>
-          <p><a href="/docs/remote-hosts/">Explore remote hosts</a>.</p>
+          <p>
+            On <code>main</code>, drag host headers in the sidebar or move
+            Local Mac and SSH hosts in Settings. Both views share the saved order.
+            See <a href="/docs/remote-hosts/#reorder-hosts">Reorder hosts</a>.
+          </p>
+          <p><a href="/docs/remote-hosts/">Set up a remote host</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -175,7 +182,7 @@ const imageAlt = {
             Register a repository to create tmux-backed worktrees from branches
             or GitHub pull requests. Worktree rows summarize live tmux window
             counts, while native tabs use readable project and worktree names.
-            Git is optional for standalone tmux and Herdr or Zellij sessions.
+            You do not need Git to use tmux, Herdr, or Zellij sessions.
           </p>
           <p>
             Pull-request imports need Git 2.42 or newer and the GitHub CLI on
@@ -215,7 +222,7 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">05</p>
         <div>
-          <h2>Move through the fleet quickly</h2>
+          <h2>Find your next session quickly</h2>
           <p>
             Search sessions, hosts, projects, worktrees, settings, and common
             actions from the Command Palette instead of navigating the sidebar
@@ -250,7 +257,7 @@ const imageAlt = {
           <p>
             Give each window a useful name with <strong>Window → Rename
             Window…</strong>. Names return after relaunch. Command-W closes the
-            active session; Shift-Command-W closes the whole window.
+            active terminal view without ending its session; Shift-Command-W closes the whole window.
           </p>
           <p><a href="/docs/windows-navigation/">Explore windows and navigation</a>.</p>
         </div>
@@ -424,7 +431,7 @@ const imageAlt = {
 
   .contents {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(7, 1fr);
     border: 1px solid var(--line);
     border-radius: 14px;
     overflow: hidden;

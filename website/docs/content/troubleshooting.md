@@ -33,7 +33,7 @@ For worktrees and registered directories managed by kwt, inspect its separate
 tmux server:
 
 ```sh
-tmux -L kwt list-sessions
+env -u TMUX_TMPDIR tmux -L kwt list-sessions
 ```
 
 Imported pull requests use separate protected sessions. Open those through

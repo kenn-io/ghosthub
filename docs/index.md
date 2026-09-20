@@ -1,48 +1,42 @@
 ---
-title: Ghosthub
-description: Internal engineering guide for Ghosthub
+title: Ghosthub engineering
+description: Build, maintain, and release Ghosthub.
 ---
 
-# Ghosthub
+# Ghosthub engineering
 
-Ghosthub is a native macOS terminal for all local and remote multiplexer
-fleets. Today it gives equal status to ordinary tmux sessions, Herdr sessions,
-and Zellij sessions, plus tmux sessions bound to managed git worktrees. All are
-presented through libghostty terminal surfaces.
+Ghosthub is a native macOS app for local and remote tmux, Herdr, and Zellij
+sessions. These pages are for Kenn engineers and approved contributors who
+build, maintain, and release it. For help using the app, read the
+[public user guides](https://ghosthub.ai/docs/).
 
-Ghosthub is alpha software. These are internal engineering docs for Kenn
-engineers and approved contributors building, operating, and releasing it.
+## What do you need to do?
 
-## What Ghosthub Is
+| Task | Reference |
+| --- | --- |
+| Set up a Mac and build the app | [Quick start](quickstart.md) |
+| Make and test a change | [Development](development.md) |
+| Understand the running app and who owns its state | [Architecture](architecture.md) |
+| Change shell startup, session attachment, or reconnect | [Terminal sessions](terminal-sessions.md) |
+| Review a trust boundary or permission | [Threat model](threat-model.md) |
+| Diagnose a build or runtime failure | [Troubleshooting](troubleshooting.md) |
+| Capture the launch-profile sheet | [Launch-profile documentation](launch-profiles.md) |
+| Prepare and publish a release | [Release](release.md) |
+| Edit or publish documentation | [Documentation publishing](https://github.com/kenn-io/ghosthub/blob/main/docs/README.md) |
 
-- A native terminal and control plane for all supported local and remote
-  multiplexers: today, tmux, Herdr, and Zellij.
-- A native Swift app built around embedded libghostty terminal surfaces.
-- A manager for optional worktree-bound sessions and their lifecycle through
-  kwt, including branch and GitHub pull-request imports.
+Ghosthub is alpha software. Schema and API contracts can change directly;
+follow the repository rules before changing persistence.
 
-## What Ghosthub Is Not
+## Other implementations and planned work
 
-- It is not Ghostty.app and does not read Ghostty.app configuration.
-- It does not vendor a Go backend or require a git submodule checkout.
-- It is alpha software. Schema and API contracts are still allowed to change
-  directly.
+These references have their own status and scope. They do not describe features
+available in the released Swift macOS app.
 
-## Runtime Shape
-
-```text
-Ghosthub.app
-  ├─ SwiftUI/AppKit workspace shell
-  ├─ libghostty terminal surfaces
-  ├─ local app persistence
-  ├─ native tmux, Herdr, and Zellij clients with SSH reconnect
-  ├─ planned local worktree sandboxes through Apple container or Docker sbx
-  ├─ bundled kwt for local worktree state
-  └─ managed architecture-matched kwt and host tmux over SSH
-```
-
-Start with [Quick Start](quickstart.md), then read
-[Architecture](architecture.md), [Threat Model](threat-model.md), and
-[Terminal Sessions](terminal-sessions.md) before changing runtime, security,
-or terminal behavior. The accepted sandbox implementation contract is in
-[Worktree Sandboxes](sandboxes.md).
+- [Windows and Linux Rust port](rust-port.md): the Windows/WSL2 implementation
+  and its design contracts. Linux remains a build and contract-test target.
+- [Worktree sandboxes](sandboxes.md): the accepted contract for a feature that
+  is not implemented yet.
+- [Sandbox image operations](sandbox-image.md): build and promotion procedures
+  for the planned sandbox image.
+- [Web UI](web-ui.md): the approved design for an additional Rust app client,
+  written before implementation.

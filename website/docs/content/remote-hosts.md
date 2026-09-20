@@ -42,6 +42,36 @@ Sessions** and filters out exited/resurrectable entries. Attachments still use
 Ghosthub's ordinary OpenSSH transport rather than a backend-specific remote
 mode.
 
+## Add and test a host
+
+1. Open **Settings → Hosts**.
+2. Add a destination such as `devbox`, `alice@build-server`, or a configured SSH
+   alias.
+3. Choose the host platform.
+4. Select **Test Connection**.
+
+An unreachable host does not block discovery or use of the rest of the fleet.
+An expanded, reachable host with no projects, tmux sessions, Herdr sessions, or Zellij sessions
+says so in the sidebar.
+
+![Ghosthub Host Settings with the connection test and remote host details](/docs/assets/guide-hosts.png)
+
+## Reorder hosts
+
+**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
+
+Drag **Local Mac** or a remote host in **Settings → Hosts** to change its
+position. The sidebar updates immediately, and the order is saved across launches and shared by all
+Ghosthub windows. Connection edits still take effect when you select **Done**.
+
+You can also drag a host header in the sidebar to move its whole section,
+including the local Mac or an exe.dev host. The insertion line marks where the
+section will go. Settings shows Local Mac and configured SSH hosts in the same
+order; dragging there preserves the positions of discovered hosts outside that list.
+Local Mac is built in. You can move it, but cannot remove it or edit an SSH
+connection for it.
+Newly added hosts appear after the hosts you have arranged.
+
 ## exe.dev hosts
 
 Ghosthub can discover running exe.dev VMs as SSH hosts without adding each VM
@@ -62,34 +92,7 @@ Ghosthub discovers only VMs carrying at least one of them, and the account's
 status line reports the counts it was scoped to. Tags are matched without
 regard to case, and are managed in exe.dev.
 
-![Ghosthub Integrations settings showing a connected exe.dev account and discovered VM status](assets/guide-exe-dev.png)
-
-## Add and test a host
-
-1. Open **Settings → Hosts**.
-2. Add a destination such as `devbox`, `alice@build-server`, or a configured SSH
-   alias.
-3. Choose the host platform.
-4. Select **Test Connection**.
-
-An unreachable host does not block discovery or use of the rest of the fleet.
-An expanded, reachable host with no projects, tmux sessions, Herdr sessions, or Zellij sessions
-says so in the sidebar.
-
-![Ghosthub Host Settings with the connection test and remote host details](assets/guide-hosts.png)
-
-## Reorder hosts
-
-Drag **Local Mac** or a remote host in the **Settings → Hosts** list to change its position. The sidebar
-updates immediately, and the order is saved across launches and shared by all
-Ghosthub windows. Connection edits still take effect when you select **Done**.
-
-You can also drag a host header in the sidebar to move its whole section,
-including the local Mac or an exe.dev host. The insertion line marks where the
-section will go. Settings shows Local Mac and configured SSH hosts in the same
-order; dragging there preserves the positions of discovered hosts outside that list.
-Local Mac is built in: you can move it, but cannot remove it or edit an SSH connection for it.
-Newly added hosts appear after the hosts you have arranged.
+![Ghosthub Integrations settings showing a connected exe.dev account and discovered VM status](/docs/assets/guide-exe-dev.png)
 
 ## Host-key trust
 
@@ -116,6 +119,8 @@ it does not open a tmux, Herdr, or Zellij session by itself.
 
 ### Tailscale browser checks
 
+**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
+
 When Tailscale SSH requires a browser check, choose **Open Authentication Page**
 in Ghosthub's authentication sheet and complete the sign-in. Ghosthub keeps
 that SSH attempt open and continues automatically after approval. If the check
@@ -125,7 +130,7 @@ The sheet shows the host requesting approval, including a jump host when one
 is involved. You can also copy the displayed link into your browser. Cancel
 closes your connection attempt.
 
-![Ghosthub authentication sheet showing a Tailscale sign-in link and waiting status](assets/guide-ssh-browser-authentication.png)
+![Ghosthub authentication sheet showing a Tailscale sign-in link and waiting status](/docs/assets/guide-ssh-browser-authentication.png)
 
 ## Automatic reconnect
 
@@ -137,7 +142,7 @@ processes were never moved into Ghosthub.
 
 If SSH needs authentication or host-key review, the presentation changes to
 **Connection needs attention**. Complete the native recovery flow to resume the
-same reconnect supervisor. If you dismiss it, choose **Review Connection** to
+same session. If you dismiss it, choose **Review Connection** to
 open it again.
 
 If the connection still fails, Ghosthub shows OpenSSH's explanation and exit
@@ -146,6 +151,8 @@ authentication failed. Trusting a host key confirms the server's identity;
 it does not sign you in. Check the account and SSH key used for that host.
 
 ## Slow connections
+
+**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
 
 For text-heavy terminals on a slow connection, SSH compression can reduce the
 amount of output sent over the network. Ghosthub enables it by default for
@@ -181,7 +188,7 @@ user selected by OpenSSH configuration and falls back to the local macOS user
 name when none is configured. The import picker starts with every peer
 unselected so you can choose only the hosts you want to add.
 
-![Host Settings with explicit Tailscale import controls](assets/guide-tailscale-import.png)
+![Host Settings with explicit Tailscale import controls](/docs/assets/guide-tailscale-import.png)
 
 ## Experimental Windows hosts
 

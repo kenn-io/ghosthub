@@ -1,16 +1,14 @@
 # ghosthub.ai
 
-Marketing site for Ghosthub. Astro static site, deployed through Vercel's
-CLI. `.github/workflows/website.yml` is CI only (check, lint, test, build); it
+The website introduces Ghosthub and publishes its user guides. It is an Astro
+static site deployed through Vercel's CLI. `.github/workflows/website.yml` is CI only (check, lint, test, build); it
 does not deploy.
 
-The public, task-oriented Zensical documentation lives in `docs/` and is
-published under `/docs/` by the same build. Each documentation page is also
-published as Markdown at its sibling `.md` URL, and `docs/llms.txt` becomes
-`/llms.txt`. The repository-root `docs/` directory remains internal engineering
-documentation and has a separate build.
+Read [Documentation publishing](../docs/README.md) for page ownership, public
+HTML and Markdown URLs, release labels, and required checks. User guides live
+in `docs/content/`; repository-root `docs/` holds engineering references.
 
-    pnpm install
+    pnpm install --frozen-lockfile
     pnpm dev        # local dev server
     pnpm check      # type-check templates
     pnpm lint       # oxlint
@@ -39,7 +37,7 @@ Then deploy the current workspace to production from the repository root:
 
     make site-deploy
 
-The target builds the site first, which hydrates the hero screenshot from the
+The target builds the site first, which downloads the screenshot set from the
 `website-assets` branch, then runs `vercel deploy --prod`. The repository-root
 `.vercelignore` limits the upload to the website project and canonical
 changelog.
@@ -50,15 +48,16 @@ changelog.
 `website-assets` branch and `scripts/sync-assets.sh` materializes the required set
 (it runs automatically via `pnpm dev`, `pnpm check`, and `pnpm build`).
 The script degrades to a generated placeholder only when
-`SYNC_ASSETS_ALLOW_PLACEHOLDER` is set (CI does this while the repo is
-private); production builds fail instead of silently deploying a
-placeholder or partial set. Successfully fetched assets get local checksum
+`SYNC_ASSETS_ALLOW_PLACEHOLDER` is set. Production builds require the complete
+real set. Successfully fetched assets get local checksum
 sidecars, so unmarked legacy placeholders are never reused by an offline
 production build.
 
-To refresh every screenshot, use the faux environment in `demo/`. It never
-shows real project or host details, and `shoot.sh` drives the exact staged
-process through every documented UI state:
+Use the synthetic environment in `demo/` for the main capture set. It needs a
+built `Ghosthub.app`, tmux, and a running Docker engine. The Docker remote uses
+loopback port 2201. Set `GHOSTHUB_DEMO_APP` to a current app bundle if it is not
+at `dist/release/Ghosthub.app`. `shoot.sh` controls the staged app, leaving any
+normal Ghosthub instance alone:
 
     cd website/demo
     ./stage.sh && ./run.sh
@@ -69,20 +68,26 @@ process through every documented UI state:
     GHOSTHUB_DEMO_EXE_ONLY=1 ./shoot.sh /tmp/ghosthub-website-assets
     ./teardown.sh   # always run: stops demo processes and removes scratch state
 
-To refresh just the Hosts settings screenshot, run
-`make screenshot-host-settings SCREENSHOT_PATH=/absolute/path/guide-hosts.png`
-from the repository root. This renders native Settings with a synthetic host
-and isolated preferences, without starting a remote server.
+Capture the Settings pages, project recovery, and launch-profile sheet from
+the real SwiftUI views with synthetic data. From the repository root:
 
-The staged app receives an explicit demo-only OpenSSH configuration and
-known-hosts file under the guarded scratch directory. Discovery and attachment
-therefore cannot inherit the developer's SSH aliases, proxies, or host trust.
+    make screenshot-settings SCREENSHOT_DIR=/tmp/ghosthub-website-assets
+    make screenshot-project-recovery SCREENSHOT_PATH=/tmp/ghosthub-website-assets/guide-project-recovery.png
+    website/demo/render-launch-profile.sh /tmp/ghosthub-website-assets/docs-launch-profiles.png
 
-The injected demo controller drives and captures only its exact staged
-process, so the workflow needs neither Accessibility nor Screen Recording
-permission. `shoot.sh` preserves native window and tab chrome, including both
-the two-by-two command center and native tab group, and writes optimized PNGs
-with the exact filenames expected by the site.
-Commit those files on `website-assets` and push that branch. Pushing
-`website-assets` does not redeploy the site by itself: trigger a Vercel
-redeploy (dashboard, or any push to the production branch) to publish them.
+Run the Settings renderer after the demo capture to use the current host list
+alongside matching Keyboard and Privacy views. It opens only test windows;
+no host discovery or terminal process is needed.
+
+The staged app uses its own OpenSSH configuration, known-hosts file, and tmux
+socket directory. The demo tmux wrapper restores that directory for kwt
+commands that clear `TMUX_TMPDIR`. The controller captures its own process,
+so it needs neither Accessibility nor Screen Recording permission.
+
+Before publishing, view every changed screenshot at full resolution and check
+its metadata for private data. Keep native window and tab controls visible.
+Add new filenames to `scripts/sync-assets.sh`, then commit the PNGs to the
+orphan `website-assets` branch. Do not add binaries to the app branch.
+
+Pushing `website-assets` does not deploy the site. Run `make site-deploy` from
+the repository root when the website is ready to publish.
