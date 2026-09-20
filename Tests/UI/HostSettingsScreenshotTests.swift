@@ -42,6 +42,7 @@ struct HostSettingsScreenshotTests {
             rootView: Color.clear
                 .sheet(isPresented: .constant(true)) {
                     SettingsView(store: store)
+                        .defaultAppStorage(defaults)
                         .frame(width: 1040, height: 744)
                         .preferredColorScheme(.dark)
                 }

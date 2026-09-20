@@ -109,12 +109,13 @@ New scenes start with hosts and session groups expanded and projects collapsed.
 The parsed disclosure sets remain in view state across sidebar hiding and focus
 changes; they are not app-wide preferences or part of restored scene descriptors.
 Saved row ordering and explicit Settings preferences remain app-wide.
-Host display order is shared by the sidebar and the SSH host list in Settings.
+Host display order is shared by the sidebar and the host list in Settings.
 Both views save moves immediately, separately from connection settings. Host
 ordering uses configuration keys and a fixed local-host identity, so renaming
 or reconnecting a host preserves its position. Newly added hosts follow the
-saved order. Settings reorders only its configured SSH hosts, preserving the
-stored positions of the local Mac and discovered hosts.
+saved order. Settings includes a movable, non-removable Local Mac row alongside
+configured SSH hosts. Reordering there preserves the stored positions of
+discovered hosts outside that list.
 
 The workspace `WindowGroup` is data-backed. Each scene continuously captures a
 small logical descriptor containing stable host and project keys, the durable

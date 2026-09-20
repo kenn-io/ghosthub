@@ -435,12 +435,12 @@ public enum WorkspaceSidebarModel {
         "host:\(configKey)"
     }
 
-    static func orderedSSHHosts(
+    static func orderedSettingsHosts(
         _ hosts: [SSHHostDraft],
         hostOrderRawValue: String
-    ) -> [SSHHostDraft] {
+    ) -> [HostSettingsRow] {
         WorkspaceSidebarOrder(rawValue: hostOrderRawValue).ordered(
-            hosts, identifiedBy: { hostOrderID(configKey: $0.configKey) }
+            [.local] + hosts.map(HostSettingsRow.ssh), identifiedBy: \.id
         )
     }
 

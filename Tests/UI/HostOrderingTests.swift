@@ -53,9 +53,17 @@ struct HostOrderingTests {
             hostOrderRawValue: savedOrder
         ).map(\.host.id)
             == [hosts[2].id, local.id, hosts[1].id])
-        #expect(WorkspaceSidebarModel.orderedSSHHosts(
+        let settingsHosts = WorkspaceSidebarModel.orderedSettingsHosts(
             [first, second], hostOrderRawValue: savedOrder
-        ).map(\.id) == [second.id, first.id])
+        )
+        #expect(settingsHosts.map(\.id) == ["host:second", "local", "host:first"])
+        order.move(
+            fromOffsets: IndexSet(integer: 1), toOffset: 3,
+            within: settingsHosts.map(\.id)
+        )
+        #expect(cache.sections(
+            in: snapshot, snapshotRevision: 0, hostOrderRawValue: order.rawValue
+        ).map(\.host.id) == [hosts[2].id, hosts[1].id, local.id])
 
         let refreshed = HostSummary(
             id: UUID(),
@@ -92,7 +100,7 @@ struct HostOrderingTests {
         #expect(order.rawValue == "host:second\nlocal\nhost:vm\nhost:first")
     }
 
-    @Test("the first Settings move leaves the local Mac first")
+    @Test("the first Settings move can put a remote host above Local Mac")
     func firstSettingsMove() throws {
         let suite = "ghosthub.host-order.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -101,11 +109,18 @@ struct HostOrderingTests {
             rawValue: WorkspaceSidebarOrderStorage.hostRawValue(in: defaults)
         )
         order.move(
-            fromOffsets: IndexSet(integer: 0),
-            toOffset: 2,
-            within: ["host:first", "host:second"]
+            fromOffsets: IndexSet(integer: 1),
+            toOffset: 0,
+            within: ["local", "host:first", "host:second"]
         )
-        #expect(order.rawValue == "local\nhost:second\nhost:first")
+        #expect(order.rawValue == "host:first\nlocal\nhost:second")
+    }
+
+    @Test("Settings includes Local Mac without configured SSH hosts")
+    func localOnly() {
+        #expect(WorkspaceSidebarModel.orderedSettingsHosts(
+            [], hostOrderRawValue: "host:removed\nlocal"
+        ).map(\.id) == ["local"])
     }
 
     @Test("new hosts do not inherit positions from removed or unsaved drafts")
@@ -138,8 +153,8 @@ struct HostOrderingTests {
         let order = WorkspaceSidebarModel.updatingHostOrder(
             saved, from: [kept], to: added.drafts
         )
-        #expect(WorkspaceSidebarModel.orderedSSHHosts(
+        #expect(WorkspaceSidebarModel.orderedSettingsHosts(
             added.drafts, hostOrderRawValue: order
-        ).map(\.id) == [kept.id, newHost.id])
+        ).compactMap(\.sshHost).map(\.id) == [kept.id, newHost.id])
     }
 }
