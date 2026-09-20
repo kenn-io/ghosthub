@@ -20,8 +20,6 @@ bindings, and running programs.
 
 ## Find tmux sessions on kwt's server
 
-**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
-
 Ghosthub checks the default tmux server and kwt's server. Sessions registered
 as worktrees or directories appear under **Projects**. Other sessions on either
 server appear under **Tmux Sessions**, including those created with

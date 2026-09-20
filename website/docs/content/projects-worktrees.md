@@ -40,8 +40,6 @@ sheet and start again so the confirmation applies to the current host.
 
 ## Find a moved project
 
-**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
-
 When a project folder moves or is renamed, Ghosthub asks kwt to look for its
 new location among repositories it already knows about. One unambiguous match
 updates the project automatically. Ghosthub attempts this once while that
@@ -82,9 +80,6 @@ the local Mac and configured remote macOS or Linux hosts, but not native
 Windows hosts.
 
 ## Register a plain directory
-
-**Unreleased fix:** directory workspaces open without the loading failure in
-the latest stable build. See [release and nightly builds](getting-started.md#release-and-nightly-builds).
 
 A hub, notes tree, or other directory that is not a Git checkout can still use
 the same kwt layouts and Ghosthub terminal flow. Register it on the target host:

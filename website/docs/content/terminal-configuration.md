@@ -101,10 +101,6 @@ terminal command for clipboard access. The `clipboard-write` setting controls
 whether those writes are allowed. Remote programs cannot read your Mac
 clipboard through OSC 52. Your explicit paste shortcut still works.
 
-**Unreleased:** image paste also works in local tmux sessions. Remote image
-paste is available in the latest stable release. See
-[release and nightly builds](getting-started.md#release-and-nightly-builds).
-
 To send an image to a tool in a local or remote macOS or Linux tmux session,
 copy the image on your Mac and press ++cmd+v++. Ghosthub saves a PNG to
 `~/.ghosthub/paste-images/` on that host and pastes its absolute path into the
