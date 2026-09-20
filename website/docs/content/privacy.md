@@ -8,7 +8,7 @@ icon: lucide/shield-check
 ## Anonymous usage data
 
 Packaged Ghosthub releases send at most one anonymous `application active`
-event per day. The event contains:
+event per day. Reporting is enabled by default. The event contains:
 
 - a random installation ID
 - the Ghosthub version
@@ -19,6 +19,8 @@ terminal data. PostHog person profiles and GeoIP enrichment are disabled.
 
 Turn reporting off at any time under **Settings → Privacy → Share anonymous
 usage data**.
+
+![Privacy settings with Share anonymous usage data enabled](/docs/assets/guide-privacy.png)
 
 ## macOS permissions
 

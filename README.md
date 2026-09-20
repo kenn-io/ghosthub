@@ -9,8 +9,8 @@
 <p align="center">
   <strong>All your multiplexers. One native terminal.</strong>
   <br>
-  Ghosthub is multiplexer-native across your Mac and SSH hosts. Today it supports
-  tmux, Herdr, and Zellij, plus optional tmux-backed worktrees.
+  Open tmux, Herdr, and Zellij sessions on your Mac and SSH hosts.
+  Add Git worktrees when you need them.
 </p>
 
 <p align="center">
@@ -43,240 +43,82 @@
   >
 </p>
 
-Ghosthub creates and attaches to ordinary tmux, Herdr, and Zellij sessions across your
-Mac and SSH hosts. All three can run side by side without Git setup. Each
-multiplexer continues to own its panes, layout, history, key bindings, and
-processes while Ghosthub provides native presentation, keepalives, and
-reconnect.
+Ghosthub opens tmux, Herdr, and Zellij sessions on your Mac and on machines
+reached over SSH. A terminal multiplexer keeps your shells and programs running
+when you close a terminal or lose a connection. Ghosthub helps you find those
+sessions, switch between them, and reconnect.
 
-The integration model is deliberately open-ended. Ghosthub is built to bring
-all multiplexers into one fleet without forcing them into a tmux-shaped
-abstraction—including the [terminal multiplexer Superlogical is
-building](https://www.superlogical.com/) when a public integration surface is
-available.
+Each multiplexer keeps its panes, history, key bindings, and running programs.
+You can also register a Git repository and use [kwt](https://kwt.sh) to create
+worktrees from branches or GitHub pull requests. A worktree is a separate
+checkout of a branch. Git and worktrees are optional.
 
-Ghosthub also manages tmux sessions bound to Git worktrees. Register a
-repository, then continue a local or remote branch, create a branch, or import
-a GitHub pull request without leaving the app. Its bundled [kwt](https://kwt.sh)
-helper manages the linked worktree lifecycle while Ghosthub opens the canonical
-tmux session for that workspace.
+Ghosthub is alpha software. Report bugs and request features through
+[GitHub issues](https://github.com/kenn-io/ghosthub/issues).
 
-There is no proprietary session format, background daemon, or migration.
+## What can I do with it?
 
-Ghosthub is alpha software. It likely has more bugs than more mature terminal
-applications like Ghostty, but please open
-[GitHub issues](https://github.com/kenn-io/ghosthub/issues) to report bugs and
-we will do our best to fix them.
+- Open local and remote sessions together in native Mac windows and tabs.
+- Keep remote sessions connected through ordinary SSH interruptions.
+- Preview tmux sessions and see which ones are producing output.
+- Create Git worktrees and inspect their changed files in the sidebar.
+- Search sessions, projects, and actions with **Command-Shift-P**.
+- Set fonts and colors in Ghosthub's own `ghostty.conf`. Ghosthub uses
+  libghostty for rendering and does not load Ghostty.app's settings.
 
-## Highlights
+See the [visual overview](https://ghosthub.ai/overview/) for a tour. The
+[public guides](https://ghosthub.ai/docs/) explain setup, controls, and limits.
 
-- **All multiplexers, one fleet.** Create or attach to tmux, Herdr, and Zellij
-  sessions on local and remote hosts, including sessions created outside
-  Ghosthub. No Git project or worktree is required.
-- **Managed worktree sessions.** Register an existing checkout, continue a
-  local or remote branch, create a branch, import a GitHub pull request, and
-  remove a linked worktree through the bundled [kwt](https://kwt.sh)
-  helper. No system kwt installation is required.
-- **Resilient SSH.** Keepalives and automatic reconnect preserve remote
-  presentations through ordinary network interruptions.
-- **Deliberate session lifecycle.** Closing a presentation detaches. Tmux and
-  Zellij Kill are confirmed, while Herdr exposes separate Stop, Restart, and Delete actions
-  that preserve each backend's ownership boundaries.
-- **Experimental native Windows hosts.** Connect to OpenSSH hosts running
-  PowerShell and [psmux](https://github.com/marlocarlo/psmux), with managed
-  AMD64 and ARM64 kwt helpers for already registered project inventory.
-- **Native workspaces.** Open independent windows or macOS tabs, and search
-  sessions and common actions from the Command Palette.
-- **Predictable tmux theming.** New sessions created by Ghosthub use the
-  selected Tmux Theme, including resolved light and dark colors from
-  `ghostty.conf`. Existing sessions keep their appearance unless you apply the
-  theme to the active session or opt into shared-session styling.
-- **Fast terminal rendering.** Ghosthub embeds libghostty with an isolated,
-  Ghostty-compatible configuration. No Electron and no Ghostty.app dependency.
+## Install and open a session
 
-## Install
-
-Ghosthub requires:
-
-- an Apple Silicon Mac
-- macOS 15 (Sequoia) or newer
-- tmux 3.2 or newer for tmux sessions
-- Herdr 0.8.0 or newer for Herdr sessions
-- Zellij 0.44 or newer for Zellij sessions
-
-Use any supported multiplexer independently or together. Cmd-D and Cmd-Shift-D pane splitting requires
-tmux 3.4 or newer or Herdr 0.8.0 or newer on the attached session. With older
-versions, use the multiplexer's normal pane-splitting keys.
-
-Experimental native Windows hosts require Windows 11 build 22523 or newer,
-OpenSSH, Windows PowerShell 5.1 or newer, and psmux with its `tmux.exe`
-compatibility alias available.
-
-Install Ghosthub from the Kenn Homebrew tap:
+You need an Apple Silicon Mac with macOS 15 (Sequoia) or newer. Install Ghosthub:
 
 ```sh
 brew install kenn-io/tap/ghosthub
 ```
 
-Launch **Ghosthub** from **Applications**. As a manual alternative, download
-the latest notarized [Ghosthub DMG](https://github.com/kenn-io/ghosthub/releases)
+Or download the [latest stable DMG](https://github.com/kenn-io/ghosthub/releases/latest)
 and drag **Ghosthub** to **Applications**.
 
-Install tmux locally if needed:
+Install at least one supported multiplexer on the host where you work: tmux
+3.2+, Herdr 0.8.0+, or Zellij 0.44+. For tmux on your Mac:
 
 ```sh
 brew install tmux
 ```
 
-Install Zellij locally if needed:
+1. Launch **Ghosthub** from **Applications**.
+2. Expand your Mac in the sidebar.
+3. Select an existing session, or select the **+** beside a session group to
+   create one.
 
-```sh
-brew install zellij
-```
+Closing a terminal view detaches from its session. The session keeps running.
+Ending it requires a separate, confirmed **Kill Session…** or **Stop Session…**
+action. See [Sessions](https://ghosthub.ai/docs/sessions/).
 
-Remote macOS and Linux hosts need the multiplexer you plan to use. Every remote host needs
-non-interactive SSH authentication backed by a key or SSH agent; password-only
-hosts cannot populate the sidebar.
+This README and the website docs follow `main`. The
+[Unreleased changelog](CHANGELOG.md#unreleased) identifies changes newer than
+the latest stable release. Read about
+[stable and nightly builds](https://ghosthub.ai/docs/getting-started/#release-and-nightly-builds)
+before trying them.
 
-## Quick start
+## Where do I go next?
 
-### Open or create a session
-
-Expand your Mac in the sidebar and select an existing tmux session. Use the
-host's **+** menu to create a named session. Closing its Ghosthub window or tab
-only detaches. To end a standalone session, hover its sidebar row and click the
-**×**; for a worktree-backed session, Control-click its worktree row and choose
-**Kill Session…**.
-Both paths confirm the exact host and session before terminating it. If a bare
-session exits on its own, **Reopen** creates the same named session again.
-
-### Add an SSH host
-
-Open **Settings → Hosts**, add an SSH address such as `devbox`,
-`alice@build-server`, or `server.example.com:2222`, and choose
-**Test Connection**. If your OpenSSH policy prompts for a new host key,
-Ghosthub shows the destination and fingerprint in its own trust sheet for
-review.
-
-Tmux-only hosts need no other setup. For project and worktree context on remote
-macOS and Linux hosts, Ghosthub automatically installs and updates the pinned
-helper for that host's operating system and CPU. It stores the helper under the
-remote user's `~/.ghosthub/` directory and does not install or replace a system
-kwt.
-
-Native Windows support is experimental. Select **Windows (psmux)** for a
-Windows OpenSSH host with PowerShell and psmux installed. Ghosthub can upload
-its matching AMD64 or ARM64 kwt helper after explicit confirmation, but the
-Windows helper is currently unsigned, so it is not installed automatically;
-project registration is not yet available on Windows.
-
-### Add projects and worktrees
-
-Open the **+** menu beside a local or remote host, choose **Add Project**, and
-enter the absolute path to an existing checkout. Ghosthub registers that one
-repository through its bundled or managed kwt helper and does not scan the
-machine.
-
-Pull-request import requires the
-[GitHub CLI (`gh`)](https://cli.github.com/) on the host containing the project:
-your Mac for a local project or the SSH machine for a remote one. Install it
-there and run `gh auth login` on that same host before importing. For an HTTPS
-Git remote, ordinary Git authentication must also work there; `gh auth
-setup-git` configures GitHub CLI as a Git credential helper.
-
-Select a project and press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> to create a Git
-worktree or import a GitHub pull request. The branch picker searches available
-local and remote branches, distinguishes same-named sources, and creates a
-local tracking branch when needed; unmatched input creates a new branch.
-Selecting the primary checkout or a linked worktree creates or repairs its
-canonical tmux session when needed, then attaches an ordinary tmux client.
-
-Use the disclosure chevron beside a worktree to expand its staged, working-tree,
-and untracked files without selecting or opening the worktree. Expanded panels
-refresh automatically and can be refreshed or collapsed independently. Ghosthub
-displays Kwt's semantic status only; it does not show diffs or provide file
-actions.
-
-To remove a non-primary worktree, hover over its row and select the **×**, or
-Control-click the row and choose **Remove Worktree…**.
-After confirmation, Ghosthub terminates that worktree's verified live tmux
-session if needed and asks kwt to remove the checkout. The Git branch is kept.
-
-## Navigation
-
-Press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> to open the **Command Palette** and
-search across hosts, projects, worktrees, sessions, settings, and actions.
-Use **Settings → Worktrees** to hide tool-owned standalone tmux sessions with
-case-sensitive `*` and `?` patterns. Kwt workspaces always remain visible under
-their projects, show a status glyph while their tmux session is live, and hide
-their duplicate entries under **Tmux Sessions** by default. The same settings
-page can expose those duplicate session rows.
-
-| Shortcut | Action |
+| I want to… | Guide |
 | --- | --- |
-| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> | Open Command Palette |
-| <kbd>⌃</kbd><kbd>Tab</kbd> / <kbd>⌃</kbd><kbd>⇧</kbd><kbd>Tab</kbd> | Select the next / previous local sibling |
-| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>[</kbd> / <kbd>]</kbd> | Select the previous / next native tab |
-| <kbd>⌘</kbd><kbd>1</kbd>–<kbd>8</kbd> / <kbd>⌘</kbd><kbd>9</kbd> | Select a numbered native tab / the last native tab |
-| <kbd>⌘</kbd><kbd>T</kbd> | Open a new workspace tab |
-| <kbd>⌘</kbd><kbd>N</kbd> | Open a new workspace window |
-| <kbd>⌘</kbd><kbd>B</kbd> | Show or hide the sidebar |
-| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> | Create a worktree |
-| <kbd>⌘</kbd><kbd>W</kbd> | Detach the current presentation |
-| <kbd>⌘</kbd><kbd>,</kbd> | Open Settings |
+| Connect another machine or arrange hosts | [Remote hosts](https://ghosthub.ai/docs/remote-hosts/) |
+| Create worktrees or find a moved project | [Projects and worktrees](https://ghosthub.ai/docs/projects-worktrees/) |
+| Save a command for a new tmux session | [Launch profiles](https://ghosthub.ai/docs/launch-profiles/) |
+| Use windows, tabs, and the Command Palette | [Windows and navigation](https://ghosthub.ai/docs/windows-navigation/) |
+| Change fonts, colors, themes, or clipboard behavior | [Terminal configuration](https://ghosthub.ai/docs/terminal-configuration/) |
+| Find or change a shortcut | [Keyboard shortcuts](https://ghosthub.ai/docs/keyboard-shortcuts/) |
+| Understand or turn off anonymous usage reporting | [Privacy](https://ghosthub.ai/docs/privacy/) |
+| Diagnose a connection or session problem | [Troubleshooting](https://ghosthub.ai/docs/troubleshooting/) |
 
-Sibling navigation follows the visible sidebar order within the current
-project or host. Application shortcuts can be changed in **Settings →
-Keyboard** or `~/.config/ghosthub/config.toml`; unavailable shortcuts pass
-through to the active terminal.
-
-## Terminal configuration
-
-Ghosthub reads its own configuration at:
-
-```text
-~/.config/ghosthub/ghostty.conf
-```
-
-The file uses
-[Ghostty's configuration format](https://ghostty.org/docs/config/reference),
-but remains independent of Ghostty.app configuration and state. Ghosthub
-reloads the active configuration when the base file, an included file, or a
-project override changes. Ghosthub's generated config enforces a modest local
-text-contrast floor so ANSI colors remain legible on light and dark terminal
-backgrounds without changing shared tmux styles. The **Tmux Theme** setting
-supplies colors for new sessions created by Ghosthub. Existing sessions keep
-their own appearance by default; **Apply theme to shared tmux sessions**
-explicitly applies the selected colors before future attachments. Use
-**Session → Apply Theme to Current Session** to update only the connected
-active session immediately.
-Both choices update the session's existing windows and chrome for every
-attached terminal. Quit confirmation is on by default and can be disabled in
-Terminal Settings; closing the final workspace leaves Ghosthub running, while
-Command-Q detaches every presentation and quits. Use **Ghosthub → Reload
-Configuration** for an explicit reload and diagnostic result.
-
-## How the pieces fit
-
-**Tmux owns terminal sessions.** It remains authoritative for windows, panes,
-layout, history, keybindings, plugins, and process lifetime.
-
-**[Kwt](https://kwt.sh) owns worktree identity.** It reports projects,
-worktrees, and their exact tmux session names. Kwt is optional when you only
-want a local and remote tmux session switcher.
-
-**Ghosthub owns presentation.** It discovers the fleet, presents native
-terminal clients, organizes workspaces, and supervises SSH reconnect.
-
-## Anonymous usage data
-
-Packaged releases send at most one anonymous daily activity event, enabled by
-default, containing only a random installation ID and the Ghosthub version and
-build number. Repository, worktree, host, session, path, command, and terminal
-data are not collected. Disable reporting in **Settings → Privacy**. The full
-contract is documented in the
-[architecture](docs/architecture.md#anonymous-usage-telemetry) and
-[threat model](docs/threat-model.md).
+Ghosthub uses your OpenSSH configuration and presents host-key reviews and
+authentication prompts when needed. Remote macOS and Linux hosts can use tmux,
+Herdr, or Zellij. Connections from the Mac app to native Windows/psmux hosts
+are experimental; see the [requirements and limits](https://ghosthub.ai/docs/remote-hosts/#experimental-windows-hosts).
 
 ## Development and contributions
 

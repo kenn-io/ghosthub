@@ -5,6 +5,44 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+Arrange hosts in the order you want, find moved project folders, and open
+registered directories without getting stuck. This update also makes more tmux
+sessions visible and adds local clipboard image paste.
+
+### Added
+
+- Drag host headers in the sidebar, or drag Local Mac and SSH hosts in
+  **Settings → Hosts**. Both views share the same saved order across windows
+  and app launches.
+- Recover a moved project without removing its registration. Ghosthub tries
+  known repository locations once, then offers **Locate Folder…** if it needs
+  your help. Other projects and sessions remain usable.
+- Paste a Mac clipboard image into a local tmux session with **Command-V**,
+  using the same workflow as remote macOS and Linux sessions. Ghosthub saves
+  a PNG on the session's host and pastes its path. Clipboard text takes
+  precedence when present.
+- Complete Tailscale SSH browser approval from Ghosthub's authentication
+  sheet. The pending connection continues after you approve it.
+
+### Changed
+
+- SSH compression is on by default. Change **SSH compression** for a host in
+  **Settings → Hosts** if needed. Saving a change detaches its open terminals;
+  remote sessions keep running and use the new setting when reopened.
+- Large sidebars do less work when previews are off, changed-file panels
+  update independently, and unused background resource polling has been
+  removed.
+
+### Fixed
+
+- Registered directory workspaces open without the endless loading state.
+- Standalone tmux sessions on kwt's server appear under **Tmux Sessions**,
+  including sessions created with `kwt tmux run`. Ghosthub checks the default
+  and kwt servers; it does not scan arbitrary named servers.
+- The Swift macOS app uses kwt's socket directory even when your shell sets
+  `TMUX_TMPDIR`. If kwt discovery fails, default-server sessions still refresh
+  while cached kwt rows remain visible.
+
 ## [0.10.2] - 2026-09-10
 
 Keep each window's sidebar arranged independently and return to the app with

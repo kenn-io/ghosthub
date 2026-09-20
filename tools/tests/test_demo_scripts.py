@@ -28,6 +28,8 @@ WEBSITE_ASSET_NAMES = (
     "guide-session-previews.png",
     "guide-session-activity.png",
     "guide-hosts.png",
+    "guide-keyboard.png",
+    "guide-privacy.png",
     "guide-tailscale-import.png",
     "guide-ssh-browser-authentication.png",
     "guide-exe-dev.png",
@@ -35,6 +37,8 @@ WEBSITE_ASSET_NAMES = (
     "guide-worktree-window-counts.png",
     "guide-worktree-changes.png",
     "guide-project-removal.png",
+    "guide-project-recovery.png",
+    "docs-launch-profiles.png",
     "guide-quick-launch.png",
     "guide-terminal.png",
     "guide-command-center.png",
@@ -62,6 +66,28 @@ def run_bash(script: str, *, env: dict[str, str] | None = None) -> subprocess.Co
         capture_output=True,
         check=False,
     )
+
+
+@pytest.mark.parametrize("socket_name", ["default", "kwt"])
+def test_demo_tmux_restores_its_socket_directory(tmp_path: Path, socket_name: str) -> None:
+    (tmp_path / ".ghosthub-demo-scratch").touch()
+    (tmp_path / "tmux").mkdir()
+    executable = tmp_path / "tmux-bin"
+    executable.write_text('#!/bin/sh\nprintf "%s\\n" "$TMUX_TMPDIR" "${TMUX-unset}" "$@"\n')
+    executable.chmod(0o700)
+    result = subprocess.run(
+        [
+            "env", "-u", "TMUX_TMPDIR", str(DEMO / "bin" / "tmux"),
+            "-L", socket_name, "list-sessions",
+        ],
+        env={**os.environ, "GHOSTHUB_DEMO_SCRATCH": str(tmp_path), "TMUX": "/outside,1,0"},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.splitlines() == [
+        str(tmp_path / "tmux"), "unset", "-L", socket_name, "list-sessions",
+    ]
 
 
 @pytest.mark.parametrize(

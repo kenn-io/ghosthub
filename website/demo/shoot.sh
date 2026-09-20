@@ -307,6 +307,23 @@ capture_worktree_changes() {
   sleep 0.5
 }
 
+capture_hero() {
+  palette "fix-reconnect-backoff"
+  sleep 5
+  # Show the selected worktree and leave space for the remote host below it.
+  demo_input click "32,489"  # collapse Zellij
+  demo_input click "32,450"  # expand Projects
+  demo_input click "32,412"  # expand ghosthub
+  demo_input click "32,658"  # collapse Herdr
+  sleep 1
+  capture_state hero.png
+  # Restore the disclosure layout expected by the remaining captures.
+  demo_input click "32,658"
+  demo_input click "32,412"
+  demo_input click "32,450"
+  sleep 0.5
+}
+
 capture_window_title() {
   demo_input rename-window
   sleep 1
@@ -334,6 +351,11 @@ capture_host_settings() {
   capture_state guide-hosts.png
   dismiss_sheet
 }
+
+if [[ "${GHOSTHUB_DEMO_HERO_ONLY:-}" == "1" ]]; then
+  capture_hero
+  exit 0
+fi
 
 if [[ "${GHOSTHUB_DEMO_WINDOW_TITLE_ONLY:-}" == "1" ]]; then
   echo "==> guide: editable workspace title"
@@ -400,16 +422,7 @@ echo "==> guide: editable workspace title"
 capture_window_title
 
 echo "==> hero: active coding-agent worktree"
-palette "fix-reconnect-backoff"
-sleep 5
-# The Projects disclosure control is deliberately compact. Its rendered
-# position is stable because the demo window has a fixed 1600×1000 frame,
-# while SwiftUI does not expose it as a pressable node on every supported
-# macOS build. Leave the default-expanded Herdr group open above it. The
-# controller uses AppKit's bottom-left coordinate origin.
-demo_input click "32,489"
-sleep 0.5
-capture_state hero.png
+capture_hero
 
 echo "==> guide: ordinary worktree session"
 palette "add-session-filters"

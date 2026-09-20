@@ -21,6 +21,8 @@ assets=(
   guide-session-previews.png
   guide-session-activity.png
   guide-hosts.png
+  guide-keyboard.png
+  guide-privacy.png
   guide-tailscale-import.png
   guide-ssh-browser-authentication.png
   guide-exe-dev.png
@@ -28,6 +30,8 @@ assets=(
   guide-worktree-window-counts.png
   guide-worktree-changes.png
   guide-project-removal.png
+  guide-project-recovery.png
+  docs-launch-profiles.png
   guide-quick-launch.png
   guide-terminal.png
   guide-command-center.png

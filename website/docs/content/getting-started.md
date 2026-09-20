@@ -5,6 +5,8 @@ icon: lucide/rocket
 
 # Getting started
 
+Install Ghosthub, then open an existing session or create your first one.
+
 ## Requirements
 
 Ghosthub currently requires:
@@ -19,14 +21,9 @@ The Cmd-D and Cmd-Shift-D pane shortcuts require tmux 3.4 or newer or Herdr
 0.8.0 or newer on the attached session. With older versions, use your normal
 multiplexer split keys.
 
-Use any supported multiplexer independently or together. When the Herdr CLI is available on the local
-Mac or a remote POSIX host, Ghosthub discovers its running and stopped sessions.
-When Zellij is available, Ghosthub discovers its active sessions and excludes
-exited/resurrectable entries. Experimental Windows hosts support neither Herdr
-nor Zellij.
-
-You can use tmux, Herdr, and Zellij on the same host. Each keeps its own panes,
-key bindings, and running programs.
+Use any supported multiplexer independently or together. Each keeps its own
+panes, key bindings, and running programs. See [Sessions](sessions.md) for the
+sessions Ghosthub discovers and the actions available for each kind.
 
 Native Windows hosts are experimental and have additional requirements. See
 [Remote Hosts](remote-hosts.md#experimental-windows-hosts).
@@ -75,7 +72,7 @@ tmux windows and panes, Herdr workspaces, or Zellij tabs and panes stay under th
 backend's control. Closing the presentation detaches without stopping the
 server.
 
-![Ghosthub sidebar with local and remote session groups](assets/guide-sessions.png)
+![Ghosthub sidebar with local and remote session groups](/docs/assets/guide-sessions.png)
 
 ## Create a session
 
@@ -88,6 +85,23 @@ The session is not tied to a Git repository. Close the Ghosthub window or tab
 to detach; your shell and other processes continue running in its multiplexer.
 Stopped Herdr sessions remain visible with a **Stopped** label so you can
 restart their saved shape later.
+
+## Release and nightly builds
+
+The [latest stable release](https://github.com/kenn-io/ghosthub/releases/latest)
+is the normal download. The website's download button and Homebrew install
+use that release.
+
+These guides follow the current `main` branch. Sections marked **Unreleased**
+describe changes that are not in the latest stable release yet. The
+[Unreleased changelog](changelog.md#unreleased) lists them together.
+
+Nightly builds are separate test builds. If you are testing one, check its
+notes and source commit: a nightly can predate a change on `main`. Installing
+a nightly replaces the stable app and uses the same settings and saved state;
+it is not a separate profile. Follow the enrollment instructions supplied with
+the test build before installing it. Normal website downloads and Homebrew
+remain on the stable channel.
 
 ## What to do next
 

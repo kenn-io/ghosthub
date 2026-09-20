@@ -84,6 +84,8 @@ and Shift-only combinations are rejected because they could intercept ordinary
 terminal input. Ghosthub also rejects a binding already used by another action
 or reserved by a fixed macOS command; the recorder shows the conflict inline.
 
+![Keyboard settings with navigation shortcuts and row menus](/docs/assets/guide-keyboard.png)
+
 ## Configure `config.toml`
 
 Shortcut overrides are also stored in
@@ -114,17 +116,8 @@ Choose **Ghosthub → Reload Configuration** after editing the file manually.
 
 ## Multiplexer ownership
 
-Command-F opens a compact Find bar for standalone terminals and supported
-POSIX tmux sessions. Return and Command-G request the next match toward older
-history; Shift-Return and Shift-Command-G request the previous match toward
-newer history. Escape, Shift-Command-F, or the close button ends Find.
-
-Standalone libghostty search follows Ghostty.app's newest-to-oldest,
-non-wrapping behavior. Tmux owns wrapping and the first step after changing
-direction. Tmux also owns pane-wide copy mode and the viewport, so another
-client attached to the same pane can see or cancel the search. Find requires
-tmux 3.4 or newer. Herdr, Zellij, Windows psmux, and older tmux versions leave
-Find unavailable rather than searching only the visible client output.
+For terminal Find controls, minimum versions, and how searching affects other
+attached clients, see [Find text in a terminal](sessions.md#find-text-in-a-terminal).
 
 Choose **File → Split Right** or **File → Split Down** if you prefer menus.
 Ghosthub asks the active multiplexer to split its focused pane directly, so

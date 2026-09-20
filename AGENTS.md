@@ -83,6 +83,28 @@ layer, as subject to direct iteration.
 5. `docs/terminal-sessions.md`: Source of truth for terminal ownership, shell startup, and restart semantics.
 6. `docs/release.md`: Signing, notarization, and release process source of truth.
 
+## Documentation
+
+- Write for the person using or maintaining Ghosthub. Lead with the outcome,
+  name who does what, use short sentences, and explain unfamiliar terms.
+- Organize around reader questions. Put purpose and current capabilities
+  first; separate limitations and future work. Use only the sections the
+  topic needs.
+- Give each bullet one main idea. Use numbered steps for sequences,
+  paragraphs for rationale, and tables or diagrams for comparisons and flows.
+- State rules directly. Preserve exact commands, field names, authorization
+  checks, limits, and failure behavior when simplifying the wording.
+- Give each fact an owning guide or reference and link to it elsewhere.
+  Update that section instead of appending a narrative of the latest change.
+  Indexes should route readers, not repeat implementation status.
+- Describe current architecture separately from approved but unbuilt work,
+  proposals, and historical decisions. Preserve rationale, approvals, and
+  active exceptions with their removal conditions. Label superseded designs
+  and keep them outside normal navigation.
+- Keep the website, its Markdown companions, README, and engineering docs on
+  message. Distinguish the latest release from newer `main` functionality.
+  Follow [docs/README.md](docs/README.md) for the publishing layout and checks.
+
 ## Non-Negotiable Workflow Rules
 
 - When a task involves multiple steps, complete all requested steps in sequence

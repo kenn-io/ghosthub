@@ -7,13 +7,17 @@ import SwiftUI
 import Testing
 @testable import GhosthubUI
 
-@Suite("Host settings documentation screenshot")
-struct HostSettingsScreenshotTests {
+@Suite("Settings documentation screenshots")
+struct SettingsScreenshotTests {
     @MainActor
-    @Test("exports host settings with synthetic connection details")
-    func hostSettings() throws {
-        guard let path = ProcessInfo.processInfo
-            .environment["GHOSTHUB_HOST_SETTINGS_SCREENSHOT"] else { return }
+    @Test("exports Settings with synthetic details", arguments: [
+        SettingsDomain.hosts, .keyboard, .privacy,
+    ])
+    func settings(domain: SettingsDomain) throws {
+        guard let directory = ProcessInfo.processInfo
+            .environment["GHOSTHUB_SETTINGS_SCREENSHOT_DIR"] else { return }
+        let path = URL(fileURLWithPath: directory)
+            .appendingPathComponent("guide-\(domain.rawValue).png").path
         let configDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
@@ -37,7 +41,7 @@ struct HostSettingsScreenshotTests {
                 sshDestination: "user@build.example.test"
             ),
         ])
-        store.selectedDomain = .hosts
+        store.selectedDomain = domain
         let controller = NSHostingController(
             rootView: Color.clear
                 .sheet(isPresented: .constant(true)) {

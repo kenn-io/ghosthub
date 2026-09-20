@@ -25,7 +25,7 @@ Each open window or tab keeps its own expanded and collapsed groups. Expanding
 a host or project in one window leaves other windows as you arranged them.
 New windows start with hosts and session groups expanded and projects collapsed.
 
-![Ghosthub sidebar with host and session groups](assets/guide-sessions.png)
+![Ghosthub sidebar with host and session groups](/docs/assets/guide-sessions.png)
 
 Press ++cmd+b++ to hide or show the sidebar. Hiding it gives the terminal
 the full window while preserving its session attachment.
@@ -41,6 +41,8 @@ Press ++shift+cmd+p++ and type to search:
 
 Press Return to perform the selected action.
 
+![Command Palette searching for a worktree](/docs/assets/guide-quick-launch.png)
+
 ## Open tabs and windows
 
 - ++cmd+t++ opens a workspace tab in the current window.
@@ -54,6 +56,8 @@ tab group. If a numbered shortcut is beyond the end of the current group, it
 selects the group's last tab. The tab bar shows the available numbered
 shortcuts and updates them when you reorder tabs.
 
+![Ghosthub window with numbered native tabs](/docs/assets/guide-native-tabs.png)
+
 To give one workspace window or tab its own label, choose
 **Window → Rename Window…**. The label belongs only to that Ghosthub workspace
 and returns after restoration or an update relaunch. Save an empty title to
@@ -63,7 +67,7 @@ You can also hover the compact title and click either the title or its pencil
 to open the same editor. Dragging from that area moves the window without
 opening the editor.
 
-![Ghosthub's editor for a workspace window or tab title](assets/guide-window-title.png)
+![Ghosthub's editor for a workspace window or tab title](/docs/assets/guide-window-title.png)
 
 ## Close a presentation
 
@@ -103,9 +107,8 @@ number so that builds sharing a release version are distinguishable.
 
 ## Rearrange navigation
 
-Drag a host header to move its entire sidebar section, including the local Mac.
-You can also drag Local Mac and configured SSH hosts in **Settings → Hosts**. Both views share
-one saved host order across windows and app launches. See [Reorder hosts](remote-hosts.md#reorder-hosts).
+To arrange whole host sections, see [Reorder hosts](remote-hosts.md#reorder-hosts).
+That guide covers the shared order in the sidebar and **Settings → Hosts**.
 
 Drag worktrees within a project, or reorder standalone tmux, Herdr, and Zellij sessions
 within their host groups. The insertion line previews the destination. Ghosthub

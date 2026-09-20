@@ -5,13 +5,17 @@ icon: lucide/book-open
 
 # Ghosthub documentation
 
-Ghosthub is the native macOS terminal for all your multiplexers. Today it
-supports local and remote tmux, Herdr, and Zellij sessions. Any supported
-multiplexer works without Git setup; when you want project context, Ghosthub
-can also create and manage tmux sessions bound to Git worktrees.
+Open tmux, Herdr, and Zellij sessions on your Mac and SSH hosts in one native
+Mac app. Use any of them without Git setup. Add projects and worktrees when
+you want a separate checkout and tmux session for each branch.
 
 These docs explain how to operate Ghosthub. For a shorter, visual introduction,
 start with the [five-minute Overview](https://ghosthub.ai/overview/).
+
+These guides and screenshots follow `main`. Features marked **Unreleased**
+are newer than the latest stable download. See
+[release and nightly builds](/docs/getting-started/#release-and-nightly-builds)
+to choose a build.
 
 ## Start here
 
@@ -20,6 +24,7 @@ start with the [five-minute Overview](https://ghosthub.ai/overview/).
 | Install Ghosthub and open a first session | [Getting Started](/docs/getting-started/) |
 | See what changed in each release | [Changelog](/docs/changelog/) |
 | Attach to tmux, Herdr, or Zellij, or manage a session | [Sessions](/docs/sessions/) |
+| Save a command for a new remote tmux session | [Launch profiles](/docs/launch-profiles/) |
 | Connect a Mac, Linux, or experimental Windows host | [Remote Hosts](/docs/remote-hosts/) |
 | Register a Git repository or create a worktree | [Projects and Worktrees](/docs/projects-worktrees/) |
 | Use windows, tabs, the sidebar, or the Command Palette | [Windows and Navigation](/docs/windows-navigation/) |
@@ -48,7 +53,7 @@ and processes. Closing a Ghosthub terminal disconnects its client and leaves
 the session running. To end a session, use a separate confirmed **Kill
 Session…** or Herdr **Stop Session…** action.
 
-![Ghosthub with local and remote sessions and project worktrees](assets/hero.png)
+![Ghosthub with local and remote sessions and project worktrees](/docs/assets/hero.png)
 
 ## Human and machine-readable pages
 

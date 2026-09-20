@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Keep both default and kwt discovery inside the staged screenshot environment.
+set -euo pipefail
+
+scratch="${GHOSTHUB_DEMO_SCRATCH:?GHOSTHUB_DEMO_SCRATCH is not set}"
+if [[ ! -f "$scratch/.ghosthub-demo-scratch" || ! -d "$scratch/tmux" ]]; then
+  echo "demo tmux: demo scratch is not staged" >&2
+  exit 64
+fi
+
+# Canonical kwt commands clear TMUX_TMPDIR before invoking this executable.
+export TMUX_TMPDIR="$scratch/tmux"
+unset TMUX
+exec "$scratch/tmux-bin" "$@"

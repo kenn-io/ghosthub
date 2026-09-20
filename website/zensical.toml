@@ -15,6 +15,7 @@ nav = [
   {"Getting Started" = "getting-started.md"},
   {"Changelog" = "changelog.md"},
   {"Sessions" = "sessions.md"},
+  {"Launch Profiles" = "launch-profiles.md"},
   {"Remote Hosts" = "remote-hosts.md"},
   {"Projects and Worktrees" = "projects-worktrees.md"},
   {"Windows and Navigation" = "windows-navigation.md"},

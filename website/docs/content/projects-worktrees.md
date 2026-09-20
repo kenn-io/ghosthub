@@ -40,6 +40,8 @@ sheet and start again so the confirmation applies to the current host.
 
 ## Find a moved project
 
+**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
+
 When a project folder moves or is renamed, Ghosthub asks kwt to look for its
 new location among repositories it already knows about. One unambiguous match
 updates the project automatically. Ghosthub attempts this once while that
@@ -53,7 +55,7 @@ Control-click the project and choose **Locate Folder…**. On this Mac, use
 path on that host. Select the main checkout of the same repository, then
 select **Use Folder**.
 
-![Locate Folder sheet for a moved project](https://raw.githubusercontent.com/kenn-io/ghosthub/refs/heads/website-assets/guide-project-recovery.png)
+![Locate Folder sheet for a moved project](/docs/assets/guide-project-recovery.png)
 
 Recovery preserves the registration until it can verify the new location.
 Automatic matching requires a repository identity; multiple matching clones
@@ -72,7 +74,7 @@ imported pull-request worktree still has a live session on its protected tmux
 server, kill that session before removing the project. Ordinary sessions that
 remain live are still available under the host's **Tmux Sessions** group.
 
-![Ghosthub showing the Remove Project action and its non-destructive confirmation](assets/guide-project-removal.png)
+![Ghosthub showing the Remove Project action and its non-destructive confirmation](/docs/assets/guide-project-removal.png)
 
 If the project or host connection changes while confirmation is open, Ghosthub
 stops and asks you to start the removal again. Project removal is available on
@@ -80,6 +82,9 @@ the local Mac and configured remote macOS or Linux hosts, but not native
 Windows hosts.
 
 ## Register a plain directory
+
+**Unreleased fix:** directory workspaces open without the loading failure in
+the latest stable build. See [release and nightly builds](getting-started.md#release-and-nightly-builds).
 
 A hub, notes tree, or other directory that is not a Git checkout can still use
 the same kwt layouts and Ghosthub terminal flow. Register it on the target host:
@@ -104,7 +109,8 @@ Kwt supplies the exact canonical tmux session name. Ghosthub creates or repairs
 that session when necessary and then attaches an ordinary tmux client. The
 native window tab and titlebar show the project and worktree names instead of
 that internal session name. New worktree sessions use kwt's short,
-hash-suffixed naming format so they also remain recognizable in `tmux ls`.
+hash-suffixed naming format. To list them from a shell, use the
+[kwt-server command](sessions.md#find-tmux-sessions-on-kwts-server).
 To put the whole project in one new window, right-click the project and choose
 **Open All Worktrees as Tabs**. Ghosthub opens the visible worktrees in sidebar
 order, creating or repairing each Kwt session as needed. If one scene cannot be
@@ -119,7 +125,7 @@ from current discovery. A running or agent glyph remains the fallback when no
 trustworthy count is available, and cached sessions do not remain marked live
 while the host is unreachable.
 
-![Ghosthub showing a compact tmux window count on a worktree row](assets/guide-worktree-window-counts.png)
+![Ghosthub showing a compact tmux window count on a worktree row](/docs/assets/guide-worktree-window-counts.png)
 
 By default, a live kwt-managed session appears only on its worktree row instead
 of being duplicated under **Tmux Sessions**. Open **Settings → Worktrees** and
@@ -132,7 +138,7 @@ Select the disclosure chevron beside a worktree. The panel expands beneath that
 worktree without selecting it or attaching its tmux session. More than one
 worktree can remain expanded.
 
-![Ghosthub showing staged, modified, and untracked files beneath a worktree](assets/guide-worktree-changes.png)
+![Ghosthub showing staged, modified, and untracked files beneath a worktree](/docs/assets/guide-worktree-changes.png)
 
 Each file shows separate staged and working-tree states when both apply, and a
 renamed file includes its original path. An empty panel says **No changed
@@ -162,6 +168,8 @@ stage changes, or commit them.
 Selecting a remote source creates a local tracking branch when needed. The
 picker distinguishes same-named sources. Input that does not match an existing
 branch creates a new branch.
+
+![New worktree sheet with branch choices](/docs/assets/guide-worktree.png)
 
 ## Import a GitHub pull request
 
