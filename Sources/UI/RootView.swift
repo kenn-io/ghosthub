@@ -59,6 +59,8 @@ public struct RootView: View {
         SessionConnectionRecoveryRequestRouter()
     @StateObject private var sshHostKeyReview =
         WorkspaceSSHHostKeyReviewModel()
+    @AppStorage(WorkspaceSidebarOrderStorage.hostKey)
+    private var hostOrderRawValue = WorkspaceSidebarOrderStorage.defaultHostOrder
     @AppStorage(WorkspaceSidebarOrderStorage.worktreeKey)
     private var worktreeOrderRawValue = ""
     @AppStorage(WorkspaceSidebarOrderStorage.tmuxSessionKey)
@@ -783,6 +785,7 @@ public struct RootView: View {
             display.workspaceInventoryWarningsByHost,
             inventoryRefreshComplete:
             display.isWorkspaceInventoryRefreshComplete,
+            hostOrderRawValue: $hostOrderRawValue,
             worktreeOrderRawValue: $worktreeOrderRawValue,
             tmuxSessionOrderRawValue: $tmuxSessionOrderRawValue,
             herdrSessionOrderRawValue: $herdrSessionOrderRawValue,

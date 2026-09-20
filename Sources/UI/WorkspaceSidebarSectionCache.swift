@@ -9,6 +9,7 @@ public final class WorkspaceSidebarSectionCache {
         var tmuxSessionVisibility: TmuxSessionVisibility
         var connectedTmuxSessionIDs: Set<String>
         var liveTmuxWindowCounts: [String: Int]
+        var hostOrderRawValue: String
         var worktreeOrderRawValue: String
         var tmuxSessionOrderRawValue: String
         var herdrSessionOrderRawValue: String
@@ -26,6 +27,7 @@ public final class WorkspaceSidebarSectionCache {
         tmuxSessionVisibility: TmuxSessionVisibility = .init(),
         connectedTmuxSessionIDs: Set<String> = [],
         liveTmuxWindowCounts: [String: Int] = [:],
+        hostOrderRawValue: String = "",
         worktreeOrderRawValue: String = "",
         tmuxSessionOrderRawValue: String = "",
         herdrSessionOrderRawValue: String = "",
@@ -37,6 +39,7 @@ public final class WorkspaceSidebarSectionCache {
             tmuxSessionVisibility: tmuxSessionVisibility,
             connectedTmuxSessionIDs: connectedTmuxSessionIDs,
             liveTmuxWindowCounts: liveTmuxWindowCounts,
+            hostOrderRawValue: hostOrderRawValue,
             worktreeOrderRawValue: worktreeOrderRawValue,
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
             herdrSessionOrderRawValue: herdrSessionOrderRawValue,
@@ -52,6 +55,7 @@ public final class WorkspaceSidebarSectionCache {
             tmuxSessionVisibility: tmuxSessionVisibility,
             connectedTmuxSessionIDs: connectedTmuxSessionIDs,
             liveTmuxWindowCounts: liveTmuxWindowCounts,
+            hostOrderRawValue: hostOrderRawValue,
             worktreeOrderRawValue: worktreeOrderRawValue,
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
             herdrSessionOrderRawValue: herdrSessionOrderRawValue,

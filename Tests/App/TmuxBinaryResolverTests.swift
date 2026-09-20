@@ -793,12 +793,16 @@ struct TmuxBinaryResolverTests {
             loginShellProvider: { shell.path }
         )
         let task = Task.detached { resolver.resolveTmuxPath() }
-        try await Task.sleep(for: .milliseconds(50))
         let started = Date()
-        task.cancel()
+        // The blocking probe can occupy the only cooperative worker. Send
+        // cancellation from outside that pool so it cannot wait for timeout.
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(50)) {
+            task.cancel()
+        }
 
+        let result = await task.value
         #expect(
-            await task.value
+            result
                 == .failure(.probeCancelled(shell: shell.path))
         )
         // Cancellation has to beat the process budget rather than ride it out.

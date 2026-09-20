@@ -148,7 +148,7 @@ final class SettingsViewTests: XCTestCase {
                 .first { $0.isEditable && $0.stringValue == "Host A" }
         )
         let hostList = try XCTUnwrap(
-            tables.first { $0.numberOfRows == 1 }
+            tables.first { $0.numberOfRows == 2 } // Local Mac and the SSH host.
         )
         let hostListScrollView = try XCTUnwrap(hostList.enclosingScrollView)
 

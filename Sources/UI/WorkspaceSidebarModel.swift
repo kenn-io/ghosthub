@@ -1,11 +1,21 @@
 import Foundation
+import GhosthubSettings
 import GhosthubWorkspace
+import SwiftUI
 
 public enum WorkspaceSidebarOrderStorage {
+    public static let hostKey = "workspaceSidebarHostOrder"
+    public static let defaultHostOrder = "local"
     public static let worktreeKey = "workspaceSidebarWorktreeOrderV1"
     public static let tmuxSessionKey = "workspaceSidebarTmuxSessionOrderV1"
     public static let herdrSessionKey = "workspaceSidebarHerdrSessionOrderV1"
     public static let zellijSessionKey = "workspaceSidebarZellijSessionOrderV1"
+
+    public static func hostRawValue(
+        in defaults: UserDefaults = .standard
+    ) -> String {
+        defaults.string(forKey: hostKey) ?? defaultHostOrder
+    }
 
     public static func worktreeRawValue(
         in defaults: UserDefaults = .standard
@@ -81,7 +91,6 @@ struct WorkspaceSidebarOrder: Equatable {
     ) -> Bool {
         guard sourceID != targetID else { return false }
 
-        let groupIDSet = Set(groupItemIDs)
         var orderedGroupIDs = orderedIDs(groupItemIDs)
         guard let sourceIndex = orderedGroupIDs.firstIndex(of: sourceID),
               let targetIndex = orderedGroupIDs.firstIndex(of: targetID)
@@ -94,6 +103,22 @@ struct WorkspaceSidebarOrder: Equatable {
             : orderedTargetIndex
         orderedGroupIDs.insert(sourceID, at: insertionIndex)
 
+        replaceGroup(with: orderedGroupIDs)
+        return true
+    }
+
+    mutating func move(
+        fromOffsets source: IndexSet,
+        toOffset destination: Int,
+        within groupItemIDs: [String]
+    ) {
+        var orderedGroupIDs = orderedIDs(groupItemIDs)
+        orderedGroupIDs.move(fromOffsets: source, toOffset: destination)
+        replaceGroup(with: orderedGroupIDs)
+    }
+
+    private mutating func replaceGroup(with orderedGroupIDs: [String]) {
+        let groupIDSet = Set(orderedGroupIDs)
         var replacements = orderedGroupIDs.makeIterator()
         itemIDs = itemIDs.map { itemID in
             guard groupIDSet.contains(itemID) else { return itemID }
@@ -102,7 +127,6 @@ struct WorkspaceSidebarOrder: Equatable {
         while let replacement = replacements.next() {
             itemIDs.append(replacement)
         }
-        return true
     }
 
     mutating func prune(keeping knownItemIDs: Set<String>) -> Bool {
@@ -400,6 +424,41 @@ public struct WorkspaceSidebarProject: Equatable, Identifiable, Sendable {
 }
 
 public enum WorkspaceSidebarModel {
+    static func hostOrderID(_ host: HostSummary) -> String {
+        if host.kind == .selfHost {
+            return WorkspaceSidebarOrderStorage.defaultHostOrder
+        }
+        return hostOrderID(configKey: host.configKey)
+    }
+
+    static func hostOrderID(configKey: String) -> String {
+        "host:\(configKey)"
+    }
+
+    static func orderedSettingsHosts(
+        _ hosts: [SSHHostDraft],
+        hostOrderRawValue: String
+    ) -> [HostSettingsRow] {
+        WorkspaceSidebarOrder(rawValue: hostOrderRawValue).ordered(
+            [.local] + hosts.map(HostSettingsRow.ssh), identifiedBy: \.id
+        )
+    }
+
+    static func updatingHostOrder(
+        _ rawValue: String,
+        from previous: [SSHHostDraft],
+        to current: [SSHHostDraft]
+    ) -> String {
+        let changedKeys = Set(previous.map(\.configKey))
+            .symmetricDifference(Set(current.map(\.configKey)))
+        let changedIDs = Set(changedKeys.map { hostOrderID(configKey: $0) })
+        // New drafts can reuse a removed or unsaved host's configuration key.
+        return rawValue.split(whereSeparator: \Character.isNewline)
+            .map(String.init)
+            .filter { !changedIDs.contains($0) }
+            .joined(separator: "\n")
+    }
+
     public static func tmuxSessionSelection(
         for selection: WorkspaceSelection,
         in snapshot: WorkspaceSnapshot
@@ -516,6 +575,7 @@ public enum WorkspaceSidebarModel {
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         connectedTmuxSessionIDs: Set<String> = [],
         liveTmuxWindowCounts: [String: Int] = [:],
+        hostOrderRawValue: String = "",
         worktreeOrderRawValue: String = "",
         tmuxSessionOrderRawValue: String = "",
         herdrSessionOrderRawValue: String = "",
@@ -534,7 +594,10 @@ public enum WorkspaceSidebarModel {
         let zellijSessionOrder = WorkspaceSidebarOrder(
             rawValue: zellijSessionOrderRawValue
         )
-        return snapshot.hosts.map { host in
+        let hosts = WorkspaceSidebarOrder(rawValue: hostOrderRawValue).ordered(
+            snapshot.hosts, identifiedBy: hostOrderID
+        )
+        return hosts.map { host in
             let sessionsByEndpoint = host.tmuxSessions.reduce(
                 into: [String: TmuxSessionSummary]()
             ) { sessions, session in

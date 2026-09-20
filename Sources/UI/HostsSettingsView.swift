@@ -3,6 +3,21 @@ import GhosthubSettings
 import GhosthubWorkspace
 import SwiftUI
 
+enum HostSettingsRow: Identifiable {
+    case local
+    case ssh(SSHHostDraft)
+
+    var sshHost: SSHHostDraft? {
+        guard case let .ssh(host) = self else { return nil }
+        return host
+    }
+
+    var id: String {
+        guard let sshHost else { return WorkspaceSidebarOrderStorage.defaultHostOrder }
+        return WorkspaceSidebarModel.hostOrderID(configKey: sshHost.configKey)
+    }
+}
+
 enum HostConnectionField: Hashable {
     case displayName
     case sshAddress
@@ -181,6 +196,8 @@ private struct TmuxLaunchProfileEditorRow: View {
 }
 
 public struct HostsSettingsView: View {
+    @AppStorage(WorkspaceSidebarOrderStorage.hostKey)
+    private var hostOrderRawValue = WorkspaceSidebarOrderStorage.defaultHostOrder
     @FocusState private var focusedConnectionField: HostConnectionField?
     @State private var remoteProjectPath = ""
     @State private var isRegisteringRemoteProject = false
@@ -334,25 +351,33 @@ public struct HostsSettingsView: View {
                             .frame(width: 16, height: 16)
                     }
                     .help("Remove Host")
-                    .disabled(sshHosts.isEmpty)
+                    .disabled(selectedSSHHostDraft == nil)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
 
-                List(selection: $selectedSSHHostDraftID) {
-                    ForEach(sshHosts) { host in
+                List(selection: selectedHostID) {
+                    ForEach(orderedHosts) { host in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(host.listDisplayName)
+                            Text(host.sshHost?.listDisplayName ?? "Local Mac")
                                 .font(.system(
                                     size: 13, weight: .semibold
                                 ))
-                            Text(host.listSubtitle)
+                            Text(host.sshHost?.listSubtitle ?? "This Mac")
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
                         .tag(host.id)
+                    }
+                    .onMove { source, destination in
+                        var order = WorkspaceSidebarOrder(rawValue: hostOrderRawValue)
+                        order.move(
+                            fromOffsets: source, toOffset: destination,
+                            within: orderedHosts.map(\.id)
+                        )
+                        hostOrderRawValue = order.rawValue
                     }
                 }
                 .frame(minHeight: 300, maxHeight: .infinity)
@@ -362,7 +387,7 @@ public struct HostsSettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    settingsSection("SSH Tmux Hosts") {
+                    settingsSection("Hosts") {
                         Text(
                             "Ghosthub uses kwt, a Git worktree manager, to discover"
                                 + " projects and worktrees alongside ordinary tmux"
@@ -694,11 +719,11 @@ public struct HostsSettingsView: View {
                             }
                         }
                     } else {
-                        settingsSection("Hosts") {
+                        settingsSection("Local Mac") {
                             Text(
-                                "Add each machine where you keep tmux sessions."
-                                    + " Tailscale hostnames work well, but any"
-                                    + " reachable SSH destination is supported."
+                                "Ghosthub discovers sessions and projects on this Mac automatically."
+                                    + " Drag Local Mac in the host list or sidebar to change its position."
+                                    + " This built-in host does not need an SSH connection and cannot be removed."
                             )
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
@@ -820,6 +845,21 @@ public struct HostsSettingsView: View {
 
     // MARK: - Binding Helpers
 
+    private var selectedHostID: Binding<String?> {
+        Binding(
+            get: {
+                selectedSSHHostDraft.map {
+                    WorkspaceSidebarModel.hostOrderID(configKey: $0.configKey)
+                } ?? WorkspaceSidebarOrderStorage.defaultHostOrder
+            },
+            set: { id in
+                selectedSSHHostDraftID = sshHosts.first {
+                    WorkspaceSidebarModel.hostOrderID(configKey: $0.configKey) == id
+                }?.id
+            }
+        )
+    }
+
     private func selectedSSHHostDraftBinding() -> (
         name: Binding<String>,
         sshDestination: Binding<String>,
@@ -873,6 +913,12 @@ public struct HostsSettingsView: View {
 
     // MARK: - Actions
 
+    private var orderedHosts: [HostSettingsRow] {
+        WorkspaceSidebarModel.orderedSettingsHosts(
+            sshHosts, hostOrderRawValue: hostOrderRawValue
+        )
+    }
+
     private func addSSHHost() {
         applyDraftListState(
             SSHHostDraftListEditor.addingDefaultHost(
@@ -900,7 +946,7 @@ public struct HostsSettingsView: View {
     private func removeSelectedSSHHost() {
         applyDraftListState(
             SSHHostDraftListEditor.removingSelectedHost(
-                from: sshHosts,
+                from: orderedHosts.compactMap(\.sshHost),
                 selectedDraftID: selectedSSHHostDraftID
             )
         )
@@ -945,6 +991,9 @@ public struct HostsSettingsView: View {
     private func applyDraftListState(
         _ state: SSHHostDraftListState
     ) {
+        hostOrderRawValue = WorkspaceSidebarModel.updatingHostOrder(
+            hostOrderRawValue, from: sshHosts, to: state.drafts
+        )
         sshHosts = state.drafts
         selectedSSHHostDraftID = state.selectedDraftID
     }
