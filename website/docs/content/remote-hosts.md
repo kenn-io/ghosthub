@@ -58,8 +58,6 @@ says so in the sidebar.
 
 ## Reorder hosts
 
-**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
-
 Drag **Local Mac** or a remote host in **Settings → Hosts** to change its
 position. The sidebar updates immediately, and the order is saved across launches and shared by all
 Ghosthub windows. Connection edits still take effect when you select **Done**.
@@ -119,8 +117,6 @@ it does not open a tmux, Herdr, or Zellij session by itself.
 
 ### Tailscale browser checks
 
-**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
-
 When Tailscale SSH requires a browser check, choose **Open Authentication Page**
 in Ghosthub's authentication sheet and complete the sign-in. Ghosthub keeps
 that SSH attempt open and continues automatically after approval. If the check
@@ -151,8 +147,6 @@ authentication failed. Trusting a host key confirms the server's identity;
 it does not sign you in. Check the account and SSH key used for that host.
 
 ## Slow connections
-
-**Unreleased.** See [release and nightly builds](getting-started.md#release-and-nightly-builds).
 
 For text-heavy terminals on a slow connection, SSH compression can reduce the
 amount of output sent over the network. Ghosthub enables it by default for
