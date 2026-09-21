@@ -193,7 +193,7 @@ struct TmuxBinaryResolverTests {
 
     @Test("remote resolution uses its supplied SSH snapshot")
     func resolvesRemotePathWithSuppliedSSHArguments() throws {
-        let host = SSHHostInfo(user: "wesm", hostname: "build-box", port: 2222)
+        let host = SSHHostInfo(user: "dev", hostname: "build-box", port: 2222)
         let sshArguments = [
             "-F", "/dev/null",
             "-o", "SetEnv=GHOSTHUB_TMUX_PROFILE=fleet",
@@ -226,7 +226,7 @@ struct TmuxBinaryResolverTests {
     @Test("SSH stderr is preserved for native recovery classification")
     func reportsRemoteSSHFailure() async {
         let host = SSHHostInfo(
-            user: "wesm", hostname: "untrusted-host", port: nil
+            user: "dev", hostname: "untrusted-host", port: nil
         )
         let resolver = TmuxBinaryResolver(
             remoteProcessRunner: { _, _, _ in
@@ -252,7 +252,7 @@ struct TmuxBinaryResolverTests {
     @Test("protected POSIX probe uses exact socket and session targets")
     func probesProtectedPOSIXSession() async throws {
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "build-box",
             port: nil
         )
@@ -281,7 +281,7 @@ struct TmuxBinaryResolverTests {
     @Test("exact probe recognizes an absent session")
     func probesAbsentSession() async throws {
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "build-box",
             port: nil
         )
@@ -306,7 +306,7 @@ struct TmuxBinaryResolverTests {
     @Test("exact probe rejects an unsupported tmux version")
     func exactProbeRejectsOldVersion() async {
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "build-box",
             port: nil
         )
@@ -334,7 +334,7 @@ struct TmuxBinaryResolverTests {
     @Test("exact probe does not treat generic tmux failure as absence")
     func exactProbePreservesGenericFailure() async {
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "build-box",
             port: nil
         )
@@ -358,7 +358,7 @@ struct TmuxBinaryResolverTests {
     @Test("protected Windows probe uses exact socket and session targets")
     func probesProtectedWindowsSession() async throws {
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "arm-builder",
             port: nil,
             platform: .windows
@@ -397,7 +397,7 @@ struct TmuxBinaryResolverTests {
     @Test("Windows resolution discovers the psmux tmux alias")
     func resolvesWindowsPsmuxPath() async throws {
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "arm-builder",
             port: 2222,
             platform: .windows
@@ -411,7 +411,7 @@ struct TmuxBinaryResolverTests {
                 return (
                     status: 0,
                     stdout:
-                    #"C:\Users\wesm\scoop\apps\psmux\current\tmux.exe"#
+                    #"C:\Users\dev\scoop\apps\psmux\current\tmux.exe"#
                         + "\ntmux 3.3.7\n",
                     stderr: ""
                 )
@@ -420,14 +420,14 @@ struct TmuxBinaryResolverTests {
 
         #expect(
             try await resolver.resolveTmuxPath(on: host).get()
-                == #"C:\Users\wesm\scoop\apps\psmux\current\tmux.exe"#
+                == #"C:\Users\dev\scoop\apps\psmux\current\tmux.exe"#
         )
     }
 
     @Test("Windows remote commands bypass POSIX login shells")
     func encodesWindowsRemoteCommand() throws {
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "arm-builder",
             port: nil,
             platform: .windows
@@ -495,7 +495,7 @@ struct TmuxBinaryResolverTests {
     @Test("remote discovery uses the configured SSH host")
     func discoversRemoteSessions() async throws {
         let host = SSHHostInfo(
-            user: "wesm", hostname: "build-box", port: 2222
+            user: "dev", hostname: "build-box", port: 2222
         )
         let resolver = TmuxBinaryResolver(
             remoteProcessRunner: { received, _, command in
@@ -531,7 +531,7 @@ struct TmuxBinaryResolverTests {
     @Test("Windows discovery uses psmux formatted session output")
     func discoversWindowsPsmuxSessions() async throws {
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "arm-builder",
             port: nil,
             platform: .windows
@@ -605,7 +605,7 @@ struct TmuxBinaryResolverTests {
         )
 
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "build-box",
             port: nil
         )
@@ -634,7 +634,7 @@ struct TmuxBinaryResolverTests {
     @Test("a reachable default server error is not confirmed absence")
     func defaultServerErrorIsNotAbsence() async {
         let host = SSHHostInfo(
-            user: "wesm",
+            user: "dev",
             hostname: "build-box",
             port: nil
         )
@@ -781,9 +781,12 @@ struct TmuxBinaryResolverTests {
         )
         defer { try? FileManager.default.removeItem(at: directory) }
         let shell = directory.appendingPathComponent("hanging-shell")
-        try "#!/bin/sh\nexec /bin/sleep 10\n".write(
-            to: shell, atomically: true, encoding: .utf8
-        )
+        let ready = directory.appendingPathComponent("ready")
+        try """
+        #!/bin/sh
+        : > \(shellQuotedCommandArgument(ready.path))
+        exec /bin/sleep 10
+        """.write(to: shell, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: shell.path
         )
@@ -794,9 +797,15 @@ struct TmuxBinaryResolverTests {
         )
         let task = Task.detached { resolver.resolveTmuxPath() }
         let started = Date()
-        // The blocking probe can occupy the only cooperative worker. Send
-        // cancellation from outside that pool so it cannot wait for timeout.
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(50)) {
+        // Wait for the real child without sharing the probe's worker pool
+        // or relying on a dispatch timer to fire before the process deadline.
+        Thread.detachNewThread {
+            while !FileManager.default.fileExists(atPath: ready.path) {
+                guard Date().timeIntervalSince(started) < processTimeout else {
+                    return
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
             task.cancel()
         }
 
