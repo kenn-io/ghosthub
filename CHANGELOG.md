@@ -5,6 +5,8 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-20
+
 Arrange hosts in the order you want, find moved project folders, and open
 registered directories without getting stuck. This update also makes more tmux
 sessions visible and adds local clipboard image paste.
@@ -468,7 +470,8 @@ local or remote hosts.
   automatically after lost connections, and navigate projects and worktrees
   managed by kwt.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/kenn-io/ghosthub/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/kenn-io/ghosthub/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/kenn-io/ghosthub/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/kenn-io/ghosthub/compare/v0.9.0...v0.10.0
