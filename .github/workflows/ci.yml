@@ -14,28 +14,8 @@ concurrency:
 
 jobs:
   macos-arm64:
-    name: macOS (Apple Silicon, ${{ matrix.lane }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include: >-
-          ${{ fromJSON(
-            github.repository == 'kenn-io/ghosthub' &&
-            github.event_name == 'pull_request' &&
-            github.event.pull_request.head.repo.full_name == github.repository &&
-            github.event.pull_request.base.repo.full_name == github.repository &&
-            vars.GHOSTHUB_CI_RUNNER_MODE == 'parallel' &&
-            '[{"lane":"hosted","runner":"macos-26","advisory":false},{"lane":"self-hosted","runner":"kenn-macos-arm64-public","advisory":true}]' ||
-            github.repository == 'kenn-io/ghosthub' &&
-            github.event_name == 'pull_request' &&
-            github.event.pull_request.head.repo.full_name == github.repository &&
-            github.event.pull_request.base.repo.full_name == github.repository &&
-            vars.GHOSTHUB_CI_RUNNER_MODE == 'self-hosted' &&
-            '[{"lane":"self-hosted","runner":"kenn-macos-arm64-public","advisory":false}]' ||
-            '[{"lane":"hosted","runner":"macos-26","advisory":false}]'
-          ) }}
-    runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ matrix.advisory }}
+    name: macOS (Apple Silicon, hosted)
+    runs-on: macos-26
     timeout-minutes: 90
     env:
       # The bootstrap default is intentionally arm64 for developer Macs.
@@ -43,6 +23,7 @@ jobs:
       LIBGHOSTTY_XCFRAMEWORK_TARGET: native
       GHOSTHUB_GUI_TEST_FILTER: >-
         Clipboard|Paste|TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|CmdVWithoutPaneSinkStaysLocal
+      # These five tests require an active key window and remain local-only.
       GHOSTHUB_WINDOW_SERVER_TEST_FILTER: >-
         TerminalYieldsKeyboardFocusWhenSheetIsAttached|ApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce|PasteboardTmuxPaneInputSinkReceivesPasteOnCmdV|CmdVWithoutPaneSinkStaysLocal
 
@@ -68,9 +49,7 @@ jobs:
           # Ghosthub intentionally follows the account shell from getpwuid,
           # just like a normal terminal. Hosted runner accounts still default
           # to bash, while supported macOS user accounts default to zsh.
-          if [[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]]; then
-            sudo chsh -s /bin/zsh "$USER"
-          fi
+          sudo chsh -s /bin/zsh "$USER"
           user_shell="$(dscl . -read "/Users/$USER" UserShell | awk '{print $2}')"
           if [[ "$user_shell" != "/bin/zsh" ]]; then
             echo "Expected /bin/zsh as the test account shell; found $user_shell." >&2
@@ -117,7 +96,6 @@ jobs:
           chmod 700 "$state_root" "$foundation_home" "$foundation_home/Library" \
             "$foundation_home/Library/Caches" "$foundation_tmp"
           {
-            echo "GHOSTHUB_CI_STATE_ROOT=$state_root"
             echo "CFFIXED_USER_HOME=$foundation_home"
             echo "TMPDIR=$foundation_tmp"
           } >> "$GITHUB_ENV"
@@ -188,26 +166,12 @@ jobs:
         run: |
           gui_test_log="$RUNNER_TEMP/gui-tests.log"
           : > "$gui_test_log"
-          test_workers=2
-          if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
-            test_workers=8
-          fi
-
-          test_arguments=(
-            swift test --skip-build --disable-swift-testing
-            --filter GhosthubTerminalSmokeTests
-            --skip "$GHOSTHUB_GUI_TEST_FILTER"
-            --skip TerminalSurfaceViewInputTests/testInputLatencyBenchmark
-            --parallel --num-workers "$test_workers"
-          )
-          if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
-            test_arguments+=(
-              --skip DefaultLibghosttyShellIntegrationLoadsUserZshrc
-            )
-          fi
-
-          sh tools/run_swift_tests.sh "${test_arguments[@]}" \
-            2>&1 | tee -a "$gui_test_log"
+          sh tools/run_swift_tests.sh \
+            swift test --skip-build --disable-swift-testing \
+            --filter GhosthubTerminalSmokeTests \
+            --skip "$GHOSTHUB_GUI_TEST_FILTER" \
+            --skip TerminalSurfaceViewInputTests/testInputLatencyBenchmark \
+            --parallel --num-workers 2 2>&1 | tee -a "$gui_test_log"
 
       - name: Run serialized GUI terminal smoke tests
         shell: bash
@@ -217,12 +181,6 @@ jobs:
             --filter "$GHOSTHUB_GUI_TEST_FILTER" \
             --skip "$GHOSTHUB_WINDOW_SERVER_TEST_FILTER" \
             --no-parallel 2>&1 | tee -a "$RUNNER_TEMP/gui-tests.log"
-
-      - name: Run trusted serialized GUI terminal smoke tests
-        if: ${{ matrix.lane == 'self-hosted' }}
-        uses: kenn-io/ghosthub/.github/actions/run-gui-terminal-tests@c346e648437b3de0195769fe9d50204aa6974929
-        with:
-          filter: ${{ env.GHOSTHUB_WINDOW_SERVER_TEST_FILTER }}
 
       - name: Verify terminal smoke coverage
         shell: bash
@@ -248,29 +206,3 @@ jobs:
 
       - name: Run essential kwt and tmux workflows
         run: make test-essential-workflows
-
-      - name: Stop Xcode background services
-        if: ${{ always() && runner.environment == 'self-hosted' }}
-        shell: bash
-        run: |
-          uid="$(/usr/bin/id -u)"
-          for label in \
-            com.apple.CoreSimulator.SimLaunchHost-arm64 \
-            com.apple.CoreSimulator.SimLaunchHost-x86 \
-            com.apple.CoreSimulator.SimulatorTrampoline \
-            com.apple.CoreSimulator.CoreSimulatorService \
-            com.apple.CoreDevice.CoreDeviceService; do
-            target="user/$uid/$label"
-            if /bin/launchctl print "$target" >/dev/null 2>&1; then
-              /bin/launchctl bootout "$target" ||
-                ! /bin/launchctl print "$target" >/dev/null 2>&1
-            fi
-          done
-
-      - name: Remove isolated macOS test state
-        if: ${{ always() && runner.environment == 'self-hosted' }}
-        shell: bash
-        run: |
-          case "${GHOSTHUB_CI_STATE_ROOT:-}" in
-            /tmp/ghosthub-ci.*) rm -rf -- "$GHOSTHUB_CI_STATE_ROOT" ;;
-          esac

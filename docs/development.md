@@ -106,34 +106,16 @@ not read or modify the developer account's SSH configuration or kwt daemon.
 
 ## Apple Silicon macOS toolchain
 
-Pull requests invoke the `main`-pinned `.github/workflows/ci.yml`. The
-`GHOSTHUB_CI_RUNNER_MODE` repository variable selects the validation path for
-canonical same-repository pull requests: `parallel` runs required hosted
-validation beside advisory self-hosted validation, `self-hosted` runs required
-self-hosted validation, and `hosted` runs required hosted validation. An unset
-or invalid value falls back to hosted validation. Canonical `main` pushes, fork
-pull requests, and noncanonical repository copies always run on GitHub's hosted
-`macos-26` Apple Silicon image, independent of the selected mode.
+Pull requests invoke the `main`-pinned `.github/workflows/ci.yml`. This workflow runs on GitHub's
+hosted `macos-26` Apple Silicon image, including `main` pushes, fork pull requests, and repository
+copies. The hosted job keeps the check name `macOS (Apple Silicon, hosted)`.
 
-The managed lane requires complete WindowServer GUI coverage. Hosted runners
-explicitly exclude the five terminal smoke tests that require an active key
-window instead of invoking them and accepting a runtime skip; the remaining
-portable terminal and AppKit coverage continues to run there. The self-hosted
-service account excludes the account-login-shell test, which continues to run
-hosted. Both lanes reject every runtime skip among the tests selected for that
-runner. Running hosted validation on every `main` push keeps that path
-continuously usable as the fallback when self-hosted validation is preferred
-for cost. Both lanes select a supported Xcode installation and the exact Zig
-toolchain required by the pinned Ghostty source, then run their complete
-available build and test gates.
-
-The self-hosted GUI tests use a repository-relative action from the same
-reviewed `main` commit as the reusable workflow. The pull-request checkout
-supplies the application and tests, but it cannot replace the trusted GUI
-launcher. A pull request that changes this action therefore cannot exercise
-its own launcher change. Merge it through hosted validation, then use a
-follow-up same-repository pull request to exercise the reviewed action from
-`main`. Fork pull requests never enter this path.
+Hosted CI explicitly excludes the five terminal smoke tests that require an active key window. With
+the self-hosted macOS lane retired, these tests remain available locally through `make swift-test`;
+CI does not cover them. The remaining portable terminal and AppKit coverage, including the
+account-login-shell test, continues to run hosted. CI rejects every runtime skip among its selected
+terminal smoke tests. It selects a supported Xcode installation and the exact Zig toolchain required
+by the pinned Ghostty source, then runs the existing build and test gates.
 
 Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target.
 Local bootstrap checks every architecture required by the running Zig
@@ -144,9 +126,8 @@ selected developer directory and the caller's environment remain unchanged.
 If no compatible SDK is installed, bootstrap stops with the searched locations
 and the supported Xcode baseline instead of failing later with linker errors.
 
-CI builds libghostty with `LIBGHOSTTY_XCFRAMEWORK_TARGET=native`, producing the
-arm64 slice required by both runner paths. The project default remains
-`aarch64` for developer Macs.
+CI builds libghostty with `LIBGHOSTTY_XCFRAMEWORK_TARGET=native`, producing the arm64 slice required
+by the hosted runner. The project default remains `aarch64` for developer Macs.
 
 The separate macOS compatibility workflow builds the unsigned release bundle
 on GitHub's Apple Silicon `macos-15` image with Xcode 26.0.1. It verifies the
