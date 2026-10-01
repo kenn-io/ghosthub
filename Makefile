@@ -25,6 +25,9 @@ DEBUG_APP_PATH ?= $(DEBUG_ROOT)/$(GHOSTHUB_APP).app
 RELEASE_APP_PATH ?= $(RELEASE_ROOT)/$(GHOSTHUB_APP).app
 RELEASE_BUNDLE_ID ?= com.ghosthub
 RELEASE_CHANNEL ?= stable
+# Only the release workflow sets this. Other stable bundles carry their git
+# description, which telemetry reports instead of the release version.
+OFFICIAL_RELEASE ?=
 NIGHTLY_SPARKLE_FEED_URL ?=
 NIGHTLY_SPARKLE_PUBLIC_ED_KEY ?=
 NIGHTLY_SOURCE_REVISION ?=
@@ -474,6 +477,10 @@ release-app: ensure-kwt ensure-kwt-variants build-release
 		--kwt-version "$(KWT_VERSION)" \
 		--kwt-source-revision "$(KWT_SOURCE_REVISION)" \
 		--remote-kwt-source-revision "$(KWT_REF)"); \
+	if [[ "$(RELEASE_CHANNEL)" == "stable" && "$(OFFICIAL_RELEASE)" != "1" ]]; then \
+		local_version="$$($(PYTHON) tools/development_version.py --component local)"; \
+		assemble_arguments+=(--development-version "$$local_version"); \
+	fi; \
 	if [[ "$(RELEASE_CHANNEL)" == "nightly" ]]; then \
 		assemble_arguments+=( \
 			--nightly-feed-url "$(NIGHTLY_SPARKLE_FEED_URL)" \

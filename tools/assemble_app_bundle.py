@@ -115,7 +115,7 @@ def resolve_release_metadata(
         return ReleaseMetadata(
             display_name,
             channel,
-            None,
+            development_version,
             STABLE_SPARKLE_FEED_URL,
             STABLE_SPARKLE_PUBLIC_ED_KEY,
             None,

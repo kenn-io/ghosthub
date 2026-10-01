@@ -367,6 +367,7 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
     assert plist["GhosthubKwtVersion"] == "0.1.0"
     assert plist["GhosthubKwtSourceRevision"] == "abc123"
     assert plist["GhosthubReleaseChannel"] == "stable"
+    assert "GhosthubDevelopmentVersion" not in plist
     assert plist["SUFeedURL"] == assemble.STABLE_SPARKLE_FEED_URL
     assert plist["SUPublicEDKey"] == assemble.STABLE_SPARKLE_PUBLIC_ED_KEY
     assert plist["SUEnableAutomaticChecks"] is True
@@ -441,6 +442,23 @@ def test_nightly_info_plist_uses_nightly_update_configuration(tmp_path):
         "latest/download/appcast.xml"
     )
     assert plist["SUPublicEDKey"] == nightly_key
+
+
+def test_local_stable_metadata_keeps_development_version():
+    assemble = load_module()
+
+    metadata = assemble.resolve_release_metadata(
+        channel=assemble.ReleaseChannel.STABLE,
+        display_name="Ghosthub",
+        development_version="0.3.0-72-g3c67741",
+        nightly_feed_url=None,
+        nightly_public_key=None,
+        source_revision=None,
+        build_date=None,
+    )
+
+    assert metadata.development_version == "0.3.0-72-g3c67741"
+    assert metadata.feed_url == assemble.STABLE_SPARKLE_FEED_URL
 
 
 @pytest.mark.parametrize(

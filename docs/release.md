@@ -700,6 +700,12 @@ pinned kwt source. Installation additionally runs the uploaded helper and
 requires its first `version` line to report that exact revision before the
 helper is promoted into the revisioned remote path.
 
+Local stable bundles record their git description in
+`GhosthubDevelopmentVersion`, so the About panel and anonymous usage telemetry
+report a development version such as `X.Y.Z-N-gHASH` instead of the
+`RELEASE_VERSION` value. Only the release workflow sets `OFFICIAL_RELEASE=1`,
+which leaves that key out; do not set it for local builds.
+
 `tools/build_release_dmg.sh` passes kwt overrides to the Makefile only when
 they are nonempty. A clean release therefore retains these pinned defaults
 instead of overriding `KWT_BINARY_PATH` with an empty value.
