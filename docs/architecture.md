@@ -448,8 +448,11 @@ are one interprocess-locked transaction, so simultaneous Ghosthub instances
 share the same identity and only one schedules the event. The claim is
 persisted before networking so an accepted event with a lost response is not
 retried. Event properties are limited to the application name, native-app
-source, version, and build number. Events explicitly disable PostHog
-person-profile processing and GeoIP enrichment. Repository, worktree, host,
+source, version, and build number. The version is the one the About panel
+shows, so only published stable releases report a bare `X.Y.Z`; nightly and
+locally packaged builds report their development version. Events explicitly
+disable PostHog person-profile processing and GeoIP enrichment. Repository,
+worktree, host,
 session, path, command, and terminal data are outside the telemetry contract.
 
 Anonymous usage reporting is enabled by default in packaged releases. Users

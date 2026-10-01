@@ -255,6 +255,7 @@ jobs:
 
       - name: Build signed and notarized DMG
         env:
+          OFFICIAL_RELEASE: "1"
           RELEASE_APP_VERSION: ${{ steps.release.outputs.version }}
           RELEASE_DMG_NAME: ${{ steps.release.outputs.dmg_name }}
           KWT_SOURCE_DIR: ${{ github.workspace }}/.release-inputs/kwt-source

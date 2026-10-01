@@ -480,4 +480,64 @@ struct TelemetryTests {
             )
         )
     }
+
+    @Test("only bundles without a development version report a release version")
+    func liveConfigurationReportsAboutVersion() throws {
+        let releaseBundle = try telemetryTestBundle(info: [
+            "CFBundleIdentifier": "com.ghosthub",
+            "CFBundleShortVersionString": "0.3.0",
+            "CFBundleVersion": "118",
+        ])
+        defer {
+            try? FileManager.default.removeItem(at: releaseBundle.bundleURL)
+        }
+        let localBundle = try telemetryTestBundle(info: [
+            "CFBundleIdentifier": "com.ghosthub",
+            "CFBundleShortVersionString": "0.3.0",
+            "CFBundleVersion": "190",
+            "GhosthubDevelopmentVersion": "0.3.0-72-g3c67741",
+        ])
+        defer {
+            try? FileManager.default.removeItem(at: localBundle.bundleURL)
+        }
+
+        let release = try #require(
+            TelemetryConfiguration.live(
+                bundle: releaseBundle,
+                environment: [:]
+            )
+        )
+        #expect(release.version == "0.3.0")
+        #expect(release.build == "118")
+
+        let local = try #require(
+            TelemetryConfiguration.live(
+                bundle: localBundle,
+                environment: [:]
+            )
+        )
+        #expect(local.version == "0.3.0-72-g3c67741")
+        #expect(local.build == "190")
+    }
+}
+
+private func telemetryTestBundle(info: [String: Any]) throws -> Bundle {
+    let bundleURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "ghosthub-telemetry-\(UUID().uuidString).app"
+        )
+    let contentsURL = bundleURL.appendingPathComponent("Contents")
+    try FileManager.default.createDirectory(
+        at: contentsURL,
+        withIntermediateDirectories: true
+    )
+    try PropertyListSerialization.data(
+        fromPropertyList: info,
+        format: .xml,
+        options: 0
+    ).write(to: contentsURL.appendingPathComponent("Info.plist"))
+    guard let bundle = Bundle(url: bundleURL) else {
+        throw CocoaError(.fileReadUnknown)
+    }
+    return bundle
 }

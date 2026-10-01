@@ -176,7 +176,9 @@ make release-app
 
 The app version comes from `RELEASE_VERSION`; the build number defaults to the
 current commit count. Override them only when deliberately testing alternate
-packaging inputs.
+packaging inputs. Local bundles also record their git description, which the
+About panel and anonymous usage telemetry report in place of the release
+version.
 
 Ghosthub bundles kwt CLI helpers but no daemon. A clean `make release-app`
 builds the pinned local helper and the Darwin/Linux amd64/arm64 remote matrix

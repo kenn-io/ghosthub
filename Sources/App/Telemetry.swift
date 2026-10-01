@@ -29,9 +29,9 @@ struct TelemetryConfiguration: Sendable {
         return TelemetryConfiguration(
             projectToken: postHogProjectToken,
             endpoint: postHogEndpoint,
-            version: bundle.object(
-                forInfoDictionaryKey: "CFBundleShortVersionString"
-            ) as? String ?? "unknown",
+            version: ApplicationVersion.aboutPanelVersion(
+                infoDictionary: bundle.infoDictionary ?? [:]
+            ) ?? "unknown",
             build: bundle.object(
                 forInfoDictionaryKey: "CFBundleVersion"
             ) as? String ?? "unknown"

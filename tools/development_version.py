@@ -22,6 +22,8 @@ UNTAGGED_DESCRIPTION = re.compile(
 class BundleVersions:
     short: str
     display: str
+    # Keeps the commit suffix on a release tag so local builds never pass for one.
+    local: str
 
 
 def bundle_versions_from_git_describe(description: str) -> BundleVersions:
@@ -32,15 +34,17 @@ def bundle_versions_from_git_describe(description: str) -> BundleVersions:
             display = tagged["version"]
         else:
             display = description.removeprefix("v")
-        return BundleVersions(short=tagged["version"], display=display)
+        return BundleVersions(
+            short=tagged["version"],
+            display=display,
+            local=description.removeprefix("v"),
+        )
 
     untagged = UNTAGGED_DESCRIPTION.fullmatch(description)
     if untagged:
         dirty = untagged["dirty"] or ""
-        return BundleVersions(
-            short="0.0.0",
-            display=f"0.0.0-0-g{untagged['revision']}{dirty}",
-        )
+        display = f"0.0.0-0-g{untagged['revision']}{dirty}"
+        return BundleVersions(short="0.0.0", display=display, local=display)
 
     raise ValueError(f"unsupported git description: {description}")
 
@@ -77,7 +81,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--component",
-        choices=("short", "display"),
+        choices=("short", "display", "local"),
         default="display",
     )
     arguments = parser.parse_args()
