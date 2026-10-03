@@ -1,6 +1,7 @@
 ---
 title: Ghosthub engineering
 description: Build, maintain, and release Ghosthub.
+last_edited: "2026-09-20"
 ---
 
 # Ghosthub engineering

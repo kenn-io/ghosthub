@@ -1,5 +1,7 @@
 ---
+title: "Remote hosts"
 description: Configure SSH hosts, trust, authentication, remote helpers, and reconnect behavior.
+last_edited: "2026-09-20"
 icon: lucide/server
 ---
 

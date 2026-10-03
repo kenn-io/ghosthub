@@ -1,3 +1,8 @@
+---
+title: "Web UI prior art: freshell"
+description: "Design rationale from studying freshell and the choices relevant to Ghosthub's multiplexer web UI."
+last_edited: "2026-08-27"
+---
 # Web UI prior art: freshell
 
 Architectural notes from studying [freshell](https://github.com/danshapiro/freshell)

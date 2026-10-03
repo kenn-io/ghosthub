@@ -1,5 +1,7 @@
 ---
+title: "Sessions"
 description: Create, open, preview, and end tmux, Herdr, and Zellij sessions.
+last_edited: "2026-09-20"
 icon: lucide/square-terminal
 ---
 

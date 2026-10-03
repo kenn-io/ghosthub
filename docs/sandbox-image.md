@@ -1,6 +1,7 @@
 ---
 title: Sandbox Image Operations
 description: Build, vet, promote, and maintain Ghosthub's Apple sandbox image
+last_edited: "2026-08-17"
 ---
 
 # Sandbox Image Operations

@@ -85,6 +85,11 @@ layer, as subject to direct iteration.
 
 ## Documentation
 
+Every new Markdown file, except root `README.md` and `AGENTS.md`, must have YAML
+frontmatter with `title`, `description`, and `last_edited`, in that order.
+Update `last_edited` to the body-edit date whenever you change the body of any
+nonexempt Markdown file; preserve it for metadata-only edits.
+
 - Write for the person using or maintaining Ghosthub. Lead with the outcome,
   name who does what, use short sentences, and explain unfamiliar terms.
 - Organize around reader questions. Put purpose and current capabilities

@@ -1,5 +1,7 @@
 ---
+title: "Privacy"
 description: Understand Ghosthub anonymous usage reporting and local state.
+last_edited: "2026-09-20"
 icon: lucide/shield-check
 ---
 

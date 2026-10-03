@@ -1,3 +1,8 @@
+---
+title: "Development"
+description: "Build, launch, format, and test Ghosthub with its pinned tools and isolated fixtures."
+last_edited: "2026-10-01"
+---
 # Development
 
 This document collects the commands and workflows used to develop Ghosthub

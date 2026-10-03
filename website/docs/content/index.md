@@ -1,5 +1,7 @@
 ---
+title: "Ghosthub documentation"
 description: Comprehensive user documentation for Ghosthub.
+last_edited: "2026-09-20"
 icon: lucide/book-open
 ---
 

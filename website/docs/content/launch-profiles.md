@@ -1,5 +1,7 @@
 ---
+title: "Launch profiles"
 description: Save a command to start a new tmux session on a macOS or Linux SSH host.
+last_edited: "2026-09-20"
 icon: lucide/play
 ---
 

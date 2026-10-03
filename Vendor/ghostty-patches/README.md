@@ -1,3 +1,8 @@
+---
+title: "Ghostty Memory Backports"
+description: "Upstream memory fixes backported to Ghosthub's pinned libghostty build and when to remove them."
+last_edited: "2026-09-10"
+---
 # Ghostty Memory Backports
 
 Ghosthub applies these patches in the order declared by `GHOSTTY_BACKPORTS` to

@@ -1,3 +1,8 @@
+---
+title: "Troubleshooting"
+description: "Diagnose libghostty bootstrap, macOS toolchain, and remote session attachment failures."
+last_edited: "2026-09-16"
+---
 # Troubleshooting
 
 Common bootstrap and build failures and how to fix them.

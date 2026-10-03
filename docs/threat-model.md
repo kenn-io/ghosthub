@@ -1,6 +1,7 @@
 ---
 title: Threat Model
 description: Security boundaries and trust assumptions for Ghosthub
+last_edited: "2026-09-06"
 ---
 
 # Threat Model

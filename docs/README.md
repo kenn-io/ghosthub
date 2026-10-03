@@ -1,3 +1,8 @@
+---
+title: "Documentation publishing"
+description: "Choose documentation owners, publish public and engineering guides, and check generated pages."
+last_edited: "2026-09-20"
+---
 # Documentation publishing
 
 Ghosthub has two documentation sites. Public guides help people use the app.

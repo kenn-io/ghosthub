@@ -1,3 +1,8 @@
+---
+title: "Contributing"
+description: "How to report issues and coordinate approved contributions to Ghosthub."
+last_edited: "2026-08-03"
+---
 # Contributing
 
 Ghosthub is free software licensed under the GNU Affero General Public License

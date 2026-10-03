@@ -1,3 +1,8 @@
+---
+title: "Changelog"
+description: "User-facing additions, fixes, and upgrade notes for Ghosthub releases."
+last_edited: "2026-09-20"
+---
 # Changelog
 
 Notable user-facing changes to Ghosthub are recorded here. Internal build,

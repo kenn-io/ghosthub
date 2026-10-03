@@ -1,5 +1,7 @@
 ---
+title: "Terminal configuration"
 description: Configure Ghosthub's libghostty terminal and tmux session themes.
+last_edited: "2026-09-20"
 icon: lucide/settings-2
 ---
 

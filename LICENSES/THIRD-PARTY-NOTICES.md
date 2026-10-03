@@ -1,3 +1,8 @@
+---
+title: "Ghosthub third-party notices"
+description: "License inventory and attribution for components and resources distributed with Ghosthub."
+last_edited: "2026-09-15"
+---
 # Ghosthub third-party notices
 
 The release bundle includes the following source-derived or statically linked

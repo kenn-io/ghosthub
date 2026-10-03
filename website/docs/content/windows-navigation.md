@@ -1,5 +1,7 @@
 ---
+title: "Windows and navigation"
 description: Navigate hosts and sessions with the sidebar, Command Palette, windows, and tabs.
+last_edited: "2026-09-20"
 icon: lucide/panels-top-left
 ---
 

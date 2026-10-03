@@ -1,3 +1,8 @@
+---
+title: "Architecture"
+description: "Ghosthub's product model, process boundaries, session attachment, and state ownership."
+last_edited: "2026-10-01"
+---
 # Architecture
 
 This page is the maintained architecture and product source of truth for

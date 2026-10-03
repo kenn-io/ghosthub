@@ -1,5 +1,7 @@
 ---
+title: "Projects, worktrees, and directories"
 description: Register Git projects or plain directories and open their workspaces.
+last_edited: "2026-09-20"
 icon: lucide/git-branch
 ---
 

@@ -1,3 +1,8 @@
+---
+title: "Sidebar performance"
+description: "Sidebar performance measurements, shipped improvements, regression checks, and remaining investigation."
+last_edited: "2026-09-13"
+---
 # Sidebar performance
 
 Measurements collected September 10–13, 2026. Timings are representative Debug

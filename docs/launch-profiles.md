@@ -1,3 +1,8 @@
+---
+title: "Launch-profile documentation"
+description: "Find the public launch-profile guide and reproduce its screenshot with the deterministic SwiftUI renderer."
+last_edited: "2026-09-20"
+---
 # Launch-profile documentation
 
 The public [Launch profiles guide](https://ghosthub.ai/docs/launch-profiles/)

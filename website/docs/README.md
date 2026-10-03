@@ -1,3 +1,8 @@
+---
+title: "Ghosthub user documentation"
+description: "Locate Ghosthub's public task guides and the publishing, preview, and deployment instructions."
+last_edited: "2026-09-20"
+---
 # Ghosthub user documentation
 
 The Markdown files in `content/` are the public task guides at

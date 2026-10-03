@@ -1,5 +1,7 @@
 ---
+title: "Keyboard shortcuts"
 description: Keyboard navigation and configurable shortcuts in Ghosthub.
+last_edited: "2026-09-20"
 icon: lucide/keyboard
 ---
 

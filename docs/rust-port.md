@@ -1,3 +1,8 @@
+---
+title: "Windows and Linux Rust Port"
+description: "Maintained design and delivery contracts for Ghosthub's native Windows and Linux Rust applications."
+last_edited: "2026-09-17"
+---
 # Windows and Linux Rust Port
 
 This document is the maintained design for native Ghosthub applications on

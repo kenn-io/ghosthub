@@ -1,3 +1,8 @@
+---
+title: "Terminal Sessions"
+description: "Terminal ownership, multiplexer attachment, shell startup, reconnect, and session lifetime rules."
+last_edited: "2026-09-17"
+---
 # Terminal Sessions
 
 Terminal behavior is the highest-risk part of Ghosthub. The app must behave

@@ -1,3 +1,8 @@
+---
+title: "Ghosthub Release Playbook"
+description: "Build, sign, notarize, and publish reproducible Ghosthub releases and nightly updates."
+last_edited: "2026-10-01"
+---
 # Ghosthub Release Playbook
 
 Ghosthub releases are built from source in `kenn-io/ghosthub` and published to

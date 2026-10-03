@@ -1,3 +1,8 @@
+---
+title: "Internal Quick Start"
+description: "Set up the macOS toolchain, bootstrap libghostty, and build and check Ghosthub."
+last_edited: "2026-09-17"
+---
 # Internal Quick Start
 
 These instructions are for Kenn engineers and approved contributors. Ghosthub

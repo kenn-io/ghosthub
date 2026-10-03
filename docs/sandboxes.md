@@ -1,6 +1,7 @@
 ---
 title: Worktree Sandboxes
 description: Provider, lifecycle, identity, terminal, and security contracts for worktree-scoped sandboxes
+last_edited: "2026-08-15"
 ---
 
 # Worktree Sandboxes

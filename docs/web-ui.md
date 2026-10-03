@@ -1,6 +1,7 @@
 ---
 title: Web UI
 description: Locked v1 contract for the loopback web UI served by the Rust application
+last_edited: "2026-08-27"
 ---
 
 # Web UI

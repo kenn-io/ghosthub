@@ -1,3 +1,8 @@
+---
+title: "ghosthub.ai"
+description: "Build and deploy ghosthub.ai, publish user guides, and capture synthetic product screenshots."
+last_edited: "2026-09-20"
+---
 # ghosthub.ai
 
 The website introduces Ghosthub and publishes its user guides. It is an Astro

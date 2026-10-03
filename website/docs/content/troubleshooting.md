@@ -1,5 +1,7 @@
 ---
+title: "Troubleshooting"
 description: Diagnose common Ghosthub installation, SSH, multiplexer, and worktree problems.
+last_edited: "2026-09-20"
 icon: lucide/life-buoy
 ---
 

@@ -1,5 +1,7 @@
 ---
+title: "Getting started"
 description: Install Ghosthub and attach to a local tmux, Herdr, or Zellij session.
+last_edited: "2026-09-20"
 icon: lucide/rocket
 ---
 
