@@ -166,6 +166,8 @@ layer, as subject to direct iteration.
   release-note entries clearly identify Rust-port work.
 - The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
   or open pull requests when the user explicitly asks.
+- Pull requests must have a user-facing benefit or improve the developer
+  experience, and the body must say which one.
 - The public repository does not accept unsolicited pull requests. Direct bug
   reports and feature requests to GitHub issues. Prospective code contributors
   must coordinate privately with Kenn Software and sign the CLA before their
