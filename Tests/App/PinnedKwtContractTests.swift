@@ -470,6 +470,82 @@ struct PinnedKwtContractTests {
         #expect(finalInventory.projects.isEmpty)
     }
 
+    @Test("bare registered projects retain their linked worktree inventory")
+    func bareProjectInventory() async throws {
+        guard ProcessInfo.processInfo.environment[
+            "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
+        ] == "1" else { return }
+        let binary = try #require(ProcessInfo.processInfo.environment[
+            "GHOSTHUB_KWT_CONTRACT_BINARY"
+        ])
+        let fixture = try TempDirectoryFixture(shortPath: true)
+        let kwtHome = try fixture.createSubdirectory("kwt-home")
+        let repository = try fixture.createSubdirectory("widget")
+        let linked = fixture.childURL("topic")
+        let environment = ["KWT_HOME": kwtHome.path]
+        let runLoginShell: KwtInventoryClient.LocalRunner = { shell, command in
+            AccountCommandRunner.runLoginShell(
+                shell: shell, command: command, timeout: 45,
+                environmentOverrides: environment
+            )
+        }
+        defer {
+            _ = AccountCommandRunner.runProcess(
+                executable: binary, arguments: ["daemon", "stop"], timeout: 10,
+                environmentOverrides: environment
+            )
+        }
+
+        try initializeRepository(repository)
+        let registry = KwtProjectRegistryClient(
+            localRunner: { runLoginShell("/bin/zsh", $0) },
+            localBinaryPath: binary
+        )
+        let registered = try await registry.register(
+            projectPath: repository.path, on: .local
+        )
+        for arguments in [
+            ["worktree", "add", "--quiet", "-b", "topic", linked.path],
+            ["config", "core.bare", "true"],
+        ] {
+            let result = AccountCommandRunner.runProcess(
+                executable: "/usr/bin/git",
+                arguments: ["-C", repository.path] + arguments, timeout: 10
+            )
+            try #require(result.status == 0, Comment(rawValue: result.stderr))
+        }
+
+        let inventoryClient = KwtInventoryClient(
+            localRunner: runLoginShell, localBinaryPath: binary,
+            loginShellProvider: { "/bin/zsh" }
+        )
+        let inventory = try await inventoryClient.load(from: .local)
+        let project = try #require(inventory.projects.first)
+        #expect(project.warning == nil)
+        #expect(project.isComplete)
+        #expect(project.project.repository == registered.repository)
+        try #require(project.worktrees.count == 1)
+        let worktree = try #require(project.worktrees.first)
+        let resolvedPath = URL(fileURLWithPath: worktree.path).resolvingSymlinksInPath().path
+        #expect(resolvedPath == linked.resolvingSymlinksInPath().path)
+        #expect(worktree.branch == "topic")
+        #expect(!worktree.isMain)
+        #expect(worktree.repository == registered.repository)
+        #expect(!worktree.sessionName.isEmpty)
+        #expect(worktree.generation != nil)
+
+        let standalone = runLoginShell(
+            "/bin/zsh",
+            "cd \(shellQuotedCommandArgument(repository.path)) && "
+                + "\(shellQuotedCommandArgument(binary)) list --json"
+        )
+        try #require(standalone.status == 0, Comment(rawValue: standalone.stdout))
+        let records = try JSONDecoder().decode(
+            [KwtWorktreeRecord].self, from: Data(standalone.stdout.utf8)
+        )
+        #expect(records == project.worktrees)
+    }
+
     @Test("exact helper inspects one generation-fenced worktree")
     func worktreeChanges() async throws {
         guard ProcessInfo.processInfo.environment[

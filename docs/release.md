@@ -140,7 +140,9 @@ authority, and compare-and-swaps the registration. Missing and concurrently
 changed registrations retain their structured error contracts.
 The pinned-helper acceptance suite exercises registration, daemon-backed
 inventory, missing-checkout removal, and another inventory request against an
-isolated `KWT_HOME`.
+isolated `KWT_HOME`. It also verifies that a registered project whose `.git`
+directory is marked bare still lists its linked worktrees through both
+Ghosthub and standalone `kwt list --json`, without requiring a main checkout.
 The pinned implementation removes `KWT_GITHUB_TOKEN`, `KWT_FLEET_TOKEN`, and
 the configured fleet token variable from tmux subprocess and session
 environments before imported workspace panes start, while preserving

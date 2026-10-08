@@ -5,6 +5,13 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-07
+
+### Fixed
+
+- Projects marked as bare Git repositories now show their linked worktrees
+  without a Workspace Inventory Issue. They no longer need a main checkout.
+
 ## [0.11.0] - 2026-09-20
 
 Arrange hosts in the order you want, find moved project folders, and open
