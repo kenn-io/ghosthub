@@ -5,6 +5,13 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-07
+
+### Fixed
+
+- Projects marked as bare Git repositories now show their linked worktrees
+  without a Workspace Inventory Issue. They no longer need a main checkout.
+
 ## [0.11.0] - 2026-09-20
 
 Arrange hosts in the order you want, find moved project folders, and open
@@ -470,7 +477,8 @@ local or remote hosts.
   automatically after lost connections, and navigate projects and worktrees
   managed by kwt.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/kenn-io/ghosthub/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kenn-io/ghosthub/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/kenn-io/ghosthub/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/kenn-io/ghosthub/compare/v0.10.0...v0.10.1
