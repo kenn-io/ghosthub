@@ -225,7 +225,13 @@ The scheduled and manually dispatchable maintenance workflow rescans the
 pinned digest with a current vulnerability database, verifies its report,
 dispositions, aliases, and attestations, and reports relevant Ubuntu refresh
 availability. It has no package or repository write authority and fails
-visibly when operator action is required. The complete developer procedure is
+visibly when operator action is required. Merging refreshed build inputs
+publishes a candidate; production still uses the old digest until the separate
+vetting, pin, and promotion steps finish. During that interval, maintenance
+rejects the old image because its attested inputs differ from `main`. A
+candidate can acquire new vulnerability findings while it awaits promotion;
+refresh the image inputs again if a fixed package is available.
+The complete developer procedure is
 [Sandbox Image Operations](sandbox-image.md).
 
 ## Protected signing environment
