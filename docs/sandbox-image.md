@@ -209,6 +209,10 @@ before creation. A failure still writes
 `images/sandbox/reports/sha256-<digest>.json` for diagnosis and returns
 nonzero.
 
+Host-side fixture commands ignore inherited Git variables and global or system
+Git configuration. Repository discovery stops at the fixture directory, so a
+missing fixture cannot make a command use the enclosing Ghosthub checkout.
+
 Vetting repeats the Git metadata write and move probes after Stop/Start. A
 provider version whose read-only overlays do not survive restart therefore
 cannot produce a passing report.

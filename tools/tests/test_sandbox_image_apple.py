@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -14,7 +16,7 @@ from sandbox_image.apple import (
     cleanup_fixture,
     require_supported_apple_provider,
 )
-from sandbox_image.process import CompletedCommand
+from sandbox_image.process import CommandError, CommandRunner, CompletedCommand
 
 DIGEST = "sha256:" + "b" * 64
 
@@ -257,26 +259,78 @@ def test_vetting_rechecks_mount_protection_after_restart(
 def test_git_contract_requires_host_visible_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = {
-        "standard": tmp_path / "standard",
-        "linked": tmp_path / "linked",
-    }
-    responses: dict[tuple[str, ...], CompletedCommand] = {
-        ("git", "-C", str(repository), "log", "-1", "--format=%s"): response(
-            ("git", "-C", str(repository), "log", "-1", "--format=%s"),
-            "Initialize fixture\n",
-        )
-        for repository in paths.values()
-    }
-    harness = AppleVettingHarness(tmp_path, ResponseRunner(responses))
+    harness = AppleVettingHarness(tmp_path, CommandRunner())
+    _mounts, paths = harness._prepare_git_fixtures(tmp_path)
     fixture = ManagedFixture("ghosthub-vet-" + "b" * 12 + "-abc123", DIGEST)
     monkeypatch.setattr(harness, "_exec", lambda *_args, **_kwargs: "")
-    monkeypatch.setattr(
-        harness, "_assert_mount_protection", lambda *_args, **_kwargs: None
-    )
-
     with pytest.raises(ValueError, match="not visible on the host"):
         harness._assert_git_contract(fixture, paths, [])
+
+
+@pytest.mark.parametrize("redirect_repository", [False, True])
+def test_git_fixtures_ignore_host_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redirect_repository: bool
+) -> None:
+    for key in tuple(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key)
+    # Exercise default global config lookup without using the account's files.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    blank_config = tmp_path / "blank.gitconfig"
+    blank_config.touch()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(blank_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    clean_environment = os.environ.copy()
+    parent = tmp_path / "parent"
+    subprocess.run(
+        ["git", "init", "--initial-branch", "main", str(parent)],
+        check=True,
+        capture_output=True,
+        env=clean_environment,
+    )
+    parent_config = parent / ".git/config"
+    original_config = parent_config.read_bytes()
+    hooks = tmp_path / "host-hooks"
+    hooks.mkdir()
+    marker = hooks / "invoked"
+    hook = hooks / "pre-commit"
+    hook.write_text('#!/bin/sh\ntouch "$(dirname "$0")/invoked"\nexit 1\n')
+    hook.chmod(0o700)
+    host_config = tmp_path / ".gitconfig"
+    host_config.write_text(f'[core]\n\thooksPath = "{hooks}"\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(host_config))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(host_config))
+    monkeypatch.delenv("GIT_CONFIG_NOSYSTEM")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(hooks))
+    if redirect_repository:
+        monkeypatch.setenv("GIT_DIR", str(parent / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(parent))
+        monkeypatch.setenv("GIT_INDEX_FILE", str(parent / ".git/index"))
+    fixture_root = parent / ".dist/vet"
+    fixture_root.mkdir(parents=True)
+
+    harness = AppleVettingHarness(parent, CommandRunner())
+    _mounts, paths = harness._prepare_git_fixtures(fixture_root)
+
+    for name in ("standard", "linked"):
+        result = subprocess.run(
+            ["git", "-C", str(paths[name]), "log", "-1", "--format=%s"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=clean_environment,
+        )
+        assert result.stdout.strip() == "Initialize fixture"
+    assert parent_config.read_bytes() == original_config
+    assert not marker.exists()
+    assert not (parent / ".git/index").exists()
+
+    missing = fixture_root / "missing"
+    missing.mkdir()
+    with pytest.raises(CommandError, match="not a git repository"):
+        harness._git(fixture_root, "-C", str(missing), "rev-parse", "--show-toplevel")
 
 
 def test_clean_refuses_unrecorded_prefixed_resource(tmp_path: Path) -> None:

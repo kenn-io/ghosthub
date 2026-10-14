@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import shlex
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import CheckResult, ImageReference
-from .process import Runner
+from .process import CompletedCommand, Runner
 
 PURPOSE_LABEL = "io.ghosthub.purpose"
 DIGEST_LABEL = "io.ghosthub.digest"
@@ -327,50 +328,73 @@ class AppleVettingHarness:
             raise ValueError("Apple image version is invalid")
         return AppleImageIdentity(digest, source_commit, image_version)
 
+    def _git(self, fixture_root: Path, *arguments: str) -> CompletedCommand:
+        command = ["env"]
+        for key in sorted(os.environ):
+            if key.startswith("GIT_"):
+                command.extend(("-u", key))
+        command.extend(
+            (
+                f"GIT_CONFIG_GLOBAL={fixture_root / 'gitconfig'}",
+                "GIT_CONFIG_NOSYSTEM=1",
+                # Keep repositories beside their cleanup record without discovering
+                # the checkout above them if a fixture repository is missing.
+                f"GIT_CEILING_DIRECTORIES={fixture_root.resolve()}",
+                "git",
+                *arguments,
+            )
+        )
+        return self.runner.run(command)
+
     def _prepare_git_fixtures(
         self, fixture_root: Path
     ) -> tuple[tuple[str, ...], dict[str, Path]]:
+        (fixture_root / "gitconfig").write_text("", encoding="utf-8")
         standard = fixture_root / "standard"
         linked_main = fixture_root / "linked-main"
         linked = fixture_root / "linked"
         for repository in (standard, linked_main):
-            self.runner.run(
-                ("git", "init", "--initial-branch", "main", str(repository))
-            )
+            self._git(fixture_root, "init", "--initial-branch", "main", str(repository))
             marker = repository / "README.md"
             marker.write_text("sandbox image vet\n", encoding="utf-8")
-            self.runner.run(("git", "-C", str(repository), "add", "README.md"))
-            self.runner.run(
-                ("git", "-C", str(repository), "config", "user.name", "Ghosthub Vet")
-            )
-            self.runner.run(
-                (
-                    "git",
-                    "-C",
-                    str(repository),
-                    "config",
-                    "user.email",
-                    "sandbox-vet@ghosthub.invalid",
-                )
-            )
-            self.runner.run(
-                ("git", "-C", str(repository), "commit", "-m", "Initialize fixture")
-            )
-        self.runner.run(
-            (
-                "git",
+            self._git(fixture_root, "-C", str(repository), "add", "README.md")
+            self._git(
+                fixture_root,
                 "-C",
-                str(linked_main),
-                "worktree",
-                "add",
-                "-b",
-                "linked",
-                str(linked),
+                str(repository),
+                "config",
+                "user.name",
+                "Ghosthub Vet",
             )
+            self._git(
+                fixture_root,
+                "-C",
+                str(repository),
+                "config",
+                "user.email",
+                "sandbox-vet@ghosthub.invalid",
+            )
+            self._git(
+                fixture_root,
+                "-C",
+                str(repository),
+                "commit",
+                "-m",
+                "Initialize fixture",
+            )
+        self._git(
+            fixture_root,
+            "-C",
+            str(linked_main),
+            "worktree",
+            "add",
+            "-b",
+            "linked",
+            str(linked),
         )
         common = linked_main / ".git"
-        gitdir_output = self.runner.run(
-            ("git", "-C", str(linked), "rev-parse", "--absolute-git-dir")
+        gitdir_output = self._git(
+            fixture_root, "-C", str(linked), "rev-parse", "--absolute-git-dir"
         ).stdout.strip()
         linked_gitdir = Path(gitdir_output)
         paths = {
@@ -434,8 +458,13 @@ class AppleVettingHarness:
                 f"git commit -m {shlex.quote(commit_message)} >/dev/null"
             )
             self._exec(fixture, script)
-            subject = self.runner.run(
-                ("git", "-C", str(repository), "log", "-1", "--format=%s")
+            subject = self._git(
+                paths["standard"].parent,
+                "-C",
+                str(repository),
+                "log",
+                "-1",
+                "--format=%s",
             ).stdout.strip()
             if subject != commit_message:
                 raise ValueError(f"{name} sandbox commit was not visible on the host")
