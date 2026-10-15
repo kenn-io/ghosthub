@@ -829,10 +829,20 @@ fn attach_websocket_runs_a_live_shell() {
 /// appears — conhost stalls the child until the viewer answers, while Unix
 /// shells never emit one. Proves the shell is live and echoing.
 fn await_echo(socket: &mut WebSocket<TcpStream>, marker: &str) {
-    let probe = format!("echo {marker}\r");
+    // Split the marker so terminal echo of the command cannot satisfy the
+    // wait before the shell actually executes it. Test markers are ASCII.
+    let (left, right) = marker.split_at(marker.len() / 2);
+    #[cfg(windows)]
+    let probe = format!("Write-Output ('{left}' + '{right}')\r");
+    #[cfg(not(windows))]
+    let probe = format!("printf '%s%s\\n' '{left}' '{right}'\r");
     socket
         .send(Message::Binary(probe.into_bytes().into()))
         .expect("send echo probe");
+    await_output(socket, marker);
+}
+
+fn await_output(socket: &mut WebSocket<TcpStream>, marker: &str) {
     let deadline = Instant::now() + Duration::from_mins(1);
     let mut collected = Vec::new();
     let mut answered = false;
@@ -896,8 +906,22 @@ fn attach_accepts_chunked_input_beyond_the_message_limit() {
     // the startup cursor query is answered stalls the console host itself.
     await_echo(&mut socket, "chunk-ready");
 
-    // 300 KiB of input across two frames, each under the 256 KiB message
-    // limit, followed by a line cancel so the shell never executes it.
+    // A raw POSIX reader consumes all 300 KiB instead of relying on the
+    // interactive shell's line limit and Ctrl-C input flushing behavior.
+    #[cfg(not(windows))]
+    {
+        socket
+            .send(Message::Binary(
+                b"stty raw -echo; printf 'reader-%s\\n' ready; \
+                  head -c 307200 >/dev/null; printf 'chunk-%s\\n' complete; exit\r"
+                    .to_vec()
+                    .into(),
+            ))
+            .expect("start raw input reader");
+        await_output(&mut socket, "reader-ready");
+    }
+
+    // Each frame stays under the 256 KiB message limit.
     let chunk = vec![b'a'; 150 * 1024];
     socket
         .send(Message::Binary(chunk.clone().into()))
@@ -905,12 +929,17 @@ fn attach_accepts_chunked_input_beyond_the_message_limit() {
     socket
         .send(Message::Binary(chunk.into()))
         .expect("second chunk");
-    socket
-        .send(Message::Binary(vec![0x03].into()))
-        .expect("cancel the pending line");
-    socket
-        .send(Message::Binary(b"exit\r".to_vec().into()))
-        .expect("send exit");
+    #[cfg(windows)]
+    {
+        socket
+            .send(Message::Binary(vec![0x03].into()))
+            .expect("cancel the pending line");
+        socket
+            .send(Message::Binary(b"exit\r".to_vec().into()))
+            .expect("send exit");
+    }
+    #[cfg(not(windows))]
+    await_output(&mut socket, "chunk-complete");
 
     let deadline = Instant::now() + Duration::from_mins(1);
     loop {
@@ -1281,7 +1310,10 @@ fn a_stalled_reader_releases_the_attachment_lock() {
     // Make the shell emit far more than the socket buffer plus the relay
     // output queue, then never read `first` again: the bridge's outbound
     // send blocks on the non-draining peer until the send timeout cuts it.
-    let flood = format!("1..40000 | ForEach-Object {{ '{}' }}\r", "x".repeat(50));
+    #[cfg(windows)]
+    let flood = format!("while ($true) {{ '{}' }}\r", "x".repeat(50));
+    #[cfg(not(windows))]
+    let flood = format!("yes '{}'\r", "x".repeat(50));
     first
         .send(Message::Binary(flood.into_bytes().into()))
         .expect("send flood-producing command");

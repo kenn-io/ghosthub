@@ -65,12 +65,14 @@ mod unix {
 
     #[test]
     fn drop_releases_a_writer_blocked_by_a_non_reading_descendant() {
-        // Raw mode makes the tty input queue block instead of discarding
-        // over-long lines; sh stays the direct child while sleep — a
-        // descendant — holds the slave and never reads. Saturated input
-        // then blocks the relay writer in write_all; teardown must kill
-        // the whole process group so the join stays bounded.
-        let relay = attach_sh("stty raw -echo && echo desc-re''ady && sleep 600");
+        // Confirm that input reached the slave before dropping the relay.
+        // The child reads one byte, leaving the rest of the large write
+        // blocked behind the raw tty's input queue.
+        let relay = attach_sh(
+            "stty raw -echo && echo desc-re''ady && \
+             dd bs=1 count=1 of=/dev/null 2>/dev/null && \
+             echo input-re''ceived && sleep 600",
+        );
         let deadline = Instant::now() + Duration::from_mins(1);
         let mut output = Vec::new();
         while !contains(&output, b"desc-ready") {
@@ -79,10 +81,14 @@ mod unix {
                 output.extend_from_slice(&chunk);
             }
         }
-        for _ in 0..64 {
-            // Overfill the few-KiB raw-mode queue; refusals once the input
-            // budget backs up are expected and irrelevant here.
-            let _ = relay.send_bytes(vec![b'z'; 1024]);
+        relay
+            .send_bytes(vec![b'z'; terminal::INPUT_BYTE_CAPACITY])
+            .expect("queue input larger than the tty buffer");
+        while !contains(&output, b"input-received") {
+            assert!(Instant::now() < deadline, "the child never received input");
+            if let Some(RelayOutput::Bytes(chunk)) = relay.recv_output(POLL) {
+                output.extend_from_slice(&chunk);
+            }
         }
 
         // Bounded observation: a wedged teardown must fail the test, not

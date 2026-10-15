@@ -21,6 +21,8 @@ use surface::{
 
 mod pty;
 mod relay;
+#[cfg(unix)]
+mod unix_io;
 mod windows_job;
 mod worker;
 

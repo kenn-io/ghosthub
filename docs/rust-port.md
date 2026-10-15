@@ -426,6 +426,13 @@ DSR natively). A relay viewer that fails to drain the bounded output queue is
 disconnected with a distinct backpressure outcome and its client and PTY are
 torn down; reconnection is a fresh attachment.
 
+On Unix, the shared process layer uses nonblocking PTY descriptors with
+interruptible readiness waits. Teardown cancels those waits before reaping
+the client. A saturated Linux PTY write can remain blocked even after the
+last slave process exits, so killing the client alone cannot bound teardown.
+Reads and writes retain their partial-I/O semantics while the client is live;
+shutdown can abandon undelivered input. Windows retains the ConPTY pipe path.
+
 The invariant is bounded non-lossy delivery with no UI blocking, not the
 absence of a byte channel. PTY bytes are never dropped or placed in an
 unbounded queue. Non-coalescible UI input uses an ordered queue bounded by both

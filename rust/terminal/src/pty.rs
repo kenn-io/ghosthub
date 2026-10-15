@@ -7,6 +7,11 @@
 
 use std::fmt;
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -74,6 +79,8 @@ pub(crate) struct PtyProcess {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     job: RelayJob,
+    #[cfg(unix)]
+    io_stopped: Arc<AtomicBool>,
 }
 
 /// A spawned PTY process together with its dedicated reader handoff and the
@@ -103,10 +110,22 @@ impl PtyProcess {
         let pair = pty_system
             .openpty(pty_size)
             .map_err(|error| WorkerError::new("open pseudoterminal", error))?;
+        #[cfg(unix)]
+        let io_stopped = Arc::new(AtomicBool::new(false));
+        #[cfg(unix)]
+        let (reader, writer) =
+            crate::unix_io::PtyIo::pair(pair.master.as_ref(), Arc::clone(&io_stopped))
+                .map_err(|error| WorkerError::new("open interruptible PTY I/O", error))?;
+        #[cfg(unix)]
+        let mut reader: Box<dyn Read + Send> = Box::new(reader);
+        #[cfg(unix)]
+        let writer: Box<dyn Write + Send> = Box::new(writer);
+        #[cfg(not(unix))]
         let mut reader = pair
             .master
             .try_clone_reader()
             .map_err(|error| WorkerError::new("clone PTY reader", error))?;
+        #[cfg(not(unix))]
         let writer = pair
             .master
             .take_writer()
@@ -145,6 +164,8 @@ impl PtyProcess {
                 master: pair.master,
                 child,
                 job,
+                #[cfg(unix)]
+                io_stopped,
             },
             reader: reader_receiver,
             writer,
@@ -189,7 +210,11 @@ impl PtyProcess {
             master,
             mut child,
             job,
+            #[cfg(unix)]
+            io_stopped,
         } = self;
+        #[cfg(unix)]
+        io_stopped.store(true, Ordering::Release);
         drop(master);
         // Captured before the child is reaped, so the group id stays valid
         // through the sweep. Because poll_exit is non-reaping on unix, the
@@ -322,11 +347,10 @@ fn reap_child(child: &mut dyn portable_pty::Child) -> u32 {
 
 /// Kill a PTY child's whole process group on POSIX. The child is a
 /// session leader, so its descendants share the group; killing only the
-/// direct child could leave a descendant holding the PTY slave open, which
-/// keeps the relay's writer blocked in `write_all` and turns teardown's
-/// thread joins — and everything serialized behind them — unbounded. The
-/// pid is captured before the child is waited on, so the group id is
-/// always live here. On Windows the Job object already contains the tree.
+/// direct child could leave a descendant running with the PTY slave open.
+/// I/O cancellation releases our reader and writer independently of that
+/// slave's lifetime. The pid is captured before the child is waited on, so
+/// the group id is always live here. On Windows the Job object contains the tree.
 #[cfg(unix)]
 #[allow(unsafe_code)]
 fn kill_process_group(pid: Option<u32>) {
@@ -442,8 +466,7 @@ where
     {
         // The child exited on its own and is still an unreaped zombie, so
         // its PID/PGID cannot recycle. Sweep any descendant holding the PTY
-        // slave open — a writer blocked in write_all unblocks and the joins
-        // stay bounded — then reap the zombie. The group signal cannot
+        // slave open, then reap the zombie. The group signal cannot
         // reach the zombie leader, so its exit code is preserved.
         sweep_descendants();
         let reaped = step(ReapStep::Reap).unwrap_or(exit_code);
