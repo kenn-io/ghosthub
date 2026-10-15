@@ -37,8 +37,18 @@ final class TerminalSurfacePreviewTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         let childPID = try XCTUnwrap(view.childProcessID)
-        let processGroup = getpgid(childPID)
-        XCTAssertGreaterThan(processGroup, 0)
+        // A published PID can still share the runner's group until setsid().
+        var processGroup = getpgid(childPID)
+        while processGroup != childPID, Date() < launchDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+            processGroup = getpgid(childPID)
+        }
+        guard processGroup == childPID else {
+            return XCTFail(
+                "Child \(childPID) did not establish its process group; "
+                    + "group=\(processGroup), runnerGroup=\(getpgrp())"
+            )
+        }
 
         await view.shutdown()
 
@@ -46,8 +56,10 @@ final class TerminalSurfacePreviewTests: XCTestCase {
         while kill(-processGroup, 0) == 0, Date() < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertEqual(kill(-processGroup, 0), -1)
-        XCTAssertEqual(errno, ESRCH)
+        let groupResult = kill(-processGroup, 0)
+        let groupError = errno
+        XCTAssertEqual(groupResult, -1, "Child process group \(processGroup) survived shutdown")
+        XCTAssertEqual(groupError, ESRCH)
     }
 
     func testLibghosttyFindSearchesSurfaceOutput() async throws {
