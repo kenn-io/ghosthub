@@ -164,6 +164,8 @@ layer, as subject to direct iteration.
   context.
 - Prefix every Rust-port pull request title with `Rust Port:` so changelog and
   release-note entries clearly identify Rust-port work.
+- Always attach current application screenshots to Rust-port pull requests.
+  Inspect the captures before uploading and use only synthetic session data.
 - The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
   or open pull requests when the user explicitly asks.
 - Pull requests must have a user-facing benefit or improve the developer
