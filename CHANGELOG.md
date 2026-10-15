@@ -5,6 +5,14 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-15
+
+### Fixed
+
+- Reconnect to an existing worktree session after changing its branch.
+- Stray or incomplete Git worktree records no longer block workspace
+  operations for the whole repository.
+
 ## [0.11.1] - 2026-10-07
 
 ### Fixed
