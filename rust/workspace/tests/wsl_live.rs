@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use config::TerminalAppearance;
-use host::WslConfig;
+use host::LocalConfig;
 use workspace::{
     KeyInput, Modifiers, NamedKey, SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
 };
@@ -227,7 +227,7 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("roundtrip");
     let identity = server.identity();
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
 
@@ -288,7 +288,7 @@ fn creates_attaches_and_detaches_one_atomic_local_session() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::empty("create-once");
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
 
@@ -372,7 +372,7 @@ fn user_created_names_cannot_execute_tmux_format_jobs() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::empty("create-format-job");
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
     wait_until_with_diagnostic(
@@ -405,7 +405,7 @@ fn creation_follows_the_client_identity_when_a_hook_renames_the_session() {
         "after-new-session",
         "rename-session renamed-by-hook",
     ]);
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
     wait_until_with_diagnostic(
@@ -438,7 +438,7 @@ fn creation_race_attaches_the_exact_existing_session() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("create-race");
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
     wait_until_with_diagnostic(
@@ -489,7 +489,7 @@ fn switches_between_discovered_sessions_without_destroying_either() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("switch");
     server.run_tmux(["new-session", "-d", "-s", "switch-live"]);
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
 
@@ -739,7 +739,7 @@ fn refuses_to_attach_when_the_discovered_session_was_replaced() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("stale-identity");
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
 
@@ -783,7 +783,7 @@ fn confirms_fresh_identity_and_never_kills_a_replacement() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("kill-confirmation");
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
 
@@ -852,7 +852,7 @@ fn detach_restores_the_inventory_revalidated_during_attachment() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("attach-inventory");
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
 
@@ -1042,7 +1042,7 @@ fn active_presentation_id(workspace: &Workspace) -> u64 {
 }
 
 fn start_workspace(server: &IsolatedServer) -> Workspace {
-    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+    let config = LocalConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
     let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
     // Worker events are consumed by the runtime event pump, not by

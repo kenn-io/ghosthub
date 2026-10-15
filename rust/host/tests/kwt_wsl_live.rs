@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use host::{
     AttachTerm, CancellationToken, KwtBundle, KwtProtectedWorktreeOpen,
-    KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen, StdCommandRunner,
-    SystemWslPresence, WslConfig, WslEndpoint, WslExecutable, WslHost, WslPresence,
+    KwtPullRequestImportRequest, KwtWorktreeCreate, KwtWorktreeOpen, LocalConfig, LocalEndpoint,
+    LocalHost, StdCommandRunner, SystemWslPresence, WslExecutable, WslPresence,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
@@ -57,8 +57,8 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
     let tmux_tmpdir = format!("{root}/tmux");
     let project_path = format!("{root}/repo");
     let branch = format!("ghosthub-live-{nonce}");
-    let host = WslHost::new(
-        WslConfig::configured(None, "/usr/bin/tmux", Some(tmux_tmpdir.clone()))
+    let host = LocalHost::wsl(
+        LocalConfig::configured(None, "/usr/bin/tmux", Some(tmux_tmpdir.clone()))
             .expect("valid isolated WSL config")
             .with_kwt_bundle(bundle)
             .with_kwt_home_for_tests(&kwt_home),
@@ -405,8 +405,8 @@ fn pinned_helper_honors_the_pull_request_contract() {
     let kwt_home = format!("{root}/home");
     let tmux_tmpdir = format!("{root}/tmux");
     let project_path = format!("{root}/hello-world");
-    let host = WslHost::new(
-        WslConfig::configured(None, "/usr/bin/tmux", Some(tmux_tmpdir.clone()))
+    let host = LocalHost::wsl(
+        LocalConfig::configured(None, "/usr/bin/tmux", Some(tmux_tmpdir.clone()))
             .expect("valid isolated WSL config")
             .with_kwt_bundle(bundle)
             .with_kwt_home_for_tests(&kwt_home),
@@ -598,9 +598,9 @@ fn pinned_helper_honors_the_pull_request_contract() {
 }
 
 fn assert_guarded_open_rejected(
-    host: &WslHost<StdCommandRunner>,
-    endpoint: &WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    host: &LocalHost<StdCommandRunner>,
+    endpoint: &LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     request: &KwtWorktreeOpen,
     cancellation: &CancellationToken,
 ) {
@@ -625,9 +625,9 @@ fn assert_guarded_open_rejected(
 }
 
 fn wait_for_exact_client(
-    host: &WslHost<StdCommandRunner>,
-    endpoint: &WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    host: &LocalHost<StdCommandRunner>,
+    endpoint: &LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     readiness_path: &str,
     cancellation: &CancellationToken,
     output: &Mutex<Vec<u8>>,
@@ -652,9 +652,9 @@ fn wait_for_exact_client(
 }
 
 fn wait_for_exact_protected_client(
-    host: &WslHost<StdCommandRunner>,
-    endpoint: &WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    host: &LocalHost<StdCommandRunner>,
+    endpoint: &LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     readiness_path: &str,
     socket_name: &str,
     cancellation: &CancellationToken,
@@ -700,7 +700,11 @@ fn wait_for_child_exit(child: &mut dyn portable_pty::Child) {
     }
 }
 
-fn windows_path_in_wsl(executable: &WslExecutable, endpoint: &WslEndpoint, path: &OsStr) -> String {
+fn windows_path_in_wsl(
+    executable: &WslExecutable,
+    endpoint: &LocalEndpoint,
+    path: &OsStr,
+) -> String {
     let output = run_wsl(
         executable,
         endpoint,
@@ -717,7 +721,7 @@ fn windows_path_in_wsl(executable: &WslExecutable, endpoint: &WslEndpoint, path:
         .to_owned()
 }
 
-fn run_wsl_ok<I, S>(executable: &WslExecutable, endpoint: &WslEndpoint, args: I)
+fn run_wsl_ok<I, S>(executable: &WslExecutable, endpoint: &LocalEndpoint, args: I)
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -730,13 +734,13 @@ where
     );
 }
 
-fn run_wsl<I, S>(executable: &WslExecutable, endpoint: &WslEndpoint, args: I) -> Output
+fn run_wsl<I, S>(executable: &WslExecutable, endpoint: &LocalEndpoint, args: I) -> Output
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
     Command::new(executable.as_os_str())
-        .args(["--distribution", endpoint.distro(), "--exec"])
+        .args(["--distribution", endpoint.name(), "--exec"])
         .args(args)
         .output()
         .expect("run WSL command")
@@ -744,7 +748,7 @@ where
 
 struct TestEnvironment {
     executable: WslExecutable,
-    endpoint: WslEndpoint,
+    endpoint: LocalEndpoint,
     root: String,
     kwt_home: String,
     tmux_tmpdir: String,
@@ -754,7 +758,7 @@ struct TestEnvironment {
 
 fn configure_isolated_worktree_base(
     executable: &WslExecutable,
-    endpoint: &WslEndpoint,
+    endpoint: &LocalEndpoint,
     kwt_home: &str,
     helper_path: &str,
     root: &str,

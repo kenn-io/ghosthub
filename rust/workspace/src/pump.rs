@@ -548,7 +548,7 @@ impl Workspace {
                 publish_terminfo_retry_boundary(
                     &self.scene,
                     &request.host_id,
-                    request.endpoint.distro(),
+                    request.endpoint.name(),
                     &request.name,
                     request.target.kind(),
                 );

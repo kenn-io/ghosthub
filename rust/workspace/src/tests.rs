@@ -1520,8 +1520,8 @@ fn retained_herdr_recovery_does_not_block_snapshots_during_discovery() {
         entered: Mutex::new(Some(entered_tx)),
         release: Mutex::new(release_rx),
     });
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -1672,21 +1672,21 @@ fn kwt_worktree_workspace_fixture() -> (Workspace, Arc<ManualRefreshRuntime>) {
     let runtime = Arc::new(ManualRefreshRuntime::default());
     let bundle =
         host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid KWT bundle");
-    let config = WslConfig::with_distro("Ubuntu")
+    let config = LocalConfig::with_distro("Ubuntu")
         .expect("valid config")
         .with_kwt_bundle(bundle);
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
     let workspace = Workspace::application_with_services(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
-        Arc::new(SystemWslDiscovery::new()),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
+        Arc::new(SystemLocalDiscovery::new()),
         runtime.clone(),
     );
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
     *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
         HostContext {
-            host: WslHost::new(
+            host: LocalHost::wsl(
                 config,
                 Arc::new(StdCommandRunner) as SharedCommandRunner,
                 executable,
@@ -1781,11 +1781,11 @@ struct BlockingDiscovery {
     release: Mutex<mpsc::Receiver<()>>,
 }
 
-impl WslDiscovery for BlockingDiscovery {
+impl LocalDiscovery for BlockingDiscovery {
     fn discover(
         &self,
-        config: WslConfig,
-        executable: WslExecutable,
+        config: LocalConfig,
+        executable: LocalExecutable,
         existing_host: Option<RuntimeHost>,
         _cancellation: &CancellationToken,
     ) -> Result<HostContext, HostError> {
@@ -1797,8 +1797,9 @@ impl WslDiscovery for BlockingDiscovery {
             .expect("release signal")
             .recv()
             .expect("release blocked discovery");
-        let host = existing_host
-            .unwrap_or_else(|| WslHost::new(config, Arc::new(StdCommandRunner), executable));
+        let host = existing_host.unwrap_or_else(|| {
+            LocalHost::with_executable(config, Arc::new(StdCommandRunner), executable)
+        });
         Ok(HostContext {
             host,
             snapshot: self.snapshot.clone(),
@@ -1820,17 +1821,17 @@ impl FixedDiscovery {
     }
 }
 
-impl WslDiscovery for FixedDiscovery {
+impl LocalDiscovery for FixedDiscovery {
     fn discover(
         &self,
-        config: WslConfig,
-        executable: WslExecutable,
+        config: LocalConfig,
+        executable: LocalExecutable,
         existing_host: Option<RuntimeHost>,
         _cancellation: &CancellationToken,
     ) -> Result<HostContext, HostError> {
         let runner: SharedCommandRunner = Arc::new(StdCommandRunner);
         let host = existing_host.map_or_else(
-            || WslHost::new(config, runner, executable),
+            || LocalHost::with_executable(config, runner, executable),
             |host| {
                 self.reused_hosts.fetch_add(1, Ordering::AcqRel);
                 host
@@ -1903,8 +1904,8 @@ fn attach_request_fixture_with_runner(
 ) -> AttachRequest {
     AttachRequest {
         host_id: "wsl".to_owned(),
-        host: WslHost::new(
-            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        host: LocalHost::wsl(
+            LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
             runner,
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
                 .expect("absolute WSL path"),
@@ -1922,8 +1923,8 @@ fn attach_request_fixture_with_runner(
 fn herdr_attach_request_fixture(snapshot: &HostSnapshot, name: &str) -> AttachRequest {
     AttachRequest {
         host_id: "wsl".to_owned(),
-        host: WslHost::new(
-            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        host: LocalHost::wsl(
+            LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
             Arc::new(StdCommandRunner) as SharedCommandRunner,
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
                 .expect("absolute WSL path"),
@@ -1946,8 +1947,8 @@ fn herdr_attach_request_fixture(snapshot: &HostSnapshot, name: &str) -> AttachRe
 fn zellij_attach_request_fixture(snapshot: &HostSnapshot, name: &str) -> AttachRequest {
     AttachRequest {
         host_id: "wsl".to_owned(),
-        host: WslHost::new(
-            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        host: LocalHost::wsl(
+            LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
             Arc::new(StdCommandRunner) as SharedCommandRunner,
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
                 .expect("absolute WSL path"),
@@ -2026,8 +2027,8 @@ fn atomic_attach_identity_mismatch_has_a_specific_diagnostic() {
 
 #[test]
 fn application_attachment_failure_stays_on_the_wsl_host() {
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
@@ -2059,8 +2060,8 @@ fn application_attachment_failure_stays_on_the_wsl_host() {
 
 #[test]
 fn stale_attachment_failure_cannot_overwrite_a_newer_host_refresh() {
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
@@ -2096,12 +2097,12 @@ fn stale_attachment_failure_cannot_overwrite_a_newer_host_refresh() {
 fn stale_attachment_refreshes_inventory_without_disabling_the_host() {
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
     let workspace = Workspace::application(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
     );
-    let host = WslHost::new(
+    let host = LocalHost::wsl(
         config,
         Arc::new(StdCommandRunner) as SharedCommandRunner,
         executable,
@@ -2170,12 +2171,12 @@ fn stale_attachment_refreshes_inventory_without_disabling_the_host() {
 fn retained_stale_failure_preserves_the_visible_terminal_and_pending_input() {
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
     let workspace = Workspace::application(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
     );
-    let host = WslHost::new(
+    let host = LocalHost::wsl(
         config,
         Arc::new(StdCommandRunner) as SharedCommandRunner,
         executable,
@@ -2325,8 +2326,8 @@ fn initial_exact_terminfo_failure_retries_with_xterm() {
 #[cfg(windows)]
 #[test]
 fn hidden_unconfirmed_client_keeps_its_identity_and_fallback_during_terminfo_retry() {
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(StdCommandRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -2859,8 +2860,8 @@ fn retained_rename_advances_the_workspace_revision_once() {
 #[cfg(windows)]
 #[test]
 fn detach_invalidates_fallback_authority_before_an_async_failure() {
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(StdCommandRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -3080,8 +3081,8 @@ fn captured_host_generation_cannot_overwrite_a_later_refresh() {
         .refresh_generation
         .load(Ordering::Acquire);
     let runner: SharedCommandRunner = Arc::new(StdCommandRunner);
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         runner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
             .expect("absolute system WSL path"),
@@ -3221,8 +3222,8 @@ fn post_create_inventory_cannot_overwrite_a_newer_refresh() {
         Vec::new(),
     ));
     let runner: SharedCommandRunner = Arc::new(StdCommandRunner);
-    let runtime_host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let runtime_host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         runner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
             .expect("absolute system WSL path"),
@@ -3314,8 +3315,8 @@ fn post_create_inventory_supersedes_an_inflight_refresh() {
         Vec::new(),
     ));
     let runner: SharedCommandRunner = Arc::new(StdCommandRunner);
-    let runtime_host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let runtime_host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         runner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
             .expect("absolute system WSL path"),
@@ -4140,12 +4141,12 @@ fn switching_to_the_active_session_is_a_no_op() {
 fn a_different_selection_supersedes_an_inflight_attachment_and_carries_its_fallback() {
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
     let workspace = Workspace::application(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
     );
-    let host = WslHost::new(
+    let host = LocalHost::wsl(
         config,
         Arc::new(StdCommandRunner) as SharedCommandRunner,
         executable,
@@ -4405,8 +4406,8 @@ fn stale_kill_identity_results_cannot_publish_confirmation() {
         Vec::new(),
     ));
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(StdCommandRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -4642,8 +4643,8 @@ fn blocked_host_discovery_does_not_block_snapshot_reads() {
         entered: Mutex::new(Some(entered_tx)),
         release: Mutex::new(release_rx),
     });
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application_with_services(
@@ -4697,8 +4698,8 @@ fn refresh_deadlines_and_retry_order_are_manually_driven() {
             0,
         )],
     )));
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application_with_services(
@@ -4776,8 +4777,8 @@ fn herdr_workspace_with_sessions_and_term(
     )
     .test_fixture_with_creation_term(term);
     let discovery = Arc::new(FixedDiscovery::new(snapshot));
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application_with_services(
@@ -4940,7 +4941,7 @@ fn unavailable_hosts_reject_herdr_mutations_and_preserve_confirmation() {
     let error = workspace
         .confirm_herdr_lifecycle()
         .expect_err("unavailable host must block confirmed mutation");
-    assert!(error.to_string().contains("connect the WSL host"));
+    assert!(error.to_string().contains("connect the local host"));
     assert!(workspace.herdr_lifecycle_confirmation().is_some());
 
     let stopped = SessionSelection::herdr("wsl", "Ubuntu", "review");
@@ -5202,8 +5203,8 @@ fn a_herdr_stop_revokes_restarts_and_the_delayed_recovery_re_drives_them() {
     let runner = Arc::new(CountingRefusingRunner(AtomicUsize::new(0)));
     let request = AttachRequest {
         host_id: "wsl".to_owned(),
-        host: WslHost::new(
-            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        host: LocalHost::wsl(
+            LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
             Arc::clone(&runner) as SharedCommandRunner,
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
                 .expect("absolute WSL path"),
@@ -5758,8 +5759,8 @@ fn zellij_refresh_failure_preserves_cached_rows() {
 
 #[test]
 fn host_refresh_keeps_cached_multiplexer_rows_visible() {
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
@@ -5797,14 +5798,14 @@ fn host_refresh_keeps_cached_multiplexer_rows_visible() {
 fn kwt_inventory_projects_worktrees_without_replacing_session_state() {
     let bundle =
         host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
-    let config = WslConfig::with_distro("Ubuntu")
+    let config = LocalConfig::with_distro("Ubuntu")
         .expect("valid config")
         .with_kwt_bundle(bundle);
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
     let workspace = Workspace::application(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
     );
     let snapshot = HostSnapshot::test_fixture(
         "Ubuntu",
@@ -5816,7 +5817,7 @@ fn kwt_inventory_projects_worktrees_without_replacing_session_state() {
             0,
         )],
     );
-    let runtime_host = WslHost::new(
+    let runtime_host = LocalHost::wsl(
         config,
         Arc::new(StdCommandRunner) as SharedCommandRunner,
         executable,
@@ -5905,14 +5906,14 @@ fn kwt_inventory_projects_worktrees_without_replacing_session_state() {
 fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
     let bundle =
         host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
-    let config = WslConfig::with_distro("Ubuntu")
+    let config = LocalConfig::with_distro("Ubuntu")
         .expect("valid config")
         .with_kwt_bundle(bundle);
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
     let workspace = Workspace::application(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
     );
     let generationless_identity = session::SessionIdentity::new(100, "$1", 200);
     let generation_identity = session::SessionIdentity::new(100, "$2", 201);
@@ -5931,7 +5932,7 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
     );
     *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
         HostContext {
-            host: WslHost::new(
+            host: LocalHost::wsl(
                 config,
                 Arc::new(StdCommandRunner) as SharedCommandRunner,
                 executable,
@@ -6285,17 +6286,17 @@ fn worktree_open_uses_durable_kwt_identity_even_without_a_live_tmux_session() {
 
 #[test]
 fn confirmed_project_mutation_survives_failed_inventory_reconciliation() {
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
     let workspace = Workspace::application(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
     );
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
     *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
         HostContext {
-            host: WslHost::new(
+            host: LocalHost::wsl(
                 config,
                 Arc::new(StdCommandRunner) as SharedCommandRunner,
                 executable,
@@ -6365,17 +6366,17 @@ fn failed_kwt_inventory_keeps_constructive_add_separate_from_remove_authority() 
 
 #[test]
 fn stale_kwt_publication_cannot_replace_the_current_project_tree() {
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
     let workspace = Workspace::application(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
     );
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
     *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
         HostContext {
-            host: WslHost::new(
+            host: LocalHost::wsl(
                 config,
                 Arc::new(StdCommandRunner) as SharedCommandRunner,
                 executable,
@@ -6420,8 +6421,8 @@ fn background_cadence_refreshes_ready_hosts_and_reuses_the_admitted_host() {
             0,
         )],
     )));
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application_with_services(
@@ -6496,7 +6497,7 @@ fn inventory_cadence_is_a_no_op_without_an_enabled_host() {
     let workspace = Workspace::application_with_services(
         TerminalAppearance::default(),
         None,
-        Arc::new(SystemWslDiscovery::new()),
+        Arc::new(SystemLocalDiscovery::new()),
         runtime.clone(),
     );
 
@@ -6519,17 +6520,17 @@ fn kwt_inventory_uses_a_distinct_slower_cadence() {
     let runtime = Arc::new(ManualRefreshRuntime::default());
     let bundle =
         host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
-    let config = WslConfig::with_distro("Ubuntu")
+    let config = LocalConfig::with_distro("Ubuntu")
         .expect("valid config")
         .with_kwt_bundle(bundle);
-    let spec = WslHostSpec::available(
+    let spec = LocalHostSpec::available(
         config,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application_with_services(
         TerminalAppearance::default(),
         Some(spec),
-        Arc::new(SystemWslDiscovery::new()),
+        Arc::new(SystemLocalDiscovery::new()),
         runtime.clone(),
     );
 
@@ -6550,19 +6551,19 @@ fn kwt_inventory_uses_a_distinct_slower_cadence() {
 fn background_kwt_refresh_requires_the_matching_host_to_be_ready() {
     let bundle =
         host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
-    let config = WslConfig::with_distro("Ubuntu")
+    let config = LocalConfig::with_distro("Ubuntu")
         .expect("valid config")
         .with_kwt_bundle(bundle);
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
     let workspace = Workspace::application(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
     );
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
     *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
         HostContext {
-            host: WslHost::new(
+            host: LocalHost::wsl(
                 config,
                 Arc::new(StdCommandRunner) as SharedCommandRunner,
                 executable,
@@ -6595,21 +6596,21 @@ fn failed_mutation_spawn_starts_deferred_kwt_refresh_for_replaced_runtime() {
     let runtime = Arc::new(ManualRefreshRuntime::default());
     let bundle =
         host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
-    let config = WslConfig::with_distro("Ubuntu")
+    let config = LocalConfig::with_distro("Ubuntu")
         .expect("valid config")
         .with_kwt_bundle(bundle.clone());
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
     let workspace = Workspace::application_with_services(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
-        Arc::new(SystemWslDiscovery::new()),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
+        Arc::new(SystemLocalDiscovery::new()),
         runtime.clone(),
     );
     let old_snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-old", 42, Vec::new());
     *workspace.scene.runtime.host.lock().expect("published host") = Some(Published::new(
         HostContext {
-            host: WslHost::new(
+            host: LocalHost::wsl(
                 config,
                 Arc::new(StdCommandRunner) as SharedCommandRunner,
                 executable.clone(),
@@ -6624,7 +6625,7 @@ fn failed_mutation_spawn_starts_deferred_kwt_refresh_for_replaced_runtime() {
     let replacement_scene = Arc::clone(&workspace.scene);
     runtime.fail_next_work(move || {
         let replacement = HostSnapshot::test_fixture("Debian", "boot-new", 84, Vec::new());
-        let replacement_config = WslConfig::with_distro("Debian")
+        let replacement_config = LocalConfig::with_distro("Debian")
             .expect("valid replacement config")
             .with_kwt_bundle(bundle);
         *replacement_scene
@@ -6633,7 +6634,7 @@ fn failed_mutation_spawn_starts_deferred_kwt_refresh_for_replaced_runtime() {
             .lock()
             .expect("published host") = Some(Published::new(
             HostContext {
-                host: WslHost::new(
+                host: LocalHost::wsl(
                     replacement_config,
                     Arc::new(StdCommandRunner) as SharedCommandRunner,
                     executable,
@@ -6675,8 +6676,8 @@ fn inactive_inventory_cadence_does_not_start_host_work() {
         42,
         Vec::new(),
     )));
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application_with_services(
@@ -6704,8 +6705,8 @@ fn inventory_cadence_yields_to_create_and_lifecycle_operations() {
         42,
         Vec::new(),
     )));
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application_with_services(
@@ -6796,8 +6797,8 @@ fn cancelling_refresh_invalidates_work_and_restores_disconnected_host() {
             0,
         )],
     )));
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application_with_services(
@@ -6879,7 +6880,7 @@ fn legacy_inventory_publication_still_updates_top_level_content() {
             if sessions.len() == 1 && sessions[0].name() == "work"
     ));
 
-    set_wsl_host_unavailable(
+    set_local_host_unavailable(
         &workspace.scene.runtime,
         DiagnosticKind::Timeout,
         "legacy refresh timed out".to_owned(),
@@ -6900,8 +6901,8 @@ fn legacy_inventory_publication_still_updates_top_level_content() {
 
 #[test]
 fn only_the_current_refresh_deadline_can_publish_timeout() {
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
@@ -8123,11 +8124,11 @@ fn two_scenes_over_one_runtime_stay_independent() {
     let refresh_runtime = Arc::new(ManualRefreshRuntime::default());
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
     let a = Workspace::application_with_services(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
-        Arc::new(SystemWslDiscovery::new()),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
+        Arc::new(SystemLocalDiscovery::new()),
         refresh_runtime,
     );
     a.scene
@@ -8143,7 +8144,7 @@ fn two_scenes_over_one_runtime_stay_independent() {
             Vec::new(),
             None,
         ));
-    let host = WslHost::new(
+    let host = LocalHost::wsl(
         config,
         Arc::new(StdCommandRunner) as SharedCommandRunner,
         executable,
@@ -8616,8 +8617,8 @@ fn completed_tmux_kill_drops_matching_confirmations_in_every_scene() {
             session::DiscoveredSession::new("other", other.clone(), 0),
         ],
     );
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -8676,8 +8677,8 @@ fn completed_tmux_kill_drops_matching_confirmations_in_every_scene() {
 #[test]
 fn completed_zellij_kill_drops_matching_confirmations_in_every_scene() {
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -8722,8 +8723,8 @@ fn completed_zellij_kill_drops_matching_confirmations_in_every_scene() {
 #[test]
 fn completed_herdr_lifecycle_drops_matching_confirmations_in_every_scene() {
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -8919,8 +8920,8 @@ fn kwt_removal_reconciliation_branches_gate_confirmation_drops() {
         // No pinned KWT bundle in this configuration: the integrated
         // reconciliation's real discovery reports inventory unavailable
         // without executing any command.
-        host: WslHost::new(
-            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        host: LocalHost::wsl(
+            LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
             Arc::new(RefusingRunner) as SharedCommandRunner,
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
                 .expect("absolute WSL path"),
@@ -9132,8 +9133,8 @@ fn kill_completing_during_identity_capture_cannot_publish_a_stale_confirmation()
             session::DiscoveredSession::new("other", other.clone(), 0),
         ],
     );
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -9233,8 +9234,8 @@ fn superseded_kill_request_cannot_overwrite_the_newer_captures_intent() {
             session::DiscoveredSession::new("other", other.clone(), 0),
         ],
     );
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -9357,8 +9358,8 @@ fn concurrent_zellij_kill_confirmations_for_one_target_are_refused() {
     // queuing behind the first on the operation lane, where it would kill
     // whatever same-name replacement discovery finds next.
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -9416,7 +9417,7 @@ fn concurrent_zellij_kill_confirmations_for_one_target_are_refused() {
             .any(|event| matches!(event, WorkspaceEvent::Error(_)))
     });
     let key = (
-        snapshot.endpoint().distro().to_owned(),
+        snapshot.endpoint().name().to_owned(),
         format!(
             "{}:{}",
             snapshot.runtime().kernel_boot_id(),
@@ -9494,8 +9495,8 @@ fn a_killed_zellij_session_leaves_shared_inventory_immediately() {
             sessions: vec![session::ZellijSessionRecord::discovered("review")],
         },
     );
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -9721,8 +9722,8 @@ fn a_confirmation_taken_before_a_completed_kill_cannot_reserve() {
     // reserves. B's confirmation must be refused as stale, not reserved
     // at the new revision.
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -9733,7 +9734,7 @@ fn a_confirmation_taken_before_a_completed_kill_cannot_reserve() {
     ));
     let b = a.open_scene();
     let key = (
-        snapshot.endpoint().distro().to_owned(),
+        snapshot.endpoint().name().to_owned(),
         format!(
             "{}:{}",
             snapshot.runtime().kernel_boot_id(),
@@ -9780,8 +9781,8 @@ fn a_completed_zellij_kill_fences_a_straddling_kill_request() {
     // a request caught between its intent mint and its publication, the
     // same way completed tmux kills fence identity captures.
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -9829,8 +9830,8 @@ fn a_completed_zellij_kill_fences_a_straddling_kill_request() {
 #[test]
 fn removal_completing_during_identity_capture_cannot_publish_a_stale_confirmation() {
     let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -10749,11 +10750,11 @@ fn real_lifecycle_operations_in_one_scene_leave_the_other_scene_untouched() {
     let refresh_runtime = Arc::new(ManualRefreshRuntime::default());
     let executable =
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path");
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
     let a = Workspace::application_with_services(
         TerminalAppearance::default(),
-        Some(WslHostSpec::available(config.clone(), executable.clone())),
-        Arc::new(SystemWslDiscovery::new()),
+        Some(LocalHostSpec::available(config.clone(), executable.clone())),
+        Arc::new(SystemLocalDiscovery::new()),
         refresh_runtime,
     );
     a.scene
@@ -10769,7 +10770,7 @@ fn real_lifecycle_operations_in_one_scene_leave_the_other_scene_untouched() {
             Vec::new(),
             None,
         ));
-    let host = WslHost::new(
+    let host = LocalHost::wsl(
         config,
         Arc::new(RefusingRunner) as SharedCommandRunner,
         executable,
@@ -11186,8 +11187,8 @@ fn pending_confirmation_in_one_scene_survives_other_scene_activity() {
         42,
         vec![session::DiscoveredSession::new("work", identity.clone(), 0)],
     );
-    let host = WslHost::new(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         Arc::new(RefusingRunner) as SharedCommandRunner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
@@ -11775,15 +11776,15 @@ fn editing_a_host_id_repoints_other_scenes_at_the_renamed_host() {
 #[test]
 fn inventory_cadence_survives_its_initiating_scene_and_clears_when_none_remain() {
     let refresh = Arc::new(ManualRefreshRuntime::default());
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
-    let spec = WslHostSpec::available(
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
+    let spec = LocalHostSpec::available(
         config,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let initiator = Workspace::application_with_services(
         TerminalAppearance::default(),
         Some(spec),
-        Arc::new(SystemWslDiscovery::new()),
+        Arc::new(SystemLocalDiscovery::new()),
         refresh.clone(),
     );
     initiator
@@ -11829,17 +11830,17 @@ fn kwt_cadence_survives_its_initiating_scene_and_clears_when_none_remain() {
     let refresh = Arc::new(ManualRefreshRuntime::default());
     let bundle =
         host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
-    let config = WslConfig::with_distro("Ubuntu")
+    let config = LocalConfig::with_distro("Ubuntu")
         .expect("valid config")
         .with_kwt_bundle(bundle);
-    let spec = WslHostSpec::available(
+    let spec = LocalHostSpec::available(
         config,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let initiator = Workspace::application_with_services(
         TerminalAppearance::default(),
         Some(spec),
-        Arc::new(SystemWslDiscovery::new()),
+        Arc::new(SystemLocalDiscovery::new()),
         refresh.clone(),
     );
     initiator
@@ -11983,15 +11984,15 @@ fn removing_a_host_drops_other_scenes_retained_presentations() {
 #[test]
 fn refresh_and_discovery_refuse_a_closed_scene() {
     let refresh = Arc::new(ManualRefreshRuntime::default());
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
-    let spec = WslHostSpec::available(
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
+    let spec = LocalHostSpec::available(
         config,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let initiator = Workspace::application_with_services(
         TerminalAppearance::default(),
         Some(spec),
-        Arc::new(SystemWslDiscovery::new()),
+        Arc::new(SystemLocalDiscovery::new()),
         refresh.clone(),
     );
     let survivor = initiator.open_scene();
@@ -12173,15 +12174,15 @@ fn connect_never_holds_navigation_while_waiting_on_publication() {
 #[test]
 fn completion_refresh_reanchors_on_a_surviving_scene() {
     let refresh = Arc::new(ManualRefreshRuntime::default());
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
-    let spec = WslHostSpec::available(
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
+    let spec = LocalHostSpec::available(
         config,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let initiator = Workspace::application_with_services(
         TerminalAppearance::default(),
         Some(spec),
-        Arc::new(SystemWslDiscovery::new()),
+        Arc::new(SystemLocalDiscovery::new()),
         refresh,
     );
     let survivor = initiator.open_scene();
@@ -12302,15 +12303,15 @@ fn cancellations_are_rejected_from_a_closed_scene() {
 #[test]
 fn destructive_lifecycle_paths_refuse_a_closed_scene() {
     let refresh = Arc::new(ManualRefreshRuntime::default());
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
-    let spec = WslHostSpec::available(
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
+    let spec = LocalHostSpec::available(
         config,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let workspace = Workspace::application_with_services(
         TerminalAppearance::default(),
         Some(spec),
-        Arc::new(SystemWslDiscovery::new()),
+        Arc::new(SystemLocalDiscovery::new()),
         refresh.clone(),
     );
     let selection = SessionSelection::new("wsl", "Ubuntu", "work");
@@ -12456,15 +12457,15 @@ fn connect_host_refuses_a_closed_scene() {
 #[test]
 fn cadence_stops_for_a_closed_scene_held_by_a_retained_handle() {
     let refresh = Arc::new(ManualRefreshRuntime::default());
-    let config = WslConfig::with_distro("Ubuntu").expect("valid config");
-    let spec = WslHostSpec::available(
+    let config = LocalConfig::with_distro("Ubuntu").expect("valid config");
+    let spec = LocalHostSpec::available(
         config,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let initiator = Workspace::application_with_services(
         TerminalAppearance::default(),
         Some(spec),
-        Arc::new(SystemWslDiscovery::new()),
+        Arc::new(SystemLocalDiscovery::new()),
         refresh.clone(),
     );
     initiator
@@ -12498,17 +12499,17 @@ fn kwt_cadence_stops_for_a_closed_scene_held_by_a_retained_handle() {
     let refresh = Arc::new(ManualRefreshRuntime::default());
     let bundle =
         host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
-    let config = WslConfig::with_distro("Ubuntu")
+    let config = LocalConfig::with_distro("Ubuntu")
         .expect("valid config")
         .with_kwt_bundle(bundle);
-    let spec = WslHostSpec::available(
+    let spec = LocalHostSpec::available(
         config,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
     let initiator = Workspace::application_with_services(
         TerminalAppearance::default(),
         Some(spec),
-        Arc::new(SystemWslDiscovery::new()),
+        Arc::new(SystemLocalDiscovery::new()),
         refresh.clone(),
     );
     initiator
@@ -14690,8 +14691,8 @@ fn herdr_stop_suppression_reaches_every_scene_and_restores_to_owners() {
         operation_id: 1,
         selection: SessionSelection::herdr("wsl", "Ubuntu", "work"),
         action: HerdrLifecycleAction::Stop,
-        host: WslHost::new(
-            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        host: LocalHost::wsl(
+            LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
             Arc::new(StdCommandRunner) as SharedCommandRunner,
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
                 .expect("absolute WSL path"),
@@ -14865,8 +14866,8 @@ fn herdr_failure_restore_cannot_resurrect_a_presentation_in_a_closed_scene() {
         operation_id: 1,
         selection: SessionSelection::herdr("wsl", "Ubuntu", "work"),
         action: HerdrLifecycleAction::Stop,
-        host: WslHost::new(
-            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+        host: LocalHost::wsl(
+            LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
             Arc::new(StdCommandRunner) as SharedCommandRunner,
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
                 .expect("absolute WSL path"),

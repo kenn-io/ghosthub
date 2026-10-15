@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use contracts::{Manifest, PlatformTag};
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandOutput, CommandRunner, HerdrInventory,
-    HostErrorKind, WslConfig, WslExecutable, WslHost, ZellijInventory,
+    HostErrorKind, LocalConfig, LocalHost, WslExecutable, ZellijInventory,
 };
 use serde::Deserialize;
 use session::ExecutablePlatform;
@@ -798,12 +798,12 @@ fn output(status: i32, stdout: &str, stderr: &str) -> CommandOutput {
     }
 }
 
-fn discover(host: &WslHost<RecordingRunner>) -> Result<host::HostSnapshot, host::HostError> {
+fn discover(host: &LocalHost<RecordingRunner>) -> Result<host::HostSnapshot, host::HostError> {
     host.discover(host.runner())
 }
 
-fn test_host(config: WslConfig, runner: RecordingRunner) -> WslHost<RecordingRunner> {
-    WslHost::new(
+fn test_host(config: LocalConfig, runner: RecordingRunner) -> LocalHost<RecordingRunner> {
+    LocalHost::wsl(
         config,
         runner,
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
@@ -844,7 +844,7 @@ fn retries_discovery_when_the_distro_restarts_between_crossings() {
         new,
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -873,7 +873,7 @@ fn rejects_malformed_runtime_and_session_identity() {
         ),
     ] {
         let host = test_host(
-            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            LocalConfig::with_distro("Ubuntu").expect("valid config"),
             RecordingRunner::new(vec![runtime, output(0, "", "")]),
         );
         assert_eq!(
@@ -885,7 +885,7 @@ fn rejects_malformed_runtime_and_session_identity() {
     }
 
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::new(vec![
             instance_output(),
             output(0, "4242\tnot-an-id\t1700000000\t0\t4\twork\n", ""),
@@ -911,11 +911,11 @@ fn default_distro_with_no_tmux_server_is_empty_inventory() {
         ),
         instance_output(),
     ]);
-    let host = test_host(WslConfig::default(), runner);
+    let host = test_host(LocalConfig::default(), runner);
 
     let snapshot = discover(&host).expect("no server is not an error");
 
-    assert_eq!(snapshot.endpoint().distro(), "Ubuntu");
+    assert_eq!(snapshot.endpoint().name(), "Ubuntu");
     assert!(snapshot.sessions().is_empty());
     assert_eq!(snapshot.runtime().init_start_ticks(), 987_654);
     assert_eq!(host.runner().calls().len(), 4);
@@ -929,7 +929,7 @@ fn discovers_identity_in_one_tmux_crossing() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -960,7 +960,7 @@ fn herdr_inventory_is_additive_and_scrubs_control_environment() {
         ),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -1038,7 +1038,7 @@ fn malformed_herdr_inventory_does_not_hide_tmux_sessions() {
         output(0, "not-json", ""),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -1062,7 +1062,7 @@ fn zellij_inventory_and_launch_plans_preserve_exact_names_and_scrub_control_envi
         output(0, "--review [Created 1m ago]\n", ""),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -1126,7 +1126,7 @@ fn zellij_kill_revalidates_and_uses_an_exact_direct_argument() {
         output(0, "", ""),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let snapshot = discover(&host).expect("initial inventory");
@@ -1189,7 +1189,7 @@ fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
         ),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let identity = host::HostSnapshot::test_fixture(
@@ -1261,7 +1261,7 @@ fn herdr_lifecycle_rejects_an_inconsistent_response_record() {
         ),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let identity = host::HostSnapshot::test_fixture(
@@ -1305,7 +1305,7 @@ fn herdr_lifecycle_rejects_an_executable_changed_after_confirmation() {
         ),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let identity = host::HostSnapshot::test_fixture(
@@ -1361,7 +1361,7 @@ fn herdr_lifecycle_rechecks_runtime_after_discovery_before_mutation() {
         ),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let identity = host::HostSnapshot::test_fixture(
@@ -1411,7 +1411,7 @@ fn herdr_delete_rejects_a_session_that_became_the_default() {
         ),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let identity = host::HostSnapshot::test_fixture(
@@ -1461,7 +1461,7 @@ fn herdr_stop_rejects_a_changed_default_role() {
         ),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let identity = host::HostSnapshot::test_fixture(
@@ -1511,7 +1511,7 @@ fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -1619,7 +1619,7 @@ fn admission_does_not_require_xterm_256color_terminfo() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let attacher = BaselineTermAttacher {
@@ -1663,7 +1663,7 @@ fn admission_uses_xterm_256color_for_creation_when_the_client_proves_it() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let snapshot = discover(&host).expect("admit full-color tmux client");
@@ -1694,7 +1694,7 @@ fn creation_receipt_polling_uses_a_stable_c_locale() {
         output(0, "4242|$4|1700000001|!", ""),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let snapshot = discover(&host).expect("admit tmux");
@@ -1725,7 +1725,7 @@ fn creation_receipt_polling_uses_a_stable_c_locale() {
 #[test]
 fn cleanup_retries_failed_termination_before_removing_the_socket_root() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::with_cleanup_failures(1, 0),
     );
 
@@ -1749,7 +1749,7 @@ fn cleanup_retries_failed_termination_before_removing_the_socket_root() {
 #[test]
 fn cleanup_preserves_the_socket_root_when_absence_cannot_be_confirmed() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::with_cleanup_failures(0, usize::MAX),
     );
 
@@ -1772,7 +1772,7 @@ fn cleanup_preserves_the_socket_root_when_absence_cannot_be_confirmed() {
 #[test]
 fn admission_failure_before_isolation_cleans_only_created_sessions() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::failing_admission("show-environment"),
     );
 
@@ -1796,7 +1796,7 @@ fn admission_failure_before_isolation_cleans_only_created_sessions() {
 #[test]
 fn timed_out_session_creation_is_prearmed_for_cleanup() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::timing_out_after_creation("new-session"),
     );
 
@@ -1836,7 +1836,7 @@ fn timed_out_session_creation_is_prearmed_for_cleanup() {
 #[test]
 fn cancelled_admission_directory_creation_cleans_the_preselected_path() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::failing_admission("mkdir"),
     );
 
@@ -1886,7 +1886,7 @@ fn failed_real_client_probe_is_not_cached_as_verified() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -1910,7 +1910,7 @@ fn failed_real_client_probe_is_not_cached_as_verified() {
 #[test]
 fn ignored_namespaces_are_rejected_without_killing_any_server() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::ignoring_namespaces(),
     );
 
@@ -1944,7 +1944,7 @@ fn ignored_namespaces_are_rejected_without_killing_any_server() {
 #[test]
 fn prefix_matching_exact_targets_are_rejected() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::ignoring_exact_targets(),
     );
 
@@ -1963,7 +1963,7 @@ fn prefix_matching_exact_targets_are_rejected() {
 #[test]
 fn failed_primary_creation_never_reaches_server_wide_commands() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::rejecting_admission("new-session"),
     );
 
@@ -1984,7 +1984,7 @@ fn failed_primary_creation_never_reaches_server_wide_commands() {
 #[test]
 fn preexisting_private_target_is_never_created_or_deleted() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::admission_status_failure("has-session", 0, ""),
     );
 
@@ -2005,7 +2005,7 @@ fn preexisting_private_target_is_never_created_or_deleted() {
 #[test]
 fn duplicate_creation_failure_never_grants_cleanup_authority() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::admission_status_failure("new-session", 1, "duplicate session"),
     );
 
@@ -2029,7 +2029,7 @@ fn discovery_decodes_length_prefixed_session_names_without_splitting_records() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -2072,7 +2072,7 @@ fn kill_capture_matches_format_shaped_names_without_targeting_them() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let snapshot = discover(&host).expect("discover format-shaped session name");
@@ -2102,7 +2102,7 @@ fn attach_plan_targets_the_fresh_stable_session_id() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let snapshot = discover(&host).expect("discover sessions");
@@ -2158,7 +2158,7 @@ fn kill_authority_comes_from_a_fresh_query_and_targets_stable_identity() {
         output(0, "", ""),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let snapshot = discover(&host).expect("discover sessions");
@@ -2214,7 +2214,7 @@ fn replaced_session_is_not_killed_after_confirmation() {
         output(0, "__ghosthub_kill_identity_mismatch_v1__\n", ""),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let snapshot = discover(&host).expect("discover sessions");
@@ -2249,7 +2249,7 @@ fn missing_stable_target_detects_a_same_named_replacement_from_inventory() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
     let snapshot = discover(&host).expect("discover sessions");
@@ -2284,7 +2284,7 @@ fn missing_stable_target_detects_a_same_named_replacement_from_inventory() {
 
 #[test]
 fn configured_socket_directory_is_explicit_environment() {
-    let config = WslConfig::configured(
+    let config = LocalConfig::configured(
         Some("Ubuntu".to_owned()),
         "/opt/tmux/bin/tmux",
         Some("/run/user/1000".to_owned()),
@@ -2320,7 +2320,7 @@ fn discovery_scrubs_inherited_tmux_client_environment() {
         instance_output(),
     ]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -2335,7 +2335,7 @@ fn discovery_scrubs_inherited_tmux_client_environment() {
 fn malformed_inventory_is_classified() {
     let runner = RecordingRunner::new(vec![instance_output(), output(0, "not-five-fields\n", "")]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -2351,7 +2351,7 @@ fn missing_tmux_binary_is_classified() {
         output(127, "", "/usr/bin/env: '/missing/tmux': No such file\n"),
     ]);
     let host = test_host(
-        WslConfig::configured(Some("Ubuntu".to_owned()), "/missing/tmux", None)
+        LocalConfig::configured(Some("Ubuntu".to_owned()), "/missing/tmux", None)
             .expect("valid config"),
         runner,
     );
@@ -2365,7 +2365,7 @@ fn missing_tmux_binary_is_classified() {
 #[test]
 fn missing_tmux_binary_during_admission_is_classified_before_capability_checks() {
     let host = test_host(
-        WslConfig::configured(Some("Ubuntu".to_owned()), "/missing/tmux", None)
+        LocalConfig::configured(Some("Ubuntu".to_owned()), "/missing/tmux", None)
             .expect("valid config"),
         RecordingRunner::missing_admission_executable("-V"),
     );
@@ -2381,7 +2381,7 @@ fn missing_tmux_binary_during_admission_is_classified_before_capability_checks()
 #[test]
 fn permission_failure_during_admission_is_classified_before_capability_checks() {
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::admission_status_failure("show-environment", 1, "permission denied"),
     );
 
@@ -2402,7 +2402,7 @@ fn rejects_wsl1_runtime_identity() {
         "",
     )]);
     let host = test_host(
-        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
@@ -2464,7 +2464,7 @@ fn consumes_the_windows_hosted_posix_wsl_contract() {
         output(0, &fixture.instance_output, ""),
     ]);
     let host = test_host(
-        WslConfig::configured(Some(fixture.distro), fixture.tmux_path, fixture.tmux_tmpdir)
+        LocalConfig::configured(Some(fixture.distro), fixture.tmux_path, fixture.tmux_tmpdir)
             .expect("valid fixture config"),
         runner,
     );

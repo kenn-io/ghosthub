@@ -3,8 +3,9 @@
 This document is the maintained design for native Ghosthub applications on
 Windows and Linux. The existing local-session product slice uses tmux in WSL2
 on Windows and discovers optional Herdr and Zellij sessions there. Native
-Linux is now a product target. Its GPUI shell and Settings run on Linux, but
-local host discovery and session workflows remain unimplemented.
+Linux discovers, attaches to, creates, and confirms kills of local tmux
+sessions through the same workflow layer. Local Linux worktrees, optional
+backends, and helper packaging remain separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and
@@ -22,9 +23,10 @@ away from SwiftUI.
 - macOS remains SwiftUI/AppKit and libghostty.
 - Windows uses Rust and GPUI. Its first product slice attaches to real tmux in
   a WSL2 distro through `wsl.exe` and ConPTY.
-- Linux enables X11 and Wayland in the native Rust/GPUI shell. Local
-  sessions and native helper packaging are planned work; compilation and
-  contracts alone do not establish Linux product parity.
+- Linux enables X11 and Wayland in the native Rust/GPUI shell and uses a
+  native PTY for local tmux clients. X11 development acceptance does not
+  establish Wayland or hardware-GPU acceptance. Native helper packaging
+  remains planned work.
 - All platforms preserve the Host, Project, Worktree, and ordinary
   multiplexer-session mental model.
 - Kwt remains authoritative for project/worktree identity and exact session
@@ -115,7 +117,7 @@ development host, Mesa's software Vulkan driver and DejaVu fonts suffice:
 sudo apt-get install --no-install-recommends \
   build-essential clang cmake libfontconfig-dev libvulkan1 \
   libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev lld llvm pkg-config \
-  mesa-vulkan-drivers fonts-dejavu-core xvfb xauth xdotool ffmpeg
+  mesa-vulkan-drivers fonts-dejavu-core xvfb xauth xdotool ffmpeg tmux
 make rust-build
 make rust-check
 ```
@@ -138,12 +140,30 @@ Ghosthub window, move it, and give it focus before capturing the X11 display
 with FFmpeg. Inspect the image: finding a window alone does not prove that
 GPUI has painted it. Stop the app and virtual display after capture. Keep
 these development captures local; accepted website screenshots follow the
-separate [publishing workflow](../website/README.md).
+separate [publishing workflow](https://github.com/kenn-io/ghosthub/blob/main/website/README.md).
 
-With empty configuration, Linux currently displays **No terminal hosts are
-available**. The Settings button opens the existing Appearance, Terminal,
-and Hosts panes. This verifies native rendering and UI interaction, not local
-terminal attachment. Software-rendered X11 captures do not establish Wayland,
+With empty configuration, Linux publishes a **Local** host and discovers
+the default tmux server after the first frame. A missing tmux executable
+leaves the application shell available with a host diagnostic. Local Linux
+settings are separate from Windows `[wsl]` settings:
+
+```toml
+[local]
+tmux-binary = "/usr/bin/tmux"
+# Optional absolute directory passed as TMUX_TMPDIR:
+# socket-directory = "/tmp/ghosthub-demo-tmux"
+```
+
+For development captures, configure `local.socket-directory` to a private
+temporary directory containing only synthetic sessions. Redirecting the app's
+state roots alone does not isolate tmux. Existing-server attachments preserve
+the server's configuration. Test fixtures start their private server with
+`-f /dev/null` and a controlled shell before connecting the app.
+
+The native Linux lifecycle tests run in `make rust-check` and require
+`/usr/bin/tmux`. They exercise real discovery, terminal output, input, resize,
+creation, detach/close survival, and confirmed kills that reject a same-named
+replacement. Software-rendered X11 captures do not establish Wayland,
 hardware GPU, Windows WSL, or ConPTY acceptance.
 
 Track implementation and baseline failures in the existing Kata project.
@@ -187,6 +207,26 @@ does not reconnect a local `wsl.exe` relay after client exit. Remote OpenSSH
 exit status 255 alone invokes bounded exponential reconnect; a connection
 healthy for 30 seconds resets backoff. Every other status passes through
 unchanged.
+
+### Shared local host boundary
+
+`LocalHost` owns the Linux session machinery used by native Linux and WSL2.
+Its endpoint distinguishes the native machine from a named WSL distribution;
+admission caches cannot cross those endpoints even when runtime evidence
+matches. `LinuxRuntimeIdentity` records the kernel boot ID and PID 1 start
+time. Windows additionally requires a WSL2 kernel before admission.
+
+The native route launches exact POSIX argv through `/usr/bin/env`; the WSL
+route prepends the pinned distribution and `--exec` to the system-owned
+Windows launcher. Both share tmux capability admission, exact session
+identity checks, one-shot creation receipts, and confirmed destruction.
+Workspace and scene state use the local host identity rather than assuming
+every local endpoint is WSL. Neither route reconstructs server panes or kills
+the server when a presentation closes.
+
+Native Linux currently exposes tmux only. It does not probe local Herdr or
+Zellij, activate a local KWT bundle, or start the worktree inventory cadence.
+Those capabilities need their own native acceptance and packaging work.
 
 ### Windows WSL command boundary
 

@@ -14,9 +14,9 @@ pub use host::KwtTmuxAttachMode;
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
     HostSnapshot, KwtInventory, KwtPullRequestImportRequest, KwtSshExecutable, LiveSessionTarget,
-    RemoteSessionInventory, RemoteTmuxConfig, RemoteTmuxHost, RemoteTmuxSnapshot, SshExecutable,
-    SshLeasePrompt, SshPromptKind, SshTarget, StdCommandRunner, WslConfig, WslExecutable, WslHost,
-    ZellijInventory,
+    LocalConfig, LocalExecutable, LocalHost, RemoteSessionInventory, RemoteTmuxConfig,
+    RemoteTmuxHost, RemoteTmuxSnapshot, SshExecutable, SshLeasePrompt, SshPromptKind, SshTarget,
+    StdCommandRunner, WslExecutable, ZellijInventory,
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
@@ -84,9 +84,8 @@ use scene::{
     run_create, run_herdr_create, run_kwt_project_mutation, run_kwt_worktree_operation,
     run_remote_herdr_attach, run_remote_herdr_create, run_remote_tmux_attach,
     run_remote_zellij_attach, run_remote_zellij_create, run_retained_retry, run_zellij_create,
-    schedule_inventory_refresh, schedule_kwt_refresh, set_scene_state, set_terminal_notice,
-    set_wsl_host_unavailable, start_initial_kwt_refresh, start_kwt_refresh,
-    take_pending_kwt_removal,
+    schedule_inventory_refresh, schedule_kwt_refresh, set_local_host_unavailable, set_scene_state,
+    set_terminal_notice, start_initial_kwt_refresh, start_kwt_refresh, take_pending_kwt_removal,
 };
 
 const REDUCED_COLOR_NOTICE: &str =
@@ -765,10 +764,32 @@ impl HostItem {
         sessions: Vec<SessionItem>,
         diagnostic: Option<HostDiagnostic>,
     ) -> Self {
+        Self::local(
+            &host::LocalEndpoint::Wsl {
+                distro: endpoint.into(),
+            },
+            socket_directory,
+            connection,
+            sessions,
+            diagnostic,
+        )
+    }
+
+    fn local(
+        endpoint: &host::LocalEndpoint,
+        socket_directory: Option<String>,
+        connection: HostConnectionState,
+        sessions: Vec<SessionItem>,
+        diagnostic: Option<HostDiagnostic>,
+    ) -> Self {
         Self {
-            id: "wsl".to_owned(),
-            name: "WSL".to_owned(),
-            endpoint: endpoint.into(),
+            id: endpoint.host_id().to_owned(),
+            name: match endpoint {
+                host::LocalEndpoint::Native => "Local",
+                host::LocalEndpoint::Wsl { .. } => "WSL",
+            }
+            .to_owned(),
+            endpoint: endpoint.name().to_owned(),
             socket_directory,
             connection,
             sessions,
@@ -885,7 +906,7 @@ impl HostItem {
 
     /// Whether cached session inventory may authorize a new host action.
     ///
-    /// WSL refreshes retain their admitted local runtime and may continue to
+    /// Local refreshes retain their admitted local runtime and may continue to
     /// use cached inventory. SSH refreshes are a connection boundary and must
     /// finish before another action can use the replacement lease.
     #[must_use]
@@ -1695,24 +1716,47 @@ fn is_canonical_kwt_generation(generation: &str) -> bool {
     generation.len() == 32 && generation.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-pub struct WslHostSpec {
-    config: WslConfig,
-    executable: Option<WslExecutable>,
+pub struct LocalHostSpec {
+    config: LocalConfig,
+    executable: Option<LocalExecutable>,
     diagnostic: Option<HostDiagnostic>,
 }
 
-impl WslHostSpec {
+impl LocalHostSpec {
     #[must_use]
-    pub fn available(config: WslConfig, executable: WslExecutable) -> Self {
+    pub fn native(config: LocalConfig) -> Self {
         Self {
             config,
-            executable: Some(executable),
+            executable: Some(LocalExecutable::Native),
+            diagnostic: None,
+        }
+    }
+
+    fn endpoint(&self) -> host::LocalEndpoint {
+        if self
+            .executable
+            .as_ref()
+            .is_some_and(LocalExecutable::is_native)
+        {
+            host::LocalEndpoint::Native
+        } else {
+            host::LocalEndpoint::Wsl {
+                distro: self.config.distro().unwrap_or("Default distro").to_owned(),
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn available(config: LocalConfig, executable: WslExecutable) -> Self {
+        Self {
+            config,
+            executable: Some(LocalExecutable::Wsl(executable)),
             diagnostic: None,
         }
     }
 
     #[must_use]
-    pub fn unavailable(config: WslConfig, error: &HostError) -> Self {
+    pub fn unavailable(config: LocalConfig, error: &HostError) -> Self {
         Self {
             config,
             executable: None,
@@ -1726,8 +1770,8 @@ impl WslHostSpec {
     }
 
     fn host_item(&self) -> HostItem {
-        HostItem::wsl(
-            self.config.distro().unwrap_or("Default distro"),
+        HostItem::local(
+            &self.endpoint(),
             self.config.socket_directory().map(str::to_owned),
             if self.diagnostic.is_some() {
                 HostConnectionState::Unavailable
@@ -1741,7 +1785,7 @@ impl WslHostSpec {
 }
 
 type SharedCommandRunner = Arc<dyn CommandRunner>;
-type RuntimeHost = WslHost<SharedCommandRunner>;
+type RuntimeHost = LocalHost<SharedCommandRunner>;
 type RuntimeRemoteHost = RemoteTmuxHost<SharedCommandRunner>;
 
 #[derive(Clone)]
@@ -2190,21 +2234,21 @@ struct HostContext {
     snapshot: HostSnapshot,
 }
 
-trait WslDiscovery: Send + Sync {
+trait LocalDiscovery: Send + Sync {
     fn discover(
         &self,
-        config: WslConfig,
-        executable: WslExecutable,
+        config: LocalConfig,
+        executable: LocalExecutable,
         existing_host: Option<RuntimeHost>,
         cancellation: &CancellationToken,
     ) -> Result<HostContext, HostError>;
 }
 
-struct SystemWslDiscovery {
+struct SystemLocalDiscovery {
     runner: SharedCommandRunner,
 }
 
-impl SystemWslDiscovery {
+impl SystemLocalDiscovery {
     fn new() -> Self {
         Self {
             runner: Arc::new(StdCommandRunner),
@@ -2212,17 +2256,18 @@ impl SystemWslDiscovery {
     }
 }
 
-impl WslDiscovery for SystemWslDiscovery {
+impl LocalDiscovery for SystemLocalDiscovery {
     fn discover(
         &self,
-        config: WslConfig,
-        executable: WslExecutable,
+        config: LocalConfig,
+        executable: LocalExecutable,
         existing_host: Option<RuntimeHost>,
         cancellation: &CancellationToken,
     ) -> Result<HostContext, HostError> {
-        let host = existing_host
-            .unwrap_or_else(|| WslHost::new(config, Arc::clone(&self.runner), executable));
-        host.discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+        let host = existing_host.unwrap_or_else(|| {
+            LocalHost::with_executable(config, Arc::clone(&self.runner), executable)
+        });
+        host.discover_with_cancel(&PtyAdmissionAttacher::new(), cancellation)
             .map(|snapshot| HostContext { host, snapshot })
     }
 }
@@ -2319,8 +2364,8 @@ enum KillCaptureRequest {
     Tmux {
         selection: SessionSelection,
         host: RuntimeHost,
-        endpoint: host::WslEndpoint,
-        runtime: host::WslRuntimeIdentity,
+        endpoint: host::LocalEndpoint,
+        runtime: host::LinuxRuntimeIdentity,
     },
     Zellij(PendingKill),
 }
@@ -2347,7 +2392,7 @@ struct KillCaptureIntent {
 /// removals.
 struct KwtRemovalCaptureIntent {
     authority: u64,
-    endpoint: host::WslEndpoint,
+    endpoint: host::LocalEndpoint,
     repository: String,
     project_path: String,
     registration_fingerprint: String,
@@ -2411,12 +2456,12 @@ fn run_confirmed_zellij_kill(
 }
 
 fn zellij_kill_key(
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     name: &str,
 ) -> ZellijKillKey {
     (
-        endpoint.distro().to_owned(),
+        endpoint.name().to_owned(),
         format!(
             "{}:{}",
             runtime.kernel_boot_id(),
@@ -2430,8 +2475,8 @@ fn zellij_kill_key(
 enum KillTarget {
     Tmux(Arc<LiveSessionTarget>),
     Zellij {
-        endpoint: host::WslEndpoint,
-        runtime: host::WslRuntimeIdentity,
+        endpoint: host::LocalEndpoint,
+        runtime: host::LinuxRuntimeIdentity,
         executable: String,
         name: String,
         /// The reservation revision this confirmation was created against;
@@ -2451,8 +2496,8 @@ struct PendingHerdrLifecycle {
     selection: SessionSelection,
     action: HerdrLifecycleAction,
     host: RuntimeHost,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     executable: String,
     record: session::HerdrSessionRecord,
 }
@@ -2469,8 +2514,8 @@ impl PendingHerdrLifecycle {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct HerdrOperationKey {
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     name: String,
 }
 
@@ -2641,8 +2686,8 @@ fn with_herdr_launch_fence<T, E>(
 struct AttachRequest {
     host_id: String,
     host: RuntimeHost,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     target: AttachTarget,
     exact_worktree_attach: bool,
     name: String,
@@ -2714,7 +2759,7 @@ fn kwt_tmux_presentation_key(
     };
     Some(PresentationKey {
         host_id: request.host_id.clone(),
-        endpoint: request.endpoint.distro().to_owned(),
+        endpoint: request.endpoint.name().to_owned(),
         socket_directory: request.host.socket_directory().map(str::to_owned),
         runtime: request.runtime.clone(),
         target: AttachTarget::Tmux(identity),
@@ -2763,8 +2808,8 @@ fn attach_target_matches_killed_tmux(
 
 fn request_matches_killed_tmux(
     request: &AttachRequest,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     identity: &session::SessionIdentity,
     name: Option<&str>,
     socket_name: Option<&str>,
@@ -2776,13 +2821,13 @@ fn request_matches_killed_tmux(
 
 fn presentation_key_matches_killed_tmux(
     key: &PresentationKey,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     identity: &session::SessionIdentity,
     name: Option<&str>,
     socket_name: Option<&str>,
 ) -> bool {
-    key.endpoint == endpoint.distro()
+    key.endpoint == endpoint.name()
         && key.runtime == *runtime
         && attach_target_matches_killed_tmux(&key.target, identity, name, socket_name)
 }
@@ -2864,8 +2909,8 @@ impl AttachTarget {
 struct CreateRequest {
     host_id: String,
     host: RuntimeHost,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     name: SessionName,
 }
 
@@ -2873,8 +2918,8 @@ struct CreateRequest {
 struct HerdrCreateRequest {
     host_id: String,
     host: RuntimeHost,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     executable: String,
     term: AttachTerm,
     name: HerdrLaunchTarget,
@@ -2885,8 +2930,8 @@ struct HerdrCreateRequest {
 struct ZellijCreateRequest {
     host_id: String,
     host: RuntimeHost,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     executable: String,
     term: AttachTerm,
     name: ZellijSessionName,
@@ -3003,7 +3048,7 @@ struct PresentationKey {
     host_id: String,
     endpoint: String,
     socket_directory: Option<String>,
-    runtime: host::WslRuntimeIdentity,
+    runtime: host::LinuxRuntimeIdentity,
     target: AttachTarget,
 }
 
@@ -3053,7 +3098,7 @@ impl AttachRequest {
     fn presentation_key(&self) -> PresentationKey {
         PresentationKey {
             host_id: self.host_id.clone(),
-            endpoint: self.endpoint.distro().to_owned(),
+            endpoint: self.endpoint.name().to_owned(),
             socket_directory: self.host.socket_directory().map(str::to_owned),
             runtime: self.runtime.clone(),
             target: self.target.clone(),
@@ -3070,7 +3115,7 @@ impl AttachRequest {
         {
             return SessionSelection::kwt_workspace(
                 &self.host_id,
-                self.endpoint.distro(),
+                self.endpoint.name(),
                 &self.name,
                 host::KwtTmuxAttachMode::Protected,
                 Some(tmux_socket_name.clone()),
@@ -3087,7 +3132,7 @@ impl AttachRequest {
         {
             return SessionSelection::kwt_workspace(
                 &self.host_id,
-                self.endpoint.distro(),
+                self.endpoint.name(),
                 &self.name,
                 host::KwtTmuxAttachMode::Direct,
                 tmux_socket_name.clone(),
@@ -3104,7 +3149,7 @@ impl AttachRequest {
         {
             return SessionSelection::kwt_workspace(
                 &self.host_id,
-                self.endpoint.distro(),
+                self.endpoint.name(),
                 session_name,
                 host::KwtTmuxAttachMode::Direct,
                 None,
@@ -3120,7 +3165,7 @@ impl AttachRequest {
         {
             return SessionSelection::kwt_workspace(
                 &self.host_id,
-                self.endpoint.distro(),
+                self.endpoint.name(),
                 &self.name,
                 host::KwtTmuxAttachMode::Direct,
                 tmux_socket_name.clone(),
@@ -3130,13 +3175,13 @@ impl AttachRequest {
         }
         match self.target.kind() {
             SessionKind::Tmux => {
-                SessionSelection::new(&self.host_id, self.endpoint.distro(), &self.name)
+                SessionSelection::new(&self.host_id, self.endpoint.name(), &self.name)
             }
             SessionKind::Herdr => {
-                SessionSelection::herdr(&self.host_id, self.endpoint.distro(), &self.name)
+                SessionSelection::herdr(&self.host_id, self.endpoint.name(), &self.name)
             }
             SessionKind::Zellij => {
-                SessionSelection::zellij(&self.host_id, self.endpoint.distro(), &self.name)
+                SessionSelection::zellij(&self.host_id, self.endpoint.name(), &self.name)
             }
         }
     }
@@ -3569,8 +3614,8 @@ fn refreshed_session_name(
     snapshot: &HostSnapshot,
     socket_directory: Option<&str>,
 ) -> Option<String> {
-    (key.host_id == "wsl"
-        && key.endpoint == snapshot.endpoint().distro()
+    (is_local_host_id(&key.host_id)
+        && key.endpoint == snapshot.endpoint().name()
         && key.socket_directory.as_deref() == socket_directory
         && key.runtime == *snapshot.runtime())
     .then(|| match &key.target {
@@ -3760,11 +3805,11 @@ pub(crate) fn resize_terminal_worker(
     worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
 }
 
-struct ConptyAdmissionAttacher {
+struct PtyAdmissionAttacher {
     size: GridSize,
 }
 
-impl ConptyAdmissionAttacher {
+impl PtyAdmissionAttacher {
     fn new() -> Self {
         Self {
             size: GridSize::new(80, 24).expect("admission grid is valid"),
@@ -3772,7 +3817,7 @@ impl ConptyAdmissionAttacher {
     }
 }
 
-impl AdmissionAttacher for ConptyAdmissionAttacher {
+impl AdmissionAttacher for PtyAdmissionAttacher {
     type Client = TerminalWorker;
 
     fn attach(&self, plan: &session::AdmissionPlan) -> Result<Self::Client, String> {
@@ -3886,8 +3931,8 @@ impl Workspace {
                     cursor_default: CursorDefault::new(snapshot.appearance.cursor_style()),
                     appearance: RwLock::new(snapshot.appearance),
                     host_scoped_inventory: false,
-                    wsl_config: None,
-                    wsl_executable: Mutex::new(None),
+                    local_config: None,
+                    local_executable: Mutex::new(None),
                     hosts: RwLock::new(snapshot.hosts),
                     inventory_state: Mutex::new(snapshot.content.clone()),
                     revision: AtomicU64::new(snapshot.revision),
@@ -3921,7 +3966,7 @@ impl Workspace {
                     kwt_mutation_in_flight: AtomicBool::new(false),
                     kwt_worktree_listing: Mutex::new(None),
                     pending_kwt_creations: Mutex::new(Vec::new()),
-                    discovery: Arc::new(SystemWslDiscovery::new()),
+                    discovery: Arc::new(SystemLocalDiscovery::new()),
                     refresh_runtime: Arc::new(ThreadRefreshRuntime),
                     scene_sequence: AtomicU64::new(0),
                     scenes: Mutex::new(Vec::new()),
@@ -3951,11 +3996,11 @@ impl Workspace {
     }
 
     #[must_use]
-    pub fn application(appearance: TerminalAppearance, wsl: Option<WslHostSpec>) -> Self {
+    pub fn application(appearance: TerminalAppearance, wsl: Option<LocalHostSpec>) -> Self {
         Self::application_with_services(
             appearance,
             wsl,
-            Arc::new(SystemWslDiscovery::new()),
+            Arc::new(SystemLocalDiscovery::new()),
             Arc::new(ThreadRefreshRuntime),
         )
     }
@@ -3964,7 +4009,7 @@ impl Workspace {
     #[must_use]
     pub fn application_with_remote_hosts(
         appearance: TerminalAppearance,
-        wsl: Option<WslHostSpec>,
+        wsl: Option<LocalHostSpec>,
         remote_specs: Vec<RemoteHostSpec>,
         settings: ApplicationConfig,
         roots: Roots,
@@ -3974,7 +4019,7 @@ impl Workspace {
         let (mut runtime, mut selected_host) = Self::application_runtime(
             appearance,
             wsl,
-            Arc::new(SystemWslDiscovery::new()),
+            Arc::new(SystemLocalDiscovery::new()),
             Arc::new(ThreadRefreshRuntime),
         );
         runtime.remote_controller = controller;
@@ -4030,8 +4075,8 @@ impl Workspace {
 
     fn application_with_services(
         appearance: TerminalAppearance,
-        wsl: Option<WslHostSpec>,
-        discovery: Arc<dyn WslDiscovery>,
+        wsl: Option<LocalHostSpec>,
+        discovery: Arc<dyn LocalDiscovery>,
         refresh_runtime: Arc<dyn RefreshRuntime>,
     ) -> Self {
         let (runtime, selected_host) =
@@ -4048,25 +4093,27 @@ impl Workspace {
 
     fn application_runtime(
         appearance: TerminalAppearance,
-        wsl: Option<WslHostSpec>,
-        discovery: Arc<dyn WslDiscovery>,
+        wsl: Option<LocalHostSpec>,
+        discovery: Arc<dyn LocalDiscovery>,
         refresh_runtime: Arc<dyn RefreshRuntime>,
     ) -> (Runtime, Option<String>) {
         let hosts = wsl
             .as_ref()
-            .map(WslHostSpec::host_item)
+            .map(LocalHostSpec::host_item)
             .into_iter()
             .collect();
-        let selected_host = wsl.as_ref().map(|_| "wsl".to_owned());
-        let wsl_config = wsl.as_ref().map(|spec| spec.config.clone());
-        let wsl_executable = wsl.and_then(|spec| spec.executable);
+        let selected_host = wsl
+            .as_ref()
+            .map(|spec| spec.endpoint().host_id().to_owned());
+        let local_config = wsl.as_ref().map(|spec| spec.config.clone());
+        let local_executable = wsl.and_then(|spec| spec.executable);
         (
             Runtime {
                 cursor_default: CursorDefault::new(appearance.cursor_style()),
                 appearance: RwLock::new(appearance.into()),
                 host_scoped_inventory: true,
-                wsl_config,
-                wsl_executable: Mutex::new(wsl_executable),
+                local_config,
+                local_executable: Mutex::new(local_executable),
                 hosts: RwLock::new(hosts),
                 inventory_state: Mutex::new(WorkspaceContent::Shell),
                 revision: AtomicU64::new(0),
@@ -4110,15 +4157,15 @@ impl Workspace {
     }
 
     #[must_use]
-    pub fn start_wsl(config: WslConfig, appearance: TerminalAppearance) -> Self {
+    pub fn start_wsl(config: LocalConfig, appearance: TerminalAppearance) -> Self {
         let workspace = Self {
             scene: attach_scene(
                 Arc::new(Runtime {
                     cursor_default: CursorDefault::new(appearance.cursor_style()),
                     appearance: RwLock::new(appearance.into()),
                     host_scoped_inventory: false,
-                    wsl_config: Some(config.clone()),
-                    wsl_executable: Mutex::new(None),
+                    local_config: Some(config.clone()),
+                    local_executable: Mutex::new(None),
                     hosts: RwLock::new(vec![HostItem::wsl(
                         config.distro().unwrap_or("Default distro"),
                         config.socket_directory().map(str::to_owned),
@@ -4158,7 +4205,7 @@ impl Workspace {
                     kwt_mutation_in_flight: AtomicBool::new(false),
                     kwt_worktree_listing: Mutex::new(None),
                     pending_kwt_creations: Mutex::new(Vec::new()),
-                    discovery: Arc::new(SystemWslDiscovery::new()),
+                    discovery: Arc::new(SystemLocalDiscovery::new()),
                     refresh_runtime: Arc::new(ThreadRefreshRuntime),
                     scene_sequence: AtomicU64::new(0),
                     scenes: Mutex::new(Vec::new()),
@@ -4182,13 +4229,13 @@ impl Workspace {
         // Same close fence as refresh: startup discovery is constructive
         // shared work no closed scene may initiate.
         let _navigation = lock_live_navigation(&self.scene)?;
-        let Some(config) = self.scene.runtime.wsl_config.clone() else {
+        let Some(config) = self.scene.runtime.local_config.clone() else {
             return Ok(());
         };
         let executable = self
             .scene
             .runtime
-            .wsl_executable
+            .local_executable
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
@@ -4584,7 +4631,7 @@ impl Workspace {
         // outcomes to surviving scenes.
         let _navigation = lock_live_navigation(&self.scene)?;
         self.select_host(id)?;
-        if id == "wsl" {
+        if is_local_host_id(id) {
             // The connect fence above already holds the navigation guard.
             return self.refresh_locked();
         }
@@ -4701,7 +4748,7 @@ impl Workspace {
         let Ok(_navigation) = lock_live_navigation(&self.scene) else {
             return false;
         };
-        if id == "wsl" {
+        if is_local_host_id(id) {
             return cancel_refresh(&self.scene.runtime);
         }
         let cancelled = {
@@ -4817,7 +4864,7 @@ impl Workspace {
         let dependencies_available = self
             .scene
             .runtime
-            .wsl_executable
+            .local_executable
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_some();
@@ -5000,7 +5047,7 @@ impl Workspace {
         self.scene.runtime.revision.fetch_add(1, Ordering::Release);
     }
 
-    /// Refresh the current WSL inventory without requiring an app restart.
+    /// Refresh the current local inventory without requiring an app restart.
     ///
     /// # Errors
     ///
@@ -5016,16 +5063,13 @@ impl Workspace {
 
     /// Refresh with the live-navigation fence already held by the caller.
     fn refresh_locked(&self) -> Result<(), WorkspaceError> {
-        let config = self
-            .scene
-            .runtime
-            .wsl_config
-            .clone()
-            .ok_or_else(|| WorkspaceError::new("preview workspace cannot refresh WSL"))?;
+        let config = self.scene.runtime.local_config.clone().ok_or_else(|| {
+            WorkspaceError::new("preview workspace cannot refresh the local host")
+        })?;
         let executable = self
             .scene
             .runtime
-            .wsl_executable
+            .local_executable
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
@@ -5526,7 +5570,7 @@ impl Workspace {
     /// scheduled.
     pub fn start_inventory_cadence(&self) -> Result<(), WorkspaceError> {
         start_event_pump(&self.scene.runtime)?;
-        if self.scene.runtime.wsl_config.is_none() {
+        if self.scene.runtime.local_config.is_none() {
             return Ok(());
         }
         if self
@@ -5548,7 +5592,7 @@ impl Workspace {
         if self
             .scene
             .runtime
-            .wsl_config
+            .local_config
             .as_ref()
             .is_some_and(|config| config.kwt_bundle().is_some())
             && self
@@ -5584,16 +5628,13 @@ impl Workspace {
         if !self.host_is_ready() || refresh_is_in_flight(&self.scene.runtime) {
             return Ok(false);
         }
-        let config = self
-            .scene
-            .runtime
-            .wsl_config
-            .clone()
-            .ok_or_else(|| WorkspaceError::new("preview workspace cannot refresh WSL"))?;
+        let config = self.scene.runtime.local_config.clone().ok_or_else(|| {
+            WorkspaceError::new("preview workspace cannot refresh the local host")
+        })?;
         let executable = self
             .scene
             .runtime
-            .wsl_executable
+            .local_executable
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
@@ -5608,10 +5649,10 @@ impl Workspace {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .any(|host| host.id == "wsl" && host.connection == HostConnectionState::Ready)
+            .any(|host| is_local_host_id(&host.id) && host.connection == HostConnectionState::Ready)
     }
 
-    /// Cancel the active WSL inventory refresh, if one is connecting.
+    /// Cancel the active local inventory refresh, if one is connecting.
     ///
     /// Returns `true` when an active refresh was cancelled.
     #[must_use]
@@ -6366,7 +6407,7 @@ impl Workspace {
         self.start_attachment(request, fallback, navigation_generation)
     }
 
-    /// Create or attach to one exact local WSL tmux session with a consumed
+    /// Create or attach to one exact local tmux session with a consumed
     /// one-shot authority.
     ///
     /// Existing visible presentations are retained and restored if the new
@@ -6409,7 +6450,7 @@ impl Workspace {
             &self.scene,
             WorkspaceContent::Attaching {
                 host_id: request.host_id.clone(),
-                endpoint: request.endpoint.distro().to_owned(),
+                endpoint: request.endpoint.name().to_owned(),
                 session: request.name.as_str().to_owned(),
                 kind: SessionKind::Tmux,
             },
@@ -6507,7 +6548,7 @@ impl Workspace {
             &self.scene,
             WorkspaceContent::Attaching {
                 host_id: request.host_id.clone(),
-                endpoint: request.endpoint.distro().to_owned(),
+                endpoint: request.endpoint.name().to_owned(),
                 session: request.name.as_str().to_owned(),
                 kind: SessionKind::Zellij,
             },
@@ -6865,7 +6906,7 @@ impl Workspace {
             &self.scene,
             WorkspaceContent::Attaching {
                 host_id: request.host_id.clone(),
-                endpoint: request.endpoint.distro().to_owned(),
+                endpoint: request.endpoint.name().to_owned(),
                 session: request.name.as_str().to_owned(),
                 kind: SessionKind::Herdr,
             },
@@ -7079,7 +7120,7 @@ impl Workspace {
             clear_terminal_notice(&self.scene);
             *state = WorkspaceContent::Attaching {
                 host_id: request.host_id.clone(),
-                endpoint: request.endpoint.distro().to_owned(),
+                endpoint: request.endpoint.name().to_owned(),
                 session: request.name.clone(),
                 kind: request.target.kind(),
             };
@@ -7595,8 +7636,8 @@ impl Workspace {
     /// tmux session; the kill is a host-wide fact.
     fn finish_killed_presentation(
         &self,
-        endpoint: &host::WslEndpoint,
-        runtime: &host::WslRuntimeIdentity,
+        endpoint: &host::LocalEndpoint,
+        runtime: &host::LinuxRuntimeIdentity,
         identity: &session::SessionIdentity,
         target_name: &str,
         socket_name: Option<&str>,
@@ -7616,7 +7657,7 @@ impl Workspace {
             },
             |selection| {
                 selection.kind() == SessionKind::Tmux
-                    && selection.endpoint() == endpoint.distro()
+                    && selection.endpoint() == endpoint.name()
                     && selection.session() == target_name
                     && selection.tmux_socket_name() == socket_name
             },
@@ -7637,8 +7678,8 @@ impl Workspace {
 
     fn finish_killed_presentation_in_scene(
         &self,
-        endpoint: &host::WslEndpoint,
-        runtime: &host::WslRuntimeIdentity,
+        endpoint: &host::LocalEndpoint,
+        runtime: &host::LinuxRuntimeIdentity,
         identity: &session::SessionIdentity,
         target_name: &str,
         socket_name: Option<&str>,
@@ -7693,8 +7734,8 @@ impl Workspace {
     /// Zellij session; the kill is a host-wide fact.
     fn finish_zellij_presentation(
         &self,
-        endpoint: &host::WslEndpoint,
-        runtime: &host::WslRuntimeIdentity,
+        endpoint: &host::LocalEndpoint,
+        runtime: &host::LinuxRuntimeIdentity,
         name: &str,
     ) {
         // As for killed tmux sessions: the killed Zellij session's pending
@@ -7719,7 +7760,7 @@ impl Workspace {
             },
             |selection| {
                 selection.kind() == SessionKind::Zellij
-                    && selection.endpoint() == endpoint.distro()
+                    && selection.endpoint() == endpoint.name()
                     && selection.session() == name
             },
         );
@@ -7733,8 +7774,8 @@ impl Workspace {
 
     fn finish_zellij_presentation_in_scene(
         &self,
-        endpoint: &host::WslEndpoint,
-        runtime: &host::WslRuntimeIdentity,
+        endpoint: &host::LocalEndpoint,
+        runtime: &host::LinuxRuntimeIdentity,
         name: &str,
     ) {
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
@@ -7764,7 +7805,7 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove_matching(|key| {
-                key.endpoint == endpoint.distro()
+                key.endpoint == endpoint.name()
                     && key.runtime == *runtime
                     && target_matches(&key.target)
             });
@@ -7778,8 +7819,8 @@ impl Workspace {
     /// scene would race the kill or undo it by keeping the session alive.
     fn close_zellij_presentations(
         &self,
-        endpoint: &host::WslEndpoint,
-        runtime: &host::WslRuntimeIdentity,
+        endpoint: &host::LocalEndpoint,
+        runtime: &host::LinuxRuntimeIdentity,
         name: &str,
     ) -> Vec<SuppressedZellijPresentation> {
         live_scenes(&self.scene.runtime)
@@ -7792,8 +7833,8 @@ impl Workspace {
 
     fn close_zellij_presentations_in_scene(
         &self,
-        endpoint: &host::WslEndpoint,
-        runtime: &host::WslRuntimeIdentity,
+        endpoint: &host::LocalEndpoint,
+        runtime: &host::LinuxRuntimeIdentity,
         name: &str,
     ) -> Option<SuppressedZellijPresentation> {
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
@@ -7842,7 +7883,7 @@ impl Workspace {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let matches = |key: &PresentationKey| {
-                key.endpoint == endpoint.distro()
+                key.endpoint == endpoint.name()
                     && key.runtime == *runtime
                     && target_matches(&key.target)
             };
@@ -8002,8 +8043,8 @@ impl Workspace {
     /// fact.
     fn finish_herdr_presentation(
         &self,
-        endpoint: &host::WslEndpoint,
-        runtime: &host::WslRuntimeIdentity,
+        endpoint: &host::LocalEndpoint,
+        runtime: &host::LinuxRuntimeIdentity,
         record: &session::HerdrSessionRecord,
     ) {
         // The Herdr session's lifecycle just changed host-wide, so a pending
@@ -8027,8 +8068,8 @@ impl Workspace {
 
     fn finish_herdr_presentation_in_scene(
         &self,
-        endpoint: &host::WslEndpoint,
-        runtime: &host::WslRuntimeIdentity,
+        endpoint: &host::LocalEndpoint,
+        runtime: &host::LinuxRuntimeIdentity,
         record: &session::HerdrSessionRecord,
     ) {
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
@@ -8059,7 +8100,7 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove_matching(|key| {
-                key.endpoint == endpoint.distro()
+                key.endpoint == endpoint.name()
                     && key.runtime == *runtime
                     && key.target.herdr_matches(record)
             });
@@ -8130,7 +8171,7 @@ impl Workspace {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let matches = |key: &PresentationKey| {
-                key.endpoint == pending.endpoint.distro()
+                key.endpoint == pending.endpoint.name()
                     && key.runtime == pending.runtime
                     && key.target.herdr_matches(&pending.record)
             };
@@ -8333,8 +8374,8 @@ impl Workspace {
     )]
     fn start_refresh(
         &self,
-        config: WslConfig,
-        executable: Option<WslExecutable>,
+        config: LocalConfig,
+        executable: Option<LocalExecutable>,
         presentation: RefreshPresentation,
     ) {
         let scene = Arc::clone(&self.scene);
@@ -8343,7 +8384,7 @@ impl Workspace {
         let deadline_scene = Arc::clone(&scene);
         let deadline_cancellation = cancellation.clone();
         if let Err(error) = scene.runtime.refresh_runtime.spawn_after(
-            "ghosthub-wsl-refresh-deadline",
+            "ghosthub-local-refresh-deadline",
             refresh_budget(generation),
             deadline_cancellation.clone(),
             Box::new(move || {
@@ -8354,7 +8395,7 @@ impl Workspace {
                 &scene,
                 generation,
                 &cancellation,
-                "schedule WSL refresh deadline",
+                "schedule local refresh deadline",
                 &error,
             );
             return;
@@ -8370,22 +8411,16 @@ impl Workspace {
         let task_scene = Arc::clone(&scene);
         let task_cancellation = cancellation.clone();
         let spawn_result = scene.runtime.refresh_runtime.spawn(
-            "ghosthub-wsl-discovery",
+            "ghosthub-local-discovery",
             Box::new(move || {
                 if task_cancellation.is_cancelled() {
                     return;
                 }
-                let resolved =
-                    executable
-                        .map_or_else(WslExecutable::system, Ok)
-                        .and_then(|executable| {
-                            discovery.discover(
-                                config,
-                                executable,
-                                existing_host,
-                                &task_cancellation,
-                            )
-                        });
+                let resolved = executable
+                    .map_or_else(LocalExecutable::system_wsl, Ok)
+                    .and_then(|executable| {
+                        discovery.discover(config, executable, existing_host, &task_cancellation)
+                    });
                 if task_cancellation.is_cancelled() {
                     return;
                 }
@@ -8406,7 +8441,7 @@ impl Workspace {
                                 publish_discovered_host(&task_scene, context, generation);
                         }
                         Err(error) => {
-                            set_wsl_host_unavailable(
+                            set_local_host_unavailable(
                                 &task_scene.runtime,
                                 error.kind(),
                                 error.to_string(),
@@ -8438,7 +8473,7 @@ impl Workspace {
                 &scene,
                 generation,
                 &cancellation,
-                "start WSL discovery task",
+                "start local discovery task",
                 &error,
             );
         }
@@ -8485,12 +8520,16 @@ fn reserve_retained_attachment(
     )
 }
 
-fn require_wsl_host_id(host_id: &str) -> Result<(), WorkspaceError> {
-    if host_id == "wsl" {
+fn is_local_host_id(id: &str) -> bool {
+    matches!(id, "local" | "wsl")
+}
+
+fn require_local_host_id(host_id: &str) -> Result<(), WorkspaceError> {
+    if is_local_host_id(host_id) {
         Ok(())
     } else {
         Err(WorkspaceError::new(
-            "this session action requires the local WSL host",
+            "this session action requires the local host",
         ))
     }
 }
@@ -8525,8 +8564,8 @@ fn choose_navigation_target(
 
 struct KwtRefresh {
     host: RuntimeHost,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     cancellation: CancellationToken,
     generation: u64,
 }
@@ -8554,8 +8593,8 @@ impl KwtProjectMutationRequest {
 
 struct KwtProjectMutationTask {
     host: RuntimeHost,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     cancellation: CancellationToken,
     generation: u64,
     request: KwtProjectMutationRequest,
@@ -8589,8 +8628,8 @@ enum KwtWorktreeOperation {
 #[derive(Clone)]
 struct KwtWorktreeTask {
     host: RuntimeHost,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     cancellation: CancellationToken,
     generation: u64,
     operation_id: u64,
@@ -8620,7 +8659,7 @@ impl KwtWorktreeTask {
 
 struct PendingKwtRemoval {
     authority: u64,
-    endpoint: host::WslEndpoint,
+    endpoint: host::LocalEndpoint,
     repository: String,
     project_path: String,
     registration_fingerprint: String,
@@ -8635,8 +8674,8 @@ struct PendingKwtRemoval {
 struct KwtRemovalCapture {
     host: RuntimeHost,
     authority: u64,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+    endpoint: host::LocalEndpoint,
+    runtime: host::LinuxRuntimeIdentity,
     repository: String,
     project_path: String,
     registration_fingerprint: String,
@@ -8652,7 +8691,7 @@ struct PendingKwtCreation {
     /// The scene whose `NewWorktree` dialog blocks on this creation; its
     /// settlement events are delivered losslessly to exactly this scene.
     scene: SceneId,
-    endpoint: host::WslEndpoint,
+    endpoint: host::LocalEndpoint,
     repository: String,
     project_path: String,
     registration_fingerprint: String,
@@ -8875,8 +8914,8 @@ fn pending_kwt_creation_target(
             && !kwt_identity_was_in_baseline(&pending.baseline, worktree)
     })?;
     Some(KwtWorktreeTarget {
-        host_id: "wsl".to_owned(),
-        endpoint: pending.endpoint.distro().to_owned(),
+        host_id: pending.endpoint.host_id().to_owned(),
+        endpoint: pending.endpoint.name().to_owned(),
         repository: pending.repository.clone(),
         project_path: pending.project_path.clone(),
         registration_fingerprint: pending.registration_fingerprint.clone(),
@@ -9279,8 +9318,8 @@ fn herdr_session_is_still_running(
 
 fn herdr_record_is_still_running(
     snapshot: &HostSnapshot,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     expected_executable: &str,
     expected: &session::HerdrSessionRecord,
 ) -> bool {
@@ -9331,12 +9370,12 @@ fn kwt_attachment_failure(fresh: &HostSnapshot, error: impl fmt::Display) -> Att
 fn discover_fresh_runtime(request: &AttachRequest) -> Result<HostSnapshot, AttachFreshError> {
     let fresh = request
         .host
-        .discover(&ConptyAdmissionAttacher::new())
+        .discover(&PtyAdmissionAttacher::new())
         .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
     if fresh.endpoint() != &request.endpoint || fresh.runtime() != &request.runtime {
         return Err(AttachFreshError::SessionChanged {
             error: WorkspaceError::new(
-                "WSL runtime changed since session discovery; refresh and try again",
+                "Local runtime changed since session discovery; refresh and try again",
             ),
             snapshot: Box::new(fresh),
         });
@@ -9483,7 +9522,7 @@ fn classify_kwt_startup_exit<T>(
         return Err(WorktreeClientStartupError::RetryWithXterm);
     }
     let message = if is_exact_terminfo_startup_failure(output_tail, term) {
-        "WSL does not provide usable xterm terminfo for terminal attachment".to_owned()
+        "The local host does not provide usable xterm terminfo for terminal attachment".to_owned()
     } else {
         format!(
             "KWT could not open the worktree: {}",
@@ -9672,7 +9711,7 @@ fn rgb(color: u32) -> Rgb {
 
 fn ready_content(snapshot: &HostSnapshot) -> WorkspaceContent {
     WorkspaceContent::Ready {
-        endpoint: snapshot.endpoint().distro().to_owned(),
+        endpoint: snapshot.endpoint().name().to_owned(),
         sessions: snapshot
             .sessions()
             .iter()
@@ -9727,7 +9766,7 @@ fn apply_zellij_inventory(host: &mut HostItem, inventory: &ZellijInventory) {
 
 fn project_herdr_lifecycle(
     hosts: &mut [HostItem],
-    current_runtime: Option<&(host::WslEndpoint, host::WslRuntimeIdentity)>,
+    current_runtime: Option<&(host::LocalEndpoint, host::LinuxRuntimeIdentity)>,
     lifecycle: &Mutex<HerdrLifecycleState>,
 ) {
     let Some((endpoint, runtime)) = current_runtime else {
@@ -9738,7 +9777,7 @@ fn project_herdr_lifecycle(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(host) = hosts
         .iter_mut()
-        .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
+        .find(|host| is_local_host_id(&host.id) && host.endpoint == endpoint.name())
     else {
         return;
     };
@@ -9833,7 +9872,10 @@ fn classify_terminal_exit_event(
     if startup_terminfo_failure && term == AttachTerm::Xterm {
         return (
             false,
-            Some("tmux could not use either xterm-256color or xterm terminfo in WSL".to_owned()),
+            Some(
+                "tmux could not use either xterm-256color or xterm terminfo on the local host"
+                    .to_owned(),
+            ),
         );
     }
     let diagnostic = (!retry_term).then(|| classify_terminal_exit(code, output_tail));

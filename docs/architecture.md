@@ -6,7 +6,7 @@ Security guarantees and trusted-peer assumptions are defined separately in
 the [Threat Model](threat-model.md).
 
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
-locked design for planned native Windows and Linux applications uses Rust and
+native Windows and Linux applications in development use Rust and
 GPUI while preserving the same product and session model. Its crate
 boundaries, dependency findings, platform roots, substrate gates, and delivery
 order are maintained in [Windows and Linux Rust Port](rust-port.md). The
@@ -224,8 +224,12 @@ Herdr, and Zellij sessions through one KWT-owned lease. A missing or broken
 backend is scoped to its own inventory and does not disable the host or another
 backend. All three backends use
 ordinary attach-only presentation; remote lifecycle controls remain withheld
-until they have fresh backend-specific identity fencing. Linux remains a
-compile-and-contract target until a native Linux product slice is authorized.
+until they have fresh backend-specific identity fencing. Native Linux also
+supports local tmux discovery, attachment, creation, and confirmed kill.
+`LocalHost` shares that lifecycle machinery with WSL while keeping native and
+WSL endpoints distinct. Native commands use a local PTY; Windows retains its
+system-owned WSL launcher and ConPTY. Linux local KWT/worktrees and optional
+Herdr/Zellij backends remain separate parity work.
 Neither replaces the macOS SwiftUI
 application or embeds a Rust runtime into it. Cross-platform parity is enforced
 through the repository-root contracts corpus rather than a shared process, FFI

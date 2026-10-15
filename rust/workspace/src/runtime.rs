@@ -5,18 +5,18 @@ use crate::{
     DiagnosticKind, HashMap, HerdrInventory, HerdrLaunchPrecondition, HerdrLaunchTarget,
     HerdrLifecycleReconciliation, HerdrLifecycleState, HerdrOperationKey, HerdrSessionName,
     HerdrSessionState, HostConnectionState, HostContext, HostDiagnostic, HostItem, HostSnapshot,
-    KwtSshExecutable, KwtState, KwtWorktreeListing, Mutex, Ordering, PendingCreation,
-    PendingHerdrLifecycle, PendingKwtCreation, PresentationKey, ProjectItem, Published,
-    RefreshRuntime, RemoteAttachmentAttempt, RemoteConstructiveState, RemoteConstructiveTarget,
-    RemoteEntry, RemoteHerdrAttachRequest, RemoteHerdrCreateRequest, RemoteTmuxAttachRequest,
-    RemoteTmuxConfig, RemoteTmuxSnapshot, RemoteZellijAttachRequest, RemoteZellijCreateRequest,
-    RuntimeHost, RuntimeRemoteHost, RwLock, Scene, SessionItem, SessionKind, SessionSelection,
-    SettingsState, SharedCommandRunner, SshExecutable, SuppressedHerdrPresentation, Weak,
-    WorkspaceContent, WorkspaceError, WslConfig, WslDiscovery, WslExecutable, ZellijInventory,
+    KwtSshExecutable, KwtState, KwtWorktreeListing, LocalConfig, LocalDiscovery, LocalExecutable,
+    Mutex, Ordering, PendingCreation, PendingHerdrLifecycle, PendingKwtCreation, PresentationKey,
+    ProjectItem, Published, RefreshRuntime, RemoteAttachmentAttempt, RemoteConstructiveState,
+    RemoteConstructiveTarget, RemoteEntry, RemoteHerdrAttachRequest, RemoteHerdrCreateRequest,
+    RemoteTmuxAttachRequest, RemoteTmuxConfig, RemoteTmuxSnapshot, RemoteZellijAttachRequest,
+    RemoteZellijCreateRequest, RuntimeHost, RuntimeRemoteHost, RwLock, Scene, SessionItem,
+    SessionKind, SessionSelection, SettingsState, SharedCommandRunner, SshExecutable,
+    SuppressedHerdrPresentation, Weak, WorkspaceContent, WorkspaceError, ZellijInventory,
     ZellijSessionName, apply_herdr_inventory, apply_zellij_inventory, current_remote_context,
-    kwt_tmux_presentation_key, refreshed_session_name, remote_snapshot_authority_matches,
-    resolve_remote_herdr_attach_target, resolve_remote_zellij_attach_target,
-    validate_herdr_launch_precondition,
+    is_local_host_id, kwt_tmux_presentation_key, refreshed_session_name,
+    remote_snapshot_authority_matches, resolve_remote_herdr_attach_target,
+    resolve_remote_zellij_attach_target, validate_herdr_launch_precondition,
 };
 pub(crate) fn equivalent_tmux_presentation_key(
     runtime: &Runtime,
@@ -45,8 +45,8 @@ pub(crate) struct Runtime {
     pub(crate) appearance: RwLock<Appearance>,
     pub(crate) cursor_default: crate::CursorDefault,
     pub(crate) host_scoped_inventory: bool,
-    pub(crate) wsl_config: Option<WslConfig>,
-    pub(crate) wsl_executable: Mutex<Option<WslExecutable>>,
+    pub(crate) local_config: Option<LocalConfig>,
+    pub(crate) local_executable: Mutex<Option<LocalExecutable>>,
     pub(crate) hosts: RwLock<Vec<HostItem>>,
     pub(crate) inventory_state: Mutex<WorkspaceContent>,
     pub(crate) revision: AtomicU64,
@@ -90,7 +90,7 @@ pub(crate) struct Runtime {
     pub(crate) kwt_mutation_in_flight: AtomicBool,
     pub(crate) kwt_worktree_listing: Mutex<Option<KwtWorktreeListing>>,
     pub(crate) pending_kwt_creations: Mutex<Vec<PendingKwtCreation>>,
-    pub(crate) discovery: Arc<dyn WslDiscovery>,
+    pub(crate) discovery: Arc<dyn LocalDiscovery>,
     pub(crate) refresh_runtime: Arc<dyn RefreshRuntime>,
     pub(crate) scene_sequence: AtomicU64,
     pub(crate) scenes: Mutex<Vec<(SceneId, Weak<Scene>)>>,
@@ -889,8 +889,8 @@ pub(crate) fn require_host_session_actions(
         .find(|host| host.id == selection.host_id() && host.endpoint == selection.endpoint())
         .ok_or_else(|| WorkspaceError::new("the selected host is not available"))?;
     if !host.accepts_session_actions() {
-        let message = if host.id == "wsl" {
-            "connect the WSL host before changing a session"
+        let message = if is_local_host_id(&host.id) {
+            "connect the local host before changing a session"
         } else {
             "wait for the SSH host connection to be ready before changing a session"
         };
@@ -921,9 +921,9 @@ pub(crate) fn herdr_operation_pending_for_selection(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     lifecycle.launches.iter().any(|operation| {
-        operation.endpoint.distro() == selection.endpoint() && operation.name == selection.session()
+        operation.endpoint.name() == selection.endpoint() && operation.name == selection.session()
     }) || lifecycle.in_flight.iter().any(|operation| {
-        operation.key.endpoint.distro() == selection.endpoint()
+        operation.key.endpoint.name() == selection.endpoint()
             && operation.key.name == selection.session()
     })
 }
@@ -1005,7 +1005,7 @@ pub(crate) fn invalidate_kwt_inventory(runtime: &Runtime) {
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter_mut()
-        .find(|host| host.id == "wsl")
+        .find(|host| is_local_host_id(&host.id))
     {
         host.projects.clear();
         host.directory_workspaces.clear();
@@ -1024,7 +1024,9 @@ pub(crate) fn cancel_refresh(runtime: &Runtime) -> bool {
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .any(|host| host.id == "wsl" && host.connection == HostConnectionState::Connecting);
+        .any(|host| {
+            is_local_host_id(&host.id) && host.connection == HostConnectionState::Connecting
+        });
     if !connecting {
         return false;
     }
@@ -1057,14 +1059,14 @@ pub(crate) fn capture_kwt_worktree_removal_context(
 ) -> Result<
     (
         RuntimeHost,
-        host::WslEndpoint,
-        host::WslRuntimeIdentity,
+        host::LocalEndpoint,
+        host::LinuxRuntimeIdentity,
         Option<String>,
         host::KwtTmuxAttachMode,
     ),
     WorkspaceError,
 > {
-    if host_id != "wsl" {
+    if !is_local_host_id(host_id) {
         return Err(WorkspaceError::new(
             "KWT worktrees are available only on WSL",
         ));
@@ -1074,7 +1076,7 @@ pub(crate) fn capture_kwt_worktree_removal_context(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
-        .filter(|published| published.value.snapshot.endpoint().distro() == endpoint)
+        .filter(|published| published.value.snapshot.endpoint().name() == endpoint)
         .map(|published| {
             (
                 published.value.host.clone(),
@@ -1090,7 +1092,7 @@ pub(crate) fn capture_kwt_worktree_removal_context(
     let item = hosts
         .iter()
         .find(|item| item.id == host_id && item.endpoint == endpoint)
-        .ok_or_else(|| WorkspaceError::new("the selected WSL host is unavailable"))?;
+        .ok_or_else(|| WorkspaceError::new("the selected local host is unavailable"))?;
     if item.connection != HostConnectionState::Ready
         || !item.kwt_available()
         || item.kwt_diagnostic.is_some()
@@ -1695,7 +1697,7 @@ pub(crate) fn publish_herdr_lifecycle_uncertain(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(host) = hosts
         .iter_mut()
-        .find(|host| host.id == "wsl" && host.endpoint == pending.endpoint.distro())
+        .find(|host| is_local_host_id(&host.id) && host.endpoint == pending.endpoint.name())
     {
         host.herdr_diagnostic = Some(HostDiagnostic::new(
             DiagnosticKind::Transport,
@@ -1710,7 +1712,7 @@ pub(crate) fn set_herdr_inventory(runtime: &Runtime, inventory: &HerdrInventory)
         .hosts
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") else {
+    let Some(host) = hosts.iter_mut().find(|host| is_local_host_id(&host.id)) else {
         return;
     };
     apply_herdr_inventory(host, inventory);
@@ -1723,8 +1725,8 @@ pub(crate) fn set_herdr_inventory(runtime: &Runtime, inventory: &HerdrInventory)
 /// name after this removal.
 pub(crate) fn remove_killed_zellij_session(
     runtime: &Runtime,
-    endpoint: &host::WslEndpoint,
-    runtime_identity: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime_identity: &host::LinuxRuntimeIdentity,
     name: &str,
 ) {
     let _publication = runtime
@@ -1764,7 +1766,7 @@ pub(crate) fn remove_killed_zellij_session(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(host) = hosts
         .iter_mut()
-        .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
+        .find(|host| is_local_host_id(&host.id) && host.endpoint == endpoint.name())
     {
         let before = host.zellij_sessions.len();
         host.zellij_sessions
@@ -1780,7 +1782,7 @@ pub(crate) fn set_zellij_inventory(runtime: &Runtime, inventory: &ZellijInventor
         .hosts
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") else {
+    let Some(host) = hosts.iter_mut().find(|host| is_local_host_id(&host.id)) else {
         return;
     };
     apply_zellij_inventory(host, inventory);
@@ -1804,7 +1806,7 @@ pub(crate) fn set_wsl_host_disconnected(runtime: &Runtime) {
         .hosts
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") {
+    if let Some(host) = hosts.iter_mut().find(|host| is_local_host_id(&host.id)) {
         host.connection = HostConnectionState::Disconnected;
         host.diagnostic = None;
         runtime.revision.fetch_add(1, Ordering::Release);

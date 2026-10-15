@@ -11,6 +11,24 @@ use config::{
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn native_linux_configuration_round_trips_independently_of_wsl() {
+    let parsed = ApplicationConfig::from_toml(
+        "[local]\ntmux-binary = '/opt/tmux'\nsocket-directory = '/tmp/native-tmux'\n\
+         [wsl]\ndistro = 'Ubuntu'\ntmux-binary = '/usr/local/bin/tmux'\n",
+    )
+    .expect("native Linux configuration");
+    assert_eq!(parsed.local().tmux_binary(), "/opt/tmux");
+    assert_eq!(parsed.local().socket_directory(), Some("/tmp/native-tmux"));
+    assert_eq!(parsed.wsl().tmux_binary(), "/usr/local/bin/tmux");
+    let root = temporary_root("native-round-trip");
+    let roots = roots_at(&root);
+    parsed.save(&roots).expect("save native configuration");
+    let loaded = ApplicationConfig::load(&roots).expect("load native configuration");
+    assert_eq!(loaded, parsed);
+    fs::remove_dir_all(root).expect("remove native configuration fixture");
+}
+
+#[test]
 fn missing_application_config_uses_documented_defaults() {
     let root = temporary_root("missing");
     let roots = roots_at(&root);
@@ -85,6 +103,9 @@ fn present_application_config_is_loaded_from_the_resolved_config_root() {
 #[test]
 fn malformed_or_unknown_configuration_is_rejected() {
     for contents in [
+        "[local]\ntmux-binary = 'tmux'\n",
+        "[local]\nsocket-directory = 'relative'\n",
+        "[local]\ndistro = 'Ubuntu'\n",
         "[wsl\ndistro = \"Ubuntu\"",
         "[wsl]\nunknown = true\n",
         "[unknown]\nvalue = true\n",

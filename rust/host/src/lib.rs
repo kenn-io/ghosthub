@@ -1,4 +1,4 @@
-//! WSL host resolution and tmux inventory.
+//! Local and remote host resolution and session inventory.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
@@ -14,11 +14,11 @@ pub use model::DiagnosticKind as HostErrorKind;
 mod command_process;
 mod herdr;
 mod kwt;
+mod local;
 mod remote;
 mod ssh;
 #[cfg(windows)]
 mod windows_system;
-mod wsl;
 mod zellij;
 
 pub use kwt::{
@@ -26,6 +26,11 @@ pub use kwt::{
     KwtProject, KwtProjectInventory, KwtProtectedWorktreeOpen, KwtPullRequest,
     KwtPullRequestImport, KwtPullRequestImportRequest, KwtTmuxAttachMode, KwtWorktree,
     KwtWorktreeCreate, KwtWorktreeOpen, kwt_command_failure_message,
+};
+pub use local::{
+    AdmissionAttacher, AttachTerm, CreationReceipt, HerdrInventory, HostError, HostSnapshot,
+    KwtHostSnapshot, LinuxRuntimeIdentity, LiveSessionTarget, LocalConfig, LocalEndpoint,
+    LocalExecutable, LocalHost, SystemWslPresence, WslExecutable, WslPresence, ZellijInventory,
 };
 pub use remote::{
     RemoteSessionInventory, RemoteTmuxConfig, RemoteTmuxError, RemoteTmuxHost, RemoteTmuxSnapshot,
@@ -35,11 +40,6 @@ pub use ssh::{
     KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshError, SshExecutionProjection,
     SshHostKeyDetails, SshLease, SshLeaseEvent, SshLeaseMode, SshLeasePrompt, SshLeaseResult,
     SshPromptDetails, SshPromptKind, SshResolvedTarget, SshRouteSnapshot, SshTarget,
-};
-pub use wsl::{
-    AdmissionAttacher, AttachTerm, CreationReceipt, HerdrInventory, HostError, HostSnapshot,
-    KwtHostSnapshot, LiveSessionTarget, SystemWslPresence, WslConfig, WslEndpoint, WslExecutable,
-    WslHost, WslPresence, WslRuntimeIdentity, ZellijInventory,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -4,11 +4,11 @@ use std::{
 };
 
 use config::{ApplicationConfig, Roots, TerminalAppearance, TerminalTheme};
-use host::{WslConfig, WslExecutable};
+use host::{LocalConfig, WslExecutable};
 use model::DiagnosticKind;
 use workspace::{
     Appearance, AppearanceSettingsDraft, HostConnectionState, HostDiagnostic, HostItem,
-    SessionItem, Workspace, WorkspaceContent, WorkspaceSnapshot, WslHostSpec,
+    LocalHostSpec, SessionItem, Workspace, WorkspaceContent, WorkspaceSnapshot,
 };
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -22,7 +22,7 @@ fn host_failure_is_scoped_beside_the_application_shell() {
         Vec::new(),
         Some(HostDiagnostic::new(
             DiagnosticKind::Timeout,
-            "WSL host refresh timed out",
+            "Local host refresh timed out",
         )),
     );
     let snapshot = WorkspaceSnapshot::shell(Appearance::default(), vec![host]);
@@ -64,8 +64,8 @@ fn ready_host_may_have_an_empty_session_inventory() {
 
 #[test]
 fn application_workspace_does_not_connect_wsl_during_construction() {
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
 
@@ -83,8 +83,8 @@ fn application_workspace_does_not_connect_wsl_during_construction() {
 
 #[test]
 fn application_facade_projects_one_consistent_snapshot_per_client() {
-    let spec = WslHostSpec::available(
-        WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").expect("valid WSL config"),
         WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute WSL path"),
     );
 
@@ -153,7 +153,7 @@ fn preview_workspace_cannot_accidentally_start_host_discovery() {
             .refresh()
             .expect_err("preview must stay inert")
             .to_string(),
-        "preview workspace cannot refresh WSL"
+        "preview workspace cannot refresh the local host"
     );
 }
 

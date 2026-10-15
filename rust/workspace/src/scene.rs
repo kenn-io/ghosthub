@@ -3,19 +3,19 @@
 use crate::{
     Arc, AtomicBool, AtomicU64, AttachFreshError, AttachRequest, AttachTarget, AttachTerm,
     AttachmentState, CREATE_IDENTITY_TIMEOUT, CancellationToken, ClosedRetainedPresentation,
-    ConptyAdmissionAttacher, CreateRequest, DiagnosticKind, DirectoryWorkspaceItem, Duration,
-    FallbackAuthority, HERDR_STARTUP_BACKOFF, HerdrCreateRequest, HerdrInventory,
-    HerdrLaunchPrecondition, HerdrLaunchTarget, HerdrLifecycleAction, HerdrSessionName,
-    HerdrSessionState, HostConnectionState, HostContext, HostDiagnostic, HostError, HostItem,
-    HostSnapshot, INVENTORY_REFRESH_INTERVAL, Instant, KWT_REFRESH_BUDGET, KWT_REFRESH_INTERVAL,
+    CreateRequest, DiagnosticKind, DirectoryWorkspaceItem, Duration, FallbackAuthority,
+    HERDR_STARTUP_BACKOFF, HerdrCreateRequest, HerdrInventory, HerdrLaunchPrecondition,
+    HerdrLaunchTarget, HerdrLifecycleAction, HerdrSessionName, HerdrSessionState,
+    HostConnectionState, HostContext, HostDiagnostic, HostError, HostItem, HostSnapshot,
+    INVENTORY_REFRESH_INTERVAL, Instant, KWT_REFRESH_BUDGET, KWT_REFRESH_INTERVAL,
     KillCaptureIntent, KillCaptureRequest, KillTarget, KwtBranchItem, KwtInventory,
     KwtProjectAction, KwtProjectMutationRequest, KwtProjectMutationTask,
     KwtPullRequestImportRequest, KwtPullRequestItem, KwtRefresh, KwtRemovalCapture,
     KwtRemovalCaptureIntent, KwtState, KwtWorktreeOperation, KwtWorktreeOutcome, KwtWorktreeTarget,
     KwtWorktreeTask, Mutex, Ordering, PendingCreation, PendingHerdrLifecycle, PendingKill,
-    PendingKwtCreation, PendingKwtRemoval, PendingPaste, PresentationKey, ProjectItem, Published,
-    REDUCED_COLOR_NOTICE, RecvTimeoutError, RefreshPresentation, RemoteActive,
-    RemoteAttachmentReset, RemoteConstructiveReset, RemoteConstructiveState,
+    PendingKwtCreation, PendingKwtRemoval, PendingPaste, PresentationKey, ProjectItem,
+    PtyAdmissionAttacher, Published, REDUCED_COLOR_NOTICE, RecvTimeoutError, RefreshPresentation,
+    RemoteActive, RemoteAttachmentReset, RemoteConstructiveReset, RemoteConstructiveState,
     RemoteConstructiveTarget, RemoteHerdrAttachRequest, RemoteHerdrCreateRequest,
     RemoteHostContext, RemoteInventory, RemotePresentationKey, RemotePublicationFence,
     RemotePublishError, RemoteReconcile, RemoteRetainedPresentation, RemoteRetainedPresentations,
@@ -35,19 +35,19 @@ use crate::{
     current_inventory_session_name, current_remote_clipboard_policy, default_terminal_geometry,
     discover_fresh_runtime, finish_pending_creation, fmt, for_each_scene, fresh_herdr_session,
     herdr_launch_result_matches, insert_remote_retained_presentation, insert_retained_presentation,
-    invalidate_kwt_inventory, kwt_attachment_failure, kwt_pull_request_import_failure, live_scenes,
-    lock_session_operations, next_operation_id, next_presentation_id, next_scene_id,
-    normalize_attached_kwt_target, pending_kwt_creation, pending_kwt_creation_target,
-    pending_remote_constructive_snapshot, poll_session_startup, preflight_kwt_worktree_remove,
-    publish_refresh, publish_worker_at_latest_geometry, ready_content,
-    recapture_remote_herdr_attach_request, recapture_remote_herdr_create_request,
+    invalidate_kwt_inventory, is_local_host_id, kwt_attachment_failure,
+    kwt_pull_request_import_failure, live_scenes, lock_session_operations, next_operation_id,
+    next_presentation_id, next_scene_id, normalize_attached_kwt_target, pending_kwt_creation,
+    pending_kwt_creation_target, pending_remote_constructive_snapshot, poll_session_startup,
+    preflight_kwt_worktree_remove, publish_refresh, publish_worker_at_latest_geometry,
+    ready_content, recapture_remote_herdr_attach_request, recapture_remote_herdr_create_request,
     recapture_remote_tmux_attach_request, recapture_remote_zellij_attach_request,
     recapture_remote_zellij_create_request, reconcile_active_worker_terminal_settings,
     reconcile_herdr_lifecycle_fences, reconcile_kwt_session_availability,
     reconcile_worker_terminal_settings, refresh_budget, refreshed_session_name, register_scene,
     remember_pending_kwt_creation, remote_constructive_is_current,
     remote_constructive_target_is_present, remove_cached_kwt_worktree,
-    require_current_kwt_selection, require_host_session_actions, require_wsl_host_id,
+    require_current_kwt_selection, require_host_session_actions, require_local_host_id,
     reserve_constructive_inventory, reserve_refresh, reserve_retained_attachment,
     resize_terminal_worker, resolve_remote_herdr_attach_target,
     resolve_remote_zellij_attach_target, resolve_retained_retry_request, retain_remote_session,
@@ -978,7 +978,7 @@ pub(crate) fn drop_matching_kill_confirmations(
 /// as `drop_matching_kill_confirmations` does for kills.
 pub(crate) fn drop_matching_kwt_removal_confirmations(
     runtime: &Runtime,
-    endpoint: &host::WslEndpoint,
+    endpoint: &host::LocalEndpoint,
     repository: &str,
     project_path: &str,
     registration_fingerprint: &str,
@@ -1217,9 +1217,9 @@ pub(crate) fn capture_attach_request(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let context = host
         .as_ref()
-        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+        .ok_or_else(|| WorkspaceError::new("Local inventory is not ready"))?;
     context.map(|context, inventory_generation| {
-        if context.snapshot.endpoint().distro() != selection.endpoint() {
+        if context.snapshot.endpoint().name() != selection.endpoint() {
             return Err(WorkspaceError::new(
                 "host endpoint changed; refresh the session selection",
             ));
@@ -1240,7 +1240,7 @@ pub(crate) fn capture_attach_request(
                                 && host.endpoint() == selection.endpoint()
                         })
                         .ok_or_else(|| {
-                            WorkspaceError::new("the selected WSL host is unavailable")
+                            WorkspaceError::new("the selected local host is unavailable")
                         })?;
                     if let Some((project, worktree)) = host_item.projects().iter().find_map(|project| {
                         project.worktrees().iter().find(|worktree| {
@@ -1423,7 +1423,7 @@ pub(crate) fn capture_kill_request(
     selection: &SessionSelection,
     generation: u64,
 ) -> Result<KillCaptureRequest, WorkspaceError> {
-    require_wsl_host_id(selection.host_id())?;
+    require_local_host_id(selection.host_id())?;
     if !matches!(selection.kind(), SessionKind::Tmux | SessionKind::Zellij) {
         return Err(WorkspaceError::new(
             "Kill Session is available only for tmux and Zellij sessions",
@@ -1474,9 +1474,9 @@ pub(crate) fn capture_kill_request(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let context = host
         .as_ref()
-        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+        .ok_or_else(|| WorkspaceError::new("Local inventory is not ready"))?;
     context.map(|context, _inventory_generation| {
-        if context.snapshot.endpoint().distro() != selection.endpoint() {
+        if context.snapshot.endpoint().name() != selection.endpoint() {
             return Err(WorkspaceError::new(
                 "host endpoint changed; refresh the session selection",
             ));
@@ -1555,7 +1555,7 @@ pub(crate) fn capture_herdr_lifecycle(
     action: HerdrLifecycleAction,
     generation: u64,
 ) -> Result<PendingHerdrLifecycle, WorkspaceError> {
-    require_wsl_host_id(selection.host_id())?;
+    require_local_host_id(selection.host_id())?;
     if selection.kind() != SessionKind::Herdr {
         return Err(WorkspaceError::new(
             "Herdr lifecycle actions require a Herdr session",
@@ -1569,9 +1569,9 @@ pub(crate) fn capture_herdr_lifecycle(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let context = host
         .as_ref()
-        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+        .ok_or_else(|| WorkspaceError::new("Local inventory is not ready"))?;
     context.map(|context, _inventory_generation| {
-        if context.snapshot.endpoint().distro() != selection.endpoint() {
+        if context.snapshot.endpoint().name() != selection.endpoint() {
             return Err(WorkspaceError::new(
                 "host endpoint changed; refresh the Herdr session selection",
             ));
@@ -1622,7 +1622,7 @@ pub(crate) fn capture_create_request(
     endpoint: &str,
     name: SessionName,
 ) -> Result<CreateRequest, WorkspaceError> {
-    require_wsl_host_id(host_id)?;
+    require_local_host_id(host_id)?;
     // The selection guard drops before the host-list read: the global
     // order is hosts before selected_host (select_host holds the list
     // guard through its selection write), and holding both here in the
@@ -1648,7 +1648,7 @@ pub(crate) fn capture_create_request(
         .ok_or_else(|| WorkspaceError::new("host is not available"))?;
     if selected.endpoint != endpoint {
         return Err(WorkspaceError::new(
-            "the WSL endpoint changed; choose the host again before creating a session",
+            "the local endpoint changed; choose the host again before creating a session",
         ));
     }
     if matches!(
@@ -1656,7 +1656,7 @@ pub(crate) fn capture_create_request(
         HostConnectionState::Disconnected | HostConnectionState::Unavailable
     ) {
         return Err(WorkspaceError::new(
-            "connect the WSL host before creating a tmux session",
+            "connect the local host before creating a tmux session",
         ));
     }
     if selected
@@ -1676,11 +1676,11 @@ pub(crate) fn capture_create_request(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let context = host
         .as_ref()
-        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+        .ok_or_else(|| WorkspaceError::new("Local inventory is not ready"))?;
     context.map(|context, _inventory_generation| {
-        if context.snapshot.endpoint().distro() != endpoint {
+        if context.snapshot.endpoint().name() != endpoint {
             return Err(WorkspaceError::new(
-                "the WSL endpoint changed; choose the host again before creating a session",
+                "the local endpoint changed; choose the host again before creating a session",
             ));
         }
         Ok(CreateRequest {
@@ -1699,7 +1699,7 @@ pub(crate) fn capture_herdr_create_request(
     endpoint: &str,
     name: HerdrSessionName,
 ) -> Result<HerdrCreateRequest, WorkspaceError> {
-    require_wsl_host_id(host_id)?;
+    require_local_host_id(host_id)?;
     if scene
         .selected_host
         .read()
@@ -1720,11 +1720,11 @@ pub(crate) fn capture_herdr_create_request(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let context = host
         .as_ref()
-        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+        .ok_or_else(|| WorkspaceError::new("Local inventory is not ready"))?;
     context.map(|context, _inventory_generation| {
-        if context.snapshot.endpoint().distro() != endpoint {
+        if context.snapshot.endpoint().name() != endpoint {
             return Err(WorkspaceError::new(
-                "the WSL endpoint changed; choose the host again before creating a session",
+                "the local endpoint changed; choose the host again before creating a session",
             ));
         }
         let HerdrInventory::Available {
@@ -1761,7 +1761,7 @@ pub(crate) fn capture_zellij_create_request(
     endpoint: &str,
     name: ZellijSessionName,
 ) -> Result<ZellijCreateRequest, WorkspaceError> {
-    require_wsl_host_id(host_id)?;
+    require_local_host_id(host_id)?;
     if scene
         .selected_host
         .read()
@@ -1783,11 +1783,11 @@ pub(crate) fn capture_zellij_create_request(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let context = host
         .as_ref()
-        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+        .ok_or_else(|| WorkspaceError::new("Local inventory is not ready"))?;
     context.map(|context, _inventory_generation| {
-        if context.snapshot.endpoint().distro() != endpoint {
+        if context.snapshot.endpoint().name() != endpoint {
             return Err(WorkspaceError::new(
-                "the WSL endpoint changed; choose the host again before creating a session",
+                "the local endpoint changed; choose the host again before creating a session",
             ));
         }
         let ZellijInventory::Available {
@@ -1821,7 +1821,7 @@ pub(crate) fn capture_herdr_restart_request(
     scene: &Scene,
     selection: &SessionSelection,
 ) -> Result<HerdrCreateRequest, WorkspaceError> {
-    require_wsl_host_id(selection.host_id())?;
+    require_local_host_id(selection.host_id())?;
     if selection.kind() != SessionKind::Herdr {
         return Err(WorkspaceError::new(
             "the selected session is not a Herdr session",
@@ -1835,11 +1835,11 @@ pub(crate) fn capture_herdr_restart_request(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let context = host
         .as_ref()
-        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+        .ok_or_else(|| WorkspaceError::new("Local inventory is not ready"))?;
     context.map(|context, _inventory_generation| {
-        if context.snapshot.endpoint().distro() != selection.endpoint() {
+        if context.snapshot.endpoint().name() != selection.endpoint() {
             return Err(WorkspaceError::new(
-                "the WSL endpoint changed; refresh before restarting the session",
+                "the local endpoint changed; refresh before restarting the session",
             ));
         }
         let HerdrInventory::Available {
@@ -1885,7 +1885,7 @@ pub(crate) fn begin_refresh(
                     .hosts
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") {
+                if let Some(host) = hosts.iter_mut().find(|host| is_local_host_id(&host.id)) {
                     host.connection = HostConnectionState::Connecting;
                     host.diagnostic = None;
                 }
@@ -2086,7 +2086,7 @@ pub(crate) fn start_initial_kwt_refresh(scene: &Arc<Scene>) {
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .find(|host| host.id == "wsl")
+        .find(|host| is_local_host_id(&host.id))
         .is_some_and(|host| !host.kwt_initialized() && !host.kwt_refreshing());
     if should_start {
         start_kwt_refresh(scene, false);
@@ -2264,7 +2264,7 @@ pub(crate) fn take_pending_kwt_removal(
         .take()
         .ok_or_else(|| WorkspaceError::new("review the worktree removal again"))?;
     let matches = pending.authority == authority
-        && pending.endpoint.distro() == endpoint
+        && pending.endpoint.name() == endpoint
         && pending.repository == repository
         && pending.project_path == project_path
         && pending.registration_fingerprint == registration_fingerprint
@@ -2303,7 +2303,7 @@ pub(crate) fn reserve_kwt_worktree_operation(
     registration_fingerprint: &str,
     operation: KwtWorktreeOperation,
 ) -> Result<KwtWorktreeTask, WorkspaceError> {
-    if host_id != "wsl" {
+    if !is_local_host_id(host_id) {
         return Err(WorkspaceError::new(
             "KWT worktrees are available only on WSL",
         ));
@@ -2325,7 +2325,7 @@ pub(crate) fn reserve_kwt_worktree_operation(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .filter(|published| published.value.snapshot.endpoint().distro() == endpoint)
+            .filter(|published| published.value.snapshot.endpoint().name() == endpoint)
             .map(|published| {
                 (
                     published.value.host.clone(),
@@ -2342,7 +2342,7 @@ pub(crate) fn reserve_kwt_worktree_operation(
         let item = hosts
             .iter()
             .find(|item| item.id == host_id && item.endpoint == endpoint)
-            .ok_or_else(|| WorkspaceError::new("the selected WSL host is unavailable"))?;
+            .ok_or_else(|| WorkspaceError::new("the selected local host is unavailable"))?;
         if item.connection != HostConnectionState::Ready
             || !item.kwt_available()
             || item.kwt_diagnostic.is_some()
@@ -2685,8 +2685,8 @@ pub(crate) fn run_kwt_pull_request_import(
         return KwtWorktreeOutcome::default();
     };
     let target = KwtWorktreeTarget {
-        host_id: "wsl".to_owned(),
-        endpoint: task.endpoint.distro().to_owned(),
+        host_id: task.endpoint.host_id().to_owned(),
+        endpoint: task.endpoint.name().to_owned(),
         repository: task.repository.clone(),
         project_path: task.project_path.clone(),
         registration_fingerprint: task.registration_fingerprint.clone(),
@@ -3203,7 +3203,7 @@ pub(crate) fn reconcile_created_kwt_worktree(
 
 pub(crate) fn resolve_pending_kwt_creations(
     scene: &Scene,
-    endpoint: &host::WslEndpoint,
+    endpoint: &host::LocalEndpoint,
     inventory: &KwtInventory,
 ) {
     resolve_pending_kwt_creations_at(scene, endpoint, inventory, Instant::now());
@@ -3211,7 +3211,7 @@ pub(crate) fn resolve_pending_kwt_creations(
 
 pub(crate) fn resolve_pending_kwt_creations_at(
     scene: &Scene,
-    endpoint: &host::WslEndpoint,
+    endpoint: &host::LocalEndpoint,
     inventory: &KwtInventory,
     now: Instant,
 ) {
@@ -3281,7 +3281,7 @@ pub(crate) fn reserve_kwt_refresh(scene: &Arc<Scene>, supersede: bool) -> Option
     }
     if scene
         .runtime
-        .wsl_config
+        .local_config
         .as_ref()
         .is_none_or(|config| config.kwt_bundle().is_none())
     {
@@ -3307,7 +3307,7 @@ pub(crate) fn reserve_kwt_refresh(scene: &Arc<Scene>, supersede: bool) -> Option
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .find(|item| item.id == "wsl" && item.endpoint == endpoint.distro())
+            .find(|item| is_local_host_id(&item.id) && item.endpoint == endpoint.name())
             .is_some_and(|item| {
                 item.connection == HostConnectionState::Ready && !item.kwt_refreshing()
             });
@@ -3346,7 +3346,7 @@ pub(crate) fn reserve_kwt_refresh(scene: &Arc<Scene>, supersede: bool) -> Option
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter_mut()
-            .find(|item| item.id == "wsl" && item.endpoint == endpoint.distro())
+            .find(|item| is_local_host_id(&item.id) && item.endpoint == endpoint.name())
         {
             item.kwt_state = KwtState::Refreshing {
                 available: item.kwt_available(),
@@ -3370,7 +3370,7 @@ pub(crate) fn reserve_kwt_project_mutation(
     endpoint: &str,
     request: KwtProjectMutationRequest,
 ) -> Result<KwtProjectMutationTask, WorkspaceError> {
-    if host_id != "wsl" {
+    if !is_local_host_id(host_id) {
         return Err(WorkspaceError::new(
             "KWT projects are available only on WSL",
         ));
@@ -3408,7 +3408,7 @@ pub(crate) fn capture_kwt_project_mutation(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
-        .filter(|published| published.value.snapshot.endpoint().distro() == endpoint)
+        .filter(|published| published.value.snapshot.endpoint().name() == endpoint)
         .map(|published| {
             (
                 published.value.host.clone(),
@@ -3425,8 +3425,8 @@ pub(crate) fn capture_kwt_project_mutation(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let item = hosts
             .iter()
-            .find(|item| item.id == "wsl" && item.endpoint == endpoint)
-            .ok_or_else(|| WorkspaceError::new("the selected WSL host is no longer available"))?;
+            .find(|item| is_local_host_id(&item.id) && item.endpoint == endpoint)
+            .ok_or_else(|| WorkspaceError::new("the selected local host is no longer available"))?;
         match &request {
             KwtProjectMutationRequest::Add { .. } => {
                 if !item.can_add_kwt_project() {
@@ -3485,7 +3485,7 @@ pub(crate) fn capture_kwt_project_mutation(
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter_mut()
-            .find(|item| item.id == "wsl" && item.endpoint == endpoint)
+            .find(|item| is_local_host_id(&item.id) && item.endpoint == endpoint)
         {
             item.kwt_state = KwtState::Mutating;
             scene.runtime.revision.fetch_add(1, Ordering::Release);
@@ -3582,8 +3582,8 @@ pub(crate) fn run_kwt_project_mutation(scene: &Arc<Scene>, task: &KwtProjectMuta
 pub(crate) fn publish_kwt_project_mutation(
     scene: &Scene,
     generation: u64,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     action: KwtProjectAction,
     project: &host::KwtProject,
 ) {
@@ -3628,8 +3628,8 @@ pub(crate) fn publish_kwt_project_mutation(
 pub(crate) fn publish_kwt_mutation_failure(
     scene: &Scene,
     generation: u64,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
 ) {
     publish_kwt(scene, generation, endpoint, runtime, |host| {
         host.kwt_state = KwtState::Ready;
@@ -3677,7 +3677,7 @@ pub(crate) fn cancel_owned_kwt_listing(scene: &Scene, listing: &crate::KwtWorktr
 
 pub(crate) fn finish_kwt_project_mutation(
     scene: &Arc<Scene>,
-    target: Option<(&host::WslEndpoint, &host::WslRuntimeIdentity)>,
+    target: Option<(&host::LocalEndpoint, &host::LinuxRuntimeIdentity)>,
 ) {
     {
         let _snapshot_write = begin_snapshot_write(&scene.runtime);
@@ -3699,7 +3699,7 @@ pub(crate) fn finish_kwt_project_mutation(
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .iter_mut()
-                    .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
+                    .find(|host| is_local_host_id(&host.id) && host.endpoint == endpoint.name())
             {
                 host.kwt_state = KwtState::Ready;
             }
@@ -4126,8 +4126,8 @@ pub(crate) fn start_kwt_refresh(scene: &Arc<Scene>, supersede: bool) -> bool {
 pub(crate) fn publish_kwt_inventory(
     scene: &Scene,
     generation: u64,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     inventory: &KwtInventory,
 ) -> bool {
     let published = publish_kwt(scene, generation, endpoint, runtime, |host| {
@@ -4200,8 +4200,8 @@ pub(crate) fn publish_kwt_inventory(
 pub(crate) fn publish_kwt_error(
     scene: &Scene,
     generation: u64,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     diagnostic: HostDiagnostic,
 ) {
     publish_kwt(scene, generation, endpoint, runtime, |host| {
@@ -4217,8 +4217,8 @@ pub(crate) fn publish_kwt_error(
 pub(crate) fn publish_kwt_unavailable(
     scene: &Scene,
     generation: u64,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
 ) {
     publish_kwt(scene, generation, endpoint, runtime, |host| {
         host.projects.clear();
@@ -4231,8 +4231,8 @@ pub(crate) fn publish_kwt_unavailable(
 pub(crate) fn publish_kwt(
     scene: &Scene,
     generation: u64,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     publish: impl FnOnce(&mut HostItem),
 ) -> bool {
     let _publication = scene
@@ -4263,7 +4263,7 @@ pub(crate) fn publish_kwt(
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter_mut()
-        .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
+        .find(|host| is_local_host_id(&host.id) && host.endpoint == endpoint.name())
     {
         publish(host);
         scene.runtime.revision.fetch_add(1, Ordering::Release);
@@ -4287,11 +4287,11 @@ pub(crate) fn expire_refresh(
             .runtime
             .refresh_finished
             .store(generation, Ordering::Release);
-        set_wsl_host_unavailable(
+        set_local_host_unavailable(
             &scene.runtime,
             DiagnosticKind::Timeout,
             format!(
-                "WSL host refresh timed out after {} seconds",
+                "Local host refresh timed out after {} seconds",
                 refresh_budget(generation).as_secs()
             ),
         );
@@ -4311,7 +4311,7 @@ pub(crate) fn fail_refresh_start(
             .runtime
             .refresh_finished
             .store(generation, Ordering::Release);
-        set_wsl_host_unavailable(
+        set_local_host_unavailable(
             &scene.runtime,
             DiagnosticKind::Transport,
             format!("{context}: {error}"),
@@ -5595,11 +5595,11 @@ pub(crate) fn create_herdr_fresh(
 > {
     let before = request
         .host
-        .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+        .discover_with_cancel(&PtyAdmissionAttacher::new(), cancellation)
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     if before.endpoint() != &request.endpoint || before.runtime() != &request.runtime {
         return Err(WorkspaceError::new(
-            "WSL changed; refresh before creating the Herdr session",
+            "The local host changed; refresh before creating the Herdr session",
         ));
     }
     let HerdrInventory::Available {
@@ -5675,11 +5675,11 @@ pub(crate) fn create_herdr_fresh(
         }
         let snapshot = request
             .host
-            .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+            .discover_with_cancel(&PtyAdmissionAttacher::new(), cancellation)
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
         if snapshot.endpoint() != &request.endpoint || snapshot.runtime() != &request.runtime {
             return Err(WorkspaceError::new(
-                "WSL changed while creating the Herdr session",
+                "The local host changed while creating the Herdr session",
             ));
         }
         let session = match snapshot.herdr() {
@@ -5721,11 +5721,11 @@ pub(crate) fn create_zellij_fresh(
 > {
     let before = request
         .host
-        .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+        .discover_with_cancel(&PtyAdmissionAttacher::new(), cancellation)
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     if before.endpoint() != &request.endpoint || before.runtime() != &request.runtime {
         return Err(WorkspaceError::new(
-            "WSL changed; refresh before creating the Zellij session",
+            "The local host changed; refresh before creating the Zellij session",
         ));
     }
     let ZellijInventory::Available {
@@ -5790,11 +5790,11 @@ pub(crate) fn create_zellij_fresh(
         }
         let snapshot = request
             .host
-            .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+            .discover_with_cancel(&PtyAdmissionAttacher::new(), cancellation)
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
         if snapshot.endpoint() != &request.endpoint || snapshot.runtime() != &request.runtime {
             return Err(WorkspaceError::new(
-                "WSL changed while creating the Zellij session",
+                "The local host changed while creating the Zellij session",
             ));
         }
         let session = match snapshot.zellij() {
@@ -5901,7 +5901,7 @@ pub(crate) fn publish_created_presentation(
         scene,
         WorkspaceContent::Terminal {
             host_id: attached.host_id,
-            endpoint: attached.endpoint.distro().to_owned(),
+            endpoint: attached.endpoint.name().to_owned(),
             session: attached.name,
             kind: attached.target.kind(),
             presentation_id: next_presentation_id(&scene.runtime),
@@ -5930,16 +5930,16 @@ pub(crate) fn create_fresh(
 > {
     let before = request
         .host
-        .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+        .discover_with_cancel(&PtyAdmissionAttacher::new(), cancellation)
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     if before.endpoint() != &request.endpoint {
         return Err(WorkspaceError::new(
-            "the default WSL distro changed; refresh before creating the session",
+            "the local endpoint changed; refresh before creating the session",
         ));
     }
     if before.runtime() != &request.runtime {
         return Err(WorkspaceError::new(
-            "WSL restarted; refresh before creating the session",
+            "The local host restarted; refresh before creating the session",
         ));
     }
     let geometry = *scene
@@ -6095,7 +6095,7 @@ pub(crate) fn run_attach(
                 active.term = attached_term;
             }
             let surface = worker.surface_handle();
-            let endpoint = snapshot.endpoint().distro().to_owned();
+            let endpoint = snapshot.endpoint().name().to_owned();
             publish_attach_inventory(scene, request, snapshot);
             let key = attachment
                 .active()
@@ -6466,7 +6466,7 @@ pub(crate) fn run_attach_over_remote(
         scene,
         WorkspaceContent::Terminal {
             host_id: request.host_id.clone(),
-            endpoint: request.endpoint.distro().to_owned(),
+            endpoint: request.endpoint.name().to_owned(),
             session,
             kind: request.target.kind(),
             presentation_id,
@@ -6737,7 +6737,7 @@ pub(crate) fn publish_herdr_lifecycle_response(
         .map(|published| published.value.snapshot.clone())
         .ok_or_else(|| {
             WorkspaceError::new(
-                "the WSL endpoint changed while publishing the Herdr lifecycle response",
+                "the local endpoint changed while publishing the Herdr lifecycle response",
             )
         })?
         .with_herdr_lifecycle(pending.action, &pending.executable, &pending.record, record)
@@ -6754,7 +6754,7 @@ pub(crate) fn reconcile_herdr_lifecycle_inventory(
     pending: &PendingHerdrLifecycle,
 ) -> Result<HostSnapshot, WorkspaceError> {
     let publication_generation = reserve_constructive_inventory(&scene.runtime);
-    let snapshot = match pending.host.discover(&ConptyAdmissionAttacher::new()) {
+    let snapshot = match pending.host.discover(&PtyAdmissionAttacher::new()) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             settle_constructive_inventory(scene, publication_generation);
@@ -6781,8 +6781,8 @@ pub(crate) fn reconcile_herdr_lifecycle_inventory(
 pub(crate) fn merge_constructive_inventory(
     scene: &Scene,
     runtime_host: &RuntimeHost,
-    endpoint: &host::WslEndpoint,
-    runtime: &host::WslRuntimeIdentity,
+    endpoint: &host::LocalEndpoint,
+    runtime: &host::LinuxRuntimeIdentity,
     snapshot: HostSnapshot,
     publication_generation: u64,
     operation: &str,
@@ -6800,7 +6800,7 @@ pub(crate) fn merge_constructive_inventory(
     let _snapshot_write = begin_snapshot_write(&scene.runtime);
     if snapshot.endpoint() != endpoint || snapshot.runtime() != runtime {
         return Err(WorkspaceError::new(format!(
-            "WSL changed while publishing {operation}"
+            "The local host changed while publishing {operation}"
         )));
     }
     let published_generation = scene
@@ -6816,7 +6816,7 @@ pub(crate) fn merge_constructive_inventory(
         })
         .ok_or_else(|| {
             WorkspaceError::new(format!(
-                "the WSL endpoint changed while publishing {operation}; refresh before trying again"
+                "the local endpoint changed while publishing {operation}; refresh before trying again"
             ))
         })?;
     if published_generation > publication_generation {
@@ -6967,7 +6967,7 @@ fn reconcile_scene_presentation_session_names(
         name.clone_into(&mut active.request.name);
         Some((
             active.request.host_id.clone(),
-            active.request.endpoint.distro().to_owned(),
+            active.request.endpoint.name().to_owned(),
             name,
         ))
     });
@@ -7066,7 +7066,7 @@ pub(crate) fn publish_attachment_failure(
     restore_presentation_inventory(scene);
     publish_refresh(&scene.runtime, inventory_generation, || {
         if scene.runtime.host_scoped_inventory {
-            set_wsl_host_unavailable(&scene.runtime, DiagnosticKind::Transport, message);
+            set_local_host_unavailable(&scene.runtime, DiagnosticKind::Transport, message);
         } else {
             set_scene_state(scene, WorkspaceContent::Error { message });
         }
@@ -7434,7 +7434,7 @@ pub(crate) fn retained_retry_exact_kwt_endpoint<'request>(
         .iter()
         .find(|host| {
             host.id() == request.host_id
-                && host.endpoint() == request.endpoint.distro()
+                && host.endpoint() == request.endpoint.name()
                 && host.connection() == HostConnectionState::Ready
         })
         .is_some_and(|host| !host.kwt_available());
@@ -7601,7 +7601,7 @@ pub(crate) fn capture_kwt_worktree_request(
     tmux_socket_name: Option<&str>,
     tmux_attach_mode: host::KwtTmuxAttachMode,
 ) -> Result<AttachRequest, WorkspaceError> {
-    if host_id != "wsl"
+    if !is_local_host_id(host_id)
         || scene
             .selected_host
             .read()
@@ -7609,7 +7609,7 @@ pub(crate) fn capture_kwt_worktree_request(
             .as_deref()
             != Some(host_id)
     {
-        return Err(WorkspaceError::new("the WSL host is not selected"));
+        return Err(WorkspaceError::new("the local host is not selected"));
     }
     let host = scene
         .runtime
@@ -7618,9 +7618,9 @@ pub(crate) fn capture_kwt_worktree_request(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let context = host
         .as_ref()
-        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+        .ok_or_else(|| WorkspaceError::new("Local inventory is not ready"))?;
     context.map(|context, inventory_generation| {
-        if context.snapshot.endpoint().distro() != endpoint {
+        if context.snapshot.endpoint().name() != endpoint {
             return Err(WorkspaceError::new(
                 "host endpoint changed; refresh the worktree selection",
             ));
@@ -7633,7 +7633,7 @@ pub(crate) fn capture_kwt_worktree_request(
         let host_item = hosts
             .iter()
             .find(|host| host.id == host_id && host.endpoint == endpoint)
-            .ok_or_else(|| WorkspaceError::new("the selected WSL host is unavailable"))?;
+            .ok_or_else(|| WorkspaceError::new("the selected local host is unavailable"))?;
         if host_item.connection != HostConnectionState::Ready || !host_item.kwt_available() {
             return Err(WorkspaceError::new(
                 "refresh KWT inventory before opening this worktree",
@@ -8039,13 +8039,13 @@ fn launch_fresh_direct_kwt_plan(
     };
     let discovered = request
         .host
-        .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+        .discover_with_cancel(&PtyAdmissionAttacher::new(), cancellation)
         .map_err(|error| WorktreeLaunchError::Attach(kwt_attachment_failure(fresh, error)))?;
     if discovered.endpoint() != &request.endpoint || discovered.runtime() != &request.runtime {
         drop(worker);
         return Err(WorktreeLaunchError::Attach(kwt_attachment_failure(
             fresh,
-            "WSL changed while opening the worktree session",
+            "The local host changed while opening the worktree session",
         )));
     }
     let identity_matches = if let Some(socket_name) = socket_name {
@@ -8207,7 +8207,7 @@ pub(crate) fn set_inventory_state(runtime: &Runtime, state: &WorkspaceContent) {
             .hosts
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") {
+        if let Some(host) = hosts.iter_mut().find(|host| is_local_host_id(&host.id)) {
             match state {
                 WorkspaceContent::Loading => {
                     host.connection = HostConnectionState::Connecting;
@@ -8290,12 +8290,12 @@ pub(crate) fn publish_legacy_inventory_state(runtime: &Runtime, state: &Workspac
     }
 }
 
-pub(crate) fn set_wsl_host_unavailable(runtime: &Runtime, kind: DiagnosticKind, message: String) {
+pub(crate) fn set_local_host_unavailable(runtime: &Runtime, kind: DiagnosticKind, message: String) {
     let mut hosts = runtime
         .hosts
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") {
+    if let Some(host) = hosts.iter_mut().find(|host| is_local_host_id(&host.id)) {
         host.connection = HostConnectionState::Unavailable;
         host.diagnostic = Some(HostDiagnostic::new(kind, message.clone()));
         if runtime.host_scoped_inventory {

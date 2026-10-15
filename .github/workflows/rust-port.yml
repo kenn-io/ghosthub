@@ -75,7 +75,8 @@ jobs:
             libxkbcommon-x11-dev \
             lld \
             llvm \
-            pkg-config
+            pkg-config \
+            tmux
 
       - name: Test and lint on Linux
         if: runner.os == 'Linux'

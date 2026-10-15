@@ -5,8 +5,9 @@ use host::SshExecutable;
 use host::{RemoteTmuxConfig, SshTarget};
 use model::DiagnosticKind;
 use model::PortStatus;
-use workspace::{RemoteHostSpec, Workspace, WslHostSpec};
+use workspace::{LocalHostSpec, RemoteHostSpec, Workspace};
 
+#[cfg(any(windows, test))]
 const KWT_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kwt"));
 const KWT_CONTROLLER_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kwt-controller.exe"));
 
@@ -48,14 +49,30 @@ fn workspace_for(
     roots: config::Roots,
     presence: &dyn host::WslPresence,
 ) -> Result<Workspace, String> {
+    #[cfg(windows)]
     let (wsl, terminal) = runtime_settings(settings).map_err(|error| error.to_string())?;
+    #[cfg(windows)]
     let spec = match presence.resolve() {
-        Ok(Some(executable)) => Some(WslHostSpec::available(wsl, executable)),
+        Ok(Some(executable)) => Some(LocalHostSpec::available(wsl, executable)),
         Ok(None) => None,
-        Err(error) => Some(WslHostSpec::unavailable(wsl, &error)),
+        Err(error) => Some(LocalHostSpec::unavailable(wsl, &error)),
+    };
+    #[cfg(target_os = "linux")]
+    let (spec, terminal) = {
+        let _ = presence;
+        let local = settings.local();
+        let config = host::LocalConfig::native(
+            local.tmux_binary(),
+            local.socket_directory().map(str::to_owned),
+        )
+        .map_err(|error| error.to_string())?;
+        (
+            Some(LocalHostSpec::native(config)),
+            settings.terminal().clone(),
+        )
     };
     #[cfg(windows)]
-    let wsl_transport_available = spec.as_ref().is_some_and(WslHostSpec::is_available);
+    let wsl_transport_available = spec.as_ref().is_some_and(LocalHostSpec::is_available);
     #[cfg(not(windows))]
     let controller = activate_bundled_kwt_controller(std::path::Path::new(&roots.helpers));
     #[cfg(not(windows))]
@@ -127,11 +144,12 @@ fn workspace_for(
     ))
 }
 
+#[cfg(any(windows, test))]
 fn runtime_settings(
     settings: &config::ApplicationConfig,
-) -> Result<(host::WslConfig, config::TerminalAppearance), host::HostError> {
+) -> Result<(host::LocalConfig, config::TerminalAppearance), host::HostError> {
     let wsl = settings.wsl();
-    let mut wsl = host::WslConfig::configured(
+    let mut wsl = host::LocalConfig::configured(
         wsl.distro().map(str::to_owned),
         wsl.tmux_binary(),
         wsl.socket_directory().map(str::to_owned),
@@ -142,6 +160,7 @@ fn runtime_settings(
     Ok((wsl, settings.terminal().clone()))
 }
 
+#[cfg(any(windows, test))]
 fn bundled_kwt() -> Option<host::KwtBundle> {
     if env!("GHOSTHUB_KWT_AVAILABLE") != "true" {
         return None;
@@ -198,12 +217,46 @@ mod tests {
     use std::ffi::OsString;
 
     use config::ApplicationConfig;
-    use host::{HostError, WslConfig, WslExecutable, WslPresence};
+    use host::{HostError, LocalConfig, WslExecutable, WslPresence};
     use workspace::{HostConnectionState, WorkspaceContent};
 
     use super::runtime_settings;
 
     struct PresentWsl;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_starts_with_a_disconnected_native_host_without_wsl() {
+        struct NoWsl;
+        impl WslPresence for NoWsl {
+            fn resolve(&self) -> Result<Option<WslExecutable>, HostError> {
+                Ok(None)
+            }
+        }
+        let root =
+            std::env::temp_dir().join(format!("ghosthub-app-native-roots-{}", std::process::id()));
+        let roots = config::Roots {
+            ghosthub_home: root.display().to_string(),
+            config: root.join("config").display().to_string(),
+            state: root.join("state").display().to_string(),
+            helpers: root.join("helpers").display().to_string(),
+        };
+        let workspace = super::workspace_for(&ApplicationConfig::default(), roots, &NoWsl)
+            .expect("native Linux workspace");
+        let snapshot = workspace.snapshot();
+        let local = snapshot
+            .hosts()
+            .iter()
+            .find(|host| host.id() == "local")
+            .expect("native local host must exist without WSL");
+        assert_eq!(local.name(), "Local");
+        assert_eq!(local.connection(), HostConnectionState::Disconnected);
+        assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
+        workspace.close();
+        if root.exists() {
+            std::fs::remove_dir_all(root).expect("remove app test roots");
+        }
+    }
 
     impl WslPresence for PresentWsl {
         fn resolve(&self) -> Result<Option<WslExecutable>, HostError> {
@@ -212,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_is_built_before_present_wsl_is_connected() {
+    fn workspace_is_built_before_the_local_host_is_connected() {
         let settings = ApplicationConfig::default();
         let root =
             std::env::temp_dir().join(format!("ghosthub-app-test-roots-{}", std::process::id()));
@@ -297,7 +350,7 @@ mod tests {
 
         let (wsl, terminal) = runtime_settings(&parsed).expect("project runtime settings");
 
-        let mut expected = WslConfig::configured(
+        let mut expected = LocalConfig::configured(
             Some("Ubuntu Dev".to_owned()),
             "/opt/tmux",
             Some("/run/user/1000/tmux".to_owned()),

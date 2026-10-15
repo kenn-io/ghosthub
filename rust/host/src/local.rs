@@ -49,7 +49,7 @@ const INVENTORY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}\t#{ses
 const CLIENT_READINESS_FORMAT: &str = "#{client_pid}\t#{pid}\t#{session_id}\t#{session_created}";
 const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}";
 const KILL_IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_kill_identity_mismatch_v1__";
-const WSL_RUNTIME_GUARD_SCRIPT: &str = r#"
+const LINUX_RUNTIME_GUARD_SCRIPT: &str = r#"
 expected_boot=$1
 expected_start=$2
 shift 2
@@ -62,7 +62,7 @@ current_start=$(
     printf '%s' "${20}"
 ) || exit 125
 if [ "$current_boot" != "$expected_boot" ] || [ "$current_start" != "$expected_start" ]; then
-    printf '%s\n' 'WSL restarted; reconnect the host' >&2
+    printf '%s\n' 'Local host restarted; reconnect the host' >&2
     exit 125
 fi
 exec "$@"
@@ -81,7 +81,7 @@ pub trait AdmissionAttacher {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WslConfig {
+pub struct LocalConfig {
     distro: Option<String>,
     tmux_binary: String,
     tmux_tmpdir: Option<String>,
@@ -89,7 +89,18 @@ pub struct WslConfig {
     kwt_home: Option<String>,
 }
 
-impl WslConfig {
+impl LocalConfig {
+    /// Configure native Linux tmux without a WSL distribution.
+    ///
+    /// # Errors
+    /// Returns an error when a configured path is not absolute.
+    pub fn native(
+        tmux_binary: impl Into<String>,
+        socket_directory: Option<String>,
+    ) -> Result<Self, HostError> {
+        Self::configured(None, tmux_binary, socket_directory)
+    }
+
     #[must_use]
     pub fn distro(&self) -> Option<&str> {
         self.distro.as_deref()
@@ -171,7 +182,7 @@ impl WslConfig {
     }
 }
 
-impl Default for WslConfig {
+impl Default for LocalConfig {
     fn default() -> Self {
         Self {
             distro: None,
@@ -184,25 +195,37 @@ impl Default for WslConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WslEndpoint {
-    distro: String,
+pub enum LocalEndpoint {
+    Native,
+    Wsl { distro: String },
 }
 
-impl WslEndpoint {
+impl LocalEndpoint {
     #[must_use]
-    pub fn distro(&self) -> &str {
-        &self.distro
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Native => "Linux",
+            Self::Wsl { distro } => distro,
+        }
+    }
+
+    #[must_use]
+    pub const fn host_id(&self) -> &'static str {
+        match self {
+            Self::Native => "local",
+            Self::Wsl { .. } => "wsl",
+        }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WslRuntimeIdentity {
+pub struct LinuxRuntimeIdentity {
     kernel_boot_id: String,
     init_start_ticks: u64,
 }
 
 /// Opaque authority to read and remove one nonce-scoped creation receipt.
-/// Only [`WslHost`] can construct its private path.
+/// Only [`LocalHost`] can construct its private path.
 #[derive(Debug, Eq, PartialEq)]
 pub struct CreationReceipt {
     path: String,
@@ -232,7 +255,7 @@ impl AttachTerm {
     }
 }
 
-impl WslRuntimeIdentity {
+impl LinuxRuntimeIdentity {
     #[must_use]
     pub fn kernel_boot_id(&self) -> &str {
         &self.kernel_boot_id
@@ -246,8 +269,8 @@ impl WslRuntimeIdentity {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostSnapshot {
-    endpoint: WslEndpoint,
-    runtime: WslRuntimeIdentity,
+    endpoint: LocalEndpoint,
+    runtime: LinuxRuntimeIdentity,
     creation_term: AttachTerm,
     sessions: Vec<DiscoveredSession>,
     herdr: Box<HerdrInventory>,
@@ -256,19 +279,19 @@ pub struct HostSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KwtHostSnapshot {
-    endpoint: WslEndpoint,
-    runtime: WslRuntimeIdentity,
+    endpoint: LocalEndpoint,
+    runtime: LinuxRuntimeIdentity,
     inventory: Option<KwtInventory>,
 }
 
 impl KwtHostSnapshot {
     #[must_use]
-    pub const fn endpoint(&self) -> &WslEndpoint {
+    pub const fn endpoint(&self) -> &LocalEndpoint {
         &self.endpoint
     }
 
     #[must_use]
-    pub const fn runtime(&self) -> &WslRuntimeIdentity {
+    pub const fn runtime(&self) -> &LinuxRuntimeIdentity {
         &self.runtime
     }
 
@@ -367,8 +390,8 @@ impl HerdrInventory {
 /// a live tmux query.
 #[derive(Debug)]
 pub struct LiveSessionTarget {
-    endpoint: WslEndpoint,
-    runtime: WslRuntimeIdentity,
+    endpoint: LocalEndpoint,
+    runtime: LinuxRuntimeIdentity,
     name: String,
     socket_name: Option<String>,
     identity: SessionIdentity,
@@ -393,12 +416,12 @@ impl LiveSessionTarget {
     }
 
     #[must_use]
-    pub fn endpoint(&self) -> &WslEndpoint {
+    pub fn endpoint(&self) -> &LocalEndpoint {
         &self.endpoint
     }
 
     #[must_use]
-    pub const fn runtime(&self) -> &WslRuntimeIdentity {
+    pub const fn runtime(&self) -> &LinuxRuntimeIdentity {
         &self.runtime
     }
 
@@ -429,10 +452,10 @@ impl HostSnapshot {
         sessions: Vec<DiscoveredSession>,
     ) -> Self {
         Self {
-            endpoint: WslEndpoint {
+            endpoint: LocalEndpoint::Wsl {
                 distro: distro.into(),
             },
-            runtime: WslRuntimeIdentity {
+            runtime: LinuxRuntimeIdentity {
                 kernel_boot_id: kernel_boot_id.into(),
                 init_start_ticks,
             },
@@ -482,12 +505,12 @@ impl HostSnapshot {
     }
 
     #[must_use]
-    pub const fn endpoint(&self) -> &WslEndpoint {
+    pub const fn endpoint(&self) -> &LocalEndpoint {
         &self.endpoint
     }
 
     #[must_use]
-    pub const fn runtime(&self) -> &WslRuntimeIdentity {
+    pub const fn runtime(&self) -> &LinuxRuntimeIdentity {
         &self.runtime
     }
 
@@ -695,11 +718,41 @@ impl WslExecutable {
     }
 }
 
+/// The local execution boundary: native Linux or a system-owned WSL launcher.
 #[derive(Clone, Debug)]
-pub struct WslHost<R> {
-    config: WslConfig,
+pub enum LocalExecutable {
+    Native,
+    Wsl(WslExecutable),
+}
+
+impl LocalExecutable {
+    #[must_use]
+    pub const fn is_native(&self) -> bool {
+        matches!(self, Self::Native)
+    }
+
+    #[must_use]
+    pub fn as_os_str(&self) -> &OsStr {
+        match self {
+            Self::Native => OsStr::new("/usr/bin/env"),
+            Self::Wsl(executable) => executable.as_os_str(),
+        }
+    }
+
+    /// Resolve the Windows launcher for an explicitly requested WSL host.
+    ///
+    /// # Errors
+    /// Returns an error if WSL cannot run on this platform.
+    pub fn system_wsl() -> Result<Self, HostError> {
+        WslExecutable::system().map(Self::Wsl)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalHost<R> {
+    config: LocalConfig,
     runner: R,
-    wsl_executable: WslExecutable,
+    local_executable: LocalExecutable,
     verified_tmux: Arc<Mutex<Option<VerifiedAdmission>>>,
     verified_kwt: Arc<Mutex<Option<VerifiedKwtHelper>>>,
     kwt_activation: Arc<Mutex<()>>,
@@ -707,26 +760,35 @@ pub struct WslHost<R> {
 
 #[derive(Debug)]
 struct VerifiedAdmission {
-    endpoint: WslEndpoint,
-    runtime: WslRuntimeIdentity,
+    endpoint: LocalEndpoint,
+    runtime: LinuxRuntimeIdentity,
     creation_term: AttachTerm,
     _binary: VerifiedTmuxBinary,
 }
 
 #[derive(Clone, Debug)]
 struct VerifiedKwtHelper {
-    endpoint: WslEndpoint,
-    runtime: WslRuntimeIdentity,
+    endpoint: LocalEndpoint,
+    runtime: LinuxRuntimeIdentity,
     path: String,
 }
 
-impl<R: CommandRunner> WslHost<R> {
+impl<R: CommandRunner> LocalHost<R> {
     #[must_use]
-    pub fn new(config: WslConfig, runner: R, wsl_executable: WslExecutable) -> Self {
+    pub fn wsl(config: LocalConfig, runner: R, executable: WslExecutable) -> Self {
+        Self::with_executable(config, runner, LocalExecutable::Wsl(executable))
+    }
+
+    #[must_use]
+    pub fn with_executable(
+        config: LocalConfig,
+        runner: R,
+        local_executable: LocalExecutable,
+    ) -> Self {
         Self {
             config,
             runner,
-            wsl_executable,
+            local_executable,
             verified_tmux: Arc::new(Mutex::new(None)),
             verified_kwt: Arc::new(Mutex::new(None)),
             kwt_activation: Arc::new(Mutex::new(())),
@@ -753,8 +815,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// helper is unavailable, or the selected distro lacks `/usr/bin/ssh`.
     pub fn remote_tmux_host(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         config: RemoteTmuxConfig,
         cancellation: &CancellationToken,
     ) -> Result<RemoteTmuxHost<R>, HostError>
@@ -781,7 +843,7 @@ impl<R: CommandRunner> WslHost<R> {
                 DiagnosticKind::ExecutableNotFound,
                 format!(
                     "OpenSSH is not installed in the {} WSL distro",
-                    endpoint.distro()
+                    endpoint.name()
                 ),
             ));
         }
@@ -794,11 +856,11 @@ impl<R: CommandRunner> WslHost<R> {
         Ok(RemoteTmuxHost::with_commands(
             config,
             CommandPrefix::new(
-                self.wsl_executable.as_os_str().to_os_string(),
+                self.local_executable.as_os_str().to_os_string(),
                 controller_arguments,
             ),
             CommandPrefix::new(
-                self.wsl_executable.as_os_str().to_os_string(),
+                self.local_executable.as_os_str().to_os_string(),
                 ssh_arguments,
             ),
             self.runner.clone(),
@@ -818,8 +880,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// or the WSL runtime boundary fails.
     pub fn discover_kwt(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         cancellation: &CancellationToken,
     ) -> Result<Option<KwtInventory>, HostError> {
         let Some(bundle) = self.config.kwt_bundle() else {
@@ -883,8 +945,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// Returns a classified path, helper, command, schema, or runtime error.
     pub fn register_kwt_project(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         project_path: &str,
         cancellation: &CancellationToken,
     ) -> Result<KwtProject, HostError> {
@@ -923,7 +985,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn resolve_kwt_project_path(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         project_path: &str,
         cancellation: &CancellationToken,
     ) -> Result<String, HostError> {
@@ -943,7 +1005,7 @@ impl<R: CommandRunner> WslHost<R> {
                 DiagnosticKind::MalformedOutput,
                 format!(
                     "That Windows folder is not available in {} through WSL.",
-                    endpoint.distro()
+                    endpoint.name()
                 ),
             ));
         }
@@ -970,8 +1032,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// removal, output is malformed, or the WSL runtime boundary moved.
     pub fn remove_kwt_project(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         expected_path: &str,
         expected_repository: &str,
         expected_registration: &str,
@@ -1038,8 +1100,8 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn ensure_kwt_helper(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         bundle: &KwtBundle,
         cancellation: &CancellationToken,
     ) -> Result<String, HostError> {
@@ -1089,7 +1151,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn resolve_home(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
     ) -> Result<String, HostError> {
         let mut args = pinned_prefix(endpoint);
@@ -1118,7 +1180,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn install_kwt_helper(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         directory: &str,
         path: &str,
         bundle: &KwtBundle,
@@ -1179,7 +1241,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn kwt_helper_matches(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         path: &str,
         bundle: &KwtBundle,
         cancellation: &CancellationToken,
@@ -1210,7 +1272,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_kwt(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         helper: &str,
         command: &[&str],
         cancellation: &CancellationToken,
@@ -1235,8 +1297,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// WSL runtime.
     pub fn kwt_repair_or_open_plan(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         request: &KwtWorktreeOpen,
         term: AttachTerm,
         cancellation: &CancellationToken,
@@ -1268,8 +1330,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// WSL runtime.
     pub fn kwt_directory_workspace_open_plan(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         request: &KwtDirectoryWorkspaceOpen,
         term: AttachTerm,
         cancellation: &CancellationToken,
@@ -1291,8 +1353,8 @@ impl<R: CommandRunner> WslHost<R> {
     )]
     fn kwt_open_plan(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         path: &str,
         session_name: &str,
         expected: &[(&str, &str)],
@@ -1343,7 +1405,7 @@ impl<R: CommandRunner> WslHost<R> {
             args.push(OsString::from(value));
         }
         Ok(RepairOrOpenPlan::worktree(
-            self.wsl_executable.as_os_str(),
+            self.local_executable.as_os_str(),
             args,
             session_name,
             &readiness_path,
@@ -1357,8 +1419,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// Returns an error when the helper, runtime, or socket cannot be verified.
     pub fn kwt_protected_attach_plan(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         request: &KwtProtectedWorktreeOpen,
         term: AttachTerm,
         cancellation: &CancellationToken,
@@ -1426,7 +1488,7 @@ impl<R: CommandRunner> WslHost<R> {
             .map(OsString::from),
         );
         Ok(RepairOrOpenPlan::worktree(
-            self.wsl_executable.as_os_str(),
+            self.local_executable.as_os_str(),
             args,
             request.session_name(),
             &readiness_path,
@@ -1442,8 +1504,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// malformed, or tmux cannot be queried safely.
     pub fn kwt_client_session_identity(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         readiness_path: &str,
         cancellation: &CancellationToken,
     ) -> Result<Option<SessionIdentity>, HostError> {
@@ -1506,8 +1568,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// receipts, or unsafe tmux output.
     pub fn kwt_named_client_session_identity(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         readiness_path: &str,
         tmux_socket_name: &str,
         cancellation: &CancellationToken,
@@ -1568,7 +1630,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     pub fn remove_kwt_client_readiness(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         readiness_path: &str,
         cancellation: &CancellationToken,
     ) {
@@ -1591,8 +1653,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// cannot be verified, or KWT emits malformed machine-readable output.
     pub fn list_kwt_branches(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         project_path: &str,
         cancellation: &CancellationToken,
     ) -> Result<Vec<KwtBranchCandidate>, HostError> {
@@ -1628,8 +1690,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// fails, or KWT emits malformed machine-readable output.
     pub fn list_kwt_pull_requests(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         project_path: &str,
         cancellation: &CancellationToken,
     ) -> Result<Vec<KwtPullRequest>, HostError> {
@@ -1680,8 +1742,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// the mutation times out, or the response violates the pinned contract.
     pub fn import_kwt_pull_request(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         request: &KwtPullRequestImportRequest,
         cancellation: &CancellationToken,
     ) -> Result<KwtPullRequestImport, HostError> {
@@ -1731,8 +1793,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// fails, or KWT rejects the requested branch operation.
     pub fn create_kwt_worktree(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         request: &KwtWorktreeCreate,
         cancellation: &CancellationToken,
     ) -> Result<(), HostError> {
@@ -1796,8 +1858,8 @@ impl<R: CommandRunner> WslHost<R> {
     )]
     pub fn remove_kwt_worktree(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         project_path: &str,
         worktree_path: &str,
         generation: &str,
@@ -1856,7 +1918,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_kwt_in_directory(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         helper: &str,
         directory: &str,
         command: &[&str],
@@ -1874,7 +1936,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_kwt_provider_in_directory(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         helper: &str,
         directory: &str,
         command: &[&str],
@@ -1892,7 +1954,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_kwt_in_directory_with_timeout(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         helper: &str,
         directory: &str,
         command: &[&str],
@@ -1916,7 +1978,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_kwt_mutation_in_directory(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         helper: &str,
         directory: &str,
         command: &[&str],
@@ -1939,7 +2001,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_scrubbed(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         command: &[&str],
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
@@ -1962,7 +2024,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_scrubbed_with_input(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         command: &[&str],
         input: &[u8],
         cancellation: &CancellationToken,
@@ -1983,7 +2045,7 @@ impl<R: CommandRunner> WslHost<R> {
         args.extend(command.iter().map(OsString::from));
         self.runner
             .run_with_input(
-                self.wsl_executable.as_os_str(),
+                self.local_executable.as_os_str(),
                 &args,
                 input,
                 cancellation,
@@ -1992,7 +2054,7 @@ impl<R: CommandRunner> WslHost<R> {
             .map_err(|error| classify_runner_error(&error))
     }
 
-    /// Resolve the exact WSL runtime and discover its tmux inventory.
+    /// Resolve the exact local Linux runtime and discover its tmux inventory.
     ///
     /// # Errors
     ///
@@ -2017,8 +2079,15 @@ impl<R: CommandRunner> WslHost<R> {
         for _attempt in 0..DISCOVERY_ATTEMPTS {
             let creation_term = self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
             let sessions = self.discover_sessions(&endpoint, cancellation)?;
-            let herdr = self.discover_herdr(&endpoint, cancellation);
-            let zellij = self.discover_zellij(&endpoint, cancellation);
+            let (herdr, zellij) = if matches!(endpoint, LocalEndpoint::Native) {
+                // Native optional backends get separate acceptance before exposure.
+                (HerdrInventory::Unavailable, ZellijInventory::Unavailable)
+            } else {
+                (
+                    self.discover_herdr(&endpoint, cancellation),
+                    self.discover_zellij(&endpoint, cancellation),
+                )
+            };
             let observed_runtime = self.resolve_runtime(&endpoint, cancellation)?;
             if runtime == observed_runtime {
                 return Ok(HostSnapshot {
@@ -2034,19 +2103,19 @@ impl<R: CommandRunner> WslHost<R> {
         }
         Err(HostError::new(
             DiagnosticKind::Transport,
-            "WSL distro restarted during tmux discovery",
+            "Local host restarted during tmux discovery",
         ))
     }
 
     /// Build an attach-only plan for a discovered session.
-    pub fn attach_plan(&self, endpoint: &WslEndpoint, session: &DiscoveredSession) -> AttachPlan {
+    pub fn attach_plan(&self, endpoint: &LocalEndpoint, session: &DiscoveredSession) -> AttachPlan {
         self.attach_plan_with_term(endpoint, session, AttachTerm::Xterm256Color)
     }
 
     /// Build an attach-only plan with an explicit terminal capability level.
     pub fn attach_plan_with_term(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         session: &DiscoveredSession,
         term: AttachTerm,
     ) -> AttachPlan {
@@ -2077,7 +2146,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn attach_identity_plan_with_term(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         name: &str,
         identity: &SessionIdentity,
         socket_name: Option<&str>,
@@ -2120,7 +2189,7 @@ impl<R: CommandRunner> WslHost<R> {
         ]);
 
         AttachPlan::attach_only(
-            self.wsl_executable.as_os_str(),
+            self.local_executable.as_os_str(),
             args,
             name,
             identity.clone(),
@@ -2131,7 +2200,7 @@ impl<R: CommandRunner> WslHost<R> {
     #[must_use]
     pub fn herdr_attach_plan(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         executable: &str,
         session: &HerdrSessionRecord,
         term: AttachTerm,
@@ -2144,14 +2213,14 @@ impl<R: CommandRunner> WslHost<R> {
                 .into_iter()
                 .map(OsString::from),
         );
-        HerdrAttachPlan::attach_only(self.wsl_executable.as_os_str(), args)
+        HerdrAttachPlan::attach_only(self.local_executable.as_os_str(), args)
     }
 
     /// Build an attach-only plan for one freshly discovered active Zellij session.
     #[must_use]
     pub fn zellij_attach_plan(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         executable: &str,
         session: &ZellijSessionRecord,
         term: AttachTerm,
@@ -2164,14 +2233,14 @@ impl<R: CommandRunner> WslHost<R> {
                 .into_iter()
                 .map(OsString::from),
         );
-        ZellijAttachPlan::attach_only(self.wsl_executable.as_os_str(), args)
+        ZellijAttachPlan::attach_only(self.local_executable.as_os_str(), args)
     }
 
     /// Build one non-repeatable Zellij session creation client.
     #[must_use]
     pub fn zellij_launch_once(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         executable: &str,
         name: ZellijSessionName,
         term: AttachTerm,
@@ -2181,7 +2250,7 @@ impl<R: CommandRunner> WslHost<R> {
         args.push(OsString::from(term.environment()));
         args.push(OsString::from(executable));
         args.push(OsString::from(format!("--session={}", name.as_str())));
-        ZellijLaunchOnce::create(self.wsl_executable.as_os_str(), args, name)
+        ZellijLaunchOnce::create(self.local_executable.as_os_str(), args, name)
     }
 
     /// Revalidate and kill one exact active Zellij session.
@@ -2198,8 +2267,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// command fails.
     pub fn kill_zellij_session(
         &self,
-        endpoint: &WslEndpoint,
-        expected_runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        expected_runtime: &LinuxRuntimeIdentity,
         expected_executable: &str,
         name: &str,
         cancellation: &CancellationToken,
@@ -2241,8 +2310,8 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn validate_current_zellij_target(
         &self,
-        endpoint: &WslEndpoint,
-        expected_runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        expected_runtime: &LinuxRuntimeIdentity,
         expected_executable: &str,
         name: &str,
         cancellation: &CancellationToken,
@@ -2281,7 +2350,7 @@ impl<R: CommandRunner> WslHost<R> {
     #[must_use]
     pub fn herdr_launch_once(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         executable: &str,
         name: HerdrLaunchTarget,
         is_default: bool,
@@ -2295,7 +2364,7 @@ impl<R: CommandRunner> WslHost<R> {
             args.push(OsString::from("--session"));
             args.push(OsString::from(name.as_str()));
         }
-        HerdrLaunchOnce::launch_or_attach(self.wsl_executable.as_os_str(), args, name)
+        HerdrLaunchOnce::launch_or_attach(self.local_executable.as_os_str(), args, name)
     }
 
     /// Revalidate and execute one confirmed destructive Herdr lifecycle action.
@@ -2311,7 +2380,7 @@ impl<R: CommandRunner> WslHost<R> {
     /// record no longer matches the confirmation, or Herdr rejects the action.
     pub fn mutate_herdr_session(
         &self,
-        expected_host: (&WslEndpoint, &WslRuntimeIdentity),
+        expected_host: (&LocalEndpoint, &LinuxRuntimeIdentity),
         expected_executable: &str,
         confirmed: &HerdrSessionRecord,
         action: HerdrLifecycleAction,
@@ -2379,8 +2448,8 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn validate_current_herdr_lifecycle_target(
         &self,
-        endpoint: &WslEndpoint,
-        expected_runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        expected_runtime: &LinuxRuntimeIdentity,
         expected_executable: &str,
         confirmed: &HerdrSessionRecord,
         action: HerdrLifecycleAction,
@@ -2419,7 +2488,7 @@ impl<R: CommandRunner> WslHost<R> {
     }
 
     /// Build one atomic local create-or-attach client for an already verified
-    /// WSL endpoint. The returned authority cannot be cloned and must be
+    /// local endpoint. The returned authority cannot be cloned and must be
     /// consumed by the terminal launcher.
     ///
     /// # Errors
@@ -2429,8 +2498,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// the ordinary client's tmux-side identity report.
     pub fn create_once(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         name: SessionName,
     ) -> Result<(CreateOnce, CreationReceipt, AttachTerm), HostError> {
         let term = self
@@ -2445,7 +2514,7 @@ impl<R: CommandRunner> WslHost<R> {
             .ok_or_else(|| {
                 HostError::new(
                     DiagnosticKind::UnsupportedEnvironment,
-                    "tmux creation requires fresh admission for this WSL runtime",
+                    "tmux creation requires fresh admission for this local runtime",
                 )
             })?;
         let (authority, receipt) = self.create_once_with_term(endpoint, name, term)?;
@@ -2454,7 +2523,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn create_once_with_term(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         name: SessionName,
         term: AttachTerm,
     ) -> Result<(CreateOnce, CreationReceipt), HostError> {
@@ -2476,7 +2545,7 @@ impl<R: CommandRunner> WslHost<R> {
         args.extend([";", "run-shell", "-b"].into_iter().map(OsString::from));
         args.push(OsString::from(creation_receipt_command(&receipt)));
         Ok((
-            CreateOnce::local_atomic(self.wsl_executable.as_os_str(), args, name),
+            CreateOnce::local_atomic(self.local_executable.as_os_str(), args, name),
             receipt,
         ))
     }
@@ -2490,7 +2559,7 @@ impl<R: CommandRunner> WslHost<R> {
     /// read before the bounded creation deadline.
     pub fn wait_for_creation_identity(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         receipt: &CreationReceipt,
         cancellation: &CancellationToken,
         timeout: Duration,
@@ -2527,7 +2596,7 @@ impl<R: CommandRunner> WslHost<R> {
             let output = self
                 .runner
                 .run(
-                    self.wsl_executable.as_os_str(),
+                    self.local_executable.as_os_str(),
                     &args,
                     cancellation,
                     remaining.min(COMMAND_TIMEOUT),
@@ -2564,7 +2633,7 @@ impl<R: CommandRunner> WslHost<R> {
         }
     }
 
-    fn remove_creation_receipt(&self, endpoint: &WslEndpoint, receipt: &CreationReceipt) {
+    fn remove_creation_receipt(&self, endpoint: &LocalEndpoint, receipt: &CreationReceipt) {
         let mut args = pinned_prefix(endpoint);
         args.extend(
             [
@@ -2578,7 +2647,7 @@ impl<R: CommandRunner> WslHost<R> {
             .map(OsString::from),
         );
         let _ignored = self.runner.run(
-            self.wsl_executable.as_os_str(),
+            self.local_executable.as_os_str(),
             &args,
             &CancellationToken::new(),
             CLEANUP_COMMAND_TIMEOUT,
@@ -2594,8 +2663,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// runtime changed across the creation boundary.
     pub fn discover_after_create(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         creation_term: AttachTerm,
         herdr: &HerdrInventory,
         zellij: &ZellijInventory,
@@ -2606,7 +2675,7 @@ impl<R: CommandRunner> WslHost<R> {
         if &observed_runtime != runtime {
             return Err(HostError::new(
                 DiagnosticKind::Transport,
-                "WSL distro restarted while creating the tmux session",
+                "Local host restarted while creating the tmux session",
             ));
         }
         Ok(HostSnapshot {
@@ -2631,8 +2700,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// longer running, or tmux returned an invalid identity.
     pub fn capture_live_session(
         &self,
-        endpoint: &WslEndpoint,
-        expected_runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        expected_runtime: &LinuxRuntimeIdentity,
         name: &str,
         cancellation: &CancellationToken,
     ) -> Result<LiveSessionTarget, HostError> {
@@ -2665,8 +2734,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// runtime changed while authority was being captured.
     pub fn capture_live_session_on_socket(
         &self,
-        endpoint: &WslEndpoint,
-        expected_runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        expected_runtime: &LinuxRuntimeIdentity,
         socket_name: &str,
         name: &str,
         cancellation: &CancellationToken,
@@ -2703,8 +2772,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// Returns a classified discovery or runtime error.
     pub fn session_is_running(
         &self,
-        endpoint: &WslEndpoint,
-        expected_runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        expected_runtime: &LinuxRuntimeIdentity,
         name: &str,
         cancellation: &CancellationToken,
     ) -> Result<bool, HostError> {
@@ -2724,8 +2793,8 @@ impl<R: CommandRunner> WslHost<R> {
     /// Returns a classified discovery or runtime error.
     pub fn session_is_running_on_socket(
         &self,
-        endpoint: &WslEndpoint,
-        expected_runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        expected_runtime: &LinuxRuntimeIdentity,
         socket_name: &str,
         name: &str,
         cancellation: &CancellationToken,
@@ -2806,8 +2875,8 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn require_runtime(
         &self,
-        endpoint: &WslEndpoint,
-        expected: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        expected: &LinuxRuntimeIdentity,
         cancellation: &CancellationToken,
     ) -> Result<(), HostError> {
         if self.resolve_runtime(endpoint, cancellation)? == *expected {
@@ -2815,14 +2884,20 @@ impl<R: CommandRunner> WslHost<R> {
         } else {
             Err(HostError::new(
                 DiagnosticKind::Transport,
-                "WSL restarted; refresh the host before changing the session",
+                "Local host restarted; refresh before changing the session",
             ))
         }
     }
 
-    fn resolve_endpoint(&self, cancellation: &CancellationToken) -> Result<WslEndpoint, HostError> {
+    fn resolve_endpoint(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<LocalEndpoint, HostError> {
+        if self.local_executable.is_native() {
+            return Ok(LocalEndpoint::Native);
+        }
         if let Some(distro) = &self.config.distro {
-            return Ok(WslEndpoint {
+            return Ok(LocalEndpoint::Wsl {
                 distro: distro.clone(),
             });
         }
@@ -2849,16 +2924,16 @@ impl<R: CommandRunner> WslHost<R> {
                     "WSL_DISTRO_NAME missing from default distro environment",
                 )
             })?;
-        Ok(WslEndpoint {
+        Ok(LocalEndpoint::Wsl {
             distro: distro.to_owned(),
         })
     }
 
     fn resolve_runtime(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
-    ) -> Result<WslRuntimeIdentity, HostError> {
+    ) -> Result<LinuxRuntimeIdentity, HostError> {
         let mut args = pinned_prefix(endpoint);
         args.extend(
             [
@@ -2875,15 +2950,18 @@ impl<R: CommandRunner> WslHost<R> {
             return Err(classify_command_failure(
                 output.status,
                 &output.stderr,
-                "read WSL runtime identity",
+                "read Linux runtime identity",
             ));
         }
-        parse_runtime(&output.stdout)
+        parse_runtime(
+            &output.stdout,
+            matches!(endpoint, LocalEndpoint::Wsl { .. }),
+        )
     }
 
     fn discover_sessions(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
     ) -> Result<Vec<DiscoveredSession>, HostError> {
         let mut args = pinned_prefix(endpoint);
@@ -2922,7 +3000,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn discover_sessions_on_socket(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         socket_name: &str,
         cancellation: &CancellationToken,
     ) -> Result<Vec<DiscoveredSession>, HostError> {
@@ -2955,7 +3033,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn discover_herdr(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
     ) -> HerdrInventory {
         match self.resolve_herdr_executable(endpoint, cancellation) {
@@ -2969,7 +3047,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn discover_zellij(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
     ) -> ZellijInventory {
         match self.resolve_zellij_executable(endpoint, cancellation) {
@@ -2983,7 +3061,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn resolve_zellij_executable(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
     ) -> Result<zellij::ExecutableProbe, HostError> {
         let mut args = pinned_prefix(endpoint);
@@ -3006,7 +3084,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn list_zellij_sessions(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         executable: String,
     ) -> ZellijInventory {
@@ -3042,7 +3120,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn resolve_herdr_executable(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
     ) -> Result<ExecutableProbe, HostError> {
         let mut args = pinned_prefix(endpoint);
@@ -3065,7 +3143,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn list_herdr_sessions(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         executable: String,
     ) -> HerdrInventory {
@@ -3103,7 +3181,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_tmux_command(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_args: &[&str],
     ) -> Result<CommandOutput, HostError> {
@@ -3125,8 +3203,8 @@ impl<R: CommandRunner> WslHost<R> {
     )]
     fn verify_tmux<A: AdmissionAttacher>(
         &self,
-        endpoint: &WslEndpoint,
-        runtime: &WslRuntimeIdentity,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
         attacher: &A,
         cancellation: &CancellationToken,
     ) -> Result<AttachTerm, HostError> {
@@ -3701,7 +3779,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn create_admission_tmpdir(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_tmpdir: &str,
     ) -> Result<(), HostError> {
@@ -3725,7 +3803,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn remove_admission_tmpdir(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         tmux_tmpdir: &str,
         creation_settled: bool,
     ) {
@@ -3744,7 +3822,7 @@ impl<R: CommandRunner> WslHost<R> {
         }
     }
 
-    fn remove_admission_tmpdir_once(&self, endpoint: &WslEndpoint, tmux_tmpdir: &str) {
+    fn remove_admission_tmpdir_once(&self, endpoint: &LocalEndpoint, tmux_tmpdir: &str) {
         let mut args = pinned_prefix(endpoint);
         append_scrubbed_environment(&mut args);
         args.extend(
@@ -3753,14 +3831,14 @@ impl<R: CommandRunner> WslHost<R> {
                 .map(OsString::from),
         );
         let _ignored = self.runner.run(
-            self.wsl_executable.as_os_str(),
+            self.local_executable.as_os_str(),
             &args,
             &CancellationToken::new(),
             CLEANUP_COMMAND_TIMEOUT,
         );
     }
 
-    fn admission_tmpdir_is_absent(&self, endpoint: &WslEndpoint, tmux_tmpdir: &str) -> bool {
+    fn admission_tmpdir_is_absent(&self, endpoint: &LocalEndpoint, tmux_tmpdir: &str) -> bool {
         let mut args = pinned_prefix(endpoint);
         append_scrubbed_environment(&mut args);
         args.extend(
@@ -3770,7 +3848,7 @@ impl<R: CommandRunner> WslHost<R> {
         );
         self.runner
             .run(
-                self.wsl_executable.as_os_str(),
+                self.local_executable.as_os_str(),
                 &args,
                 &CancellationToken::new(),
                 CLEANUP_COMMAND_TIMEOUT,
@@ -3780,7 +3858,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_tmux(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_tmpdir: &str,
         tmux_args: &[&str],
@@ -3790,7 +3868,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_tmux_cleanup(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         tmux_tmpdir: &str,
         tmux_args: &[&str],
         timeout: Duration,
@@ -3804,7 +3882,7 @@ impl<R: CommandRunner> WslHost<R> {
         args.extend(tmux_args.iter().map(OsString::from));
         self.runner
             .run(
-                self.wsl_executable.as_os_str(),
+                self.local_executable.as_os_str(),
                 &args,
                 &CancellationToken::new(),
                 timeout.min(CLEANUP_COMMAND_TIMEOUT),
@@ -3814,7 +3892,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn read_admission_identity(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_tmpdir: &str,
         namespace: &str,
@@ -3864,7 +3942,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn admission_new_session_plan(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         tmux_tmpdir: &str,
         namespace: &str,
         session_name: &str,
@@ -3894,7 +3972,7 @@ impl<R: CommandRunner> WslHost<R> {
             .into_iter()
             .map(OsString::from),
         );
-        AdmissionPlan::isolated(self.wsl_executable.as_os_str(), args)
+        AdmissionPlan::isolated(self.local_executable.as_os_str(), args)
     }
 
     #[allow(
@@ -3903,7 +3981,7 @@ impl<R: CommandRunner> WslHost<R> {
     )]
     fn start_admission_create_client<A: AdmissionAttacher>(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         tmux_tmpdir: &str,
         namespace: &str,
         session_name: &str,
@@ -3975,7 +4053,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn admission_attach_plan(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         tmux_tmpdir: &str,
         namespace: &str,
         target: &str,
@@ -3999,12 +4077,12 @@ impl<R: CommandRunner> WslHost<R> {
             args.push(OsString::from("-E"));
         }
         args.extend(["-t", target].into_iter().map(OsString::from));
-        AdmissionPlan::isolated(self.wsl_executable.as_os_str(), args)
+        AdmissionPlan::isolated(self.local_executable.as_os_str(), args)
     }
 
     fn wait_for_admission_attachment(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_tmpdir: &str,
         namespace: &str,
@@ -4053,7 +4131,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_tmux_required(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_tmpdir: &str,
         tmux_args: &[&str],
@@ -4071,7 +4149,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_tmux_with_env_required(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_tmpdir: &str,
         environment: &[&str],
@@ -4093,7 +4171,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_tmux_missing_session(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_tmpdir: &str,
         tmux_args: &[&str],
@@ -4115,7 +4193,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn require_admission_session_absent(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_tmpdir: &str,
         namespace: &str,
@@ -4155,7 +4233,7 @@ impl<R: CommandRunner> WslHost<R> {
 
     fn run_tmux_with_env(
         &self,
-        endpoint: &WslEndpoint,
+        endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
         tmux_tmpdir: &str,
         environment: &[&str],
@@ -4183,7 +4261,12 @@ impl<R: CommandRunner> WslHost<R> {
         timeout: Duration,
     ) -> Result<CommandOutput, HostError> {
         self.runner
-            .run(self.wsl_executable.as_os_str(), args, cancellation, timeout)
+            .run(
+                self.local_executable.as_os_str(),
+                args,
+                cancellation,
+                timeout,
+            )
             .map_err(|error| {
                 HostError::new(
                     if error.kind() == std::io::ErrorKind::TimedOut {
@@ -4263,17 +4346,17 @@ fn validate_herdr_lifecycle_response(
 }
 
 fn admission_matches(
-    verified_endpoint: &WslEndpoint,
-    verified_runtime: &WslRuntimeIdentity,
-    endpoint: &WslEndpoint,
-    runtime: &WslRuntimeIdentity,
+    verified_endpoint: &LocalEndpoint,
+    verified_runtime: &LinuxRuntimeIdentity,
+    endpoint: &LocalEndpoint,
+    runtime: &LinuxRuntimeIdentity,
 ) -> bool {
     verified_endpoint == endpoint && verified_runtime == runtime
 }
 
 struct AdmissionCleanup<'a, R: CommandRunner> {
-    host: &'a WslHost<R>,
-    endpoint: &'a WslEndpoint,
+    host: &'a LocalHost<R>,
+    endpoint: &'a LocalEndpoint,
     tmux_tmpdir: String,
     creation_settled: bool,
     exact_sessions: Vec<(String, String)>,
@@ -4287,7 +4370,7 @@ struct AdmissionIdentity {
 }
 
 impl<'a, R: CommandRunner> AdmissionCleanup<'a, R> {
-    fn new(host: &'a WslHost<R>, endpoint: &'a WslEndpoint, tmux_tmpdir: String) -> Self {
+    fn new(host: &'a LocalHost<R>, endpoint: &'a LocalEndpoint, tmux_tmpdir: String) -> Self {
         Self {
             host,
             endpoint,
@@ -4421,20 +4504,26 @@ impl<R: CommandRunner> Drop for AdmissionCleanup<'_, R> {
     }
 }
 
-fn pinned_prefix(endpoint: &WslEndpoint) -> Vec<OsString> {
-    ["--distribution", endpoint.distro(), "--exec"]
-        .into_iter()
-        .map(OsString::from)
-        .collect()
+fn pinned_prefix(endpoint: &LocalEndpoint) -> Vec<OsString> {
+    match endpoint {
+        LocalEndpoint::Native => Vec::new(),
+        LocalEndpoint::Wsl { distro } => ["--distribution", distro, "--exec"]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+    }
 }
 
-fn runtime_pinned_prefix(endpoint: &WslEndpoint, runtime: &WslRuntimeIdentity) -> Vec<OsString> {
+fn runtime_pinned_prefix(
+    endpoint: &LocalEndpoint,
+    runtime: &LinuxRuntimeIdentity,
+) -> Vec<OsString> {
     let mut prefix = pinned_prefix(endpoint);
     prefix.extend([
         OsString::from("/bin/sh"),
         OsString::from("-c"),
-        OsString::from(WSL_RUNTIME_GUARD_SCRIPT),
-        OsString::from("ghosthub-wsl-runtime-guard"),
+        OsString::from(LINUX_RUNTIME_GUARD_SCRIPT),
+        OsString::from("ghosthub-linux-runtime-guard"),
         OsString::from(runtime.kernel_boot_id()),
         OsString::from(runtime.init_start_ticks().to_string()),
     ]);
@@ -4855,14 +4944,14 @@ fn admission_scope(sequence: u64) -> Result<AdmissionScope, HostError> {
     })
 }
 
-fn parse_runtime(bytes: &[u8]) -> Result<WslRuntimeIdentity, HostError> {
-    let output = decode(bytes, "WSL runtime identity")?;
+fn parse_runtime(bytes: &[u8], require_wsl: bool) -> Result<LinuxRuntimeIdentity, HostError> {
+    let output = decode(bytes, "Linux runtime identity")?;
     let mut lines = output.lines();
     let version = lines.next().unwrap_or_default();
     let kernel_boot_id = lines.next().unwrap_or_default();
     let init_stat = lines.next().unwrap_or_default();
 
-    if !version.to_ascii_lowercase().contains("wsl2") {
+    if require_wsl && !version.to_ascii_lowercase().contains("wsl2") {
         return Err(HostError::new(
             DiagnosticKind::UnsupportedEnvironment,
             format!("WSL2 required; kernel reported: {version}"),
@@ -4899,7 +4988,7 @@ fn parse_runtime(bytes: &[u8]) -> Result<WslRuntimeIdentity, HostError> {
             )
         })?;
 
-    Ok(WslRuntimeIdentity {
+    Ok(LinuxRuntimeIdentity {
         kernel_boot_id: kernel_boot_id.to_owned(),
         init_start_ticks,
     })
@@ -5101,7 +5190,7 @@ fn is_project_path_input_absolute(path: &str) -> bool {
 }
 
 fn resolve_wsl_unc_project_path(
-    endpoint: &WslEndpoint,
+    endpoint: &LocalEndpoint,
     path: &str,
 ) -> Result<Option<String>, HostError> {
     if !path.starts_with(r"\\") && !path.starts_with("//") {
@@ -5114,12 +5203,12 @@ fn resolve_wsl_unc_project_path(
         return Ok(None);
     }
     let distro = components.next().unwrap_or_default();
-    if distro.is_empty() || !distro.eq_ignore_ascii_case(endpoint.distro()) {
+    if distro.is_empty() || !distro.eq_ignore_ascii_case(endpoint.name()) {
         return Err(HostError::new(
             DiagnosticKind::MalformedOutput,
             format!(
                 "That folder belongs to WSL distro {distro:?}, but this host uses {}.",
-                endpoint.distro()
+                endpoint.name()
             ),
         ));
     }
@@ -5384,12 +5473,12 @@ mod tests {
     }
 
     fn kwt_mutation_host() -> (
-        WslHost<KwtMutationRunner>,
+        LocalHost<KwtMutationRunner>,
         KwtMutationRunner,
-        WslEndpoint,
-        WslRuntimeIdentity,
+        LocalEndpoint,
+        LinuxRuntimeIdentity,
     ) {
-        kwt_mutation_host_with_config(WslConfig::with_distro("Ubuntu").expect("config"))
+        kwt_mutation_host_with_config(LocalConfig::with_distro("Ubuntu").expect("config"))
     }
 
     fn test_kwt_helper_path() -> String {
@@ -5401,24 +5490,24 @@ mod tests {
     }
 
     fn kwt_mutation_host_with_config(
-        config: WslConfig,
+        config: LocalConfig,
     ) -> (
-        WslHost<KwtMutationRunner>,
+        LocalHost<KwtMutationRunner>,
         KwtMutationRunner,
-        WslEndpoint,
-        WslRuntimeIdentity,
+        LocalEndpoint,
+        LinuxRuntimeIdentity,
     ) {
         let runner = KwtMutationRunner::default();
-        let endpoint = WslEndpoint {
+        let endpoint = LocalEndpoint::Wsl {
             distro: "Ubuntu".to_owned(),
         };
-        let runtime = WslRuntimeIdentity {
+        let runtime = LinuxRuntimeIdentity {
             kernel_boot_id: "12345678-1234-1234-1234-123456789abc".to_owned(),
             init_start_ticks: 42,
         };
         let bundle =
             KwtBundle::new("a".repeat(40), "b".repeat(64), vec![1_u8]).expect("valid bundle");
-        let host = WslHost::new(
+        let host = LocalHost::wsl(
             config.with_kwt_bundle(bundle),
             runner.clone(),
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("WSL path"),
@@ -5456,8 +5545,8 @@ mod tests {
                 "--exec",
                 "/bin/sh",
                 "-c",
-                WSL_RUNTIME_GUARD_SCRIPT,
-                "ghosthub-wsl-runtime-guard",
+                LINUX_RUNTIME_GUARD_SCRIPT,
+                "ghosthub-linux-runtime-guard",
                 runtime.kernel_boot_id(),
                 &runtime.init_start_ticks().to_string(),
                 &test_kwt_helper_path(),
@@ -5473,8 +5562,8 @@ mod tests {
                 "--exec",
                 "/bin/sh",
                 "-c",
-                WSL_RUNTIME_GUARD_SCRIPT,
-                "ghosthub-wsl-runtime-guard",
+                LINUX_RUNTIME_GUARD_SCRIPT,
+                "ghosthub-linux-runtime-guard",
                 runtime.kernel_boot_id(),
                 &runtime.init_start_ticks().to_string(),
                 "/usr/bin/ssh",
@@ -5546,7 +5635,7 @@ mod tests {
 
     #[test]
     fn kwt_commands_use_the_configured_tmux_socket_directory() {
-        let config = WslConfig::configured(
+        let config = LocalConfig::configured(
             Some("Ubuntu".to_owned()),
             "/usr/bin/tmux",
             Some("/run/user/1000/ghosthub".to_owned()),
@@ -6240,10 +6329,10 @@ mod tests {
             "/tmp/other.sock",
         );
         let snapshot = HostSnapshot {
-            endpoint: WslEndpoint {
+            endpoint: LocalEndpoint::Wsl {
                 distro: "Ubuntu".to_owned(),
             },
-            runtime: WslRuntimeIdentity {
+            runtime: LinuxRuntimeIdentity {
                 kernel_boot_id: "boot".to_owned(),
                 init_start_ticks: 1,
             },
@@ -6305,10 +6394,10 @@ mod tests {
             "/tmp/work.sock",
         );
         let snapshot = |executable: &str, session: HerdrSessionRecord| HostSnapshot {
-            endpoint: WslEndpoint {
+            endpoint: LocalEndpoint::Wsl {
                 distro: "Ubuntu".to_owned(),
             },
-            runtime: WslRuntimeIdentity {
+            runtime: LinuxRuntimeIdentity {
                 kernel_boot_id: "boot".to_owned(),
                 init_start_ticks: 1,
             },
@@ -6384,23 +6473,29 @@ mod tests {
 
     #[test]
     fn cached_admission_requires_the_same_endpoint_and_runtime() {
-        let ubuntu = WslEndpoint {
+        let ubuntu = LocalEndpoint::Wsl {
             distro: "Ubuntu".to_owned(),
         };
-        let debian = WslEndpoint {
+        let debian = LocalEndpoint::Wsl {
             distro: "Debian".to_owned(),
         };
-        let runtime = WslRuntimeIdentity {
+        let runtime = LinuxRuntimeIdentity {
             kernel_boot_id: "shared-wsl-kernel".to_owned(),
             init_start_ticks: 42,
         };
-        let restarted = WslRuntimeIdentity {
+        let restarted = LinuxRuntimeIdentity {
             kernel_boot_id: "shared-wsl-kernel".to_owned(),
             init_start_ticks: 43,
         };
 
         assert!(admission_matches(&ubuntu, &runtime, &ubuntu, &runtime));
         assert!(!admission_matches(&ubuntu, &runtime, &debian, &runtime));
+        assert!(!admission_matches(
+            &ubuntu,
+            &runtime,
+            &LocalEndpoint::Native,
+            &runtime
+        ));
         assert!(!admission_matches(&ubuntu, &runtime, &ubuntu, &restarted));
     }
 
@@ -6431,8 +6526,8 @@ mod tests {
 
     #[test]
     fn local_creation_is_one_atomic_scrubbed_client_command() {
-        let host = WslHost::new(
-            WslConfig::configured(
+        let host = LocalHost::wsl(
+            LocalConfig::configured(
                 Some("Ubuntu Work".to_owned()),
                 "/opt/tmux/bin/tmux",
                 Some("/run/user/1000/ghosthub".to_owned()),
@@ -6442,7 +6537,7 @@ mod tests {
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
                 .expect("absolute WSL path"),
         );
-        let endpoint = WslEndpoint {
+        let endpoint = LocalEndpoint::Wsl {
             distro: "Ubuntu Work".to_owned(),
         };
         let (plan, receipt) = host
@@ -6495,13 +6590,13 @@ mod tests {
 
     #[test]
     fn herdr_launch_is_one_scrubbed_argv_only_client_command() {
-        let host = WslHost::new(
-            WslConfig::with_distro("Ubuntu Work").expect("valid config"),
+        let host = LocalHost::wsl(
+            LocalConfig::with_distro("Ubuntu Work").expect("valid config"),
             crate::StdCommandRunner,
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
                 .expect("absolute WSL path"),
         );
-        let endpoint = WslEndpoint {
+        let endpoint = LocalEndpoint::Wsl {
             distro: "Ubuntu Work".to_owned(),
         };
         let plan = host.herdr_launch_once(

@@ -16,6 +16,33 @@ const APPLICATION_CONFIG: &str = "config.toml";
 const DEFAULT_TMUX_BINARY: &str = "/usr/bin/tmux";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalSettings {
+    tmux_binary: String,
+    socket_directory: Option<String>,
+}
+
+impl LocalSettings {
+    #[must_use]
+    pub fn tmux_binary(&self) -> &str {
+        &self.tmux_binary
+    }
+
+    #[must_use]
+    pub fn socket_directory(&self) -> Option<&str> {
+        self.socket_directory.as_deref()
+    }
+}
+
+impl Default for LocalSettings {
+    fn default() -> Self {
+        Self {
+            tmux_binary: DEFAULT_TMUX_BINARY.to_owned(),
+            socket_directory: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WslSettings {
     distro: Option<String>,
     tmux_binary: String,
@@ -51,6 +78,7 @@ impl Default for WslSettings {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ApplicationConfig {
+    local: LocalSettings,
     wsl: WslSettings,
     terminal: TerminalAppearance,
     ssh_hosts: Vec<SshHostSettings>,
@@ -197,6 +225,11 @@ impl ApplicationConfig {
     }
 
     #[must_use]
+    pub const fn local(&self) -> &LocalSettings {
+        &self.local
+    }
+
+    #[must_use]
     pub const fn terminal(&self) -> &TerminalAppearance {
         &self.terminal
     }
@@ -306,10 +339,36 @@ impl std::error::Error for ConfigError {}
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
+    local: LocalFile,
     wsl: WslFile,
     terminal: TerminalFile,
     #[serde(rename = "ssh-host")]
     ssh_hosts: Vec<SshHostFile>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+struct LocalFile {
+    tmux_binary: Option<String>,
+    socket_directory: Option<String>,
+}
+
+impl TryFrom<LocalFile> for LocalSettings {
+    type Error = ConfigError;
+
+    fn try_from(file: LocalFile) -> Result<Self, Self::Error> {
+        let tmux_binary = file
+            .tmux_binary
+            .unwrap_or_else(|| DEFAULT_TMUX_BINARY.to_owned());
+        require_posix_absolute("local.tmux-binary", &tmux_binary)?;
+        if let Some(path) = &file.socket_directory {
+            require_posix_absolute("local.socket-directory", path)?;
+        }
+        Ok(Self {
+            tmux_binary,
+            socket_directory: file.socket_directory,
+        })
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -350,6 +409,7 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
 
     fn try_from(file: ConfigFile) -> Result<Self, Self::Error> {
         let defaults = Self::default();
+        let local = LocalSettings::try_from(file.local)?;
         let tmux_binary = file
             .wsl
             .tmux_binary
@@ -422,6 +482,7 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
             .unwrap_or((configured_background, configured_foreground));
 
         Ok(Self {
+            local,
             wsl: WslSettings {
                 distro: file.wsl.distro,
                 tmux_binary,
@@ -454,6 +515,10 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
 impl From<&ApplicationConfig> for ConfigFile {
     fn from(config: &ApplicationConfig) -> Self {
         Self {
+            local: LocalFile {
+                tmux_binary: Some(config.local.tmux_binary.clone()),
+                socket_directory: config.local.socket_directory.clone(),
+            },
             wsl: WslFile {
                 distro: config.wsl.distro.clone(),
                 tmux_binary: Some(config.wsl.tmux_binary.clone()),
