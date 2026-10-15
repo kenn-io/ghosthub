@@ -11,6 +11,14 @@ locale charmap | grep -qx UTF-8
 TERM=tmux-256color infocmp tmux-256color >/dev/null
 git --version >/dev/null
 curl --version >/dev/null
+# Remove with the temporary CVE-2026-92392 dispositions after Trivy catches up.
+for package in curl libcurl3t64-gnutls libcurl4t64; do
+  installed="$(dpkg-query -W -f='${Version}' "$package")"
+  if ! dpkg --compare-versions "$installed" ge 8.18.0-1ubuntu2.8; then
+    printf '%s %s lacks the CVE-2026-92392 fix\n' "$package" "$installed" >&2
+    exit 1
+  fi
+done
 ssh -V
 unzip -v >/dev/null
 xz --version >/dev/null

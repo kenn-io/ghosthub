@@ -231,7 +231,8 @@ vetting, pin, and promotion steps finish. During that interval, maintenance
 rejects the old image because its attested inputs differ from `main`. A
 candidate can acquire new vulnerability findings while it awaits promotion;
 refresh the image inputs again if a fixed package is available.
-The complete developer procedure is
+The developer procedure, including temporary dispositions for vendor-confirmed
+scanner false positives, is
 [Sandbox Image Operations](sandbox-image.md).
 
 ## Protected signing environment
