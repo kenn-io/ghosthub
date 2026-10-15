@@ -134,6 +134,8 @@ help:
 		'      Run both the Swift and Python test suites.' \
 		'  make rust-check' \
 		'      Run Rust formatting, tests, checks, and clippy for the current platform.' \
+		'  make rust-build' \
+		'      Build the native Rust application for the current platform.' \
 		'  make rust-test-wsl-live' \
 		'      Run the isolated WSL2 terminal and workspace acceptance suites.' \
 		'  make rust-test-ssh-controller-live GHOSTHUB_KWT_CONTROLLER_BUNDLE_TEST=/absolute/path/to/kwt.exe' \
@@ -630,6 +632,10 @@ zizmor:
 		.github/workflows/sandbox-image*.yml
 
 test: swift-test python-test
+
+.PHONY: rust-build
+rust-build:
+	@cd "$(RUST_DIR)" && $(CARGO) build --locked -p ghosthub-app
 
 rust-format-check:
 	@cd "$(RUST_DIR)" && $(CARGO) fmt --all --check

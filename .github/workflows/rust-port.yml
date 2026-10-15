@@ -2,19 +2,23 @@ name: Rust Port CI
 
 on:
   push:
-    branches: [rust-port]
+    branches: [main]
     paths:
       - rust/**
       - contracts/**
       - docs/rust-port.md
       - .github/workflows/rust-port.yml
+      - Makefile
+      - KWT_REVISION
   pull_request:
-    branches: [rust-port]
+    branches: [main]
     paths:
       - rust/**
       - contracts/**
       - docs/rust-port.md
       - .github/workflows/rust-port.yml
+      - Makefile
+      - KWT_REVISION
   workflow_dispatch:
 
 permissions:

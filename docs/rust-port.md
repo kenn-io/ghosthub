@@ -1,9 +1,10 @@
 # Windows and Linux Rust Port
 
 This document is the maintained design for native Ghosthub applications on
-Windows and Linux. The first product slice is Windows-only, uses tmux in WSL2,
-and discovers optional Herdr and Zellij sessions there; Linux remains a
-compile-and-contract target until a native Linux product slice is authorized.
+Windows and Linux. The existing local-session product slice uses tmux in WSL2
+on Windows and discovers optional Herdr and Zellij sessions there. Native
+Linux is now a product target. Its GPUI shell and Settings run on Linux, but
+local host discovery and session workflows remain unimplemented.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and
@@ -21,8 +22,9 @@ away from SwiftUI.
 - macOS remains SwiftUI/AppKit and libghostty.
 - Windows uses Rust and GPUI. Its first product slice attaches to real tmux in
   a WSL2 distro through `wsl.exe` and ConPTY.
-- Linux remains in Rust CI for compilation, contracts, architecture, lint, and
-  dependency policy. A native Linux application is deferred.
+- Linux enables X11 and Wayland in the native Rust/GPUI shell. Local
+  sessions and native helper packaging are planned work; compilation and
+  contracts alone do not establish Linux product parity.
 - All platforms preserve the Host, Project, Worktree, and ordinary
   multiplexer-session mental model.
 - Kwt remains authoritative for project/worktree identity and exact session
@@ -97,10 +99,61 @@ The first checked-in workspace pins Rust 1.96.1 and GPUI 0.2.2. It contains
 Windows ARM64 process. Linux enables both Wayland and X11 backends and is
 compiled and tested independently rather than inferred from the Windows build.
 
-Rust CI exists only in `.github/workflows/rust-port.yml`. It runs Windows and
-Linux jobs for pushes and pull requests targeting the `rust-port` integration
-branch. It is neither present on nor triggered for `main`; the shipped Swift
-application's CI remains unchanged.
+Rust CI is defined in `.github/workflows/rust-port.yml`. It runs Windows and
+Linux jobs for relevant pushes and pull requests targeting `main`, including
+changes to the shared Makefile and pinned KWT revision. The shipped Swift
+application's CI remains separate.
+
+### Build and inspect the Linux application
+
+Use the toolchain pinned in `rust/rust-toolchain.toml`. On Debian or Ubuntu,
+install the GPUI build dependencies listed in the Rust CI workflow. Running
+the app also needs a Vulkan driver and a font GPUI can resolve. For a headless
+development host, Mesa's software Vulkan driver and DejaVu fonts suffice:
+
+```sh
+sudo apt-get install --no-install-recommends \
+  build-essential clang cmake libfontconfig-dev libvulkan1 \
+  libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev lld llvm pkg-config \
+  mesa-vulkan-drivers fonts-dejavu-core xvfb xauth xdotool ffmpeg
+make rust-build
+make rust-check
+```
+
+The executable is `rust/target/debug/ghosthub`. Use disposable application
+roots when inspecting a development build. This keeps configured hosts,
+helpers, and saved preferences separate from installed application state:
+
+```sh
+capture_root=$(mktemp -d)
+export GHOSTHUB_HOME="$capture_root/home"
+export GHOSTHUB_CONFIG_HOME="$capture_root/config"
+export GHOSTHUB_STATE_HOME="$capture_root/state"
+./rust/target/debug/ghosthub
+```
+
+For native screenshots without a desktop, run the executable under
+`xvfb-run -a -s '-screen 0 1280x800x24'`. Use `xdotool` to wait for the
+Ghosthub window, move it, and give it focus before capturing the X11 display
+with FFmpeg. Inspect the image: finding a window alone does not prove that
+GPUI has painted it. Stop the app and virtual display after capture. Keep
+these development captures local; accepted website screenshots follow the
+separate [publishing workflow](../website/README.md).
+
+With empty configuration, Linux currently displays **No terminal hosts are
+available**. The Settings button opens the existing Appearance, Terminal,
+and Hosts panes. This verifies native rendering and UI interaction, not local
+terminal attachment. Software-rendered X11 captures do not establish Wayland,
+hardware GPU, Windows WSL, or ConPTY acceptance.
+
+Track implementation and baseline failures in the existing Kata project.
+Check `kata federation status --agent` before resuming across machines; retain
+the local spoke binding when federation is healthy. Work in this order:
+establish build and rendering evidence, resolve reproduced baseline failures,
+then deliver the native Linux local-session slice. Continue remote/worktree,
+Settings, persistence, and platform delivery work through their existing
+issues and focused children. Do not infer completion from an old issue
+comment or a passing compile check.
 
 ## 2. Terminal Presentation and Session Execution
 
@@ -1262,8 +1315,8 @@ screenshots.
 If the WSL ConPTY/lifetime or tmux capability gate fails, Windows returns to
 substrate selection; there is no app-lifetime or psmux fallback. If every VT
 candidate fails the terminal-state gate, product integration stops for
-architecture reconsideration. Linux CI remains a compile-and-contract signal,
-not an alternate product delivery branch.
+architecture reconsideration. Linux CI remains a compile-and-contract signal;
+native Linux delivery also requires live session and desktop acceptance.
 
 ### Test categories
 
@@ -1312,6 +1365,13 @@ used as evidence for the Windows ConPTY-to-WSL relay path.
 ### Follow-on order
 
 After Slice 1:
+
+The renewed native Linux work first adds a real local host, ordinary tmux
+discovery and attachment, constructive creation, and confirmed destruction.
+It must prove input, resize, and detach-only lifetime against an isolated
+server through the native application. Local kwt/worktrees and optional
+Herdr/Zellij follow through the same ownership boundaries. The Windows WSL
+slice remains independently tested throughout this work.
 
 1. Local Ghosthub inventory and ordinary worktree RepairOrOpen now ship with
    pinned bundled kwt, project/worktree inventory, branch-backed creation,
