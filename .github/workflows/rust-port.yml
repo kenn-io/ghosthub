@@ -74,6 +74,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            apparmor-profiles \
             build-essential \
             bubblewrap \
             clang \
@@ -88,6 +89,13 @@ jobs:
             pkg-config \
             tmux
 
+      - name: Enable Bubblewrap namespaces on Ubuntu
+        if: runner.os == 'Linux'
+        run: |
+          sudo apparmor_parser -r /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          bwrap --unshare-user --unshare-pid --unshare-net \
+            --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --chdir / /bin/true
+
       - name: Build the pinned Linux KWT helper
         if: runner.os == 'Linux'
         run: make -C .. bootstrap-kwt
@@ -98,13 +106,13 @@ jobs:
         run: |
           cargo test-contracts --locked
           make -C .. rust-check
-          make -C .. rust-test-kwt-live
+          make -C .. rust-test-kwt-live KWT_BINARY_PATH=.build/kwt/kwt
 
       - name: Test Linux protected pull-request worktrees
         if: runner.os == 'Linux'
         env:
           KWT_GITHUB_TOKEN: ${{ github.token }}
-        run: make -C .. rust-test-kwt-pr-live
+        run: make -C .. rust-test-kwt-pr-live KWT_BINARY_PATH=.build/kwt/kwt
 
       - name: Test and lint on Windows
         if: runner.os == 'Windows'

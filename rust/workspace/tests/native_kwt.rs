@@ -358,6 +358,13 @@ fn isolated_fixture(test_name: &str, network: bool) -> Option<Fixture> {
             fs::create_dir(root.join(dir)).unwrap();
         }
         fs::write(root.join("gitconfig"), "").unwrap();
+        // The private /tmp can hide either original artifact, including the checkout.
+        let bin = root.join("bin");
+        fs::create_dir(&bin).unwrap();
+        let executable = bin.join("native_kwt");
+        let staged_helper = bin.join("kwt");
+        fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        fs::copy(&helper, &staged_helper).unwrap();
         let mut child = Command::new("bwrap");
         if !network {
             child.arg("--unshare-net");
@@ -377,7 +384,8 @@ fn isolated_fixture(test_name: &str, network: bool) -> Option<Fixture> {
             .arg(&root)
             .arg(&root)
             .args(["--proc", "/proc", "--dev", "/dev"])
-            .arg(std::env::current_exe().unwrap());
+            .arg(executable)
+            .current_dir(&root);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("GIT_") {
                 child.env_remove(key);
@@ -386,6 +394,7 @@ fn isolated_fixture(test_name: &str, network: bool) -> Option<Fixture> {
         let result = child
             .args(["--exact", test_name, "--ignored", "--nocapture"])
             .env("GHOSTHUB_KWT_FIXTURE", &root)
+            .env("GHOSTHUB_KWT_BUNDLE_TEST", staged_helper)
             .env("HOME", root.join("home"))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("KWT_HOME", root.join("kwt"))

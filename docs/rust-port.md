@@ -178,9 +178,21 @@ replacement. `make rust-test-kwt-live` adds real project registration, branch
 creation/import, shell input, generation checks, confirmed removal, and
 unregistration without deleting checkouts or sessions. It requires Bubblewrap
 and runs with a private `/tmp`, PID namespace, home, Git config, and KWT state.
+The executable and helper are staged inside the fixture so checkouts and
+build artifacts under `/tmp` also work. Both live-test targets accept relative
+`KWT_BINARY_PATH` overrides from the repository root.
 `make rust-test-kwt-pr-live` also verifies GitHub PR import, idempotent reuse,
 protected attachment/recreation, and removal; it requires `KWT_GITHUB_TOKEN`
 and network access to the public contract repository.
+
+On Ubuntu 24.04, install `apparmor-profiles` and load the distribution's
+Bubblewrap profile before running these tests:
+
+```sh
+sudo apparmor_parser -r /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+```
+
+Rust CI loads this profile and exercises namespace creation before building.
 
 Software-rendered X11 captures do not establish Wayland,
 hardware GPU, Windows WSL, or ConPTY acceptance.
