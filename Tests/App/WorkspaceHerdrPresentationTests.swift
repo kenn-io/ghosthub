@@ -1823,7 +1823,7 @@ struct WorkspaceHerdrPresentationTests {
         displays.withLock { $0 = 1 }
         model.reconnectActiveHerdrSessionNow()
         await waitUntilMainActor {
-            store.requestedConfigurations.count == 1
+            store.requestedKeys.contains { $0.target == .herdrSession }
                 && model.activeBorrowedHerdrConnectionState == .connected
         }
 
