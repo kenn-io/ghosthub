@@ -906,20 +906,21 @@ fn attach_accepts_chunked_input_beyond_the_message_limit() {
     // the startup cursor query is answered stalls the console host itself.
     await_echo(&mut socket, "chunk-ready");
 
-    // A raw POSIX reader consumes all 300 KiB instead of relying on the
-    // interactive shell's line limit and Ctrl-C input flushing behavior.
+    // Consume all 300 KiB before exiting, without shell line editing or Ctrl-C.
+    #[cfg(windows)]
+    let reader = b"Write-Output ('reader-' + 'ready'); \
+                   for ($received=0; $received -lt 307200; $received++) { \
+                       if ([Console]::ReadKey($true).KeyChar -ne 'a') { \
+                           throw 'Unexpected input' \
+                       } \
+                   }; Write-Output ('chunk-' + 'complete'); exit\r";
     #[cfg(not(windows))]
-    {
-        socket
-            .send(Message::Binary(
-                b"stty raw -echo; printf 'reader-%s\\n' ready; \
-                  head -c 307200 >/dev/null; printf 'chunk-%s\\n' complete; exit\r"
-                    .to_vec()
-                    .into(),
-            ))
-            .expect("start raw input reader");
-        await_output(&mut socket, "reader-ready");
-    }
+    let reader = b"stty raw -echo; printf 'reader-%s\\n' ready; \
+                   head -c 307200 >/dev/null; printf 'chunk-%s\\n' complete; exit\r";
+    socket
+        .send(Message::Binary(reader.to_vec().into()))
+        .expect("start counted input reader");
+    await_output(&mut socket, "reader-ready");
 
     // Each frame stays under the 256 KiB message limit.
     let chunk = vec![b'a'; 150 * 1024];
@@ -929,16 +930,6 @@ fn attach_accepts_chunked_input_beyond_the_message_limit() {
     socket
         .send(Message::Binary(chunk.into()))
         .expect("second chunk");
-    #[cfg(windows)]
-    {
-        socket
-            .send(Message::Binary(vec![0x03].into()))
-            .expect("cancel the pending line");
-        socket
-            .send(Message::Binary(b"exit\r".to_vec().into()))
-            .expect("send exit");
-    }
-    #[cfg(not(windows))]
     await_output(&mut socket, "chunk-complete");
 
     let deadline = Instant::now() + Duration::from_mins(1);
