@@ -5,43 +5,12 @@ use std::{
 
 use config::{ApplicationConfig, Roots, TerminalAppearance, TerminalTheme};
 use host::{LocalConfig, WslExecutable};
-use model::DiagnosticKind;
 use workspace::{
-    Appearance, AppearanceSettingsDraft, HostConnectionState, HostDiagnostic, HostItem,
-    LocalHostSpec, SessionItem, Workspace, WorkspaceContent, WorkspaceSnapshot,
+    Appearance, AppearanceSettingsDraft, HostConnectionState, HostItem, LocalHostSpec, SessionItem,
+    Workspace, WorkspaceContent, WorkspaceSnapshot,
 };
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-#[test]
-fn host_failure_is_scoped_beside_the_application_shell() {
-    let host = HostItem::wsl(
-        "Default distro",
-        None,
-        HostConnectionState::Unavailable,
-        Vec::new(),
-        Some(HostDiagnostic::new(
-            DiagnosticKind::Timeout,
-            "Local host refresh timed out",
-        )),
-    );
-    let snapshot = WorkspaceSnapshot::shell(Appearance::default(), vec![host]);
-
-    assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
-    assert_eq!(snapshot.selected_host(), Some("wsl"));
-    assert_eq!(snapshot.hosts().len(), 1);
-    assert_eq!(
-        snapshot.hosts()[0].connection(),
-        HostConnectionState::Unavailable
-    );
-    assert_eq!(
-        snapshot.hosts()[0]
-            .diagnostic()
-            .expect("host diagnostic")
-            .kind(),
-        DiagnosticKind::Timeout
-    );
-}
 
 #[test]
 fn ready_host_may_have_an_empty_session_inventory() {

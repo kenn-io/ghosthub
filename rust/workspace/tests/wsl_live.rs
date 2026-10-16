@@ -254,7 +254,10 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
         )
     });
     workspace
-        .send_key(KeyInput::text("echo workspace-ready", Modifiers::default()))
+        .send_key(KeyInput::text(
+            "printf 'workspace-%s\\n' ready",
+            Modifiers::default(),
+        ))
         .expect("send text");
     workspace
         .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
@@ -314,7 +317,10 @@ fn creates_attaches_and_detaches_one_atomic_local_session() {
         || workspace_diagnostic(&workspace),
     );
     workspace
-        .send_key(KeyInput::text("echo creation-clean", Modifiers::default()))
+        .send_key(KeyInput::text(
+            "printf 'creation-%s\\n' clean",
+            Modifiers::default(),
+        ))
         .expect("send text through the created client");
     workspace
         .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
