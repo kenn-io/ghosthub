@@ -803,6 +803,10 @@ or import a branch or PR. Click a worktree to open its terminal. Choose
 **Remove Worktree** from its **…** menu or use the project's **×** control
 to unregister it. Both actions require confirmation.
 
+![Add a project in native Linux Ghosthub](https://github.com/user-attachments/assets/2ef61ac0-e6da-4e4e-95f8-ed2ad14ac003)
+
+![Native Linux worktrees and an attached terminal](https://github.com/user-attachments/assets/65866e46-c57f-448f-b0c3-49da80fb9442)
+
 On Windows, the native folder picker accepts Windows folders and
 `\\wsl.localhost\<distro>\...` paths; Ghosthub resolves drive paths through
 that distro's `wslpath`, maps a matching WSL UNC path directly to its POSIX
