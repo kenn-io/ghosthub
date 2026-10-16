@@ -160,6 +160,23 @@ impl Fixture {
         })
     }
 
+    fn mutate<T>(&self, mut submit: impl FnMut() -> Result<T, workspace::WorkspaceError>) -> T {
+        // Success events can arrive before the worker releases its mutation lane.
+        self.wait(|| match submit() {
+            Ok(value) => Some(value),
+            Err(error)
+                if matches!(
+                    error.to_string().as_str(),
+                    "another KWT operation is already running"
+                        | "another KWT project operation is already running"
+                ) =>
+            {
+                None
+            }
+            Err(error) => panic!("{error}"),
+        })
+    }
+
     fn open(
         &self,
         project: &ProjectItem,
@@ -213,8 +230,8 @@ impl Fixture {
 
     fn create(&self, branch: &str, new_branch: bool) -> WorktreeItem {
         let project = self.project();
-        self.workspace
-            .create_kwt_worktree(
+        self.mutate(|| {
+            self.workspace.create_kwt_worktree(
                 "local",
                 &self.endpoint(),
                 project.repository(),
@@ -224,7 +241,7 @@ impl Fixture {
                 None,
                 new_branch,
             )
-            .unwrap();
+        });
         self.event(|event| {
             matches!(event, WorkspaceEvent::KwtWorktreeCreated { .. }).then_some(())
         });
@@ -264,8 +281,8 @@ impl Fixture {
             }
             _ => None,
         });
-        self.workspace
-            .remove_kwt_worktree(
+        self.mutate(|| {
+            self.workspace.remove_kwt_worktree(
                 "local",
                 &self.endpoint(),
                 project.repository(),
@@ -276,7 +293,7 @@ impl Fixture {
                 worktree.session_name(),
                 authority,
             )
-            .unwrap();
+        });
         self.event(|event| {
             matches!(event, WorkspaceEvent::KwtWorktreeRemoved { .. }).then_some(())
         });
@@ -409,10 +426,11 @@ fn projects_and_worktrees_use_native_linux() {
     ] {
         output(Command::new("/usr/bin/git").arg("-C").arg(&repo).args(args));
     }
-    fixture
-        .workspace
-        .add_kwt_project("local", &fixture.endpoint(), repo.to_str().unwrap())
-        .unwrap();
+    fixture.mutate(|| {
+        fixture
+            .workspace
+            .add_kwt_project("local", &fixture.endpoint(), repo.to_str().unwrap())
+    });
     fixture.event(|event| {
         matches!(event, WorkspaceEvent::KwtProjectMutationFinished { .. }).then_some(())
     });
@@ -452,16 +470,15 @@ fn projects_and_worktrees_use_native_linux() {
     fixture.probe(&replacement);
     fixture.remove(&replacement);
     let project = fixture.project();
-    fixture
-        .workspace
-        .remove_kwt_project(
+    fixture.mutate(|| {
+        fixture.workspace.remove_kwt_project(
             "local",
             &fixture.endpoint(),
             project.repository(),
             project.path(),
             project.registration_fingerprint(),
         )
-        .unwrap();
+    });
     fixture.event(|event| {
         matches!(event, WorkspaceEvent::KwtProjectMutationFinished { .. }).then_some(())
     });
@@ -508,18 +525,18 @@ fn pull_request_import_attaches_to_the_protected_native_socket() {
             ])
             .arg(&repo),
     );
-    fixture
-        .workspace
-        .add_kwt_project("local", &fixture.endpoint(), repo.to_str().unwrap())
-        .unwrap();
+    fixture.mutate(|| {
+        fixture
+            .workspace
+            .add_kwt_project("local", &fixture.endpoint(), repo.to_str().unwrap())
+    });
     fixture.event(|event| {
         matches!(event, WorkspaceEvent::KwtProjectMutationFinished { .. }).then_some(())
     });
     let project = fixture.project();
     let import = || {
-        fixture
-            .workspace
-            .import_kwt_pull_request(
+        fixture.mutate(|| {
+            fixture.workspace.import_kwt_pull_request(
                 "local",
                 &fixture.endpoint(),
                 project.repository(),
@@ -527,7 +544,7 @@ fn pull_request_import_attaches_to_the_protected_native_socket() {
                 project.registration_fingerprint(),
                 "https://github.com/octocat/Hello-World/pull/1",
             )
-            .unwrap();
+        });
         fixture.event(|event| match event {
             WorkspaceEvent::KwtWorktreeCreated { target, .. } => Some(target),
             _ => None,

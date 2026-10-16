@@ -647,6 +647,7 @@ test: swift-test python-test
 
 .PHONY: rust-build
 ifeq ($(shell uname -s),Linux)
+rust-build: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
 rust-build: ensure-kwt
 endif
 rust-build:

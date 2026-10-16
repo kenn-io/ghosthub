@@ -127,6 +127,8 @@ make rust-test-kwt-live
 
 Install Go before building the helper. On Linux, `make rust-build` builds the
 revision from `KWT_REVISION` and embeds it in the application.
+To use an already-built helper, pass `KWT_BINARY_PATH=/absolute/path/to/kwt`.
+An explicit `GHOSTHUB_KWT_BUNDLE` takes precedence over that path.
 
 The executable is `rust/target/debug/ghosthub`. Use disposable application
 roots when inspecting a development build. This keeps configured hosts,
