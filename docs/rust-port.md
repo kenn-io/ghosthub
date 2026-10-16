@@ -6,8 +6,9 @@ on Windows and discovers optional Herdr and Zellij sessions there. Native
 Linux discovers, attaches to, creates, and confirms kills of local tmux
 sessions through the same workflow layer. Linux also supports KWT project
 registration, branch and pull-request imports, worktree attachment, and
-confirmed removal. Optional backends and distribution packaging remain
-separate parity work.
+confirmed removal. Local Herdr supports running and stopped inventory,
+creation, attachment, restart, and confirmed stop/delete. Native Zellij and
+distribution packaging remain separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and
@@ -194,6 +195,19 @@ sudo apparmor_parser -r /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
 
 Rust CI loads this profile and exercises namespace creation before building.
 
+For local Herdr acceptance, provide an existing Linux executable:
+
+```sh
+make rust-test-herdr-live HERDR_BINARY_PATH=/absolute/path/to/herdr
+```
+
+The test stages that executable inside private process and network namespaces
+with disposable home, XDG configuration, state, and runtime directories. It
+exercises real shell input, detach and application-close survival, restart,
+confirmed stop/delete, stale confirmation rejection, and silent disappearance
+of the optional backend. CI downloads and verifies Herdr 0.9.5 for this test;
+Ghosthub does not install or update Herdr for users.
+
 Software-rendered X11 captures do not establish Wayland,
 hardware GPU, Windows WSL, or ConPTY acceptance.
 
@@ -255,9 +269,13 @@ Workspace and scene state use the local host identity rather than assuming
 every local endpoint is WSL. Neither route reconstructs server panes or kills
 the server when a presentation closes.
 
-Native Linux currently exposes tmux only. It does not probe local Herdr or
-Zellij, activate a local KWT bundle, or start the worktree inventory cadence.
-Those capabilities need their own native acceptance and packaging work.
+Native Linux exposes tmux, KWT project/worktree workflows, and optional Herdr
+sessions. Herdr uses the same login-environment executable discovery and
+whole-session lifecycle machinery as WSL. A missing installation hides its
+group without affecting tmux. Herdr has no stable generation ID: lifecycle
+checks compare the runtime, executable, session state, default role, and
+configuration paths; an otherwise identical replacement cannot be detected.
+Native Zellij still requires its own acceptance before exposure.
 
 ### Windows WSL command boundary
 
@@ -1464,7 +1482,8 @@ The renewed native Linux work first adds a real local host, ordinary tmux
 discovery and attachment, constructive creation, and confirmed destruction.
 It must prove input, resize, and detach-only lifetime against an isolated
 server through the native application. Linux KWT project/worktree workflows
-now use those same ownership boundaries. Optional Herdr/Zellij follow next.
+now use those same ownership boundaries. Native Herdr also uses the shared
+session lifecycle; optional Zellij follows next.
 The Windows WSL slice remains independently tested throughout this work.
 
 1. Local Ghosthub inventory and ordinary worktree RepairOrOpen now ship with

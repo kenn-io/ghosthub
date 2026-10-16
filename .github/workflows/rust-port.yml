@@ -100,6 +100,17 @@ jobs:
         if: runner.os == 'Linux'
         run: make -C .. bootstrap-kwt
 
+      - name: Stage Herdr for Linux acceptance
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ghosthub-herdr"
+          curl --fail --location --retry 3 \
+            https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-linux-x86_64 \
+            --output "$RUNNER_TEMP/ghosthub-herdr/herdr"
+          echo "14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d  $RUNNER_TEMP/ghosthub-herdr/herdr" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/ghosthub-herdr/herdr"
+          echo "HERDR_BINARY_PATH=$RUNNER_TEMP/ghosthub-herdr/herdr" >> "$GITHUB_ENV"
+
       - name: Test and lint on Linux
         if: runner.os == 'Linux'
         shell: bash
@@ -107,6 +118,7 @@ jobs:
           cargo test-contracts --locked
           make -C .. rust-check
           make -C .. rust-test-kwt-live KWT_BINARY_PATH=.build/kwt/kwt
+          make -C .. rust-test-herdr-live
 
       - name: Test Linux protected pull-request worktrees
         if: runner.os == 'Linux'

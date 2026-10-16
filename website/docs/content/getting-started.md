@@ -30,8 +30,9 @@ Native Windows hosts are experimental and have additional requirements. See
 
 Native Windows and Linux applications are also in development, separate from
 the macOS release described here. The Linux source build supports local tmux
-sessions; worktrees, optional local backends, and platform packaging remain
-in progress. See the [Rust development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md)
+sessions, projects and worktrees, and optional Herdr sessions. Native Zellij
+and platform packaging remain in progress.
+See the [Rust development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md)
 for build instructions and current limits.
 
 ## Install Ghosthub

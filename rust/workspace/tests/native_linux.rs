@@ -20,16 +20,45 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("gh-native-{}-{nonce:x}", std::process::id()));
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&root)
-            .expect("private tmux directory");
+    fn new(test_name: &str) -> Option<Self> {
+        let root = if let Some(root) = std::env::var_os("GHOSTHUB_NATIVE_FIXTURE") {
+            PathBuf::from(root)
+        } else {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root =
+                std::env::temp_dir().join(format!("gh-native-{}-{nonce:x}", std::process::id()));
+            fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+            for dir in ["home", "config", "state", "runtime"] {
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(root.join(dir))
+                    .unwrap();
+            }
+            fs::write(root.join("gitconfig"), "").unwrap();
+            // Optional backend discovery must see fixture configuration even when
+            // Herdr is installed on the developer's machine.
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test_name, "--nocapture"])
+                .env_clear()
+                .env("GHOSTHUB_NATIVE_FIXTURE", &root)
+                .env("HOME", root.join("home"))
+                .env("XDG_CONFIG_HOME", root.join("config"))
+                .env("XDG_STATE_HOME", root.join("state"))
+                .env("XDG_RUNTIME_DIR", root.join("runtime"))
+                .env("GIT_CONFIG_GLOBAL", root.join("gitconfig"))
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("PATH", "/usr/bin:/bin")
+                .env("SHELL", "/bin/sh")
+                .env("LANG", "C.UTF-8")
+                .status()
+                .unwrap();
+            fs::remove_dir_all(root).unwrap();
+            assert!(result.success());
+            return None;
+        };
         let config =
             LocalConfig::native("/usr/bin/tmux", Some(root.display().to_string())).unwrap();
         let workspace = Workspace::application(
@@ -54,7 +83,7 @@ impl Fixture {
         fixture.wait(|| {
             fixture.workspace.snapshot().hosts()[0].connection() == HostConnectionState::Ready
         });
-        fixture
+        Some(fixture)
     }
 
     fn command(&self, args: &[&str]) -> Output {
@@ -150,13 +179,16 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.workspace.close();
         let _ = self.command(&["kill-server"]);
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
 #[test]
 fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
-    let fixture = Fixture::new();
+    let Some(fixture) =
+        Fixture::new("native_sessions_attach_resize_create_and_survive_detach_and_close")
+    else {
+        return;
+    };
     let identity = fixture.identity("work");
     let selection = fixture.selection("work");
     fixture
@@ -208,7 +240,11 @@ fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
 
 #[test]
 fn native_kill_confirmation_preserves_cancelled_and_replaced_sessions() {
-    let fixture = Fixture::new();
+    let Some(fixture) =
+        Fixture::new("native_kill_confirmation_preserves_cancelled_and_replaced_sessions")
+    else {
+        return;
+    };
     let selection = fixture.selection("work");
     let original = fixture.identity("work");
     fixture

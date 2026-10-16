@@ -20,6 +20,7 @@ ghosthub-surface.workspace = true
 ghosthub-terminal.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 ghosthub-host = { workspace = true, features = ["test-support"] }
 ghosthub-terminal = { workspace = true, features = ["test-support"] }
 

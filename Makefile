@@ -52,6 +52,7 @@ KWT_REF ?= $(shell tr -d '[:space:]' < KWT_REVISION)
 KWT_SOURCE_DIR ?= $(abspath .build/kwt-source)
 KWT_BINARY_PATH ?= $(abspath .build/kwt/kwt)
 KWT_VARIANTS_DIR ?= $(abspath .build/kwt/variants)
+HERDR_BINARY_PATH ?= $(shell command -v herdr 2>/dev/null)
 THIRD_PARTY_LICENSES_DIR ?= LICENSES
 RUST_DIR ?= rust
 
@@ -668,6 +669,13 @@ rust-test-kwt-live: ensure-kwt
 rust-test-kwt-pr-live: ensure-kwt
 	@cd "$(RUST_DIR)" && GHOSTHUB_KWT_BUNDLE_TEST="$(shell realpath -m -- "$(KWT_BINARY_PATH)")" \
 		$(CARGO) test --locked -p ghosthub-workspace --test native_kwt -- --ignored --exact pull_request_import_attaches_to_the_protected_native_socket
+
+.PHONY: rust-test-herdr-live
+rust-test-herdr-live:
+	@test -n "$(HERDR_BINARY_PATH)" -a -f "$(HERDR_BINARY_PATH)" -a -x "$(HERDR_BINARY_PATH)" || \
+		{ echo "Set HERDR_BINARY_PATH to a Linux Herdr executable" >&2; exit 1; }
+	cd rust && GHOSTHUB_HERDR_TEST="$(shell realpath -m -- "$(HERDR_BINARY_PATH)")" \
+		$(CARGO) test --locked -p ghosthub-workspace --test native_herdr -- --ignored
 
 rust-test-wsl-live:
 	@cd "$(RUST_DIR)" && $(CARGO) test-wsl-terminal-live

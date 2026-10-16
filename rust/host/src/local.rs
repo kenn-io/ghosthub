@@ -2103,14 +2103,12 @@ impl<R: CommandRunner> LocalHost<R> {
         for _attempt in 0..DISCOVERY_ATTEMPTS {
             let creation_term = self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
             let sessions = self.discover_sessions(&endpoint, cancellation)?;
-            let (herdr, zellij) = if matches!(endpoint, LocalEndpoint::Native) {
-                // Native optional backends get separate acceptance before exposure.
-                (HerdrInventory::Unavailable, ZellijInventory::Unavailable)
+            let herdr = self.discover_herdr(&endpoint, cancellation);
+            let zellij = if matches!(endpoint, LocalEndpoint::Native) {
+                // Native Zellij gets separate acceptance before exposure.
+                ZellijInventory::Unavailable
             } else {
-                (
-                    self.discover_herdr(&endpoint, cancellation),
-                    self.discover_zellij(&endpoint, cancellation),
-                )
+                self.discover_zellij(&endpoint, cancellation)
             };
             let observed_runtime = self.resolve_runtime(&endpoint, cancellation)?;
             if runtime == observed_runtime {

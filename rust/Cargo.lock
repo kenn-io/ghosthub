@@ -2249,6 +2249,7 @@ dependencies = [
  "ghosthub-session",
  "ghosthub-surface",
  "ghosthub-terminal",
+ "serde_json",
 ]
 
 [[package]]
