@@ -1,6 +1,7 @@
-# Tools the local bootstrap needs that mise can install.
+# Tools for local builds and commit checks.
 # Zig must match `required_zig_version` in Vendor/ghostty.version.json;
 # CI installs the same release from the official archive.
 [tools]
 zig = "0.15.2"
 go = "latest"
+swiftformat = "0.63.1"

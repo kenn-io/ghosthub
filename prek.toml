@@ -38,9 +38,10 @@ hooks = [
   },
   {
     id = "swift-warning-check",
-    name = "swift build test targets warnings-as-errors",
+    name = "Swift compiler check (macOS)",
     language = "system",
-    entry = "make swift-warning-check",
+    entry = "make swift-warning-hook",
+    verbose = true,
     files = "(\\.swift$|^Package\\.swift$)",
     pass_filenames = false,
     priority = 10,

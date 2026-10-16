@@ -1550,7 +1550,12 @@ extension WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport.previewPaneSplitter(
+                identity: TmuxSessionIdentity(
+                    serverPID: "101", sessionID: "$1", createdAt: "1000"
+                )
+            )
         )
         let worktree = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -1575,6 +1580,11 @@ extension WorkspaceTmuxDiscoveryTests {
             return surfaceStore.requestCount == 2
         }
 
+        let otherHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: other)
+        )
+        #expect(model.retainedBorrowedTmuxHandle(for: worktree) == originalHandle)
+
         var replacement = worktree
         replacement.name = replacementName
         replacement.socketName = replacementSocket
@@ -1598,6 +1608,7 @@ extension WorkspaceTmuxDiscoveryTests {
             #expect(model.retainedBorrowedTmuxHandle(for: worktree) == nil)
         }
         #expect(model.activeBorrowedTmuxSelection == replacement)
+        #expect(model.retainedBorrowedTmuxHandle(for: other) == otherHandle)
         #expect(model.retainedBorrowedTmuxPresentationCount == 2)
         #expect(surfaceStore.removedKeys.count == 1)
         await model.shutdown()
@@ -1615,7 +1626,12 @@ extension WorkspaceTmuxDiscoveryTests {
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
-            }
+            },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport.previewPaneSplitter(
+                identity: TmuxSessionIdentity(
+                    serverPID: "101", sessionID: "$1", createdAt: "1000"
+                )
+            )
         )
         let worktree = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -1639,6 +1655,11 @@ extension WorkspaceTmuxDiscoveryTests {
             return surfaceStore.requestCount == 2
         }
 
+        let otherHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: other)
+        )
+        #expect(model.retainedBorrowedTmuxHandle(for: worktree) == originalHandle)
+
         var refreshed = worktree
         refreshed.worktreeGeneration =
             "fedcba9876543210fedcba9876543210"
@@ -1652,6 +1673,7 @@ extension WorkspaceTmuxDiscoveryTests {
             model.retainedBorrowedTmuxHandle(for: refreshed) != originalHandle
         )
         #expect(model.activeBorrowedTmuxSelection == refreshed)
+        #expect(model.retainedBorrowedTmuxHandle(for: other) == otherHandle)
         #expect(model.retainedBorrowedTmuxPresentationCount == 2)
         #expect(surfaceStore.removedKeys.count == 1)
         await model.shutdown()

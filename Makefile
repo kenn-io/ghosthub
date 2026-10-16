@@ -384,6 +384,14 @@ test-ssh-authentication-docker: bootstrap-libghostty ensure-kwt
 build: bootstrap-libghostty
 	@$(SWIFT) build
 
+.PHONY: swift-warning-hook
+ifeq ($(shell uname -s),Darwin)
+swift-warning-hook: swift-warning-check
+else
+swift-warning-hook:
+	@printf '%s\n' 'Swift compiler checks require macOS; macOS CI runs this check.'
+endif
+
 # This gate is about warnings in Ghosthub's own Swift code. Ghostty's umbrella
 # header deliberately omits the ghostty/vt headers, and clang only reports that
 # while building the GhosttyKit module, so leaving it fatal made the gate pass

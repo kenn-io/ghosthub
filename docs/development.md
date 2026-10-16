@@ -45,7 +45,20 @@ make format         # rewrite in place
 make format-check   # report without changing anything
 ```
 
-`make install-hooks` wires the same formatter into a pre-commit hook.
+The repository's Prek hooks run the formatter and basic file checks on both
+Linux and macOS. The compiler warning hook runs only on macOS; macOS CI runs
+the full `make swift-warning-check`. Linux commits need no
+hook exceptions.
+
+Install the pinned formatter through mise and make it available when committing:
+
+```bash
+mise install swiftformat
+mise exec swiftformat -- git commit
+```
+
+Use the existing global Prek hook when one is configured. Otherwise,
+`make install-hooks` installs the repository hooks.
 
 Run Swift tests:
 
