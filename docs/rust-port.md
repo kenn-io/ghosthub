@@ -277,6 +277,16 @@ checks compare the runtime, executable, session state, default role, and
 configuration paths; an otherwise identical replacement cannot be detected.
 Native Zellij still requires its own acceptance before exposure.
 
+### Native Linux Herdr sessions
+
+Expand **Local → Herdr Sessions** and select **+** to create a session.
+Select a running session to attach. Its row menu offers **Detach** and
+confirmed **Stop**. A stopped session offers **Restart** and confirmed
+**Delete**. Closing the presentation or application detaches its client;
+Stop ends the session's processes and preserves its saved layout.
+
+![Native Linux Herdr session running Git commands](https://github.com/user-attachments/assets/50d40216-97e8-45bf-8095-2d43f7b4b0ba)
+
 ### Windows WSL command boundary
 
 WSL is enabled automatically when the system-owned `wsl.exe` exists, but it is
