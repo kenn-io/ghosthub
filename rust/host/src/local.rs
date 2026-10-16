@@ -18,7 +18,7 @@ use session::{
 use crate::herdr::{self, ExecutableProbe};
 use crate::kwt::{
     parse_branches, parse_command_failure, parse_project_mutation, parse_pull_request_import,
-    parse_pull_requests,
+    parse_pull_requests, validate_project_removal,
 };
 use crate::zellij;
 use crate::{
@@ -86,6 +86,7 @@ pub struct LocalConfig {
     tmux_binary: String,
     tmux_tmpdir: Option<String>,
     kwt_bundle: Option<KwtBundle>,
+    kwt_helper_root: Option<String>,
     kwt_home: Option<String>,
 }
 
@@ -120,6 +121,22 @@ impl LocalConfig {
     pub fn with_kwt_bundle(mut self, bundle: KwtBundle) -> Self {
         self.kwt_bundle = Some(bundle);
         self
+    }
+
+    /// Set the helper installation root in the host's filesystem.
+    ///
+    /// # Errors
+    /// Returns an error if the root is not an absolute POSIX path.
+    pub fn with_kwt_helper_root(mut self, root: impl Into<String>) -> Result<Self, HostError> {
+        let root = root.into();
+        if !is_posix_absolute(&root) {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT helper root must be an absolute path",
+            ));
+        }
+        self.kwt_helper_root = Some(root);
+        Ok(self)
     }
 
     #[doc(hidden)]
@@ -177,6 +194,7 @@ impl LocalConfig {
             tmux_binary,
             tmux_tmpdir,
             kwt_bundle: None,
+            kwt_helper_root: None,
             kwt_home: None,
         })
     }
@@ -189,6 +207,7 @@ impl Default for LocalConfig {
             tmux_binary: DEFAULT_TMUX.to_owned(),
             tmux_tmpdir: None,
             kwt_bundle: None,
+            kwt_helper_root: None,
             kwt_home: None,
         }
     }
@@ -951,6 +970,12 @@ impl<R: CommandRunner> LocalHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<KwtProject, HostError> {
         let project_path = project_path.trim();
+        if endpoint == &LocalEndpoint::Native && !is_posix_absolute(project_path) {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "Choose a project folder or enter an absolute Linux path.",
+            ));
+        }
         if !is_project_path_input_absolute(project_path) {
             return Err(HostError::new(
                 DiagnosticKind::MalformedOutput,
@@ -989,6 +1014,9 @@ impl<R: CommandRunner> LocalHost<R> {
         project_path: &str,
         cancellation: &CancellationToken,
     ) -> Result<String, HostError> {
+        if endpoint == &LocalEndpoint::Native {
+            return Ok(project_path.to_owned());
+        }
         if let Some(path) = resolve_wsl_unc_project_path(endpoint, project_path)? {
             return Ok(path);
         }
@@ -1055,16 +1083,16 @@ impl<R: CommandRunner> LocalHost<R> {
                     format!("KWT returned invalid project inventory before removal: {error}"),
                 )
             })?;
-        if !current.iter().any(|project| {
+        let Some(project) = current.into_iter().find(|project| {
             project.path() == expected_path
                 && project.repository() == expected_repository
                 && project.registration_fingerprint() == expected_registration
-        }) {
+        }) else {
             return Err(HostError::new(
                 DiagnosticKind::MalformedOutput,
                 "The project registration changed. Refresh and confirm removal again.",
             ));
-        }
+        };
         self.require_runtime(endpoint, runtime, cancellation)?;
         let output = self.run_scrubbed(
             endpoint,
@@ -1082,18 +1110,12 @@ impl<R: CommandRunner> LocalHost<R> {
             cancellation,
         )?;
         require_kwt_project_command(&output, "unregister the KWT project")?;
-        let project = parse_project_mutation(&output.stdout, "unregistered").map_err(|error| {
+        validate_project_removal(&output.stdout, &project).map_err(|error| {
             HostError::new(
                 DiagnosticKind::MalformedOutput,
                 format!("KWT returned an invalid project removal response: {error}"),
             )
         })?;
-        if project.path() != expected_path || project.repository() != expected_repository {
-            return Err(HostError::new(
-                DiagnosticKind::MalformedOutput,
-                "KWT removed a project other than the confirmed identity",
-            ));
-        }
         self.require_runtime(endpoint, runtime, cancellation)?;
         Ok(project)
     }
@@ -1127,12 +1149,14 @@ impl<R: CommandRunner> LocalHost<R> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
 
-        let home = self.resolve_home(endpoint, cancellation)?;
-        let directory = format!(
-            "{home}/.ghosthub/helpers/kwt/{}/{}",
-            bundle.revision(),
-            bundle.sha256()
-        );
+        let root = match &self.config.kwt_helper_root {
+            Some(root) => root.clone(),
+            None => format!(
+                "{}/.ghosthub/helpers",
+                self.resolve_home(endpoint, cancellation)?
+            ),
+        };
+        let directory = format!("{root}/kwt/{}/{}", bundle.revision(), bundle.sha256());
         let path = format!("{directory}/kwt");
         if !self.kwt_helper_matches(endpoint, &path, bundle, cancellation)? {
             self.install_kwt_helper(endpoint, &directory, &path, bundle, cancellation)?;
@@ -1536,6 +1560,7 @@ impl<R: CommandRunner> LocalHost<R> {
         let output = self.run_tmux_command(
             endpoint,
             cancellation,
+            None,
             &[
                 "-f",
                 "/dev/null",
@@ -1602,9 +1627,8 @@ impl<R: CommandRunner> LocalHost<R> {
         let output = self.run_tmux_command(
             endpoint,
             cancellation,
+            Some(tmux_socket_name),
             &[
-                "-L",
-                tmux_socket_name,
                 "-f",
                 "/dev/null",
                 "list-clients",
@@ -2156,7 +2180,10 @@ impl<R: CommandRunner> LocalHost<R> {
         append_tmux_environment(
             &mut args,
             Some(term.environment()),
-            self.config.tmux_tmpdir.as_deref(),
+            socket_name
+                .is_none()
+                .then_some(self.config.tmux_tmpdir.as_deref())
+                .flatten(),
             &[],
         );
         args.push(OsString::from(&self.config.tmux_binary));
@@ -2830,11 +2857,7 @@ impl<R: CommandRunner> LocalHost<R> {
         let condition = tmux_identity_condition(identity);
         let kill = format!("kill-session -t ={}", identity.session_id());
         let mismatch = format!("display-message -p {KILL_IDENTITY_MISMATCH_MARKER}");
-        let socket_args = target
-            .socket_name()
-            .map_or_else(Vec::new, |socket| vec!["-L", socket]);
         let mut tmux_args = vec!["-f", "/dev/null"];
-        tmux_args.extend(socket_args);
         tmux_args.extend([
             "if-shell",
             "-F",
@@ -2844,7 +2867,12 @@ impl<R: CommandRunner> LocalHost<R> {
             kill.as_str(),
             mismatch.as_str(),
         ]);
-        let output = self.run_tmux_command(&target.endpoint, cancellation, &tmux_args)?;
+        let output = self.run_tmux_command(
+            &target.endpoint,
+            cancellation,
+            target.socket_name(),
+            &tmux_args,
+        )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if is_no_server(&stderr) || is_missing_session(&stderr) {
@@ -3007,15 +3035,8 @@ impl<R: CommandRunner> LocalHost<R> {
         let output = self.run_tmux_command(
             endpoint,
             cancellation,
-            &[
-                "-f",
-                "/dev/null",
-                "-L",
-                socket_name,
-                "list-sessions",
-                "-F",
-                INVENTORY_FORMAT,
-            ],
+            Some(socket_name),
+            &["-f", "/dev/null", "list-sessions", "-F", INVENTORY_FORMAT],
         )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3183,16 +3204,24 @@ impl<R: CommandRunner> LocalHost<R> {
         &self,
         endpoint: &LocalEndpoint,
         cancellation: &CancellationToken,
+        socket_name: Option<&str>,
         tmux_args: &[&str],
     ) -> Result<CommandOutput, HostError> {
         let mut args = pinned_prefix(endpoint);
         append_tmux_environment(
             &mut args,
             Some("TERM=xterm"),
-            self.config.tmux_tmpdir.as_deref(),
+            // KWT's named servers deliberately ignore the default-server directory.
+            socket_name
+                .is_none()
+                .then_some(self.config.tmux_tmpdir.as_deref())
+                .flatten(),
             &[],
         );
         args.push(OsString::from(&self.config.tmux_binary));
+        if let Some(socket) = socket_name {
+            args.extend([OsString::from("-L"), OsString::from(socket)]);
+        }
         args.extend(tmux_args.iter().map(OsString::from));
         self.run(&args, cancellation)
     }
@@ -5421,7 +5450,7 @@ mod tests {
             } else if args.windows(2).any(|pair| pair == ["projects", "add"]) {
                 br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["projects", "remove"]) {
-                br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
+                br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["branches", "--json"]) {
                 br#"[{"name":"feature/ready","label":"feature/ready","source":"origin/feature/ready","is_current":false,"is_remote":true,"last_commit":{"hash":"abc","message":"ready","author":"A","date":"2026-01-01T00:00:00Z"}}]"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["pr", "list"]) {
@@ -5981,7 +6010,13 @@ mod tests {
 
     #[test]
     fn captured_named_session_attach_plan_uses_the_exact_socket_and_identity() {
-        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let config = LocalConfig::configured(
+            None,
+            "/usr/bin/tmux",
+            Some("/tmp/default-server".to_owned()),
+        )
+        .unwrap();
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host_with_config(config);
         let identity = SessionIdentity::new(42, "$7", 99);
         let target = LiveSessionTarget {
             endpoint,
@@ -5999,6 +6034,12 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(args.windows(2).any(|args| args == ["-L", "kwt"]));
+        assert!(args.windows(2).any(|args| args == ["-u", "TMUX_TMPDIR"]));
+        assert!(
+            !args
+                .iter()
+                .any(|argument| argument.starts_with("TMUX_TMPDIR="))
+        );
         assert!(args.iter().any(|argument| argument == "=$7:"));
         assert!(
             args.iter()

@@ -228,8 +228,11 @@ until they have fresh backend-specific identity fencing. Native Linux also
 supports local tmux discovery, attachment, creation, and confirmed kill.
 `LocalHost` shares that lifecycle machinery with WSL while keeping native and
 WSL endpoints distinct. Native commands use a local PTY; Windows retains its
-system-owned WSL launcher and ConPTY. Linux local KWT/worktrees and optional
-Herdr/Zellij backends remain separate parity work.
+system-owned WSL launcher and ConPTY. Linux embeds the pinned KWT helper for
+local projects, worktree creation/import, attachment, and confirmed removal.
+KWT named sockets use their canonical directory independently of the host’s
+default tmux socket directory. Optional Herdr/Zellij backends remain separate
+parity work.
 Neither replaces the macOS SwiftUI
 application or embeds a Rust runtime into it. Cross-platform parity is enforced
 through the repository-root contracts corpus rather than a shared process, FFI

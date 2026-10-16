@@ -2607,9 +2607,15 @@ pub(crate) fn run_kwt_pull_request_import(
         }
     };
     let workspace = imported.workspace();
-    let exact_response = imported.project_identity() == task.repository
+    // KWT's PR API canonicalizes GitHub names; project inventory preserves their spelling.
+    let same_repository = |identity: &str| {
+        identity == task.repository
+            || (task.repository.starts_with("github.com/")
+                && identity.eq_ignore_ascii_case(&task.repository))
+    };
+    let exact_response = same_repository(imported.project_identity())
         && imported.project_path() == task.project_path
-        && workspace.repository() == task.repository
+        && same_repository(workspace.repository())
         && workspace.generation().is_some()
         && workspace.tmux_socket_name().is_some();
     if !exact_response {

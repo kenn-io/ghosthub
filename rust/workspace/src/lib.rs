@@ -5101,7 +5101,7 @@ impl Workspace {
         let path = path.trim();
         if !is_absolute_project_path_input(path) {
             return Err(WorkspaceError::new(
-                "Choose a project folder or enter an absolute Windows or WSL path.",
+                "Choose a project folder or enter an absolute path.",
             ));
         }
         self.start_kwt_project_mutation(

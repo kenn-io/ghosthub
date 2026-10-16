@@ -136,6 +136,10 @@ help:
 		'      Run Rust formatting, tests, checks, and clippy for the current platform.' \
 		'  make rust-build' \
 		'      Build the native Rust application for the current platform.' \
+		'  make rust-test-kwt-live' \
+		'      Test Linux project/worktree workflows with Bubblewrap and the pinned helper.' \
+		'  make rust-test-kwt-pr-live' \
+		'      Test protected GitHub imports on Linux; requires KWT_GITHUB_TOKEN.' \
 		'  make rust-test-wsl-live' \
 		'      Run the isolated WSL2 terminal and workspace acceptance suites.' \
 		'  make rust-test-ssh-controller-live GHOSTHUB_KWT_CONTROLLER_BUNDLE_TEST=/absolute/path/to/kwt.exe' \
@@ -642,6 +646,9 @@ zizmor:
 test: swift-test python-test
 
 .PHONY: rust-build
+ifeq ($(shell uname -s),Linux)
+rust-build: ensure-kwt
+endif
 rust-build:
 	@cd "$(RUST_DIR)" && $(CARGO) build --locked -p ghosthub-app
 
@@ -650,6 +657,16 @@ rust-format-check:
 
 rust-test:
 	@cd "$(RUST_DIR)" && $(CARGO) test --workspace --locked
+
+.PHONY: rust-test-kwt-live
+rust-test-kwt-live: ensure-kwt
+	@cd "$(RUST_DIR)" && GHOSTHUB_KWT_BUNDLE_TEST="$(KWT_BINARY_PATH)" \
+		$(CARGO) test --locked -p ghosthub-workspace --test native_kwt -- --ignored --exact projects_and_worktrees_use_native_linux
+
+.PHONY: rust-test-kwt-pr-live
+rust-test-kwt-pr-live: ensure-kwt
+	@cd "$(RUST_DIR)" && GHOSTHUB_KWT_BUNDLE_TEST="$(KWT_BINARY_PATH)" \
+		$(CARGO) test --locked -p ghosthub-workspace --test native_kwt -- --ignored --exact pull_request_import_attaches_to_the_protected_native_socket
 
 rust-test-wsl-live:
 	@cd "$(RUST_DIR)" && $(CARGO) test-wsl-terminal-live

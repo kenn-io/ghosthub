@@ -25,6 +25,13 @@ PowerShell, placing the matching PE helper at
 payloads remain unsigned until an approved Authenticode/DigiCert signing step
 is added, so they are not enterprise-ready release artifacts.
 
+Experimental native Linux Rust builds also embed the revision from
+`KWT_REVISION`. `make rust-build` stages the helper with the shared builder;
+Cargo checks its ELF architecture and pinned revision and records its SHA-256.
+Release builds require the helper. Activation stays under the resolved Ghosthub helper root
+and never replaces an installed KWT binary. These builds are not yet published
+as Linux release packages. See [Rust port acceptance](rust-port.md).
+
 `make run-app` follows the same rule. Its `bootstrap-kwt` dependency builds and
 caches `KWT_REF` under `.build`, then stages that exact helper into the debug
 app. A developer can override the repository, revision, source directory, or

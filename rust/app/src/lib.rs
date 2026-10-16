@@ -7,7 +7,6 @@ use model::DiagnosticKind;
 use model::PortStatus;
 use workspace::{LocalHostSpec, RemoteHostSpec, Workspace};
 
-#[cfg(any(windows, test))]
 const KWT_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kwt"));
 const KWT_CONTROLLER_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kwt-controller.exe"));
 
@@ -61,11 +60,15 @@ fn workspace_for(
     let (spec, terminal) = {
         let _ = presence;
         let local = settings.local();
-        let config = host::LocalConfig::native(
+        let mut config = host::LocalConfig::native(
             local.tmux_binary(),
             local.socket_directory().map(str::to_owned),
         )
+        .and_then(|config| config.with_kwt_helper_root(&roots.helpers))
         .map_err(|error| error.to_string())?;
+        if let Some(bundle) = bundled_kwt() {
+            config = config.with_kwt_bundle(bundle);
+        }
         (
             Some(LocalHostSpec::native(config)),
             settings.terminal().clone(),
@@ -160,7 +163,6 @@ fn runtime_settings(
     Ok((wsl, settings.terminal().clone()))
 }
 
-#[cfg(any(windows, test))]
 fn bundled_kwt() -> Option<host::KwtBundle> {
     if env!("GHOSTHUB_KWT_AVAILABLE") != "true" {
         return None;

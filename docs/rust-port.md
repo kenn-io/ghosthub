@@ -4,8 +4,10 @@ This document is the maintained design for native Ghosthub applications on
 Windows and Linux. The existing local-session product slice uses tmux in WSL2
 on Windows and discovers optional Herdr and Zellij sessions there. Native
 Linux discovers, attaches to, creates, and confirms kills of local tmux
-sessions through the same workflow layer. Local Linux worktrees, optional
-backends, and helper packaging remain separate parity work.
+sessions through the same workflow layer. Linux also supports KWT project
+registration, branch and pull-request imports, worktree attachment, and
+confirmed removal. Optional backends and distribution packaging remain
+separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and
@@ -25,8 +27,8 @@ away from SwiftUI.
   a WSL2 distro through `wsl.exe` and ConPTY.
 - Linux enables X11 and Wayland in the native Rust/GPUI shell and uses a
   native PTY for local tmux clients. X11 development acceptance does not
-  establish Wayland or hardware-GPU acceptance. Native helper packaging
-  remains planned work.
+  establish Wayland or hardware-GPU acceptance. Linux builds embed the pinned
+  KWT helper; distribution packaging remains planned work.
 - All platforms preserve the Host, Project, Worktree, and ordinary
   multiplexer-session mental model.
 - Kwt remains authoritative for project/worktree identity and exact session
@@ -117,10 +119,14 @@ development host, Mesa's software Vulkan driver and DejaVu fonts suffice:
 sudo apt-get install --no-install-recommends \
   build-essential clang cmake libfontconfig-dev libvulkan1 \
   libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev lld llvm pkg-config \
-  mesa-vulkan-drivers fonts-dejavu-core xvfb xauth xdotool ffmpeg tmux
+  mesa-vulkan-drivers fonts-dejavu-core xvfb xauth xdotool ffmpeg tmux bubblewrap
 make rust-build
 make rust-check
+make rust-test-kwt-live
 ```
+
+Install Go before building the helper. On Linux, `make rust-build` builds the
+revision from `KWT_REVISION` and embeds it in the application.
 
 The executable is `rust/target/debug/ghosthub`. Use disposable application
 roots when inspecting a development build. This keeps configured hosts,
@@ -156,14 +162,25 @@ tmux-binary = "/usr/bin/tmux"
 
 For development captures, configure `local.socket-directory` to a private
 temporary directory containing only synthetic sessions. Redirecting the app's
-state roots alone does not isolate tmux. Existing-server attachments preserve
+state roots alone does not isolate tmux or KWT. Set `KWT_HOME` to a disposable
+directory and give captures a private `/tmp` mount (for example with Bubblewrap).
+KWT owns its named sockets and deliberately ignores `TMUX_TMPDIR` for them.
+Existing-server attachments preserve
 the server's configuration. Test fixtures start their private server with
 `-f /dev/null` and a controlled shell before connecting the app.
 
 The native Linux lifecycle tests run in `make rust-check` and require
 `/usr/bin/tmux`. They exercise real discovery, terminal output, input, resize,
 creation, detach/close survival, and confirmed kills that reject a same-named
-replacement. Software-rendered X11 captures do not establish Wayland,
+replacement. `make rust-test-kwt-live` adds real project registration, branch
+creation/import, shell input, generation checks, confirmed removal, and
+unregistration without deleting checkouts or sessions. It requires Bubblewrap
+and runs with a private `/tmp`, PID namespace, home, Git config, and KWT state.
+`make rust-test-kwt-pr-live` also verifies GitHub PR import, idempotent reuse,
+protected attachment/recreation, and removal; it requires `KWT_GITHUB_TOKEN`
+and network access to the public contract repository.
+
+Software-rendered X11 captures do not establish Wayland,
 hardware GPU, Windows WSL, or ConPTY acceptance.
 
 Track implementation and baseline failures in the existing Kata project.
@@ -750,17 +767,22 @@ state and never relocates helpers. The default POSIX state being the home root
 itself is a shipped irregularity. Local kwt operations use the packaged pinned
 binary, never a helper resolved from these directories or PATH.
 
+Linux builds stage the native helper with `make bootstrap-kwt`. Cargo embeds
+`.build/kwt/kwt` (or `GHOSTHUB_KWT_BUNDLE`) and rejects a release build without
+a valid matching helper. Native activation uses the resolved Ghosthub helper
+root, including `GHOSTHUB_HOME` overrides.
+
 The Windows Rust build cross-compiles that exact revision for the WSL
 architecture with `tools/build_rust_kwt.ps1`. Cargo embeds the staged Linux
 binary plus its SHA-256 and revision. Cargo tracks the configured staging path
 even before it exists and accepts the helper only when its ELF machine matches
 the selected Linux architecture and its bytes contain the pinned revision;
 release builds fail if the helper is absent or invalid.
-The host activates it at the POSIX managed-helper path with an atomic rename
+The host activates it at the POSIX managed-helper path with atomic publication
 and verifies both digest and reported revision before use. A process-local
 cache remembers only the managed path: every operation revalidates the helper
-before execution, and a missing or replaced helper is repaired atomically
-before the requested KWT command runs. Developer builds may omit the bundle,
+before execution. A missing helper is installed again; an existing helper with
+different bytes is rejected. Developer builds may omit the bundle,
 in which case KWT inventory alone is unavailable.
 
 KWT project and worktree reads are a separate cancellable host operation from
@@ -774,8 +796,14 @@ seconds only while the window is active. A manual host refresh supersedes both
 read generations. Failed or in-flight KWT reads retain the last usable project
 tree and affect neither session availability nor terminal presentation.
 
-The Projects header exposes **Add Project** whenever the current WSL host has
-usable KWT inventory. The native folder picker accepts Windows folders and
+The Projects header exposes **Add Project** whenever the local Linux or WSL
+host has usable KWT inventory. On Linux, choose a repository folder or enter
+its absolute POSIX path. Use the **+** beside a project to create a worktree
+or import a branch or PR. Click a worktree to open its terminal. Choose
+**Remove Worktree** from its **…** menu or use the project's **×** control
+to unregister it. Both actions require confirmation.
+
+On Windows, the native folder picker accepts Windows folders and
 `\\wsl.localhost\<distro>\...` paths; Ghosthub resolves drive paths through
 that distro's `wslpath`, maps a matching WSL UNC path directly to its POSIX
 path, and rejects a UNC path owned by another distro. An explicitly entered
@@ -798,9 +826,10 @@ reconciliation cannot hide an add or resurrect a removal that KWT already
 confirmed. A mutation supersedes only older KWT reads, and ordinary KWT
 cadence waits for the mutation and its reconciliation to finish. Commands that
 may already have crossed the process boundary are not cancelled or silently
-retried. Every KWT command receives the same explicit `TMUX_TMPDIR` as tmux
-discovery and attachment, so project session availability cannot be inferred
-from a different server namespace.
+retried. KWT receives the configured `TMUX_TMPDIR` for default-server
+operations. Its named sockets use the canonical tmux directory. Ghosthub clears `TMUX_TMPDIR`
+when querying, attaching to, or killing a named KWT endpoint, including
+protected imports. Default-server sessions retain the configured directory.
 
 The same serialized KWT lane now owns the first local worktree workflow.
 Each registered project can load `branches --json` from its exact checkout and
@@ -1306,7 +1335,7 @@ clipboard-write = true
 [[ssh-host]]
 name = "Studio"
 hostname = "studio.example"
-user = "wesm"
+user = "user-a"
 port = 22
 # Optional: otherwise resolved through the remote login environment.
 tmux-binary = "/opt/homebrew/bin/tmux"
@@ -1416,9 +1445,9 @@ After Slice 1:
 The renewed native Linux work first adds a real local host, ordinary tmux
 discovery and attachment, constructive creation, and confirmed destruction.
 It must prove input, resize, and detach-only lifetime against an isolated
-server through the native application. Local kwt/worktrees and optional
-Herdr/Zellij follow through the same ownership boundaries. The Windows WSL
-slice remains independently tested throughout this work.
+server through the native application. Linux KWT project/worktree workflows
+now use those same ownership boundaries. Optional Herdr/Zellij follow next.
+The Windows WSL slice remains independently tested throughout this work.
 
 1. Local Ghosthub inventory and ordinary worktree RepairOrOpen now ship with
    pinned bundled kwt, project/worktree inventory, branch-backed creation,

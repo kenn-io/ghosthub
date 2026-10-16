@@ -4568,7 +4568,7 @@ impl RootView {
                 } => {
                     let valid = workspace::is_absolute_project_path_input(path);
                     let text = if path.is_empty() && !focused {
-                        "Choose a folder or enter a WSL path".to_owned()
+                        "Choose a folder or enter an absolute path".to_owned()
                     } else if path.is_empty() {
                         "▏".to_owned()
                     } else {
@@ -9808,12 +9808,15 @@ mod tests {
     fn new_host_editor_and_endpoint_subtitle_preserve_optional_authority() {
         let mut editor = SshHostEditor::new(None);
         editor.draft.name = "Build host".to_owned();
-        editor.draft.hostname = "build.internal".to_owned();
-        editor.draft.user = "wesm".to_owned();
+        editor.draft.hostname = "build.example".to_owned();
+        editor.draft.user = "user-a".to_owned();
         editor.draft.port = "2222".to_owned();
 
         assert_eq!(editor.original_id, None);
-        assert_eq!(ssh_host_subtitle(&editor.draft), "wesm@build.internal:2222");
+        assert_eq!(
+            ssh_host_subtitle(&editor.draft),
+            "user-a@build.example:2222"
+        );
         assert_eq!(
             ssh_host_subtitle(&SshHostDraft {
                 hostname: "studio.local".to_owned(),
@@ -10491,9 +10494,9 @@ mod tests {
     #[test]
     fn remote_tmux_rows_open_without_exposing_unimplemented_mutations() {
         let host = HostItem::ssh(
-            "ssh:wesm@studio.example:",
+            "ssh:user-a@studio.example:",
             "Studio",
-            "wesm@studio.example",
+            "user-a@studio.example",
             HostConnectionState::Ready,
             vec![SessionItem::new("build", 0)],
             None,
@@ -10538,9 +10541,9 @@ mod tests {
     #[test]
     fn remote_tmux_failure_keeps_optional_multiplexer_groups_usable() {
         let host = HostItem::ssh(
-            "ssh:wesm@studio.example:",
+            "ssh:user-a@studio.example:",
             "Studio",
-            "wesm@studio.example",
+            "user-a@studio.example",
             HostConnectionState::Ready,
             Vec::new(),
             None,

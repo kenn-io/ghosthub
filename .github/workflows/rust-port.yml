@@ -10,6 +10,7 @@ on:
       - .github/workflows/rust-port.yml
       - Makefile
       - KWT_REVISION
+      - tools/build_pinned_kwt.sh
   pull_request:
     branches: [main]
     paths:
@@ -19,6 +20,7 @@ on:
       - .github/workflows/rust-port.yml
       - Makefile
       - KWT_REVISION
+      - tools/build_pinned_kwt.sh
   workflow_dispatch:
 
 permissions:
@@ -60,12 +62,20 @@ jobs:
         with:
           workspaces: rust
 
+      - name: Set up Go for the Linux KWT helper
+        if: runner.os == 'Linux'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: stable
+          cache: false
+
       - name: Install GPUI Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
+            bubblewrap \
             clang \
             cmake \
             libfontconfig-dev \
@@ -78,12 +88,23 @@ jobs:
             pkg-config \
             tmux
 
+      - name: Build the pinned Linux KWT helper
+        if: runner.os == 'Linux'
+        run: make -C .. bootstrap-kwt
+
       - name: Test and lint on Linux
         if: runner.os == 'Linux'
         shell: bash
         run: |
           cargo test-contracts --locked
           make -C .. rust-check
+          make -C .. rust-test-kwt-live
+
+      - name: Test Linux protected pull-request worktrees
+        if: runner.os == 'Linux'
+        env:
+          KWT_GITHUB_TOKEN: ${{ github.token }}
+        run: make -C .. rust-test-kwt-pr-live
 
       - name: Test and lint on Windows
         if: runner.os == 'Windows'

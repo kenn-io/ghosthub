@@ -131,11 +131,13 @@ fn main() {
         _ => None,
     };
     let linux_configured = env::var_os("GHOSTHUB_KWT_BUNDLE").map(PathBuf::from);
+    let variants = repo.join(".build/kwt/variants");
     let linux_candidate = linux_configured.or_else(|| {
+        if target_os == "linux" {
+            return Some(repo.join(".build/kwt/kwt"));
+        }
         (target_os == "windows").then(|| {
-            repo.join(".build")
-                .join("kwt")
-                .join("variants")
+            variants
                 .join(format!("linux-{}", architecture.unwrap_or("unsupported")))
                 .join("kwt")
         })
@@ -143,9 +145,7 @@ fn main() {
     let controller_configured = env::var_os("GHOSTHUB_KWT_CONTROLLER_BUNDLE").map(PathBuf::from);
     let controller_candidate = controller_configured.or_else(|| {
         (target_os == "windows").then(|| {
-            repo.join(".build")
-                .join("kwt")
-                .join("variants")
+            variants
                 .join(format!("windows-{}", architecture.unwrap_or("unsupported")))
                 .join("kwt")
         })
@@ -185,12 +185,12 @@ fn main() {
         },
     );
 
-    let release_windows =
-        target_os == "windows" && env::var("PROFILE").is_ok_and(|profile| profile == "release");
+    let release = matches!(target_os.as_str(), "linux" | "windows")
+        && env::var("PROFILE").is_ok_and(|profile| profile == "release");
     assert!(
-        (available && controller_available)
-            || !(release_windows || env::var_os("GHOSTHUB_REQUIRE_KWT_BUNDLE").is_some()),
-        "pinned KWT Linux and Windows helpers are required; run tools/build_rust_kwt.ps1 or set both KWT bundle overrides"
+        (available && (target_os != "windows" || controller_available))
+            || !(release || env::var_os("GHOSTHUB_REQUIRE_KWT_BUNDLE").is_some()),
+        "pinned KWT helpers are required; run make bootstrap-kwt on Linux or tools/build_rust_kwt.ps1 on Windows"
     );
     if (!available || !controller_available) && target_os == "windows" {
         println!(

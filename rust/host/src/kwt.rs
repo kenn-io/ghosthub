@@ -186,6 +186,28 @@ pub(crate) fn parse_command_failure(output: &[u8]) -> Option<KwtCommandFailure> 
     })
 }
 
+// Removal receipts identify the deleted registration; they have no live fingerprint.
+pub(crate) fn validate_project_removal(output: &[u8], expected: &KwtProject) -> Result<(), String> {
+    #[derive(Deserialize)]
+    struct Receipt {
+        status: String,
+        project: RemovedProject,
+    }
+    #[derive(Deserialize)]
+    struct RemovedProject {
+        repository: String,
+        path: String,
+    }
+    let receipt: Receipt = serde_json::from_slice(output).map_err(|error| error.to_string())?;
+    if receipt.status != "unregistered"
+        || receipt.project.repository != expected.repository
+        || receipt.project.path != expected.path
+    {
+        return Err("KWT did not confirm removal of the expected project".to_owned());
+    }
+    Ok(())
+}
+
 /// Decode a machine-readable KWT command failure for presentation by an
 /// owning workflow layer.
 #[must_use]
@@ -904,6 +926,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn removal_receipt_requires_the_confirmed_identity_and_status() {
+        let project = parse_project_mutation(
+            br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","registration_fingerprint":"observed-registration"}}"#,
+            "registered",
+        ).unwrap();
+        for receipt in [
+            br#"{"status":"registered","project":{"repository":"github.com/acme/widget","path":"/code/widget"}}"#.as_slice(),
+            br#"{"status":"unregistered","project":{"repository":"github.com/acme/other","path":"/code/widget"}}"#,
+            br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","path":"/code/other"}}"#,
+            br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget"}}"#,
+        ] {
+            assert!(super::validate_project_removal(receipt, &project).is_err());
+        }
     }
 
     #[test]

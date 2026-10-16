@@ -105,12 +105,12 @@ target_metadata_matches() {
 }
 
 if [[ "$locked" == false ]]; then
-  command -v lockf >/dev/null || {
-    printf 'lockf is required to build the pinned kwt helper.\n' >&2
-    exit 1
-  }
   mkdir -p "$(dirname "$source_dir")"
-  exec lockf -k "${source_dir}.lock" "$0" "$@" --locked
+  case "$(uname -s)" in
+    Linux) exec flock "${source_dir}.lock" "$0" "$@" --locked ;;
+    Darwin) exec lockf -k "${source_dir}.lock" "$0" "$@" --locked ;;
+    *) printf 'Building the pinned kwt helper requires Linux or macOS.\n' >&2; exit 1 ;;
+  esac
 fi
 
 if [[ -f "$output" && -f "$stamp" ]] \
