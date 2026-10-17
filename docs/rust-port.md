@@ -219,14 +219,18 @@ This test uses private process and network namespaces, a private `/tmp`, and
 disposable home, XDG configuration, cache, data, and runtime directories.
 It checks real shell input and resize, detach and application-close survival,
 cancelled kills, confirmed kills across two scenes, exclusion of exited
-sessions, and continued tmux use when Zellij disappears. CI downloads and
-verifies [Zellij 0.44.3](https://github.com/zellij-org/zellij/releases/tag/v0.44.3)
+sessions, exact selection among multiple sessions, names with spaces and
+quotes, rejected attachment names, and continued tmux use when Zellij
+disappears. CI downloads and verifies [Zellij 0.45.1](https://github.com/zellij-org/zellij/releases/tag/v0.45.1)
 for this test. Ghosthub does not install or update Zellij for users.
 
-Use Zellij 0.44.3 with the Rust port. Zellij 0.45 changed the meaning of
-`attach -- <name>`: the name is now an initial command. The current attach
-path is incompatible with 0.45 and can select the wrong session. Support for
-the new CLI remains separate work for native Linux, WSL, and SSH.
+The Rust port passes the selected session name directly to `zellij attach`.
+Zellij 0.45.1 uses `--` to introduce an initial command, so it cannot escape
+option-like session names. Ghosthub rejects creation and attachment for names
+starting with `-` (except the single name `-`) and the reserved names `help`
+and `options`. Existing sessions with these names remain visible and can be
+killed with confirmation. The restriction applies to native Linux, WSL, and
+SSH; names containing spaces or quotes remain exact arguments.
 
 Software-rendered X11 captures do not establish Wayland,
 hardware GPU, Windows WSL, or ConPTY acceptance.
@@ -309,15 +313,19 @@ Stop ends the session's processes and preserves its saved layout.
 
 ### Native Linux Zellij sessions
 
-Install Zellij 0.44.3 in your login environment, then refresh **Local**.
+Install Zellij 0.45.1 in your login environment, then refresh **Local**.
 Choose **+** beside **Zellij Sessions**, enter a name, and select **Create**.
+Names beginning with `-` (except `-` itself), `help`, and `options` cannot be
+created or attached because Zellij parses them as CLI options or subcommands.
 Select an active session to attach. Its row menu offers **Detach** and
 confirmed **Kill Session**. Detach and application close preserve the server;
 Kill Session ends its processes and closes matching Ghosthub attachments.
 Ghosthub lists only active sessions and offers no resurrection or saved-session
 deletion action.
 
-![Native Linux Zellij session running Git commands](https://github.com/user-attachments/assets/6cc0f5da-3071-4dd2-8f5d-f142e64bd569)
+![Native Linux Ghosthub attached to the selected Zellij 0.45.1 session](https://github.com/user-attachments/assets/92bf3824-4179-4897-9f27-f72cec688f02)
+
+![The creation dialog explains unsupported Zellij names](https://github.com/user-attachments/assets/28bbda03-863a-496c-b666-e39062026107)
 
 ### Windows WSL command boundary
 
@@ -477,7 +485,7 @@ or Herdr inventory. Exited entries that Zellij could resurrect are deliberately
 excluded.
 
 The sidebar gives Zellij its own compact group and creation action. Opening an
-active row consumes an attach-only plan for `zellij attach -- <exact-name>`.
+active row consumes an attach-only plan for `zellij attach <exact-name>`.
 Creation consumes a non-cloneable one-shot launch for
 `zellij --session=<exact-name>`. Both run as ordinary local PTY clients, share the
 retained-presentation switcher with tmux and Herdr, and never replay creation

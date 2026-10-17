@@ -116,9 +116,9 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ghosthub-zellij"
           curl --fail --location --retry 3 \
-            https://github.com/zellij-org/zellij/releases/download/v0.44.3/zellij-x86_64-unknown-linux-musl.tar.gz \
+            https://github.com/zellij-org/zellij/releases/download/v0.45.1/zellij-x86_64-unknown-linux-musl.tar.gz \
             --output "$RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz"
-          echo "0f7c346788627f506c0a28296517768633cff24fc822a739f8264b640ecad751  $RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz" | sha256sum --check
+          echo "40bcc2e03f5d5ae8e054e39f676081fe12ab70871506996ba595834c3718eefc  $RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz" -C "$RUNNER_TEMP/ghosthub-zellij"
           echo "ZELLIJ_BINARY_PATH=$RUNNER_TEMP/ghosthub-zellij/zellij" >> "$GITHUB_ENV"
 

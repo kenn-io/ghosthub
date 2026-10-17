@@ -1059,7 +1059,7 @@ fn zellij_inventory_and_launch_plans_preserve_exact_names_and_scrub_control_envi
     ]);
     runner.set_zellij_outputs(vec![
         output(0, "GHOSTHUB_ZELLIJ_PATH\n/opt/zellij/bin/zellij\n", ""),
-        output(0, "--review [Created 1m ago]\n", ""),
+        output(0, "review 'one' [Created 1m ago]\n", ""),
     ]);
     let host = test_host(
         LocalConfig::with_distro("Ubuntu").expect("valid config"),
@@ -1075,18 +1075,20 @@ fn zellij_inventory_and_launch_plans_preserve_exact_names_and_scrub_control_envi
         panic!("Zellij is available");
     };
     assert_eq!(executable, "/opt/zellij/bin/zellij");
-    assert_eq!(sessions[0].name(), "--review");
+    assert_eq!(sessions[0].name(), "review 'one'");
 
-    let plan = host.zellij_attach_plan(
-        snapshot.endpoint(),
-        executable,
-        &sessions[0],
-        AttachTerm::Xterm256Color,
-    );
+    let plan = host
+        .zellij_attach_plan(
+            snapshot.endpoint(),
+            executable,
+            &sessions[0],
+            AttachTerm::Xterm256Color,
+        )
+        .expect("attachable name");
     assert!(
         plan.args()
-            .windows(3)
-            .any(|arguments| arguments == ["attach", "--", "--review"])
+            .windows(2)
+            .any(|arguments| arguments == ["attach", "review 'one'"])
     );
     for variable in ["ZELLIJ", "ZELLIJ_PANE_ID", "ZELLIJ_SESSION_NAME"] {
         assert!(
@@ -1099,12 +1101,15 @@ fn zellij_inventory_and_launch_plans_preserve_exact_names_and_scrub_control_envi
     let launch = host.zellij_launch_once(
         snapshot.endpoint(),
         executable,
-        ZellijSessionName::parse("--new").expect("valid leading-dash name"),
+        ZellijSessionName::parse("new session").expect("valid name"),
         AttachTerm::Xterm256Color,
     );
     let (_program, args, target) = launch.into_parts();
-    assert!(args.iter().any(|argument| argument == "--session=--new"));
-    assert_eq!(target.as_str(), "--new");
+    assert!(
+        args.iter()
+            .any(|argument| argument == "--session=new session")
+    );
+    assert_eq!(target.as_str(), "new session");
 }
 
 #[test]

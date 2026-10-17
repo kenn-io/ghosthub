@@ -113,6 +113,7 @@ pub struct ZellijSessionName(String);
 pub enum ZellijSessionNameError {
     Empty,
     ForbiddenCharacter,
+    Unattachable,
 }
 
 impl ZellijSessionName {
@@ -121,9 +122,8 @@ impl ZellijSessionName {
     /// # Errors
     ///
     /// Returns an error for an empty name, `.` or `..`, or a name containing
-    /// a slash or control character. These are the same restrictions exposed
-    /// by the Swift application; leading dashes remain valid because every
-    /// lifecycle command terminates option parsing explicitly.
+    /// a slash or control character, or a name Zellij's attach command cannot
+    /// represent as its session argument.
     pub fn parse(value: &str) -> Result<Self, ZellijSessionNameError> {
         let value = value.trim();
         if value.is_empty() {
@@ -136,6 +136,7 @@ impl ZellijSessionName {
         {
             return Err(ZellijSessionNameError::ForbiddenCharacter);
         }
+        validate_zellij_attach_name(value)?;
         Ok(Self(value.to_owned()))
     }
 
@@ -152,6 +153,9 @@ impl fmt::Display for ZellijSessionNameError {
             Self::ForbiddenCharacter => {
                 formatter.write_str("Use a nonempty name without slashes or control characters.")
             }
+            Self::Unattachable => formatter.write_str(
+                "Zellij cannot attach to names beginning with '-' (except '-'), 'help', or 'options'.",
+            ),
         }
     }
 }
@@ -171,6 +175,27 @@ impl ZellijSessionRecord {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// Return the exact name when Zellij can parse it as an attach target.
+    ///
+    /// # Errors
+    ///
+    /// Rejects names parsed as options or subcommands by Zellij's attach CLI.
+    pub fn attach_name(&self) -> Result<&str, ZellijSessionNameError> {
+        validate_zellij_attach_name(&self.name)?;
+        Ok(&self.name)
+    }
+}
+
+fn validate_zellij_attach_name(name: &str) -> Result<(), ZellijSessionNameError> {
+    if name.is_empty() {
+        return Err(ZellijSessionNameError::Empty);
+    }
+    // Since Zellij 0.45.1, `--` starts an initial command, not the session name.
+    if (name.starts_with('-') && name != "-") || matches!(name, "help" | "options") {
+        return Err(ZellijSessionNameError::Unattachable);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -876,7 +901,7 @@ mod tests {
     assert_not_impl_any!(RepairOrOpenPlan: serde::Serialize);
 
     #[test]
-    fn zellij_session_names_match_the_shipped_creation_contract() {
+    fn zellij_creation_validates_and_trims_names() {
         assert_eq!(
             ZellijSessionName::parse("  review session  ")
                 .expect("valid name")
@@ -900,11 +925,34 @@ mod tests {
             Err(ZellijSessionNameError::ForbiddenCharacter)
         );
         assert_eq!(
-            ZellijSessionName::parse("--leading-option")
-                .expect("leading dashes remain valid")
+            ZellijSessionName::parse("-")
+                .expect("a lone dash is a positional name")
                 .as_str(),
-            "--leading-option"
+            "-"
         );
+    }
+
+    #[test]
+    fn zellij_creation_rejects_names_that_cannot_be_attached() {
+        for name in ["--review", "-c", "--", "options", "help"] {
+            assert!(ZellijSessionName::parse(name).is_err(), "{name}");
+            assert!(
+                super::ZellijSessionRecord::discovered(name)
+                    .attach_name()
+                    .is_err(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn zellij_attachment_preserves_discovered_names_without_trimming() {
+        for name in ["review 'one'", " help", "options ", "-", "révision"] {
+            assert_eq!(
+                super::ZellijSessionRecord::discovered(name).attach_name(),
+                Ok(name)
+            );
+        }
     }
 
     #[test]

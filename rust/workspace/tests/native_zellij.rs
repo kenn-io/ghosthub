@@ -79,8 +79,13 @@ impl Fixture {
     fn shell_probe(&self, name: &str, marker: &str) {
         self.wait(|| matches!(self.workspace.snapshot().content(), WorkspaceContent::Terminal { session, kind: SessionKind::Zellij, .. } if session == name));
         self.wait(|| self.terminal_text().contains('$'));
-        self.send_command(&format!("printf 'zellij-%s\\n' {marker}"));
-        self.wait(|| self.terminal_text().contains(&format!("zellij-{marker}")));
+        self.send_command(&format!(
+            "printf 'zellij-%s:%s\\n' \"$ZELLIJ_SESSION_NAME\" {marker}"
+        ));
+        self.wait(|| {
+            self.terminal_text()
+                .contains(&format!("zellij-{name}:{marker}"))
+        });
     }
 
     fn send_command(&self, command: &str) {
@@ -250,9 +255,9 @@ fn native_zellij_lifecycle() {
     );
     fixture
         .workspace
-        .create_zellij_session("local", "Linux", "keep")
+        .create_zellij_session("local", "Linux", "keep 'one'")
         .unwrap();
-    fixture.shell_probe("keep", "keep");
+    fixture.shell_probe("keep 'one'", "keep");
     fixture.workspace.close();
 
     let fixture = Fixture::new(fixture.root.clone());
@@ -331,10 +336,69 @@ fn native_zellij_lifecycle() {
     assert!(fixture.workspace.attach(&selection).is_err());
     fixture
         .workspace
-        .attach(&fixture.selection("keep"))
+        .attach(&fixture.selection("keep 'one'"))
         .unwrap();
-    fixture.shell_probe("keep", "survived");
+    fixture.shell_probe("keep 'one'", "survived");
     fixture.workspace.detach();
+
+    for name in ["--review", "help", "options"] {
+        assert!(
+            fixture
+                .workspace
+                .create_zellij_session("local", "Linux", name)
+                .is_err()
+        );
+        let executable = fixture.root.join("bin/zellij");
+        // An external client can create names that the attach parser cannot address.
+        let created = fixture.tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            "external-zellij",
+            executable.to_str().unwrap(),
+            &format!("--session={name}"),
+        ]);
+        assert!(created.status.success(), "{created:?}");
+        fixture.wait(|| {
+            fixture
+                .session_list()
+                .lines()
+                .any(|line| line.starts_with(&format!("{name} ")))
+        });
+        fixture.workspace.refresh().unwrap();
+        fixture.wait(|| {
+            fixture.workspace.snapshot().hosts()[0]
+                .zellij_sessions()
+                .iter()
+                .any(|session| session.name() == name)
+        });
+        let error = fixture
+            .workspace
+            .attach(&fixture.selection(name))
+            .unwrap_err();
+        assert!(error.to_string().contains("Zellij cannot attach"));
+        assert_eq!(
+            fixture.workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Ready
+        );
+        fixture
+            .workspace
+            .request_session_kill(&fixture.selection(name))
+            .unwrap();
+        fixture.workspace.confirm_session_kill().unwrap();
+        fixture.wait(|| {
+            !fixture.workspace.snapshot().hosts()[0]
+                .zellij_sessions()
+                .iter()
+                .any(|session| session.name() == name)
+        });
+        fixture.wait(|| {
+            !fixture
+                .tmux(&["has-session", "-t", "=external-zellij"])
+                .status
+                .success()
+        });
+    }
 
     // Hide the optional executable through its login profile, leaving tmux usable.
     fs::write(
