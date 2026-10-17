@@ -8758,7 +8758,7 @@ fn kill_confirmation_title(selection: &SessionSelection) -> String {
 
 fn kill_confirmation_description(selection: &SessionSelection) -> String {
     format!(
-        "This permanently terminates every window, pane, and process in this tmux session on {}.",
+        "This permanently terminates every window, pane, and process in this session on {}.",
         selection.endpoint()
     )
 }
@@ -11199,7 +11199,7 @@ mod tests {
         );
         assert_eq!(
             kill_confirmation_description(&selection),
-            "This permanently terminates every window, pane, and process in this tmux session on Ubuntu-24.04."
+            "This permanently terminates every window, pane, and process in this session on Ubuntu-24.04."
         );
     }
 

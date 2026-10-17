@@ -2104,12 +2104,7 @@ impl<R: CommandRunner> LocalHost<R> {
             let creation_term = self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
             let sessions = self.discover_sessions(&endpoint, cancellation)?;
             let herdr = self.discover_herdr(&endpoint, cancellation);
-            let zellij = if matches!(endpoint, LocalEndpoint::Native) {
-                // Native Zellij gets separate acceptance before exposure.
-                ZellijInventory::Unavailable
-            } else {
-                self.discover_zellij(&endpoint, cancellation)
-            };
+            let zellij = self.discover_zellij(&endpoint, cancellation);
             let observed_runtime = self.resolve_runtime(&endpoint, cancellation)?;
             if runtime == observed_runtime {
                 return Ok(HostSnapshot {
@@ -2287,7 +2282,7 @@ impl<R: CommandRunner> LocalHost<R> {
     ///
     /// # Errors
     ///
-    /// Returns a classified error when the WSL runtime, Zellij executable, or
+    /// Returns a classified error when the local runtime, Zellij executable, or
     /// active session no longer matches confirmation, or when the direct kill
     /// command fails.
     pub fn kill_zellij_session(

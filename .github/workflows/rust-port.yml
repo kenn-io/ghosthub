@@ -111,6 +111,17 @@ jobs:
           chmod +x "$RUNNER_TEMP/ghosthub-herdr/herdr"
           echo "HERDR_BINARY_PATH=$RUNNER_TEMP/ghosthub-herdr/herdr" >> "$GITHUB_ENV"
 
+      - name: Stage Zellij for Linux acceptance
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ghosthub-zellij"
+          curl --fail --location --retry 3 \
+            https://github.com/zellij-org/zellij/releases/download/v0.44.3/zellij-x86_64-unknown-linux-musl.tar.gz \
+            --output "$RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz"
+          echo "0f7c346788627f506c0a28296517768633cff24fc822a739f8264b640ecad751  $RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz" -C "$RUNNER_TEMP/ghosthub-zellij"
+          echo "ZELLIJ_BINARY_PATH=$RUNNER_TEMP/ghosthub-zellij/zellij" >> "$GITHUB_ENV"
+
       - name: Test and lint on Linux
         if: runner.os == 'Linux'
         shell: bash
@@ -119,6 +130,7 @@ jobs:
           make -C .. rust-check
           make -C .. rust-test-kwt-live KWT_BINARY_PATH=.build/kwt/kwt
           make -C .. rust-test-herdr-live
+          make -C .. rust-test-zellij-live
 
       - name: Test Linux protected pull-request worktrees
         if: runner.os == 'Linux'

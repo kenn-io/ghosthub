@@ -677,6 +677,13 @@ rust-test-herdr-live:
 	cd rust && GHOSTHUB_HERDR_TEST="$(shell realpath -m -- "$(HERDR_BINARY_PATH)")" \
 		$(CARGO) test --locked -p ghosthub-workspace --test native_herdr -- --ignored
 
+.PHONY: rust-test-zellij-live
+rust-test-zellij-live:
+	@test -n "$(ZELLIJ_BINARY_PATH)" -a -f "$(ZELLIJ_BINARY_PATH)" -a -x "$(ZELLIJ_BINARY_PATH)" || \
+		{ echo "Set ZELLIJ_BINARY_PATH to a Linux Zellij executable" >&2; exit 1; }
+	cd rust && GHOSTHUB_ZELLIJ_TEST="$(shell realpath -m -- "$(ZELLIJ_BINARY_PATH)")" \
+		$(CARGO) test --locked -p ghosthub-workspace --test native_zellij -- --ignored
+
 rust-test-wsl-live:
 	@cd "$(RUST_DIR)" && $(CARGO) test-wsl-terminal-live
 	@cd "$(RUST_DIR)" && $(CARGO) test-wsl-workspace-live

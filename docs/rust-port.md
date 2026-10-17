@@ -7,8 +7,9 @@ Linux discovers, attaches to, creates, and confirms kills of local tmux
 sessions through the same workflow layer. Linux also supports KWT project
 registration, branch and pull-request imports, worktree attachment, and
 confirmed removal. Local Herdr supports running and stopped inventory,
-creation, attachment, restart, and confirmed stop/delete. Native Zellij and
-distribution packaging remain separate parity work.
+creation, attachment, restart, and confirmed stop/delete. Local Zellij supports
+active-session discovery, creation, attachment, and confirmed kills.
+Distribution packaging remains separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and
@@ -208,6 +209,25 @@ confirmed stop/delete, stale confirmation rejection, and silent disappearance
 of the optional backend. CI downloads and verifies Herdr 0.9.5 for this test;
 Ghosthub does not install or update Herdr for users.
 
+For local Zellij acceptance, provide an existing Linux executable:
+
+```sh
+make rust-test-zellij-live ZELLIJ_BINARY_PATH=/absolute/path/to/zellij
+```
+
+This test uses private process and network namespaces, a private `/tmp`, and
+disposable home, XDG configuration, cache, data, and runtime directories.
+It checks real shell input and resize, detach and application-close survival,
+cancelled kills, confirmed kills across two scenes, exclusion of exited
+sessions, and continued tmux use when Zellij disappears. CI downloads and
+verifies [Zellij 0.44.3](https://github.com/zellij-org/zellij/releases/tag/v0.44.3)
+for this test. Ghosthub does not install or update Zellij for users.
+
+Use Zellij 0.44.3 with the Rust port. Zellij 0.45 changed the meaning of
+`attach -- <name>`: the name is now an initial command. The current attach
+path is incompatible with 0.45 and can select the wrong session. Support for
+the new CLI remains separate work for native Linux, WSL, and SSH.
+
 Software-rendered X11 captures do not establish Wayland,
 hardware GPU, Windows WSL, or ConPTY acceptance.
 
@@ -270,12 +290,12 @@ every local endpoint is WSL. Neither route reconstructs server panes or kills
 the server when a presentation closes.
 
 Native Linux exposes tmux, KWT project/worktree workflows, and optional Herdr
-sessions. Herdr uses the same login-environment executable discovery and
-whole-session lifecycle machinery as WSL. A missing installation hides its
-group without affecting tmux. Herdr has no stable generation ID: lifecycle
+and Zellij sessions. Herdr uses the same login-environment executable
+discovery and whole-session lifecycle machinery as WSL. A missing installation
+hides its group without affecting tmux. Herdr has no stable generation ID: lifecycle
 checks compare the runtime, executable, session state, default role, and
 configuration paths; an otherwise identical replacement cannot be detected.
-Native Zellij still requires its own acceptance before exposure.
+Zellij uses the shared active-only discovery and confirmed-kill workflow.
 
 ### Native Linux Herdr sessions
 
@@ -433,11 +453,11 @@ and cancels an older refresh, so an earlier full snapshot cannot overwrite the
 result. Rust does not reinterpret Herdr as a tmux-compatible server or use
 Herdr's remote mode.
 
-### Optional Zellij capability in WSL
+### Optional local Zellij capability
 
-Zellij is a third optional capability of the same resolved WSL endpoint. Host
-resolves one absolute executable through the POSIX login profile, removes
-inherited `ZELLIJ`, `ZELLIJ_PANE_ID`, and `ZELLIJ_SESSION_NAME`, and invokes
+Zellij is a third optional capability of the resolved native Linux or WSL
+endpoint. Host resolves one absolute executable through the POSIX login
+profile, removes inherited `ZELLIJ`, `ZELLIJ_PANE_ID`, and `ZELLIJ_SESSION_NAME`, and invokes
 `zellij list-sessions --no-formatting` through direct argv. Exit 127 is silent
 absence. Zellij's exact no-active-sessions response is successful empty
 inventory; other failures remain Zellij-scoped diagnostics and never hide tmux
@@ -447,11 +467,11 @@ excluded.
 The sidebar gives Zellij its own compact group and creation action. Opening an
 active row consumes an attach-only plan for `zellij attach -- <exact-name>`.
 Creation consumes a non-cloneable one-shot launch for
-`zellij --session=<exact-name>`. Both run as ordinary ConPTY clients, share the
+`zellij --session=<exact-name>`. Both run as ordinary local PTY clients, share the
 retained-presentation switcher with tmux and Herdr, and never replay creation
 after failure. Closing the client only detaches.
 
-Kill Session is separate and confirmed. Host checks the current WSL runtime,
+Kill Session is separate and confirmed. Host checks the current Linux runtime,
 absolute executable, and exact active name, closes the matching presentation,
 then repeats all checks immediately before `zellij kill-session --
 <exact-name>`. Attachment, creation, and kill share the serialized session
@@ -1493,7 +1513,8 @@ discovery and attachment, constructive creation, and confirmed destruction.
 It must prove input, resize, and detach-only lifetime against an isolated
 server through the native application. Linux KWT project/worktree workflows
 now use those same ownership boundaries. Native Herdr also uses the shared
-session lifecycle; optional Zellij follows next.
+session lifecycle; native Zellij uses active-only inventory and confirmed
+kills across scenes.
 The Windows WSL slice remains independently tested throughout this work.
 
 1. Local Ghosthub inventory and ordinary worktree RepairOrOpen now ship with

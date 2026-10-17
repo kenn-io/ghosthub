@@ -18,6 +18,11 @@ bindings, and running programs.
 
 ![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](/docs/assets/guide-sessions.png)
 
+The unreleased Rust/Linux source build also supports local tmux, Herdr, and
+Zellij sessions. See the [native Linux development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md)
+for build instructions and native session controls. The Rust port currently
+requires Zellij 0.44.3; its attach command is incompatible with Zellij 0.45.
+
 ## Find tmux sessions on kwt's server
 
 Ghosthub checks the default tmux server and kwt's server. Sessions registered

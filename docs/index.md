@@ -32,8 +32,8 @@ follow the repository rules before changing persistence.
 These references have their own status and scope. They do not describe features
 available in the released Swift macOS app.
 
-- [Windows and Linux Rust port](rust-port.md): the Windows/WSL2 implementation
-  and its design contracts. Linux remains a build and contract-test target.
+- [Windows and Linux Rust port](rust-port.md): the native Windows/WSL2 and Linux
+  implementations, development instructions, and remaining parity work.
 - [Worktree sandboxes](sandboxes.md): the accepted contract for a feature that
   is not implemented yet.
 - [Sandbox image operations](sandbox-image.md): build and promotion procedures

@@ -1444,7 +1444,9 @@ pub(crate) fn capture_kill_request(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .active()
         .map(|active| active.request.clone())
-        .filter(|request| request.selection() == *selection)
+        .filter(|request| {
+            selection.kind() == SessionKind::Tmux && request.selection() == *selection
+        })
     {
         return Ok(KillCaptureRequest::Tmux {
             selection: selection.clone(),
