@@ -323,7 +323,9 @@ Kill Session ends its processes and closes matching Ghosthub attachments.
 Ghosthub lists only active sessions and offers no resurrection or saved-session
 deletion action.
 
-![Native Linux Zellij session running Git commands](https://github.com/user-attachments/assets/6cc0f5da-3071-4dd2-8f5d-f142e64bd569)
+![Native Linux Ghosthub attached to the selected Zellij 0.45.1 session](https://github.com/user-attachments/assets/92bf3824-4179-4897-9f27-f72cec688f02)
+
+![The creation dialog explains unsupported Zellij names](https://github.com/user-attachments/assets/28bbda03-863a-496c-b666-e39062026107)
 
 ### Windows WSL command boundary
 
