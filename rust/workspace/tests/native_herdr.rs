@@ -64,6 +64,32 @@ impl Fixture {
         }
     }
 
+    #[track_caller]
+    fn wait_event(&self, expected: impl Fn(&WorkspaceEvent) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let mut found = false;
+            // Match and reject errors from the same drain; a second consumer can
+            // steal the expected asynchronous failure between polls.
+            for event in self.workspace.drain_events().0 {
+                if expected(&event) {
+                    found = true;
+                } else if let WorkspaceEvent::Error(message) = event {
+                    panic!("{message}");
+                }
+            }
+            if found {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Herdr event timed out: {:?}",
+                self.workspace.snapshot().hosts(),
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn terminal_text(&self) -> String {
         let snapshot = self.workspace.snapshot();
         let WorkspaceContent::Terminal { surface, .. } = snapshot.content() else {
@@ -273,6 +299,8 @@ fn native_herdr_lifecycle() {
     let fixture = Fixture::new(fixture.root.clone());
     fixture.workspace.attach(&fixture.selection()).unwrap();
     fixture.shell_probe("reopened");
+    // Keep the external stop's client-exit event out of the lifecycle assertion.
+    fixture.workspace.detach();
 
     fixture
         .workspace
@@ -284,7 +312,7 @@ fn native_herdr_lifecycle() {
         .unwrap();
     assert!(stopped.status.success());
     fixture.workspace.confirm_herdr_lifecycle().unwrap();
-    fixture.wait(|| fixture.workspace.drain_events().0.iter().any(|event| matches!(event, WorkspaceEvent::Error(message) if message.contains("no longer running"))));
+    fixture.wait_event(|event| matches!(event, WorkspaceEvent::Error(message) if message.contains("no longer running")));
     fixture.wait_session(HerdrSessionState::Stopped);
     fixture.lifecycle(HerdrLifecycleAction::Delete);
     fixture.wait(|| {
