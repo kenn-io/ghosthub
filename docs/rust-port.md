@@ -307,6 +307,18 @@ Stop ends the session's processes and preserves its saved layout.
 
 ![Native Linux Herdr session running Git commands](https://github.com/user-attachments/assets/50d40216-97e8-45bf-8095-2d43f7b4b0ba)
 
+### Native Linux Zellij sessions
+
+Install Zellij 0.44.3 in your login environment, then refresh **Local**.
+Choose **+** beside **Zellij Sessions**, enter a name, and select **Create**.
+Select an active session to attach. Its row menu offers **Detach** and
+confirmed **Kill Session**. Detach and application close preserve the server;
+Kill Session ends its processes and closes matching Ghosthub attachments.
+Ghosthub lists only active sessions and offers no resurrection or saved-session
+deletion action.
+
+![Native Linux Zellij session running Git commands](https://github.com/user-attachments/assets/6cc0f5da-3071-4dd2-8f5d-f142e64bd569)
+
 ### Windows WSL command boundary
 
 WSL is enabled automatically when the system-owned `wsl.exe` exists, but it is
