@@ -1388,7 +1388,10 @@ pub(crate) fn capture_attach_request(
                 (
                     AttachTarget::Zellij {
                         executable: executable.clone(),
-                        name: session.name().to_owned(),
+                        name: session
+                            .attach_name()
+                            .map_err(|error| WorkspaceError::new(error.to_string()))?
+                            .to_owned(),
                     },
                     session.name().to_owned(),
                 )
@@ -8142,7 +8145,8 @@ pub(crate) fn launch_fresh_zellij(
     };
     let plan = request
         .host
-        .zellij_attach_plan(fresh.endpoint(), executable, session, term);
+        .zellij_attach_plan(fresh.endpoint(), executable, session, term)
+        .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
     let geometry = *scene
         .terminal_geometry
         .lock()

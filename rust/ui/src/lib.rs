@@ -9072,10 +9072,9 @@ fn new_session_validation(
             if !host.zellij_available() || host.zellij_diagnostic().is_some() {
                 return Some("Zellij is not available on this host.".to_owned());
             }
-            let Ok(name) = workspace::ZellijSessionName::parse(&draft.name) else {
-                return Some(
-                    "Use a nonempty name without slashes or control characters.".to_owned(),
-                );
+            let name = match workspace::ZellijSessionName::parse(&draft.name) {
+                Ok(name) => name,
+                Err(error) => return Some(error.to_string()),
             };
             host.zellij_sessions()
                 .iter()

@@ -772,7 +772,8 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the reviewed lease is no longer live.
+    /// Returns an error when the reviewed lease is no longer live or Zellij
+    /// cannot parse the name as an exact attach target.
     pub fn zellij_attach_plan(
         &self,
         snapshot: &RemoteTmuxSnapshot,
@@ -784,13 +785,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             .lease()
             .ensure_live()
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
-        let command = multiplexer_command(
-            &zellij::CONTROL_VARIABLES,
-            RemoteCommandLocale::Login,
-            Some(term),
-            executable,
-            ["attach", "--", session.name()],
-        );
+        let command = zellij_attach_command(executable, session, term)?;
         Ok(ZellijAttachPlan::attach_only(
             self.ssh.program(),
             self.ssh.with_arguments(ssh_arguments(
@@ -955,6 +950,23 @@ fn herdr_launch_command(
         executable,
         args,
     )
+}
+
+fn zellij_attach_command(
+    executable: &str,
+    session: &ZellijSessionRecord,
+    term: &str,
+) -> Result<Vec<String>, RemoteTmuxError> {
+    let name = session.attach_name().map_err(|error| {
+        RemoteTmuxError::new(DiagnosticKind::UnsupportedEnvironment, error.to_string())
+    })?;
+    Ok(multiplexer_command(
+        &zellij::CONTROL_VARIABLES,
+        RemoteCommandLocale::Login,
+        Some(term),
+        executable,
+        ["attach", name],
+    ))
 }
 
 fn zellij_launch_command(executable: &str, name: &ZellijSessionName, term: &str) -> Vec<String> {
@@ -1746,6 +1758,54 @@ mod tests {
             Some("/usr/local/bin/herdr")
         );
         assert!(!command.iter().any(|value| value == "--session"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_zellij_attach_delivers_the_exact_positional_name() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("gh-zellij-argv-{}-{nonce}", std::process::id()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
+        let executable = root.join("zellij");
+        std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\0' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let command = zellij_attach_command(
+            executable.to_str().unwrap(),
+            &ZellijSessionRecord::discovered("review 'one'"),
+            "xterm",
+        )
+        .unwrap();
+        // Execute the command delivered to SSH's remote shell against an argv recorder.
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &account_login_shell_command(&posix_command(&command))])
+            .env_clear()
+            .env("HOME", &root)
+            .env("SHELL", "/bin/sh")
+            .env("PATH", "/usr/bin:/bin")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"attach\0review 'one'\0");
+        for name in ["--review", "help", "options"] {
+            let error = zellij_attach_command(
+                "/usr/bin/zellij",
+                &ZellijSessionRecord::discovered(name),
+                "xterm",
+            )
+            .expect_err("unrepresentable attach name");
+            assert_eq!(error.kind(), DiagnosticKind::UnsupportedEnvironment);
+        }
     }
 
     #[test]

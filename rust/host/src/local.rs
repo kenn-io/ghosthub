@@ -2237,23 +2237,28 @@ impl<R: CommandRunner> LocalHost<R> {
     }
 
     /// Build an attach-only plan for one freshly discovered active Zellij session.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Rejects a name that Zellij cannot parse as an exact attach target.
     pub fn zellij_attach_plan(
         &self,
         endpoint: &LocalEndpoint,
         executable: &str,
         session: &ZellijSessionRecord,
         term: AttachTerm,
-    ) -> ZellijAttachPlan {
+    ) -> Result<ZellijAttachPlan, HostError> {
+        let name = session.attach_name().map_err(|error| {
+            HostError::new(DiagnosticKind::UnsupportedEnvironment, error.to_string())
+        })?;
         let mut args = pinned_prefix(endpoint);
         append_zellij_environment(&mut args);
         args.push(OsString::from(term.environment()));
-        args.extend(
-            [executable, "attach", "--", session.name()]
-                .into_iter()
-                .map(OsString::from),
-        );
-        ZellijAttachPlan::attach_only(self.local_executable.as_os_str(), args)
+        args.extend([executable, "attach", name].into_iter().map(OsString::from));
+        Ok(ZellijAttachPlan::attach_only(
+            self.local_executable.as_os_str(),
+            args,
+        ))
     }
 
     /// Build one non-repeatable Zellij session creation client.

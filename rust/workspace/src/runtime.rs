@@ -769,7 +769,10 @@ pub(crate) fn capture_remote_zellij_attach_request(
         host: context.host.clone(),
         snapshot: context.snapshot.clone(),
         executable: executable.clone(),
-        name: session.name().to_owned(),
+        name: session
+            .attach_name()
+            .map_err(|error| WorkspaceError::new(error.to_string()))?
+            .to_owned(),
     })
 }
 
