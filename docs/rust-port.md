@@ -131,6 +131,8 @@ Install Go before building the helper. On Linux, `make rust-build` builds the
 revision from `KWT_REVISION` and embeds it in the application.
 To use an already-built helper, pass `KWT_BINARY_PATH=/absolute/path/to/kwt`.
 An explicit `GHOSTHUB_KWT_BUNDLE` takes precedence over that path.
+The same native Linux bundle supplies the SSH controller; no separately
+installed KWT or Windows executable is required for Linux SSH hosts.
 
 The executable is `rust/target/debug/ghosthub`. Use disposable application
 roots when inspecting a development build. This keeps configured hosts,
@@ -235,6 +237,22 @@ SSH; names containing spaces or quotes remain exact arguments.
 Software-rendered X11 captures do not establish Wayland,
 hardware GPU, Windows WSL, or ConPTY acceptance.
 
+For native Linux SSH acceptance, install `openssh-server`, `openssh-client`,
+`tmux`, and `bubblewrap`, then run:
+
+```sh
+make rust-test-ssh-live
+```
+
+This test runs the application composition root with its bundled controller
+against a disposable OpenSSH server. Private process and network namespaces,
+generated keys, a fixture account, and disposable home and KWT roots keep the
+test independent of configured hosts. It exercises the host-key prompt,
+inventory, exact session selection, shell input, resize, retained switching,
+detach, application close, and reopening with the accepted host key. CI runs
+it on Linux. Windows/WSL controllers and remote macOS servers need separate
+acceptance.
+
 Track implementation and baseline failures in the existing Kata project.
 Check `kata federation status --agent` before resuming across machines; retain
 the local spoke binding when federation is healthy. Work in this order:
@@ -326,6 +344,20 @@ deletion action.
 ![Native Linux Ghosthub attached to the selected Zellij 0.45.1 session](https://github.com/user-attachments/assets/92bf3824-4179-4897-9f27-f72cec688f02)
 
 ![The creation dialog explains unsupported Zellij names](https://github.com/user-attachments/assets/28bbda03-863a-496c-b666-e39062026107)
+
+### Native Linux SSH sessions
+
+Build with `make rust-build`, then open **Settings → Hosts**. Add a host name
+and an SSH destination from your OpenSSH configuration, then select **Save Host**.
+Select **Connect** beside that host in the sidebar. Review any host-key or
+authentication prompt before continuing. Select a discovered session to open
+its terminal; switching tmux rows retains the previous presentation.
+
+**Detach** closes the selected client. Closing Ghosthub closes its clients
+and preserves the remote sessions. Reopening the app leaves configured hosts
+disconnected until you select **Connect** again. Remote tmux creation, confirmed
+destruction, worktree workflows, and automatic transport recovery remain
+separate work.
 
 ### Windows WSL command boundary
 
@@ -1084,7 +1116,11 @@ Cancelling or failing a connection refresh discards that host's stale runtime
 context and lease before publishing `Disconnected` or `Unavailable`; retained
 terminal presentations keep only their own explicit lease ownership.
 
-The first Rust remote-host slice exposes this boundary through a native
+Linux activates the same pinned native KWT bundle used for local operations
+as its SSH controller under the resolved helpers root. Windows acquires the
+controller and OpenSSH client through the admitted WSL host.
+
+The Rust remote-host slice exposes this boundary through a native
 Settings shell modeled on the Swift app. The shell owns stable domain
 navigation plus a consistent page header and detail area, so later settings
 panes extend the container rather than replace it. Hosts is the first
@@ -1112,7 +1148,8 @@ remain visible beside the tmux group so its path can be corrected. Tmux
 attachment retains exact server PID, session ID,
 and creation-time authority. Running Herdr and active Zellij rows build their
 ordinary attach-only client argv after scrubbing inherited backend routing
-variables. Terminal launches each resolved client through ConPTY and remains
+variables. Terminal launches each resolved client through a native Linux PTY
+or Windows ConPTY and remains
 unaware of WSL, KWT, routing, SSH configuration, or multiplexer selection.
 Before any remote tmux, Herdr, or Zellij client is launched, Host verifies the
 remote terminfo database and selects `xterm-256color` when available, otherwise

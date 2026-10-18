@@ -7,7 +7,11 @@ use model::DiagnosticKind;
 use model::PortStatus;
 use workspace::{LocalHostSpec, RemoteHostSpec, Workspace};
 
+#[cfg(all(test, target_os = "linux"))]
+mod native_ssh;
+
 const KWT_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kwt"));
+#[cfg(not(target_os = "linux"))]
 const KWT_CONTROLLER_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kwt-controller.exe"));
 
 #[cfg(target_os = "linux")]
@@ -186,16 +190,23 @@ fn bundled_kwt() -> Option<host::KwtBundle> {
 /// this crate.
 #[must_use]
 pub fn bundled_kwt_controller() -> Option<host::KwtBundle> {
-    if env!("GHOSTHUB_KWT_CONTROLLER_AVAILABLE") != "true" {
-        return None;
+    #[cfg(target_os = "linux")]
+    {
+        bundled_kwt()
     }
-    host::KwtBundle::new(
-        env!("GHOSTHUB_KWT_REVISION"),
-        env!("GHOSTHUB_KWT_CONTROLLER_SHA256"),
-        KWT_CONTROLLER_BYTES,
-    )
-    .map(Some)
-    .expect("build script emitted valid native KWT controller metadata")
+    #[cfg(not(target_os = "linux"))]
+    {
+        if env!("GHOSTHUB_KWT_CONTROLLER_AVAILABLE") != "true" {
+            return None;
+        }
+        host::KwtBundle::new(
+            env!("GHOSTHUB_KWT_REVISION"),
+            env!("GHOSTHUB_KWT_CONTROLLER_SHA256"),
+            KWT_CONTROLLER_BYTES,
+        )
+        .map(Some)
+        .expect("build script emitted valid native KWT controller metadata")
+    }
 }
 
 /// Activate the bundled controller under an explicit, already-resolved local
@@ -243,8 +254,16 @@ mod tests {
             state: root.join("state").display().to_string(),
             helpers: root.join("helpers").display().to_string(),
         };
-        let workspace = super::workspace_for(&ApplicationConfig::default(), roots, &NoWsl)
-            .expect("native Linux workspace");
+        let settings = ApplicationConfig::from_toml(
+            r#"
+                [[ssh-host]]
+                name = "Studio"
+                hostname = "studio.example"
+            "#,
+        )
+        .expect("valid SSH host configuration");
+        let workspace =
+            super::workspace_for(&settings, roots, &NoWsl).expect("native Linux workspace");
         let snapshot = workspace.snapshot();
         let local = snapshot
             .hosts()
@@ -253,6 +272,13 @@ mod tests {
             .expect("native local host must exist without WSL");
         assert_eq!(local.name(), "Local");
         assert_eq!(local.connection(), HostConnectionState::Disconnected);
+        let remote = snapshot.hosts().iter().find(|host| host.is_ssh()).unwrap();
+        if super::bundled_kwt().is_some() {
+            assert_eq!(remote.connection(), HostConnectionState::Disconnected);
+            assert!(remote.diagnostic().is_none());
+        } else {
+            assert_eq!(remote.connection(), HostConnectionState::Unavailable);
+        }
         assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
         workspace.close();
         if root.exists() {

@@ -145,6 +145,8 @@ help:
 		'      Run the isolated WSL2 terminal and workspace acceptance suites.' \
 		'  make rust-test-ssh-controller-live GHOSTHUB_KWT_CONTROLLER_BUNDLE_TEST=/absolute/path/to/kwt.exe' \
 		'      Validate the pinned native KWT SSH route contract without connecting.' \
+		'  make rust-test-ssh-live' \
+		'      Exercise native Linux SSH attachment with a disposable OpenSSH server.' \
 		'  make rust-deny' \
 		'      Check the complete Windows/Linux Rust dependency graph with cargo-deny.' \
 		'  make format' \
@@ -690,6 +692,11 @@ rust-test-wsl-live:
 
 rust-test-ssh-controller-live:
 	@cd "$(RUST_DIR)" && $(CARGO) test-ssh-controller-live
+
+.PHONY: rust-test-ssh-live
+rust-test-ssh-live: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
+rust-test-ssh-live: ensure-kwt
+	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib -- --ignored --exact native_ssh::native_ssh_connects_attaches_and_preserves_sessions
 
 rust-lint:
 	@cd "$(RUST_DIR)" && $(CARGO) check --workspace --all-targets --locked

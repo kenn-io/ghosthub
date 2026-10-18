@@ -10,6 +10,11 @@ Zellij sessions on remote macOS and Linux machines over SSH. Herdr and Zellij
 are optional; native Windows hosts using psmux are experimental and do not
 support them.
 
+The unreleased Rust/Linux source build also connects to POSIX SSH hosts using
+its bundled KWT controller. See the [native Linux SSH guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
+for setup and current limits. Remote tmux creation, confirmed destruction,
+worktree operations, and automatic recovery remain follow-up work in the port.
+
 ## Before you add a host
 
 A macOS or Linux host needs:

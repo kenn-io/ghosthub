@@ -11,6 +11,7 @@ on:
       - Makefile
       - KWT_REVISION
       - tools/build_pinned_kwt.sh
+      - tools/run_rust_ssh_fixture.sh
   pull_request:
     branches: [main]
     paths:
@@ -21,6 +22,7 @@ on:
       - Makefile
       - KWT_REVISION
       - tools/build_pinned_kwt.sh
+      - tools/run_rust_ssh_fixture.sh
   workflow_dispatch:
 
 permissions:
@@ -86,6 +88,7 @@ jobs:
             libxkbcommon-x11-dev \
             lld \
             llvm \
+            openssh-server \
             pkg-config \
             tmux
 
@@ -131,6 +134,7 @@ jobs:
           make -C .. rust-test-kwt-live KWT_BINARY_PATH=.build/kwt/kwt
           make -C .. rust-test-herdr-live
           make -C .. rust-test-zellij-live
+          make -C .. rust-test-ssh-live
 
       - name: Test Linux protected pull-request worktrees
         if: runner.os == 'Linux'
