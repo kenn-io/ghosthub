@@ -219,6 +219,16 @@ previous name. It cannot restore processes from the exited session.
 A clean detach or a confirmed ended session stays closed until you explicitly
 open or reopen it.
 
+## Rename a standalone session
+
+Control-click a standalone session row and choose **Rename Session…**, or use
+**Rename tmux session** in the Command Palette. The new name must be unique on
+that host and cannot contain periods, colons, or line breaks. An open session
+reconnects under its new name and keeps its windows, panes, and processes.
+
+Worktree sessions keep the names kwt assigns, so they have no rename action.
+Renaming is unavailable on native Windows hosts.
+
 ## End a session deliberately
 
 To end a standalone session that Ghosthub knows is running, hover over its

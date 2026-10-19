@@ -146,6 +146,16 @@ leaves the presentation open. After success it rechecks the active attachment,
 closing that exact current selection and navigating away only if it is the
 killed target.
 
+Rename Session is offered only for standalone sessions on the default tmux
+server of a macOS or Linux host, because kwt owns worktree and directory
+session names. It uses the identity discovery recorded for the row and one tmux
+conditional that runs `rename-session` only when the server PID, `session_id`,
+and `session_created` still match. The tmux client stays attached across the
+rename, but presentations are keyed by session name. After a successful
+rename, Ghosthub therefore replaces the old presentation, and if it was active,
+reattaches under the new name with the same identity guard. The saved sidebar
+position moves to the new name.
+
 Ghosthub applies the selected Tmux Theme when it creates a new bare tmux
 session. A built-in palette supplies its configured colors. Follow ghostty.conf
 instead uses the effective foreground and background resolved by libghostty for

@@ -150,6 +150,10 @@ final class WorkspaceSceneModel: ObservableObject {
         TmuxPresentationStyle, WorkspaceTmuxSessionSelection,
         TmuxSessionIdentity, CommandHost
     ) async throws -> Void
+    typealias TmuxSessionRenaming = @Sendable (
+        WorkspaceTmuxSessionSelection, String, TmuxSessionIdentity,
+        CommandHost
+    ) async throws -> Void
     typealias SSHHostProbeRunner = @Sendable (
         SSHHostInfo, [String], String
     ) -> (status: Int32, stdout: String, stderr: String)
@@ -898,6 +902,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private let tmuxSessionIdentityReviewer:
         TmuxSessionIdentityReviewReading
     private let tmuxSessionStyler: TmuxSessionStyling
+    private let tmuxSessionRenamer: TmuxSessionRenaming
+    private let sidebarOrderDefaults: UserDefaults
     private let tmuxPresentationStyleProvider:
         (UInt?) -> TmuxPresentationStyle?
     /// Displays macOS currently reports as active. Zero means nothing can be
@@ -1366,6 +1372,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
+        tmuxSessionRenamer: @escaping TmuxSessionRenaming = {
+            selection, newName, identity, host in
+            try await TmuxSessionRenamer().rename(
+                selection,
+                to: newName,
+                expectedIdentity: identity,
+                on: host
+            )
+        },
+        sidebarOrderDefaults: UserDefaults = .standard,
         sshHostProbeRunner: @escaping SSHHostProbeRunner = {
             host, connectionArguments, command in
             let output = AccountCommandRunner(
@@ -1539,6 +1555,8 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxRoutedSessionIdentityReader
         self.tmuxSessionIdentityReviewer = tmuxSessionIdentityReviewer
         self.tmuxSessionStyler = tmuxSessionStyler
+        self.tmuxSessionRenamer = tmuxSessionRenamer
+        self.sidebarOrderDefaults = sidebarOrderDefaults
         self.tmuxPresentationStyleProvider =
             tmuxPresentationStyleProvider
         self.activeDisplayCount = activeDisplayCount
@@ -11652,6 +11670,94 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         }
         refreshKwtInventory()
+    }
+
+    func renameTmuxSession(
+        _ tmuxSelection: WorkspaceTmuxSessionSelection,
+        to requestedName: String
+    ) async throws {
+        let newName = TmuxSessionName.normalized(requestedName)
+        guard newName != tmuxSelection.name else { return }
+        guard let hostSummary = snapshot.host(id: tmuxSelection.hostID),
+              let host = CommandHostResolver.resolve(hostSummary)
+        else {
+            throw TmuxSessionKillError.hostChanged(
+                session: tmuxSelection.name
+            )
+        }
+        guard WorkspaceSidebarModel.canRequestRename(
+            tmuxSelection,
+            in: snapshot
+        ),
+            let identity = Self.discoveredTmuxSessionIdentity(
+                tmuxSelection,
+                hostSummary: hostSummary
+            )
+        else {
+            throw TmuxSessionRenameError.sessionNotRunning(
+                host: host.displayName,
+                session: tmuxSelection.name
+            )
+        }
+        guard TmuxSessionName.isValid(newName) else {
+            throw TmuxSessionRenameError.commandFailed(
+                host: host.displayName,
+                session: tmuxSelection.name,
+                status: 1,
+                message: "Use 1–100 characters without periods, colons,"
+                    + " or line breaks"
+            )
+        }
+        guard !hostSummary.tmuxSessions.contains(where: {
+            $0.name == newName && $0.socketName == nil
+        }) else {
+            throw TmuxSessionRenameError.nameInUse(
+                host: host.displayName,
+                name: newName
+            )
+        }
+
+        try await tmuxSessionRenamer(tmuxSelection, newName, identity, host)
+
+        let renamedSelection = WorkspaceTmuxSessionSelection(
+            hostID: tmuxSelection.hostID,
+            name: newName,
+            tmuxAttachMode: tmuxSelection.tmuxAttachMode
+        )
+        // The tmux client stays attached across a rename, but Ghosthub keys
+        // presentations by session name. Replace the old presentation and
+        // reattach the active one by its unchanged identity.
+        let wasActive = activeBorrowedTmuxSelection.map {
+            Self.sameTmuxEndpoint($0, tmuxSelection)
+        } ?? false
+        if let retainedTarget = retainedTmuxPresentations.values.first(
+            where: { Self.sameTmuxEndpoint($0.selection, tmuxSelection) }
+        )?.selection {
+            invalidateBorrowedTmuxSession(retainedTarget)
+        }
+        if let index = tmuxSessionsByHost[tmuxSelection.hostID]?.firstIndex(
+            where: { $0.name == tmuxSelection.name && $0.socketName == nil }
+        ) {
+            tmuxSessionsByHost[tmuxSelection.hostID]?[index].name = newName
+        }
+        WorkspaceSidebarOrderStorage.renameTmuxSession(
+            hostID: tmuxSelection.hostID,
+            from: tmuxSelection.name,
+            to: newName,
+            in: sidebarOrderDefaults
+        )
+        applyInventoryOverlayIfNeeded()
+        updateWorkspaceInventoryState()
+        if wasActive,
+           let currentHostSummary = snapshot.host(id: tmuxSelection.hostID),
+           CommandHostResolver.resolve(currentHostSummary) == host {
+            presentTmuxSession(
+                renamedSelection,
+                launchMode: .attach,
+                expectedAttachIdentity: identity
+            )
+        }
+        fenceTmuxDiscoveryForCreationReconciliation(host: host)
     }
 
     func applyTheme(

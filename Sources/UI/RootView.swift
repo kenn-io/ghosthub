@@ -41,6 +41,7 @@ public struct RootView: View {
     @State private var newWorktreeProject: ProjectSummary?
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
+    @State private var renamingTmuxSession: WorkspaceTmuxSessionSelection?
     @State private var newHerdrSessionHost: HostSummary?
     @State private var newZellijSessionHost: HostSummary?
     @State private var herdrCreationTask: Task<Void, Never>?
@@ -217,6 +218,23 @@ public struct RootView: View {
                         try await importPullRequest(request)
                     },
                     onCancel: { newWorktreeProject = nil }
+                )
+            }
+            .sheet(item: $renamingTmuxSession) { session in
+                RenameTmuxSessionSheet(
+                    session: session,
+                    existingNames: Set(
+                        snapshot.host(id: session.hostID)?.tmuxSessions
+                            .filter { $0.socketName == nil }
+                            .map(\.name) ?? []
+                    ),
+                    onRename: { name in
+                        guard let rename = handlers.renameTmuxSession else {
+                            throw SessionRenameUnavailableError()
+                        }
+                        try await rename(session, name)
+                    },
+                    onDismiss: { renamingTmuxSession = nil }
                 )
             }
             .sheet(item: $newTmuxSessionHost) { host in
@@ -730,6 +748,7 @@ public struct RootView: View {
                 deactivateZellijSession()
             },
             onRequestKillTmuxSession: requestSessionKill,
+            onRequestRenameTmuxSession: requestSessionRename,
             onRequestKillZellijSession: requestZellijSessionKill,
             onRequestRemoveWorktree: requestWorktreeRemoval,
             isWorktreeChangesPollingEligible:
@@ -1242,6 +1261,15 @@ public struct RootView: View {
         else { return }
         handlers.cancelHerdrSessionLifecycle?(request)
         workspaceAlert = nil
+    }
+
+    private func requestSessionRename(
+        _ tmuxSession: WorkspaceTmuxSessionSelection
+    ) {
+        guard handlers.renameTmuxSession != nil,
+              WorkspaceSidebarModel.canRequestRename(tmuxSession, in: snapshot)
+        else { return }
+        renamingTmuxSession = tmuxSession
     }
 
     private func requestSessionKill(
@@ -2060,6 +2088,8 @@ public struct RootView: View {
             requestHerdrSessionLifecycle(herdrSession, action: .stop)
         case let .deleteHerdrSession(herdrSession):
             requestHerdrSessionLifecycle(herdrSession, action: .delete)
+        case let .renameTmuxSession(tmuxSession):
+            requestSessionRename(tmuxSession)
         case let .killTmuxSession(tmuxSession):
             requestSessionKill(tmuxSession)
         case let .killZellijSession(zellijSession):
@@ -2287,6 +2317,12 @@ public struct RootView: View {
 private struct SessionKillUnavailableError: LocalizedError {
     var errorDescription: String? {
         "Session termination is unavailable."
+    }
+}
+
+private struct SessionRenameUnavailableError: LocalizedError {
+    var errorDescription: String? {
+        "Session renaming is unavailable."
     }
 }
 

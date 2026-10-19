@@ -881,6 +881,57 @@ struct CommandPaletteModelTests {
         #expect(kill.action == .killTmuxSession(expected))
     }
 
+    @Test("rename is offered only for standalone sessions with a stable identity")
+    func renameCommandsTargetStandaloneSessions() {
+        func session(
+            _ name: String,
+            socketName: String? = nil,
+            identified: Bool = true
+        ) -> TmuxSessionSummary {
+            TmuxSessionSummary(
+                name: name,
+                socketName: socketName,
+                managed: false,
+                windows: [],
+                serverPID: identified ? "4242" : nil,
+                sessionID: identified ? "$\(name.count)" : nil,
+                createdAt: identified ? "1785190000" : nil
+            )
+        }
+        let host = HostSummary.fixture(tmuxSessions: [
+            session("desk"),
+            session("desk", socketName: "kwt"),
+            session("pending", identified: false),
+        ])
+        let windowsHost = HostSummary.fixture(
+            name: "Windows",
+            platform: .windows,
+            tmuxSessions: [session("remote")]
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [host, windowsHost],
+                projects: [],
+                worktrees: []
+            ),
+            selection: WorkspaceSelection(selectedHostID: host.id),
+            tmuxSessionVisibility: TmuxSessionVisibility(
+                hideKwtManagedSessions: false
+            )
+        )
+
+        let renamed = commands.compactMap {
+            item -> WorkspaceTmuxSessionSelection? in
+            guard case let .renameTmuxSession(session) = item.action else {
+                return nil
+            }
+            return session
+        }
+        #expect(renamed == [
+            WorkspaceTmuxSessionSelection(hostID: host.id, name: "desk"),
+        ])
+    }
+
     @Test("a kwt namesake retains its own command beside a default workspace")
     func namedSocketCommandsRemainDistinct() throws {
         let host = HostSummary.fixture(tmuxSessions: [.init(

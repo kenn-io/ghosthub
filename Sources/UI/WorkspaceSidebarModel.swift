@@ -40,6 +40,29 @@ public enum WorkspaceSidebarOrderStorage {
     ) -> String {
         defaults.string(forKey: zellijSessionKey) ?? ""
     }
+
+    /// Keeps a renamed tmux session at its saved sidebar position.
+    public static func renameTmuxSession(
+        hostID: UUID,
+        from oldName: String,
+        to newName: String,
+        in defaults: UserDefaults = .standard
+    ) {
+        var order = WorkspaceSidebarOrder(
+            rawValue: tmuxSessionRawValue(in: defaults)
+        )
+        guard order.replace(
+            WorkspaceSidebarModel.tmuxSessionOrderID(
+                hostID: hostID,
+                name: oldName
+            ),
+            with: WorkspaceSidebarModel.tmuxSessionOrderID(
+                hostID: hostID,
+                name: newName
+            )
+        ) else { return }
+        defaults.set(order.rawValue, forKey: tmuxSessionKey)
+    }
 }
 
 struct WorkspaceSidebarOrder: Equatable {
@@ -127,6 +150,15 @@ struct WorkspaceSidebarOrder: Equatable {
         while let replacement = replacements.next() {
             itemIDs.append(replacement)
         }
+    }
+
+    mutating func replace(_ itemID: String, with newItemID: String) -> Bool {
+        guard itemID != newItemID, itemIDs.contains(itemID) else {
+            return false
+        }
+        itemIDs.removeAll { $0 == newItemID }
+        itemIDs = itemIDs.map { $0 == itemID ? newItemID : $0 }
+        return true
     }
 
     mutating func prune(keeping knownItemIDs: Set<String>) -> Bool {
@@ -504,6 +536,27 @@ public enum WorkspaceSidebarModel {
             socketName: workspace.tmuxSocketName,
             tmuxAttachMode: workspace.tmuxAttachMode
         )
+    }
+
+    /// Rename applies only to standalone sessions on the default tmux
+    /// server. Kwt owns worktree and directory session names, and Windows
+    /// hosts have no POSIX shell for the identity-guarded command.
+    public static func canRequestRename(
+        _ selection: WorkspaceTmuxSessionSelection,
+        in snapshot: WorkspaceSnapshot
+    ) -> Bool {
+        guard selection.worktreeID == nil,
+              selection.directoryWorkspaceID == nil,
+              selection.socketName == nil,
+              selection.tmuxAttachMode != .protected,
+              let host = snapshot.host(id: selection.hostID),
+              host.platform != .windows
+        else { return false }
+        return host.tmuxSessions.contains {
+            $0.name == selection.name
+                && $0.socketName == nil
+                && $0.hasStableIdentity
+        }
     }
 
     public static func canRequestKill(

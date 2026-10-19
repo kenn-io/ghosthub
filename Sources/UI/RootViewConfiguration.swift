@@ -437,6 +437,8 @@ public struct InteractionHandlers {
             -> TmuxSessionKillRequest)?
     public let killTmuxSession:
         ((TmuxSessionKillRequest) async throws -> Void)?
+    public let renameTmuxSession:
+        ((WorkspaceTmuxSessionSelection, String) async throws -> Void)?
     public let applyTmuxSessionTheme:
         ((WorkspaceTmuxSessionSelection) async throws -> Void)?
     public let createTmuxSession:
@@ -532,6 +534,8 @@ public struct InteractionHandlers {
             -> TmuxSessionKillRequest)? = nil,
         killTmuxSession:
         ((TmuxSessionKillRequest) async throws -> Void)? = nil,
+        renameTmuxSession:
+        ((WorkspaceTmuxSessionSelection, String) async throws -> Void)? = nil,
         applyTmuxSessionTheme:
         ((WorkspaceTmuxSessionSelection) async throws -> Void)? = nil,
         createTmuxSession:
@@ -608,6 +612,7 @@ public struct InteractionHandlers {
         self.cancelHerdrSessionLifecycle = cancelHerdrSessionLifecycle
         self.prepareTmuxSessionKill = prepareTmuxSessionKill
         self.killTmuxSession = killTmuxSession
+        self.renameTmuxSession = renameTmuxSession
         self.applyTmuxSessionTheme = applyTmuxSessionTheme
         self.createTmuxSession = createTmuxSession
         self.currentWorkspaceSnapshot = currentWorkspaceSnapshot
