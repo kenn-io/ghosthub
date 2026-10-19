@@ -20,6 +20,7 @@ assets=(
   guide-find.png
   guide-session-previews.png
   guide-session-activity.png
+  guide-session-rename.png
   guide-hosts.png
   guide-keyboard.png
   guide-privacy.png

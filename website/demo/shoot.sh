@@ -187,6 +187,22 @@ capture_find() {
   sleep 1
 }
 
+capture_session_rename() {
+  palette "scratch"
+  sleep 3
+  palette "Rename tmux session: scratch" true sheet
+  sleep 2
+  capture_state guide-session-rename.png
+  dismiss_sheet
+}
+
+if [[ "${GHOSTHUB_DEMO_SESSION_RENAME_ONLY:-}" == "1" ]]; then
+  echo "==> guide: rename a standalone session"
+  capture_session_rename
+  echo "captured session-rename website asset -> $out_dir"
+  exit 0
+fi
+
 if [[ "${GHOSTHUB_DEMO_FIND_ONLY:-}" == "1" ]]; then
   echo "==> guide: active-pane Find"
   capture_find
@@ -479,6 +495,9 @@ echo "==> guide: Quick Launch"
 palette "reconnect" false
 capture_state guide-quick-launch.png
 dismiss_sheet
+
+echo "==> guide: rename a standalone session"
+capture_session_rename
 
 echo "==> guide: appearance settings"
 palette "Open Appearance Settings" true sheet
