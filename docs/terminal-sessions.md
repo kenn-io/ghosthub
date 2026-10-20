@@ -147,14 +147,21 @@ closing that exact current selection and navigating away only if it is the
 killed target.
 
 Rename Session is offered only for standalone sessions on the default tmux
-server of a macOS or Linux host, because kwt owns worktree and directory
-session names. It uses the identity discovery recorded for the row and one tmux
-conditional that runs `rename-session` only when the server PID, `session_id`,
-and `session_created` still match. The tmux client stays attached across the
-rename, but presentations are keyed by session name. After a successful
-rename, Ghosthub therefore replaces the old presentation, and if it was active,
-reattaches under the new name with the same identity guard. The saved sidebar
-position moves to the new name.
+server of a macOS or Linux host. Kwt derives worktree and directory session
+names from the branch and path instead of storing them, so a session that a
+kwt worktree or directory workspace owns is never renamable, including when
+kwt-managed sessions are shown as plain rows. Rename uses the identity
+discovery recorded for the row and one tmux conditional that runs
+`rename-session` only when the server PID, `session_id`, and `session_created`
+still match.
+
+The tmux client stays attached across the rename. Presentations are keyed by
+session name, so every window that shows a session with the same identity moves
+its presentation to the new name and keeps the running terminal. A presentation
+that is still connecting, reconnecting, or resizing is replaced instead, and an
+active one reattaches under the new name with the same identity guard. A closed
+presentation that an ended session left under the new name is discarded first.
+The saved sidebar position moves to the new name.
 
 Ghosthub applies the selected Tmux Theme when it creates a new bare tmux
 session. A built-in palette supplies its configured colors. Follow ghostty.conf
@@ -598,7 +605,8 @@ default and other named sockets retain the account's override. On Windows,
 those phases use encoded
 PowerShell commands within the same OpenSSH account environment. Unbound
 discovered sessions remain attach-only.
-Ghosthub does not expose rename, resize, or window operations. On an attached
+Ghosthub does not expose window rename, resize, or other tmux window
+operations. On an attached
 tmux or capable Herdr terminal, Cmd-D and Cmd-Shift-D request Ghostty-style
 split-right and split-down operations; the File menu exposes the same actions
 and shortcuts. The Herdr routing contract is documented above. For tmux,
