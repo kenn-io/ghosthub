@@ -7,12 +7,13 @@ import Testing
 
 extension WorkspaceTmuxDiscoveryTests {
     @MainActor
-    @Test("renaming the open session reattaches it under the new name")
-    func renameReattachesOpenSession() async throws {
+    @Test("renaming the open session keeps its terminal attached")
+    func renameKeepsOpenSessionAttached() async throws {
         let environment = try setupStandardEnvironment()
         let hostID = environment.host.id
-        let names = LockedValue(["anchor", "desk"])
+        let names = LockedValue(["anchor": "$1", "desk": "$2"])
         let renames = LockedValue<[(String, String, TmuxSessionIdentity)]>([])
+        let store = SceneTmuxSurfaceStoreStub()
         let defaults = try #require(UserDefaults(
             suiteName: "ghosthub-rename-\(UUID().uuidString)"
         ))
@@ -33,25 +34,20 @@ extension WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: hostID,
             snapshot: environment.snapshot,
-            tmuxSessionDiscovery: { _ in
-                .success(names.load().map { name in
-                    DiscoveredTmuxSession(
-                        name: name,
-                        windowCount: 1,
-                        serverPID: "101",
-                        sessionID: name == "anchor" ? "$1" : "$2",
-                        createdAt: "1000",
-                        managed: false
-                    )
-                })
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
             },
+            tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
             tmuxSessionRenamer: { selection, newName, identity, _ in
                 renames.withLock {
                     $0.append((selection.name, newName, identity))
                 }
-                names.withLock { names in
-                    names = names.map { $0 == selection.name ? newName : $0 }
-                }
+                names.withLock { renameFixtureSession(
+                    &$0,
+                    from: selection.name,
+                    to: newName
+                ) }
             },
             sidebarOrderDefaults: defaults
         )
@@ -61,7 +57,9 @@ extension WorkspaceTmuxDiscoveryTests {
         }
         let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
         model.openBorrowedTmuxSession(desk)
-        #expect(model.activeBorrowedTmuxSelection?.name == "desk")
+        await connectActiveRenameSession(model, store: store)
+        let handle = try #require(model.retainedBorrowedTmuxHandle(for: desk))
+        let surfaceRequests = store.requestCount
 
         try await model.renameTmuxSession(desk, to: "  work  ")
 
@@ -69,19 +67,20 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(recorded.count == 1)
         #expect(recorded.first?.0 == "desk")
         #expect(recorded.first?.1 == "work")
-        #expect(recorded.first?.2 == TmuxSessionIdentity(
-            serverPID: "101",
-            sessionID: "$2",
-            createdAt: "1000"
-        ))
+        #expect(recorded.first?.2 == renameFixtureIdentity("$2"))
         #expect(
             Set(model.snapshot.hosts[0].tmuxSessions.map(\.name))
                 == ["anchor", "work"]
         )
         let work = WorkspaceTmuxSessionSelection(hostID: hostID, name: "work")
+        let renamed = try #require(model.retainedBorrowedTmuxHandle(for: work))
         #expect(model.activeBorrowedTmuxSelection == work)
         #expect(model.retainedBorrowedTmuxHandle(for: desk) == nil)
-        #expect(model.retainedBorrowedTmuxHandle(for: work) != nil)
+        #expect(renamed.id == handle.id)
+        #expect(renamed.surfaceID == handle.surfaceID)
+        #expect(store.removedKeys.isEmpty)
+        #expect(store.requestCount == surfaceRequests)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
         #expect(
             WorkspaceSidebarOrderStorage.tmuxSessionRawValue(in: defaults)
                 .split(separator: "\n").map(String.init) == [
@@ -95,7 +94,126 @@ extension WorkspaceTmuxDiscoveryTests {
                     ),
                 ]
         )
+
+        // The terminal's close callback still reaches the renamed session.
+        store.surface.closeObservers[handle.id]?(false, 1)
+        await waitUntilMainActor {
+            !model.activeBorrowedTmuxSessionIsConnected
+        }
         await model.shutdown()
+    }
+
+    @MainActor
+    @Test("renaming onto an ended session's name drops its closed terminal")
+    func renameOntoEndedSessionName() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["build": "$3", "desk": "$2"])
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
+            tmuxSessionRenamer: { selection, newName, _, _ in
+                names.withLock { renameFixtureSession(
+                    &$0,
+                    from: selection.name,
+                    to: newName
+                ) }
+            }
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.count == 2
+        }
+        let build = WorkspaceTmuxSessionSelection(hostID: hostID, name: "build")
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        model.openBorrowedTmuxSession(build)
+        await connectActiveRenameSession(model, store: store)
+        let ended = try #require(model.retainedBorrowedTmuxHandle(for: build))
+        model.openBorrowedTmuxSession(desk)
+        await connectActiveRenameSession(model, store: store)
+        let handle = try #require(model.retainedBorrowedTmuxHandle(for: desk))
+
+        store.surface.closeObservers[ended.id]?(false, 1)
+        names.withLock { $0["build"] = nil }
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.map(\.name) == ["desk"]
+        }
+
+        try await model.renameTmuxSession(desk, to: "build")
+
+        let renamed = try #require(model.retainedBorrowedTmuxHandle(for: build))
+        #expect(renamed.id == handle.id)
+        #expect(model.activeBorrowedTmuxSelection == build)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a rename moves the session in every window that shows it")
+    func renameReachesOtherWindows() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["desk": "$2"])
+        let coordinator = TmuxSessionRenameCoordinator()
+        var models: [WorkspaceSceneModel] = []
+        var stores: [SceneTmuxSurfaceStoreStub] = []
+        for _ in 0 ..< 2 {
+            let store = SceneTmuxSurfaceStoreStub()
+            let model = try makeModel(
+                database: environment.database,
+                localHostID: hostID,
+                snapshot: environment.snapshot,
+                nativeTmuxSurfaceStore: store,
+                nativeTmuxPathProvider: {
+                    successfulTmuxResolution("/usr/bin/tmux")
+                },
+                tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
+                tmuxSessionRenamer: { selection, newName, _, _ in
+                    names.withLock { renameFixtureSession(
+                        &$0,
+                        from: selection.name,
+                        to: newName
+                    ) }
+                },
+                tmuxSessionRenameCoordinator: coordinator
+            )
+            models.append(model)
+            stores.append(store)
+        }
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        var handles: [BorrowedTmuxSessionHandle] = []
+        for (model, store) in zip(models, stores) {
+            model.startTmuxSessionDiscovery()
+            await waitUntilMainActor {
+                model.snapshot.hosts[0].tmuxSessions.count == 1
+            }
+            model.openBorrowedTmuxSession(desk)
+            await connectActiveRenameSession(model, store: store)
+            try handles.append(#require(model.retainedBorrowedTmuxHandle(
+                for: desk
+            )))
+        }
+
+        try await models[0].renameTmuxSession(desk, to: "work")
+
+        let work = WorkspaceTmuxSessionSelection(hostID: hostID, name: "work")
+        let other = models[1]
+        #expect(other.retainedBorrowedTmuxHandle(for: work)?.id == handles[1].id)
+        #expect(other.retainedBorrowedTmuxHandle(for: desk) == nil)
+        #expect(other.activeBorrowedTmuxSelection == work)
+        #expect(other.snapshot.hosts[0].tmuxSessions.map(\.name) == ["work"])
+        #expect(stores[1].removedKeys.isEmpty)
+        for model in models {
+            await model.shutdown()
+        }
     }
 
     @MainActor
@@ -166,5 +284,45 @@ extension WorkspaceTmuxDiscoveryTests {
                 == ["anchor", "desk", "managed"]
         )
         await model.shutdown()
+    }
+}
+
+private func renameFixture(
+    _ sessions: LockedValue<[String: String]>
+) -> [DiscoveredTmuxSession] {
+    sessions.load().sorted { $0.key < $1.key }.map { name, sessionID in
+        DiscoveredTmuxSession(
+            name: name,
+            windowCount: 1,
+            serverPID: "101",
+            sessionID: sessionID,
+            createdAt: "1000",
+            managed: false
+        )
+    }
+}
+
+/// Tmux keeps the session id across a rename.
+private func renameFixtureSession(
+    _ sessions: inout [String: String],
+    from oldName: String,
+    to newName: String
+) {
+    sessions[newName] = sessions.removeValue(forKey: oldName)
+}
+
+private func renameFixtureIdentity(_ sessionID: String) -> TmuxSessionIdentity {
+    TmuxSessionIdentity(serverPID: "101", sessionID: sessionID, createdAt: "1000")
+}
+
+@MainActor
+private func connectActiveRenameSession(
+    _ model: WorkspaceSceneModel,
+    store: SceneTmuxSurfaceStoreStub
+) async {
+    await waitUntilMainActor {
+        model.prepareActiveBorrowedTmuxSurface()
+        return store.requestCount > 0
+            && model.activeBorrowedTmuxSessionIsConnected
     }
 }

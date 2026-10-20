@@ -594,6 +594,49 @@ struct WorkspaceSidebarModelTests {
         )
     }
 
+    @Test("rename is refused for sessions kwt owns, even as plain rows")
+    func renameEligibilityExcludesKwtSessions() {
+        let hostID = UUID()
+        var worktree = WorktreeSummary.fixture(hostID: hostID)
+        worktree.tmuxSessionName = "desk"
+        worktree.tmuxSocketName = nil
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: hostID,
+            name: "notes",
+            path: "/workspaces/notes",
+            tmuxSessionName: "notes",
+            sessionLive: true
+        )
+        let names = ["desk", "notes", "kwt-wt-ghosthub-main-abc", "scratch"]
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(
+                id: hostID,
+                tmuxSessions: names.enumerated().map { index, name in
+                    TmuxSessionSummary(
+                        name: name,
+                        managed: false,
+                        windows: [],
+                        serverPID: "4242",
+                        sessionID: "$\(index)",
+                        createdAt: "1785190000"
+                    )
+                }
+            )],
+            projects: [],
+            worktrees: [worktree],
+            directoryWorkspaces: [directory]
+        )
+
+        let renamable = names.filter {
+            WorkspaceSidebarModel.canRequestRename(
+                WorkspaceTmuxSessionSelection(hostID: hostID, name: $0),
+                in: snapshot
+            )
+        }
+        #expect(renamable == ["scratch"])
+    }
+
     @Test("kill eligibility requires discovery or an active attachment")
     func runningSessionEvidence() {
         let hostID = UUID()

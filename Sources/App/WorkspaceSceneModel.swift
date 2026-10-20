@@ -903,6 +903,7 @@ final class WorkspaceSceneModel: ObservableObject {
         TmuxSessionIdentityReviewReading
     private let tmuxSessionStyler: TmuxSessionStyling
     private let tmuxSessionRenamer: TmuxSessionRenaming
+    private let tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator
     private let sidebarOrderDefaults: UserDefaults
     private let tmuxPresentationStyleProvider:
         (UInt?) -> TmuxPresentationStyle?
@@ -933,6 +934,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var worktreeMutationCancellable: AnyCancellable?
     private var herdrLifecycleCancellable: AnyCancellable?
     private var zellijSessionKillCancellable: AnyCancellable?
+    private var tmuxSessionRenameCancellable: AnyCancellable?
     private var activityControllerBacking: ActivityMonitoringController?
     var activityController: ActivityMonitoringController {
         guard let activityControllerBacking else {
@@ -1381,6 +1383,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
+        tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator = .shared,
         sidebarOrderDefaults: UserDefaults = .standard,
         sshHostProbeRunner: @escaping SSHHostProbeRunner = {
             host, connectionArguments, command in
@@ -1556,6 +1559,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.tmuxSessionIdentityReviewer = tmuxSessionIdentityReviewer
         self.tmuxSessionStyler = tmuxSessionStyler
         self.tmuxSessionRenamer = tmuxSessionRenamer
+        self.tmuxSessionRenameCoordinator = tmuxSessionRenameCoordinator
         self.sidebarOrderDefaults = sidebarOrderDefaults
         self.tmuxPresentationStyleProvider =
             tmuxPresentationStyleProvider
@@ -1843,6 +1847,10 @@ final class WorkspaceSceneModel: ObservableObject {
             [weak self] event in
             self?.zellijSessionKillEvent(event)
         }
+        tmuxSessionRenameCancellable = tmuxSessionRenameCoordinator.renames
+            .sink { [weak self] rename in
+                self?.applyTmuxSessionRename(rename)
+            }
         let quarantinedScopes = Set(
             worktreeMutationCoordinator.quarantinedProjectRemovals.keys
         )
@@ -1931,6 +1939,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         herdrLifecycleCancellable?.cancel()
         zellijSessionKillCancellable?.cancel()
+        tmuxSessionRenameCancellable?.cancel()
         herdrDiscoveryTask?.cancel()
         herdrShortcutNavigationTask?.cancel()
         zellijDiscoveryTask?.cancel()
@@ -2551,6 +2560,7 @@ final class WorkspaceSceneModel: ObservableObject {
         herdrLifecycleAuthorities.removeAll()
         herdrLifecycleCancellable?.cancel()
         zellijSessionKillCancellable?.cancel()
+        tmuxSessionRenameCancellable?.cancel()
         herdrDiscoveryTask?.cancel()
         zellijDiscoveryTask?.cancel()
         zellijCreationDiscoveryRetryTask?.cancel()
@@ -11719,45 +11729,133 @@ final class WorkspaceSceneModel: ObservableObject {
 
         try await tmuxSessionRenamer(tmuxSelection, newName, identity, host)
 
-        let renamedSelection = WorkspaceTmuxSessionSelection(
-            hostID: tmuxSelection.hostID,
-            name: newName,
-            tmuxAttachMode: tmuxSelection.tmuxAttachMode
-        )
-        // The tmux client stays attached across a rename, but Ghosthub keys
-        // presentations by session name. Replace the old presentation and
-        // reattach the active one by its unchanged identity.
-        let wasActive = activeBorrowedTmuxSelection.map {
-            Self.sameTmuxEndpoint($0, tmuxSelection)
-        } ?? false
-        if let retainedTarget = retainedTmuxPresentations.values.first(
-            where: { Self.sameTmuxEndpoint($0.selection, tmuxSelection) }
-        )?.selection {
-            invalidateBorrowedTmuxSession(retainedTarget)
-        }
-        if let index = tmuxSessionsByHost[tmuxSelection.hostID]?.firstIndex(
-            where: { $0.name == tmuxSelection.name && $0.socketName == nil }
-        ) {
-            tmuxSessionsByHost[tmuxSelection.hostID]?[index].name = newName
-        }
         WorkspaceSidebarOrderStorage.renameTmuxSession(
             hostID: tmuxSelection.hostID,
             from: tmuxSelection.name,
             to: newName,
             in: sidebarOrderDefaults
         )
+        tmuxSessionRenameCoordinator.didRename(.init(
+            hostID: tmuxSelection.hostID,
+            host: host,
+            oldName: tmuxSelection.name,
+            newName: newName,
+            identity: identity
+        ))
+        fenceTmuxDiscoveryForCreationReconciliation(host: host)
+    }
+
+    /// Every scene, including the one that ran `rename-session`, moves its
+    /// view of the session to the new name. Matching the identity keeps a
+    /// scene from renaming a different session that reused the old name.
+    private func applyTmuxSessionRename(
+        _ rename: TmuxSessionRenameCoordinator.Rename
+    ) {
+        guard let hostSummary = snapshot.host(id: rename.hostID),
+              CommandHostResolver.resolve(hostSummary) == rename.host
+        else { return }
+        let oldSelection = WorkspaceTmuxSessionSelection(
+            hostID: rename.hostID,
+            name: rename.oldName
+        )
+        let renamedSelection = WorkspaceTmuxSessionSelection(
+            hostID: rename.hostID,
+            name: rename.newName
+        )
+        // Tmux accepted the new name, so anything retained under it belongs
+        // to an ended session and must not be reused.
+        if let stale = retainedTmuxPresentation(for: renamedSelection) {
+            invalidateBorrowedTmuxSession(stale.selection)
+        }
+        let discoveredIdentity = Self.discoveredTmuxSessionIdentity(
+            oldSelection,
+            hostSummary: hostSummary
+        )
+        if discoveredIdentity == rename.identity,
+           let index = tmuxSessionsByHost[rename.hostID]?.firstIndex(where: {
+               $0.name == rename.oldName && $0.socketName == nil
+           }) {
+            tmuxSessionsByHost[rename.hostID]?[index].name = rename.newName
+        }
+        if let presentation = retainedTmuxPresentation(for: oldSelection),
+           (presentation.expectedPreviewIdentity
+               ?? nativeTmuxSessionCoordinator.attachedSessionIdentity(
+                   presentation.handle
+               )
+               ?? discoveredIdentity) == rename.identity,
+           !rekeyTmuxPresentation(presentation, to: renamedSelection) {
+            // A presentation that is still connecting or resizing would race
+            // the move, so it reattaches to the same session instead.
+            let wasActive = activeBorrowedTmuxHandle == presentation.handle
+            invalidateBorrowedTmuxSession(presentation.selection)
+            if wasActive {
+                presentTmuxSession(
+                    renamedSelection,
+                    launchMode: .attach,
+                    expectedAttachIdentity: rename.identity
+                )
+            }
+        }
         applyInventoryOverlayIfNeeded()
         updateWorkspaceInventoryState()
-        if wasActive,
-           let currentHostSummary = snapshot.host(id: tmuxSelection.hostID),
-           CommandHostResolver.resolve(currentHostSummary) == host {
-            presentTmuxSession(
-                renamedSelection,
-                launchMode: .attach,
-                expectedAttachIdentity: identity
-            )
+    }
+
+    private func rekeyTmuxPresentation(
+        _ presentation: RetainedTmuxPresentation,
+        to renamedSelection: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        let oldKey = TmuxPresentationKey(presentation.selection)
+        let newKey = TmuxPresentationKey(renamedSelection)
+        let handle = presentation.handle
+        guard retainedTmuxPresentations[oldKey] === presentation,
+              retainedTmuxPresentations[newKey] == nil,
+              !presentation.reconnectSupervisor.isRunning,
+              presentation.establishmentConfirmationTask == nil,
+              !presentation.previewPromotionIsPending,
+              presentation.sizingTransitionTask == nil,
+              presentation.pendingSizingActivationNavigationRevision == nil,
+              !presentation.hiddenSizingReconnectPending,
+              !presentation.hiddenSizingProvisioningPending,
+              pendingCreatedTmuxSessions[handle.id] == nil,
+              !pendingAlwaysLiveTmuxSurfaceHandleIDs.contains(handle.id),
+              let renamedHandle = nativeTmuxSessionCoordinator.rename(
+                  handle,
+                  to: renamedSelection.name
+              )
+        else { return false }
+        let wasActive = activeBorrowedTmuxHandle == handle
+        objectWillChange.send()
+        tmuxSessionPreviewCoordinator.remove(
+            oldKey.previewKey,
+            reason: .replacement
+        )
+        retainedTmuxPresentations.removeValue(forKey: oldKey)
+        presentation.selection = renamedSelection
+        presentation.handle = renamedHandle
+        presentation.reconnectContext?.selection = renamedSelection
+        retainedTmuxPresentations[newKey] = presentation
+        retainedTmuxPresentationKeysByHandle[handle.id] = newKey
+        if alwaysLiveManagedTmuxPresentationKeys.remove(oldKey) != nil {
+            alwaysLiveManagedTmuxPresentationKeys.insert(newKey)
         }
-        fenceTmuxDiscoveryForCreationReconciliation(host: host)
+        if let identity = alwaysLiveIneligibleTmuxPresentationIdentities
+            .removeValue(forKey: oldKey) {
+            alwaysLiveIneligibleTmuxPresentationIdentities[newKey] = identity
+        }
+        if wasActive {
+            activeBorrowedTmuxSelection = renamedSelection
+            activeBorrowedTmuxHandle = renamedHandle
+        }
+        registerTmuxPreview(
+            presentation,
+            identityIsResolved: presentation.verifiedPreviewIdentity != nil
+        )
+        readTmuxPreviewIdentityIfNeeded(presentation)
+        refreshConnectedBorrowedTmuxSessionIDs()
+        if borrowedTmuxConnectionStates[handle.id] == .connected {
+            warmConnectedTmuxSession(handle: renamedHandle)
+        }
+        return true
     }
 
     func applyTheme(

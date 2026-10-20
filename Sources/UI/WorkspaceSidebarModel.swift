@@ -540,7 +540,9 @@ public enum WorkspaceSidebarModel {
 
     /// Rename applies only to standalone sessions on the default tmux
     /// server. Kwt owns worktree and directory session names, and Windows
-    /// hosts have no POSIX shell for the identity-guarded command.
+    /// hosts have no POSIX shell for the identity-guarded command. Kwt
+    /// derives its session names rather than storing them, so a renamed
+    /// kwt session would be orphaned even when it is shown as a plain row.
     public static func canRequestRename(
         _ selection: WorkspaceTmuxSessionSelection,
         in snapshot: WorkspaceSnapshot
@@ -549,9 +551,21 @@ public enum WorkspaceSidebarModel {
               selection.directoryWorkspaceID == nil,
               selection.socketName == nil,
               selection.tmuxAttachMode != .protected,
+              !selection.name.hasPrefix("kwt-wt-"),
+              !selection.name.hasPrefix("kwt-workspace-"),
               let host = snapshot.host(id: selection.hostID),
               host.platform != .windows
         else { return false }
+        let ownedByKwt = snapshot.worktrees.contains {
+            $0.hostID == host.id
+                && $0.tmuxSessionName == selection.name
+                && $0.tmuxSocketName == nil
+        } || snapshot.directoryWorkspaces.contains {
+            $0.hostID == host.id
+                && $0.tmuxSessionName == selection.name
+                && $0.tmuxSocketName == nil
+        }
+        guard !ownedByKwt else { return false }
         return host.tmuxSessions.contains {
             $0.name == selection.name
                 && $0.socketName == nil

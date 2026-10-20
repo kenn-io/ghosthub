@@ -632,10 +632,54 @@ final class NativeTmuxSessionCoordinator {
     }
 
     func detach(_ handle: BorrowedTmuxSessionHandle) {
+        guard let handle = currentHandle(handle) else { return }
         let key = sessionKey(handle)
-        guard handlesByKey[key] == handle else { return }
         handlesByKey.removeValue(forKey: key)
         removeHandle(handle, for: key, keyAlreadyRemoved: true)
+    }
+
+    /// Moves a launched attachment to its session's new name. The tmux
+    /// client stays attached across `rename-session`, so the surface keeps
+    /// running. Returns nil while the attachment is still provisioning or
+    /// resizing; the caller replaces the attachment instead.
+    func rename(
+        _ handle: BorrowedTmuxSessionHandle,
+        to name: String
+    ) -> BorrowedTmuxSessionHandle? {
+        let oldKey = sessionKey(handle)
+        var renamed = handle
+        renamed.name = name
+        let newKey = sessionKey(renamed)
+        guard !isShuttingDown,
+              handlesByKey[oldKey] == handle,
+              handlesByKey[newKey] == nil,
+              !provisioningHandles.contains(handle.id),
+              pendingSizingByHandle[handle.id] == nil,
+              sizingTransitionTasks[handle.id]?.isEmpty ?? true
+        else { return nil }
+        handlesByKey.removeValue(forKey: oldKey)
+        handlesByKey[newKey] = renamed
+        // Queued splits and an in-flight client lookup target the old name.
+        paneSplitClientBindings.removeValue(forKey: handle.id)?.task.cancel()
+        paneSplitWorkers.removeValue(forKey: handle.id)?.task.cancel()
+        paneSplitRequests.removeValue(forKey: handle.id)
+        // The surface callbacks captured the old name; reinstall them.
+        if hasLaunched(renamed),
+           let surface = terminalCoordinator.paneSurfaceIfPresent(
+               for: surfaceKey(renamed)
+           ) {
+            surface.terminalFindController.close()
+            surface.terminalFindController = .unavailable
+            _ = self.surface(handle: renamed)
+        }
+        return renamed
+    }
+
+    /// Callbacks can outlive a rename, so they resolve the handle by id.
+    private func currentHandle(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> BorrowedTmuxSessionHandle? {
+        handlesByKey.values.first { $0.id == handle.id }
     }
 
     @discardableResult
@@ -1901,7 +1945,7 @@ final class NativeTmuxSessionCoordinator {
     func requestAttachedSessionIdentity(
         _ handle: BorrowedTmuxSessionHandle
     ) {
-        guard handlesByKey[sessionKey(handle)] == handle else { return }
+        guard let handle = currentHandle(handle) else { return }
         previewIdentityRetryHandles.insert(handle.id)
         guard let attachment = attachments[handle.id],
               launchedAttachmentIDs[handle.id] == attachment.id
@@ -1962,9 +2006,9 @@ final class NativeTmuxSessionCoordinator {
         requiredLaunchFailureID: UUID? = nil
     ) {
         Task { [weak self] in
-            guard let self, !isShuttingDown else { return }
-            let key = sessionKey(handle)
-            guard handlesByKey[key] == handle else { return }
+            guard let self, !isShuttingDown,
+                  let handle = currentHandle(handle)
+            else { return }
             if let requiredAttachmentID {
                 guard attachments[handle.id]?.id == requiredAttachmentID,
                       launchedAttachmentIDs[handle.id]
@@ -1987,8 +2031,8 @@ final class NativeTmuxSessionCoordinator {
         processAlive: Bool,
         childExitCode: UInt32?
     ) {
+        guard let handle = currentHandle(handle) else { return }
         let key = sessionKey(handle)
-        guard handlesByKey[key] == handle else { return }
         let attachment = attachments.removeValue(forKey: handle.id)
         let launchedAttachmentID = launchedAttachmentIDs.removeValue(
             forKey: handle.id
