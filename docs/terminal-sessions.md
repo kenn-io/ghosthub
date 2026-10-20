@@ -157,15 +157,25 @@ discovery recorded for the row and one tmux conditional that runs
 `rename-session` only when the server PID, `session_id`, and `session_created`
 still match.
 
-The tmux client stays attached across the rename. Presentations are keyed by
+The tmux client stays attached across the rename, because tmux keeps the
+`session_id` and the client attaches by that ID. Presentations are keyed by
 session name, so every window that shows a session with the same identity moves
 its presentation to the new name and keeps the running terminal. A rename never
 detaches a client, because detaching the last one can end the session. The
 window that requests the rename refuses it while its own presentation of that
 session is still connecting, reconnecting, or resizing. Any other window whose
-presentation is in that state keeps it under the old name, as it would after a
-rename made outside Ghosthub. A closed presentation that an ended session left
-under the new name is discarded first.
+presentation is in that state keeps it under the old name.
+
+Always Live discovery matches sessions by identity before it closes a client
+whose name is no longer listed. A client whose session is listed under another
+name moves to that name, so a refresh that lands before the rename notice, or a
+rename made in tmux itself, keeps the terminal open. A client that is still
+connecting or resizing waits under its old name, and Always Live does not open a
+second client for the new name meanwhile. If a window already holds a client
+for the same session under the new name, it keeps the active one, and closes the
+other only after the one it keeps is connected. A presentation under the new
+name is discarded only when its attachment closed or tmux reports a different
+session for it.
 The saved sidebar position moves to the new name.
 
 Ghosthub applies the selected Tmux Theme when it creates a new bare tmux
