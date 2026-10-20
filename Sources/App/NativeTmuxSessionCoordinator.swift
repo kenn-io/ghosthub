@@ -653,9 +653,7 @@ final class NativeTmuxSessionCoordinator {
         guard !isShuttingDown,
               handlesByKey[oldKey] == handle,
               handlesByKey[newKey] == nil,
-              !provisioningHandles.contains(handle.id),
-              pendingSizingByHandle[handle.id] == nil,
-              sizingTransitionTasks[handle.id]?.isEmpty ?? true
+              isSettled(handle)
         else { return nil }
         handlesByKey.removeValue(forKey: oldKey)
         handlesByKey[newKey] = renamed
@@ -673,6 +671,14 @@ final class NativeTmuxSessionCoordinator {
             _ = self.surface(handle: renamed)
         }
         return renamed
+    }
+
+    /// A handle that is attaching or resizing has work in flight that
+    /// targets its current name.
+    func isSettled(_ handle: BorrowedTmuxSessionHandle) -> Bool {
+        !provisioningHandles.contains(handle.id)
+            && pendingSizingByHandle[handle.id] == nil
+            && sizingTransitionTasks[handle.id]?.isEmpty ?? true
     }
 
     /// Callbacks can outlive a rename, so they resolve the handle by id.

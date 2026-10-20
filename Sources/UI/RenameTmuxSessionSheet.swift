@@ -46,6 +46,9 @@ struct RenameTmuxSessionSheet: View {
         if !TmuxSessionName.isValid(normalizedName) {
             return "Use 1–100 characters without periods, colons, or line breaks."
         }
+        if WorkspaceSidebarModel.isKwtTmuxSessionName(normalizedName) {
+            return "Names starting with kwt-wt- or kwt-workspace- belong to kwt."
+        }
         return nil
     }
 
@@ -54,6 +57,7 @@ struct RenameTmuxSessionSheet: View {
             && !isUnchanged
             && TmuxSessionName.isValid(normalizedName)
             && !existingNames.contains(normalizedName)
+            && !WorkspaceSidebarModel.isKwtTmuxSessionName(normalizedName)
     }
 
     var body: some View {

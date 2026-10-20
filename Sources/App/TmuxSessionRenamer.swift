@@ -7,6 +7,8 @@ enum TmuxSessionRenameError: Error, Equatable, LocalizedError {
     case unsupportedHost(host: String, session: String)
     case sessionNotRunning(host: String, session: String)
     case nameInUse(host: String, name: String)
+    case nameOwnedByKwt(host: String, name: String)
+    case sessionConnecting(session: String)
     case sessionChanged(host: String, session: String)
     case commandFailed(
         host: String,
@@ -25,6 +27,11 @@ enum TmuxSessionRenameError: Error, Equatable, LocalizedError {
                 + " \(host). Refresh the host and try again."
         case let .nameInUse(host, name):
             return "A tmux session named “\(name)” already exists on \(host)."
+        case let .nameOwnedByKwt(host, name):
+            return "kwt owns the session name “\(name)” on \(host). Names"
+                + " starting with kwt-wt- or kwt-workspace- belong to kwt."
+        case .sessionConnecting:
+            return "The session is still connecting. Try again in a moment."
         case let .sessionChanged(host, session):
             return "Session “\(session)” on \(host) was replaced or removed"
                 + " before it could be renamed. Refresh the host and try again."

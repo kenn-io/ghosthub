@@ -11726,6 +11726,24 @@ final class WorkspaceSceneModel: ObservableObject {
                 name: newName
             )
         }
+        guard !WorkspaceSidebarModel.kwtOwnsTmuxSessionName(
+            newName,
+            hostID: hostSummary.id,
+            in: snapshot
+        ) else {
+            throw TmuxSessionRenameError.nameOwnedByKwt(
+                host: host.displayName,
+                name: newName
+            )
+        }
+        // A terminal that is still attaching cannot move to the new name, and
+        // renaming under it would leave it attached to a name that is gone.
+        if let presentation = retainedTmuxPresentation(for: tmuxSelection),
+           !tmuxPresentationCanMove(presentation) {
+            throw TmuxSessionRenameError.sessionConnecting(
+                session: tmuxSelection.name
+            )
+        }
 
         try await tmuxSessionRenamer(tmuxSelection, newName, identity, host)
 
@@ -11777,29 +11795,40 @@ final class WorkspaceSceneModel: ObservableObject {
            }) {
             tmuxSessionsByHost[rename.hostID]?[index].name = rename.newName
         }
+        // A presentation that is still connecting or resizing keeps its old
+        // name, as it would after a rename made outside Ghosthub. A rename
+        // never detaches, because detaching the last client can end the
+        // session.
         if let presentation = retainedTmuxPresentation(for: oldSelection),
            (presentation.expectedPreviewIdentity
                ?? nativeTmuxSessionCoordinator.attachedSessionIdentity(
                    presentation.handle
                )
-               ?? discoveredIdentity) == rename.identity,
-           !rekeyTmuxPresentation(presentation, to: renamedSelection) {
-            // A presentation that is still connecting or resizing would race
-            // the move, so it reattaches to the same session instead.
-            let wasActive = activeBorrowedTmuxHandle == presentation.handle
-            invalidateBorrowedTmuxSession(presentation.selection)
-            if wasActive {
-                presentTmuxSession(
-                    renamedSelection,
-                    launchMode: .attach,
-                    expectedAttachIdentity: rename.identity
-                )
-            }
+               ?? discoveredIdentity) == rename.identity {
+            rekeyTmuxPresentation(presentation, to: renamedSelection)
         }
         applyInventoryOverlayIfNeeded()
         updateWorkspaceInventoryState()
     }
 
+    /// Work still in flight for a presentation targets its current name.
+    private func tmuxPresentationCanMove(
+        _ presentation: RetainedTmuxPresentation
+    ) -> Bool {
+        let handle = presentation.handle
+        return !presentation.reconnectSupervisor.isRunning
+            && presentation.establishmentConfirmationTask == nil
+            && !presentation.previewPromotionIsPending
+            && presentation.sizingTransitionTask == nil
+            && presentation.pendingSizingActivationNavigationRevision == nil
+            && !presentation.hiddenSizingReconnectPending
+            && !presentation.hiddenSizingProvisioningPending
+            && pendingCreatedTmuxSessions[handle.id] == nil
+            && !pendingAlwaysLiveTmuxSurfaceHandleIDs.contains(handle.id)
+            && nativeTmuxSessionCoordinator.isSettled(handle)
+    }
+
+    @discardableResult
     private func rekeyTmuxPresentation(
         _ presentation: RetainedTmuxPresentation,
         to renamedSelection: WorkspaceTmuxSessionSelection
@@ -11809,15 +11838,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let handle = presentation.handle
         guard retainedTmuxPresentations[oldKey] === presentation,
               retainedTmuxPresentations[newKey] == nil,
-              !presentation.reconnectSupervisor.isRunning,
-              presentation.establishmentConfirmationTask == nil,
-              !presentation.previewPromotionIsPending,
-              presentation.sizingTransitionTask == nil,
-              presentation.pendingSizingActivationNavigationRevision == nil,
-              !presentation.hiddenSizingReconnectPending,
-              !presentation.hiddenSizingProvisioningPending,
-              pendingCreatedTmuxSessions[handle.id] == nil,
-              !pendingAlwaysLiveTmuxSurfaceHandleIDs.contains(handle.id),
+              tmuxPresentationCanMove(presentation),
               let renamedHandle = nativeTmuxSessionCoordinator.rename(
                   handle,
                   to: renamedSelection.name

@@ -551,26 +551,43 @@ public enum WorkspaceSidebarModel {
               selection.directoryWorkspaceID == nil,
               selection.socketName == nil,
               selection.tmuxAttachMode != .protected,
-              !selection.name.hasPrefix("kwt-wt-"),
-              !selection.name.hasPrefix("kwt-workspace-"),
               let host = snapshot.host(id: selection.hostID),
-              host.platform != .windows
+              host.platform != .windows,
+              !kwtOwnsTmuxSessionName(
+                  selection.name,
+                  hostID: host.id,
+                  in: snapshot
+              )
         else { return false }
-        let ownedByKwt = snapshot.worktrees.contains {
-            $0.hostID == host.id
-                && $0.tmuxSessionName == selection.name
-                && $0.tmuxSocketName == nil
-        } || snapshot.directoryWorkspaces.contains {
-            $0.hostID == host.id
-                && $0.tmuxSessionName == selection.name
-                && $0.tmuxSocketName == nil
-        }
-        guard !ownedByKwt else { return false }
         return host.tmuxSessions.contains {
             $0.name == selection.name
                 && $0.socketName == nil
                 && $0.hasStableIdentity
         }
+    }
+
+    /// kwt derives worktree and directory session names and finds them by
+    /// name, so Ghosthub must neither rename them nor rename onto them.
+    public static func kwtOwnsTmuxSessionName(
+        _ name: String,
+        hostID: UUID,
+        in snapshot: WorkspaceSnapshot
+    ) -> Bool {
+        isKwtTmuxSessionName(name)
+            || snapshot.worktrees.contains {
+                $0.hostID == hostID
+                    && $0.tmuxSessionName == name
+                    && $0.tmuxSocketName == nil
+            }
+            || snapshot.directoryWorkspaces.contains {
+                $0.hostID == hostID
+                    && $0.tmuxSessionName == name
+                    && $0.tmuxSocketName == nil
+            }
+    }
+
+    public static func isKwtTmuxSessionName(_ name: String) -> Bool {
+        name.hasPrefix("kwt-wt-") || name.hasPrefix("kwt-workspace-")
     }
 
     public static func canRequestKill(

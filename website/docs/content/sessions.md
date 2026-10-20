@@ -225,12 +225,14 @@ Control-click a standalone session row and choose **Rename Session…**, or use
 **Rename tmux session** in the Command Palette. The new name must be unique on
 that host and cannot contain periods, colons, or line breaks. An open session
 stays connected in every window that shows it and keeps its windows, panes, and
-processes.
+processes. If the session is still connecting in the window you rename from,
+wait a moment and try again.
 
 ![Rename tmux session sheet with the current session name ready to edit](/docs/assets/guide-session-rename.png)
 
 Sessions that kwt manages for worktrees and directories keep the names kwt
-assigns, so they have no rename action.
+assigns, so they have no rename action. For the same reason, a new name cannot
+start with `kwt-wt-` or `kwt-workspace-`.
 Renaming is unavailable on native Windows hosts.
 
 ## End a session deliberately

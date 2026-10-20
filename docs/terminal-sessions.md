@@ -150,17 +150,22 @@ Rename Session is offered only for standalone sessions on the default tmux
 server of a macOS or Linux host. Kwt derives worktree and directory session
 names from the branch and path instead of storing them, so a session that a
 kwt worktree or directory workspace owns is never renamable, including when
-kwt-managed sessions are shown as plain rows. Rename uses the identity
+kwt-managed sessions are shown as plain rows. For the same reason a rename
+cannot take a name that starts with `kwt-wt-` or `kwt-workspace-`, or that a
+kwt worktree or directory workspace on that host uses. Rename uses the identity
 discovery recorded for the row and one tmux conditional that runs
 `rename-session` only when the server PID, `session_id`, and `session_created`
 still match.
 
 The tmux client stays attached across the rename. Presentations are keyed by
 session name, so every window that shows a session with the same identity moves
-its presentation to the new name and keeps the running terminal. A presentation
-that is still connecting, reconnecting, or resizing is replaced instead, and an
-active one reattaches under the new name with the same identity guard. A closed
-presentation that an ended session left under the new name is discarded first.
+its presentation to the new name and keeps the running terminal. A rename never
+detaches a client, because detaching the last one can end the session. The
+window that requests the rename refuses it while its own presentation of that
+session is still connecting, reconnecting, or resizing. Any other window whose
+presentation is in that state keeps it under the old name, as it would after a
+rename made outside Ghosthub. A closed presentation that an ended session left
+under the new name is discarded first.
 The saved sidebar position moves to the new name.
 
 Ghosthub applies the selected Tmux Theme when it creates a new bare tmux
