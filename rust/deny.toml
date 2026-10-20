@@ -14,6 +14,11 @@ ignore = [
     { id = "RUSTSEC-2026-0173", reason = "GPUI 0.2.2 transitively pins proc-macro-error2; no maintained compatible upgrade is available." },
     { id = "RUSTSEC-2026-0192", reason = "GPUI 0.2.2 transitively pins ttf-parser; no maintained compatible upgrade is available." },
     { id = "RUSTSEC-2026-0206", reason = "GPUI 0.2.2 transitively pins rustybuzz; no maintained compatible upgrade is available." },
+    # These standalone crates moved into zbus 6. Remove these exceptions when
+    # GPUI's ashpd/oo7 dependencies migrate from zbus 5 to zbus 6.
+    { id = "RUSTSEC-2026-0370", reason = "GPUI 0.2.2 requires zvariant 5 through oo7 and zbus 5; no maintained compatible upgrade is available." },
+    { id = "RUSTSEC-2026-0371", reason = "GPUI 0.2.2 requires zbus_names 4 through zbus 5; no maintained compatible upgrade is available." },
+    { id = "RUSTSEC-2026-0372", reason = "GPUI 0.2.2 requires zvariant_derive 5 through zvariant 5; no maintained compatible upgrade is available." },
 ]
 
 [licenses]
