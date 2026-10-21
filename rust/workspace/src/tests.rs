@@ -37,6 +37,7 @@ fn remote_host_fixture(config: &RemoteTmuxConfig) -> RuntimeRemoteHost {
         config.clone(),
         &controller,
         &ssh,
+        &std::env::temp_dir().join("ghosthub-test-ssh-kwt"),
         Arc::new(StdCommandRunner),
     )
 }
@@ -8017,7 +8018,12 @@ fn display_only_ssh_host_edits_preserve_runtime_and_selection() {
 
     let navigation = lock_live_navigation(&workspace.scene).expect("scene is live");
     workspace
-        .publish_saved_ssh_host(&navigation, Some(config.id()), &edited)
+        .publish_saved_ssh_host(
+            &navigation,
+            Some(config.id()),
+            &edited,
+            &std::env::temp_dir(),
+        )
         .expect("publish display edit");
     drop(navigation);
 
@@ -8100,7 +8106,12 @@ fn connection_changing_ssh_host_edits_disconnect_and_move_selection() {
 
     let navigation = lock_live_navigation(&workspace.scene).expect("scene is live");
     workspace
-        .publish_saved_ssh_host(&navigation, Some(config.id()), &edited)
+        .publish_saved_ssh_host(
+            &navigation,
+            Some(config.id()),
+            &edited,
+            &std::env::temp_dir(),
+        )
         .expect("publish connection edit");
 
     assert!(cancellation.is_cancelled());
@@ -10116,6 +10127,7 @@ fn counted_remote_host(
         config.clone(),
         &controller,
         &ssh,
+        &std::env::temp_dir().join("ghosthub-test-ssh-kwt"),
         runner as SharedCommandRunner,
     )
 }
@@ -13212,7 +13224,7 @@ fn a_concurrent_surviving_selection_is_never_overwritten_by_rename() {
 
         let navigation = lock_live_navigation(&initiator.scene).expect("scene is live");
         initiator
-            .publish_saved_ssh_host(&navigation, Some("host-a"), &edited)
+            .publish_saved_ssh_host(&navigation, Some("host-a"), &edited, &std::env::temp_dir())
             .expect("publish the rename");
         drop(navigation);
         selecting.join().expect("selector thread exits");

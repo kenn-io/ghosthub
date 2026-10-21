@@ -363,16 +363,24 @@ pub struct RemoteTmuxHost<R> {
 }
 
 impl<R> RemoteTmuxHost<R> {
+    /// Construct a native POSIX transport with an explicit SSH controller home.
+    /// Windows transports use the WSL command prefixes instead.
     #[must_use]
     pub fn new(
         config: RemoteTmuxConfig,
         controller: &KwtSshExecutable,
         ssh: &SshExecutable,
+        kwt_home: &Path,
         runner: R,
     ) -> Self {
+        let mut home = OsString::from("KWT_HOME=");
+        home.push(kwt_home);
         Self {
             config,
-            controller: CommandPrefix::native(controller.as_os_str().to_os_string()),
+            controller: CommandPrefix::new(
+                "/usr/bin/env",
+                vec![home, controller.as_os_str().to_os_string()],
+            ),
             ssh: CommandPrefix::native(ssh.as_os_str().to_os_string()),
             runner,
         }

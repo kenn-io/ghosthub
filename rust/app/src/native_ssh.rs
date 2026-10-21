@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,12 +13,19 @@ struct Fixture {
     root: PathBuf,
     host_id: String,
     endpoint: String,
+    kwt: PathBuf,
+    account_home: PathBuf,
+    controller_home: PathBuf,
 }
 
 impl Fixture {
     fn new(root: PathBuf) -> Self {
         let roots = config::ApplicationConfig::current_roots().unwrap();
         let settings = config::ApplicationConfig::load(&roots).unwrap();
+        let kwt = super::activate_bundled_kwt_controller(Path::new(&roots.helpers))
+            .unwrap()
+            .unwrap();
+        let controller_home = Path::new(&roots.state).join("ssh/kwt");
         let workspace = super::workspace_for(&settings, roots, &host::SystemWslPresence).unwrap();
         let snapshot = workspace.snapshot();
         let host = snapshot.hosts().iter().find(|host| host.is_ssh()).unwrap();
@@ -32,7 +39,24 @@ impl Fixture {
             root,
             host_id,
             endpoint,
+            kwt: kwt.as_os_str().into(),
+            account_home: std::env::var_os("KWT_HOME").unwrap().into(),
+            controller_home,
         }
+    }
+
+    fn kwt(&self, home: &Path, arguments: &[&str]) -> Vec<u8> {
+        let output = Command::new(&self.kwt)
+            .env("KWT_HOME", home)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        output.stdout
+    }
+
+    fn daemon_status(&self, home: &Path) -> serde_json::Value {
+        serde_json::from_slice(&self.kwt(home, &["daemon", "status", "--json"])).unwrap()
     }
 
     #[track_caller]
@@ -141,6 +165,10 @@ impl Drop for Fixture {
 
 #[test]
 #[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real SSH and account-daemon lifecycle"
+)]
 fn native_ssh_connects_attaches_and_preserves_sessions() {
     let Some(root) = std::env::var_os("GHOSTHUB_SSH_FIXTURE") else {
         let result = Command::new("/bin/sh")
@@ -161,6 +189,40 @@ fn native_ssh_connects_attaches_and_preserves_sessions() {
         return;
     };
     let fixture = Fixture::new(root.into());
+    fixture.kwt(&fixture.account_home, &["daemon", "start"]);
+    let account = fixture.daemon_status(&fixture.account_home);
+    assert_eq!(account["state"], "ready");
+    assert_eq!(account["active_leases"], 0);
+    let project = fixture.root.join("atlas");
+    std::fs::create_dir(&project).unwrap();
+    for arguments in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.name", "Demo"],
+        vec!["config", "user.email", "demo@example.invalid"],
+        vec!["commit", "--allow-empty", "-m", "Initial"],
+    ] {
+        let output = Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(&project)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    fixture.kwt(
+        &fixture.account_home,
+        &["projects", "add", project.to_str().unwrap(), "--json"],
+    );
+    fixture.workspace.connect_host("local").unwrap();
+    fixture.wait(|| {
+        fixture.workspace.snapshot().hosts().iter().any(|host| {
+            host.id() == "local"
+                && host
+                    .projects()
+                    .iter()
+                    .any(|item| item.path() == project.to_str().unwrap())
+        })
+    });
     let identity = fixture.tmux(&[
         "display-message",
         "-p",
@@ -173,6 +235,16 @@ fn native_ssh_connects_attaches_and_preserves_sessions() {
         1,
         "first connect must ask about the host key"
     );
+    let account_after_connect = fixture.daemon_status(&fixture.account_home);
+    assert_eq!(account_after_connect["pid"], account["pid"]);
+    assert_eq!(
+        account_after_connect["active_leases"], 0,
+        "Ghosthub's SSH lease must not belong to the account daemon"
+    );
+    let controller = fixture.daemon_status(&fixture.controller_home);
+    assert_eq!(controller["state"], "ready");
+    assert_eq!(controller["active_leases"], 1);
+    assert_ne!(controller["pid"], account["pid"]);
     let snapshot = fixture.workspace.snapshot();
     let host = snapshot
         .hosts()
@@ -210,14 +282,36 @@ fn native_ssh_connects_attaches_and_preserves_sessions() {
     fixture.attach("review", "before-close");
     fixture.workspace.close();
     fixture.wait(|| fixture.tmux(&["list-clients"]).is_empty());
+    let account_after_close = fixture.daemon_status(&fixture.account_home);
+    assert_eq!(account_after_close["state"], "ready");
+    assert_eq!(account_after_close["pid"], account["pid"]);
+    fixture.kwt(&fixture.account_home, &["daemon", "stop"]);
+    assert_eq!(
+        fixture.daemon_status(&fixture.account_home)["state"],
+        "stopped"
+    );
 
     let reopened = Fixture::new(fixture.root.clone());
+    let draft = reopened.workspace.configured_ssh_hosts()[0].draft().clone();
+    reopened
+        .workspace
+        .remove_ssh_host(&reopened.host_id)
+        .unwrap();
+    assert_eq!(
+        reopened.workspace.save_ssh_host(None, &draft).unwrap(),
+        reopened.host_id
+    );
     assert_eq!(
         reopened.connect(),
         0,
         "accepted fixture key should be retained"
     );
     reopened.attach("review", "reopened");
+    assert_eq!(
+        reopened.daemon_status(&reopened.account_home)["state"],
+        "stopped",
+        "neither route resolution nor lease acquisition may restart the account daemon"
+    );
     assert_eq!(
         reopened.tmux(&[
             "display-message",

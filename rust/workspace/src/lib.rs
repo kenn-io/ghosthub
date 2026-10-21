@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, RwLock, TryLockError, Weak};
@@ -1852,11 +1853,16 @@ impl RemoteHostSpec {
         )
     }
 
-    fn runtime_host(&self, runner: SharedCommandRunner) -> Option<RuntimeRemoteHost> {
+    fn runtime_host(
+        &self,
+        kwt_home: &Path,
+        runner: SharedCommandRunner,
+    ) -> Option<RuntimeRemoteHost> {
         Some(RemoteTmuxHost::new(
             self.config.clone(),
             self.controller.as_ref()?,
             self.ssh.as_ref()?,
+            kwt_home,
             runner,
         ))
     }
@@ -4024,6 +4030,7 @@ impl Workspace {
         );
         runtime.remote_controller = controller;
         runtime.ssh_executable = ssh;
+        let ssh_kwt_home = Path::new(&roots.state).join("ssh/kwt");
         *runtime
             .settings
             .get_mut()
@@ -4048,7 +4055,7 @@ impl Workspace {
                         item.id().to_owned(),
                         RemoteEntry {
                             config: spec.config.clone(),
-                            native_host: spec.runtime_host(Arc::clone(&runner)),
+                            native_host: spec.runtime_host(&ssh_kwt_home, Arc::clone(&runner)),
                             context: None,
                             cancellation: None,
                             constructive_cancellation: None,
@@ -4497,7 +4504,7 @@ impl Workspace {
         )
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
         let id = host.id();
-        {
+        let ssh_kwt_home = {
             let mut settings = self
                 .scene
                 .runtime
@@ -4522,8 +4529,9 @@ impl Workspace {
                 .config
                 .replace_ssh_hosts(&roots, hosts)
                 .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        }
-        self.publish_saved_ssh_host(&navigation, original_id, &host)?;
+            Path::new(&roots.state).join("ssh/kwt")
+        };
+        self.publish_saved_ssh_host(&navigation, original_id, &host, &ssh_kwt_home)?;
         Ok(id)
     }
 
@@ -4842,6 +4850,7 @@ impl Workspace {
         navigation: &NavigationFence<'_>,
         original_id: Option<&str>,
         settings: &SshHostSettings,
+        kwt_home: &Path,
     ) -> Result<(), WorkspaceError> {
         debug_assert!(
             navigation.fences(&self.scene),
@@ -4889,7 +4898,10 @@ impl Workspace {
             }),
         );
         #[cfg(windows)]
-        let runtime = None;
+        let runtime = {
+            let _ = kwt_home;
+            None
+        };
         #[cfg(not(windows))]
         let runtime = self
             .scene
@@ -4902,6 +4914,7 @@ impl Workspace {
                     config.clone(),
                     controller,
                     ssh,
+                    kwt_home,
                     Arc::clone(&self.scene.runtime.remote_runner),
                 )
             });

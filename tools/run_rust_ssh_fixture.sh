@@ -48,7 +48,7 @@ fi
 root=$GHOSTHUB_SSH_FIXTURE
 export HOME="$root/home" SHELL=/bin/sh LANG=C.UTF-8 TERM=xterm-256color
 export KWT_HOME="$root/kwt" GHOSTHUB_HOME="$root/ghosthub"
-export GHOSTHUB_CONFIG_HOME="$root/config" GHOSTHUB_STATE_HOME="$root/state"
+export GHOSTHUB_CONFIG_HOME="$root/config" GHOSTHUB_STATE_HOME="$root/state with spaces"
 export XDG_CONFIG_HOME="$root/xdg/config" XDG_STATE_HOME="$root/xdg/state"
 export XDG_DATA_HOME="$root/xdg/data" XDG_CACHE_HOME="$root/xdg/cache"
 export XDG_RUNTIME_DIR="$root/runtime" GIT_CONFIG_GLOBAL="$root/gitconfig" GIT_CONFIG_NOSYSTEM=1

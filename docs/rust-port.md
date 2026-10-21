@@ -249,9 +249,11 @@ against a disposable OpenSSH server. Private process and network namespaces,
 generated keys, a fixture account, and disposable home and KWT roots keep the
 test independent of configured hosts. It exercises the host-key prompt,
 inventory, exact session selection, shell input, resize, retained switching,
-detach, application close, and reopening with the accepted host key. CI runs
-it on Linux. Windows/WSL controllers and remote macOS servers need separate
-acceptance.
+detach, application close, and reopening with the accepted host key. An
+existing account KWT daemon continues to serve local project inventory while
+SSH leases belong to Ghosthub's separate daemon. Reconnecting after the
+account daemon stops must leave it stopped. CI runs this test on Linux.
+Windows/WSL controllers and remote macOS servers need separate acceptance.
 
 Track implementation and baseline failures in the existing Kata project.
 Check `kata federation status --agent` before resuming across machines; retain
@@ -346,6 +348,11 @@ deletion action.
 ![The creation dialog explains unsupported Zellij names](https://github.com/user-attachments/assets/28bbda03-863a-496c-b666-e39062026107)
 
 ### Native Linux SSH sessions
+
+Native Linux route resolution and lease acquisition use `ssh/kwt` under the
+resolved application state root as their `KWT_HOME`. Local project and
+worktree commands continue to use the account's KWT home. See the
+[SSH controller boundary](architecture.md#external-state) for daemon ownership.
 
 Build with `make rust-build`, then open **Settings → Hosts**. Add a host name
 and an SSH destination from your OpenSSH configuration, then select **Save Host**.
