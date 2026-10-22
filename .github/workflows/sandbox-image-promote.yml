@@ -29,8 +29,8 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
-          version: '0.9.5'
-          checksum: 2cf10babba653310606f8b49876cfb679928669e7ddaa1fb41fb00ce73e64f66
+          version: '0.13.4'
+          checksum: 2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f
       - name: Verify evidence with trusted main tooling
         run: >-
           uv run --frozen python tools/sandbox_image.py verify-promotion
@@ -70,8 +70,8 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
-          version: '0.9.5'
-          checksum: 2cf10babba653310606f8b49876cfb679928669e7ddaa1fb41fb00ce73e64f66
+          version: '0.13.4'
+          checksum: 2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
           driver-opts: image=docker.io/moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
@@ -155,14 +155,14 @@ jobs:
             exit 1
           fi
 
-          trivy_directory="$RUNNER_TEMP/trivy-0.73.0"
-          trivy_archive="$RUNNER_TEMP/trivy-0.73.0.tar.gz"
+          trivy_directory="$RUNNER_TEMP/trivy-0.76.1"
+          trivy_archive="$RUNNER_TEMP/trivy-0.76.1.tar.gz"
           mkdir -p "$trivy_directory"
           curl --disable --fail --location --proto '=https' --tlsv1.2 \
             --silent --show-error --output "$trivy_archive" \
-            'https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz'
+            'https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz'
           printf '%s  %s\n' \
-            '2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b' \
+            'c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0' \
             "$trivy_archive" | sha256sum --check --status
           tar -xzf "$trivy_archive" -C "$trivy_directory" trivy
 

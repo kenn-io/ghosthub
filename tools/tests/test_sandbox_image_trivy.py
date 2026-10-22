@@ -13,8 +13,8 @@ from sandbox_image.trivy import (
 
 
 def test_trivy_asset_uses_upstream_platform_names() -> None:
-    assert trivy_asset("Darwin", "arm64") == "trivy_0.73.0_macOS-ARM64.tar.gz"
-    assert trivy_asset("Linux", "x86_64") == "trivy_0.73.0_Linux-64bit.tar.gz"
+    assert trivy_asset("Darwin", "arm64") == "trivy_0.76.1_macOS-ARM64.tar.gz"
+    assert trivy_asset("Linux", "x86_64") == "trivy_0.76.1_Linux-64bit.tar.gz"
 
 
 def test_extract_oci_archive_produces_layout_directory(tmp_path: Path) -> None:

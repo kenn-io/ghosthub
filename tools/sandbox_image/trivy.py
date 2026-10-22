@@ -14,16 +14,16 @@ from .model import Finding, ImageReference
 from .policy import ALLOWED_SEVERITIES
 from .process import Runner
 
-TRIVY_VERSION = "0.73.0"
+TRIVY_VERSION = "0.76.1"
 TRIVY_ASSET_SHA256 = {
     (
         "Darwin",
         "arm64",
-    ): "80cc25faaf6378e37701202d0b4f9f43d9e413d198d594ba60fdf559fe44a683",
+    ): "11a9b6cd2752011b54f01ea4bd0dbfa9f0c41dc6538d5a3f9d23955f471bf4e5",
     (
         "Linux",
         "x86_64",
-    ): "2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b",
+    ): "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0",
 }
 
 

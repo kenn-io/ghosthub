@@ -163,6 +163,13 @@ independent image version, official Ubuntu 26.04 arm64 base digest, and APT
 snapshot time. Review those three changes and any deliberate package or
 disposition changes.
 
+The October 22 package snapshot includes Ubuntu's
+`ca-certificates` fix for the compromised eMudhra intermediates
+(`20260816ubuntu0.26.04.1`, [USN-8944-1](https://ubuntu.com/security/notices/USN-8944-1)).
+Existing sandboxes keep their image's trust bundle until a rebuilt image
+passes the candidate and promotion process below. Updating the source
+snapshot does not update an already running sandbox.
+
 `sandbox-image-check` publishes nothing. It performs two no-cache builds with
 the pinned BuildKit image and a source epoch derived from `APT_SNAPSHOT`, then
 requires their Docker content identities to match. It runs the image contract,

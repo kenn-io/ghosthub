@@ -3,25 +3,25 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 website_root="$(cd "$script_dir/.." && pwd)"
-uv_version="0.9.5"
+uv_version="0.13.4"
 
 os_name="$(uname -s)"
 machine_arch="$(uname -m)"
 case "$os_name:$machine_arch" in
   Darwin:arm64)
     uv_target="uv-aarch64-apple-darwin"
-    archive_sha256="dc098ff224d78ed418e121fd374f655949d2c7031a70f6f6604eaf016a130433"
-    binary_sha256="d54989c0037e115f53c34a5658c2cc0ff5c44e35b5635ed9a5463b9caa364f81"
+    archive_sha256="e0b1d4743ce64c55d9f0f4a444afa6b81125680070ee04e853fcd0f6c1ebf8f1"
+    binary_sha256="cd510bf93fddcbf0799eb0b7bd9aae87e850a5596aeb4594c12aba72fd4e388b"
     ;;
   Linux:aarch64 | Linux:arm64)
     uv_target="uv-aarch64-unknown-linux-gnu"
-    archive_sha256="9db0c2f6683099f86bfeea47f4134e915f382512278de95b2a0e625957594ff3"
-    binary_sha256="b880aad13554f4eb7815f962b4f40e3f94fb2f86cae4b98afa0906324b61f754"
+    archive_sha256="1ae72b4718729e2ccc4f1ae2c6d1e531ca8467800e0546e9130b3886023a60ab"
+    binary_sha256="7ecaf349a12fb60c605c1848e8e1bbd313bbf9a362a6c3043c8f786ec570c491"
     ;;
   Linux:x86_64 | Linux:amd64)
     uv_target="uv-x86_64-unknown-linux-gnu"
-    archive_sha256="2cf10babba653310606f8b49876cfb679928669e7ddaa1fb41fb00ce73e64f66"
-    binary_sha256="d3dc3ca8e29337dd602a9a4df9e6edb15ebc52aed91461debeedb96939dc4ce0"
+    archive_sha256="2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+    binary_sha256="5b2a2df4ef04c5d778d50702d6e1d1ff22909fc883086b4ef406a4f115e3c4fb"
     ;;
   *)
     printf 'unsupported uv bootstrap platform: %s %s\n' "$os_name" "$machine_arch" >&2
