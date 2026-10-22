@@ -935,6 +935,12 @@ final class WorkspaceSceneModel: ObservableObject {
     private var herdrLifecycleCancellable: AnyCancellable?
     private var zellijSessionKillCancellable: AnyCancellable?
     private var tmuxSessionRenameCancellable: AnyCancellable?
+    /// The rename log's sequence when this scene last applied a tmux listing
+    /// for each host. A rename fences in-flight discovery, so a listing
+    /// applied after an entry already shows that rename.
+    private var tmuxRenameSequenceByHost: [UUID: UInt64] = [:]
+    /// Hosts with a client still waiting to move to its session's new name.
+    private var pendingTmuxRenameHostIDs: Set<UUID> = []
     private var activityControllerBacking: ActivityMonitoringController?
     var activityController: ActivityMonitoringController {
         guard let activityControllerBacking else {
@@ -1848,8 +1854,8 @@ final class WorkspaceSceneModel: ObservableObject {
             self?.zellijSessionKillEvent(event)
         }
         tmuxSessionRenameCancellable = tmuxSessionRenameCoordinator.renames
-            .sink { [weak self] rename in
-                self?.applyTmuxSessionRename(rename)
+            .sink { [weak self] entry in
+                self?.applyTmuxSessionRename(entry.rename)
             }
         let quarantinedScopes = Set(
             worktreeMutationCoordinator.quarantinedProjectRemovals.keys
@@ -4390,6 +4396,7 @@ final class WorkspaceSceneModel: ObservableObject {
         if !successfulTmuxHostIDs.isEmpty {
             applyDeferredTmuxPresentationsIfReady()
             for hostID in successfulTmuxHostIDs {
+                followTmuxRenames(hostID: hostID)
                 reconcileAlwaysLiveTmuxPresentations(hostID: hostID)
             }
         }
@@ -5984,6 +5991,7 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: hostID,
             preservingKwtSessions: kwtUnavailable
         )
+        tmuxRenameSequenceByHost[hostID] = tmuxSessionRenameCoordinator.sequence
         if let publishingEpoch, let commandHost = inventoryHosts[hostID] {
             workspaceInventoryStore.publishTmuxDiscovery(
                 result,
@@ -6015,6 +6023,7 @@ final class WorkspaceSceneModel: ObservableObject {
             applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
             updateWorkspaceInventoryState()
             applyDeferredTmuxPresentationsIfReady()
+            followTmuxRenames(hostID: hostID)
             reconcileAlwaysLiveTmuxPresentations(hostID: hostID)
         }
     }
@@ -8292,21 +8301,20 @@ final class WorkspaceSceneModel: ObservableObject {
                 $0.key.hostID != hostID
                     || desiredIdentities[$0.key] == $0.value
             }
-        let heldRenames = followRenamedTmuxSessions(hostID: hostID)
+        let movingKeys = followTmuxRenames(hostID: hostID)
         let obsoleteSelections = alwaysLiveManagedTmuxPresentationKeys
             .filter {
                 $0.hostID == hostID && !desiredKeys.contains($0)
-                    && heldRenames[$0] == nil
+                    && !movingKeys.contains($0)
             }
             .compactMap { retainedTmuxPresentations[$0]?.selection }
         for selection in obsoleteSelections {
             invalidateBorrowedTmuxSession(selection)
         }
-        let heldRenamedKeys = Set(heldRenames.values)
 
         for (session, selection) in zip(sessions, selections) {
             let key = TmuxPresentationKey(selection)
-            guard !heldRenamedKeys.contains(key),
+            guard !movingKeys.contains(key),
                   let discoveredIdentity = desiredIdentities[key],
                   alwaysLiveIneligibleTmuxPresentationIdentities[key]
                   != discoveredIdentity
@@ -11782,14 +11790,6 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: rename.hostID,
             name: rename.oldName
         )
-        let renamedSelection = WorkspaceTmuxSessionSelection(
-            hostID: rename.hostID,
-            name: rename.newName
-        )
-        invalidateStaleTmuxPresentation(
-            at: renamedSelection,
-            for: rename.identity
-        )
         let discoveredIdentity = Self.discoveredTmuxSessionIdentity(
             oldSelection,
             hostSummary: hostSummary
@@ -11800,95 +11800,160 @@ final class WorkspaceSceneModel: ObservableObject {
            }) {
             tmuxSessionsByHost[rename.hostID]?[index].name = rename.newName
         }
-        if let presentation = retainedTmuxPresentation(for: oldSelection),
-           (retainedTmuxSessionIdentity(presentation) ?? discoveredIdentity)
-           == rename.identity {
+        // A client that has not reported its session yet attached to the
+        // session listed under the old name.
+        if discoveredIdentity == rename.identity,
+           let presentation = retainedTmuxPresentation(for: oldSelection),
+           retainedTmuxSessionIdentity(presentation) == nil,
+           let renamedSelection = renamedTmuxSelection(
+               hostID: rename.hostID,
+               name: rename.newName
+           ) {
             followTmuxRename(
                 presentation,
                 to: renamedSelection,
                 identity: rename.identity
             )
         }
+        followTmuxRenames(hostID: rename.hostID)
         applyInventoryOverlayIfNeeded()
         updateWorkspaceInventoryState()
     }
 
     /// tmux keeps a session's ID across renames, so a client whose session
-    /// is now listed under another name moves to that name instead of
-    /// closing. Returns the old key and new key of each client that has to
-    /// wait, because it is still connecting or resizing.
-    private func followRenamedTmuxSessions(
+    /// now has another name moves to it instead of closing. This covers
+    /// renames from any window and from tmux itself. Returns the keys of
+    /// clients that still have to move and of the names they move to, so
+    /// Always Live leaves both alone until the move happens.
+    @discardableResult
+    private func followTmuxRenames(
         hostID: UUID
-    ) -> [TmuxPresentationKey: TmuxPresentationKey] {
-        let sessions = (tmuxSessionsByHost[hostID] ?? []).filter {
-            $0.socketName == nil
-        }
-        let listedNames = Set(sessions.map(\.name))
-        var held: [TmuxPresentationKey: TmuxPresentationKey] = [:]
-        for presentation in Array(retainedTmuxPresentations.values) {
-            let selection = presentation.selection
-            guard selection.hostID == hostID,
-                  Self.isPlainTmuxSession(selection),
-                  !listedNames.contains(selection.name),
-                  let identity = retainedTmuxSessionIdentity(presentation),
-                  let session = sessions.first(where: {
-                      Self.tmuxSessionIdentity($0) == identity
-                  })
-            else { continue }
-            let renamed = alwaysLiveTmuxSelection(
-                hostID: hostID,
-                name: session.name,
-                socketName: nil
-            )
-            guard Self.isPlainTmuxSession(renamed) else { continue }
-            if !followTmuxRename(presentation, to: renamed, identity: identity),
-               retainedTmuxPresentations[TmuxPresentationKey(selection)]
-               === presentation {
-                held[TmuxPresentationKey(selection)] =
-                    TmuxPresentationKey(renamed)
+    ) -> Set<TmuxPresentationKey> {
+        var waiting: Set<TmuxPresentationKey> = []
+        // A move can free the name another client is waiting for.
+        var moved = true
+        while moved {
+            moved = false
+            waiting = []
+            for presentation in Array(retainedTmuxPresentations.values) {
+                let selection = presentation.selection
+                let key = TmuxPresentationKey(selection)
+                guard selection.hostID == hostID,
+                      Self.isPlainTmuxSession(selection),
+                      retainedTmuxPresentations[key] === presentation,
+                      !nativeTmuxSessionCoordinator.hasClosedAttachment(
+                          presentation.handle
+                      ),
+                      let identity = retainedTmuxSessionIdentity(presentation),
+                      let name = currentTmuxSessionName(
+                          of: identity,
+                          hostID: hostID
+                      ),
+                      name != selection.name,
+                      let renamed = renamedTmuxSelection(
+                          hostID: hostID,
+                          name: name
+                      )
+                else { continue }
+                if followTmuxRename(
+                    presentation,
+                    to: renamed,
+                    identity: identity
+                ) {
+                    moved = true
+                } else if retainedTmuxPresentations[key] === presentation {
+                    waiting.insert(key)
+                    waiting.insert(TmuxPresentationKey(renamed))
+                }
             }
         }
-        return held
+        if waiting.isEmpty {
+            pendingTmuxRenameHostIDs.remove(hostID)
+        } else {
+            pendingTmuxRenameHostIDs.insert(hostID)
+        }
+        return waiting
     }
 
-    /// Moves a client to its session's new name. When the window already
-    /// has a client for the same session under that name, one of them
-    /// closes, but only once the one that stays is connected, so the
-    /// session always keeps a client.
+    /// Moves a client to its session's new name and returns false when it
+    /// has to wait. A client already under that name keeps it while its own
+    /// session is live, because that session moves on its own. A second
+    /// client for the same session closes only once tmux has reported the
+    /// one that stays as attached, so the session always keeps a client.
     @discardableResult
     private func followTmuxRename(
         _ presentation: RetainedTmuxPresentation,
         to renamedSelection: WorkspaceTmuxSessionSelection,
         identity: TmuxSessionIdentity
     ) -> Bool {
-        invalidateStaleTmuxPresentation(at: renamedSelection, for: identity)
         guard let existing = retainedTmuxPresentation(for: renamedSelection),
               existing !== presentation
         else {
             return rekeyTmuxPresentation(presentation, to: renamedSelection)
         }
-        if activeBorrowedTmuxHandle == presentation.handle {
-            guard isConnectedAndSettled(presentation) else { return false }
+        let existingIdentity = retainedTmuxSessionIdentity(existing)
+        if nativeTmuxSessionCoordinator.hasClosedAttachment(existing.handle)
+            || existingIdentity.map({
+                $0 != identity && tmuxSessionHasEnded(
+                    $0,
+                    hostID: renamedSelection.hostID
+                )
+            }) == true {
             invalidateBorrowedTmuxSession(existing.selection)
             return rekeyTmuxPresentation(presentation, to: renamedSelection)
         }
-        guard isConnectedAndSettled(existing) else { return false }
+        guard existingIdentity == identity else { return false }
+        let keepsMovingClient = activeBorrowedTmuxHandle == presentation.handle
+        guard isConfirmedAttached(
+            keepsMovingClient ? presentation : existing,
+            to: identity
+        ) else { return false }
+        if keepsMovingClient {
+            invalidateBorrowedTmuxSession(existing.selection)
+            return rekeyTmuxPresentation(presentation, to: renamedSelection)
+        }
         invalidateBorrowedTmuxSession(presentation.selection)
         return true
     }
 
-    /// A client kept under a name belongs to an ended session when its
-    /// attachment closed or tmux reported a different session for it.
-    private func invalidateStaleTmuxPresentation(
-        at selection: WorkspaceTmuxSessionSelection,
-        for identity: TmuxSessionIdentity
-    ) {
-        guard let existing = retainedTmuxPresentation(for: selection),
-              nativeTmuxSessionCoordinator.hasClosedAttachment(existing.handle)
-              || retainedTmuxSessionIdentity(existing)
-              .map({ $0 != identity }) == true
-        else { return }
-        invalidateBorrowedTmuxSession(existing.selection)
+    /// A rename newer than this scene's last listing of the host wins,
+    /// because that listing predates it. Otherwise the listing is current.
+    private func currentTmuxSessionName(
+        of identity: TmuxSessionIdentity,
+        hostID: UUID
+    ) -> String? {
+        if let host = inventoryHosts[hostID],
+           let entry = tmuxSessionRenameCoordinator.latestRename(
+               of: identity,
+               on: host
+           ),
+           entry.sequence > tmuxRenameSequenceByHost[hostID, default: 0] {
+            return entry.rename.newName
+        }
+        return tmuxSessionsByHost[hostID]?.first {
+            $0.socketName == nil && Self.tmuxSessionIdentity($0) == identity
+        }?.name
+    }
+
+    private func tmuxSessionHasEnded(
+        _ identity: TmuxSessionIdentity,
+        hostID: UUID
+    ) -> Bool {
+        tmuxFreshHostIDs.contains(hostID)
+            && currentTmuxSessionName(of: identity, hostID: hostID) == nil
+    }
+
+    /// A session renamed onto a kwt-owned name has no plain selection.
+    private func renamedTmuxSelection(
+        hostID: UUID,
+        name: String
+    ) -> WorkspaceTmuxSessionSelection? {
+        let selection = alwaysLiveTmuxSelection(
+            hostID: hostID,
+            name: name,
+            socketName: nil
+        )
+        return Self.isPlainTmuxSession(selection) ? selection : nil
     }
 
     private func retainedTmuxSessionIdentity(
@@ -11900,11 +11965,17 @@ final class WorkspaceSceneModel: ObservableObject {
             )
     }
 
-    private func isConnectedAndSettled(
-        _ presentation: RetainedTmuxPresentation
+    /// A connected surface can still be waiting on SSH or tmux. tmux reports
+    /// a client's identity only once that client is attached.
+    private func isConfirmedAttached(
+        _ presentation: RetainedTmuxPresentation,
+        to identity: TmuxSessionIdentity
     ) -> Bool {
         borrowedTmuxConnectionStates[presentation.handle.id] == .connected
             && tmuxPresentationCanMove(presentation)
+            && nativeTmuxSessionCoordinator.attachedSessionIdentity(
+                presentation.handle
+            ) == identity
     }
 
     private static func isPlainTmuxSession(
@@ -12107,6 +12178,12 @@ final class WorkspaceSceneModel: ObservableObject {
         state: ConnectionState
     ) {
         let previousState = borrowedTmuxConnectionStates[handle.id]
+        if state == .connected,
+           pendingTmuxRenameHostIDs.contains(handle.hostID) {
+            Task { [weak self] in
+                self?.followTmuxRenames(hostID: handle.hostID)
+            }
+        }
         if state == .connected,
            let presentation = retainedTmuxPresentation(for: handle),
            let context = presentation.reconnectContext,

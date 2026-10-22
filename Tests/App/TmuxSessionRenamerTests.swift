@@ -126,6 +126,16 @@ struct TmuxSessionRenamerTests {
         #expect(try sessionNames(tmuxPath, socketName) == [
             "anchor", "before", "it's after",
         ])
+
+        try await renamer.rename(
+            after,
+            to: "-work",
+            expectedIdentity: identity,
+            on: .local
+        )
+        #expect(try sessionNames(tmuxPath, socketName) == [
+            "-work", "anchor", "before",
+        ])
     }
 
     private func sessionNames(

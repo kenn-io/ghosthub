@@ -330,10 +330,246 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(connecting.retainedBorrowedTmuxHandle(for: desk)?.id == handle.id)
         #expect(connecting.activeBorrowedTmuxSelection == desk)
         #expect(stores[1].removedKeys.isEmpty)
+
+        // Once connected, the window applies the rename it had to hold.
         tmuxResolved.leave()
+        let work = WorkspaceTmuxSessionSelection(hostID: hostID, name: "work")
+        await waitUntilMainActor {
+            connecting.prepareActiveBorrowedTmuxSurface()
+            return connecting.retainedBorrowedTmuxHandle(for: work)?.id
+                == handle.id
+        }
+        #expect(connecting.retainedBorrowedTmuxHandle(for: desk) == nil)
+        #expect(connecting.activeBorrowedTmuxSelection == work)
+        #expect(stores[1].removedKeys.isEmpty)
         for model in models {
             await model.shutdown()
         }
+    }
+
+    @MainActor
+    @Test("a second terminal for the session closes only once tmux confirms the other")
+    func renameClosesDuplicateAfterTmuxConfirmsAttachment() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["anchor": "$1", "desk": "$2"])
+        let coordinator = TmuxSessionRenameCoordinator()
+        let sizingHold = LockedValue<DispatchGroup?>(nil)
+        let identityHold = LockedValue<DispatchGroup?>(nil)
+        var models: [WorkspaceSceneModel] = []
+        var stores: [SceneTmuxSurfaceStoreStub] = []
+        for _ in 0 ..< 2 {
+            let store = SceneTmuxSurfaceStoreStub()
+            let model = try makeModel(
+                database: environment.database,
+                localHostID: hostID,
+                snapshot: environment.snapshot,
+                nativeTmuxSurfaceStore: store,
+                nativeTmuxPathProvider: {
+                    successfulTmuxResolution("/usr/bin/tmux")
+                },
+                nativeTmuxPaneSplitter: renameClientSplitter(
+                    names,
+                    launches: store.launchCommands,
+                    sizingHold: sizingHold,
+                    identityHold: identityHold
+                ),
+                tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
+                tmuxSessionRenamer: { selection, newName, _, _ in
+                    names.withLock { renameFixtureSession(
+                        &$0,
+                        from: selection.name,
+                        to: newName
+                    ) }
+                },
+                tmuxSessionRenameCoordinator: coordinator
+            )
+            models.append(model)
+            stores.append(store)
+            model.startTmuxSessionDiscovery()
+            await waitUntilMainActor {
+                model.snapshot.hosts[0].tmuxSessions.count == 2
+            }
+        }
+        let anchor = WorkspaceTmuxSessionSelection(hostID: hostID, name: "anchor")
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        let notes = WorkspaceTmuxSessionSelection(hostID: hostID, name: "notes")
+        let window = models[1]
+        window.openBorrowedTmuxSession(desk)
+        await connectActiveRenameSession(window, store: stores[1])
+        let moving = try #require(window.retainedBorrowedTmuxHandle(for: desk))
+
+        // Switching away starts a resize that holds the desk terminal in
+        // place while the other window renames its session.
+        let sizing = DispatchGroup()
+        sizing.enter()
+        sizingHold.store(sizing)
+        window.openBorrowedTmuxSession(anchor)
+        await connectActiveRenameSession(window, store: stores[1])
+        try await models[0].renameTmuxSession(desk, to: "notes")
+        #expect(window.retainedBorrowedTmuxHandle(for: desk)?.id == moving.id)
+
+        let identity = DispatchGroup()
+        identity.enter()
+        identityHold.store(identity)
+        window.openBorrowedTmuxSession(notes)
+        await waitUntilMainActor {
+            window.prepareActiveBorrowedTmuxSurface()
+            return window.activeBorrowedTmuxSelection == notes
+                && window.activeBorrowedTmuxSessionIsConnected
+        }
+        let kept = try #require(window.retainedBorrowedTmuxHandle(for: notes))
+        sizingHold.store(nil)
+        sizing.leave()
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        window.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            window.snapshot.hosts[0].tmuxSessions.map(\.name).sorted()
+                == ["anchor", "notes"]
+        }
+
+        // tmux has not reported the new terminal's client yet.
+        #expect(window.retainedBorrowedTmuxHandle(for: desk)?.id == moving.id)
+        #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == kept.id)
+
+        identityHold.store(nil)
+        identity.leave()
+        await waitUntilMainActor {
+            window.refreshTmuxSessionDiscovery()
+            return window.retainedBorrowedTmuxHandle(for: desk) == nil
+        }
+        #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == kept.id)
+        #expect(window.activeBorrowedTmuxSelection == notes)
+        #expect(window.activeBorrowedTmuxSessionIsConnected)
+        for model in models {
+            await model.shutdown()
+        }
+    }
+
+    @MainActor
+    @Test("a rename onto a name whose session moved in tmux keeps both terminals")
+    func renameOntoNameMovedInTmux() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["desk": "$2", "notes": "$3"])
+        let coordinator = TmuxSessionRenameCoordinator()
+        var models: [WorkspaceSceneModel] = []
+        var stores: [SceneTmuxSurfaceStoreStub] = []
+        for _ in 0 ..< 2 {
+            let store = SceneTmuxSurfaceStoreStub()
+            let model = try makeModel(
+                database: environment.database,
+                localHostID: hostID,
+                snapshot: environment.snapshot,
+                nativeTmuxSurfaceStore: store,
+                nativeTmuxPathProvider: {
+                    successfulTmuxResolution("/usr/bin/tmux")
+                },
+                nativeTmuxPaneSplitter: renameClientSplitter(names, launches: store.launchCommands),
+                tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
+                tmuxSessionRenamer: { selection, newName, _, _ in
+                    names.withLock { renameFixtureSession(
+                        &$0,
+                        from: selection.name,
+                        to: newName
+                    ) }
+                },
+                tmuxSessionRenameCoordinator: coordinator
+            )
+            models.append(model)
+            stores.append(store)
+            model.startTmuxSessionDiscovery()
+            await waitUntilMainActor {
+                model.snapshot.hosts[0].tmuxSessions.count == 2
+            }
+        }
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        let notes = WorkspaceTmuxSessionSelection(hostID: hostID, name: "notes")
+        let other = WorkspaceTmuxSessionSelection(hostID: hostID, name: "other")
+        let window = models[1]
+        window.openBorrowedTmuxSession(notes)
+        await connectActiveRenameSession(window, store: stores[1])
+        let moved = try #require(window.retainedBorrowedTmuxHandle(for: notes))
+        window.openBorrowedTmuxSession(desk)
+        await connectActiveRenameSession(window, store: stores[1])
+        let renamed = try #require(window.retainedBorrowedTmuxHandle(for: desk))
+
+        // Someone renames notes in tmux. Only the first window has seen it.
+        names.withLock { renameFixtureSession(&$0, from: "notes", to: "other") }
+        models[0].refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            models[0].snapshot.hosts[0].tmuxSessions.map(\.name).sorted()
+                == ["desk", "other"]
+        }
+        try await models[0].renameTmuxSession(desk, to: "notes")
+
+        #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == moved.id)
+        #expect(window.retainedBorrowedTmuxHandle(for: desk)?.id == renamed.id)
+        #expect(stores[1].removedKeys.isEmpty)
+
+        window.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            window.retainedBorrowedTmuxHandle(for: other)?.id == moved.id
+        }
+        #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == renamed.id)
+        #expect(window.retainedBorrowedTmuxHandle(for: desk) == nil)
+        #expect(window.activeBorrowedTmuxSelection == notes)
+        #expect(stores[1].removedKeys.isEmpty)
+        for model in models {
+            await model.shutdown()
+        }
+    }
+
+    @MainActor
+    @Test("Always Live keeps a session renamed in tmux when a new one takes its name")
+    func alwaysLiveFollowsTmuxRenameWhenOldNameReturns() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["desk": "$2"])
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: renameIdentitySplitter(names),
+            tmuxSessionDiscovery: { _ in
+                .success(renameFixture(names, live: true))
+            },
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        let notes = WorkspaceTmuxSessionSelection(hostID: hostID, name: "notes")
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: desk) != nil
+        }
+        model.openBorrowedTmuxSession(desk)
+        await connectActiveRenameSession(model, store: store)
+        let handle = try #require(model.retainedBorrowedTmuxHandle(for: desk))
+
+        names.withLock {
+            renameFixtureSession(&$0, from: "desk", to: "notes")
+            $0["desk"] = "$5"
+        }
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: notes)?.id == handle.id
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == notes)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        #expect(model.retainedBorrowedTmuxHandle(for: desk)?.id != handle.id)
+        await model.shutdown()
     }
 
     @MainActor
@@ -573,14 +809,61 @@ private func renameFixture(
     }
 }
 
-/// Reports the fixture's only session as the one each client attached to.
+/// Reports the fixture's first session as the one each client attached to,
+/// once `reported` has been left.
 private func renameIdentitySplitter(
-    _ sessions: LockedValue<[String: String]>
+    _ sessions: LockedValue<[String: String]>,
+    after reported: DispatchGroup? = nil
 ) -> TmuxPaneSplitter {
     TmuxPaneSplitter { _, _, command in
-        guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"),
-              let sessionID = sessions.load().values.first
+        guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") else {
+            return (0, "")
+        }
+        reported?.wait()
+        guard let sessionID = sessions.load().sorted(by: { $0.key < $1.key })
+            .first?.value
         else { return (0, "") }
+        return (
+            0,
+            "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                + "\t101\t789\t321\t/dev/ttys001\t\(sessionID)\t1000\t%9\n"
+        )
+    }
+}
+
+/// Reports each client as attached to the session its launch named when
+/// tmux was first asked, and to that same session after any rename. The
+/// identity command carries the launch's client token. The holds stall
+/// resize and identity commands while set.
+private func renameClientSplitter(
+    _ sessions: LockedValue<[String: String]>,
+    launches: LockedValue<[String]>,
+    sizingHold: LockedValue<DispatchGroup?> = LockedValue(nil),
+    identityHold: LockedValue<DispatchGroup?> = LockedValue(nil)
+) -> TmuxPaneSplitter {
+    let attached = LockedValue<[String: String]>([:])
+    return TmuxPaneSplitter { _, _, command in
+        if command.contains("ignore-size") {
+            sizingHold.load()?.wait()
+        }
+        guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") else {
+            return (0, "")
+        }
+        identityHold.load()?.wait()
+        guard let token = command.range(
+            of: "[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+            options: .regularExpression
+        ).map({ String(command[$0]) })
+        else { return (0, "") }
+        if attached.load()[token] == nil,
+           let launch = launches.load().last(where: { $0.contains(token) }) {
+            let unquoted = launch.filter { !"\\'\"".contains($0) }
+            let sessionID = sessions.load().first {
+                unquoted.contains("-t =\($0.key) ")
+            }?.value
+            attached.withLock { $0[token] = sessionID }
+        }
+        guard let sessionID = attached.load()[token] else { return (0, "") }
         return (
             0,
             "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"

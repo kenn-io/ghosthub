@@ -1,4 +1,4 @@
-public struct TmuxSessionIdentity: Equatable, Sendable {
+public struct TmuxSessionIdentity: Hashable, Sendable {
     public let serverPID: String
     public let sessionID: String
     public let createdAt: String

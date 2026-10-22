@@ -172,6 +172,8 @@ final class SceneTmuxSurfaceStoreStub: NativeSessionSurfaceStoring {
     private(set) var lastConfiguration: TerminalSurfaceConfiguration?
     private(set) var requestedKeys: [SurfaceKey] = []
     private(set) var removedKeys: [SurfaceKey] = []
+    /// Every launch command, readable from a pane splitter stub.
+    let launchCommands = LockedValue<[String]>([])
     private var retainedKeys: Set<SurfaceKey> = []
 
     func paneSurface(
@@ -183,6 +185,9 @@ final class SceneTmuxSurfaceStoreStub: NativeSessionSurfaceStoring {
         requestCount += 1
         lastConfiguration = configuration
         requestedKeys.append(key)
+        if let command = configuration.command {
+            launchCommands.withLock { $0.append(command) }
+        }
         return returnsSurface ? surface : nil
     }
 

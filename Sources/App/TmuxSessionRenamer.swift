@@ -197,7 +197,8 @@ struct TmuxSessionRenamer: Sendable {
             "-t",
             target,
             expectedIdentity.formatCondition,
-            "rename-session -t \(shellQuotedCommandArgument(target)) "
+            // `--` keeps a name such as `-work` from reading as a flag.
+            "rename-session -t \(shellQuotedCommandArgument(target)) -- "
                 + shellQuotedCommandArgument(newName),
             "display-message -p "
                 + shellQuotedCommandArgument(identityMismatchMarker),

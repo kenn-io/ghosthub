@@ -3,8 +3,9 @@ import Foundation
 import GhosthubTmux
 import GhosthubTransport
 
-/// Every scene keys its tmux presentations by session name, so a rename made
-/// in one window is published to all of them, including the one that made it.
+/// Every scene keys its tmux presentations by session name. Renames go into
+/// a log, kept as the latest name of each session, so a scene that cannot
+/// move a client when a rename lands can still apply it later.
 @MainActor
 final class TmuxSessionRenameCoordinator {
     struct Rename: Equatable, Sendable {
@@ -15,15 +16,38 @@ final class TmuxSessionRenameCoordinator {
         let identity: TmuxSessionIdentity
     }
 
+    struct Entry: Equatable, Sendable {
+        let sequence: UInt64
+        let rename: Rename
+    }
+
+    private struct SessionKey: Hashable {
+        let host: CommandHost
+        let identity: TmuxSessionIdentity
+    }
+
     static let shared = TmuxSessionRenameCoordinator()
 
-    private let subject = PassthroughSubject<Rename, Never>()
+    /// The sequence of the newest entry, or zero before any rename.
+    private(set) var sequence: UInt64 = 0
+    private var latest: [SessionKey: Entry] = [:]
+    private let subject = PassthroughSubject<Entry, Never>()
 
-    var renames: AnyPublisher<Rename, Never> {
+    var renames: AnyPublisher<Entry, Never> {
         subject.eraseToAnyPublisher()
     }
 
     func didRename(_ rename: Rename) {
-        subject.send(rename)
+        sequence &+= 1
+        let entry = Entry(sequence: sequence, rename: rename)
+        latest[SessionKey(host: rename.host, identity: rename.identity)] = entry
+        subject.send(entry)
+    }
+
+    func latestRename(
+        of identity: TmuxSessionIdentity,
+        on host: CommandHost
+    ) -> Entry? {
+        latest[SessionKey(host: host, identity: identity)]
     }
 }
