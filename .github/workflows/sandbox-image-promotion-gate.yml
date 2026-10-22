@@ -265,8 +265,8 @@ jobs:
           path: .dist/proposed-authority
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
-          version: '0.9.5'
-          checksum: 2cf10babba653310606f8b49876cfb679928669e7ddaa1fb41fb00ce73e64f66
+          version: '0.13.4'
+          checksum: 2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f
       - name: Audit complete promotion authority
         env:
           GH_TOKEN: ${{ steps.audit-token.outputs.token }}
