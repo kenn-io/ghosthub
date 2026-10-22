@@ -361,10 +361,10 @@ let package = Package(
     ],
     products: products,
     dependencies: [
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.10.0"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
         .package(
             url: "https://github.com/sparkle-project/Sparkle.git",
-            exact: "2.9.4"
+            exact: "2.10.0"
         ),
     ],
     targets: targets

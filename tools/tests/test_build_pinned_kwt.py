@@ -349,10 +349,6 @@ fi
         ).stdout
         == ""
     )
-    assert (
-        output.with_suffix(".revision").read_text()
-        == f"{second_revision} identity=4"
-    )
     assert second_revision in subprocess.run(
         [output, "--version"],
         check=True,
@@ -407,7 +403,10 @@ exec "{real_git}" "$@"
     assert fetch_log.read_text().splitlines() == ["fetch"]
 
 
-def test_rebuilds_helper_from_legacy_identity_stamp(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stamp_suffix", ["", " identity=4", " identity=4 go=1.27.2"])
+def test_rebuilds_helper_from_stale_build_stamp(
+    tmp_path: Path, stamp_suffix: str
+) -> None:
     repository, revision, _, fake_bin = bootstrap_fixture(tmp_path)
     output = tmp_path / "output" / "kwt"
     output.parent.mkdir()
@@ -418,7 +417,7 @@ def test_rebuilds_helper_from_legacy_identity_stamp(tmp_path: Path) -> None:
     )
     output.write_text(stale_helper)
     output.chmod(output.stat().st_mode | stat.S_IXUSR)
-    output.with_suffix(".revision").write_text(revision)
+    output.with_suffix(".revision").write_text(revision + stamp_suffix)
 
     result = subprocess.run(
         [
@@ -583,11 +582,17 @@ def test_stamps_pinned_source_identity_for_daemon_replacement(
             str(output),
         ],
         cwd=Path(__file__).parents[2],
+        env={**os.environ, "GOTOOLCHAIN": "local"},
         capture_output=True,
         text=True,
     )
 
     assert result.returncode == 0, result.stderr
+    metadata = subprocess.run(
+        ["go", "version", "-m", output], check=True, capture_output=True, text=True
+    ).stdout
+    compiler = (Path(__file__).parents[2] / "KWT_GO_VERSION").read_text().strip()
+    assert metadata.splitlines()[0].endswith(f": go{compiler}")
     identity = json.loads(
         subprocess.run(
             [output, "--version"],

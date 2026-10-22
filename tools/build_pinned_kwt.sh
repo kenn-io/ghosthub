@@ -3,6 +3,9 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 project_root="$(dirname "$script_dir")"
+# KWT includes Go's TLS verifier, so its compiler is a release input too.
+go_version="$(tr -d '[:space:]' < "$project_root/KWT_GO_VERSION")"
+export GOTOOLCHAIN="go${go_version}"
 
 locked=false
 if [[ $# -eq 5 && "$5" == "--locked" ]]; then
@@ -33,9 +36,9 @@ if [[ $# -eq 6 ]]; then
 fi
 stamp="${output}.revision"
 build_identity_schema=4
-stamp_value="${revision} identity=${build_identity_schema}"
+stamp_value="${revision} identity=${build_identity_schema} go=${go_version}"
 if [[ "$targeted" == true ]]; then
-  stamp_value="${revision} ${goos}/${goarch} identity=${build_identity_schema}"
+  stamp_value="${revision} ${goos}/${goarch} identity=${build_identity_schema} go=${go_version}"
 fi
 
 # The stamp records intent; only the binary can say which revision it is.

@@ -37,7 +37,17 @@ caches `KWT_REF` under `.build`, then stages that exact helper into the debug
 app. A developer can override the repository, revision, source directory, or
 binary path deliberately, but the default never embeds the system kwt.
 `bootstrap-kwt-variants` cross-compiles the complete remote matrix from the
-same pin. Each cross-compile retains its Go symbol table but omits debug
+same pin. The Bash and PowerShell builders select the exact compiler in
+`KWT_GO_VERSION` through `GOTOOLCHAIN`. Local cache stamps include this
+compiler pin, so changing it rebuilds helpers even when the KWT source is
+unchanged. Release, nightly, and acceptance CI install the same compiler.
+Update this pin when Go ships relevant security fixes; rebuilding the app
+alone does not update a cached helper's Go runtime. Inspect a built helper
+with `go version -m .build/kwt/kwt` and run `make test-essential-workflows`
+before accepting a new helper. The Go 1.27.3 pin includes the
+[eMudhra certificate verification fix](https://go.dev/doc/devel/release#go1.27.3).
+
+Each cross-compile retains its Go symbol table but omits debug
 information, then inspects that actual Mach-O, ELF, or PE artifact for the
 exact pinned version, revision, and revision timestamp before caching it.
 Before either debug or release packaging, every variant is also checked for
@@ -61,13 +71,14 @@ dependency is not part of Ghosthub's app binary or release obligations.
 
 ## Reproducible inputs
 
-The root `RELEASE_VERSION` and `KWT_REVISION` files plus
+The root `RELEASE_VERSION`, `KWT_REVISION`, and `KWT_GO_VERSION` files plus
 `.github/workflows/release.yml` pin the
 release inputs that must move deliberately:
 
 - the release version in `RELEASE_VERSION`
 - the full `kenn-io/kwt` source revision in `KWT_REVISION`
-- Sparkle 2.9.4 as an exact Swift package dependency
+- the Go compiler in `KWT_GO_VERSION` for every bundled KWT helper
+- Sparkle 2.10.0 as an exact Swift package dependency
 - Xcode 26.0.1
 - Zig 0.15.2 and its archive checksum
 - immutable revisions for every GitHub Action

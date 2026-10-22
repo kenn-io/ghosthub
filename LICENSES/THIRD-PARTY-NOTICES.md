@@ -11,7 +11,7 @@ revisions and is copied verbatim into `Ghosthub.app/Contents/Resources/Licenses`
 | GRDB.swift | `GRDB-MIT.txt` |
 | kwt | `kwt-Apache-2.0.txt`, `kwt-NOTICE.txt` |
 | Fantastty-derived terminal integration | `fantastty-MIT.txt` |
-| Sparkle 2.9.4 | `Sparkle-LICENSE.txt` |
+| Sparkle 2.10.0 | `Sparkle-LICENSE.txt` |
 | Zig compiler runtime and standard library | `Zig-MIT.txt` |
 | zlib | `zlib.txt` |
 | libpng | `libpng.txt` |

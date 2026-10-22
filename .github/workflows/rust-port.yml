@@ -10,6 +10,7 @@ on:
       - .github/workflows/rust-port.yml
       - Makefile
       - KWT_REVISION
+      - KWT_GO_VERSION
       - tools/build_pinned_kwt.sh
       - tools/run_rust_ssh_fixture.sh
   pull_request:
@@ -21,6 +22,7 @@ on:
       - .github/workflows/rust-port.yml
       - Makefile
       - KWT_REVISION
+      - KWT_GO_VERSION
       - tools/build_pinned_kwt.sh
       - tools/run_rust_ssh_fixture.sh
   workflow_dispatch:
@@ -68,7 +70,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: stable
+          go-version-file: KWT_GO_VERSION
           cache: false
 
       - name: Install GPUI Linux dependencies

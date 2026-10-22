@@ -151,7 +151,7 @@ jobs:
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version-file: .release-inputs/kwt-source/go.mod
+          go-version-file: KWT_GO_VERSION
           cache-dependency-path: .release-inputs/kwt-source/go.sum
           cache: false
 
@@ -219,12 +219,13 @@ jobs:
 
       - name: Build pinned kwt helper
         shell: bash
-        working-directory: .release-inputs/kwt-source
         run: |
           kwt_binary="$RUNNER_TEMP/kwt"
-          go build -trimpath \
-            -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=$KWT_REF" \
-            -o "$kwt_binary" ./cmd/kwt
+          tools/build_pinned_kwt.sh \
+            "https://github.com/${KWT_REPOSITORY}.git" \
+            "$KWT_REF" \
+            "$GITHUB_WORKSPACE/.release-inputs/kwt-source" \
+            "$kwt_binary"
           kwt_archs="$(lipo -archs "$kwt_binary")"
           if [[ "$kwt_archs" != "arm64" ]]; then
             echo "Embedded kwt must be an arm64 Mach-O; found: $kwt_archs" >&2

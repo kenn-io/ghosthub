@@ -55,7 +55,9 @@ if ($dirty.Count -ne 0) {
 $previousGoos = $env:GOOS
 $previousGoarch = $env:GOARCH
 $previousCgo = $env:CGO_ENABLED
+$previousToolchain = $env:GOTOOLCHAIN
 try {
+    $env:GOTOOLCHAIN = "go" + (Get-Content -Raw (Join-Path $repoRoot "KWT_GO_VERSION")).Trim()
     $env:GOARCH = $Architecture
     $env:CGO_ENABLED = "0"
     foreach ($targetOs in @("linux", "windows")) {
@@ -101,4 +103,5 @@ finally {
     $env:GOOS = $previousGoos
     $env:GOARCH = $previousGoarch
     $env:CGO_ENABLED = $previousCgo
+    $env:GOTOOLCHAIN = $previousToolchain
 }
