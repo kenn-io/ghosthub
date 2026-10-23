@@ -5,6 +5,19 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-10-23
+
+### Fixed
+
+- The bundled kwt helper now rejects certificates from the compromised
+  eMudhra intermediate CAs when it connects to GitHub, for example while
+  importing a pull request. This applies to the local helper and to the
+  copies Ghosthub installs on remote hosts after you update.
+- With Git 2.56 or later, Ghosthub can again inspect and clean up a worktree
+  whose Git registration is damaged.
+- Retrying a canceled new-branch worktree no longer reuses a damaged spare
+  checkout.
+
 ## [0.11.2] - 2026-10-15
 
 ### Fixed
