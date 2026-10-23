@@ -50,6 +50,11 @@ Linux and macOS. The compiler warning hook runs only on macOS; macOS CI runs
 the full `make swift-warning-check`. Linux commits need no
 hook exceptions.
 
+CI installs the same SwiftFormat release that `mise.toml` pins and fails if the
+two disagree. To change the version, update `mise.toml` and the version and
+SHA-256 of `swiftformat.zip` in the "Install SwiftFormat" step of
+`.github/workflows/ci.yml` together, then run `make format`.
+
 Install the pinned formatter through mise and make it available when committing:
 
 ```bash

@@ -765,14 +765,14 @@ install-hooks:
 
 format:
 	@if ! command -v swiftformat >/dev/null 2>&1; then \
-		echo "swiftformat not found. Install with: brew install swiftformat" >&2; \
+		echo "swiftformat not found. Install the version pinned in mise.toml with: mise install swiftformat" >&2; \
 		exit 1; \
 	fi
 	swiftformat --quiet .
 
 format-check:
 	@if ! command -v swiftformat >/dev/null 2>&1; then \
-		echo "swiftformat not found. Install with: brew install swiftformat" >&2; \
+		echo "swiftformat not found. Install the version pinned in mise.toml with: mise install swiftformat" >&2; \
 		exit 1; \
 	fi
 	swiftformat --lint .
