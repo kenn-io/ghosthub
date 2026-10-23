@@ -1996,7 +1996,9 @@ final class NativeTmuxSessionCoordinator {
     /// still attached to the same session. Returns false, and leaves both
     /// attached, when tmux has not identified either client or refuses. It
     /// also returns false when the duplicate was relaunched meanwhile, so
-    /// the caller never closes the new attachment.
+    /// the caller never closes the new attachment. The detached client's
+    /// exit can remove its attachment before tmux replies; that alone is
+    /// not a relaunch.
     func detachDuplicateClient(
         _ duplicate: BorrowedTmuxSessionHandle,
         keeping kept: BorrowedTmuxSessionHandle
@@ -2016,8 +2018,11 @@ final class NativeTmuxSessionCoordinator {
                 expectedIdentity: nil
             )
         )
-        return detached
-            && attachments[duplicate.id]?.id == duplicateAttachment.id
+        guard detached else { return false }
+        if let attachment = attachments[duplicate.id] {
+            return attachment.id == duplicateAttachment.id
+        }
+        return !provisioningHandles.contains(duplicate.id)
     }
 
     func requestPaneSplit(

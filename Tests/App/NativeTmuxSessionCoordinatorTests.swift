@@ -631,6 +631,59 @@ struct NativeTmuxSessionCoordinatorTests {
         await coordinator.shutdown()
     }
 
+    @Test("a duplicate detach still reports success after its client exits")
+    func duplicateDetachSurvivesClientExit() async throws {
+        let detachGate = BlockingGate()
+        defer { detachGate.open() }
+        let store = RecordingNativeSessionSurfaceStore()
+        let hostID = UUID()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("detach-client") {
+                    detachGate.block()
+                    return (0, "")
+                }
+                guard command.contains(
+                    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                ) else { return (0, "") }
+                return (0, coordinatorSplitClientOutput)
+            }
+        )
+        var handles: [BorrowedTmuxSessionHandle] = []
+        for name in ["kept", "duplicate"] {
+            let handle = coordinator.attach(
+                hostID: hostID,
+                name: name,
+                host: .local,
+                sessionIdentity: coordinatorSplitIdentity
+            )
+            await waitUntilMainActor {
+                _ = coordinator.surface(handle: handle)
+                return coordinator.attachedSessionIdentity(handle)
+                    == coordinatorSplitIdentity
+            }
+            handles.append(handle)
+        }
+        let duplicate = handles[1]
+        let detach = Task {
+            await coordinator.detachDuplicateClient(
+                duplicate,
+                keeping: handles[0]
+            )
+        }
+        await detachGate.waitUntilBlocked()
+
+        // tmux detached the client, which exits before tmux replies.
+        let close = try #require(store.surface.closeObservers[duplicate.id])
+        close(true, nil)
+        detachGate.open()
+
+        #expect(await detach.value)
+        await coordinator.shutdown()
+    }
+
     @Test("tmux older than 3.4 captures identity without split shortcuts")
     func oldTmuxCapturesIdentityWithoutSplitHandler() async {
         let store = RecordingNativeSessionSurfaceStore()
