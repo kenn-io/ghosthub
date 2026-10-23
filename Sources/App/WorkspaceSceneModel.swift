@@ -941,6 +941,10 @@ final class WorkspaceSceneModel: ObservableObject {
     private var tmuxRenameSequenceByHost: [UUID: UInt64] = [:]
     /// Hosts with a client still waiting to move to its session's new name.
     private var pendingTmuxRenameHostIDs: Set<UUID> = []
+    /// tmux lookups, by handle ID, of the client a duplicate close keeps.
+    private var tmuxDuplicateKeeperChecks: [UUID: Task<Void, Never>] = [:]
+    /// The client tmux just reported as still attached to the session.
+    private var verifiedTmuxDuplicateKeeperID: UUID?
     private var activityControllerBacking: ActivityMonitoringController?
     var activityController: ActivityMonitoringController {
         guard let activityControllerBacking else {
@@ -2538,6 +2542,10 @@ final class WorkspaceSceneModel: ObservableObject {
         pendingAlwaysLiveTmuxSurfaceHandleIDs.removeAll()
         cancelPendingRestoration()
         cancelPendingHerdrShortcutNavigation()
+        for check in tmuxDuplicateKeeperChecks.values {
+            check.cancel()
+        }
+        tmuxDuplicateKeeperChecks.removeAll()
         for presentation in retainedTmuxPresentations.values {
             presentation.previewPromotionID = nil
             presentation.previewPromotionNavigationRevision = nil
@@ -10236,13 +10244,16 @@ final class WorkspaceSceneModel: ObservableObject {
             selection,
             hostSummary: host
         )
-        // A workspace row attaching by name would accept any same-name
-        // session. Without kwt's identity flags, fence the attach on the
-        // discovered identity so it rejects a replacement session.
+        // A row attaching by name would accept any same-name session, and a
+        // launch still provisioning when its session is renamed would miss
+        // it. Without kwt's identity flags, fence the attach on the
+        // discovered identity so it follows a rename by session ID and
+        // rejects a replacement session.
         let isWorkspaceBound = selection.worktreeID != nil
             || selection.directoryWorkspaceID != nil
         let fencedAttachIdentity = expectedAttachIdentity
-            ?? (isWorkspaceBound && !openWorkspace ? discoveredIdentity : nil)
+            ?? ((isWorkspaceBound || Self.isPlainTmuxSession(selection))
+                && !openWorkspace ? discoveredIdentity : nil)
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -11835,6 +11846,7 @@ final class WorkspaceSceneModel: ObservableObject {
         while moved {
             moved = false
             waiting = []
+            var blocked: [TmuxPresentationKey: TmuxPresentationKey] = [:]
             for presentation in Array(retainedTmuxPresentations.values) {
                 let selection = presentation.selection
                 let key = TmuxPresentationKey(selection)
@@ -11864,7 +11876,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 } else if retainedTmuxPresentations[key] === presentation {
                     waiting.insert(key)
                     waiting.insert(TmuxPresentationKey(renamed))
+                    blocked[key] = TmuxPresentationKey(renamed)
                 }
+            }
+            if !moved {
+                moved = parkTmuxRenameCycle(blocked)
             }
         }
         if waiting.isEmpty {
@@ -11873,6 +11889,35 @@ final class WorkspaceSceneModel: ObservableObject {
             pendingTmuxRenameHostIDs.insert(hostID)
         }
         return waiting
+    }
+
+    /// Sessions that swap names in tmux each wait for the other's name.
+    /// When every client in such a cycle can move, one steps aside to a
+    /// name tmux never gives a session, so the others can move into the
+    /// names it frees and it can then take the last one.
+    private func parkTmuxRenameCycle(
+        _ blocked: [TmuxPresentationKey: TmuxPresentationKey]
+    ) -> Bool {
+        for start in blocked.keys {
+            var cycle = [start]
+            var current = start
+            while let next = blocked[current], next != start {
+                guard !cycle.contains(next) else { break }
+                cycle.append(next)
+                current = next
+            }
+            guard blocked[current] == start else { continue }
+            let presentations = cycle.compactMap { retainedTmuxPresentations[$0] }
+            guard presentations.count == cycle.count,
+                  presentations.allSatisfy(tmuxPresentationCanMove),
+                  let parked = presentations.first
+            else { continue }
+            var aside = parked.selection
+            // tmux replaces a colon in a session name, so no session has one.
+            aside.name = "ghosthub:rename:\(parked.handle.id.uuidString)"
+            return rekeyTmuxPresentation(parked, to: aside)
+        }
+        return false
     }
 
     /// Moves a client to its session's new name and returns false when it
@@ -11904,10 +11949,14 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         guard existingIdentity == identity else { return false }
         let keepsMovingClient = activeBorrowedTmuxHandle == presentation.handle
-        guard isConfirmedAttached(
-            keepsMovingClient ? presentation : existing,
-            to: identity
-        ) else { return false }
+        let kept = keepsMovingClient ? presentation : existing
+        guard isConfirmedAttached(kept, to: identity) else { return false }
+        // The kept client may have switched sessions since tmux last
+        // reported it. Ask again, and close nothing until tmux answers.
+        guard verifiedTmuxDuplicateKeeperID == kept.handle.id else {
+            checkTmuxDuplicateKeeper(kept, identity: identity)
+            return false
+        }
         if keepsMovingClient {
             invalidateBorrowedTmuxSession(existing.selection)
             return rekeyTmuxPresentation(presentation, to: renamedSelection)
@@ -11976,6 +12025,26 @@ final class WorkspaceSceneModel: ObservableObject {
             && nativeTmuxSessionCoordinator.attachedSessionIdentity(
                 presentation.handle
             ) == identity
+    }
+
+    private func checkTmuxDuplicateKeeper(
+        _ kept: RetainedTmuxPresentation,
+        identity: TmuxSessionIdentity
+    ) {
+        let handle = kept.handle
+        guard tmuxDuplicateKeeperChecks[handle.id] == nil else { return }
+        tmuxDuplicateKeeperChecks[handle.id] = Task { [weak self] in
+            let current = await self?.nativeTmuxSessionCoordinator
+                .revalidateAttachedSessionIdentity(handle)
+            guard let self else { return }
+            tmuxDuplicateKeeperChecks.removeValue(forKey: handle.id)
+            guard !Task.isCancelled, !isShutDown, current == identity else {
+                return
+            }
+            verifiedTmuxDuplicateKeeperID = handle.id
+            defer { verifiedTmuxDuplicateKeeperID = nil }
+            followTmuxRenames(hostID: handle.hostID)
+        }
     }
 
     private static func isPlainTmuxSession(

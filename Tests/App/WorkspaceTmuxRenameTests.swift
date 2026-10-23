@@ -285,6 +285,7 @@ extension WorkspaceTmuxDiscoveryTests {
         tmuxResolved.enter()
         var models: [WorkspaceSceneModel] = []
         var stores: [SceneTmuxSurfaceStoreStub] = []
+        let clients = RenameTmuxClients()
         for index in 0 ..< 2 {
             let store = SceneTmuxSurfaceStoreStub()
             let model = try makeModel(
@@ -298,6 +299,11 @@ extension WorkspaceTmuxDiscoveryTests {
                     }
                     return successfulTmuxResolution("/usr/bin/tmux")
                 },
+                nativeTmuxPaneSplitter: renameClientSplitter(
+                    names,
+                    launches: store.launchCommands,
+                    clients: index == 1 ? clients : RenameTmuxClients()
+                ),
                 tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
                 tmuxSessionRenamer: { selection, newName, _, _ in
                     names.withLock { renameFixtureSession(
@@ -342,6 +348,10 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(connecting.retainedBorrowedTmuxHandle(for: desk) == nil)
         #expect(connecting.activeBorrowedTmuxSelection == work)
         #expect(stores[1].removedKeys.isEmpty)
+        // The launch ran after the rename and still reached the session.
+        await waitUntilMainActor {
+            clients.attached.load().values.contains("$2")
+        }
         for model in models {
             await model.shutdown()
         }
@@ -358,7 +368,8 @@ extension WorkspaceTmuxDiscoveryTests {
         let identityHold = LockedValue<DispatchGroup?>(nil)
         var models: [WorkspaceSceneModel] = []
         var stores: [SceneTmuxSurfaceStoreStub] = []
-        for _ in 0 ..< 2 {
+        let clients = RenameTmuxClients()
+        for index in 0 ..< 2 {
             let store = SceneTmuxSurfaceStoreStub()
             let model = try makeModel(
                 database: environment.database,
@@ -371,6 +382,7 @@ extension WorkspaceTmuxDiscoveryTests {
                 nativeTmuxPaneSplitter: renameClientSplitter(
                     names,
                     launches: store.launchCommands,
+                    clients: index == 1 ? clients : RenameTmuxClients(),
                     sizingHold: sizingHold,
                     identityHold: identityHold
                 ),
@@ -434,8 +446,25 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(window.retainedBorrowedTmuxHandle(for: desk)?.id == moving.id)
         #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == kept.id)
 
+        // The terminal that stays switches to another session before tmux
+        // is asked again, so neither terminal may close.
+        let keptToken = try #require(stores[1].launchCommands.load()
+            .last(where: { $0.contains("$2") })
+            .flatMap(RenameTmuxClients.token(in:)))
+        clients.switched.withLock { $0[keptToken] = "$1" }
         identityHold.store(nil)
         identity.leave()
+        await waitUntilMainActor {
+            window.refreshTmuxSessionDiscovery()
+            return clients.switchedReports.load() > 0
+        }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(window.retainedBorrowedTmuxHandle(for: desk)?.id == moving.id)
+        #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == kept.id)
+
+        clients.switched.withLock { $0.removeAll() }
         await waitUntilMainActor {
             window.refreshTmuxSessionDiscovery()
             return window.retainedBorrowedTmuxHandle(for: desk) == nil
@@ -520,6 +549,55 @@ extension WorkspaceTmuxDiscoveryTests {
         for model in models {
             await model.shutdown()
         }
+    }
+
+    @MainActor
+    @Test("sessions that swap names in tmux keep their terminals")
+    func sessionsSwapNamesInTmux() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["desk": "$2", "notes": "$3"])
+        let store = SceneTmuxSurfaceStoreStub()
+        let window = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: renameClientSplitter(
+                names,
+                launches: store.launchCommands
+            ),
+            tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
+            tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator()
+        )
+        window.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            window.snapshot.hosts[0].tmuxSessions.count == 2
+        }
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        let notes = WorkspaceTmuxSessionSelection(hostID: hostID, name: "notes")
+        window.openBorrowedTmuxSession(notes)
+        await connectActiveRenameSession(window, store: store)
+        let wasNotes = try #require(window.retainedBorrowedTmuxHandle(for: notes))
+        window.openBorrowedTmuxSession(desk)
+        await connectActiveRenameSession(window, store: store)
+        let wasDesk = try #require(window.retainedBorrowedTmuxHandle(for: desk))
+
+        names.store(["desk": "$3", "notes": "$2"])
+        window.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            window.prepareActiveBorrowedTmuxSurface()
+            return window.retainedBorrowedTmuxHandle(for: notes)?.id
+                == wasDesk.id
+        }
+        #expect(window.retainedBorrowedTmuxHandle(for: desk)?.id == wasNotes.id)
+        #expect(window.activeBorrowedTmuxSelection == notes)
+        #expect(window.activeBorrowedTmuxSessionIsConnected)
+        #expect(store.removedKeys.isEmpty)
+        await window.shutdown()
     }
 
     @MainActor
@@ -831,18 +909,35 @@ private func renameIdentitySplitter(
     }
 }
 
-/// Reports each client as attached to the session its launch named when
-/// tmux was first asked, and to that same session after any rename. The
+/// The tmux clients a fake splitter has seen, by launch client token.
+private final class RenameTmuxClients: Sendable {
+    /// The session each client attached to, by session ID.
+    let attached = LockedValue<[String: String]>([:])
+    /// Sessions that clients switched to after tmux first reported them.
+    let switched = LockedValue<[String: String]>([:])
+    let switchedReports = LockedValue(0)
+
+    static func token(in command: String) -> String? {
+        command.range(
+            of: "[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+            options: .regularExpression
+        ).map { String(command[$0]) }
+    }
+}
+
+/// Reports each client as attached to the session its launch targeted when
+/// tmux was first asked, and to that same session after any rename. A
+/// launch that names a session no longer listed attaches to nothing. The
 /// identity command carries the launch's client token. The holds stall
 /// resize and identity commands while set.
 private func renameClientSplitter(
     _ sessions: LockedValue<[String: String]>,
     launches: LockedValue<[String]>,
+    clients: RenameTmuxClients = RenameTmuxClients(),
     sizingHold: LockedValue<DispatchGroup?> = LockedValue(nil),
     identityHold: LockedValue<DispatchGroup?> = LockedValue(nil)
 ) -> TmuxPaneSplitter {
-    let attached = LockedValue<[String: String]>([:])
-    return TmuxPaneSplitter { _, _, command in
+    TmuxPaneSplitter { _, _, command in
         if command.contains("ignore-size") {
             sizingHold.load()?.wait()
         }
@@ -850,20 +945,30 @@ private func renameClientSplitter(
             return (0, "")
         }
         identityHold.load()?.wait()
-        guard let token = command.range(
-            of: "[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}",
-            options: .regularExpression
-        ).map({ String(command[$0]) })
-        else { return (0, "") }
-        if attached.load()[token] == nil,
+        guard let token = RenameTmuxClients.token(in: command) else {
+            return (0, "")
+        }
+        if let switched = clients.switched.load()[token],
+           clients.attached.load()[token] != nil {
+            clients.switchedReports.withLock { $0 += 1 }
+            return (
+                0,
+                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
+                    + "\t101\t789\t321\t/dev/ttys001\t\(switched)\t1000\t%9\n"
+            )
+        }
+        if clients.attached.load()[token] == nil,
            let launch = launches.load().last(where: { $0.contains(token) }) {
             let unquoted = launch.filter { !"\\'\"".contains($0) }
             let sessionID = sessions.load().first {
                 unquoted.contains("-t =\($0.key) ")
+                    || unquoted.contains("-t \($0.value) ")
             }?.value
-            attached.withLock { $0[token] = sessionID }
+            clients.attached.withLock { $0[token] = sessionID }
         }
-        guard let sessionID = attached.load()[token] else { return (0, "") }
+        guard let sessionID = clients.attached.load()[token] else {
+            return (0, "")
+        }
         return (
             0,
             "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"

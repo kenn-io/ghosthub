@@ -174,14 +174,23 @@ window's last listing wins and a later listing is current. Each discovery also
 moves any presentation whose session identity is now listed under another name,
 including after a rename made in tmux itself or when a new session reuses the
 old name. Always Live leaves both names of a waiting presentation alone until
-it moves.
+it moves. When sessions swap names, each presentation waits for the other's
+name. If every presentation in that cycle can move, one is rekeyed to a name
+tmux never gives a session, which frees its name for the rest of the cycle.
+
+A standalone session attaches by its discovered `session_id` behind the same
+identity condition that rename uses. A launch that is still provisioning when
+its session is renamed therefore reaches the renamed session, and refuses a
+replacement session that took the old name.
 
 A presentation under the destination name stays while its own session is
 still listed, because that session moves on its own. It is discarded only after
 its attachment closed or its session is gone from a fresh listing. If a window
 holds two presentations of the same session, it keeps the active one and closes
 the other only after tmux has reported the kept client as attached to that
-session. Until then both stay open, so the session always keeps a client.
+session. Just before the close it asks tmux again, because the kept client may
+have switched sessions since. Until tmux confirms it, both stay open, so the
+session always keeps a client.
 The saved sidebar position moves to the new name.
 
 Ghosthub applies the selected Tmux Theme when it creates a new bare tmux
