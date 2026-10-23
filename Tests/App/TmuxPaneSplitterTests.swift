@@ -1470,4 +1470,68 @@ struct TmuxPaneSplitterTests {
             #expect(panes.stdout.split(whereSeparator: \.isNewline).count == 1)
         }
     }
+
+    @Test("a duplicate detaches only while the kept client stays on the session")
+    func duplicateDetachRequiresKeptClient() async throws {
+        guard case let .success(tmuxPath) =
+            TmuxBinaryResolver().resolveTmuxPath()
+        else { return }
+        guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "duplicate-detach",
+            sessions: ["work", "other"]
+        )
+        defer { server.stop() }
+        let socketName = server.socketName
+        let splitter = TmuxPaneSplitter()
+        func tmux(_ arguments: String...) -> String {
+            AccountCommandRunner.runProcess(
+                executable: tmuxPath,
+                arguments: ["-L", socketName] + arguments,
+                timeout: 5
+            ).stdout
+        }
+        var targets: [TmuxPaneSplitTarget] = []
+        var clients: [TmuxAttachedClientIdentity] = []
+        var processes: [TestTmuxClient] = []
+        defer { processes.forEach { $0.stop() } }
+        for _ in 0 ..< 2 {
+            let token = UUID().uuidString.lowercased()
+            let process = try TestTmuxClient(
+                tmuxPath: tmuxPath,
+                socketName: socketName,
+                sessionName: "work",
+                clientToken: token
+            )
+            processes.append(process)
+            _ = try await process.publishedTTY()
+            var target = TmuxPaneSplitTarget(
+                host: .local,
+                tmuxPath: tmuxPath,
+                sessionName: "work",
+                socketName: socketName,
+                sshConnectionArguments: [],
+                clientToken: token
+            )
+            let client = try await splitter.clientIdentity(target: target).get()
+            target.expectedClient = client
+            targets.append(target)
+            clients.append(client)
+        }
+        let kept = clients[0]
+        let duplicate = clients[1]
+        // The kept client moved to another session after tmux reported it.
+        _ = tmux("switch-client", "-c", kept.clientTTY, "-t", "=other:")
+        _ = tmux("set-option", "-g", "destroy-unattached", "on")
+        #expect(await !splitter.detachClient(duplicate, keeping: targets[0]))
+        #expect(tmux("list-clients", "-t", "=work:", "-F", "#{client_tty}")
+            .contains(duplicate.clientTTY))
+
+        _ = tmux("switch-client", "-c", kept.clientTTY, "-t", "=work:")
+        #expect(await splitter.detachClient(duplicate, keeping: targets[0]))
+        let attached = tmux("list-clients", "-t", "=work:", "-F", "#{client_tty}")
+            .split(whereSeparator: \.isNewline).map(String.init)
+        #expect(attached == [kept.clientTTY])
+    }
 }

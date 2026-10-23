@@ -446,17 +446,14 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(window.retainedBorrowedTmuxHandle(for: desk)?.id == moving.id)
         #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == kept.id)
 
-        // The terminal that stays switches to another session before tmux
-        // is asked again, so neither terminal may close.
-        let keptToken = try #require(stores[1].launchCommands.load()
-            .last(where: { $0.contains("$2") })
-            .flatMap(RenameTmuxClients.token(in:)))
-        clients.switched.withLock { $0[keptToken] = "$1" }
+        // The terminal that stays has switched to another session, so tmux
+        // refuses to detach the other one and neither may close.
+        clients.keeperSwitched.store(true)
         identityHold.store(nil)
         identity.leave()
         await waitUntilMainActor {
             window.refreshTmuxSessionDiscovery()
-            return clients.switchedReports.load() > 0
+            return clients.refusedDetaches.load() > 0
         }
         for _ in 0 ..< 20 {
             await Task.yield()
@@ -464,7 +461,7 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(window.retainedBorrowedTmuxHandle(for: desk)?.id == moving.id)
         #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == kept.id)
 
-        clients.switched.withLock { $0.removeAll() }
+        clients.keeperSwitched.store(false)
         await waitUntilMainActor {
             window.refreshTmuxSessionDiscovery()
             return window.retainedBorrowedTmuxHandle(for: desk) == nil
@@ -913,9 +910,10 @@ private func renameIdentitySplitter(
 private final class RenameTmuxClients: Sendable {
     /// The session each client attached to, by session ID.
     let attached = LockedValue<[String: String]>([:])
-    /// Sessions that clients switched to after tmux first reported them.
-    let switched = LockedValue<[String: String]>([:])
-    let switchedReports = LockedValue(0)
+    /// The kept client has switched sessions, so tmux refuses to detach a
+    /// duplicate.
+    let keeperSwitched = LockedValue(false)
+    let refusedDetaches = LockedValue(0)
 
     static func token(in command: String) -> String? {
         command.range(
@@ -941,21 +939,20 @@ private func renameClientSplitter(
         if command.contains("ignore-size") {
             sizingHold.load()?.wait()
         }
+        if command.contains("detach-client"), clients.keeperSwitched.load() {
+            clients.refusedDetaches.withLock { $0 += 1 }
+            let marker = command.range(
+                of: "GHOSTHUB_TMUX_CLIENT_DETACH_REFUSED_[0-9A-F-]{36}",
+                options: .regularExpression
+            ).map { String(command[$0]) } ?? ""
+            return (0, marker + "\n")
+        }
         guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") else {
             return (0, "")
         }
         identityHold.load()?.wait()
         guard let token = RenameTmuxClients.token(in: command) else {
             return (0, "")
-        }
-        if let switched = clients.switched.load()[token],
-           clients.attached.load()[token] != nil {
-            clients.switchedReports.withLock { $0 += 1 }
-            return (
-                0,
-                "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
-                    + "\t101\t789\t321\t/dev/ttys001\t\(switched)\t1000\t%9\n"
-            )
         }
         if clients.attached.load()[token] == nil,
            let launch = launches.load().last(where: { $0.contains(token) }) {

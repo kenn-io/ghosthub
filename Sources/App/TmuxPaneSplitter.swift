@@ -45,6 +45,8 @@ struct TmuxPaneSplitter: Sendable {
         "GHOSTHUB_TMUX_SPLIT_IDENTITY_MISMATCH"
     private static let sizingMismatchMarker =
         "GHOSTHUB_TMUX_CLIENT_SIZING_MISMATCH"
+    private static let detachRefusedMarker =
+        "GHOSTHUB_TMUX_CLIENT_DETACH_REFUSED"
     typealias Runner = @Sendable (
         CommandHost,
         [String],
@@ -207,24 +209,11 @@ struct TmuxPaneSplitter: Sendable {
             mismatchMarker: mismatchMarker,
             hookIndex: hookIndex
         )
-        let result = await run(command: command, target: target)
-        if Task.isCancelled {
-            let cleanup = TmuxAttachedClientGuard.cleanupCommand(
-                tmuxPath: target.tmuxPath,
-                socketName: target.socketName,
-                hookIndex: hookIndex
-            )
-            let runner = runner
-            let cleanupTask = Task.detached(priority: .userInitiated) {
-                runner(
-                    target.host,
-                    target.sshConnectionArguments,
-                    cleanup
-                )
-            }
-            _ = await cleanupTask.value
-            return nil
-        }
+        guard let result = await runGuarded(
+            command: command,
+            hookIndex: hookIndex,
+            target: target
+        ) else { return nil }
         if result.diagnostic.split(whereSeparator: \.isNewline)
             .contains(Substring(mismatchMarker)) {
             return TmuxPaneSplitFailure(
@@ -241,6 +230,66 @@ struct TmuxPaneSplitter: Sendable {
             sessionName: target.sessionName,
             status: result.status,
             diagnostic: Self.normalizedDiagnostic(result.diagnostic)
+        )
+    }
+
+    /// Detaches `duplicate` only while the target's client is still attached
+    /// to the same session. tmux checks and detaches in one command queue, so
+    /// the detach never takes the session's last client.
+    func detachClient(
+        _ duplicate: TmuxAttachedClientIdentity,
+        keeping target: TmuxPaneSplitTarget
+    ) async -> Bool {
+        guard Self.platform(for: target.host) == .posix,
+              let keeper = target.expectedClient
+        else { return false }
+        let marker = Self.detachRefusedMarker + "_\(UUID().uuidString)"
+        let hookIndex = Int.random(in: 1_000_000_000 ... 2_000_000_000)
+        let command = Self.detachCommand(
+            tmuxPath: target.tmuxPath,
+            socketName: target.socketName,
+            keeper: keeper,
+            duplicate: duplicate,
+            marker: marker,
+            hookIndex: hookIndex
+        )
+        guard let result = await runGuarded(
+            command: command,
+            hookIndex: hookIndex,
+            target: target
+        ) else { return false }
+        return result.status == 0
+            && !result.diagnostic.split(whereSeparator: \.isNewline)
+            .contains(Substring(marker))
+    }
+
+    static func detachCommand(
+        tmuxPath: String,
+        socketName: String?,
+        keeper: TmuxAttachedClientIdentity,
+        duplicate: TmuxAttachedClientIdentity,
+        marker: String,
+        hookIndex: Int
+    ) -> String {
+        let duplicateClient = "#{&&:"
+            + "#{==:#{client_pid},\(duplicate.clientPID)},"
+            + "#{&&:"
+            + "#{==:#{client_created},\(duplicate.clientCreatedAt)},"
+            + "#{==:#{client_tty},\(duplicate.clientTTY)}}}"
+        let detach = [
+            "if-shell", "-F", "#{==:#{L:#{?\(duplicateClient),1,}},1}",
+            ["detach-client", "-t", duplicate.clientTTY]
+                .map(shellQuotedCommandArgument).joined(separator: " "),
+            "display-message -p " + shellQuotedCommandArgument(marker),
+        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        return TmuxAttachedClientGuard.command(
+            tmuxPath: tmuxPath,
+            socketName: socketName,
+            expectedClient: keeper,
+            marker: marker,
+            hookIndex: hookIndex,
+            action: detach,
+            scope: .client
         )
     }
 
@@ -348,6 +397,32 @@ struct TmuxPaneSplitter: Sendable {
             ))
         }
         return .success(client)
+    }
+
+    /// Runs a `TmuxAttachedClientGuard` command and returns nil when the task
+    /// is cancelled, after removing the hook the cancelled command set.
+    private func runGuarded(
+        command: String,
+        hookIndex: Int,
+        target: TmuxPaneSplitTarget
+    ) async -> (status: Int32, diagnostic: String)? {
+        let result = await run(command: command, target: target)
+        guard Task.isCancelled else { return result }
+        let cleanup = TmuxAttachedClientGuard.cleanupCommand(
+            tmuxPath: target.tmuxPath,
+            socketName: target.socketName,
+            hookIndex: hookIndex
+        )
+        let runner = runner
+        let cleanupTask = Task.detached(priority: .userInitiated) {
+            runner(
+                target.host,
+                target.sshConnectionArguments,
+                cleanup
+            )
+        }
+        _ = await cleanupTask.value
+        return nil
     }
 
     private func run(
