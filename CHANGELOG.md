@@ -13,10 +13,11 @@ test, and documentation-only changes are omitted.
   eMudhra intermediate CAs when it connects to GitHub, for example while
   importing a pull request. This applies to the local helper and to the
   copies Ghosthub installs on remote hosts after you update.
-- With Git 2.56 or later, Ghosthub can again inspect and clean up a worktree
-  whose Git registration is damaged.
-- Retrying a canceled new-branch worktree no longer reuses a damaged spare
-  checkout.
+- With Git 2.56 or later, Ghosthub can again show and remove a worktree
+  whose Git link is broken. Before, it stopped with a Git error.
+- After you cancel creating a worktree on a new branch, trying again now
+  works. Before, the retry could reuse the half-made checkout the canceled
+  attempt left behind.
 
 ## [0.11.2] - 2026-10-15
 
