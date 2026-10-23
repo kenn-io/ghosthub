@@ -1521,6 +1521,14 @@ struct TmuxPaneSplitterTests {
         }
         let kept = clients[0]
         let duplicate = clients[1]
+        // The duplicate moved to another session, where it may be the only
+        // client.
+        _ = tmux("switch-client", "-c", duplicate.clientTTY, "-t", "=other:")
+        #expect(await !splitter.detachClient(duplicate, keeping: targets[0]))
+        #expect(tmux("list-clients", "-t", "=other:", "-F", "#{client_tty}")
+            .contains(duplicate.clientTTY))
+        _ = tmux("switch-client", "-c", duplicate.clientTTY, "-t", "=work:")
+
         // The kept client moved to another session after tmux reported it.
         _ = tmux("switch-client", "-c", kept.clientTTY, "-t", "=other:")
         _ = tmux("set-option", "-g", "destroy-unattached", "on")

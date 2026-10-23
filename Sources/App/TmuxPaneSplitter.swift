@@ -233,9 +233,10 @@ struct TmuxPaneSplitter: Sendable {
         )
     }
 
-    /// Detaches `duplicate` only while the target's client is still attached
-    /// to the same session. tmux checks and detaches in one command queue, so
-    /// the detach never takes the session's last client.
+    /// Detaches `duplicate` only while it and the target's client are both
+    /// still attached to the target client's session. tmux checks and
+    /// detaches in one command queue, so the detach never takes any
+    /// session's last client.
     func detachClient(
         _ duplicate: TmuxAttachedClientIdentity,
         keeping target: TmuxPaneSplitTarget
@@ -271,11 +272,17 @@ struct TmuxPaneSplitter: Sendable {
         marker: String,
         hookIndex: Int
     ) -> String {
+        // The guard runs in the kept client's context, so inside the client
+        // loop `session_name` is the kept client's session and
+        // `client_session` is the looped client's. Names are unique per
+        // server.
         let duplicateClient = "#{&&:"
             + "#{==:#{client_pid},\(duplicate.clientPID)},"
             + "#{&&:"
             + "#{==:#{client_created},\(duplicate.clientCreatedAt)},"
-            + "#{==:#{client_tty},\(duplicate.clientTTY)}}}"
+            + "#{&&:"
+            + "#{==:#{client_tty},\(duplicate.clientTTY)},"
+            + "#{==:#{client_session},#{session_name}}}}}"
         let detach = [
             "if-shell", "-F", "#{==:#{L:#{?\(duplicateClient),1,}},1}",
             ["detach-client", "-t", duplicate.clientTTY]

@@ -188,10 +188,12 @@ still listed, because that session moves on its own. It is discarded only after
 its attachment closed or its session is gone from a fresh listing. If a window
 holds two presentations of the same session, it keeps the active one and closes
 the other only after tmux has reported the kept client as attached to that
-session. The kept client may have switched sessions since, so one tmux command
-queue checks that the kept client is still on the session and only then detaches
-the other client. The presentation closes only after that detach. If tmux
-refuses, both stay open, so the session always keeps a client.
+session. Either client may have switched sessions since, so one tmux command
+queue checks that both are still on the kept client's session and only then
+detaches the other client. The presentation closes only after that detach, and
+not if its attachment was relaunched in the meantime. If the closed
+presentation was selected while tmux detached it, the window shows the kept one
+instead. If tmux refuses, both stay open, so no session loses its last client.
 The saved sidebar position moves to the new name.
 
 Ghosthub applies the selected Tmux Theme when it creates a new bare tmux

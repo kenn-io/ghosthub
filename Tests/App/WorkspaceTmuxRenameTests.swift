@@ -461,14 +461,30 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(window.retainedBorrowedTmuxHandle(for: desk)?.id == moving.id)
         #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == kept.id)
 
+        // The user selects the other terminal while tmux detaches it. The
+        // window then shows the kept terminal of the same session.
+        let detaching = DispatchGroup()
+        detaching.enter()
+        clients.detachHold.store(detaching)
+        await waitUntilMainActor { clients.unheldDetaches.load() == 0 }
         clients.keeperSwitched.store(false)
         await waitUntilMainActor {
             window.refreshTmuxSessionDiscovery()
+            return clients.heldDetaches.load() > 0
+        }
+        window.openBorrowedTmuxSession(desk)
+        await waitUntilMainActor {
+            window.activeBorrowedTmuxSelection == desk
+        }
+        clients.detachHold.store(nil)
+        detaching.leave()
+        await waitUntilMainActor {
+            window.prepareActiveBorrowedTmuxSurface()
             return window.retainedBorrowedTmuxHandle(for: desk) == nil
+                && window.activeBorrowedTmuxSelection == notes
+                && window.activeBorrowedTmuxSessionIsConnected
         }
         #expect(window.retainedBorrowedTmuxHandle(for: notes)?.id == kept.id)
-        #expect(window.activeBorrowedTmuxSelection == notes)
-        #expect(window.activeBorrowedTmuxSessionIsConnected)
         for model in models {
             await model.shutdown()
         }
@@ -910,10 +926,67 @@ private func renameIdentitySplitter(
 private final class RenameTmuxClients: Sendable {
     /// The session each client attached to, by session ID.
     let attached = LockedValue<[String: String]>([:])
+    /// Each client's TTY, by token.
+    let ttys = LockedValue<[String: String]>([:])
+    /// TTYs of clients that tmux detached.
+    let detached = LockedValue<Set<String>>([])
     /// The kept client has switched sessions, so tmux refuses to detach a
     /// duplicate.
     let keeperSwitched = LockedValue(false)
     let refusedDetaches = LockedValue(0)
+    /// Detaches stalled by `detachHold`, and those running without it.
+    let heldDetaches = LockedValue(0)
+    let unheldDetaches = LockedValue(0)
+    /// Stalls detach commands while set.
+    let detachHold = LockedValue<DispatchGroup?>(nil)
+
+    func tty(for token: String) -> String {
+        var tty = ""
+        ttys.withLock { ttys in
+            tty = ttys[token] ?? "/dev/ttys\(100 + ttys.count)"
+            ttys[token] = tty
+        }
+        return tty
+    }
+
+    /// Like the real guard, refuses unless the kept client, whose TTY the
+    /// guard names last, is still attached.
+    func detach(_ command: String) -> String {
+        if let hold = detachHold.load() {
+            heldDetaches.withLock { $0 += 1 }
+            hold.wait()
+            return decideDetach(command)
+        }
+        unheldDetaches.withLock { $0 += 1 }
+        defer { unheldDetaches.withLock { $0 -= 1 } }
+        return decideDetach(command)
+    }
+
+    private func decideDetach(_ command: String) -> String {
+        let pattern = "/dev/ttys[0-9]+"
+        let keeper = command.ranges(of: try! Regex(pattern)).last
+            .map { String(command[$0]) }
+        let duplicate = command.range(of: "detach-client").flatMap {
+            command[$0.upperBound...].range(
+                of: pattern,
+                options: .regularExpression
+            )
+        }.map { String(command[$0]) }
+        var allowed = false
+        if let keeper, let duplicate, !keeperSwitched.load() {
+            detached.withLock { detached in
+                guard !detached.contains(keeper) else { return }
+                detached.insert(duplicate)
+                allowed = true
+            }
+        }
+        guard !allowed else { return "" }
+        refusedDetaches.withLock { $0 += 1 }
+        return (command.range(
+            of: "GHOSTHUB_TMUX_CLIENT_DETACH_REFUSED_[0-9A-F-]{36}",
+            options: .regularExpression
+        ).map { String(command[$0]) } ?? "") + "\n"
+    }
 
     static func token(in command: String) -> String? {
         command.range(
@@ -939,13 +1012,8 @@ private func renameClientSplitter(
         if command.contains("ignore-size") {
             sizingHold.load()?.wait()
         }
-        if command.contains("detach-client"), clients.keeperSwitched.load() {
-            clients.refusedDetaches.withLock { $0 += 1 }
-            let marker = command.range(
-                of: "GHOSTHUB_TMUX_CLIENT_DETACH_REFUSED_[0-9A-F-]{36}",
-                options: .regularExpression
-            ).map { String(command[$0]) } ?? ""
-            return (0, marker + "\n")
+        if command.contains("detach-client") {
+            return (0, clients.detach(command))
         }
         guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") else {
             return (0, "")
@@ -966,10 +1034,11 @@ private func renameClientSplitter(
         guard let sessionID = clients.attached.load()[token] else {
             return (0, "")
         }
+        let tty = clients.tty(for: token)
         return (
             0,
             "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"
-                + "\t101\t789\t321\t/dev/ttys001\t\(sessionID)\t1000\t%9\n"
+                + "\t101\t\(tty.dropFirst(9))\t321\t\(tty)\t\(sessionID)\t1000\t%9\n"
         )
     }
 }

@@ -12039,7 +12039,22 @@ final class WorkspaceSceneModel: ObservableObject {
             if let key = retainedTmuxPresentationKeysByHandle[
                 duplicateHandle.id
             ], retainedTmuxPresentations[key] === duplicate {
+                // The duplicate may have been selected meanwhile, possibly
+                // still activating. Show the kept terminal of the same
+                // session in its place.
+                let wasActive = activeBorrowedTmuxHandle?.id
+                    == duplicateHandle.id
+                    || activeBorrowedTmuxSelection.map {
+                        TmuxPresentationKey($0) == key
+                    } == true
                 invalidateBorrowedTmuxSession(duplicate.selection)
+                if wasActive,
+                   let keptKey = retainedTmuxPresentationKeysByHandle[
+                       keptHandle.id
+                   ],
+                   let kept = retainedTmuxPresentations[keptKey] {
+                    openBorrowedTmuxSession(kept.selection)
+                }
             }
             followTmuxRenames(hostID: duplicateHandle.hostID)
         }

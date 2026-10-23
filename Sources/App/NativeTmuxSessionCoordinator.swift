@@ -1994,7 +1994,9 @@ final class NativeTmuxSessionCoordinator {
 
     /// Detaches the duplicate's tmux client only while the kept client is
     /// still attached to the same session. Returns false, and leaves both
-    /// attached, when tmux has not identified either client or refuses.
+    /// attached, when tmux has not identified either client or refuses. It
+    /// also returns false when the duplicate was relaunched meanwhile, so
+    /// the caller never closes the new attachment.
     func detachDuplicateClient(
         _ duplicate: BorrowedTmuxSessionHandle,
         keeping kept: BorrowedTmuxSessionHandle
@@ -2006,7 +2008,7 @@ final class NativeTmuxSessionCoordinator {
               paneSplitClients[kept.id] != nil,
               let duplicateClient = paneSplitClients[duplicate.id]
         else { return false }
-        return await paneSplitter.detachClient(
+        let detached = await paneSplitter.detachClient(
             duplicateClient,
             keeping: paneSplitTarget(
                 handle: kept,
@@ -2014,6 +2016,8 @@ final class NativeTmuxSessionCoordinator {
                 expectedIdentity: nil
             )
         )
+        return detached
+            && attachments[duplicate.id]?.id == duplicateAttachment.id
     }
 
     func requestPaneSplit(
