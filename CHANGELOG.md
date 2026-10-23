@@ -498,7 +498,8 @@ local or remote hosts.
   automatically after lost connections, and navigate projects and worktrees
   managed by kwt.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/kenn-io/ghosthub/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/kenn-io/ghosthub/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kenn-io/ghosthub/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kenn-io/ghosthub/compare/v0.10.2...v0.11.0
