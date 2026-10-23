@@ -1996,9 +1996,7 @@ final class NativeTmuxSessionCoordinator {
     /// still attached to the same session. Returns false, and leaves both
     /// attached, when tmux has not identified either client or refuses. It
     /// also returns false when the duplicate was relaunched meanwhile, so
-    /// the caller never closes the new attachment. The detached client's
-    /// exit can remove its attachment before tmux replies; that alone is
-    /// not a relaunch.
+    /// the caller never closes the new attachment.
     func detachDuplicateClient(
         _ duplicate: BorrowedTmuxSessionHandle,
         keeping kept: BorrowedTmuxSessionHandle
@@ -2018,11 +2016,40 @@ final class NativeTmuxSessionCoordinator {
                 expectedIdentity: nil
             )
         )
-        guard detached else { return false }
-        if let attachment = attachments[duplicate.id] {
-            return attachment.id == duplicateAttachment.id
+        return detached && wasDetached(duplicate, attachmentID: duplicateAttachment.id)
+    }
+
+    /// Detaches a client tmux may have moved off the session it last
+    /// reported, only while the session it is on now keeps another client.
+    /// Returns false, and leaves it attached, when tmux has not identified
+    /// the client, refuses, or the handle was relaunched meanwhile.
+    func detachClientSharingSession(
+        _ handle: BorrowedTmuxSessionHandle
+    ) async -> Bool {
+        guard let attachment = attachments[handle.id],
+              launchedAttachmentIDs[handle.id] == attachment.id,
+              paneSplitClients[handle.id] != nil
+        else { return false }
+        let detached = await paneSplitter.detachClientSharingSession(
+            target: paneSplitTarget(
+                handle: handle,
+                attachment: attachment,
+                expectedIdentity: nil
+            )
+        )
+        return detached && wasDetached(handle, attachmentID: attachment.id)
+    }
+
+    /// The detached client's exit can remove its attachment before tmux
+    /// replies; that alone is not a relaunch.
+    private func wasDetached(
+        _ handle: BorrowedTmuxSessionHandle,
+        attachmentID: UUID
+    ) -> Bool {
+        if let attachment = attachments[handle.id] {
+            return attachment.id == attachmentID
         }
-        return !provisioningHandles.contains(duplicate.id)
+        return !provisioningHandles.contains(handle.id)
     }
 
     func requestPaneSplit(

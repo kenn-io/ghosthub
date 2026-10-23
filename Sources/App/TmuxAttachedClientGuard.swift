@@ -32,6 +32,9 @@ enum TmuxAttachedClientGuard {
     enum Scope {
         case client
         case pane
+        /// The client on whatever session it is on now, which can differ
+        /// from the one tmux last reported.
+        case anySession
     }
 
     static func command(
@@ -51,17 +54,17 @@ enum TmuxAttachedClientGuard {
             + "#{==:#{client_created},\(expectedClient.clientCreatedAt)},"
             + "#{==:#{client_tty},\(expectedClient.clientTTY)}}}"
         let exactClient = "#{==:#{L:#{?\(clientIdentity),1,}},1}"
-        let targetCondition: String
-        switch scope {
-        case .client:
-            targetCondition = exactClient
-        case .pane:
-            targetCondition = "#{&&:\(exactClient),"
-                + "#{==:#{pane_id},\(expectedClient.paneID)}}"
-        }
-        let condition = "#{&&:"
+        let sessionCondition = "#{&&:"
             + expectedClient.sessionIdentity.formatCondition
-            + ",\(targetCondition)}"
+        let condition = switch scope {
+        case .client:
+            sessionCondition + ",\(exactClient)}"
+        case .pane:
+            sessionCondition + ",#{&&:\(exactClient),"
+                + "#{==:#{pane_id},\(expectedClient.paneID)}}}"
+        case .anySession:
+            exactClient
+        }
         let guardedAction = [
             "if-shell", "-F", condition,
             action,

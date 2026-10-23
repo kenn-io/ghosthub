@@ -1542,4 +1542,70 @@ struct TmuxPaneSplitterTests {
             .split(whereSeparator: \.isNewline).map(String.init)
         #expect(attached == [kept.clientTTY])
     }
+
+    @Test("a client tmux moved detaches only while its session keeps a client")
+    func sharedSessionDetachFollowsClient() async throws {
+        guard case let .success(tmuxPath) =
+            TmuxBinaryResolver().resolveTmuxPath()
+        else { return }
+        guard nativePaneSplitsAreAvailable(tmuxPath) else { return }
+        let server = try makeTestTmuxServer(
+            tmuxPath: tmuxPath,
+            purpose: "shared-session-detach",
+            sessions: ["work", "other", "spare"]
+        )
+        defer { server.stop() }
+        let socketName = server.socketName
+        let splitter = TmuxPaneSplitter()
+        func tmux(_ arguments: String...) -> String {
+            AccountCommandRunner.runProcess(
+                executable: tmuxPath,
+                arguments: ["-L", socketName] + arguments,
+                timeout: 5
+            ).stdout
+        }
+        var targets: [TmuxPaneSplitTarget] = []
+        var clients: [TmuxAttachedClientIdentity] = []
+        var processes: [TestTmuxClient] = []
+        defer { processes.forEach { $0.stop() } }
+        for session in ["work", "other"] {
+            let token = UUID().uuidString.lowercased()
+            let process = try TestTmuxClient(
+                tmuxPath: tmuxPath,
+                socketName: socketName,
+                sessionName: session,
+                clientToken: token
+            )
+            processes.append(process)
+            _ = try await process.publishedTTY()
+            var target = TmuxPaneSplitTarget(
+                host: .local,
+                tmuxPath: tmuxPath,
+                sessionName: session,
+                socketName: socketName,
+                sshConnectionArguments: [],
+                clientToken: token
+            )
+            let client = try await splitter.clientIdentity(target: target).get()
+            target.expectedClient = client
+            targets.append(target)
+            clients.append(client)
+        }
+        let moved = clients[0]
+        let other = clients[1]
+
+        // tmux reported the client on work. It is now the only client of
+        // spare, so detaching it would destroy spare.
+        _ = tmux("switch-client", "-c", moved.clientTTY, "-t", "=spare:")
+        _ = tmux("set-option", "-g", "destroy-unattached", "on")
+        #expect(await !splitter.detachClientSharingSession(target: targets[0]))
+        #expect(tmux("list-clients", "-t", "=spare:", "-F", "#{client_tty}")
+            .contains(moved.clientTTY))
+
+        _ = tmux("switch-client", "-c", moved.clientTTY, "-t", "=other:")
+        #expect(await splitter.detachClientSharingSession(target: targets[0]))
+        let attached = tmux("list-clients", "-F", "#{client_tty}")
+            .split(whereSeparator: \.isNewline).map(String.init)
+        #expect(attached == [other.clientTTY])
+    }
 }

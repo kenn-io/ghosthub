@@ -184,8 +184,11 @@ its session is renamed therefore reaches the renamed session, and refuses a
 replacement session that took the old name.
 
 A presentation under the destination name stays while its own session is
-still listed, because that session moves on its own. It is discarded only after
-its attachment closed or its session is gone from a fresh listing. If a window
+still listed, because that session moves on its own. It is discarded once its
+attachment closed. When its session is gone from a fresh listing but its client
+is still running, tmux has moved that client to another session. The client is
+detached only while the session it is on now has another client, and the
+presentation closes only after that detach. If a window
 holds two presentations of the same session, it keeps the active one and closes
 the other only after tmux has reported the kept client as attached to that
 session. Either client may have switched sessions since, so one tmux command

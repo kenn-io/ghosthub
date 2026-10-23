@@ -254,6 +254,46 @@ struct TmuxPaneSplitter: Sendable {
             marker: marker,
             hookIndex: hookIndex
         )
+        return await runDetach(
+            command: command,
+            hookIndex: hookIndex,
+            marker: marker,
+            target: target
+        )
+    }
+
+    /// Detaches the target's client only while the session it is on now
+    /// has another client. tmux may have moved the client off the session
+    /// it last reported, so the check follows the client, not a session.
+    func detachClientSharingSession(
+        target: TmuxPaneSplitTarget
+    ) async -> Bool {
+        guard Self.platform(for: target.host) == .posix,
+              let client = target.expectedClient
+        else { return false }
+        let marker = Self.detachRefusedMarker + "_\(UUID().uuidString)"
+        let hookIndex = Int.random(in: 1_000_000_000 ... 2_000_000_000)
+        let command = Self.sharedSessionDetachCommand(
+            tmuxPath: target.tmuxPath,
+            socketName: target.socketName,
+            client: client,
+            marker: marker,
+            hookIndex: hookIndex
+        )
+        return await runDetach(
+            command: command,
+            hookIndex: hookIndex,
+            marker: marker,
+            target: target
+        )
+    }
+
+    private func runDetach(
+        command: String,
+        hookIndex: Int,
+        marker: String,
+        target: TmuxPaneSplitTarget
+    ) async -> Bool {
         guard let result = await runGuarded(
             command: command,
             hookIndex: hookIndex,
@@ -262,6 +302,32 @@ struct TmuxPaneSplitter: Sendable {
         return result.status == 0
             && !result.diagnostic.split(whereSeparator: \.isNewline)
             .contains(Substring(marker))
+    }
+
+    static func sharedSessionDetachCommand(
+        tmuxPath: String,
+        socketName: String?,
+        client: TmuxAttachedClientIdentity,
+        marker: String,
+        hookIndex: Int
+    ) -> String {
+        // The guard runs in the client's own context, so `session_attached`
+        // counts the clients of the session it is on now.
+        let detach = [
+            "if-shell", "-F", "#{>:#{session_attached},1}",
+            ["detach-client", "-t", client.clientTTY]
+                .map(shellQuotedCommandArgument).joined(separator: " "),
+            "display-message -p " + shellQuotedCommandArgument(marker),
+        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        return TmuxAttachedClientGuard.command(
+            tmuxPath: tmuxPath,
+            socketName: socketName,
+            expectedClient: client,
+            marker: marker,
+            hookIndex: hookIndex,
+            action: detach,
+            scope: .anySession
+        )
     }
 
     static func detachCommand(

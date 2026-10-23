@@ -942,7 +942,7 @@ final class WorkspaceSceneModel: ObservableObject {
     /// Hosts with a client still waiting to move to its session's new name.
     private var pendingTmuxRenameHostIDs: Set<UUID> = []
     /// Guarded tmux detaches of duplicate clients, by duplicate handle ID.
-    private var tmuxDuplicateDetaches: [UUID: Task<Void, Never>] = [:]
+    private var tmuxClientDetaches: [UUID: Task<Void, Never>] = [:]
     private var activityControllerBacking: ActivityMonitoringController?
     var activityController: ActivityMonitoringController {
         guard let activityControllerBacking else {
@@ -2540,10 +2540,10 @@ final class WorkspaceSceneModel: ObservableObject {
         pendingAlwaysLiveTmuxSurfaceHandleIDs.removeAll()
         cancelPendingRestoration()
         cancelPendingHerdrShortcutNavigation()
-        for detach in tmuxDuplicateDetaches.values {
+        for detach in tmuxClientDetaches.values {
             detach.cancel()
         }
-        tmuxDuplicateDetaches.removeAll()
+        tmuxClientDetaches.removeAll()
         for presentation in retainedTmuxPresentations.values {
             presentation.previewPromotionID = nil
             presentation.previewPromotionNavigationRevision = nil
@@ -11923,6 +11923,8 @@ final class WorkspaceSceneModel: ObservableObject {
     /// session is live, because that session moves on its own. A second
     /// client for the same session closes only once tmux has reported the
     /// one that stays as attached, so the session always keeps a client.
+    /// A live client whose session ended is on another session now, and
+    /// closes only while that session keeps another client.
     @discardableResult
     private func followTmuxRename(
         _ presentation: RetainedTmuxPresentation,
@@ -11934,24 +11936,32 @@ final class WorkspaceSceneModel: ObservableObject {
         else {
             return rekeyTmuxPresentation(presentation, to: renamedSelection)
         }
-        let existingIdentity = retainedTmuxSessionIdentity(existing)
-        if nativeTmuxSessionCoordinator.hasClosedAttachment(existing.handle)
-            || existingIdentity.map({
-                $0 != identity && tmuxSessionHasEnded(
-                    $0,
-                    hostID: renamedSelection.hostID
-                )
-            }) == true {
+        if nativeTmuxSessionCoordinator.hasClosedAttachment(existing.handle) {
             invalidateBorrowedTmuxSession(existing.selection)
             return rekeyTmuxPresentation(presentation, to: renamedSelection)
+        }
+        let existingIdentity = retainedTmuxSessionIdentity(existing)
+        if existingIdentity.map({
+            $0 != identity && tmuxSessionHasEnded(
+                $0,
+                hostID: renamedSelection.hostID
+            )
+        }) == true {
+            detachTmuxClient(
+                existing,
+                showing: presentation,
+                keepsReplacementSession: false
+            )
+            return false
         }
         guard existingIdentity == identity else { return false }
         let keepsMovingClient = activeBorrowedTmuxHandle == presentation.handle
         let kept = keepsMovingClient ? presentation : existing
         guard isConfirmedAttached(kept, to: identity) else { return false }
-        detachTmuxDuplicate(
+        detachTmuxClient(
             keepsMovingClient ? existing : presentation,
-            keeping: kept
+            showing: kept,
+            keepsReplacementSession: true
         )
         return false
     }
@@ -12018,45 +12028,55 @@ final class WorkspaceSceneModel: ObservableObject {
             ) == identity
     }
 
-    /// The kept client may have switched sessions since tmux last reported
-    /// it, so tmux detaches the duplicate only while the kept client is
-    /// still on the session. The duplicate closes only after that detach.
-    private func detachTmuxDuplicate(
-        _ duplicate: RetainedTmuxPresentation,
-        keeping kept: RetainedTmuxPresentation
+    /// Closes a client only after tmux detaches it. With
+    /// `keepsReplacementSession`, tmux detaches it only while the
+    /// replacement's client is still on the same session, because the
+    /// replacement may have switched sessions since tmux last reported it.
+    /// Otherwise tmux detaches it only while the session it is on now
+    /// keeps another client.
+    private func detachTmuxClient(
+        _ presentation: RetainedTmuxPresentation,
+        showing replacement: RetainedTmuxPresentation,
+        keepsReplacementSession: Bool
     ) {
-        let duplicateHandle = duplicate.handle
-        let keptHandle = kept.handle
-        guard tmuxDuplicateDetaches[duplicateHandle.id] == nil else { return }
-        tmuxDuplicateDetaches[duplicateHandle.id] = Task { [weak self] in
-            let detached = await self?.nativeTmuxSessionCoordinator
-                .detachDuplicateClient(duplicateHandle, keeping: keptHandle)
-            guard let self else { return }
-            tmuxDuplicateDetaches.removeValue(forKey: duplicateHandle.id)
-            guard detached == true, !Task.isCancelled, !isShutDown else {
+        let handle = presentation.handle
+        let replacementHandle = replacement.handle
+        guard tmuxClientDetaches[handle.id] == nil else { return }
+        tmuxClientDetaches[handle.id] = Task { [weak self] in
+            guard let coordinator = self?.nativeTmuxSessionCoordinator else {
                 return
             }
-            if let key = retainedTmuxPresentationKeysByHandle[
-                duplicateHandle.id
-            ], retainedTmuxPresentations[key] === duplicate {
-                // The duplicate may have been selected meanwhile, possibly
-                // still activating. Show the kept terminal of the same
-                // session in its place.
-                let wasActive = activeBorrowedTmuxHandle?.id
-                    == duplicateHandle.id
+            let detached = if keepsReplacementSession {
+                await coordinator.detachDuplicateClient(
+                    handle,
+                    keeping: replacementHandle
+                )
+            } else {
+                await coordinator.detachClientSharingSession(handle)
+            }
+            guard let self else { return }
+            tmuxClientDetaches.removeValue(forKey: handle.id)
+            guard detached, !Task.isCancelled, !isShutDown else { return }
+            var wasActive = false
+            if let key = retainedTmuxPresentationKeysByHandle[handle.id],
+               retainedTmuxPresentations[key] === presentation {
+                // The detached client may have been selected meanwhile,
+                // possibly still activating. Show the replacement in its
+                // place.
+                wasActive = activeBorrowedTmuxHandle?.id == handle.id
                     || activeBorrowedTmuxSelection.map {
                         TmuxPresentationKey($0) == key
                     } == true
-                invalidateBorrowedTmuxSession(duplicate.selection)
-                if wasActive,
-                   let keptKey = retainedTmuxPresentationKeysByHandle[
-                       keptHandle.id
-                   ],
-                   let kept = retainedTmuxPresentations[keptKey] {
-                    openBorrowedTmuxSession(kept.selection)
-                }
+                invalidateBorrowedTmuxSession(presentation.selection)
             }
-            followTmuxRenames(hostID: duplicateHandle.hostID)
+            followTmuxRenames(hostID: handle.hostID)
+            if wasActive,
+               let key = retainedTmuxPresentationKeysByHandle[
+                   replacementHandle.id
+               ],
+               let replacement = retainedTmuxPresentations[key] {
+                openBorrowedTmuxSession(replacement.selection)
+            }
         }
     }
 

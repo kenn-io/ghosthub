@@ -157,6 +157,86 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a rename onto a name whose session ended keeps a client tmux moved elsewhere")
+    func renameOntoEndedNameKeepsSwitchedClient() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["build": "$3", "desk": "$2"])
+        let clients = RenameTmuxClients()
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: renameClientSplitter(
+                names,
+                launches: store.launchCommands,
+                clients: clients
+            ),
+            tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
+            tmuxSessionRenamer: { selection, newName, _, _ in
+                names.withLock { renameFixtureSession(
+                    &$0,
+                    from: selection.name,
+                    to: newName
+                ) }
+            }
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.count == 2
+        }
+        let build = WorkspaceTmuxSessionSelection(hostID: hostID, name: "build")
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        model.openBorrowedTmuxSession(build)
+        await connectActiveRenameSession(model, store: store)
+        let switched = try #require(model.retainedBorrowedTmuxHandle(for: build))
+        model.openBorrowedTmuxSession(desk)
+        await connectActiveRenameSession(model, store: store)
+        let handle = try #require(model.retainedBorrowedTmuxHandle(for: desk))
+        await waitUntilMainActor { clients.attached.load().count == 2 }
+
+        // build ends, and tmux moves its still-running client to a session
+        // that has no other client.
+        names.withLock { $0["build"] = nil }
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.map(\.name) == ["desk"]
+        }
+
+        try await model.renameTmuxSession(desk, to: "build")
+        await waitUntilMainActor {
+            model.refreshTmuxSessionDiscovery()
+            return clients.refusedDetaches.load() > 0
+        }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        #expect(model.retainedBorrowedTmuxHandle(for: build)?.id == switched.id)
+        #expect(model.retainedBorrowedTmuxHandle(for: desk)?.id == handle.id)
+        #expect(clients.detached.load().isEmpty)
+
+        // Once that session has another client, tmux detaches this one and
+        // the renamed session takes the name.
+        clients.sessionShared.store(true)
+        await waitUntilMainActor {
+            model.refreshTmuxSessionDiscovery()
+            return model.retainedBorrowedTmuxHandle(for: build)?.id
+                == handle.id
+        }
+        #expect(clients.detached.load() == [clients.tty(for: try #require(
+            clients.attached.load().first { $0.value == "$3" }?.key
+        ))])
+        #expect(model.retainedBorrowedTmuxHandle(for: desk) == nil)
+        #expect(model.activeBorrowedTmuxSelection == build)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a rename moves the session in every window that shows it")
     func renameReachesOtherWindows() async throws {
         let environment = try setupStandardEnvironment()
@@ -939,6 +1019,9 @@ private final class RenameTmuxClients: Sendable {
     let unheldDetaches = LockedValue(0)
     /// Stalls detach commands while set.
     let detachHold = LockedValue<DispatchGroup?>(nil)
+    /// The session a detached-only-if-shared client is on now has another
+    /// client.
+    let sessionShared = LockedValue(false)
 
     func tty(for token: String) -> String {
         var tty = ""
@@ -973,7 +1056,12 @@ private final class RenameTmuxClients: Sendable {
             )
         }.map { String(command[$0]) }
         var allowed = false
-        if let keeper, let duplicate, !keeperSwitched.load() {
+        if command.contains("session_attached") {
+            if let duplicate, sessionShared.load() {
+                detached.withLock { $0.insert(duplicate) }
+                allowed = true
+            }
+        } else if let keeper, let duplicate, !keeperSwitched.load() {
             detached.withLock { detached in
                 guard !detached.contains(keeper) else { return }
                 detached.insert(duplicate)
@@ -996,9 +1084,10 @@ private final class RenameTmuxClients: Sendable {
     }
 }
 
-/// Reports each client as attached to the session its launch targeted when
-/// tmux was first asked, and to that same session after any rename. A
-/// launch that names a session no longer listed attaches to nothing. The
+/// Reports each client as attached to the session its `attach-session`
+/// targeted when tmux was first asked, and to that same session after any
+/// rename. A launch that names a session no longer listed attaches to
+/// nothing. The
 /// identity command carries the launch's client token. The holds stall
 /// resize and identity commands while set.
 private func renameClientSplitter(
@@ -1024,11 +1113,15 @@ private func renameClientSplitter(
         }
         if clients.attached.load()[token] == nil,
            let launch = launches.load().last(where: { $0.contains(token) }) {
-            let unquoted = launch.filter { !"\\'\"".contains($0) }
-            let sessionID = sessions.load().first {
-                unquoted.contains("-t =\($0.key) ")
-                    || unquoted.contains("-t \($0.value) ")
-            }?.value
+            let listed = sessions.load()
+            let sessionID: String? = switch attachTarget(in: launch) {
+            case let target? where target.hasPrefix("="):
+                listed[String(target.dropFirst())]
+            case let target? where listed.values.contains(target):
+                target
+            default:
+                nil
+            }
             clients.attached.withLock { $0[token] = sessionID }
         }
         guard let sessionID = clients.attached.load()[token] else {
@@ -1041,6 +1134,20 @@ private func renameClientSplitter(
                 + "\t101\t\(tty.dropFirst(9))\t321\t\(tty)\t\(sessionID)\t1000\t%9\n"
         )
     }
+}
+
+/// The target of the launch's `attach-session`. Setup commands in the same
+/// launch target the session too, so they must not count as the attach.
+private func attachTarget(in launch: String) -> String? {
+    let unquoted = launch.filter { !"\\'\"".contains($0) }
+    guard let attach = unquoted.range(of: "attach-session ") else {
+        return nil
+    }
+    let words = unquoted[attach.upperBound...].split(separator: " ")
+    guard let flag = words.firstIndex(of: "-t"),
+          words.indices.contains(flag + 1)
+    else { return nil }
+    return String(words[flag + 1])
 }
 
 /// Tmux keeps the session id across a rename.
