@@ -138,14 +138,14 @@ jobs:
           version="$(sed -n 's/^swiftformat = "\(.*\)"$/\1/p' mise.toml)"
           # The version becomes part of the download URL.
           if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
-            echo "mise.toml must pin swiftformat to a release version; found '${version}'." >&2
+            echo "mise.toml must contain a line like swiftformat = \"X.Y.Z\" with a release version; found '${version:-nothing}'." >&2
             exit 1
           fi
           archive_name="swiftformat-${version}.zip"
           sha256="$(awk -v name="$archive_name" '$2 == name { print $1 }' "$checksum_file")"
           if [[ -z "$sha256" ]]; then
             echo "mise.toml pins SwiftFormat $version, but $checksum_file has no entry for $archive_name." >&2
-            echo "Replace its line with the SHA-256 of swiftformat.zip from the SwiftFormat $version release." >&2
+            echo "Set the line in $checksum_file to '<sha256>  $archive_name', using the SHA-256 of swiftformat.zip from the SwiftFormat $version release." >&2
             exit 1
           fi
           archive="$RUNNER_TEMP/$archive_name"
@@ -153,7 +153,10 @@ jobs:
           curl --fail --silent --show-error --location \
             "https://github.com/nicklockwood/SwiftFormat/releases/download/${version}/swiftformat.zip" \
             --output "$archive"
-          printf '%s  %s\n' "$sha256" "$archive" | shasum -a 256 -c -
+          if ! printf '%s  %s\n' "$sha256" "$archive" | shasum -a 256 -c -; then
+            echo "Checksum mismatch for $archive_name. Update $checksum_file with the SHA-256 of swiftformat.zip from the SwiftFormat $version release." >&2
+            exit 1
+          fi
           mkdir -p "$install_root"
           unzip -q -o "$archive" swiftformat -d "$install_root"
           echo "$install_root" >> "$GITHUB_PATH"

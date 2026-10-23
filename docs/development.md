@@ -54,7 +54,8 @@ The "Install pinned SwiftFormat" CI step installs the release that `mise.toml`
 pins and checks it against `.github/swiftformat.sha256`. To change the version
 in one pull request:
 
-1. Update `swiftformat` in `mise.toml`.
+1. Update `swiftformat` in `mise.toml`. Use a plain release number such as
+   `0.63.1`.
 2. Replace the line in `.github/swiftformat.sha256` with the SHA-256 of
    `swiftformat.zip` from that release, named `swiftformat-<version>.zip`.
 3. Run `mise exec -- make format` and commit the result.
