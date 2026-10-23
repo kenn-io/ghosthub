@@ -342,9 +342,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 } else {
                     commands.append(mouseSetupCommand(tmuxPath: tmuxPath))
                     commands.append(
-                        presentationCommand?.bestEffortCommand(
-                            tmuxPath: tmuxPath
-                        ) ?? ":"
+                        presentationSetupCommand(tmuxPath: tmuxPath)
                     )
                     commands.append("exec \(attach)")
                 }
@@ -358,9 +356,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             } else {
                 commands.append(mouseSetupCommand(tmuxPath: tmuxPath))
                 commands.append(
-                    presentationCommand?.bestEffortCommand(
-                        tmuxPath: tmuxPath
-                    ) ?? ":"
+                    presentationSetupCommand(tmuxPath: tmuxPath)
                 )
                 commands.append("exec \(attach)")
             }
@@ -542,9 +538,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 mouseSetupCommand(tmuxPath: tmuxPath)
             )
             remoteAttachCommands.append(
-                presentationCommand?.bestEffortCommand(
-                    tmuxPath: tmuxPath
-                ) ?? ":"
+                presentationSetupCommand(tmuxPath: tmuxPath)
             )
         }
         remoteAttachCommands.append(attach)
@@ -939,13 +933,49 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         ]
     }
 
+    /// An attach fenced on a session identity sets mouse handling on that
+    /// session, which may have been renamed, and never on a replacement
+    /// that took its name.
     private func mouseSetupCommand(tmuxPath: String) -> String {
-        let command = tmuxArguments(
-            tmuxPath,
-            "set-option", "-t", exactSessionTarget,
-            "mouse", "on"
-        ).map(shellQuotedCommandArgument).joined(separator: " ")
+        let arguments = if let expectedAttachIdentity {
+            tmuxArguments(
+                tmuxPath,
+                "if-shell", "-F", "-t", expectedAttachIdentity.sessionID,
+                expectedAttachIdentity.formatCondition,
+                [
+                    "set-option",
+                    "-t",
+                    expectedAttachIdentity.sessionID,
+                    "mouse",
+                    "on",
+                ]
+                .map(shellQuotedCommandArgument)
+                .joined(separator: " ")
+            )
+        } else {
+            tmuxArguments(
+                tmuxPath,
+                "set-option", "-t", exactSessionTarget,
+                "mouse", "on"
+            )
+        }
+        let command = arguments.map(shellQuotedCommandArgument)
+            .joined(separator: " ")
         return "\(command) >/dev/null 2>&1 || :"
+    }
+
+    private func presentationSetupCommand(tmuxPath: String) -> String {
+        guard let presentationCommand else { return ":" }
+        guard let expectedAttachIdentity else {
+            return presentationCommand.bestEffortCommand(tmuxPath: tmuxPath)
+        }
+        let checked = presentationCommand.applyCommand(
+            tmuxPath: tmuxPath,
+            expectedIdentity: expectedAttachIdentity,
+            followsRename: true
+        )
+        // The checked command exits on a mismatch, so it runs in a subshell.
+        return "(\(checked)) >/dev/null 2>&1 || :"
     }
 
     private var exactSessionTarget: String {

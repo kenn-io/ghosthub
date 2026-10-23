@@ -35,13 +35,18 @@ public struct TmuxPresentationCommand: Equatable, Sendable {
         self.style = style
     }
 
+    /// Each mutation first checks the session identity through the session
+    /// name, or through the session ID when `followsRename` is set, so a
+    /// session renamed since its identity was read is still styled.
     public func applyCommand(
         tmuxPath: String,
-        expectedIdentity: TmuxSessionIdentity
+        expectedIdentity: TmuxSessionIdentity,
+        followsRename: Bool = false
     ) -> String {
         strictCommand(
             tmuxPath: tmuxPath,
-            expectedIdentity: expectedIdentity
+            expectedIdentity: expectedIdentity,
+            checkTarget: followsRename ? expectedIdentity.sessionID : target
         )
     }
 
@@ -95,25 +100,28 @@ public struct TmuxPresentationCommand: Equatable, Sendable {
 
     private func strictCommand(
         tmuxPath: String,
-        expectedIdentity: TmuxSessionIdentity
+        expectedIdentity: TmuxSessionIdentity,
+        checkTarget: String
     ) -> String {
         var commands = sessionOptions.map { option, value in
             identityCheckedCommand(
                 tmuxPath: tmuxPath,
                 expectedIdentity: expectedIdentity,
-                mutation: tmuxCommand(
+                checkTarget: checkTarget,
+                mutation: shellQuotedCommandArgument(tmuxCommand(
                     "set-option", "-t", expectedIdentity.sessionID,
                     option, value
-                )
+                ))
             )
         }
         let listWindows = identityCheckedCommand(
             tmuxPath: tmuxPath,
             expectedIdentity: expectedIdentity,
-            mutation: tmuxCommand(
+            checkTarget: checkTarget,
+            mutation: shellQuotedCommandArgument(tmuxCommand(
                 "list-windows", "-t", expectedIdentity.sessionID,
                 "-F", "#{window_id}"
-            )
+            ))
         )
         commands.append("ghosthub_windows=\"$(\(listWindows))\"")
         let mismatch = shellQuotedCommandArgument(Self.identityMismatchMarker)
@@ -122,11 +130,19 @@ public struct TmuxPresentationCommand: Equatable, Sendable {
                 + "printf '%s\\n' \"$ghosthub_windows\"; exit 0; fi"
         )
         let setWindowOptions = windowOptions.map { option, value in
-            identityCheckedCommand(
+            // `if-shell -t` does not pass its target to the command it
+            // runs, so the shell puts the window ID into the mutation.
+            let mutation = shellQuotedCommandArgument(
+                tmuxCommand("set-option", "-w", "-t") + " "
+            ) + "\"$ghosthub_window\"" + shellQuotedCommandArgument(
+                " " + tmuxCommand(option, value)
+            )
+            return identityCheckedCommand(
                 tmuxPath: tmuxPath,
                 expectedIdentity: expectedIdentity,
+                checkTarget: checkTarget,
                 shellTarget: "$ghosthub_window",
-                mutation: tmuxCommand("set-option", "-w", option, value)
+                mutation: mutation
             )
         }.joined(separator: " && ")
         commands.append(
@@ -139,7 +155,9 @@ public struct TmuxPresentationCommand: Equatable, Sendable {
     private func identityCheckedCommand(
         tmuxPath: String,
         expectedIdentity: TmuxSessionIdentity,
+        checkTarget: String,
         shellTarget: String? = nil,
+        // A shell word that expands to the tmux command to run.
         mutation: String
     ) -> String {
         let argumentsBeforeTarget = tmuxArguments(
@@ -149,14 +167,16 @@ public struct TmuxPresentationCommand: Equatable, Sendable {
         let checkedTarget = if let shellTarget {
             "\"\(shellTarget)\""
         } else {
-            shellQuotedCommandArgument(target)
+            shellQuotedCommandArgument(checkTarget)
         }
         let argumentsAfterTarget = [
-            expectedIdentity.formatCondition,
+            shellQuotedCommandArgument(expectedIdentity.formatCondition),
             mutation,
-            "display-message -p "
-                + shellQuotedCommandArgument(Self.identityMismatchMarker),
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
+            shellQuotedCommandArgument(
+                "display-message -p "
+                    + shellQuotedCommandArgument(Self.identityMismatchMarker)
+            ),
+        ].joined(separator: " ")
         return "\(argumentsBeforeTarget) \(checkedTarget) \(argumentsAfterTarget)"
     }
 
