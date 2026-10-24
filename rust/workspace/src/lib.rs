@@ -7733,28 +7733,46 @@ impl Workspace {
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
         self.finish_remote_tmux_kill(request);
+        self.refresh_after_remote_tmux_kill(request, |host, snapshot, cancellation| {
+            host.refresh(snapshot.lease(), cancellation)
+        })
+    }
+
+    fn refresh_after_remote_tmux_kill(
+        &self,
+        request: &RemoteTmuxAttachRequest,
+        mut refresh: impl FnMut(
+            &RuntimeRemoteHost,
+            &RemoteTmuxSnapshot,
+            &CancellationToken,
+        ) -> Result<RemoteSessionInventory, host::RemoteTmuxError>,
+    ) -> Result<(), WorkspaceError> {
         // Refresh the same connection after success. A newer connection owns its
         // own inventory; never publish the old connection's result over it.
-        if let Ok((host, snapshot)) = runtime::recapture_remote_attachment_context(
+        while let Ok((host, snapshot)) = runtime::recapture_remote_attachment_context(
             &self.scene.runtime,
             &request.host_id,
             request.connection_generation,
             &request.snapshot,
         ) {
             let cancellation = CancellationToken::new();
-            let inventory = host
-                .refresh(snapshot.lease(), &cancellation)
-                .map_err(|error| {
-                    WorkspaceError::new(format!("Session killed, but refresh failed: {error}"))
-                })?;
-            let _published = scene::publish_remote_inventory(
+            let inventory = refresh(&host, &snapshot, &cancellation).map_err(|error| {
+                WorkspaceError::new(format!("Session killed, but refresh failed: {error}"))
+            })?;
+            if scene::publish_remote_inventory(
                 &self.scene,
                 &request.host_id,
                 request.connection_generation,
                 &snapshot,
                 &cancellation,
                 inventory,
-            );
+            )
+            .is_ok()
+            {
+                return Ok(());
+            }
+            // Background creation reconciliation can publish outside the operation
+            // lane. Losing that race requires another read, not a stale row or payload.
         }
         Ok(())
     }

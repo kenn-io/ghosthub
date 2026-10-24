@@ -7960,6 +7960,205 @@ fn stale_remote_inventory_cannot_overwrite_the_published_generation() {
     );
 }
 
+fn remote_kill_refresh_fixture() -> (Workspace, RemoteTmuxAttachRequest) {
+    let config = RemoteTmuxConfig::new(
+        "ssh:studio",
+        "Studio",
+        SshTarget::new("studio.example", None, None).expect("valid target"),
+        "/usr/bin/tmux",
+        None,
+    )
+    .expect("valid remote host");
+    let host = remote_host_fixture(&config);
+    let session =
+        session::DiscoveredSession::new("review", session::SessionIdentity::new(42, "$1", 100), 0);
+    let initial = RemoteTmuxSnapshot::test_fixture(
+        "studio.example",
+        TEST_REMOTE_ROUTE,
+        7,
+        vec![session.clone()],
+        HerdrInventory::Unavailable,
+        ZellijInventory::Unavailable,
+    );
+    let request = RemoteTmuxAttachRequest {
+        host_id: config.id().to_owned(),
+        connection_generation: 7,
+        selection: SessionSelection::new("ssh:studio", "studio.example", "review"),
+        host: host.clone(),
+        snapshot: initial.clone(),
+        session,
+    };
+    let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+        Appearance::default(),
+        vec![HostItem::ssh(
+            "ssh:studio",
+            "Studio",
+            "studio.example",
+            HostConnectionState::Ready,
+            vec![SessionItem::new("review", 0)],
+            None,
+        )],
+    ));
+    workspace
+        .scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .expect("remote hosts")
+        .insert(
+            config.id().to_owned(),
+            RemoteEntry {
+                config,
+                native_host: Some(host.clone()),
+                context: Some(RemoteHostContext {
+                    generation: 7,
+                    host,
+                    snapshot: initial,
+                }),
+                cancellation: None,
+                constructive_cancellation: None,
+                attachment_attempts: Vec::new(),
+                generation: 7,
+            },
+        );
+    (workspace, request)
+}
+
+#[test]
+fn remote_kill_refresh_retries_after_constructive_reconciliation_publishes() {
+    let (workspace, request) = remote_kill_refresh_fixture();
+    let other_scene = workspace.open_scene();
+    let target = RemoteConstructiveTarget::Tmux {
+        route_identity: TEST_REMOTE_ROUTE.to_owned(),
+        executable: "/usr/bin/tmux".to_owned(),
+        name: "build".to_owned(),
+    };
+    workspace
+        .scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .expect("remote hosts")
+        .get_mut("ssh:studio")
+        .unwrap()
+        .constructive_cancellation = Some(RemoteConstructiveState::PendingReconciliation(
+        target.clone(),
+    ));
+    let build =
+        session::DiscoveredSession::new("build", session::SessionIdentity::new(42, "$2", 101), 0);
+    let mut reads = 0;
+    workspace
+        .refresh_after_remote_tmux_kill(&request, |_, _, _| {
+            reads += 1;
+            assert!(reads <= 2, "one lost publication needs one fresh retry");
+            if reads == 1 {
+                // Reconciliation read before the kill, but its response arrives
+                // during the kill's newer discovery. Exercise its real publisher.
+                reconcile_remote_constructive_with_backoff(
+                    &other_scene.scene,
+                    "ssh:studio",
+                    7,
+                    request.snapshot.clone(),
+                    &target,
+                    &[Duration::ZERO],
+                    |_, _| {
+                        Ok::<_, ()>(RemoteSessionInventory::test_fixture(
+                            Some("/usr/bin/tmux".to_owned()),
+                            vec![request.session.clone(), build.clone()],
+                            HerdrInventory::Unavailable,
+                            ZellijInventory::Unavailable,
+                        ))
+                    },
+                );
+            }
+            let mut sessions = vec![build.clone()];
+            if reads > 1 {
+                sessions.push(session::DiscoveredSession::new(
+                    "newcomer",
+                    session::SessionIdentity::new(42, "$3", 102),
+                    0,
+                ));
+            }
+            Ok(RemoteSessionInventory::test_fixture(
+                Some("/usr/bin/tmux".to_owned()),
+                sessions,
+                HerdrInventory::Unavailable,
+                ZellijInventory::Unavailable,
+            ))
+        })
+        .expect("kill refresh settles");
+    for scene in [&workspace, &other_scene] {
+        assert_eq!(
+            scene.snapshot().hosts()[0]
+                .sessions()
+                .iter()
+                .map(|s| s.name().to_owned())
+                .collect::<Vec<_>>(),
+            ["build", "newcomer"]
+        );
+    }
+    assert!(
+        capture_remote_tmux_create_request(
+            &workspace.scene.runtime,
+            "ssh:studio",
+            "studio.example",
+            SessionName::parse("review").unwrap(),
+        )
+        .is_ok(),
+        "the killed name is available again without reconnecting"
+    );
+}
+
+#[test]
+fn remote_kill_refresh_stops_when_the_connection_changes() {
+    let (workspace, request) = remote_kill_refresh_fixture();
+    let replacement = RemoteTmuxSnapshot::test_fixture(
+        "studio.example",
+        TEST_REMOTE_ROUTE,
+        // KWT may reuse the lease; Ghosthub's connection generation still changed.
+        7,
+        vec![session::DiscoveredSession::new(
+            "replacement",
+            session::SessionIdentity::new(99, "$1", 200),
+            0,
+        )],
+        HerdrInventory::Unavailable,
+        ZellijInventory::Unavailable,
+    );
+    let mut reads = 0;
+    workspace
+        .refresh_after_remote_tmux_kill(&request, |_, _, _| {
+            reads += 1;
+            assert_eq!(reads, 1, "the old kill must not query the new connection");
+            workspace
+                .scene
+                .runtime
+                .remote_hosts
+                .lock()
+                .expect("remote hosts")
+                .get_mut("ssh:studio")
+                .unwrap()
+                .generation = 8;
+            publish_remote_connection(
+                &workspace.scene,
+                "ssh:studio",
+                8,
+                Ok((request.host.clone(), replacement.clone())),
+            );
+            Ok(RemoteSessionInventory::test_fixture(
+                Some("/usr/bin/tmux".to_owned()),
+                Vec::new(),
+                HerdrInventory::Unavailable,
+                ZellijInventory::Unavailable,
+            ))
+        })
+        .expect("the new connection owns its inventory");
+    assert_eq!(
+        workspace.snapshot().hosts()[0].sessions()[0].name(),
+        "replacement"
+    );
+}
+
 #[test]
 fn display_only_ssh_host_edits_preserve_runtime_and_selection() {
     let config = RemoteTmuxConfig::new(
