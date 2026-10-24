@@ -747,26 +747,33 @@ fn websocket_upgrade_rejects_missing_credentials() {
 fn shutdown_closes_open_websockets_and_stops_the_listener() {
     let server = Server::start().expect("start server");
     let addr = server.addr();
-    let (status, socket) = upgrade(
-        addr,
-        &[
-            ("Origin", &origin(addr)),
-            ("Authorization", &bearer(&server)),
-        ],
-    );
-    assert_eq!(status, 101);
-    let mut socket = socket.expect("upgraded socket");
-    let Message::Text(_) = socket.read().expect("server hello") else {
-        panic!("expected server hello");
-    };
+    let mut sockets = Vec::new();
+    for _ in 0..32 {
+        let (status, socket) = upgrade(
+            addr,
+            &[
+                ("Origin", &origin(addr)),
+                ("Authorization", &bearer(&server)),
+            ],
+        );
+        assert_eq!(status, 101);
+        let mut socket = socket.expect("upgraded socket");
+        let Message::Text(_) = socket.read().expect("server hello") else {
+            panic!("expected server hello");
+        };
+
+        sockets.push(socket);
+    }
 
     server.shutdown();
 
-    match socket.read().expect("shutdown close frame") {
-        Message::Close(Some(frame)) => {
-            assert_eq!(u16::from(frame.code), 1001, "going away");
+    for mut socket in sockets {
+        match socket.read().expect("shutdown close frame") {
+            Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 1001, "going away");
+            }
+            other => panic!("expected close frame, got {other:?}"),
         }
-        other => panic!("expected close frame, got {other:?}"),
     }
 
     assert!(

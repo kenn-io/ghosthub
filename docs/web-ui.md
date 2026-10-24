@@ -273,7 +273,9 @@ configuration:
   strict Content-Security-Policy with no remote origins. The application
   never fetches UI code at runtime.
 - Shutdown tears down every relay, attach client, and PTY, invalidates the
-  credential, and closes websockets with proper close frames.
+  credential, and closes websockets with proper close frames. The HTTP listener
+  and upgraded handlers share one bounded grace period; the runtime stays alive
+  until the handlers finish or that period expires.
 
 ### Scene credentials
 

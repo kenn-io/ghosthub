@@ -164,19 +164,17 @@ impl Server {
         self.scenes.invalidate();
         self.shutdown.send_replace(true);
         if let Some((runtime, mut serve)) = self.running.take() {
-            // Every attachment handler awaits its relay teardown before it
-            // returns, so the serving task completing means every relay and
-            // PTY is torn down. A connection that ignores the shutdown
-            // signal past the grace period is force-terminated, and the
-            // runtime shutdown then drains relay teardowns that already
-            // started on the blocking pool.
-            let finished = runtime
-                .block_on(async { tokio::time::timeout(SHUTDOWN_GRACE, &mut serve).await })
-                .is_ok();
-            if !finished {
-                serve.abort();
-                let _aborted = runtime.block_on(serve);
-            }
+            // Axum detaches upgraded sockets from the HTTP serving task. Each
+            // handler retains a shutdown receiver through its close frame and
+            // relay teardown, so drain those receivers before stopping Tokio.
+            runtime.block_on(async {
+                let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
+                if tokio::time::timeout_at(deadline, &mut serve).await.is_err() {
+                    serve.abort();
+                    let _aborted = serve.await;
+                }
+                let _drained = tokio::time::timeout_at(deadline, self.shutdown.closed()).await;
+            });
             runtime.shutdown_timeout(SHUTDOWN_GRACE);
         }
     }
