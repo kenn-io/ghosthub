@@ -1697,8 +1697,9 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(surfaceStore.lastConfiguration?.command?.contains(
             "ignore-size"
         ) == true)
+        // The preview attaches to fleet by its session ID.
         #expect(surfaceStore.lastConfiguration?.command?.contains(
-            "fleet"
+            "#{==:#{session_id},$2}"
         ) == true)
         #expect(model.activeBorrowedTmuxSelection == selection)
         #expect(Set(surfaceStore.requestedKeys).count == 2)

@@ -146,6 +146,59 @@ leaves the presentation open. After success it rechecks the active attachment,
 closing that exact current selection and navigating away only if it is the
 killed target.
 
+Rename Session is offered only for standalone sessions on the default tmux
+server of a macOS or Linux host. Kwt derives worktree and directory session
+names from the branch and path instead of storing them, so a session that a
+kwt worktree or directory workspace owns is never renamable, including when
+kwt-managed sessions are shown as plain rows. For the same reason a rename
+cannot take a name that starts with `kwt-wt-` or `kwt-workspace-`, or that a
+kwt worktree or directory workspace on that host uses. Rename uses the identity
+discovery recorded for the row and one tmux conditional that runs
+`rename-session` only when the server PID, `session_id`, and `session_created`
+still match.
+
+The tmux client stays attached across the rename, because tmux keeps the
+`session_id` and a client stays on its session. Presentations are keyed by
+session name, so every window that shows a session with the same identity moves
+its presentation to the new name and keeps the running terminal. A rename never
+detaches a client, because detaching the last one can end the session. The
+window that requests the rename refuses it while its own presentation of that
+session is still connecting, reconnecting, or resizing.
+
+Renames go into an in-memory log that keeps the latest name of each session
+identity. A window that cannot move a presentation when the rename lands, because
+it is still connecting or resizing, keeps it under the old name and applies the
+log entry once the presentation connects or the next discovery runs, in every
+preview mode. A rename fences in-flight discovery, so an entry newer than a
+window's last listing wins and a later listing is current. Each discovery also
+moves any presentation whose session identity is now listed under another name,
+including after a rename made in tmux itself or when a new session reuses the
+old name. Always Live leaves both names of a waiting presentation alone until
+it moves. When sessions swap names, each presentation waits for the other's
+name. If every presentation in that cycle can move, one is rekeyed to a name
+tmux never gives a session, which frees its name for the rest of the cycle.
+
+A standalone session attaches by its discovered `session_id` behind the same
+identity condition that rename uses. A launch that is still provisioning when
+its session is renamed therefore reaches the renamed session, and refuses a
+replacement session that took the old name.
+
+A presentation under the destination name stays while its own session is
+still listed, because that session moves on its own. It is discarded once its
+attachment closed. When its session is gone from a fresh listing but its client
+is still running, tmux has moved that client to another session. The client is
+detached only while the session it is on now has another client, and the
+presentation closes only after that detach. If a window
+holds two presentations of the same session, it keeps the active one and closes
+the other only after tmux has reported the kept client as attached to that
+session. Either client may have switched sessions since, so one tmux command
+queue checks that both are still on the kept client's session and only then
+detaches the other client. The presentation closes only after that detach, and
+not if its attachment was relaunched in the meantime. If the closed
+presentation was selected while tmux detached it, the window shows the kept one
+instead. If tmux refuses, both stay open, so no session loses its last client.
+The saved sidebar position moves to the new name.
+
 Ghosthub applies the selected Tmux Theme when it creates a new bare tmux
 session. A built-in palette supplies its configured colors. Follow ghostty.conf
 instead uses the effective foreground and background resolved by libghostty for
@@ -588,7 +641,8 @@ default and other named sockets retain the account's override. On Windows,
 those phases use encoded
 PowerShell commands within the same OpenSSH account environment. Unbound
 discovered sessions remain attach-only.
-Ghosthub does not expose rename, resize, or window operations. On an attached
+Ghosthub does not expose window rename, resize, or other tmux window
+operations. On an attached
 tmux or capable Herdr terminal, Cmd-D and Cmd-Shift-D request Ghostty-style
 split-right and split-down operations; the File menu exposes the same actions
 and shortcuts. The Herdr routing contract is documented above. For tmux,

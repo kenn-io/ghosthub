@@ -862,7 +862,7 @@ struct TmuxSessionKillerTests {
                 false
             ),
             ("", false),
-        ]
+        ] as [(String, Bool)]
     )
     func confirmedAbsenceDiagnostics(
         output: String,

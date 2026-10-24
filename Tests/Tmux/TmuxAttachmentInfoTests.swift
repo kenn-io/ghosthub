@@ -316,6 +316,88 @@ struct TmuxAttachmentInfoTests {
         )
     }
 
+    @Test("a fenced attach sets up the renamed session, not its old name")
+    func fencedAttachSetsUpRenamedSession() throws {
+        let tmuxPath = ProcessInfo.processInfo.environment["PATH"]?
+            .split(separator: ":")
+            .map { String($0) + "/tmux" }
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+        guard let tmuxPath else { return }
+        let server = try TestTmuxServer(
+            tmuxPath: tmuxPath,
+            socket: .runOwned(purpose: "fenced-setup")
+        )
+        defer { server.stop() }
+        try server.createSession("desk")
+        let tmux = shellQuotedCommandArgument(tmuxPath)
+        let socket = shellQuotedCommandArgument(server.socketName)
+        let fields = try #require(runShell("""
+        \(tmux) -L \(socket) display-message -p -t '=desk:' \
+        '#{pid} #{session_id} #{session_created}'
+        """)?.split(separator: " ").map(String.init))
+        try #require(fields.count == 3)
+        let identity = TmuxSessionIdentity(
+            serverPID: fields[0],
+            sessionID: fields[1],
+            createdAt: fields[2]
+        )
+        // The session is renamed and a new one takes the old name before
+        // the launch runs.
+        _ = runShell("\(tmux) -L \(socket) rename-session -t '=desk' work")
+        try server.createSession("desk")
+        let command = TmuxAttachmentInfo(
+            sessionName: "desk",
+            host: .local,
+            socketName: server.socketName,
+            expectedAttachIdentity: identity,
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            ),
+            launchMode: .attachOnly
+        ).attachCommand(tmuxPath: tmuxPath)
+        let attach = shellQuotedCommandArgument(command)
+        let attached = runShell("""
+        export TERM=xterm-256color
+        /bin/sleep 5 | /usr/bin/script -q /dev/null /bin/sh -c \(attach) \
+        >/dev/null 2>&1 &
+        client=$!
+        trap 'kill "$client" 2>/dev/null || :' EXIT
+        attempts=0
+        while [ "$attempts" -lt 200 ]; do
+            session=$(\(tmux) -L \(socket) list-clients -F '#{session_name}')
+            [ -n "$session" ] && { printf '%s' "$session"; exit 0; }
+            attempts=$((attempts + 1))
+            sleep 0.01
+        done
+        """)
+        #expect(attached == "work")
+
+        func option(_ flags: String, _ session: String, _ name: String) -> String? {
+            runShell("""
+            \(tmux) -L \(socket) show-options \(flags) -v -t '=\(session):' \(name)
+            """)
+        }
+        #expect(option("", "work", "mouse") == "on")
+        #expect(option("-w", "work", "window-style") == "fg=#3B4851,bg=#FFFFFF")
+        #expect(option("", "desk", "mouse") == "")
+        #expect(option("-w", "desk", "window-style") == "")
+    }
+
+    private func runShell(_ script: String) -> String? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     @Test("built-in themes set pane defaults for terminal color queries")
     func builtInThemeSetsPaneDefaults() {
         let command = TmuxAttachmentInfo(

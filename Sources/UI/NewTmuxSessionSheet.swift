@@ -3,12 +3,12 @@ import GhosthubSettings
 import GhosthubWorkspace
 import SwiftUI
 
-enum TmuxSessionName {
-    static func normalized(_ value: String) -> String {
+public enum TmuxSessionName {
+    public static func normalized(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func isValid(_ value: String) -> Bool {
+    public static func isValid(_ value: String) -> Bool {
         let name = normalized(value)
         guard !name.isEmpty, name.count <= 100 else { return false }
         return name.unicodeScalars.allSatisfy { scalar in

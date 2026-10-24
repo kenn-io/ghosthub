@@ -18,6 +18,7 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case stopHerdrSession(WorkspaceHerdrSessionSelection)
     case deleteHerdrSession(WorkspaceHerdrSessionSelection)
     case killTmuxSession(WorkspaceTmuxSessionSelection)
+    case renameTmuxSession(WorkspaceTmuxSessionSelection)
     case killZellijSession(WorkspaceZellijSessionSelection)
     case applyThemeToCurrentTmuxSession(
         WorkspaceTmuxSessionSelection
@@ -602,6 +603,15 @@ public enum CommandPaletteModel {
                     action: .openTmuxSession(session)
                 ),
             ]
+            if WorkspaceSidebarModel.canRequestRename(session, in: snapshot) {
+                commands.append(WorkspaceCommandItem(
+                    id: "rename-tmux-session-\(session.id)",
+                    title: "Rename tmux session: \(session.name)",
+                    subtitle: "Rename on \(hostName).",
+                    keywords: ["rename", "tmux", "session"] + keywords,
+                    action: .renameTmuxSession(session)
+                ))
+            }
             if canRequestKill {
                 commands.append(WorkspaceCommandItem(
                     id: "kill-tmux-session-\(session.id)",

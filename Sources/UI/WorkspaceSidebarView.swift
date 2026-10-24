@@ -202,6 +202,7 @@ struct WorkspaceSidebarView: View {
         (WorkspaceHerdrSessionSelection, HerdrSessionDestructiveAction) -> Void
     let onNavigateAwayFromSession: () -> Void
     let onRequestKillTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
+    let onRequestRenameTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onRequestKillZellijSession: (WorkspaceZellijSessionSelection) -> Void
     let onRequestRemoveWorktree: (WorktreeSummary) -> Void
     let isWorktreeChangesPollingEligible: Bool
@@ -295,6 +296,9 @@ struct WorkspaceSidebarView: View {
         onRequestKillTmuxSession: @escaping (
             WorkspaceTmuxSessionSelection
         ) -> Void = { _ in },
+        onRequestRenameTmuxSession: @escaping (
+            WorkspaceTmuxSessionSelection
+        ) -> Void = { _ in },
         onRequestKillZellijSession: @escaping (
             WorkspaceZellijSessionSelection
         ) -> Void = { _ in },
@@ -364,6 +368,7 @@ struct WorkspaceSidebarView: View {
         self.onRequestHerdrSessionLifecycle = onRequestHerdrSessionLifecycle
         self.onNavigateAwayFromSession = onNavigateAwayFromSession
         self.onRequestKillTmuxSession = onRequestKillTmuxSession
+        self.onRequestRenameTmuxSession = onRequestRenameTmuxSession
         self.onRequestKillZellijSession = onRequestKillZellijSession
         self.onRequestRemoveWorktree = onRequestRemoveWorktree
         self.isWorktreeChangesPollingEligible =
@@ -934,6 +939,10 @@ struct WorkspaceSidebarView: View {
                 activeTmuxSessionIsConnected
             ) ? $0 : nil
         }
+        let renamableTmuxSession = tmuxSession.flatMap {
+            WorkspaceSidebarModel.canRequestRename($0, in: snapshot)
+                ? $0 : nil
+        }
         let herdrActions: [WorkspaceSidebarRowAction]
         if case .herdrSession = row.target {
             herdrActions = WorkspaceSidebarRowActionModel.actions(
@@ -1259,6 +1268,11 @@ struct WorkspaceSidebarView: View {
             }
         }
         .contextMenu {
+            if let renamableTmuxSession {
+                Button("Rename Session…") {
+                    onRequestRenameTmuxSession(renamableTmuxSession)
+                }
+            }
             if let tmuxSession = runningTmuxSession {
                 Button("Kill Session…", role: .destructive) {
                     onRequestKillTmuxSession(tmuxSession)
@@ -1274,6 +1288,11 @@ struct WorkspaceSidebarView: View {
             }
         }
         .accessibilityActions {
+            if let renamableTmuxSession {
+                Button("Rename Session") {
+                    onRequestRenameTmuxSession(renamableTmuxSession)
+                }
+            }
             if let tmuxSession = runningTmuxSession {
                 Button("Kill Session") {
                     onRequestKillTmuxSession(tmuxSession)

@@ -509,6 +509,13 @@ func makeModel(
             on: host
         )
     },
+    tmuxSessionRenamer: @escaping
+    WorkspaceSceneModel.TmuxSessionRenaming = { _, _, _, _ in },
+    tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator =
+        TmuxSessionRenameCoordinator(),
+    sidebarOrderDefaults: UserDefaults = UserDefaults(
+        suiteName: "ghosthub-tests-\(UUID().uuidString)"
+    )!,
     sshHostProbeRunner: @escaping
     WorkspaceSceneModel.SSHHostProbeRunner = { _, _, _ in
         (status: 255, stdout: "", stderr: "")
@@ -677,6 +684,9 @@ func makeModel(
             )
         },
         tmuxSessionStyler: tmuxSessionStyler,
+        tmuxSessionRenamer: tmuxSessionRenamer,
+        tmuxSessionRenameCoordinator: tmuxSessionRenameCoordinator,
+        sidebarOrderDefaults: sidebarOrderDefaults,
         sshHostProbeRunner: sshHostProbeRunner,
         hostSSHConnectionProvider: hostSSHConnectionProvider,
         hostSSHSessionProvider: hostSSHSessionProvider,
