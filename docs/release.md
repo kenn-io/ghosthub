@@ -466,12 +466,13 @@ If Apple rejects the submission, the workflow prints the notary response and
 fetches the detailed notarization log before failing. It never publishes an
 unsigned or unnotarized fallback artifact.
 
-After Apple accepts a submission, ticket stapling gets up to three attempts,
-waiting 10 and 20 seconds between attempts to tolerate interrupted ticket
-downloads. If all attempts fail, packaging exits with the last stapler error.
+After Apple accepts a submission, ticket stapling and validation use
+`tools/stapler.sh`. Ticket-service failures (exit 68) get up to three attempts,
+waiting 10 and 20 seconds between attempts. Other errors, including invalid
+ticket data, fail immediately. Exhausted retries preserve the last stapler error.
 Successful stapling must still pass ticket validation and Gatekeeper assessment
 before the script writes the release checksum. Stable and nightly builds use
-this same path.
+this same path, including the nightly candidate's final ticket validation.
 
 ### Homebrew tap
 

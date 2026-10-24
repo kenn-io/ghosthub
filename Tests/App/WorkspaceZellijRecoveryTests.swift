@@ -276,14 +276,19 @@ extension WorkspaceZellijTests {
         store.surface.launchFailureIsRetryable = true
         let close = try #require(store.surface.closeObservers.values.first)
         close(false, 255)
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(store.requestedConfigurations.count >= 3)
-        #expect(model.zellijReconnectSupervisorIsRunning)
+        // A retry hands off to a queued surface-state callback, so the
+        // supervisor can briefly be idle between successive attempts.
+        await waitUntilMainActor {
+            store.requestedConfigurations.count >= 3
+        }
+        let failedAttemptCount = store.requestedConfigurations.count
 
         store.surface.launchError = nil
         store.surface.launchFailureIsRetryable = false
         await waitUntilMainActor(timeout: .seconds(5)) {
-            model.activeBorrowedZellijSelection == selection
+            store.requestedConfigurations.count > failedAttemptCount
+                && model.activeBorrowedZellijSelection == selection
+                && model.activeBorrowedZellijConnectionState == .connected
                 && !model.zellijReconnectSupervisorIsRunning
         }
 

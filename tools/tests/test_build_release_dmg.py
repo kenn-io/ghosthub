@@ -6,18 +6,18 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    ("staple_results", "validation_result", "expected_code", "expected_calls"),
+    ("staple_results", "validation_results", "expected_code", "expected_calls"),
     [
-        ("0", 0, 0, ["submit", "staple", "validate", "assess"]),
+        ("0", "0", 0, ["submit", "staple", "validate", "assess"]),
         (
             "68 0",
-            0,
+            "0",
             0,
             ["submit", "staple", "sleep 10", "staple", "validate", "assess"],
         ),
         (
             "68 68 0",
-            0,
+            "0",
             0,
             [
                 "submit",
@@ -32,15 +32,28 @@ import pytest
         ),
         (
             "68 68 68",
-            0,
+            "0",
             68,
             ["submit", "staple", "sleep 10", "staple", "sleep 20", "staple"],
         ),
-        ("0", 65, 65, ["submit", "staple", "validate"]),
+        ("0", "65", 65, ["submit", "staple", "validate"]),
+        (
+            "0",
+            "68 0",
+            0,
+            ["submit", "staple", "validate", "sleep 10", "validate", "assess"],
+        ),
+        (
+            "0",
+            "68 68 68",
+            68,
+            ["submit", "staple", "validate", "sleep 10", "validate", "sleep 20", "validate"],
+        ),
+        ("65", "0", 65, ["submit", "staple"]),
     ],
 )
 def test_stapling_gates_release_checksum(
-    tmp_path, staple_results, validation_result, expected_code, expected_calls
+    tmp_path, staple_results, validation_results, expected_code, expected_calls
 ):
     """Exercise the real packaging script with Apple tools at a fixture boundary."""
     fake_bin = tmp_path / "bin"
@@ -48,6 +61,7 @@ def test_stapling_gates_release_checksum(
     release = tmp_path / "release"
     (release / "Fixture.app").mkdir(parents=True)
     (tmp_path / "staple-results").write_text(staple_results.replace(" ", "\n") + "\n")
+    (tmp_path / "validate-results").write_text(validation_results.replace(" ", "\n") + "\n")
     commands = {
         "make": 'test "$1" = release-app',
         "xattr": 'test "$1" = -cr',
@@ -61,17 +75,13 @@ esac""",
   "notarytool submit")
     echo submit >> "$FIXTURE_ROOT/calls"
     echo '{"status":"Accepted","id":"fixture-submission"}' ;;
-  "stapler staple")
+  "stapler staple"|"stapler validate")
     test "$3" = "$RELEASE_DMG_PATH"
-    echo staple >> "$FIXTURE_ROOT/calls"
-    result=$(head -n 1 "$FIXTURE_ROOT/staple-results")
-    tail -n +2 "$FIXTURE_ROOT/staple-results" > "$FIXTURE_ROOT/remaining"
-    mv "$FIXTURE_ROOT/remaining" "$FIXTURE_ROOT/staple-results"
+    echo "$2" >> "$FIXTURE_ROOT/calls"
+    result=$(head -n 1 "$FIXTURE_ROOT/$2-results")
+    tail -n +2 "$FIXTURE_ROOT/$2-results" > "$FIXTURE_ROOT/remaining"
+    mv "$FIXTURE_ROOT/remaining" "$FIXTURE_ROOT/$2-results"
     exit "${result:-99}" ;;
-  "stapler validate")
-    test "$3" = "$RELEASE_DMG_PATH"
-    echo validate >> "$FIXTURE_ROOT/calls"
-    exit "$VALIDATION_RESULT" ;;
   *) exit 99 ;;
 esac""",
         "spctl": 'echo assess >> "$FIXTURE_ROOT/calls"',
@@ -95,7 +105,6 @@ esac""",
         "APPLE_NOTARY_KEY_FILE": str(tmp_path / "fixture-key"),
         "APPLE_NOTARY_KEY_ID": "fixture-key",
         "APPLE_NOTARY_ISSUER": "fixture-issuer",
-        "VALIDATION_RESULT": str(validation_result),
         "TMPDIR": str(tmp_path),
     }
     result = subprocess.run(

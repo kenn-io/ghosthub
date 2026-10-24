@@ -193,20 +193,8 @@ if [[ -n "$APPLE_NOTARY_KEY_FILE" || -n "$APPLE_NOTARY_KEY_ID" || -n "$APPLE_NOT
   fi
 
   printf 'Stapling notarization ticket: %s\n' "$RELEASE_DMG_PATH"
-  for attempt in 1 2 3; do
-    if xcrun stapler staple "$RELEASE_DMG_PATH"; then
-      break
-    else
-      staple_status=$?
-    fi
-    if [[ "$attempt" -eq 3 ]]; then
-      exit "$staple_status"
-    fi
-    printf 'Stapling failed (exit %s); retrying in %s seconds.\n' \
-      "$staple_status" "$((attempt * 10))" >&2
-    sleep "$((attempt * 10))"
-  done
-  xcrun stapler validate "$RELEASE_DMG_PATH"
+  "$SCRIPT_DIR/stapler.sh" staple "$RELEASE_DMG_PATH"
+  "$SCRIPT_DIR/stapler.sh" validate "$RELEASE_DMG_PATH"
   spctl --assess --type open --context context:primary-signature --verbose=2 \
     "$RELEASE_DMG_PATH"
 fi

@@ -328,7 +328,7 @@ jobs:
           cd "$RELEASE_ROOT"
           shasum -a 256 -c "${RELEASE_DMG_NAME}.sha256"
           shasum -a 256 -c SHA256SUMS
-          xcrun stapler validate "$RELEASE_DMG_NAME"
+          "$GITHUB_WORKSPACE/tools/stapler.sh" validate "$RELEASE_DMG_NAME"
           spctl --assess --type open --context context:primary-signature --verbose=2 \
             "$RELEASE_DMG_NAME"
           codesign --verify --deep --strict --verbose=2 Ghosthub.app
