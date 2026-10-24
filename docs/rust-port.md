@@ -261,6 +261,8 @@ CI runs these tests on Linux.
 Remote tmux creation is also exercised through the application entry point:
 quoted names remain exact, duplicate names are rejected, the terminal accepts
 shell input, and detach or application close preserves the created session.
+First-session creation also checks the shell's UTF-8 locale and non-ASCII input
+with no server running before the connection.
 Windows/WSL controllers and remote macOS servers need separate acceptance.
 
 Track implementation and baseline failures in the existing Kata project.
@@ -1195,6 +1197,8 @@ reports the server PID, session ID, and creation time from that client's own
 command queue; only inventory matching that identity may become its
 presentation. Reading the receipt has a bounded deadline and best-effort
 cleanup. Later opens use attach-only authority and never replay creation.
+Interactive tmux clients inherit the remote login locale; only inventory
+commands force the C locale for parsing.
 The UI withholds remote tmux/Zellij kill, Herdr stop/delete, worktrees,
 reconnect/backoff, and restoration until each operation has fresh remote
 identity and lifecycle fencing. An absent control cannot silently fall back to

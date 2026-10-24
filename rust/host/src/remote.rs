@@ -626,6 +626,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         let command = posix_command(&tmux_command(
             &self.config,
             tmux_binary,
+            RemoteCommandLocale::StableOutput,
             ["-f", "/dev/null", "list-sessions", "-F", INVENTORY_FORMAT],
         ));
         let framed = framed_remote_shell_command(&command, &begin_marker, &end_marker);
@@ -684,6 +685,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                     "tmux is unavailable on the remote host",
                 )
             })?,
+            RemoteCommandLocale::Login,
             [
                 "if-shell",
                 "-F",
@@ -780,6 +782,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         let mut command = tmux_command(
             &self.config,
             executable,
+            RemoteCommandLocale::Login,
             [
                 "new-session",
                 "-A",
@@ -1036,6 +1039,7 @@ fn framed_status_marker(end_marker: &str) -> String {
 fn tmux_command<'a>(
     config: &RemoteTmuxConfig,
     tmux_binary: &str,
+    locale: RemoteCommandLocale,
     args: impl IntoIterator<Item = &'a str>,
 ) -> Vec<String> {
     let mut command = vec![
@@ -1047,7 +1051,10 @@ fn tmux_command<'a>(
         "-u".to_owned(),
         "TMUX_TMPDIR".to_owned(),
     ];
-    command.extend(["LC_ALL=C".to_owned(), "TERM=xterm-256color".to_owned()]);
+    if matches!(locale, RemoteCommandLocale::StableOutput) {
+        command.push("LC_ALL=C".to_owned());
+    }
+    command.push("TERM=xterm-256color".to_owned());
     if let Some(path) = config.socket_directory() {
         command.push(format!("TMUX_TMPDIR={path}"));
     }
@@ -1811,7 +1818,12 @@ mod tests {
         .expect("config");
 
         assert_eq!(
-            tmux_command(&config, "/usr/bin/tmux", ["list-sessions"]),
+            tmux_command(
+                &config,
+                "/usr/bin/tmux",
+                RemoteCommandLocale::StableOutput,
+                ["list-sessions"],
+            ),
             [
                 "/usr/bin/env",
                 "-u",

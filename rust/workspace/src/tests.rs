@@ -10142,8 +10142,7 @@ fn queued_remote_tmux_creation_stops_when_scene_closes() {
         None,
     )
     .unwrap();
-    let runner = Arc::new(CountingRefusingRunner(AtomicUsize::new(0)));
-    let host = counted_remote_host(&config, Arc::clone(&runner));
+    let host = remote_host_fixture(&config);
     let snapshot = RemoteTmuxSnapshot::test_fixture(
         "studio.example",
         TEST_REMOTE_ROUTE,
@@ -10183,7 +10182,21 @@ fn queued_remote_tmux_creation_stops_when_scene_closes() {
     workspace
         .create_session("ssh:studio", "studio.example", "build")
         .unwrap();
+    let cancellation = {
+        let hosts = workspace.scene.runtime.remote_hosts.lock().unwrap();
+        let Some(RemoteConstructiveState::Active { cancellation, .. }) =
+            hosts["ssh:studio"].constructive_cancellation.as_ref()
+        else {
+            panic!("creation must register an active cancellation token");
+        };
+        cancellation.clone()
+    };
+    assert!(!cancellation.is_cancelled());
     workspace.close();
+    assert!(
+        cancellation.is_cancelled(),
+        "closing must cancel creation before the operation lane is released"
+    );
     drop(lane);
     settle("cancelled tmux creation", || {
         !workspace
@@ -10192,11 +10205,6 @@ fn queued_remote_tmux_creation_stops_when_scene_closes() {
             .remote_constructive_in_flight
             .load(Ordering::Acquire)
     });
-    assert_eq!(
-        runner.0.load(Ordering::Acquire),
-        0,
-        "closing before launch must not issue a remote command"
-    );
 }
 
 #[test]

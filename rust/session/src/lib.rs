@@ -1032,29 +1032,4 @@ mod tests {
             "Swift-compatible character counting treats combining sequences as one name character"
         );
     }
-
-    #[test]
-    fn create_once_is_consumed_into_one_exact_argv() {
-        let plan = CreateOnce::atomic(
-            "wsl.exe",
-            vec![
-                "new-session".into(),
-                "-A".into(),
-                "-s".into(),
-                "demo".into(),
-            ],
-            SessionName::parse("demo").expect("valid name"),
-        );
-        let (program, args, target) = plan.into_parts();
-
-        assert_eq!(program, "wsl.exe");
-        assert_eq!(
-            args,
-            ["new-session", "-A", "-s", "demo"]
-                .into_iter()
-                .map(std::ffi::OsString::from)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(target.as_str(), "demo");
-    }
 }

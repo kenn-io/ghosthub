@@ -394,6 +394,44 @@ fn native_ssh_reports_authentication_failure_and_recovers() {
 
 #[test]
 #[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
+fn native_ssh_first_tmux_session_preserves_login_locale() {
+    let Some(fixture) =
+        Fixture::isolated("native_ssh::native_ssh_first_tmux_session_preserves_login_locale")
+    else {
+        return;
+    };
+    fixture.tmux(&["kill-server"]);
+    std::fs::write(fixture.root.join("home/.profile"), "export LANG=C.UTF-8\n").unwrap();
+    fixture.connect();
+    assert!(fixture.workspace.snapshot().hosts().iter().any(|host| {
+        host.id() == fixture.host_id && host.tmux_available() && host.sessions().is_empty()
+    }));
+    fixture
+        .workspace
+        .create_session(&fixture.host_id, &fixture.endpoint, "first")
+        .unwrap();
+    fixture.wait(|snapshot| matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == "first"));
+    fixture.wait(|_| fixture.terminal_text().contains("$ "));
+    fixture
+        .workspace
+        .send_key(KeyInput::text(
+            "printf 'locale-%s:%s:%s\\n' \"$LANG\" \"$(locale charmap)\" 'café'",
+            Modifiers::default(),
+        ))
+        .unwrap();
+    fixture
+        .workspace
+        .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
+        .unwrap();
+    fixture.wait(|_| {
+        fixture
+            .terminal_text()
+            .contains("locale-C.UTF-8:UTF-8:café")
+    });
+}
+
+#[test]
+#[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
 fn native_ssh_creates_exact_tmux_session_and_preserves_it() {
     let Some(fixture) =
         Fixture::isolated("native_ssh::native_ssh_creates_exact_tmux_session_and_preserves_it")
