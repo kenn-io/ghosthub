@@ -244,15 +244,20 @@ For native Linux SSH acceptance, install `openssh-server`, `openssh-client`,
 make rust-test-ssh-live
 ```
 
-This test runs the application composition root with its bundled controller
+These tests run the application composition root with its bundled controller
 against a disposable OpenSSH server. Private process and network namespaces,
 generated keys, a fixture account, and disposable home and KWT roots keep the
-test independent of configured hosts. It exercises the host-key prompt,
+tests independent of configured hosts. They exercise the host-key prompt,
 inventory, exact session selection, shell input, resize, retained switching,
 detach, application close, and reopening with the accepted host key. An
 existing account KWT daemon continues to serve local project inventory while
 SSH leases belong to Ghosthub's separate daemon. Reconnecting after the
-account daemon stops must leave it stopped. CI runs this test on Linux.
+account daemon stops must leave it stopped. A rejected public key must leave
+the application shell available and show the SSH diagnostic and exit status
+on that host. Reconnecting after the key is authorized must clear the error
+and allow normal session attachment. KWT's optional failure `details` object
+is accepted without relaxing stream ordering or route and prompt validation.
+CI runs these tests on Linux.
 Windows/WSL controllers and remote macOS servers need separate acceptance.
 
 Track implementation and baseline failures in the existing Kata project.

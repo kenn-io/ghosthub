@@ -696,7 +696,7 @@ rust-test-ssh-controller-live:
 .PHONY: rust-test-ssh-live
 rust-test-ssh-live: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
 rust-test-ssh-live: ensure-kwt
-	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib -- --ignored --exact native_ssh::native_ssh_connects_attaches_and_preserves_sessions
+	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib native_ssh:: -- --ignored
 
 rust-lint:
 	@cd "$(RUST_DIR)" && $(CARGO) check --workspace --all-targets --locked

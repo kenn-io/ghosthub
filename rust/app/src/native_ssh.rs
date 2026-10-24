@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use workspace::{
     HostConnectionState, KeyInput, Modifiers, NamedKey, SessionSelection, Workspace,
-    WorkspaceContent, WorkspaceEvent,
+    WorkspaceContent, WorkspaceEvent, WorkspaceSnapshot,
 };
 
 struct Fixture {
@@ -19,6 +19,23 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn isolated(test_name: &str) -> Option<Self> {
+        if let Some(root) = std::env::var_os("GHOSTHUB_SSH_FIXTURE") {
+            return Some(Self::new(root.into()));
+        }
+        let result = Command::new("/bin/sh")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tools/run_rust_ssh_fixture.sh"
+            ))
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", test_name, "--ignored", "--nocapture"])
+            .status()
+            .unwrap();
+        assert!(result.success());
+        None
+    }
+
     fn new(root: PathBuf) -> Self {
         let roots = config::ApplicationConfig::current_roots().unwrap();
         let settings = config::ApplicationConfig::load(&roots).unwrap();
@@ -60,7 +77,7 @@ impl Fixture {
     }
 
     #[track_caller]
-    fn wait(&self, mut condition: impl FnMut() -> bool) -> usize {
+    fn wait(&self, mut condition: impl FnMut(&WorkspaceSnapshot) -> bool) -> usize {
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut prompts = 0;
         loop {
@@ -83,10 +100,10 @@ impl Fixture {
                     _ => {}
                 }
             }
-            if condition() {
+            let snapshot = self.workspace.snapshot();
+            if condition(&snapshot) {
                 return prompts;
             }
-            let snapshot = self.workspace.snapshot();
             let host = snapshot
                 .hosts()
                 .iter()
@@ -108,8 +125,8 @@ impl Fixture {
 
     fn connect(&self) -> usize {
         self.workspace.connect_host(&self.host_id).unwrap();
-        self.wait(|| {
-            self.workspace.snapshot().hosts().iter().any(|host| {
+        self.wait(|snapshot| {
+            snapshot.hosts().iter().any(|host| {
                 host.id() == self.host_id && host.connection() == HostConnectionState::Ready
             })
         })
@@ -141,8 +158,8 @@ impl Fixture {
         self.workspace
             .switch_session(&SessionSelection::new(&self.host_id, &self.endpoint, name))
             .unwrap();
-        self.wait(|| matches!(self.workspace.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == name));
-        self.wait(|| self.terminal_text().contains("$ "));
+        self.wait(|snapshot| matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == name));
+        self.wait(|_| self.terminal_text().contains("$ "));
         self.workspace.send_key(KeyInput::text(
             format!("printf 'remote-%s:%s\\n' \"$(tmux display-message -p -t \"$TMUX_PANE\" '#S')\" {marker}"),
             Modifiers::default(),
@@ -150,7 +167,7 @@ impl Fixture {
         self.workspace
             .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
             .unwrap();
-        self.wait(|| {
+        self.wait(|_| {
             self.terminal_text()
                 .contains(&format!("remote-{name}:{marker}"))
         });
@@ -170,25 +187,11 @@ impl Drop for Fixture {
     reason = "one real SSH and account-daemon lifecycle"
 )]
 fn native_ssh_connects_attaches_and_preserves_sessions() {
-    let Some(root) = std::env::var_os("GHOSTHUB_SSH_FIXTURE") else {
-        let result = Command::new("/bin/sh")
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../tools/run_rust_ssh_fixture.sh"
-            ))
-            .arg(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "native_ssh::native_ssh_connects_attaches_and_preserves_sessions",
-                "--ignored",
-                "--nocapture",
-            ])
-            .status()
-            .unwrap();
-        assert!(result.success());
+    let Some(fixture) =
+        Fixture::isolated("native_ssh::native_ssh_connects_attaches_and_preserves_sessions")
+    else {
         return;
     };
-    let fixture = Fixture::new(root.into());
     fixture.kwt(&fixture.account_home, &["daemon", "start"]);
     let account = fixture.daemon_status(&fixture.account_home);
     assert_eq!(account["state"], "ready");
@@ -214,8 +217,8 @@ fn native_ssh_connects_attaches_and_preserves_sessions() {
         &["projects", "add", project.to_str().unwrap(), "--json"],
     );
     fixture.workspace.connect_host("local").unwrap();
-    fixture.wait(|| {
-        fixture.workspace.snapshot().hosts().iter().any(|host| {
+    fixture.wait(|snapshot| {
+        snapshot.hosts().iter().any(|host| {
             host.id() == "local"
                 && host
                     .projects()
@@ -254,13 +257,13 @@ fn native_ssh_connects_attaches_and_preserves_sessions() {
     assert_eq!(host.sessions().len(), 2);
     fixture.attach("review", "ready");
     fixture.workspace.resize(91, 29).unwrap();
-    fixture.wait(|| {
+    fixture.wait(|_| {
         fixture.tmux(&["list-clients", "-F", "#{client_width}:#{client_height}"]) == "91:29"
     });
     fixture.attach("notes 'one'", "quoted");
     fixture.attach("review", "returned");
     fixture.workspace.detach();
-    fixture.wait(|| {
+    fixture.wait(|_| {
         fixture.tmux(&[
             "display-message",
             "-p",
@@ -281,7 +284,7 @@ fn native_ssh_connects_attaches_and_preserves_sessions() {
     );
     fixture.attach("review", "before-close");
     fixture.workspace.close();
-    fixture.wait(|| fixture.tmux(&["list-clients"]).is_empty());
+    fixture.wait(|_| fixture.tmux(&["list-clients"]).is_empty());
     let account_after_close = fixture.daemon_status(&fixture.account_home);
     assert_eq!(account_after_close["state"], "ready");
     assert_eq!(account_after_close["pid"], account["pid"]);
@@ -322,4 +325,69 @@ fn native_ssh_connects_attaches_and_preserves_sessions() {
         ]),
         identity
     );
+}
+
+#[test]
+#[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
+fn native_ssh_reports_authentication_failure_and_recovers() {
+    let Some(fixture) =
+        Fixture::isolated("native_ssh::native_ssh_reports_authentication_failure_and_recovers")
+    else {
+        return;
+    };
+    let authorized_keys = fixture.root.join("authorized_keys");
+    let original_keys = std::fs::read(&authorized_keys).unwrap();
+    std::fs::write(&authorized_keys, "").unwrap();
+
+    fixture.workspace.connect_host(&fixture.host_id).unwrap();
+    assert_eq!(
+        fixture.wait(|snapshot| {
+            snapshot.hosts().iter().any(|host| {
+                host.id() == fixture.host_id
+                    && host.connection() == HostConnectionState::Unavailable
+            })
+        }),
+        1
+    );
+    let snapshot = fixture.workspace.snapshot();
+    let host = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == fixture.host_id)
+        .unwrap();
+    let diagnostic = host.diagnostic().expect("failed SSH host has a diagnostic");
+    assert_eq!(
+        diagnostic.kind(),
+        model::DiagnosticKind::Transport,
+        "{diagnostic:?}"
+    );
+    assert!(
+        diagnostic
+            .message()
+            .contains("Permission denied (publickey)"),
+        "{diagnostic:?}"
+    );
+    assert!(
+        diagnostic.message().contains("exit status 255"),
+        "{diagnostic:?}"
+    );
+    assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
+
+    std::fs::write(&authorized_keys, original_keys).unwrap();
+    assert_eq!(
+        fixture.connect(),
+        0,
+        "accepted host key should remain trusted"
+    );
+    let recovered = fixture.workspace.snapshot();
+    assert!(
+        recovered
+            .hosts()
+            .iter()
+            .find(|host| host.id() == fixture.host_id)
+            .unwrap()
+            .diagnostic()
+            .is_none()
+    );
+    fixture.attach("review", "after-authentication-failure");
 }

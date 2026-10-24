@@ -810,6 +810,9 @@ struct OperationFailure {
     code: String,
     message: String,
     retryable: bool,
+    // KWT includes structured context; the message already carries the diagnostic.
+    #[serde(rename = "details")]
+    _details: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Default)]
@@ -1590,6 +1593,7 @@ fn classify_kwt_failure(stdout: &[u8], status: i32, operation: &str) -> SshError
             code: failure.code().to_owned(),
             message: failure.message().to_owned(),
             retryable: failure.retryable(),
+            _details: None,
         });
     }
     SshError::new(
@@ -1994,6 +1998,59 @@ mod tests {
         }"#;
         let error = stream.accept(failure, &route).expect_err("changed route");
         assert_eq!(error.code(), Some("ssh_configuration_changed"));
+        assert!(error.retryable());
+    }
+
+    #[test]
+    fn lease_failure_details_preserve_the_ssh_diagnostic() {
+        let mut stream = SshLeaseStream::new();
+        let failure = br#"{
+          "operation_id":"op-1","sequence":1,"kind":"complete",
+          "failure":{
+            "code":"ssh_connection_failed",
+            "message":"SSH command failed (exit status 255).\nghosthub@127.0.0.1: Permission denied (publickey).",
+            "retryable":true,"details":{"exit_code":255}
+          }
+        }"#;
+        let error = stream
+            .accept(failure, &route())
+            .expect_err("SSH rejected the key");
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(error.code(), Some("ssh_connection_failed"));
+        assert_eq!(
+            error.to_string(),
+            "SSH command failed (exit status 255).\nghosthub@127.0.0.1: Permission denied (publickey)."
+        );
+        assert!(error.retryable());
+        assert!(
+            stream.accept(failure, &route()).is_err(),
+            "completion is terminal"
+        );
+    }
+
+    #[test]
+    fn lease_failures_reject_invalid_details_and_unknown_fields() {
+        for extra in [r#""details":255"#, r#""details":{},"unexpected":true"#] {
+            let failure = format!(
+                r#"{{"operation_id":"op-1","sequence":1,"kind":"complete","failure":{{"code":"ssh_connection_failed","message":"SSH failed","retryable":true,{extra}}}}}"#
+            );
+            let error = SshLeaseStream::new()
+                .accept(failure.as_bytes(), &route())
+                .expect_err("invalid failure shape");
+            assert_eq!(error.kind(), DiagnosticKind::MalformedOutput);
+        }
+    }
+
+    #[test]
+    fn standalone_failure_details_preserve_the_kwt_error() {
+        let error = accept_lease_line(
+            &mut SshLeaseStream::new(),
+            br#"{"error":{"code":"daemon_draining","message":"daemon is draining","retryable":true,"details":{"drain_deadline":"2026-08-15T12:00:30Z"}}}"#,
+            &route(),
+        ).expect_err("KWT refused the lease before streaming");
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(error.code(), Some("daemon_draining"));
+        assert_eq!(error.to_string(), "daemon is draining");
         assert!(error.retryable());
     }
 
