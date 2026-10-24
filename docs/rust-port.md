@@ -383,9 +383,9 @@ separate work.
 
 ![Review the isolated SSH host key before connecting](https://github.com/user-attachments/assets/cf1646f1-ca95-4960-ad90-de500f053482)
 
-![Create a remote tmux session from native Linux Ghosthub](https://github.com/user-attachments/assets/247cb353-a291-4d2b-b708-733471721570)
+![Create the first remote tmux session from native Linux Ghosthub](https://github.com/user-attachments/assets/c786a62b-d672-419d-893b-80ac6b03aebf)
 
-![The newly created remote tmux session accepts shell input](https://github.com/user-attachments/assets/d422cd45-d247-4535-8053-57e0fbb2ce24)
+![The first remote tmux shell preserves UTF-8 and renders non-ASCII output](https://github.com/user-attachments/assets/0fa7b084-4567-480e-9ce5-f398a7fb20ec)
 
 ### Windows WSL command boundary
 
