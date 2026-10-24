@@ -379,9 +379,7 @@ disconnected until you select **Connect** again. Confirmed remote
 destruction, worktree workflows, and automatic transport recovery remain
 separate work.
 
-![Configure an SSH host in native Linux Ghosthub](https://github.com/user-attachments/assets/1a674ae3-5729-4a66-bb1d-2d2334af6fb5)
-
-![Review the isolated SSH host key before connecting](https://github.com/user-attachments/assets/02a1114f-591a-43c7-a8c4-9490d49bc4ae)
+![Review the isolated SSH host key before connecting](https://github.com/user-attachments/assets/cf1646f1-ca95-4960-ad90-de500f053482)
 
 ![Create a remote tmux session from native Linux Ghosthub](https://github.com/user-attachments/assets/247cb353-a291-4d2b-b708-733471721570)
 
