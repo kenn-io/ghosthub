@@ -4415,12 +4415,14 @@ fn stale_kill_identity_results_cannot_publish_confirmation() {
     let pending = |generation| PendingKill {
         generation,
         selection: SessionSelection::new("wsl", "Ubuntu", "work"),
-        host: host.clone(),
-        target: KillTarget::Tmux(Arc::new(LiveSessionTarget::test_fixture(
-            &snapshot,
-            "work",
-            session::SessionIdentity::new(100, "$1", 200),
-        ))),
+        target: KillTarget::Tmux {
+            host: host.clone(),
+            target: Arc::new(LiveSessionTarget::test_fixture(
+                &snapshot,
+                "work",
+                session::SessionIdentity::new(100, "$1", 200),
+            )),
+        },
     };
 
     workspace.scene.kill_generation.store(2, Ordering::Release);
@@ -8643,12 +8645,14 @@ fn completed_tmux_kill_drops_matching_confirmations_in_every_scene() {
     let pending = |scene: &Scene, name: &str, identity: &session::SessionIdentity| PendingKill {
         generation: scene.kill_generation.load(Ordering::Acquire),
         selection: SessionSelection::new("wsl", "Ubuntu", name),
-        host: host.clone(),
-        target: KillTarget::Tmux(Arc::new(LiveSessionTarget::test_fixture(
-            &snapshot,
-            name,
-            identity.clone(),
-        ))),
+        target: KillTarget::Tmux {
+            host: host.clone(),
+            target: Arc::new(LiveSessionTarget::test_fixture(
+                &snapshot,
+                name,
+                identity.clone(),
+            )),
+        },
     };
     assert!(publish_pending_kill(
         &b.scene,
@@ -8703,8 +8707,8 @@ fn completed_zellij_kill_drops_matching_confirmations_in_every_scene() {
     let pending = |scene: &Scene, name: &str| PendingKill {
         generation: scene.kill_generation.load(Ordering::Acquire),
         selection: SessionSelection::zellij("wsl", "Ubuntu", name),
-        host: host.clone(),
         target: KillTarget::Zellij {
+            host: host.clone(),
             endpoint: snapshot.endpoint().clone(),
             runtime: snapshot.runtime().clone(),
             executable: "/usr/bin/zellij".to_owned(),
@@ -9202,10 +9206,10 @@ fn kill_completing_during_identity_capture_cannot_publish_a_stale_confirmation()
             PendingKill {
                 generation: b_generation,
                 selection: SessionSelection::new("wsl", "Ubuntu", "work"),
-                host: host.clone(),
-                target: KillTarget::Tmux(Arc::new(LiveSessionTarget::test_fixture(
-                    &snapshot, "work", work,
-                ))),
+                target: KillTarget::Tmux {
+                    host: host.clone(),
+                    target: Arc::new(LiveSessionTarget::test_fixture(&snapshot, "work", work)),
+                },
             },
         ),
         "a capture that straddled the kill cannot publish"
@@ -9220,10 +9224,10 @@ fn kill_completing_during_identity_capture_cannot_publish_a_stale_confirmation()
             PendingKill {
                 generation: c_generation,
                 selection: SessionSelection::new("wsl", "Ubuntu", "other"),
-                host,
-                target: KillTarget::Tmux(Arc::new(LiveSessionTarget::test_fixture(
-                    &snapshot, "other", other,
-                ))),
+                target: KillTarget::Tmux {
+                    host,
+                    target: Arc::new(LiveSessionTarget::test_fixture(&snapshot, "other", other)),
+                },
             },
         ),
         "an unrelated in-flight capture still publishes"
@@ -9315,10 +9319,10 @@ fn superseded_kill_request_cannot_overwrite_the_newer_captures_intent() {
             PendingKill {
                 generation: newer_generation,
                 selection: SessionSelection::new("wsl", "Ubuntu", "other"),
-                host,
-                target: KillTarget::Tmux(Arc::new(LiveSessionTarget::test_fixture(
-                    &snapshot, "other", other,
-                ))),
+                target: KillTarget::Tmux {
+                    host,
+                    target: Arc::new(LiveSessionTarget::test_fixture(&snapshot, "other", other)),
+                },
             },
         ),
         "the newer capture still publishes its confirmation"
@@ -9381,6 +9385,7 @@ fn concurrent_zellij_kill_confirmations_for_one_target_are_refused() {
     ));
     let b = a.open_scene();
     let target = || KillTarget::Zellij {
+        host: host.clone(),
         endpoint: snapshot.endpoint().clone(),
         runtime: snapshot.runtime().clone(),
         executable: "/usr/bin/zellij".to_owned(),
@@ -9394,7 +9399,6 @@ fn concurrent_zellij_kill_confirmations_for_one_target_are_refused() {
             PendingKill {
                 generation,
                 selection: SessionSelection::zellij("wsl", "Ubuntu", "review"),
-                host: host.clone(),
                 target: target(),
             },
         ));
@@ -9760,8 +9764,8 @@ fn a_confirmation_taken_before_a_completed_kill_cannot_reserve() {
         PendingKill {
             generation,
             selection: SessionSelection::zellij("wsl", "Ubuntu", "review"),
-            host,
             target: KillTarget::Zellij {
+                host,
                 endpoint: snapshot.endpoint().clone(),
                 runtime: snapshot.runtime().clone(),
                 executable: "/usr/bin/zellij".to_owned(),
@@ -9821,8 +9825,8 @@ fn a_completed_zellij_kill_fences_a_straddling_kill_request() {
         PendingKill {
             generation,
             selection,
-            host,
             target: KillTarget::Zellij {
+                host,
                 endpoint: snapshot.endpoint().clone(),
                 runtime: snapshot.runtime().clone(),
                 executable: "/usr/bin/zellij".to_owned(),
@@ -11308,10 +11312,10 @@ fn pending_confirmation_in_one_scene_survives_other_scene_activity() {
         PendingKill {
             generation,
             selection: SessionSelection::new("wsl", "Ubuntu", "work"),
-            host,
-            target: KillTarget::Tmux(Arc::new(LiveSessionTarget::test_fixture(
-                &snapshot, "work", identity,
-            ))),
+            target: KillTarget::Tmux {
+                host,
+                target: Arc::new(LiveSessionTarget::test_fixture(&snapshot, "work", identity)),
+            },
         },
     ));
     assert!(

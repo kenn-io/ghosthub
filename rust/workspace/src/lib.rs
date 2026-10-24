@@ -2380,13 +2380,14 @@ enum KillCaptureRequest {
         endpoint: host::LocalEndpoint,
         runtime: host::LinuxRuntimeIdentity,
     },
+    RemoteTmux(Box<RemoteTmuxAttachRequest>),
     Zellij(PendingKill),
 }
 
+#[derive(Clone)]
 struct PendingKill {
     generation: u64,
     selection: SessionSelection,
-    host: RuntimeHost,
     target: KillTarget,
 }
 
@@ -2421,6 +2422,7 @@ fn run_confirmed_zellij_kill(
     revision: u64,
 ) {
     let KillTarget::Zellij {
+        host,
         endpoint,
         runtime,
         executable,
@@ -2441,7 +2443,7 @@ fn run_confirmed_zellij_kill(
         return;
     }
     let mut suppressed = Vec::new();
-    let result = pending.host.kill_zellij_session(
+    let result = host.kill_zellij_session(
         endpoint,
         runtime,
         executable,
@@ -2486,8 +2488,13 @@ fn zellij_kill_key(
 
 #[derive(Clone)]
 enum KillTarget {
-    Tmux(Arc<LiveSessionTarget>),
+    Tmux {
+        host: RuntimeHost,
+        target: Arc<LiveSessionTarget>,
+    },
+    RemoteTmux(Box<RemoteTmuxAttachRequest>),
     Zellij {
+        host: RuntimeHost,
         endpoint: host::LocalEndpoint,
         runtime: host::LinuxRuntimeIdentity,
         executable: String,
@@ -7378,49 +7385,13 @@ impl Workspace {
             }
             return Ok(());
         }
-        let KillCaptureRequest::Tmux {
-            selection,
-            host,
-            endpoint,
-            runtime,
-        } = request
-        else {
-            unreachable!("Zellij kill requests return above");
-        };
         let workspace = self.clone();
         thread::Builder::new()
             .name("ghosthub-session-kill-identity".to_owned())
-            .spawn(move || {
-                let result = selection.tmux_socket_name().map_or_else(
-                    || {
-                        host.capture_live_session(
-                            &endpoint,
-                            &runtime,
-                            selection.session(),
-                            &CancellationToken::new(),
-                        )
-                    },
-                    |socket_name| {
-                        host.capture_live_session_on_socket(
-                            &endpoint,
-                            &runtime,
-                            socket_name,
-                            selection.session(),
-                            &CancellationToken::new(),
-                        )
-                    },
-                );
-                match result {
-                    Ok(target) => {
-                        publish_pending_kill(
-                            &workspace.scene,
-                            PendingKill {
-                                generation,
-                                selection,
-                                host,
-                                target: KillTarget::Tmux(Arc::new(target)),
-                            },
-                        );
+            .spawn(
+                move || match scene::capture_tmux_kill(&workspace.scene, request, generation) {
+                    Ok(pending) => {
+                        publish_pending_kill(&workspace.scene, pending);
                     }
                     Err(error) => {
                         let pending_kill = workspace
@@ -7434,8 +7405,8 @@ impl Workspace {
                         workspace.push_operation_error(error.to_string());
                         drop(pending_kill);
                     }
-                }
-            })
+                },
+            )
             .map_err(|error| WorkspaceError::new(format!("verify tmux session: {error}")))?;
         Ok(())
     }
@@ -7515,12 +7486,7 @@ impl Workspace {
         };
         let workspace = self.clone();
         let task_reservation = reservation.clone();
-        let retry = PendingKill {
-            generation: pending.generation,
-            selection: pending.selection.clone(),
-            host: pending.host.clone(),
-            target: pending.target.clone(),
-        };
+        let retry = pending.clone();
         let spawn_result = thread::Builder::new()
             .name("ghosthub-session-kill".to_owned())
             .spawn(move || {
@@ -7531,14 +7497,17 @@ impl Workspace {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 match &pending.target {
-                    KillTarget::Tmux(target) => {
-                        match pending
-                            .host
-                            .kill_live_session(target, &CancellationToken::new())
-                        {
+                    KillTarget::Tmux { host, target } => {
+                        match host.kill_live_session(target, &CancellationToken::new()) {
                             Ok(()) => workspace.finish_session_kill(target),
                             Err(error) => workspace.push_operation_error(error.to_string()),
                         }
+                    }
+                    KillTarget::RemoteTmux(request) => {
+                        if let Err(error) = workspace.kill_remote_tmux(request) {
+                            workspace.push_operation_error(error.to_string());
+                        }
+                        return;
                     }
                     KillTarget::Zellij { .. } => {
                         let Some((key, revision)) = task_reservation else {
@@ -7743,6 +7712,100 @@ impl Workspace {
         scene::push_operation_event(&self.scene, event);
     }
 
+    fn kill_remote_tmux(&self, request: &RemoteTmuxAttachRequest) -> Result<(), WorkspaceError> {
+        // This runs under the session operation lane, after any earlier attach/create.
+        // A closed scene or changed connection cannot spend queued confirmation authority.
+        {
+            let _navigation = lock_live_navigation(&self.scene)?;
+            runtime::recapture_remote_attachment_context(
+                &self.scene.runtime,
+                &request.host_id,
+                request.connection_generation,
+                &request.snapshot,
+            )?;
+        }
+        request
+            .host
+            .kill_live_session(
+                &request.snapshot,
+                &request.session,
+                &CancellationToken::new(),
+            )
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        self.finish_remote_tmux_kill(request);
+        // Refresh the same connection after success. A newer connection owns its
+        // own inventory; never publish the old connection's result over it.
+        if let Ok((host, snapshot)) = runtime::recapture_remote_attachment_context(
+            &self.scene.runtime,
+            &request.host_id,
+            request.connection_generation,
+            &request.snapshot,
+        ) {
+            let cancellation = CancellationToken::new();
+            let inventory = host
+                .refresh(snapshot.lease(), &cancellation)
+                .map_err(|error| {
+                    WorkspaceError::new(format!("Session killed, but refresh failed: {error}"))
+                })?;
+            let _published = scene::publish_remote_inventory(
+                &self.scene,
+                &request.host_id,
+                request.connection_generation,
+                &snapshot,
+                &cancellation,
+                inventory,
+            );
+        }
+        Ok(())
+    }
+
+    fn finish_remote_tmux_kill(&self, request: &RemoteTmuxAttachRequest) {
+        let matches_key = |key: &RemotePresentationKey| {
+            key.host_id == request.host_id
+                && key.endpoint == request.snapshot.endpoint()
+                && key.route_identity == request.snapshot.route_identity()
+                && key.session_identity
+                    == RemoteSessionIdentity::Tmux(request.session.identity().clone())
+        };
+        drop_matching_kill_confirmations(
+            &self.scene.runtime,
+            |pending| {
+                matches!(&pending.target, KillTarget::RemoteTmux(other)
+                if other.host_id == request.host_id
+                    && other.snapshot.route_identity() == request.snapshot.route_identity()
+                    && other.session.identity() == request.session.identity())
+            },
+            |selection| selection == &request.selection,
+        );
+        for_each_scene(&self.scene.runtime, |scene| {
+            let _snapshot_write = begin_snapshot_write(&scene.runtime);
+            let _navigation = scene
+                .navigation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let active_matches = scene
+                .remote_active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|active| matches_key(&active.key));
+            if active_matches {
+                detach_scene_locked(scene);
+            }
+            let mut retained = scene
+                .remote_retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let before = retained.entries.len();
+            retained
+                .entries
+                .retain(|entry| !matches_key(&entry.active.key));
+            if retained.entries.len() != before {
+                bump_scene_revision(scene);
+            }
+        });
+    }
+
     fn finish_session_kill(&self, target: &LiveSessionTarget) {
         self.finish_killed_presentation(
             target.endpoint(),
@@ -7769,12 +7832,12 @@ impl Workspace {
         drop_matching_kill_confirmations(
             &self.scene.runtime,
             |pending| match &pending.target {
-                KillTarget::Tmux(target) => {
+                KillTarget::Tmux { target, .. } => {
                     target.endpoint() == endpoint
                         && target.runtime() == runtime
                         && target.identity() == identity
                 }
-                KillTarget::Zellij { .. } => false,
+                KillTarget::Zellij { .. } | KillTarget::RemoteTmux(_) => false,
             },
             |selection| {
                 selection.kind() == SessionKind::Tmux

@@ -8614,7 +8614,6 @@ fn tree_sessions(
             let is_active = active == Some(&selection);
             let has_exact_socket = selection.tmux_socket_name().is_some();
             let can_kill = host_accepts_actions
-                && !host.is_ssh()
                 && (discovered || (has_exact_socket && (is_active || retained)));
             let state = match (is_active, retained, host_accepts_actions, can_kill) {
                 (true, _, _, true) => TreeSessionState::ActiveKillable,
@@ -10494,7 +10493,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_tmux_rows_open_without_exposing_unimplemented_mutations() {
+    fn remote_tmux_rows_offer_open_and_confirmed_kill() {
         let host = HostItem::ssh(
             "ssh:user-a@studio.example:",
             "Studio",
@@ -10508,7 +10507,7 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert!(rows[0].state.can_open());
-        assert!(!rows[0].state.can_kill());
+        assert!(rows[0].state.can_kill());
     }
 
     #[test]

@@ -649,6 +649,79 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         parse_inventory_payload(&output.stdout)
     }
 
+    /// Read a fresh identity before showing destructive confirmation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reviewed lease, tmux, or exact session is unavailable.
+    pub fn capture_live_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<DiscoveredSession, RemoteTmuxError> {
+        let binary = snapshot.tmux_binary().ok_or_else(|| {
+            RemoteTmuxError::new(DiagnosticKind::ExecutableNotFound, "tmux is unavailable")
+        })?;
+        self.discover_sessions(snapshot.lease(), binary, cancellation)?
+            .into_iter()
+            .find(|session| session.name() == name)
+            .ok_or_else(|| {
+                RemoteTmuxError::new(
+                    DiagnosticKind::Transport,
+                    format!("Session ‘{name}’ is no longer running. Refresh before trying again."),
+                )
+            })
+    }
+
+    /// Kill only the identity captured before confirmation, in one tmux command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lease is stale, the identity changed, or tmux fails.
+    pub fn kill_live_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        session: &DiscoveredSession,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
+        let binary = snapshot.tmux_binary().ok_or_else(|| {
+            RemoteTmuxError::new(DiagnosticKind::ExecutableNotFound, "tmux is unavailable")
+        })?;
+        let marker = identity_mismatch_marker()?;
+        let identity = session.identity();
+        let command = posix_command(&tmux_command(
+            &self.config,
+            binary,
+            RemoteCommandLocale::StableOutput,
+            [
+                "if-shell",
+                "-F",
+                "-t",
+                &format!("={}:", identity.session_id()),
+                &tmux_identity_condition(identity),
+                &format!("kill-session -t ={}", identity.session_id()),
+                &format!("display-message -p {marker}"),
+            ],
+        ));
+        let output = self.run_framed_remote_shell(
+            snapshot.lease(),
+            &command,
+            "GHOSTHUB_TMUX_KILL_",
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(command_failure(&output, "remote tmux kill failed"));
+        }
+        if String::from_utf8_lossy(&output.stdout).contains(&marker) {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "The tmux session no longer matches the confirmation. Refresh before trying again.",
+            ));
+        }
+        Ok(())
+    }
+
     /// Build an ordinary PTY client plan over the existing KWT lease.
     ///
     /// The returned marker is unique to this attachment and is the only
@@ -670,12 +743,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
         let identity_mismatch_marker = identity_mismatch_marker()?;
         let identity = session.identity();
-        let condition = format!(
-            "#{{&&:{},#{{&&:{},{}}}}}",
-            tmux_identity_equals("pid", &identity.server_pid().to_string()),
-            tmux_identity_equals("session_id", identity.session_id()),
-            tmux_identity_equals("session_created", &identity.created_at().to_string()),
-        );
+        let condition = tmux_identity_condition(identity);
         let attach = format!("attach-session -E -t ={}", identity.session_id());
         let command = tmux_command(
             &self.config,
@@ -1029,6 +1097,15 @@ fn framed_remote_shell_command(command: &str, begin_marker: &str, end_marker: &s
     let status = shell_quoted_argument(&framed_status_marker(end_marker));
     format!(
         "printf '%s\\n' {begin}; printf '%s\\n' {begin} >&2; ( {command} ); ghosthub_status=$?; printf '%s%d\\n' {status} \"$ghosthub_status\"; printf '%s\\n' {end}; printf '%s\\n' {end} >&2; exit 0"
+    )
+}
+
+fn tmux_identity_condition(identity: &SessionIdentity) -> String {
+    format!(
+        "#{{&&:{},#{{&&:{},{}}}}}",
+        tmux_identity_equals("pid", &identity.server_pid().to_string()),
+        tmux_identity_equals("session_id", identity.session_id()),
+        tmux_identity_equals("session_created", &identity.created_at().to_string()),
     )
 }
 

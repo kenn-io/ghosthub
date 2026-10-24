@@ -19,8 +19,10 @@ bindings, and running programs.
 ![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](/docs/assets/guide-sessions.png)
 
 The unreleased Rust/Linux source build also supports local tmux, Herdr, and
-Zellij sessions, plus creating and opening tmux sessions on connected SSH
-hosts. See the [native Linux development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
+Zellij sessions, plus creating, opening, and ending tmux sessions on connected
+SSH hosts. Open a remote tmux row’s **…** menu and choose **Kill**, then
+confirm the session and host. A same-name replacement requires a new
+confirmation. See the [native Linux development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
 for build instructions and native session controls. The Rust port supports
 Zellij 0.45.1. Names beginning with `-` (except `-` itself), `help`, and `options`
 cannot be created or attached; existing sessions remain visible and killable.
