@@ -9,6 +9,8 @@ registration, branch and pull-request imports, worktree attachment, and
 confirmed removal. Local Herdr supports running and stopped inventory,
 creation, attachment, restart, and confirmed stop/delete. Local Zellij supports
 active-session discovery, creation, attachment, and confirmed kills.
+Connected SSH hosts support tmux creation, attachment, and confirmed kills
+bound to the live session identity.
 Distribution packaging remains separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
@@ -262,7 +264,9 @@ Remote tmux creation is also exercised through the application entry point:
 quoted names remain exact, duplicate names are rejected, the terminal accepts
 shell input, and detach or application close preserves the created session.
 First-session creation also checks the shell's UTF-8 locale and non-ASCII input
-with no server running before the connection.
+with no server running before the connection. Confirmed remote kills cover
+cancellation, fresh identity capture, same-name replacement, server restart
+with a reused session ID, changed connections, and cleanup across two scenes.
 Windows/WSL controllers and remote macOS servers need separate acceptance.
 
 Track implementation and baseline failures in the existing Kata project.
@@ -377,9 +381,19 @@ the host's tmux path or connection before creating a session.
 
 **Detach** closes the selected client. Closing Ghosthub closes its clients
 and preserves the remote sessions. Reopening the app leaves configured hosts
-disconnected until you select **Connect** again. Confirmed remote
-destruction, worktree workflows, and automatic transport recovery remain
-separate work.
+disconnected until you select **Connect** again.
+
+To end a remote tmux session, open its **…** menu and choose **Kill**.
+Review the session name and host, then confirm. Ghosthub checks a fresh tmux
+identity before showing the dialog and kills only that exact identity. A
+replaced session or changed SSH connection requires a new confirmation.
+Success closes matching clients in every open window and refreshes the host
+inventory; unrelated sessions keep running.
+
+Remote Herdr stop/delete, Zellij kill, worktree workflows, and automatic
+transport recovery remain separate work.
+
+![Confirm the exact remote tmux session and host](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
 
 ![Review the isolated SSH host key before connecting](https://github.com/user-attachments/assets/cf1646f1-ca95-4960-ad90-de500f053482)
 

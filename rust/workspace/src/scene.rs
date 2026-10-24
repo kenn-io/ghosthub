@@ -1427,6 +1427,15 @@ pub(crate) fn capture_kill_request(
     selection: &SessionSelection,
     generation: u64,
 ) -> Result<KillCaptureRequest, WorkspaceError> {
+    if !is_local_host_id(selection.host_id()) {
+        if selection.worktree_path().is_some() {
+            return Err(WorkspaceError::new(
+                "Remote worktree session kills are not available",
+            ));
+        }
+        return crate::capture_remote_tmux_attach_request(&scene.runtime, selection)
+            .map(|request| KillCaptureRequest::RemoteTmux(Box::new(request)));
+    }
     require_local_host_id(selection.host_id())?;
     if !matches!(selection.kind(), SessionKind::Tmux | SessionKind::Zellij) {
         return Err(WorkspaceError::new(
@@ -1533,8 +1542,8 @@ pub(crate) fn capture_kill_request(
                 Ok(KillCaptureRequest::Zellij(PendingKill {
                     generation,
                     selection: selection.clone(),
-                    host: context.host.clone(),
                     target: KillTarget::Zellij {
+                        host: context.host.clone(),
                         endpoint: context.snapshot.endpoint().clone(),
                         runtime: context.snapshot.runtime().clone(),
                         executable: executable.clone(),
@@ -1553,6 +1562,79 @@ pub(crate) fn capture_kill_request(
             SessionKind::Herdr => unreachable!("Herdr was rejected above"),
         }
     })
+}
+
+pub(crate) fn capture_tmux_kill(
+    scene: &Scene,
+    request: KillCaptureRequest,
+    generation: u64,
+) -> Result<PendingKill, WorkspaceError> {
+    let cancellation = CancellationToken::new();
+    match request {
+        KillCaptureRequest::Tmux {
+            selection,
+            host,
+            endpoint,
+            runtime,
+        } => {
+            let target = selection
+                .tmux_socket_name()
+                .map_or_else(
+                    || {
+                        host.capture_live_session(
+                            &endpoint,
+                            &runtime,
+                            selection.session(),
+                            &cancellation,
+                        )
+                    },
+                    |socket| {
+                        host.capture_live_session_on_socket(
+                            &endpoint,
+                            &runtime,
+                            socket,
+                            selection.session(),
+                            &cancellation,
+                        )
+                    },
+                )
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            Ok(PendingKill {
+                generation,
+                selection,
+                target: KillTarget::Tmux {
+                    host,
+                    target: Arc::new(target),
+                },
+            })
+        }
+        KillCaptureRequest::RemoteTmux(mut request) => {
+            let (host, snapshot) = crate::runtime::recapture_remote_attachment_context(
+                &scene.runtime,
+                &request.host_id,
+                request.connection_generation,
+                &request.snapshot,
+            )?;
+            request.session = host
+                .capture_live_session(&snapshot, request.selection.session(), &cancellation)
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            // Check for a reconnect during the query; confirmation checks again.
+            crate::runtime::recapture_remote_attachment_context(
+                &scene.runtime,
+                &request.host_id,
+                request.connection_generation,
+                &snapshot,
+            )?;
+            request.host = host;
+            request.snapshot = snapshot;
+            Ok(PendingKill {
+                generation,
+                selection: request.selection.clone(),
+                target: KillTarget::RemoteTmux(request),
+            })
+        }
+        KillCaptureRequest::Zellij(_) => unreachable!("Zellij captures publish synchronously"),
+    }
 }
 
 pub(crate) fn capture_herdr_lifecycle(

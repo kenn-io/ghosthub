@@ -132,6 +132,45 @@ impl Fixture {
         })
     }
 
+    fn open_scene(&self) -> Self {
+        Self {
+            workspace: self.workspace.open_scene(),
+            root: self.root.clone(),
+            host_id: self.host_id.clone(),
+            endpoint: self.endpoint.clone(),
+            kwt: self.kwt.clone(),
+            account_home: self.account_home.clone(),
+            controller_home: self.controller_home.clone(),
+        }
+    }
+
+    fn request_kill(&self, name: &str) {
+        self.workspace.select_host(&self.host_id).unwrap();
+        self.workspace
+            .request_session_kill(&SessionSelection::new(&self.host_id, &self.endpoint, name))
+            .unwrap();
+        self.wait(|_| self.workspace.session_kill_confirmation().is_some());
+    }
+
+    #[track_caller]
+    fn wait_for_error(&self, expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let mut found = false;
+            for event in self.workspace.drain_events().0 {
+                if let WorkspaceEvent::Error(message) = event {
+                    assert!(message.contains(expected), "{message}");
+                    found = true;
+                }
+            }
+            if found {
+                return;
+            }
+            assert!(Instant::now() < deadline, "missing error: {expected}");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn tmux(&self, arguments: &[&str]) -> String {
         let output = Command::new("/usr/bin/tmux")
             .env("TMUX_TMPDIR", self.root.join("tmux"))
@@ -172,6 +211,201 @@ impl Fixture {
                 .contains(&format!("remote-{name}:{marker}"))
         });
     }
+}
+
+#[test]
+#[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
+fn native_ssh_kill_cancels_then_closes_only_matching_clients_across_scenes() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::native_ssh_kill_cancels_then_closes_only_matching_clients_across_scenes",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    let name = "notes 'one'";
+    let worktree = SessionSelection::kwt_workspace(
+        &fixture.host_id,
+        &fixture.endpoint,
+        name,
+        host::KwtTmuxAttachMode::Protected,
+        Some("kwt".to_owned()),
+        "/work/demo",
+        None,
+    );
+    assert!(fixture.workspace.request_session_kill(&worktree).is_err());
+    fixture.attach(name, "before-kill");
+    fixture.request_kill(name);
+    fixture.workspace.cancel_session_kill();
+    assert!(fixture.workspace.confirm_session_kill().is_err());
+    fixture.attach(name, "after-cancel");
+
+    let other = fixture.open_scene();
+    other.attach(name, "second-window");
+    other.attach("review", "unrelated-window");
+    assert!(
+        other
+            .workspace
+            .snapshot()
+            .retained_selections()
+            .iter()
+            .any(|s| s.session() == name)
+    );
+    other.request_kill(name);
+    fixture.request_kill(name);
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait(|snapshot| {
+        !matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == name)
+            && !fixture
+                .tmux(&["list-sessions", "-F", "#{session_name}"])
+                .lines()
+                .any(|s| s == name)
+    });
+    other.wait(|snapshot| {
+        !snapshot
+            .retained_selections()
+            .iter()
+            .any(|s| s.session() == name)
+            && other.workspace.session_kill_confirmation().is_none()
+            && snapshot
+                .hosts()
+                .iter()
+                .find(|h| h.id() == fixture.host_id)
+                .unwrap()
+                .sessions()
+                .iter()
+                .all(|s| s.name() != name)
+    });
+    assert!(
+        matches!(other.workspace.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "review")
+    );
+    other.attach("review", "survived-kill");
+    assert_eq!(
+        fixture.tmux(&["list-sessions", "-F", "#{session_name}"]),
+        "review"
+    );
+}
+
+#[test]
+#[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
+fn native_ssh_kill_rejects_replacements_and_changed_connections() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::native_ssh_kill_rejects_replacements_and_changed_connections",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    fixture.request_kill("review");
+    let old = fixture.tmux(&["display-message", "-p", "-t", "=review:", "#{session_id}"]);
+    fixture.tmux(&["kill-session", "-t", "=review"]);
+    fixture.tmux(&["new-session", "-d", "-s", "review", "/bin/sh"]);
+    let replacement = fixture.tmux(&["display-message", "-p", "-t", "=review:", "#{session_id}"]);
+    assert_ne!(old, replacement);
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait_for_error("tmux");
+    assert_eq!(
+        fixture.tmux(&["display-message", "-p", "-t", "=review:", "#{session_id}"]),
+        replacement
+    );
+
+    fixture.connect();
+    fixture.attach("review", "before-reconnect");
+    fixture.request_kill("review");
+    fixture.connect();
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait_for_error("SSH connection changed");
+    assert!(
+        matches!(fixture.workspace.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "review")
+    );
+    fixture.attach("review", "after-rejected-kill");
+    assert_eq!(
+        fixture.tmux(&["display-message", "-p", "-t", "=review:", "#{session_id}"]),
+        replacement
+    );
+}
+
+#[test]
+#[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
+fn native_ssh_kill_rejects_restarted_server_and_captures_fresh_identity() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::native_ssh_kill_rejects_restarted_server_and_captures_fresh_identity",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    fixture.request_kill("review");
+    let old = fixture.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "=review:",
+        "#{pid}|#{session_id}",
+    ]);
+    fixture.tmux(&["kill-server"]);
+    fixture.tmux(&[
+        "-f",
+        "/dev/null",
+        "new-session",
+        "-d",
+        "-s",
+        "review",
+        "/bin/sh",
+    ]);
+    let replacement = fixture.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "=review:",
+        "#{pid}|#{session_id}",
+    ]);
+    assert_ne!(old, replacement);
+    assert_eq!(
+        old.split('|').nth(1),
+        replacement.split('|').nth(1),
+        "session ID is reused on the new server"
+    );
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait_for_error("no longer matches");
+    assert_eq!(
+        fixture.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            "=review:",
+            "#{pid}|#{session_id}"
+        ]),
+        replacement
+    );
+
+    // The UI inventory still describes the original server. Confirmation must
+    // query the live session, not copy that cached identity.
+    fixture.tmux(&["new-session", "-d", "-s", "survivor", "/bin/sh"]);
+    fixture.request_kill("review");
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait(|snapshot| {
+        snapshot
+            .hosts()
+            .iter()
+            .find(|h| h.id() == fixture.host_id)
+            .unwrap()
+            .sessions()
+            .iter()
+            .all(|s| s.name() != "review")
+    });
+    assert_eq!(
+        fixture.tmux(&["list-sessions", "-F", "#{session_name}"]),
+        "survivor"
+    );
+    fixture.request_kill("survivor");
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait(|snapshot| {
+        snapshot
+            .hosts()
+            .iter()
+            .find(|h| h.id() == fixture.host_id)
+            .unwrap()
+            .sessions()
+            .is_empty()
+    });
 }
 
 impl Drop for Fixture {
