@@ -27,6 +27,8 @@ for build instructions and native session controls. The Rust port supports
 Zellij 0.45.1. Names beginning with `-` (except `-` itself), `help`, and `options`
 cannot be created or attached; existing sessions remain visible and killable.
 
+![Confirm a remote tmux kill in the native Rust application](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
+
 ## Find tmux sessions on kwt's server
 
 Ghosthub checks the default tmux server and kwt's server. Sessions registered

@@ -393,6 +393,8 @@ inventory; unrelated sessions keep running.
 Remote Herdr stop/delete, Zellij kill, worktree workflows, and automatic
 transport recovery remain separate work.
 
+![Confirm the exact remote tmux session and host](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
+
 ![Review the isolated SSH host key before connecting](https://github.com/user-attachments/assets/cf1646f1-ca95-4960-ad90-de500f053482)
 
 ![Create the first remote tmux session from native Linux Ghosthub](https://github.com/user-attachments/assets/c786a62b-d672-419d-893b-80ac6b03aebf)
