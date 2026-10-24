@@ -244,11 +244,11 @@ pub struct LinuxRuntimeIdentity {
 }
 
 /// Opaque authority to read and remove one nonce-scoped creation receipt.
-/// Only [`LocalHost`] can construct its private path.
+/// Host implementations construct its private, random path.
 #[derive(Debug, Eq, PartialEq)]
 pub struct CreationReceipt {
-    path: String,
-    staging_path: String,
+    pub(crate) path: String,
+    pub(crate) staging_path: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2570,7 +2570,7 @@ impl<R: CommandRunner> LocalHost<R> {
         args.extend([";", "run-shell", "-b"].into_iter().map(OsString::from));
         args.push(OsString::from(creation_receipt_command(&receipt)));
         Ok((
-            CreateOnce::local_atomic(self.local_executable.as_os_str(), args, name),
+            CreateOnce::atomic(self.local_executable.as_os_str(), args, name),
             receipt,
         ))
     }
@@ -4650,7 +4650,7 @@ struct AdmissionScope {
     name_nonce: String,
 }
 
-fn creation_identity_receipt() -> Result<CreationReceipt, HostError> {
+pub(crate) fn creation_identity_receipt() -> Result<CreationReceipt, HostError> {
     let mut nonce = [0_u8; 16];
     getrandom::fill(&mut nonce).map_err(|error| {
         HostError::new(
@@ -4672,7 +4672,7 @@ fn creation_receipt_command(receipt: &CreationReceipt) -> String {
     )
 }
 
-fn parse_creation_receipt(bytes: &[u8]) -> Result<SessionIdentity, HostError> {
+pub(crate) fn parse_creation_receipt(bytes: &[u8]) -> Result<SessionIdentity, HostError> {
     let value = decode(bytes, "tmux creation identity")?
         .strip_suffix("|!")
         .ok_or_else(|| {

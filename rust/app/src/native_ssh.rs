@@ -391,3 +391,91 @@ fn native_ssh_reports_authentication_failure_and_recovers() {
     );
     fixture.attach("review", "after-authentication-failure");
 }
+
+#[test]
+#[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
+fn native_ssh_creates_exact_tmux_session_and_preserves_it() {
+    let Some(fixture) =
+        Fixture::isolated("native_ssh::native_ssh_creates_exact_tmux_session_and_preserves_it")
+    else {
+        return;
+    };
+    fixture.connect();
+    fixture.attach("review", "before-create");
+    assert!(
+        fixture
+            .workspace
+            .create_session(&fixture.host_id, &fixture.endpoint, "review")
+            .is_err()
+    );
+
+    let name = "build 'two' $(false)";
+    fixture
+        .workspace
+        .create_session(&fixture.host_id, &fixture.endpoint, name)
+        .unwrap();
+    fixture.wait(|snapshot| matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == name));
+    fixture.attach(name, "created");
+    let target = format!("={name}:");
+    let identity = fixture.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &target,
+        "#{pid}|#{session_id}|#{session_created}",
+    ]);
+    assert_eq!(
+        fixture.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &target,
+            "#{session_attached}"
+        ]),
+        "1"
+    );
+    assert!(!std::fs::read_dir("/tmp").unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".ghosthub-create-")
+    }));
+
+    fixture.workspace.detach();
+    fixture.wait(|_| {
+        fixture.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &target,
+            "#{session_attached}",
+        ]) == "0"
+    });
+    fixture.workspace.close();
+    fixture.wait(|_| fixture.tmux(&["list-clients"]).is_empty());
+    assert_eq!(
+        fixture.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &target,
+            "#{pid}|#{session_id}|#{session_created}"
+        ]),
+        identity
+    );
+
+    let reopened = Fixture::new(fixture.root.clone());
+    assert_eq!(reopened.connect(), 0);
+    reopened.attach(name, "reopened");
+    assert_eq!(
+        fixture.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &target,
+            "#{pid}|#{session_id}|#{session_created}"
+        ]),
+        identity
+    );
+}

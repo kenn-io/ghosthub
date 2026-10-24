@@ -557,7 +557,7 @@ impl HerdrLaunchOnce {
     }
 }
 
-/// One atomic local create-or-attach launch. The authority is intentionally
+/// One atomic create-or-attach launch. The authority is intentionally
 /// neither cloneable nor serializable and is consumed by the terminal launcher.
 #[derive(Debug, Eq, PartialEq)]
 pub struct CreateOnce {
@@ -568,7 +568,7 @@ pub struct CreateOnce {
 
 impl CreateOnce {
     #[must_use]
-    pub fn local_atomic(
+    pub fn atomic(
         program: impl Into<OsString>,
         args: Vec<OsString>,
         target_name: SessionName,
@@ -1035,7 +1035,7 @@ mod tests {
 
     #[test]
     fn create_once_is_consumed_into_one_exact_argv() {
-        let plan = CreateOnce::local_atomic(
+        let plan = CreateOnce::atomic(
             "wsl.exe",
             vec![
                 "new-session".into(),

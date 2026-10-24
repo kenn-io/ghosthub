@@ -9,13 +9,13 @@ use crate::{
     Mutex, Ordering, PendingCreation, PendingHerdrLifecycle, PendingKwtCreation, PresentationKey,
     ProjectItem, Published, RefreshRuntime, RemoteAttachmentAttempt, RemoteConstructiveState,
     RemoteConstructiveTarget, RemoteEntry, RemoteHerdrAttachRequest, RemoteHerdrCreateRequest,
-    RemoteTmuxAttachRequest, RemoteTmuxConfig, RemoteTmuxSnapshot, RemoteZellijAttachRequest,
-    RemoteZellijCreateRequest, RuntimeHost, RuntimeRemoteHost, RwLock, Scene, SessionItem,
-    SessionKind, SessionSelection, SettingsState, SharedCommandRunner, SshExecutable,
-    SuppressedHerdrPresentation, Weak, WorkspaceContent, WorkspaceError, ZellijInventory,
-    ZellijSessionName, apply_herdr_inventory, apply_zellij_inventory, current_remote_context,
-    is_local_host_id, kwt_tmux_presentation_key, refreshed_session_name,
-    remote_snapshot_authority_matches, resolve_remote_herdr_attach_target,
+    RemoteTmuxAttachRequest, RemoteTmuxConfig, RemoteTmuxCreateRequest, RemoteTmuxSnapshot,
+    RemoteZellijAttachRequest, RemoteZellijCreateRequest, RuntimeHost, RuntimeRemoteHost, RwLock,
+    Scene, SessionItem, SessionKind, SessionName, SessionSelection, SettingsState,
+    SharedCommandRunner, SshExecutable, SuppressedHerdrPresentation, Weak, WorkspaceContent,
+    WorkspaceError, ZellijInventory, ZellijSessionName, apply_herdr_inventory,
+    apply_zellij_inventory, current_remote_context, is_local_host_id, kwt_tmux_presentation_key,
+    refreshed_session_name, remote_snapshot_authority_matches, resolve_remote_herdr_attach_target,
     resolve_remote_zellij_attach_target, validate_herdr_launch_precondition,
 };
 pub(crate) fn equivalent_tmux_presentation_key(
@@ -630,6 +630,54 @@ pub(crate) fn capture_remote_herdr_create_request(
         executable: executable.clone(),
         name: HerdrLaunchTarget::created(name),
         precondition: HerdrLaunchPrecondition::Absent,
+    })
+}
+
+pub(crate) fn capture_remote_tmux_create_request(
+    runtime: &Runtime,
+    host_id: &str,
+    endpoint: &str,
+    name: SessionName,
+) -> Result<RemoteTmuxCreateRequest, WorkspaceError> {
+    require_host_session_actions(
+        runtime,
+        &SessionSelection::new(host_id, endpoint, name.as_str()),
+    )?;
+    let entries = runtime
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = entries
+        .get(host_id)
+        .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+    let context = current_remote_context(entry)
+        .ok_or_else(|| WorkspaceError::new("Connect this SSH host before creating a session"))?;
+    if context.snapshot.endpoint() != endpoint {
+        return Err(WorkspaceError::new(
+            "SSH endpoint changed; refresh before creating the session",
+        ));
+    }
+    let executable = context
+        .snapshot
+        .tmux_binary()
+        .ok_or_else(|| WorkspaceError::new("tmux is not available on this SSH host"))?;
+    if context
+        .snapshot
+        .sessions()
+        .iter()
+        .any(|session| session.name() == name.as_str())
+    {
+        return Err(WorkspaceError::new(
+            "a tmux session with this name already exists",
+        ));
+    }
+    Ok(RemoteTmuxCreateRequest {
+        host_id: host_id.to_owned(),
+        connection_generation: entry.generation,
+        host: context.host.clone(),
+        snapshot: context.snapshot.clone(),
+        executable: executable.to_owned(),
+        name,
     })
 }
 
@@ -1601,6 +1649,45 @@ pub(crate) fn recapture_remote_herdr_create_request(
         executable: request.executable.clone(),
         name: request.name.clone(),
         precondition: request.precondition.clone(),
+    })
+}
+
+pub(crate) fn recapture_remote_tmux_create_request(
+    runtime: &Runtime,
+    request: &RemoteTmuxCreateRequest,
+) -> Result<RemoteTmuxCreateRequest, WorkspaceError> {
+    let (host, snapshot) = recapture_remote_attachment_context(
+        runtime,
+        &request.host_id,
+        request.connection_generation,
+        &request.snapshot,
+    )
+    .map_err(|_| {
+        WorkspaceError::new(
+            "the SSH connection changed before session creation; refresh before trying again",
+        )
+    })?;
+    if snapshot.tmux_binary() != Some(request.executable.as_str()) {
+        return Err(WorkspaceError::new(
+            "the remote tmux executable changed; refresh before creating the session",
+        ));
+    }
+    if snapshot
+        .sessions()
+        .iter()
+        .any(|session| session.name() == request.name.as_str())
+    {
+        return Err(WorkspaceError::new(
+            "a tmux session with this name already exists",
+        ));
+    }
+    Ok(RemoteTmuxCreateRequest {
+        host_id: request.host_id.clone(),
+        connection_generation: request.connection_generation,
+        host,
+        snapshot,
+        executable: request.executable.clone(),
+        name: request.name.clone(),
     })
 }
 

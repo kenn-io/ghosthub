@@ -10133,6 +10133,73 @@ fn counted_remote_host(
 }
 
 #[test]
+fn queued_remote_tmux_creation_stops_when_scene_closes() {
+    let config = RemoteTmuxConfig::new(
+        "ssh:studio",
+        "Studio",
+        SshTarget::new("studio.example", None, None).unwrap(),
+        "/usr/bin/tmux",
+        None,
+    )
+    .unwrap();
+    let runner = Arc::new(CountingRefusingRunner(AtomicUsize::new(0)));
+    let host = counted_remote_host(&config, Arc::clone(&runner));
+    let snapshot = RemoteTmuxSnapshot::test_fixture(
+        "studio.example",
+        TEST_REMOTE_ROUTE,
+        7,
+        Vec::new(),
+        HerdrInventory::Unavailable,
+        ZellijInventory::Unavailable,
+    );
+    let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+        Appearance::default(),
+        vec![HostItem::ssh(
+            "ssh:studio",
+            "Studio",
+            "studio.example",
+            HostConnectionState::Ready,
+            Vec::new(),
+            None,
+        )],
+    ));
+    workspace.scene.runtime.remote_hosts.lock().unwrap().insert(
+        config.id().to_owned(),
+        RemoteEntry {
+            config,
+            native_host: Some(host.clone()),
+            context: Some(RemoteHostContext {
+                generation: 7,
+                host,
+                snapshot,
+            }),
+            cancellation: None,
+            constructive_cancellation: None,
+            attachment_attempts: Vec::new(),
+            generation: 7,
+        },
+    );
+    let lane = workspace.scene.runtime.session_operations.lock().unwrap();
+    workspace
+        .create_session("ssh:studio", "studio.example", "build")
+        .unwrap();
+    workspace.close();
+    drop(lane);
+    settle("cancelled tmux creation", || {
+        !workspace
+            .scene
+            .runtime
+            .remote_constructive_in_flight
+            .load(Ordering::Acquire)
+    });
+    assert_eq!(
+        runner.0.load(Ordering::Acquire),
+        0,
+        "closing before launch must not issue a remote command"
+    );
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one linear proof from queued registration through the production runner"

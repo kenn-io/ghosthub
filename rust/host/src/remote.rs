@@ -3,19 +3,19 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use model::DiagnosticKind;
 use session::{
-    AttachPlan, DiscoveredSession, HerdrAttachPlan, HerdrLaunchOnce, HerdrLaunchTarget,
-    HerdrSessionRecord, SessionIdentity, ZellijAttachPlan, ZellijLaunchOnce, ZellijSessionName,
-    ZellijSessionRecord,
+    AttachPlan, CreateOnce, DiscoveredSession, HerdrAttachPlan, HerdrLaunchOnce, HerdrLaunchTarget,
+    HerdrSessionRecord, SessionIdentity, SessionName, ZellijAttachPlan, ZellijLaunchOnce,
+    ZellijSessionName, ZellijSessionRecord,
 };
 
 use crate::{
-    AttachTerm, CancellationToken, CommandPrefix, CommandRunner, HerdrInventory, HostError,
-    KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshLease, SshLeaseEvent, SshLeasePrompt,
-    SshTarget, ZellijInventory, herdr, zellij,
+    AttachTerm, CancellationToken, CommandPrefix, CommandRunner, CreationReceipt, HerdrInventory,
+    HostError, KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshLease, SshLeaseEvent,
+    SshLeasePrompt, SshTarget, ZellijInventory, herdr, zellij,
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
@@ -746,6 +746,139 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         ))
     }
 
+    /// Build one atomic create-or-attach client over the reviewed SSH lease.
+    /// The receipt records the identity from that client's command queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lease expired, tmux is unavailable, or a random
+    /// receipt path cannot be generated.
+    pub fn create_once(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        name: SessionName,
+        term: &str,
+    ) -> Result<(CreateOnce, CreationReceipt), RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|error| RemoteTmuxError::ssh(&error))?;
+        let executable = snapshot.tmux_binary().ok_or_else(|| {
+            RemoteTmuxError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "tmux is unavailable on the remote host",
+            )
+        })?;
+        let receipt = crate::local::creation_identity_receipt()
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        // Use POSIX tools on both Linux and macOS; these paths contain only a
+        // fixed prefix and a random hexadecimal nonce.
+        let report = format!(
+            "/bin/sh -c 'umask 077; set -C; printf \"%s|%s|%s|!\" \"$1\" \"$2\" \"$3\" > \"$4\" && mv -f \"$4\" \"$5\"' ghosthub-receipt '#{{pid}}' '#{{session_id}}' '#{{session_created}}' '{}' '{}'",
+            receipt.staging_path, receipt.path
+        );
+        let mut command = tmux_command(
+            &self.config,
+            executable,
+            [
+                "new-session",
+                "-A",
+                "-E",
+                "-s",
+                name.as_str(),
+                ";",
+                "run-shell",
+                "-b",
+                &report,
+            ],
+        );
+        if let Some(value) = command.iter_mut().find(|value| value.starts_with("TERM=")) {
+            *value = format!("TERM={term}");
+        }
+        let plan = CreateOnce::atomic(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&posix_command(&command)),
+            )),
+            name,
+        );
+        Ok((plan, receipt))
+    }
+
+    /// Read the exact identity reported by the one-shot remote tmux client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for cancellation, an expired lease, a malformed
+    /// receipt, or a missing receipt after the deadline.
+    pub fn wait_for_creation_identity(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        receipt: &CreationReceipt,
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<SessionIdentity, RemoteTmuxError> {
+        let deadline = Instant::now() + timeout;
+        let command = format!(
+            "if test -f {path}; then cat {path}; else exit 3; fi",
+            path = shell_quoted_argument(&receipt.path)
+        );
+        let result = (|| loop {
+            if cancellation.is_cancelled() {
+                return Err(RemoteTmuxError::transport(
+                    "tmux creation identity wait was cancelled",
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(RemoteTmuxError::new(
+                    DiagnosticKind::Timeout,
+                    "timed out waiting for the remote tmux client identity",
+                ));
+            }
+            let (begin, end) = payload_markers("GHOSTHUB_TMUX_CREATE_")?;
+            let framed = framed_remote_shell_command(&command, &begin, &end);
+            let output = self.run_remote_shell_with_timeout(
+                snapshot.lease(),
+                &framed,
+                cancellation,
+                remaining.min(COMMAND_TIMEOUT),
+            )?;
+            let output = extract_framed_command_output(output, &begin, &end)?;
+            match output.status {
+                0 => {
+                    return crate::local::parse_creation_receipt(&output.stdout)
+                        .map_err(|error| RemoteTmuxError::from_host(&error));
+                }
+                3 => {
+                    let _cancelled = cancellation.wait_cancelled(Duration::from_millis(20));
+                }
+                _ => {
+                    return Err(RemoteTmuxError::transport(nonempty_diagnostic(
+                        &output.stderr,
+                        "read remote tmux creation identity failed",
+                    )));
+                }
+            }
+        })();
+        let cleanup = posix_command(&[
+            "rm".to_owned(),
+            "-f".to_owned(),
+            receipt.path.clone(),
+            receipt.staging_path.clone(),
+        ]);
+        let _ignored = self.run_remote_shell_with_timeout(
+            snapshot.lease(),
+            &cleanup,
+            &CancellationToken::new(),
+            Duration::from_secs(2),
+        );
+        result
+    }
+
     /// Build one remote Herdr launch through the reviewed SSH lease.
     ///
     /// # Errors
@@ -853,6 +986,16 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         command: &str,
         cancellation: &CancellationToken,
     ) -> Result<crate::CommandOutput, RemoteTmuxError> {
+        self.run_remote_shell_with_timeout(lease, command, cancellation, COMMAND_TIMEOUT)
+    }
+
+    fn run_remote_shell_with_timeout(
+        &self,
+        lease: &SshLease,
+        command: &str,
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<crate::CommandOutput, RemoteTmuxError> {
         lease
             .ensure_live()
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
@@ -867,7 +1010,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                     &account_login_shell_command(command),
                 )),
                 cancellation,
-                COMMAND_TIMEOUT,
+                timeout,
             )
             .map_err(|error| RemoteTmuxError::command_execution(&error))?;
         lease

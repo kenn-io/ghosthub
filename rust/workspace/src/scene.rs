@@ -19,37 +19,38 @@ use crate::{
     RemoteConstructiveTarget, RemoteHerdrAttachRequest, RemoteHerdrCreateRequest,
     RemoteHostContext, RemoteInventory, RemotePresentationKey, RemotePublicationFence,
     RemotePublishError, RemoteReconcile, RemoteRetainedPresentation, RemoteRetainedPresentations,
-    RemoteSessionIdentity, RemoteSessionInventory, RemoteTmuxAttachRequest, RemoteTmuxSnapshot,
-    RemoteZellijAttachRequest, RemoteZellijCreateRequest, RetainedPresentation,
-    RetainedPresentations, RetainedRetry, Runtime, RuntimeHost, RuntimeRemoteHost, RwLock,
-    SCENE_INBOX_LIMIT, SSH_PROMPT_TIMEOUT, SceneId, SessionKind, SessionName, SessionSelection,
-    SshLeasePrompt, SshPromptRequest, SuppressedHerdrPresentation, TMUX_CREATE_DISCOVERY_ATTEMPTS,
-    TMUX_CREATE_DISCOVERY_DELAY, TerminalGeometry, TerminalWorker, TryLockError,
-    WORKTREE_CLIENT_STARTUP_BACKOFF, WorkerState, Workspace, WorkspaceContent, WorkspaceError,
-    WorkspaceEvent, WorkspaceNotice, WorktreeClientStartupError, WorktreeItem, WorktreeLaunchError,
-    ZellijCreateRequest, ZellijInventory, ZellijSessionName, begin_snapshot_write,
-    cadence_fallback_scene, cancel_remote_attachment, cancel_remote_constructive,
-    cancel_scene_remote_attachments, cancel_superseded_remote_constructive_navigation,
-    capture_kwt_creation_baseline, clear_pending_remote_constructive, created_session,
-    creation_launch_geometry, current_default_colors, current_default_cursor_shape,
-    current_inventory_session_name, current_remote_clipboard_policy, default_terminal_geometry,
-    discover_fresh_runtime, finish_pending_creation, fmt, for_each_scene, fresh_herdr_session,
-    herdr_launch_result_matches, insert_remote_retained_presentation, insert_retained_presentation,
-    invalidate_kwt_inventory, is_local_host_id, kwt_attachment_failure,
-    kwt_pull_request_import_failure, live_scenes, lock_session_operations, next_operation_id,
-    next_presentation_id, next_scene_id, normalize_attached_kwt_target, pending_kwt_creation,
-    pending_kwt_creation_target, pending_remote_constructive_snapshot, poll_session_startup,
-    preflight_kwt_worktree_remove, publish_refresh, publish_worker_at_latest_geometry,
-    ready_content, recapture_remote_herdr_attach_request, recapture_remote_herdr_create_request,
-    recapture_remote_tmux_attach_request, recapture_remote_zellij_attach_request,
-    recapture_remote_zellij_create_request, reconcile_active_worker_terminal_settings,
-    reconcile_herdr_lifecycle_fences, reconcile_kwt_session_availability,
-    reconcile_worker_terminal_settings, refresh_budget, refreshed_session_name, register_scene,
-    remember_pending_kwt_creation, remote_constructive_is_current,
-    remote_constructive_target_is_present, remove_cached_kwt_worktree,
-    require_current_kwt_selection, require_host_session_actions, require_local_host_id,
-    reserve_constructive_inventory, reserve_refresh, reserve_retained_attachment,
-    resize_terminal_worker, resolve_remote_herdr_attach_target,
+    RemoteSessionIdentity, RemoteSessionInventory, RemoteTmuxAttachRequest,
+    RemoteTmuxCreateRequest, RemoteTmuxSnapshot, RemoteZellijAttachRequest,
+    RemoteZellijCreateRequest, RetainedPresentation, RetainedPresentations, RetainedRetry, Runtime,
+    RuntimeHost, RuntimeRemoteHost, RwLock, SCENE_INBOX_LIMIT, SSH_PROMPT_TIMEOUT, SceneId,
+    SessionKind, SessionName, SessionSelection, SshLeasePrompt, SshPromptRequest,
+    SuppressedHerdrPresentation, TMUX_CREATE_DISCOVERY_ATTEMPTS, TMUX_CREATE_DISCOVERY_DELAY,
+    TerminalGeometry, TerminalWorker, TryLockError, WORKTREE_CLIENT_STARTUP_BACKOFF, WorkerState,
+    Workspace, WorkspaceContent, WorkspaceError, WorkspaceEvent, WorkspaceNotice,
+    WorktreeClientStartupError, WorktreeItem, WorktreeLaunchError, ZellijCreateRequest,
+    ZellijInventory, ZellijSessionName, begin_snapshot_write, cadence_fallback_scene,
+    cancel_remote_attachment, cancel_remote_constructive, cancel_scene_remote_attachments,
+    cancel_superseded_remote_constructive_navigation, capture_kwt_creation_baseline,
+    clear_pending_remote_constructive, created_session, creation_launch_geometry,
+    current_default_colors, current_default_cursor_shape, current_inventory_session_name,
+    current_remote_clipboard_policy, default_terminal_geometry, discover_fresh_runtime,
+    finish_pending_creation, fmt, for_each_scene, fresh_herdr_session, herdr_launch_result_matches,
+    insert_remote_retained_presentation, insert_retained_presentation, invalidate_kwt_inventory,
+    is_local_host_id, kwt_attachment_failure, kwt_pull_request_import_failure, live_scenes,
+    lock_session_operations, next_operation_id, next_presentation_id, next_scene_id,
+    normalize_attached_kwt_target, pending_kwt_creation, pending_kwt_creation_target,
+    pending_remote_constructive_snapshot, poll_session_startup, preflight_kwt_worktree_remove,
+    publish_refresh, publish_worker_at_latest_geometry, ready_content,
+    recapture_remote_herdr_attach_request, recapture_remote_herdr_create_request,
+    recapture_remote_tmux_attach_request, recapture_remote_tmux_create_request,
+    recapture_remote_zellij_attach_request, recapture_remote_zellij_create_request,
+    reconcile_active_worker_terminal_settings, reconcile_herdr_lifecycle_fences,
+    reconcile_kwt_session_availability, reconcile_worker_terminal_settings, refresh_budget,
+    refreshed_session_name, register_scene, remember_pending_kwt_creation,
+    remote_constructive_is_current, remote_constructive_target_is_present,
+    remove_cached_kwt_worktree, require_current_kwt_selection, require_host_session_actions,
+    require_local_host_id, reserve_constructive_inventory, reserve_refresh,
+    reserve_retained_attachment, resize_terminal_worker, resolve_remote_herdr_attach_target,
     resolve_remote_zellij_attach_target, resolve_retained_retry_request, retain_remote_session,
     set_herdr_inventory, set_remote_herdr_launch_pending, set_remote_host_snapshot,
     set_remote_host_state, set_zellij_inventory, settle_remote_constructive_task, sync_channel,
@@ -5030,6 +5031,126 @@ pub(crate) fn run_remote_herdr_create(
     clippy::too_many_lines,
     reason = "recapture, launch, publication, and settlement stay one auditable sequence"
 )]
+pub(crate) fn run_remote_tmux_create(
+    scene: &Scene,
+    request: &RemoteTmuxCreateRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+    launched: &AtomicBool,
+) {
+    let _reset = RemoteConstructiveReset {
+        scene,
+        host_id: &request.host_id,
+        navigation_generation,
+    };
+    let Some(operation) = lock_session_operations(scene, cancellation) else {
+        return;
+    };
+    // As for Herdr constructions: recapture the latest same-connection
+    // snapshot after acquiring the operation lane so another scene's
+    // publication does not read as staleness.
+    let recaptured = match recapture_remote_tmux_create_request(&scene.runtime, request) {
+        Ok(recaptured) => recaptured,
+        Err(error) => {
+            if scene.navigation_generation.load(Ordering::Acquire) == navigation_generation
+                && remote_constructive_is_current(&scene.runtime, &request.host_id, cancellation)
+            {
+                push_operation_event(scene, WorkspaceEvent::Error(error.to_string()));
+            }
+            drop(operation);
+            return;
+        }
+    };
+    let request = &recaptured;
+    let result = create_remote_tmux_fresh(
+        scene,
+        request,
+        navigation_generation,
+        cancellation,
+        launched,
+    )
+    .and_then(|(worker, inventory, session, geometry, term)| {
+        let snapshot = publish_remote_inventory(
+            scene,
+            &request.host_id,
+            request.connection_generation,
+            &request.snapshot,
+            cancellation,
+            inventory,
+        )?;
+        if let Err(error) =
+            worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
+        {
+            return Err(WorkspaceError::from_worker(&error));
+        }
+        let navigation = scene
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if scene.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+            drop(worker);
+            drop(navigation);
+            return Ok(());
+        }
+        let selection =
+            SessionSelection::new(&request.host_id, snapshot.endpoint(), session.name());
+        let key = RemotePresentationKey {
+            host_id: request.host_id.clone(),
+            endpoint: snapshot.endpoint().to_owned(),
+            route_identity: snapshot.route_identity().to_owned(),
+            lease_generation: snapshot.lease_generation(),
+            session_identity: RemoteSessionIdentity::Tmux(session.identity().clone()),
+        };
+        let published = publish_remote_worker(
+            scene,
+            worker,
+            key,
+            &selection,
+            snapshot.lease().clone(),
+            next_presentation_id(&scene.runtime),
+            term,
+            None,
+            Some(&RemotePublicationFence {
+                host_id: &request.host_id,
+                connection_generation: request.connection_generation,
+                snapshot: &snapshot,
+                cancellation,
+            }),
+        )
+        .map_err(|error| error.error);
+        drop(navigation);
+        published?;
+        Ok(())
+    });
+    if let Err(error) = &result
+        && scene.navigation_generation.load(Ordering::Acquire) == navigation_generation
+        && remote_constructive_is_current(&scene.runtime, &request.host_id, cancellation)
+    {
+        push_operation_event(scene, WorkspaceEvent::Error(error.to_string()));
+    }
+    let pending = settle_remote_constructive_task(
+        &scene.runtime,
+        &request.host_id,
+        navigation_generation,
+        result.is_ok(),
+    );
+    drop(operation);
+    if let Some(target) = pending {
+        reconcile_remote_constructive_after_connection(
+            scene,
+            &request.host_id,
+            request.connection_generation,
+            &request.host,
+            request.snapshot.clone(),
+            &target,
+        );
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "recapture, launch, publication, and settlement stay one auditable sequence"
+)]
 pub(crate) fn run_remote_zellij_create(
     scene: &Scene,
     request: &RemoteZellijCreateRequest,
@@ -5258,6 +5379,105 @@ pub(crate) fn create_remote_herdr_fresh(
         Err(WorkspaceError::new(
             "Herdr started, but the remote session did not appear in inventory; refresh before trying again",
         ))
+    }
+}
+
+pub(crate) fn create_remote_tmux_fresh(
+    scene: &Scene,
+    request: &RemoteTmuxCreateRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+    launched: &AtomicBool,
+) -> Result<
+    (
+        TerminalWorker,
+        RemoteSessionInventory,
+        session::DiscoveredSession,
+        TerminalGeometry,
+        AttachTerm,
+    ),
+    WorkspaceError,
+> {
+    let before = request
+        .host
+        .refresh(request.snapshot.lease(), cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    if before.tmux_binary() != Some(request.executable.as_str()) {
+        return Err(WorkspaceError::new(
+            "the remote tmux executable changed; refresh before creating the session",
+        ));
+    }
+    if before
+        .sessions()
+        .iter()
+        .any(|session| session.name() == request.name.as_str())
+    {
+        return Err(WorkspaceError::new(
+            "a tmux session with this name already exists",
+        ));
+    }
+    let geometry = creation_launch_geometry(
+        *scene
+            .terminal_geometry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    let term = request
+        .host
+        .probe_terminal_term(&request.snapshot, cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let (worker, receipt) = with_current_remote_constructive_launch(
+        scene,
+        &request.host_id,
+        request.connection_generation,
+        &request.snapshot,
+        navigation_generation,
+        cancellation,
+        || {
+            let (authority, receipt) = request
+                .host
+                .create_once(&request.snapshot, request.name.clone(), term.as_str())
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            launched.store(true, Ordering::Release);
+            let worker = TerminalWorker::create_with_metadata(
+                authority,
+                geometry.grid,
+                geometry.sequence,
+                geometry.pixels,
+                current_remote_clipboard_policy(&scene.runtime),
+                current_default_colors(&scene.runtime),
+                current_default_cursor_shape(&scene.runtime),
+            )
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            Ok((worker, receipt))
+        },
+    )?;
+    let identity = request
+        .host
+        .wait_for_creation_identity(
+            &request.snapshot,
+            &receipt,
+            cancellation,
+            CREATE_IDENTITY_TIMEOUT,
+        )
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let discovered = poll_session_startup("tmux", cancellation, &HERDR_STARTUP_BACKOFF, || {
+        let inventory = request
+            .host
+            .refresh(request.snapshot.lease(), cancellation)
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let session = inventory
+            .sessions()
+            .iter()
+            .find(|session| session.identity() == &identity)
+            .cloned();
+        Ok(session.map(|session| (inventory, session)))
+    })?;
+    match discovered {
+        Some((inventory, session)) => Ok((worker, inventory, session, geometry, term)),
+        None => Err(WorkspaceError::new(
+            "the tmux client started, but its exact remote session did not appear; refresh before trying again",
+        )),
     }
 }
 

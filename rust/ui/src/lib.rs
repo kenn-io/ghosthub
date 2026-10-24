@@ -8462,7 +8462,7 @@ fn session_creation_available(host: &HostItem, kind: NewSessionKind) -> bool {
         return false;
     }
     match kind {
-        NewSessionKind::Tmux => !host.is_ssh(),
+        NewSessionKind::Tmux => host.tmux_available() && host.tmux_diagnostic().is_none(),
         NewSessionKind::Herdr => host.herdr_available() && host.herdr_diagnostic().is_none(),
         NewSessionKind::Zellij => host.zellij_available() && host.zellij_diagnostic().is_none(),
     }
@@ -9026,7 +9026,7 @@ fn new_session_validation(
     };
     if host.endpoint() != draft.endpoint {
         return Some(
-            "The WSL endpoint changed. Close this dialog and choose the host again.".to_owned(),
+            "The host endpoint changed. Close this dialog and choose the host again.".to_owned(),
         );
     }
     if !host.accepts_session_actions() {
@@ -9041,6 +9041,9 @@ fn new_session_validation(
     }
     match draft.kind {
         NewSessionKind::Tmux => {
+            if !host.tmux_available() || host.tmux_diagnostic().is_some() {
+                return Some("tmux is not available on this host.".to_owned());
+            }
             let Ok(name) = SessionName::parse(&draft.name) else {
                 return Some(
                     "Use 1–100 characters without #, periods, colons, or line breaks.".to_owned(),
@@ -10569,6 +10572,7 @@ mod tests {
         assert!(groups.zellij);
         assert!(herdr[0].access.can_open());
         assert!(zellij[0].state.can_open());
+        assert!(!session_creation_available(&host, NewSessionKind::Tmux));
         assert_eq!(
             host_landing_text(&host),
             "Choose a session to open its terminal."

@@ -43,15 +43,16 @@ use runtime::{
     cancel_superseded_remote_constructive_navigation, capture_kwt_worktree_removal_context,
     capture_remote_herdr_attach_request, capture_remote_herdr_create_request,
     capture_remote_herdr_restart_request, capture_remote_tmux_attach_request,
-    capture_remote_zellij_attach_request, capture_remote_zellij_create_request,
-    clear_pending_remote_constructive, clear_remote_attachment_registration,
-    clear_remote_constructive_registration, current_inventory_session_name,
-    equivalent_tmux_presentation_key, finish_herdr_launch, finish_herdr_lifecycle_state,
-    finish_pending_creation, for_each_scene, herdr_operation_pending_for_selection,
-    invalidate_kwt_inventory, live_scenes, next_operation_id, next_presentation_id, next_scene_id,
-    pending_remote_constructive_snapshot, publish_herdr_lifecycle_uncertain, publish_refresh,
-    read_scene_revision_consistent, recapture_remote_herdr_attach_request,
-    recapture_remote_herdr_create_request, recapture_remote_tmux_attach_request,
+    capture_remote_tmux_create_request, capture_remote_zellij_attach_request,
+    capture_remote_zellij_create_request, clear_pending_remote_constructive,
+    clear_remote_attachment_registration, clear_remote_constructive_registration,
+    current_inventory_session_name, equivalent_tmux_presentation_key, finish_herdr_launch,
+    finish_herdr_lifecycle_state, finish_pending_creation, for_each_scene,
+    herdr_operation_pending_for_selection, invalidate_kwt_inventory, live_scenes,
+    next_operation_id, next_presentation_id, next_scene_id, pending_remote_constructive_snapshot,
+    publish_herdr_lifecycle_uncertain, publish_refresh, read_scene_revision_consistent,
+    recapture_remote_herdr_attach_request, recapture_remote_herdr_create_request,
+    recapture_remote_tmux_attach_request, recapture_remote_tmux_create_request,
     recapture_remote_zellij_attach_request, recapture_remote_zellij_create_request,
     reconcile_herdr_lifecycle_fences, refresh_is_in_flight, register_remote_attachment,
     register_remote_constructive, register_scene, release_zellij_kill,
@@ -84,9 +85,10 @@ use scene::{
     restore_scene_inventory_state, retire_clipboard_writes, run_attach, run_attach_over_remote,
     run_create, run_herdr_create, run_kwt_project_mutation, run_kwt_worktree_operation,
     run_remote_herdr_attach, run_remote_herdr_create, run_remote_tmux_attach,
-    run_remote_zellij_attach, run_remote_zellij_create, run_retained_retry, run_zellij_create,
-    schedule_inventory_refresh, schedule_kwt_refresh, set_local_host_unavailable, set_scene_state,
-    set_terminal_notice, start_initial_kwt_refresh, start_kwt_refresh, take_pending_kwt_removal,
+    run_remote_tmux_create, run_remote_zellij_attach, run_remote_zellij_create, run_retained_retry,
+    run_zellij_create, schedule_inventory_refresh, schedule_kwt_refresh,
+    set_local_host_unavailable, set_scene_state, set_terminal_notice, start_initial_kwt_refresh,
+    start_kwt_refresh, take_pending_kwt_removal,
 };
 
 const REDUCED_COLOR_NOTICE: &str =
@@ -1889,6 +1891,11 @@ struct RemoteEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RemoteConstructiveTarget {
+    Tmux {
+        route_identity: String,
+        executable: String,
+        name: String,
+    },
     Herdr {
         route_identity: String,
         executable: String,
@@ -2955,6 +2962,16 @@ struct RemoteHerdrCreateRequest {
 }
 
 #[derive(Clone)]
+struct RemoteTmuxCreateRequest {
+    host_id: String,
+    connection_generation: u64,
+    host: RuntimeRemoteHost,
+    snapshot: RemoteTmuxSnapshot,
+    executable: String,
+    name: SessionName,
+}
+
+#[derive(Clone)]
 struct RemoteZellijCreateRequest {
     host_id: String,
     connection_generation: u64,
@@ -3028,6 +3045,16 @@ impl RemoteHerdrCreateRequest {
             executable: self.executable.clone(),
             name: self.name.as_str().to_owned(),
             precondition: self.precondition.clone(),
+        }
+    }
+}
+
+impl RemoteTmuxCreateRequest {
+    fn constructive_target(&self) -> RemoteConstructiveTarget {
+        RemoteConstructiveTarget::Tmux {
+            route_identity: self.snapshot.route_identity().to_owned(),
+            executable: self.executable.clone(),
+            name: self.name.as_str().to_owned(),
         }
     }
 }
@@ -3870,6 +3897,18 @@ fn remote_constructive_target_is_present(
     target: &RemoteConstructiveTarget,
 ) -> bool {
     match target {
+        RemoteConstructiveTarget::Tmux {
+            route_identity,
+            executable,
+            name,
+        } => {
+            snapshot.route_identity() == route_identity
+                && snapshot.tmux_binary() == Some(executable.as_str())
+                && snapshot
+                    .sessions()
+                    .iter()
+                    .any(|session| session.name() == name)
+        }
         RemoteConstructiveTarget::Herdr {
             route_identity,
             executable,
@@ -6420,7 +6459,7 @@ impl Workspace {
         self.start_attachment(request, fallback, navigation_generation)
     }
 
-    /// Create or attach to one exact local tmux session with a consumed
+    /// Create or attach to one exact tmux session with a consumed
     /// one-shot authority.
     ///
     /// Existing visible presentations are retained and restored if the new
@@ -6442,6 +6481,11 @@ impl Workspace {
         let name =
             SessionName::parse(name).map_err(|error| WorkspaceError::new(error.to_string()))?;
         let navigation = lock_live_navigation(&self.scene)?;
+        if self.is_remote_host(host_id) {
+            let request =
+                capture_remote_tmux_create_request(&self.scene.runtime, host_id, endpoint, name)?;
+            return self.start_remote_tmux_launch(request, navigation);
+        }
         let request = capture_create_request(&self.scene, host_id, endpoint, name)?;
         let navigation_generation = self.begin_navigation();
         let in_flight_fallback = self.supersede_inflight_attachment()?;
@@ -6682,6 +6726,70 @@ impl Workspace {
             drop(navigation);
             return Err(WorkspaceError::new(format!(
                 "start remote Herdr launch task: {error}"
+            )));
+        }
+        drop(navigation);
+        Ok(())
+    }
+
+    fn start_remote_tmux_launch(
+        &self,
+        request: RemoteTmuxCreateRequest,
+        navigation: NavigationFence<'_>,
+    ) -> Result<(), WorkspaceError> {
+        self.reserve_remote_constructive()?;
+        let navigation_generation = self.begin_navigation();
+        let cancellation = CancellationToken::new();
+        let launched = match register_remote_constructive(
+            &self.scene.runtime,
+            self.scene.id,
+            &request.host_id,
+            request.connection_generation,
+            &request.snapshot,
+            navigation_generation,
+            &cancellation,
+            request.constructive_target(),
+        ) {
+            Ok(launched) => launched,
+            Err(error) => {
+                self.scene
+                    .runtime
+                    .remote_constructive_in_flight
+                    .store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.settle_local_navigation_before_remote() {
+            cancellation.cancel();
+            clear_remote_constructive_registration(&self.scene.runtime, &request.host_id);
+            self.scene
+                .runtime
+                .remote_constructive_in_flight
+                .store(false, Ordering::Release);
+            return Err(error);
+        }
+        let pending_host_id = request.host_id.clone();
+        let scene = Arc::clone(&self.scene);
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-remote-tmux-launch".to_owned())
+            .spawn(move || {
+                run_remote_tmux_create(
+                    &scene,
+                    &request,
+                    navigation_generation,
+                    &cancellation,
+                    &launched,
+                );
+            })
+        {
+            clear_remote_constructive_registration(&self.scene.runtime, &pending_host_id);
+            self.scene
+                .runtime
+                .remote_constructive_in_flight
+                .store(false, Ordering::Release);
+            drop(navigation);
+            return Err(WorkspaceError::new(format!(
+                "start remote tmux launch task: {error}"
             )));
         }
         drop(navigation);
