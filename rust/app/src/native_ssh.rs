@@ -171,14 +171,27 @@ impl Fixture {
         }
     }
 
+    #[track_caller]
     fn tmux(&self, arguments: &[&str]) -> String {
         let output = Command::new("/usr/bin/tmux")
             .env("TMUX_TMPDIR", self.root.join("tmux"))
             .args(arguments)
             .output()
             .unwrap();
-        assert!(output.status.success(), "{output:?}");
+        assert!(output.status.success(), "tmux {arguments:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    fn stop_tmux_server(&self) {
+        let pid = self.tmux(&["display-message", "-p", "#{pid}"]);
+        let process = Path::new("/proc").join(pid);
+        self.tmux(&["kill-server"]);
+        // kill-server can return before the old server finishes shutting down.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while process.exists() {
+            assert!(Instant::now() < deadline, "tmux server did not exit");
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn terminal_text(&self) -> String {
@@ -340,7 +353,7 @@ fn native_ssh_kill_rejects_restarted_server_and_captures_fresh_identity() {
         "=review:",
         "#{pid}|#{session_id}",
     ]);
-    fixture.tmux(&["kill-server"]);
+    fixture.stop_tmux_server();
     fixture.tmux(&[
         "-f",
         "/dev/null",
@@ -634,7 +647,7 @@ fn native_ssh_first_tmux_session_preserves_login_locale() {
     else {
         return;
     };
-    fixture.tmux(&["kill-server"]);
+    fixture.stop_tmux_server();
     std::fs::write(fixture.root.join("home/.profile"), "export LANG=C.UTF-8\n").unwrap();
     fixture.connect();
     assert!(fixture.workspace.snapshot().hosts().iter().any(|host| {
