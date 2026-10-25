@@ -292,3 +292,91 @@ fn stop_restart_and_delete_remote_herdr_across_scenes() {
     other.workspace.close();
     fixture.workspace.close();
 }
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn successful_stop_preserves_navigation_queued_before_suppression() {
+    stop_with_queued_navigation(
+        "native_ssh::herdr::successful_stop_preserves_navigation_queued_before_suppression",
+        false,
+    );
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn failed_stop_preserves_navigation_queued_before_suppression() {
+    stop_with_queued_navigation(
+        "native_ssh::herdr::failed_stop_preserves_navigation_queued_before_suppression",
+        true,
+    );
+}
+
+fn stop_with_queued_navigation(test_name: &str, reject_stop: bool) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let Some(fixture) = Fixture::isolated(test_name) else {
+        return;
+    };
+    fixture.connect();
+    let selection = fixture.create_herdr("guarded");
+    // Reselecting the current client still permits recovery after a rejected Stop.
+    fixture.workspace.switch_session(&selection).unwrap();
+    let other = fixture.open_scene();
+    other.workspace.switch_session(&selection).unwrap();
+    other.herdr_shell("before-probe");
+
+    let binary = fixture.root.join("bin/herdr");
+    std::fs::rename(&binary, fixture.root.join("bin/herdr-real")).unwrap();
+    // Hold the first inventory read while Stop owns the operation lane.
+    std::fs::write(
+        &binary,
+        format!(
+            r#"#!/bin/sh
+if [ -n "${{SSH_CONNECTION:-}}" ] && [ "$1 $2" = 'session list' ] && mkdir '{root}/probe-started' 2>/dev/null; then
+  while [ ! -f '{root}/release-probe' ]; do sleep 0.02; done
+fi
+if [ "$1 $2 $3" = 'session stop guarded' ] && [ '{reject_stop}' = true ]; then
+  printf '%s\n' '{{"error":{{"message":"fixture stop rejected"}}}}'
+  exit 1
+fi
+exec '{root}/bin/herdr-real' "$@"
+"#,
+            root = fixture.root.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    fixture
+        .workspace
+        .request_herdr_lifecycle(&selection, HerdrLifecycleAction::Stop)
+        .unwrap();
+    fixture.workspace.confirm_herdr_lifecycle().unwrap();
+    fixture.wait(|_| fixture.root.join("probe-started").exists());
+    other
+        .workspace
+        .switch_session(&SessionSelection::new(
+            &fixture.host_id,
+            &fixture.endpoint,
+            "review",
+        ))
+        .unwrap();
+    // The old client is still presented while the tmux request waits behind Stop.
+    assert!(matches!(
+        other.workspace.snapshot().content(),
+        WorkspaceContent::Terminal {
+            kind: workspace::SessionKind::Herdr,
+            ..
+        }
+    ));
+    std::fs::write(fixture.root.join("release-probe"), "").unwrap();
+    if reject_stop {
+        fixture.wait_for_error("fixture stop rejected");
+        fixture.wait_herdr("guarded", Some(HerdrSessionState::Running));
+        fixture.herdr_shell("original-scene-restored");
+    } else {
+        fixture.wait_herdr("guarded", Some(HerdrSessionState::Stopped));
+    }
+    // Probe the queued destination without selecting it again.
+    other.tmux_shell("review", "queued-before-suppression");
+    other.workspace.close();
+    fixture.workspace.close();
+}

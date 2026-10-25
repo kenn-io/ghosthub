@@ -8711,6 +8711,7 @@ fn stale_generation_remote_publication_cannot_touch_another_scenes_presentation(
         );
     // Scene B presents the remote session keyed to the current connection.
     *b.scene.remote_active.lock().expect("scene B remote active") = Some(RemoteActive {
+        navigation_generation: 0,
         key: RemotePresentationKey {
             host_id: "ssh:studio".to_owned(),
             endpoint: "studio.example".to_owned(),
@@ -11836,6 +11837,7 @@ fn switching_away_from_a_non_retainable_session_retires_its_clipboard_authority(
         .expect("worker")
         .publish(previous);
     *workspace.scene.remote_active.lock().expect("remote active") = Some(RemoteActive {
+        navigation_generation: 0,
         key: RemotePresentationKey {
             host_id: "ssh:studio".to_owned(),
             endpoint: "studio.example".to_owned(),
@@ -11897,6 +11899,7 @@ fn a_remote_terminal_exit_retires_its_clipboard_authority() {
         ZellijInventory::Unavailable,
     );
     *workspace.scene.remote_active.lock().expect("remote active") = Some(RemoteActive {
+        navigation_generation: 0,
         key: RemotePresentationKey {
             host_id: "ssh:studio".to_owned(),
             endpoint: "studio.example".to_owned(),
@@ -12228,6 +12231,7 @@ fn removing_a_host_drops_other_scenes_retained_presentations() {
         .entries
         .push(RemoteRetainedPresentation {
             active: RemoteActive {
+                navigation_generation: 0,
                 key: RemotePresentationKey {
                     host_id: "ssh:studio".to_owned(),
                     endpoint: "studio.example".to_owned(),
@@ -12248,6 +12252,7 @@ fn removing_a_host_drops_other_scenes_retained_presentations() {
 
     // The non-initiating scene also presents the doomed host actively.
     *other.scene.remote_active.lock().expect("remote active") = Some(RemoteActive {
+        navigation_generation: 0,
         key: RemotePresentationKey {
             host_id: "ssh:studio".to_owned(),
             endpoint: "studio.example".to_owned(),
@@ -12355,6 +12360,7 @@ fn removing_the_initiating_scenes_own_host_detaches_under_the_held_fence() {
         ZellijInventory::Unavailable,
     );
     *workspace.scene.remote_active.lock().expect("remote active") = Some(RemoteActive {
+        navigation_generation: 0,
         key: RemotePresentationKey {
             host_id: "ssh:studio".to_owned(),
             endpoint: "studio.example".to_owned(),
@@ -13379,6 +13385,7 @@ fn removal_waits_for_a_scenes_navigation_before_judging_its_presentation() {
     thread::sleep(Duration::from_millis(150));
 
     *other.scene.remote_active.lock().expect("remote active") = Some(RemoteActive {
+        navigation_generation: 0,
         key: RemotePresentationKey {
             host_id: "ssh:studio".to_owned(),
             endpoint: "studio.example".to_owned(),
@@ -14492,6 +14499,7 @@ fn closing_a_scene_releases_worker_presentations_attempts_and_lease() {
     )
     .expect("register scene B's attach attempt");
     *b.scene.remote_active.lock().expect("remote active") = Some(RemoteActive {
+        navigation_generation: 0,
         key: RemotePresentationKey {
             host_id: "ssh:studio".to_owned(),
             endpoint: "studio.example".to_owned(),
@@ -14550,6 +14558,7 @@ fn closing_a_scene_releases_worker_presentations_attempts_and_lease() {
         .entries
         .push(RemoteRetainedPresentation {
             active: RemoteActive {
+                navigation_generation: 0,
                 key: RemotePresentationKey {
                     host_id: "ssh:studio".to_owned(),
                     endpoint: "studio.example".to_owned(),

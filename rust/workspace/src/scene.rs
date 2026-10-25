@@ -285,6 +285,12 @@ pub(crate) fn detach_scene_locked(scene: &Scene) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .invalidate();
+    clear_active_presentation(scene);
+}
+
+/// Close only the presented client while holding the navigation and snapshot guards.
+/// Pending navigation belongs to the user and remains intact.
+pub(crate) fn clear_active_presentation(scene: &Scene) {
     scene
         .remote_active
         .lock()
@@ -6595,6 +6601,7 @@ pub(crate) fn publish_remote_worker(
     let (worker_generation, previous_worker) = workers.replace(worker);
     reconcile_active_worker_terminal_settings(&scene.runtime, &workers);
     let previous_remote = remote_active.replace(RemoteActive {
+        navigation_generation: scene.navigation_generation.load(Ordering::Acquire),
         key,
         selection: selection.clone(),
         worker_generation,

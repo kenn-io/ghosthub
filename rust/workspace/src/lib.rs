@@ -1932,6 +1932,8 @@ struct RemoteAttachmentAttempt {
 }
 
 struct RemoteActive {
+    /// Navigation that installed or reselected this presentation.
+    navigation_generation: u64,
     key: RemotePresentationKey,
     selection: SessionSelection,
     worker_generation: u64,
@@ -6115,6 +6117,7 @@ impl Workspace {
                 "the active remote presentation changed while selecting it",
             ));
         };
+        active.navigation_generation = self.scene.navigation_generation.load(Ordering::Acquire);
         if current_key.is_some_and(|key| active.key == *key) && active.selection != *selection {
             active.selection = selection.clone();
             set_scene_state(
@@ -7902,18 +7905,19 @@ impl Workspace {
                 .navigation
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let active_matches = scene
+            let active_navigation = scene
                 .remote_active
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
-                .is_some_and(|active| matches_key(&active.key));
-            if active_matches {
-                detach_scene_locked(scene);
-                closed.push((
-                    scene.id,
-                    scene.navigation_generation.load(Ordering::Acquire),
-                ));
+                .filter(|active| matches_key(&active.key))
+                .map(|active| active.navigation_generation);
+            if let Some(active_navigation) = active_navigation {
+                // Closing this client must not cancel a newer destination waiting on the lane.
+                scene::clear_active_presentation(scene);
+                if scene.navigation_generation.load(Ordering::Acquire) == active_navigation {
+                    closed.push((scene.id, active_navigation));
+                }
             }
             let mut retained = scene
                 .remote_retained
