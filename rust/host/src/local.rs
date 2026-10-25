@@ -4307,7 +4307,7 @@ impl<R: CommandRunner> LocalHost<R> {
     }
 }
 
-fn validate_herdr_lifecycle_target(
+pub(crate) fn validate_herdr_lifecycle_target(
     confirmed: &HerdrSessionRecord,
     current: &HerdrSessionRecord,
     action: HerdrLifecycleAction,
@@ -4351,7 +4351,7 @@ fn validate_herdr_lifecycle_target(
     Ok(())
 }
 
-fn validate_herdr_lifecycle_response(
+pub(crate) fn validate_herdr_lifecycle_response(
     confirmed: &HerdrSessionRecord,
     response: &HerdrSessionRecord,
     action: HerdrLifecycleAction,

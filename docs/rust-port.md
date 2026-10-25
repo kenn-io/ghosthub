@@ -10,7 +10,8 @@ confirmed removal. Local Herdr supports running and stopped inventory,
 creation, attachment, restart, and confirmed stop/delete. Local Zellij supports
 active-session discovery, creation, attachment, and confirmed kills.
 Connected SSH hosts support tmux creation, attachment, and confirmed kills
-bound to the live session identity.
+bound to the live session identity. Remote Herdr supports creation, attachment,
+restart, and confirmed stop/delete.
 Distribution packaging remains separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
@@ -243,7 +244,7 @@ For native Linux SSH acceptance, install `openssh-server`, `openssh-client`,
 `tmux`, and `bubblewrap`, then run:
 
 ```sh
-make rust-test-ssh-live
+make rust-test-ssh-live HERDR_BINARY_PATH=/absolute/path/to/herdr
 ```
 
 These tests run the application composition root with its bundled controller
@@ -267,6 +268,10 @@ First-session creation also checks the shell's UTF-8 locale and non-ASCII input
 with no server running before the connection. Confirmed remote kills cover
 cancellation, fresh identity capture, same-name replacement, server restart
 with a reused session ID, changed connections, and cleanup across two scenes.
+The same fixture stages Herdr and tests confirmed stop/delete, cancelled and
+stale confirmations, cross-window cleanup, and recovery after a rejected Stop.
+A failed Stop restores a matching client only after fresh inventory confirms
+that the session is still running and the user has not navigated elsewhere.
 Windows/WSL controllers and remote macOS servers need separate acceptance.
 
 Track implementation and baseline failures in the existing Kata project.
@@ -390,8 +395,23 @@ replaced session or changed SSH connection requires a new confirmation.
 Success closes matching clients in every open window and refreshes the host
 inventory; unrelated sessions keep running.
 
-Remote Herdr stop/delete, Zellij kill, worktree workflows, and automatic
-transport recovery remain separate work.
+On a connected host with Herdr installed, choose **+** beside **Herdr Sessions**
+to create a session, or select a running row to attach. Its **…** menu offers
+confirmed **Stop**, which ends the processes and keeps the saved layout. A
+stopped row offers **Restart** and confirmed **Delete**. The default session
+cannot be deleted. Ghosthub checks the current state, executable, and saved
+paths through the same SSH connection before Stop or Delete. A changed
+connection requires a new confirmation. As on local hosts, Herdr does not
+provide a generation ID to distinguish otherwise identical replacements.
+
+Stop detaches matching clients across windows before ending the session. If
+Stop fails, Ghosthub refreshes inventory and restores clients only where the
+same session is still running and the user has not navigated elsewhere. An
+unreadable result leaves clients detached with a Herdr diagnostic; reconnect
+the host to refresh its inventory. Other backends remain available.
+
+Remote Zellij kill, worktree workflows, and automatic transport recovery
+remain separate work.
 
 ![Confirm the exact remote tmux session and host](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
 
@@ -1202,8 +1222,8 @@ Each host's tmux, Herdr, and Zellij groups have independent disclosure controls;
 collapsing navigation never detaches a client or changes session lifetime.
 
 The current remote UI supports discovery, attach-only presentation, retained
-switching, detach, one-shot tmux creation, Herdr creation/restart, and Zellij
-creation. Constructive operations re-probe the backend through the existing
+switching, detach, one-shot tmux creation, confirmed tmux kill, the Herdr
+session lifecycle, and Zellij creation. Constructive operations re-probe the backend through the existing
 reviewed lease before launch, publish only an exact post-launch inventory
 match, and run entirely off the UI thread. Tmux creation launches one atomic
 `new-session -A -E` client through the reviewed lease. A nonce-scoped receipt
@@ -1213,7 +1233,7 @@ presentation. Reading the receipt has a bounded deadline and best-effort
 cleanup. Later opens use attach-only authority and never replay creation.
 Interactive tmux clients inherit the remote login locale; only inventory
 commands force the C locale for parsing.
-The UI withholds remote tmux/Zellij kill, Herdr stop/delete, worktrees,
+The UI withholds remote Zellij kill, worktrees,
 reconnect/backoff, and restoration until each operation has fresh remote
 identity and lifecycle fencing. An absent control cannot silently fall back to
 WSL or unguarded SSH.

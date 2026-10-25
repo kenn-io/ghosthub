@@ -8,6 +8,8 @@ use workspace::{
     WorkspaceContent, WorkspaceEvent, WorkspaceSnapshot,
 };
 
+mod herdr;
+
 struct Fixture {
     workspace: Workspace,
     root: PathBuf,
@@ -210,6 +212,10 @@ impl Fixture {
         self.workspace
             .switch_session(&SessionSelection::new(&self.host_id, &self.endpoint, name))
             .unwrap();
+        self.tmux_shell(name, marker);
+    }
+
+    fn tmux_shell(&self, name: &str, marker: &str) {
         self.wait(|snapshot| matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == name));
         self.wait(|_| self.terminal_text().contains("$ "));
         self.workspace.send_key(KeyInput::text(

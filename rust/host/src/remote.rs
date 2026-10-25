@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use model::DiagnosticKind;
 use session::{
     AttachPlan, CreateOnce, DiscoveredSession, HerdrAttachPlan, HerdrLaunchOnce, HerdrLaunchTarget,
-    HerdrSessionRecord, SessionIdentity, SessionName, ZellijAttachPlan, ZellijLaunchOnce,
-    ZellijSessionName, ZellijSessionRecord,
+    HerdrLifecycleAction, HerdrSessionRecord, SessionIdentity, SessionName, ZellijAttachPlan,
+    ZellijLaunchOnce, ZellijSessionName, ZellijSessionRecord,
 };
 
 use crate::{
@@ -28,6 +28,7 @@ const TMUX_PATH_MARKER: &str = "GHOSTHUB_TMUX_PATH=";
 const TMUX_PROBE_PREFIX: &str = "GHOSTHUB_TMUX_PROBE_";
 const HERDR_PROBE_PREFIX: &str = "GHOSTHUB_HERDR_PROBE_";
 const HERDR_INVENTORY_PREFIX: &str = "GHOSTHUB_HERDR_INVENTORY_";
+const HERDR_LIFECYCLE_PREFIX: &str = "GHOSTHUB_HERDR_LIFECYCLE_";
 const ZELLIJ_PROBE_PREFIX: &str = "GHOSTHUB_ZELLIJ_PROBE_";
 const ZELLIJ_INVENTORY_PREFIX: &str = "GHOSTHUB_ZELLIJ_INVENTORY_";
 const TERMINFO_PROBE_PREFIX: &str = "GHOSTHUB_TERMINFO_PROBE_";
@@ -780,6 +781,102 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             session.identity().clone(),
         );
         Ok((plan, identity_mismatch_marker))
+    }
+
+    /// Revalidate a confirmed Herdr Stop/Delete and execute it on the reviewed lease.
+    /// Herdr exposes configuration identity but no session generation, as on local hosts.
+    /// Preparation runs before and after the final read: detach clients once, then
+    /// recheck the connection without repeating any destructive action.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed records, executables, expired authority, and failed or inconsistent replies.
+    pub fn mutate_herdr_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        confirmed: &HerdrSessionRecord,
+        action: HerdrLifecycleAction,
+        cancellation: &CancellationToken,
+        mut prepare_mutation: impl FnMut() -> bool,
+    ) -> Result<HerdrSessionRecord, RemoteTmuxError> {
+        self.validate_herdr_lifecycle(snapshot, executable, confirmed, action, cancellation)?;
+        if !prepare_mutation() {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "the SSH connection or Herdr confirmation is no longer current",
+            ));
+        }
+        self.validate_herdr_lifecycle(snapshot, executable, confirmed, action, cancellation)?;
+        if !prepare_mutation() {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "the SSH connection or Herdr confirmation is no longer current",
+            ));
+        }
+        let command = multiplexer_command(
+            &herdr::CONTROL_VARIABLES,
+            RemoteCommandLocale::StableOutput,
+            None,
+            executable,
+            ["session", action.command(), confirmed.name(), "--json"],
+        );
+        let output = self.run_framed_remote_shell(
+            snapshot.lease(),
+            &posix_command(&command),
+            HERDR_LIFECYCLE_PREFIX,
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                herdr::lifecycle_error(&output.stdout, &output.stderr),
+            ));
+        }
+        let record = herdr::parse_lifecycle(action, &output.stdout)
+            .map_err(|error| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, error))?;
+        crate::local::validate_herdr_lifecycle_response(confirmed, &record, action)
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        Ok(record)
+    }
+
+    fn validate_herdr_lifecycle(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        confirmed: &HerdrSessionRecord,
+        action: HerdrLifecycleAction,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
+        let inventory = self.discover_herdr(snapshot.lease(), cancellation)?;
+        let (current_executable, sessions) = match &inventory {
+            HerdrInventory::Available {
+                executable,
+                sessions,
+            } => (executable, sessions),
+            HerdrInventory::Unavailable => {
+                return Err(RemoteTmuxError::new(
+                    DiagnosticKind::ExecutableNotFound,
+                    "Herdr is unavailable on this host",
+                ));
+            }
+            HerdrInventory::Failed(error) => return Err(RemoteTmuxError::from_host(error)),
+        };
+        if current_executable != executable {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "the Herdr executable changed after lifecycle confirmation",
+            ));
+        }
+        let current = sessions
+            .iter()
+            .find(|record| record.name() == confirmed.name())
+            .ok_or_else(|| {
+                RemoteTmuxError::new(DiagnosticKind::Transport, "Herdr session no longer exists")
+            })?;
+        crate::local::validate_herdr_lifecycle_target(confirmed, current, action)
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        Ok(())
     }
 
     /// Build an ordinary remote Herdr client over the reviewed SSH lease.

@@ -8275,7 +8275,6 @@ struct TreeHerdrSession {
 enum HerdrRowAccess {
     Cached,
     OpenOnly,
-    Constructive,
     Mutable,
 }
 
@@ -8289,7 +8288,7 @@ impl HerdrRowAccess {
     }
 
     const fn can_restart(self) -> bool {
-        matches!(self, Self::Constructive | Self::Mutable)
+        matches!(self, Self::Mutable)
     }
 }
 
@@ -8673,15 +8672,12 @@ fn tree_herdr_sessions(
         }
     }
     let host_can_open = host.accepts_session_actions() && host.herdr_diagnostic().is_none();
-    let host_accepts_mutation = host_can_open && !host.is_ssh();
     for session in &mut sessions {
         session.active = active == Some(&session.selection);
         let retained = retained.contains(&session.selection);
-        session.access = if session.inventory.is_some() && host_accepts_mutation {
+        session.access = if session.inventory.is_some() && host_can_open {
             HerdrRowAccess::Mutable
-        } else if session.inventory.is_some() && host_can_open && host.is_ssh() {
-            HerdrRowAccess::Constructive
-        } else if (session.inventory.is_some() && host_can_open) || session.active || retained {
+        } else if session.active || retained {
             HerdrRowAccess::OpenOnly
         } else {
             HerdrRowAccess::Cached
@@ -10985,7 +10981,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_herdr_sessions_allow_attach_and_constructive_restart_only() {
+    fn remote_herdr_sessions_offer_state_appropriate_lifecycle_actions() {
         let host = HostItem::ssh(
             "ssh:studio",
             "Studio",
@@ -11004,14 +11000,20 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows[0].access.can_open());
         assert!(rows[0].access.can_restart());
-        assert!(!rows[0].access.can_mutate());
+        assert_eq!(
+            available_herdr_row_actions(
+                rows[0].access,
+                rows[0].inventory.as_ref().expect("inventory")
+            ),
+            vec![HerdrRowAction::Stop]
+        );
         assert!(rows[1].access.can_restart());
         assert_eq!(
             available_herdr_row_actions(
                 rows[1].access,
                 rows[1].inventory.as_ref().expect("inventory")
             ),
-            vec![HerdrRowAction::Restart]
+            vec![HerdrRowAction::Restart, HerdrRowAction::Delete]
         );
     }
 

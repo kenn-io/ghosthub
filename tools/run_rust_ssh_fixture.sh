@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Run a Linux client against a disposable OpenSSH server and tmux inventory.
+# Run a Linux client against disposable OpenSSH and multiplexer inventory.
 set -eu
 
 if [ "${GHOSTHUB_SSH_FIXTURE:-}" = "" ]; then
@@ -14,6 +14,10 @@ if [ "${GHOSTHUB_SSH_FIXTURE:-}" = "" ]; then
     trap 'rm -rf -- "$fixture"' EXIT HUP INT TERM
     cp -f -- "$0" "$fixture/fixture.sh"
     cp -f -- "$1" "$fixture/client"
+    if [ -n "${GHOSTHUB_HERDR_TEST:-}" ]; then
+        mkdir "$fixture/bin"
+        cp -f -- "$GHOSTHUB_HERDR_TEST" "$fixture/bin/herdr"
+    fi
     shift
     printf 'ghosthub:x:%s:%s:Fixture:%s/home:/bin/sh\nsshd:x:65534:65534:SSH:/run/sshd:/usr/sbin/nologin\n' "$(id -u)" "$(id -g)" "$fixture" > "$fixture/passwd"
     printf 'ghosthub:x:%s:\nsshd:x:65534:\n' "$(id -g)" > "$fixture/group"
@@ -56,6 +60,21 @@ umask 077
 mkdir -p "$HOME/.ssh" "$KWT_HOME" "$GHOSTHUB_CONFIG_HOME" "$GHOSTHUB_STATE_HOME" \
     "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" \
     "$XDG_RUNTIME_DIR" "$root/tmux" /run/sshd
+if [ -x "$root/bin/herdr" ]; then
+    mkdir -p "$XDG_CONFIG_HOME/herdr"
+    cat > "$HOME/.profile" <<EOF
+export PATH="$root/bin:/usr/bin:/bin"
+export XDG_CONFIG_HOME="$XDG_CONFIG_HOME" XDG_STATE_HOME="$XDG_STATE_HOME"
+export XDG_DATA_HOME="$XDG_DATA_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME"
+export XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+EOF
+    cat > "$XDG_CONFIG_HOME/herdr/config.toml" <<EOF
+onboarding = false
+[terminal]
+default_shell = '/bin/sh'
+shell_mode = 'non_login'
+EOF
+fi
 : > "$GIT_CONFIG_GLOBAL"
 ssh-keygen -q -t ed25519 -N '' -f "$root/client_key"
 ssh-keygen -q -t ed25519 -N '' -f "$root/host_key"

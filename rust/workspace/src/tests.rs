@@ -4986,6 +4986,9 @@ fn in_flight_herdr_lifecycle_is_visible_and_rejects_duplicates() {
             .expect("pending lifecycle")
             .take()
             .expect("pending stop");
+        let PendingHerdrLifecycle::Local(pending) = pending else {
+            panic!("expected local lifecycle");
+        };
         assert!(lifecycle.start(&pending));
         pending.generation
     };
@@ -5263,6 +5266,9 @@ fn a_herdr_stop_revokes_restarts_and_the_delayed_recovery_re_drives_them() {
             .expect("pending lifecycle")
             .take()
             .expect("pending stop");
+        let PendingHerdrLifecycle::Local(pending) = pending else {
+            panic!("expected local lifecycle");
+        };
         assert!(lifecycle.start(&pending));
         pending
     };
@@ -5333,6 +5339,9 @@ fn uncertain_lifecycle_stays_fenced_until_fresh_inventory_arrives() {
             .expect("pending lifecycle")
             .take()
             .expect("pending stop");
+        let PendingHerdrLifecycle::Local(pending) = pending else {
+            panic!("expected local lifecycle");
+        };
         assert!(lifecycle.start(&pending));
         pending
     };
@@ -5435,6 +5444,9 @@ fn ordinary_refresh_cannot_reconcile_an_active_lifecycle_operation() {
             .expect("pending lifecycle")
             .take()
             .expect("pending stop");
+        let PendingHerdrLifecycle::Local(pending) = pending else {
+            panic!("expected local lifecycle");
+        };
         assert!(lifecycle.start(&pending));
     }
     let snapshot = workspace
@@ -5508,6 +5520,9 @@ fn fresh_inventory_supersedes_a_synthetic_lifecycle_response() {
         .expect("lifecycle state")
         .clone()
         .expect("pending stop");
+    let PendingHerdrLifecycle::Local(pending) = pending else {
+        panic!("expected local lifecycle");
+    };
     let stopped = session::HerdrSessionRecord::new(
         "default",
         true,
@@ -8958,7 +8973,7 @@ fn completed_herdr_lifecycle_drops_matching_confirmations_in_every_scene() {
             "/srv/herdr/sessions/herdr.sock",
         )
     };
-    let pending = |scene: &Scene, name: &str, operation_id| PendingHerdrLifecycle {
+    let pending = |scene: &Scene, name: &str, operation_id| LocalHerdrLifecycle {
         generation: scene.herdr_lifecycle_generation.load(Ordering::Acquire),
         operation_id,
         selection: SessionSelection::herdr("wsl", "Ubuntu", name),
@@ -8972,11 +8987,15 @@ fn completed_herdr_lifecycle_drops_matching_confirmations_in_every_scene() {
     *b.scene
         .pending_herdr_lifecycle
         .lock()
-        .expect("scene B pending lifecycle") = Some(pending(&b.scene, "agents", 1));
+        .expect("scene B pending lifecycle") = Some(PendingHerdrLifecycle::Local(Box::new(
+        pending(&b.scene, "agents", 1),
+    )));
     *c.scene
         .pending_herdr_lifecycle
         .lock()
-        .expect("scene C pending lifecycle") = Some(pending(&c.scene, "other", 2));
+        .expect("scene C pending lifecycle") = Some(PendingHerdrLifecycle::Local(Box::new(
+        pending(&c.scene, "other", 2),
+    )));
     assert!(b.herdr_lifecycle_confirmation().is_some());
     let c_revision = c.snapshot().revision();
 
@@ -14976,7 +14995,7 @@ fn herdr_stop_suppression_reaches_every_scene_and_restores_to_owners() {
         "/tmp/herdr/review",
         "/tmp/herdr/review/herdr.sock",
     );
-    let pending = PendingHerdrLifecycle {
+    let pending = LocalHerdrLifecycle {
         generation: a.scene.herdr_lifecycle_generation.load(Ordering::Acquire),
         operation_id: 1,
         selection: SessionSelection::herdr("wsl", "Ubuntu", "work"),
@@ -15148,7 +15167,7 @@ fn herdr_failure_restore_cannot_resurrect_a_presentation_in_a_closed_scene() {
         "/tmp/herdr/review",
         "/tmp/herdr/review/herdr.sock",
     );
-    let pending = PendingHerdrLifecycle {
+    let pending = LocalHerdrLifecycle {
         generation: workspace
             .scene
             .herdr_lifecycle_generation

@@ -6,7 +6,7 @@ use crate::{
     HerdrLifecycleReconciliation, HerdrLifecycleState, HerdrOperationKey, HerdrSessionName,
     HerdrSessionState, HostConnectionState, HostContext, HostDiagnostic, HostItem, HostSnapshot,
     KwtSshExecutable, KwtState, KwtWorktreeListing, LocalConfig, LocalDiscovery, LocalExecutable,
-    Mutex, Ordering, PendingCreation, PendingHerdrLifecycle, PendingKwtCreation, PresentationKey,
+    LocalHerdrLifecycle, Mutex, Ordering, PendingCreation, PendingKwtCreation, PresentationKey,
     ProjectItem, Published, RefreshRuntime, RemoteAttachmentAttempt, RemoteConstructiveState,
     RemoteConstructiveTarget, RemoteEntry, RemoteHerdrAttachRequest, RemoteHerdrCreateRequest,
     RemoteTmuxAttachRequest, RemoteTmuxConfig, RemoteTmuxCreateRequest, RemoteTmuxSnapshot,
@@ -971,6 +971,13 @@ pub(crate) fn herdr_operation_pending_for_selection(
         .herdr_lifecycle
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let remote_pending = lifecycle
+        .remote
+        .iter()
+        .any(|operation| operation.request.selection == *selection);
+    if !is_local_host_id(selection.host_id()) {
+        return remote_pending;
+    }
     lifecycle.launches.iter().any(|operation| {
         operation.endpoint.name() == selection.endpoint() && operation.name == selection.session()
     }) || lifecycle.in_flight.iter().any(|operation| {
@@ -1770,7 +1777,7 @@ pub(crate) fn current_inventory_session_name(
 
 pub(crate) fn publish_herdr_lifecycle_uncertain(
     runtime: &Runtime,
-    pending: &PendingHerdrLifecycle,
+    pending: &LocalHerdrLifecycle,
     suppressed: Vec<SuppressedHerdrPresentation>,
     message: &str,
 ) {

@@ -12,8 +12,8 @@ use crate::{
     KwtProjectAction, KwtProjectMutationRequest, KwtProjectMutationTask,
     KwtPullRequestImportRequest, KwtPullRequestItem, KwtRefresh, KwtRemovalCapture,
     KwtRemovalCaptureIntent, KwtState, KwtWorktreeOperation, KwtWorktreeOutcome, KwtWorktreeTarget,
-    KwtWorktreeTask, Mutex, Ordering, PendingCreation, PendingHerdrLifecycle, PendingKill,
-    PendingKwtCreation, PendingKwtRemoval, PendingPaste, PresentationKey, ProjectItem,
+    KwtWorktreeTask, LocalHerdrLifecycle, Mutex, Ordering, PendingCreation, PendingHerdrLifecycle,
+    PendingKill, PendingKwtCreation, PendingKwtRemoval, PendingPaste, PresentationKey, ProjectItem,
     PtyAdmissionAttacher, Published, REDUCED_COLOR_NOTICE, RecvTimeoutError, RefreshPresentation,
     RemoteActive, RemoteAttachmentReset, RemoteConstructiveReset, RemoteConstructiveState,
     RemoteConstructiveTarget, RemoteHerdrAttachRequest, RemoteHerdrCreateRequest,
@@ -1642,7 +1642,7 @@ pub(crate) fn capture_herdr_lifecycle(
     selection: &SessionSelection,
     action: HerdrLifecycleAction,
     generation: u64,
-) -> Result<PendingHerdrLifecycle, WorkspaceError> {
+) -> Result<LocalHerdrLifecycle, WorkspaceError> {
     require_local_host_id(selection.host_id())?;
     if selection.kind() != SessionKind::Herdr {
         return Err(WorkspaceError::new(
@@ -1690,7 +1690,7 @@ pub(crate) fn capture_herdr_lifecycle(
                 "Herdr's default session cannot be deleted",
             ));
         }
-        Ok(PendingHerdrLifecycle {
+        Ok(LocalHerdrLifecycle {
             generation,
             operation_id: next_operation_id(&scene.runtime),
             selection: selection.clone(),
@@ -7016,7 +7016,7 @@ pub(crate) fn merge_herdr_created_inventory(
 
 pub(crate) fn merge_herdr_lifecycle_inventory(
     scene: &Scene,
-    pending: &PendingHerdrLifecycle,
+    pending: &LocalHerdrLifecycle,
     snapshot: HostSnapshot,
     publication_generation: u64,
 ) -> Result<u64, WorkspaceError> {
@@ -7033,7 +7033,7 @@ pub(crate) fn merge_herdr_lifecycle_inventory(
 
 pub(crate) fn publish_herdr_lifecycle_response(
     scene: &Scene,
-    pending: &PendingHerdrLifecycle,
+    pending: &LocalHerdrLifecycle,
     record: session::HerdrSessionRecord,
 ) -> Result<u64, WorkspaceError> {
     let publication_generation = reserve_constructive_inventory(&scene.runtime);
@@ -7064,7 +7064,7 @@ pub(crate) fn publish_herdr_lifecycle_response(
 
 pub(crate) fn reconcile_herdr_lifecycle_inventory(
     scene: &Scene,
-    pending: &PendingHerdrLifecycle,
+    pending: &LocalHerdrLifecycle,
 ) -> Result<HostSnapshot, WorkspaceError> {
     let publication_generation = reserve_constructive_inventory(&scene.runtime);
     let snapshot = match pending.host.discover(&PtyAdmissionAttacher::new()) {

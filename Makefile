@@ -695,7 +695,10 @@ rust-test-ssh-controller-live:
 
 .PHONY: rust-test-ssh-live
 rust-test-ssh-live: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
+rust-test-ssh-live: export GHOSTHUB_HERDR_TEST = $(shell realpath -m -- "$(HERDR_BINARY_PATH)")
 rust-test-ssh-live: ensure-kwt
+	@test -n "$(HERDR_BINARY_PATH)" -a -x "$(HERDR_BINARY_PATH)" || \
+		{ echo "Set HERDR_BINARY_PATH to a Linux Herdr executable" >&2; exit 1; }
 	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib native_ssh:: -- --ignored
 
 rust-lint:
