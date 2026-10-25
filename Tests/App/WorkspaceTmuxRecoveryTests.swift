@@ -1628,18 +1628,37 @@ extension WorkspaceTmuxDiscoveryTests {
             hostID: environment.remoteHost.id,
             name: "profile-work"
         )
-        let discovery = ProfileReconciliationDiscoveryState(
-            sessionName: selection.name
+        let sessions = Mutex([
+            DiscoveredTmuxSession(
+                name: selection.name,
+                windowCount: 1,
+                createdAt: "1721552400",
+                managed: false
+            ),
+        ])
+        let confirmation = CancellableProbeState()
+        let inventory = WorkspaceInventoryStore(
+            refreshInterval: .seconds(3_600),
+            kwtLoader: { _ in KwtHostInventory(projects: []) },
+            kwtProvisioner: { _ in },
+            tmuxLoader: { host in
+                .success(host == .local ? [] : sessions.withLock { $0 })
+            },
+            mutationCoordinator: WorktreeMutationCoordinator()
         )
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
+            workspaceInventoryStore: inventory,
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
-            tmuxSessionDiscovery: discovery.discover,
-            createdSessionDiscoveryDelays: [.milliseconds(20)],
+            tmuxSessionDiscovery: confirmation.discover,
+            tmuxSessionValidationDiscovery: { _, _ in
+                .success(sessions.withLock { $0 })
+            },
+            createdSessionDiscoveryDelays: [.seconds(3_600)],
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
         model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
@@ -1647,22 +1666,22 @@ extension WorkspaceTmuxDiscoveryTests {
             initialCommand: "printf ready"
         ))
         await launchActiveTmuxSurface(model, store: surfaceStore)
-        await waitUntilMainActor { discovery.didStartFirst }
+        await waitUntilMainActor { confirmation.didStart }
+        // Reconcile inventory while the confirmation probe is still in flight.
+        model.startTmuxSessionDiscovery()
         await waitUntilMainActor {
-            discovery.didCancelFirst
-                && model.pendingCreatedTmuxSessionCount == 0
+            confirmation.didCancel && model.pendingCreatedTmuxSessionCount == 0
         }
 
         #expect(model.activeBorrowedTmuxLaunchMode == .attach)
         #expect(surfaceStore.requestCount == 1)
+        sessions.withLock { $0.removeAll() }
         surfaceStore.surface.closeObservers.values.first?(false, 255)
         await waitUntilMainActor {
-            discovery.count == 3
-                && (model.activeBorrowedTmuxSessionIsConfirmedEnded
-                    || surfaceStore.requestCount > 1)
+            model.activeBorrowedTmuxSessionIsConfirmedEnded
+                || surfaceStore.requestCount > 1
         }
 
-        #expect(discovery.count == 3)
         #expect(surfaceStore.requestCount == 1)
         #expect(model.activeBorrowedTmuxLaunchMode == .attach)
         #expect(model.activeBorrowedTmuxSessionIsConfirmedEnded)
