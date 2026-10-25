@@ -32,6 +32,10 @@ cannot be created or attached; existing sessions remain visible and killable.
 
 ![Confirm a remote tmux kill in the native Rust application](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
 
+![Confirm Stop for a running Herdr session on the SSH host](https://github.com/user-attachments/assets/2a5220ee-c9d6-4b6b-a227-975578bf0f89)
+
+![Confirm Delete for the stopped remote Herdr session](https://github.com/user-attachments/assets/a4185835-f0e8-4a75-a7f0-6318a4eaecdf)
+
 ## Find tmux sessions on kwt's server
 
 Ghosthub checks the default tmux server and kwt's server. Sessions registered

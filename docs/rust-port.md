@@ -410,6 +410,10 @@ same session is still running and the user has not navigated elsewhere. An
 unreadable result leaves clients detached with a Herdr diagnostic; reconnect
 the host to refresh its inventory. Other backends remain available.
 
+![Confirm Stop for a running Herdr session on the SSH host](https://github.com/user-attachments/assets/2a5220ee-c9d6-4b6b-a227-975578bf0f89)
+
+![Confirm Delete for the stopped remote Herdr session](https://github.com/user-attachments/assets/a4185835-f0e8-4a75-a7f0-6318a4eaecdf)
+
 Remote Zellij kill, worktree workflows, and automatic transport recovery
 remain separate work.
 
