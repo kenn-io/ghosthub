@@ -604,6 +604,109 @@ fn reconnect_during_second_stop_probe_does_not_restore_stopped_session() {
     fixture.workspace.close();
 }
 
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn successful_stop_allows_superseding_queued_local_herdr_create() {
+    stop_with_queued_local_herdr_launch(
+        "native_ssh::herdr::successful_stop_allows_superseding_queued_local_herdr_create",
+        false,
+        false,
+    );
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn failed_stop_allows_superseding_queued_local_herdr_create() {
+    stop_with_queued_local_herdr_launch(
+        "native_ssh::herdr::failed_stop_allows_superseding_queued_local_herdr_create",
+        true,
+        false,
+    );
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn successful_stop_allows_superseding_queued_local_herdr_restart() {
+    stop_with_queued_local_herdr_launch(
+        "native_ssh::herdr::successful_stop_allows_superseding_queued_local_herdr_restart",
+        false,
+        true,
+    );
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn failed_stop_allows_superseding_queued_local_herdr_restart() {
+    stop_with_queued_local_herdr_launch(
+        "native_ssh::herdr::failed_stop_allows_superseding_queued_local_herdr_restart",
+        true,
+        true,
+    );
+}
+
+fn stop_with_queued_local_herdr_launch(test_name: &str, reject_stop: bool, restart: bool) {
+    let Some(fixture) = Fixture::isolated(test_name) else {
+        return;
+    };
+    let destination = fixture.local_session("local-review");
+    fixture.connect();
+    let selection = fixture.create_herdr("guarded");
+    let other = fixture.open_scene();
+    other.workspace.switch_session(&selection).unwrap();
+    other.herdr_shell("before-local-launch");
+    let local = SessionSelection::herdr(
+        destination.host_id(),
+        destination.endpoint(),
+        if restart { "default" } else { "local-draft" },
+    );
+    let launch = || {
+        if restart {
+            other.workspace.restart_herdr_session(&local)
+        } else {
+            other
+                .workspace
+                .create_herdr_session(local.host_id(), local.endpoint(), local.session())
+        }
+    };
+    fixture.gate_herdr_stop(reject_stop);
+    fixture
+        .workspace
+        .request_herdr_lifecycle(&selection, HerdrLifecycleAction::Stop)
+        .unwrap();
+    fixture.workspace.confirm_herdr_lifecycle().unwrap();
+    fixture.wait(|_| fixture.root.join("probe-started").exists());
+    launch().unwrap();
+    std::fs::write(fixture.root.join("release-probe"), "").unwrap();
+    fixture.wait(|_| fixture.root.join("stop-started").exists());
+    other.workspace.switch_session(&destination).unwrap();
+    std::fs::write(fixture.root.join("release-stop"), "").unwrap();
+    if reject_stop {
+        fixture.wait_for_error("fixture stop rejected");
+        fixture.wait_herdr("guarded", Some(HerdrSessionState::Running));
+    } else {
+        fixture.wait_herdr("guarded", Some(HerdrSessionState::Stopped));
+    }
+    other.tmux_shell("local-review", "after-superseding-launch");
+    // The superseded request must not create or restart its target.
+    assert!(
+        !fixture.herdr_list()["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["name"] == local.session() && record["running"] == true)
+    );
+    // Retry without detaching or closing the scene that owned the old request.
+    launch().expect("superseding a queued launch must release its reservation");
+    other.herdr_shell("local-launch-after-supersession");
+    assert!(matches!(
+        other.workspace.snapshot().content(),
+        WorkspaceContent::Terminal { host_id, session, kind: workspace::SessionKind::Herdr, .. }
+            if host_id == local.host_id() && session == local.session()
+    ));
+    other.workspace.close();
+    fixture.workspace.close();
+}
+
 fn stop_with_queued_navigation(test_name: &str, reject_stop: bool, navigation: QueuedNavigation) {
     let Some(fixture) = Fixture::isolated(test_name) else {
         return;

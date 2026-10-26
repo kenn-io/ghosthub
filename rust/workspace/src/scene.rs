@@ -318,6 +318,16 @@ pub(crate) fn clear_active_presentation(scene: &Scene) {
     } else {
         purge_queued_clipboard_writes(scene);
     }
+    // A queued launch already owns Attaching state; keep it visible so a
+    // later selection cancels the launch and releases its reservation.
+    if scene
+        .pending_creation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_some()
+    {
+        return;
+    }
     let pending = scene
         .attachment
         .lock()
