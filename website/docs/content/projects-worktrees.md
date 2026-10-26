@@ -127,6 +127,25 @@ of being duplicated under **Tmux Sessions**. Open **Settings → Worktrees** and
 turn off **Hide kwt-managed sessions from Tmux Sessions** if you want both
 entries visible.
 
+## Flag worktrees
+
+This feature is unreleased.
+
+Open the **…** menu beside a worktree and choose **Flag Worktree**. Its name
+turns amber and its leading icon becomes a filled flag. Use **Unflag Worktree**
+to restore the original icon and text color. Control-clicking the row offers
+the same actions.
+
+![Flagged primary and linked worktrees beside an unflagged checkout](/docs/assets/guide-worktree-flags.png)
+
+Flags are manual reminders saved on this Mac. They appear across open windows
+and survive relaunches, even if a terminal session stops or a host goes offline.
+You can flag several worktrees, including the primary checkout. Flagging does
+not open a session, change row order, or follow terminal activity.
+
+Flagging becomes available once inventory supplies a verified worktree identity.
+A newly created checkout at an old path starts unflagged.
+
 ## Inspect changed files
 
 Select the disclosure chevron beside a worktree. The panel expands beneath that

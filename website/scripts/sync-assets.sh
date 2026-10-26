@@ -29,6 +29,7 @@ assets=(
   guide-worktree.png
   guide-worktree-window-counts.png
   guide-worktree-changes.png
+  guide-worktree-flags.png
   guide-project-removal.png
   guide-project-recovery.png
   docs-launch-profiles.png
