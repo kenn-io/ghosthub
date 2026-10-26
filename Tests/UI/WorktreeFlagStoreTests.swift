@@ -7,6 +7,25 @@ import Testing
 
 @MainActor
 struct WorktreeFlagStoreTests {
+    @Test("row observers share a key without retaining detached rows")
+    func rowObservation() throws {
+        let fixture = try FlagStoreFixture()
+        let store = fixture.store()
+        let key = try #require(FlagTestWorkspace().key)
+        weak var released: WorktreeFlagState?
+        do {
+            let state = store.state(for: key)
+            released = state
+            #expect(store.state(for: key) === state)
+            #expect(!state.isFlagged)
+            try store.setFlagged(true, for: key)
+            #expect(state.isFlagged)
+            #expect(!store.state(for: nil).isFlagged)
+        }
+        #expect(released == nil)
+        #expect(store.state(for: key).isFlagged)
+    }
+
     @Test("flags restore and explicit updates are idempotent")
     func persistence() throws {
         let fixture = try FlagStoreFixture()

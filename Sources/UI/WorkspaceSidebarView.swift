@@ -166,6 +166,15 @@ private struct WorkspaceSidebarReorderIndicator: Equatable {
 
 // MARK: - WorkspaceSidebarView
 
+private struct WorktreeFlagContent<Content: View>: View {
+    let state: WorktreeFlagState
+    let content: (Bool) -> Content
+
+    var body: some View {
+        content(state.isFlagged)
+    }
+}
+
 struct WorkspaceSidebarView: View {
     @Environment(\.accessibilityDifferentiateWithoutColor)
     private var differentiateWithoutColor
@@ -175,7 +184,7 @@ struct WorkspaceSidebarView: View {
     let snapshot: WorkspaceSnapshot
     let sectionCache: WorkspaceSidebarSectionCache?
     let snapshotRevision: UInt64
-    @ObservedObject private var worktreeFlagStore: WorktreeFlagStore
+    private let worktreeFlagStore: WorktreeFlagStore
     private let onWorktreeFlagFailure: (WorktreeSummary, String) -> Void
     @Binding var selection: WorkspaceSelection
     let visibility: WorktreeVisibility
@@ -1520,6 +1529,16 @@ struct WorkspaceSidebarView: View {
         _ row: WorkspaceSidebarRow,
         groupItems: [WorkspaceSidebarDragItem]
     ) -> some View {
+        WorktreeFlagContent(state: worktreeFlagStore.state(for: row.worktreeFlagKey)) { isFlagged in
+            worktreeContent(row, groupItems: groupItems, isFlagged: isFlagged)
+        }
+    }
+
+    private func worktreeContent(
+        _ row: WorkspaceSidebarRow,
+        groupItems: [WorkspaceSidebarDragItem],
+        isFlagged: Bool
+    ) -> AnyView {
         guard case let .worktree(worktreeID) = row.target,
               let worktree = snapshot.worktree(id: worktreeID)
         else {
@@ -1533,7 +1552,6 @@ struct WorkspaceSidebarView: View {
             activeSelectionIsConnected: activeTmuxSessionIsConnected
         )
         let isExpanded = worktreeChanges.isExpanded(worktreeID)
-        let isFlagged = row.worktreeFlagKey.map(worktreeFlagStore.isFlagged) ?? false
         let actionGroups = WorktreeMenuAction.groups(
             flagKey: row.worktreeFlagKey,
             isFlagged: isFlagged,

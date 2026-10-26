@@ -21,15 +21,15 @@ import Testing
 @MainActor
 struct ActivationWorkGateTests {
     @Test(
-        "flag changes update both sidebars without rebuilding inventory or terminal roots",
-        arguments: [100, 500]
+        "flag changes update only their row and preserve previews",
+        arguments: [100, 500], [SessionPreviewMode.off, .alwaysLive]
     )
-    func worktreeFlagPublication(worktreeCount: Int) throws {
+    func worktreeFlagPublication(worktreeCount: Int, previewMode: SessionPreviewMode) throws {
         let app = NSApplication.shared
         let wasEnhanced = app.value(forKey: "accessibilityEnhancedUserInterface")
         app.setValue(true, forKey: "accessibilityEnhancedUserInterface")
         defer { app.setValue(wasEnhanced, forKey: "accessibilityEnhancedUserInterface") }
-        let gate = GateEnvironment(worktreeCount: worktreeCount)
+        let gate = GateEnvironment(worktreeCount: worktreeCount, previewMode: previewMode)
         defer { gate.close() }
         for view in gate.hostingViews {
             let projects = try #require(accessibilityElement(
@@ -48,6 +48,9 @@ struct ActivationWorkGateTests {
         let worktree = gate.snapshot.worktrees[0]
         let key = try #require(WorktreeFlagKey.resolve(worktreeID: worktree.id, in: gate.snapshot))
         let selections = gate.windowModels.map(\.selection)
+        let previewBuilds = gate.windowModels.map(\.previewBuilds)
+        let previewMountChanges = gate.windowModels.map(\.previewMountChanges)
+        let expandedPreviews = gate.windowModels.map(\.expandedPreviewIDs)
         RenderWorkCounters.beginRecording()
         try gate.flagStore.setFlagged(true, for: key)
         gate.settle()
@@ -55,8 +58,13 @@ struct ActivationWorkGateTests {
         #expect(counts.rootBodyEvaluations == 0)
         #expect(counts.sidebarSectionComputations == 0)
         #expect(counts.sidebarRowEvaluations > 0)
-        #expect(counts.sidebarRowEvaluations <= 280)
+        #expect(counts.sidebarRowEvaluations <= 16)
         #expect(gate.windowModels.map(\.selection) == selections)
+        #expect(gate.windowModels.map(\.previewMountChanges) == previewMountChanges)
+        #expect(gate.windowModels.map(\.expandedPreviewIDs) == expandedPreviews)
+        for (before, model) in zip(previewBuilds, gate.windowModels) {
+            #expect(model.previewBuilds - before <= 4)
+        }
         for view in gate.hostingViews {
             let row = try #require(accessibilityElement(
                 worktree.name, attribute: "accessibilityLabel", in: view
@@ -648,6 +656,8 @@ private final class GateWindowModel: ObservableObject {
     let previewMode: SessionPreviewMode
     let previewableSessionIDs: Set<String>
     var expandedPreviewIDs: Set<String> = []
+    var previewBuilds = 0
+    var previewMountChanges = 0
     @Published var selection: WorkspaceSelection
     @Published var activeSession: WorkspaceTmuxSessionSelection?
     @Published var columnVisibility: NavigationSplitViewVisibility = .all
@@ -694,12 +704,14 @@ private struct GateHarness: View {
                     AnyView(Color.clear)
                 },
                 tmuxSessionPreviewBuilder: { _, _ in
-                    AnyView(Color.clear.frame(height: 40))
+                    model.previewBuilds += 1
+                    return AnyView(Color.clear.frame(height: 40))
                 }
             ),
             handlers: InteractionHandlers(
                 openTmuxSession: { model.activeSession = $0 },
                 setTmuxSessionPreviewExpanded: { session, expanded in
+                    model.previewMountChanges += 1
                     if expanded {
                         model.expandedPreviewIDs.insert(session.id)
                     } else {

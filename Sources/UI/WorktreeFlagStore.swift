@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import GhosthubWorkspace
+import Observation
 import os
 
 @MainActor
@@ -13,6 +14,7 @@ public final class WorktreeFlagStore: ObservableObject {
     private let defaults: UserDefaults
     private let encodeKeys: (Set<WorktreeFlagKey>) throws -> Data
     private let reportDiagnostic: (String) -> Void
+    private var states: [WorktreeFlagKey: StateReference] = [:]
 
     public convenience init(userDefaults: UserDefaults = .standard) {
         self.init(userDefaults: userDefaults, reportDiagnostic: {
@@ -49,6 +51,17 @@ public final class WorktreeFlagStore: ObservableObject {
         flaggedKeys.contains(key)
     }
 
+    /// Rows with the same durable key share one narrow observation boundary.
+    func state(for key: WorktreeFlagKey?) -> WorktreeFlagState {
+        guard let key else { return .unavailable }
+        if let state = states[key]?.value {
+            return state
+        }
+        let state = WorktreeFlagState(isFlagged: isFlagged(key))
+        states[key] = StateReference(value: state)
+        return state
+    }
+
     public func setFlagged(_ flagged: Bool, for key: WorktreeFlagKey) throws {
         guard isFlagged(key) != flagged else { return }
         var updated = flaggedKeys
@@ -61,6 +74,7 @@ public final class WorktreeFlagStore: ObservableObject {
             let data = try encodeKeys(updated)
             defaults.set(data, forKey: Self.preferenceKey)
             flaggedKeys = updated
+            states[key]?.value?.isFlagged = flagged
         } catch {
             reportDiagnostic("The worktree flag update could not be encoded.")
             throw error
@@ -96,6 +110,21 @@ public final class WorktreeFlagStore: ObservableObject {
             // Invalid entries are diagnosed once by the containing load.
             key = try? WorktreeFlagKey(from: decoder)
         }
+    }
+
+    private struct StateReference {
+        weak var value: WorktreeFlagState?
+    }
+}
+
+@MainActor
+@Observable
+final class WorktreeFlagState {
+    fileprivate static let unavailable = WorktreeFlagState(isFlagged: false)
+    fileprivate(set) var isFlagged: Bool
+
+    fileprivate init(isFlagged: Bool) {
+        self.isFlagged = isFlagged
     }
 }
 

@@ -115,10 +115,12 @@ uses the stable host key, project key, and canonical kwt worktree generation,
 so another checkout at the same path does not inherit it. Rows without verified
 identity cannot be flagged yet. Offline hosts and missing inventory do not clear
 saved flags. Flagging changes only the sidebar's leading icon and name color.
-One shared in-memory store is observed by the sidebar, independently of terminal
-roots. Durable keys are cached with inventory rows; membership is a set lookup.
-Only explicit changes serialize and save preferences, and flag changes do not
-invalidate inventory sections. See [sidebar performance](sidebar-performance.md).
+One shared in-memory store supplies an observable flag value for each durable
+key. Only the matching worktree rows observe that value; neither the sidebar nor
+terminal roots observe the full flag set. Durable keys are cached with inventory
+rows. Only explicit changes serialize and save preferences, and flag changes do
+not invalidate inventory sections or unrelated previews. See
+[sidebar performance](sidebar-performance.md).
 Host display order is shared by the sidebar and the host list in Settings.
 Both views save moves immediately, separately from connection settings. Host
 ordering uses configuration keys and a fixed local-host identity, so renaming
