@@ -192,8 +192,8 @@ resulting worktree session.
 
 ## Remove a worktree
 
-Hover over a non-primary worktree and select the **×**, or Control-click its row
-and choose **Remove Worktree…**.
+Open the **…** menu beside a non-primary worktree, or Control-click its row.
+Choose **Remove Worktree…**.
 After you confirm the exact worktree and host, Ghosthub:
 
 1. ends that worktree's verified live tmux session when necessary; and
