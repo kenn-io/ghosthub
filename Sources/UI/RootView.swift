@@ -18,6 +18,7 @@ public struct RootView: View {
     @Binding private var isLogViewerPresented: Bool
     @Binding private var isSettingsPresented: Bool
     @ObservedObject private var settingsStore: SettingsStore
+    private let worktreeFlagStore: WorktreeFlagStore
     /// Tracks whether the sidebar was auto-collapsed due to narrow
     /// window width so we can auto-expand it when the window grows.
     @State private var sidebarAutoCollapsed = false
@@ -78,6 +79,7 @@ public struct RootView: View {
         sidebarWidthChanged: @escaping (CGFloat) -> Void = { _ in },
         workspaceWindowProvider: @escaping () -> NSWindow? = { nil },
         settingsStore: SettingsStore = .shared,
+        worktreeFlagStore: WorktreeFlagStore = .shared,
         selection: Binding<WorkspaceSelection>,
         isSidePanelVisible: Binding<Bool> = .constant(false),
         columnVisibility: Binding<NavigationSplitViewVisibility> = .constant(.all),
@@ -92,6 +94,7 @@ public struct RootView: View {
         self.sidebarWidthChanged = sidebarWidthChanged
         self.workspaceWindowProvider = workspaceWindowProvider
         self.settingsStore = settingsStore
+        self.worktreeFlagStore = worktreeFlagStore
         _selection = selection
         _isSidePanelVisible = isSidePanelVisible
         _columnVisibility = columnVisibility
@@ -683,6 +686,7 @@ public struct RootView: View {
             snapshot: snapshot,
             sectionCache: display.sidebarSectionCache,
             snapshotRevision: display.sidebarSnapshotRevision,
+            worktreeFlagStore: worktreeFlagStore,
             selection: Binding(
                 get: { selection },
                 set: { selectWorkspace($0) }
@@ -790,6 +794,11 @@ public struct RootView: View {
             tmuxSessionOrderRawValue: $tmuxSessionOrderRawValue,
             herdrSessionOrderRawValue: $herdrSessionOrderRawValue,
             zellijSessionOrderRawValue: $zellijSessionOrderRawValue,
+            onWorktreeFlagFailure: { worktree, message in
+                presentNonWorktreeWorkspaceAlert(.worktreeFlagFailure(
+                    worktree: worktree.name, message: message
+                ))
+            },
             onOpen: { worktree in
                 selectWorkspace(.worktree(worktree.id))
             }
@@ -1523,6 +1532,12 @@ public struct RootView: View {
                     pendingWorktreeRemoval = nil
                     pendingWorktreeRemovals.removeAll()
                 }
+            )
+        case let .worktreeFlagFailure(_, message):
+            return Alert(
+                title: Text("Couldn't Update Worktree Flag"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
             )
         case let .worktreeRemovalFailure(worktree, message):
             return Alert(

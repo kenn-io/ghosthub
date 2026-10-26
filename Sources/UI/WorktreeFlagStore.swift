@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import GhosthubWorkspace
 import os
 
 @MainActor
@@ -66,6 +67,18 @@ public final class WorktreeFlagStore: ObservableObject {
         }
     }
 
+    func setFlagged(
+        _ flagged: Bool,
+        for key: WorktreeFlagKey,
+        worktreeID: UUID,
+        in snapshot: WorkspaceSnapshot
+    ) throws {
+        guard WorktreeFlagKey.resolve(worktreeID: worktreeID, in: snapshot) == key else {
+            throw WorktreeFlagUpdateError.identityChanged
+        }
+        try setFlagged(flagged, for: key)
+    }
+
     nonisolated static func encode(_ keys: Set<WorktreeFlagKey>) throws -> Data {
         let sorted = keys.sorted {
             ($0.hostKey, $0.projectKey, $0.generation)
@@ -83,5 +96,13 @@ public final class WorktreeFlagStore: ObservableObject {
             // Invalid entries are diagnosed once by the containing load.
             key = try? WorktreeFlagKey(from: decoder)
         }
+    }
+}
+
+enum WorktreeFlagUpdateError: LocalizedError {
+    case identityChanged
+
+    var errorDescription: String? {
+        "This worktree changed. Reopen its actions menu and try again."
     }
 }

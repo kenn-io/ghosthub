@@ -175,6 +175,8 @@ struct WorkspaceSidebarView: View {
     let snapshot: WorkspaceSnapshot
     let sectionCache: WorkspaceSidebarSectionCache?
     let snapshotRevision: UInt64
+    @ObservedObject private var worktreeFlagStore: WorktreeFlagStore
+    private let onWorktreeFlagFailure: (WorktreeSummary, String) -> Void
     @Binding var selection: WorkspaceSelection
     let visibility: WorktreeVisibility
     let tmuxSessionVisibility: TmuxSessionVisibility
@@ -255,6 +257,7 @@ struct WorkspaceSidebarView: View {
         snapshot: WorkspaceSnapshot,
         sectionCache: WorkspaceSidebarSectionCache? = nil,
         snapshotRevision: UInt64 = 0,
+        worktreeFlagStore: WorktreeFlagStore = .shared,
         selection: Binding<WorkspaceSelection>,
         visibility: WorktreeVisibility,
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
@@ -337,8 +340,11 @@ struct WorkspaceSidebarView: View {
         tmuxSessionOrderRawValue: Binding<String> = .constant(""),
         herdrSessionOrderRawValue: Binding<String> = .constant(""),
         zellijSessionOrderRawValue: Binding<String> = .constant(""),
+        onWorktreeFlagFailure: @escaping (WorktreeSummary, String) -> Void = { _, _ in },
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
     ) {
+        self.worktreeFlagStore = worktreeFlagStore
+        self.onWorktreeFlagFailure = onWorktreeFlagFailure
         self.snapshot = snapshot
         self.sectionCache = sectionCache
         self.snapshotRevision = snapshotRevision
@@ -921,12 +927,22 @@ struct WorkspaceSidebarView: View {
 
     private func sidebarButton(
         _ row: WorkspaceSidebarRow,
-        reservedTrailingActionWidth: CGFloat = 0
+        reservedTrailingActionWidth: CGFloat = 0,
+        isWorktreeFlagged: Bool = false
     ) -> some View {
         RenderWorkCounters.countSidebarRowEvaluation()
+        let flagPresentation = WorktreeFlagPresentation(
+            isFlagged: isWorktreeFlagged, isPrimary: row.icon == .primaryWorktree
+        )
         let tmuxSession = tmuxSessionSelection(for: row)
-        let runningTmuxSession = tmuxSession.flatMap {
-            WorkspaceSidebarModel.canRequestKill(
+        let ownsWorktreeActions = if case .worktree = row.target {
+            true
+        } else {
+            false
+        }
+        let runningTmuxSession: WorkspaceTmuxSessionSelection? = tmuxSession.flatMap {
+            guard !ownsWorktreeActions else { return nil }
+            return WorkspaceSidebarModel.canRequestKill(
                 $0,
                 in: snapshot,
                 activeSelection: activeTmuxSession,
@@ -1076,12 +1092,19 @@ struct WorkspaceSidebarView: View {
                 )
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: row.icon.systemImageName)
+                    Image(systemName: isWorktreeFlagged
+                        ? flagPresentation.systemImageName : row.icon.systemImageName)
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(isSelected ? .primary : .secondary)
+                        .foregroundStyle(isWorktreeFlagged
+                            ? WorktreeFlagPresentation.flagColor
+                            : (isSelected ? .primary : .secondary))
                         .frame(width: 18)
                     if let status = row.worktreeStatus {
-                        worktreeRowContent(row.title, status: status)
+                        worktreeRowContent(
+                            row.title,
+                            status: status,
+                            titleColor: flagPresentation.titleColor
+                        )
                     } else {
                         legacyRowContent(
                             title: row.title,
@@ -1148,7 +1171,8 @@ struct WorkspaceSidebarView: View {
                 WorkspaceAccessibilityModel.descriptor(
                     for: row,
                     isSelected: isSelected,
-                    hasRecentTmuxOutput: isTmuxSessionWorking
+                    hasRecentTmuxOutput: isTmuxSessionWorking,
+                    isWorktreeFlagged: isWorktreeFlagged
                 )
             )
             .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -1509,12 +1533,34 @@ struct WorkspaceSidebarView: View {
             activeSelectionIsConnected: activeTmuxSessionIsConnected
         )
         let isExpanded = worktreeChanges.isExpanded(worktreeID)
+        let isFlagged = row.worktreeFlagKey.map(worktreeFlagStore.isFlagged) ?? false
+        let actionGroups = WorktreeMenuAction.groups(
+            flagKey: row.worktreeFlagKey,
+            isFlagged: isFlagged,
+            isExpanded: isExpanded,
+            canKill: runningTmuxSession != nil,
+            canRemove: isRemovable
+        )
+        let performAction: (WorktreeMenuAction) -> Void = { action in
+            performWorktreeAction(
+                action,
+                worktree: worktree,
+                runningTmuxSession: runningTmuxSession
+            )
+        }
         let isActionHovered = hoveredWorktreeActionID == worktreeID
         let actionPresentation =
-            WorkspaceWorktreeRemovalActionPresentation(
-                isRemovable: isRemovable,
+            WorkspaceWorktreeActionPresentation(
                 isRowHovered: hoveredWorktreeID == worktreeID,
                 isActionHovered: isActionHovered,
+                isSelected: Self.isRowSelected(
+                    row,
+                    selection: selection,
+                    rowTmuxSession: tmuxSessionSelection(for: row),
+                    activeTmuxSession: activeTmuxSession,
+                    activeHerdrSession: activeHerdrSession,
+                    activeZellijSession: activeZellijSession
+                ),
                 isFocused: focusedWorktreeActionID == worktreeID
             )
         let disclosurePresentation =
@@ -1527,63 +1573,74 @@ struct WorkspaceSidebarView: View {
             sidebarButton(
                 contentRow,
                 reservedTrailingActionWidth:
-                actionPresentation.reservedWidth
+                actionPresentation.reservedWidth,
+                isWorktreeFlagged: isFlagged
             )
             .overlay(alignment: .trailing) {
-                if isRemovable {
-                    Button {
-                        onRequestRemoveWorktree(worktree)
-                    } label: {
-                        ZStack {
-                            Color.clear
-                            if actionPresentation.isVisible {
-                                Image(systemName: "xmark")
-                                    .font(.system(
-                                        size: 10,
-                                        weight: .semibold
-                                    ))
-                            }
-                        }
-                        .frame(
-                            width: actionPresentation.hitTargetWidth,
-                            height: 30
-                        )
-                        .background {
-                            if actionPresentation.isVisible {
-                                RoundedRectangle(cornerRadius: 5)
-                                    .fill(Color.primary.opacity(
-                                        isActionHovered ? 0.14 : 0.05
-                                    ))
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .focused(
-                        $focusedWorktreeActionID,
-                        equals: worktreeID
-                    )
-                    .onHover { isHovered in
-                        if isHovered {
-                            worktreeHoverDismissTask?.cancel()
-                            hoveredWorktreeActionID = worktreeID
-                        } else if hoveredWorktreeActionID == worktreeID {
-                            hoveredWorktreeActionID = nil
-                            scheduleWorktreeHoverDismiss(worktreeID)
+                NativePopupMenuButton(groups: actionGroups.map { group in
+                    group.map { action in
+                        NativePopupMenuAction(
+                            action.title,
+                            role: action.isDestructive ? .destructive : nil,
+                            isEnabled: action.isEnabled
+                        ) {
+                            performAction(action)
                         }
                     }
-                    .help("Remove worktree…")
-                    .accessibilityLabel(
-                        "Remove worktree \(worktree.name)"
+                }) {
+                    ZStack {
+                        Color.clear
+                        if actionPresentation.isVisible {
+                            Image(systemName: "ellipsis")
+                                .font(.system(
+                                    size: 10,
+                                    weight: .semibold
+                                ))
+                        }
+                    }
+                    .frame(
+                        width: actionPresentation.hitTargetWidth,
+                        height: 30
                     )
-                    .accessibilityIdentifier(
-                        "remove-worktree-\(worktree.id.uuidString)"
-                    )
+                    .background {
+                        if actionPresentation.isVisible {
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(Color.primary.opacity(
+                                    isActionHovered ? 0.14 : 0.05
+                                ))
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .focused(
+                    $focusedWorktreeActionID,
+                    equals: worktreeID
+                )
+                .onHover { isHovered in
+                    if isHovered {
+                        worktreeHoverDismissTask?.cancel()
+                        hoveredWorktreeActionID = worktreeID
+                    } else if hoveredWorktreeActionID == worktreeID {
+                        hoveredWorktreeActionID = nil
+                        scheduleWorktreeHoverDismiss(worktreeID)
+                    }
+                }
+                .help(row.worktreeFlagKey == nil
+                    ? "Refresh worktree inventory to enable flagging."
+                    : "Worktree actions")
+                .accessibilityLabel(
+                    "Worktree actions for \(worktree.name)"
+                )
+                .accessibilityIdentifier(
+                    "worktree-actions-\(worktree.id.uuidString)"
+                )
+                .accessibilityHint(row.worktreeFlagKey == nil
+                    ? "Flagging requires a verified worktree identity from inventory."
+                    : "Includes flagging and available worktree actions.")
             }
             .onHover { isHovered in
-                guard isRemovable else { return }
                 if isHovered {
                     worktreeHoverDismissTask?.cancel()
                     hoveredWorktreeID = worktreeID
@@ -1592,43 +1649,22 @@ struct WorkspaceSidebarView: View {
                 }
             }
             .contextMenu {
-                Button(isExpanded ? "Hide Changes" : "Show Changes") {
-                    worktreeChanges.setExpanded(
-                        !isExpanded,
-                        worktreeID: worktreeID
-                    )
-                }
-                if let runningTmuxSession {
-                    Divider()
-                    Button("Kill Session…", role: .destructive) {
-                        onRequestKillTmuxSession(runningTmuxSession)
-                    }
-                }
-                if isRemovable {
-                    if runningTmuxSession == nil {
+                ForEach(Array(actionGroups.enumerated()), id: \.offset) { index, group in
+                    if index > 0 {
                         Divider()
                     }
-                    Button("Remove Worktree…", role: .destructive) {
-                        onRequestRemoveWorktree(worktree)
+                    ForEach(group) { action in
+                        Button(action.title, role: action.isDestructive ? .destructive : nil) {
+                            performAction(action)
+                        }
+                        .disabled(!action.isEnabled)
                     }
                 }
             }
-            .accessibilityAction(
-                named: isExpanded ? "Hide Changes" : "Show Changes"
-            ) {
-                worktreeChanges.setExpanded(
-                    !isExpanded,
-                    worktreeID: worktreeID
-                )
-            }
-            .accessibilityAction(named: "Remove Worktree") {
-                if isRemovable {
-                    onRequestRemoveWorktree(worktree)
-                }
-            }
-            .accessibilityAction(named: "Kill Session") {
-                if let runningTmuxSession {
-                    onRequestKillTmuxSession(runningTmuxSession)
+            .accessibilityActions {
+                ForEach(actionGroups.flatMap { $0 }) { action in
+                    Button(action.title) { performAction(action) }
+                        .disabled(!action.isEnabled)
                 }
             }
             .modifier(
@@ -1664,6 +1700,35 @@ struct WorkspaceSidebarView: View {
                     .padding(.trailing, 6)
             }
         )
+    }
+
+    private func performWorktreeAction(
+        _ action: WorktreeMenuAction,
+        worktree: WorktreeSummary,
+        runningTmuxSession: WorkspaceTmuxSessionSelection?
+    ) {
+        switch action {
+        case let .setFlagged(key?, flagged):
+            do {
+                try worktreeFlagStore.setFlagged(
+                    flagged, for: key, worktreeID: worktree.id, in: currentSnapshot()
+                )
+            } catch let error as WorktreeFlagUpdateError {
+                onWorktreeFlagFailure(worktree, error.localizedDescription)
+            } catch {
+                onWorktreeFlagFailure(worktree, "The worktree flag couldn't be saved. Try again.")
+            }
+        case .setFlagged(nil, _):
+            break
+        case let .setChangesExpanded(expanded):
+            worktreeChanges.setExpanded(expanded, worktreeID: worktree.id)
+        case .killSession:
+            if let runningTmuxSession {
+                onRequestKillTmuxSession(runningTmuxSession)
+            }
+        case .removeWorktree:
+            onRequestRemoveWorktree(worktree)
+        }
     }
 
     private func worktreeChangesDisclosureButton(
@@ -2344,10 +2409,11 @@ struct WorkspaceSidebarView: View {
     /// line 1; optional PR info on line 2.
     private func worktreeRowContent(
         _ title: String,
-        status: WorktreeRowStatus
+        status: WorktreeRowStatus,
+        titleColor: Color
     ) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            WorktreeRowLine(title: title, status: status)
+            WorktreeRowLine(title: title, status: status, titleColor: titleColor)
             worktreePRLine(status)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

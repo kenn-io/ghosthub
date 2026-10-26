@@ -20,6 +20,52 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct ActivationWorkGateTests {
+    @Test(
+        "flag changes update both sidebars without rebuilding inventory or terminal roots",
+        arguments: [100, 500]
+    )
+    func worktreeFlagPublication(worktreeCount: Int) throws {
+        let app = NSApplication.shared
+        let wasEnhanced = app.value(forKey: "accessibilityEnhancedUserInterface")
+        app.setValue(true, forKey: "accessibilityEnhancedUserInterface")
+        defer { app.setValue(wasEnhanced, forKey: "accessibilityEnhancedUserInterface") }
+        let gate = GateEnvironment(worktreeCount: worktreeCount)
+        defer { gate.close() }
+        for view in gate.hostingViews {
+            let projects = try #require(accessibilityElement(
+                "sidebar-section-disclosure-projects:\(gate.snapshot.hosts[0].id.uuidString)",
+                in: view
+            ))
+            _ = projects.perform(NSSelectorFromString("accessibilityPerformPress"))
+            gate.settle()
+            let project = try #require(accessibilityElement(
+                "Expand \(gate.snapshot.projects[0].sidebarTitle)",
+                attribute: "accessibilityLabel", in: view
+            ))
+            _ = project.perform(NSSelectorFromString("accessibilityPerformPress"))
+            gate.settle()
+        }
+        let worktree = gate.snapshot.worktrees[0]
+        let key = try #require(WorktreeFlagKey.resolve(worktreeID: worktree.id, in: gate.snapshot))
+        let selections = gate.windowModels.map(\.selection)
+        RenderWorkCounters.beginRecording()
+        try gate.flagStore.setFlagged(true, for: key)
+        gate.settle()
+        let counts = RenderWorkCounters.endRecording()
+        #expect(counts.rootBodyEvaluations == 0)
+        #expect(counts.sidebarSectionComputations == 0)
+        #expect(counts.sidebarRowEvaluations > 0)
+        #expect(counts.sidebarRowEvaluations <= 280)
+        #expect(gate.windowModels.map(\.selection) == selections)
+        for view in gate.hostingViews {
+            let row = try #require(accessibilityElement(
+                worktree.name, attribute: "accessibilityLabel", in: view
+            ))
+            #expect((row.value(forKey: "accessibilityValue") as? String)?
+                .contains("Flagged") == true)
+        }
+    }
+
     @Test("activation preference refresh does not redraw unchanged windows", arguments: [100, 500])
     func activationPreferenceRefreshDoesNotRedrawWindows(sessionCount: Int) {
         let gate = GateEnvironment(sessionCount: sessionCount)
@@ -418,6 +464,7 @@ private final class GateEnvironment {
     private let windows: [NSWindow]
     let hostingViews: [NSHostingView<GateHarness>]
     let settingsStore: SettingsStore
+    let flagStore: WorktreeFlagStore
     private let tempRoot: URL
     private let defaults: UserDefaults
     private let defaultsSuiteName: String
@@ -426,7 +473,7 @@ private final class GateEnvironment {
     init(sessionCount: Int = 4, worktreeCount: Int = 3, previewMode: SessionPreviewMode = .off) {
         let worktreeNames = (0 ..< worktreeCount).map { "worktree-\($0)" }
         let sessionNames = (0 ..< sessionCount).map { "session-\($0)" }
-        let environment = makeWorkspaceEnvironment(
+        var environment = makeWorkspaceEnvironment(
             hostConfig: { host in
                 host.tmuxSessions = (sessionNames + worktreeNames).enumerated().map { index, name in
                     TmuxSessionSummary(
@@ -439,16 +486,18 @@ private final class GateEnvironment {
                     )
                 }
             },
-            worktrees: worktreeNames.map { name in
+            worktrees: worktreeNames.enumerated().map { index, name in
                 { worktree in
                     worktree.name = name
                     worktree.branch = name
                     worktree.path = "/tmp/sidebar-fixture/\(name)"
                     worktree.tmuxSessionName = name
                     worktree.tmuxAttachMode = .direct
+                    worktree.generation = String(format: "%032x", index + 1)
                 }
             }
         )
+        environment.snapshot.projects[0].scopedKey = "github.com/example/project"
         snapshot = environment.snapshot
 
         tempRoot = FileManager.default.temporaryDirectory
@@ -460,6 +509,7 @@ private final class GateEnvironment {
         defaultsSuiteName = "ActivationWorkGate-\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: defaultsSuiteName)!
         defaults.removePersistentDomain(forName: defaultsSuiteName)
+        flagStore = WorktreeFlagStore(userDefaults: defaults)
         settingsStore = SettingsStore(
             configPipeline: LibghosttyConfigPipeline(
                 paths: LibghosttyConfigPaths(
@@ -490,6 +540,7 @@ private final class GateEnvironment {
                 rootView: GateHarness(
                     model: model,
                     settingsStore: settingsStore,
+                    flagStore: flagStore,
                     defaults: defaults,
                     sidebarToggleTarget: sidebarToggleTarget
                 )
@@ -625,6 +676,7 @@ private final class GateWindowModel: ObservableObject {
 private struct GateHarness: View {
     @ObservedObject var model: GateWindowModel
     let settingsStore: SettingsStore
+    let flagStore: WorktreeFlagStore
     let defaults: UserDefaults
     let sidebarToggleTarget: AnyObject
 
@@ -657,6 +709,7 @@ private struct GateHarness: View {
             ),
             sidebarToggleTarget: sidebarToggleTarget,
             settingsStore: settingsStore,
+            worktreeFlagStore: flagStore,
             selection: $model.selection,
             columnVisibility: $model.columnVisibility,
             isCommandPalettePresented: $model.isCommandPalettePresented
