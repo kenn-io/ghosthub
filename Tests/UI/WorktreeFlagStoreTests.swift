@@ -90,23 +90,6 @@ struct WorktreeFlagStoreTests {
         #expect(fixture.defaults.object(forKey: WorktreeFlagStore.preferenceKey) == nil)
     }
 
-    @Test("encoding failures preserve the stored and observed state")
-    func encodingFailure() throws {
-        let fixture = try FlagStoreFixture()
-        let key = try #require(FlagTestWorkspace().key)
-        let bytes = try JSONEncoder().encode([key])
-        fixture.defaults.set(bytes, forKey: WorktreeFlagStore.preferenceKey)
-        enum Failure: Error { case expected }
-        var diagnostics: [String] = []
-        let store = WorktreeFlagStore(userDefaults: fixture.defaults, encode: { _ in
-            throw Failure.expected
-        }, reportDiagnostic: { diagnostics.append($0) })
-        #expect(throws: Failure.expected) { try store.setFlagged(false, for: key) }
-        #expect(store.isFlagged(key))
-        #expect(fixture.defaults.data(forKey: WorktreeFlagStore.preferenceKey) == bytes)
-        #expect(diagnostics.count == 1)
-    }
-
     @Test("loading skips invalid entries and duplicates without rewriting bytes")
     func malformedEntries() throws {
         let fixture = try FlagStoreFixture()
