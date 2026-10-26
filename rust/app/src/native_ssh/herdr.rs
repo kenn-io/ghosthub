@@ -299,6 +299,7 @@ fn successful_stop_preserves_navigation_queued_before_suppression() {
     stop_with_queued_navigation(
         "native_ssh::herdr::successful_stop_preserves_navigation_queued_before_suppression",
         false,
+        false,
     );
 }
 
@@ -308,13 +309,65 @@ fn failed_stop_preserves_navigation_queued_before_suppression() {
     stop_with_queued_navigation(
         "native_ssh::herdr::failed_stop_preserves_navigation_queued_before_suppression",
         true,
+        false,
     );
 }
 
-fn stop_with_queued_navigation(test_name: &str, reject_stop: bool) {
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn successful_stop_preserves_local_navigation_queued_before_suppression() {
+    stop_with_queued_navigation(
+        "native_ssh::herdr::successful_stop_preserves_local_navigation_queued_before_suppression",
+        false,
+        true,
+    );
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn failed_stop_preserves_local_navigation_queued_before_suppression() {
+    stop_with_queued_navigation(
+        "native_ssh::herdr::failed_stop_preserves_local_navigation_queued_before_suppression",
+        true,
+        true,
+    );
+}
+
+fn stop_with_queued_navigation(test_name: &str, reject_stop: bool, local_destination: bool) {
     use std::os::unix::fs::PermissionsExt as _;
     let Some(fixture) = Fixture::isolated(test_name) else {
         return;
+    };
+    let destination = if local_destination {
+        let output = Command::new("/usr/bin/tmux")
+            .env("TMUX_TMPDIR", fixture.root.join("local-tmux"))
+            .args([
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                "local-review",
+                "/bin/sh",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        fixture.workspace.refresh().unwrap();
+        fixture.wait(|snapshot| {
+            snapshot.hosts().iter().any(|host| {
+                !host.is_ssh()
+                    && host
+                        .sessions()
+                        .iter()
+                        .any(|session| session.name() == "local-review")
+            })
+        });
+        let snapshot = fixture.workspace.snapshot();
+        let host = snapshot.hosts().iter().find(|host| !host.is_ssh()).unwrap();
+        SessionSelection::new(host.id(), host.endpoint(), "local-review")
+    } else {
+        SessionSelection::new(&fixture.host_id, &fixture.endpoint, "review")
     };
     fixture.connect();
     let selection = fixture.create_herdr("guarded");
@@ -351,14 +404,7 @@ exec '{root}/bin/herdr-real' "$@"
         .unwrap();
     fixture.workspace.confirm_herdr_lifecycle().unwrap();
     fixture.wait(|_| fixture.root.join("probe-started").exists());
-    other
-        .workspace
-        .switch_session(&SessionSelection::new(
-            &fixture.host_id,
-            &fixture.endpoint,
-            "review",
-        ))
-        .unwrap();
+    other.workspace.switch_session(&destination).unwrap();
     // The old client is still presented while the tmux request waits behind Stop.
     assert!(matches!(
         other.workspace.snapshot().content(),
@@ -376,7 +422,7 @@ exec '{root}/bin/herdr-real' "$@"
         fixture.wait_herdr("guarded", Some(HerdrSessionState::Stopped));
     }
     // Probe the queued destination without selecting it again.
-    other.tmux_shell("review", "queued-before-suppression");
+    other.tmux_shell(destination.session(), "queued-before-suppression");
     other.workspace.close();
     fixture.workspace.close();
 }

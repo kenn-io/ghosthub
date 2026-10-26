@@ -6765,15 +6765,16 @@ pub(crate) fn run_attach_over_remote(
         .remote_active
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(active_remote) = remote_active.as_ref() else {
-        attachment.clear_if_current(generation);
-        return;
-    };
     let mut workers = scene
         .worker
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if workers.generation() != active_remote.worker_generation {
+    // Lifecycle suppression may have closed the predecessor while this navigation waited.
+    let predecessor_matches = match remote_active.as_ref() {
+        Some(active) => workers.generation() == active.worker_generation,
+        None => workers.active().is_none(),
+    };
+    if !predecessor_matches {
         attachment.clear_if_current(generation);
         return;
     }
