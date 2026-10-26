@@ -1887,6 +1887,8 @@ struct RemoteEntry {
     /// Supersede and cancel fences act per scene; only connection-authority
     /// changes cancel every scene's attempt at once.
     attachment_attempts: Vec<RemoteAttachmentAttempt>,
+    /// Rejected Stop recoveries awaiting this host's in-flight reconnect.
+    herdr_recoveries: Vec<remote_herdr::Recovery>,
     generation: u64,
 }
 
@@ -4148,6 +4150,7 @@ impl Workspace {
                             cancellation: None,
                             constructive_cancellation: None,
                             attachment_attempts: Vec::new(),
+                            herdr_recoveries: Vec::new(),
                             generation: 0,
                         },
                     );
@@ -4808,6 +4811,7 @@ impl Workspace {
                     .filter(|entry| entry.generation == generation)
                     .map(|entry| {
                         entry.cancellation.take();
+                        entry.herdr_recoveries.clear();
                         entry.context.take()
                     });
                 if stale_context.is_some() {
@@ -4858,6 +4862,7 @@ impl Workspace {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 entries.get_mut(id).and_then(|entry| {
                     let cancellation = entry.cancellation.take()?;
+                    entry.herdr_recoveries.clear();
                     entry.generation = entry.generation.wrapping_add(1).max(1);
                     Some((cancellation, entry.context.take()))
                 })
@@ -5021,6 +5026,7 @@ impl Workspace {
                         cancellation: None,
                         constructive_cancellation: None,
                         attachment_attempts: Vec::new(),
+                        herdr_recoveries: Vec::new(),
                         generation: 0,
                     },
                 );

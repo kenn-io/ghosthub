@@ -2,6 +2,33 @@ use super::*;
 use workspace::{HerdrLifecycleAction, HerdrSessionState};
 
 impl Fixture {
+    fn gate_herdr_second_probe(&self) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let binary = self.root.join("bin/herdr");
+        std::fs::rename(&binary, self.root.join("bin/herdr-real")).unwrap();
+        std::fs::write(
+            &binary,
+            format!(
+                r#"#!/bin/sh
+if [ -n "${{SSH_CONNECTION:-}}" ] && [ "$1 $2" = 'session list' ]; then
+  if mkdir '{root}/first-probe' 2>/dev/null; then
+    :
+  elif mkdir '{root}/probe-started' 2>/dev/null; then
+    while [ ! -f '{root}/release-probe' ]; do sleep 0.02; done
+  elif [ -f '{root}/hold-reconnect' ] && mkdir '{root}/reconnect-started' 2>/dev/null; then
+    while [ ! -f '{root}/release-reconnect' ]; do sleep 0.02; done
+  fi
+fi
+if [ "$1 $2 $3" = 'session stop guarded' ]; then touch '{root}/stop-started'; fi
+exec '{root}/bin/herdr-real' "$@"
+"#,
+                root = self.root.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     fn gate_herdr_stop(&self, reject_stop: bool) {
         use std::os::unix::fs::PermissionsExt as _;
         let binary = self.root.join("bin/herdr");
@@ -466,6 +493,114 @@ fn reconnect_during_stop_probe_preserves_existing_clients() {
     fixture.herdr_shell("original-client-preserved");
     other.herdr_shell("other-client-preserved");
     other.workspace.close();
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn reconnect_during_second_stop_probe_recovers_unchanged_scenes() {
+    stop_with_reconnect_after_suppression(
+        "native_ssh::herdr::reconnect_during_second_stop_probe_recovers_unchanged_scenes",
+        false,
+    );
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn reconnect_finishing_after_rejected_stop_recovers_unchanged_scenes() {
+    stop_with_reconnect_after_suppression(
+        "native_ssh::herdr::reconnect_finishing_after_rejected_stop_recovers_unchanged_scenes",
+        true,
+    );
+}
+
+fn stop_with_reconnect_after_suppression(test_name: &str, delay_reconnect: bool) {
+    let Some(fixture) = Fixture::isolated(test_name) else {
+        return;
+    };
+    let destination = fixture.local_session("local-review");
+    fixture.connect();
+    let selection = fixture.create_herdr("guarded");
+    let other = fixture.open_scene();
+    let navigating = fixture.open_scene();
+    for scene in [&other, &navigating] {
+        scene.workspace.switch_session(&selection).unwrap();
+        scene.herdr_shell("before-second-probe");
+    }
+    fixture.gate_herdr_second_probe();
+    fixture
+        .workspace
+        .request_herdr_lifecycle(&selection, HerdrLifecycleAction::Stop)
+        .unwrap();
+    fixture.workspace.confirm_herdr_lifecycle().unwrap();
+    fixture.wait(|_| fixture.root.join("probe-started").exists());
+    for scene in [&fixture, &other, &navigating] {
+        assert!(!matches!(
+            scene.workspace.snapshot().content(),
+            WorkspaceContent::Terminal { .. }
+        ));
+    }
+    if delay_reconnect {
+        std::fs::write(fixture.root.join("hold-reconnect"), "").unwrap();
+        fixture.workspace.connect_host(&fixture.host_id).unwrap();
+        fixture.wait(|_| fixture.root.join("reconnect-started").exists());
+    } else {
+        fixture.connect();
+    }
+    if !delay_reconnect {
+        navigating.workspace.switch_session(&destination).unwrap();
+    }
+    std::fs::write(fixture.root.join("release-probe"), "").unwrap();
+    fixture.wait_for_error("no longer current");
+    assert!(!fixture.root.join("stop-started").exists());
+    // This intent arrives after recovery was saved for the pending connection.
+    if delay_reconnect {
+        navigating.workspace.switch_session(&destination).unwrap();
+    }
+    std::fs::write(fixture.root.join("release-reconnect"), "").unwrap();
+    fixture.wait_herdr("guarded", Some(HerdrSessionState::Running));
+    fixture.herdr_shell("recovered-after-reconnect");
+    other.herdr_shell("other-recovered-after-reconnect");
+    navigating.tmux_shell("local-review", "after-reconnect");
+    navigating.workspace.close();
+    other.workspace.close();
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn reconnect_during_second_stop_probe_does_not_restore_stopped_session() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::herdr::reconnect_during_second_stop_probe_does_not_restore_stopped_session",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    let selection = fixture.create_herdr("guarded");
+    fixture.gate_herdr_second_probe();
+    fixture
+        .workspace
+        .request_herdr_lifecycle(&selection, HerdrLifecycleAction::Stop)
+        .unwrap();
+    fixture.workspace.confirm_herdr_lifecycle().unwrap();
+    fixture.wait(|_| fixture.root.join("probe-started").exists());
+    let output = Command::new(fixture.root.join("bin/herdr-real"))
+        .args(["session", "stop", "guarded", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    fixture.connect();
+    std::fs::write(fixture.root.join("release-probe"), "").unwrap();
+    fixture.wait_for_error("no longer running");
+    assert!(!fixture.root.join("stop-started").exists());
+    fixture.wait_herdr("guarded", Some(HerdrSessionState::Stopped));
+    assert!(!matches!(
+        fixture.workspace.snapshot().content(),
+        WorkspaceContent::Terminal { .. }
+    ));
+    let destination = SessionSelection::new(&fixture.host_id, &fixture.endpoint, "review");
+    fixture.workspace.switch_session(&destination).unwrap();
+    fixture.tmux_shell("review", "after-rejected-recovery");
     fixture.workspace.close();
 }
 

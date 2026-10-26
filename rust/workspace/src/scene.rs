@@ -605,6 +605,7 @@ pub(crate) fn publish_remote_connection(
         }
         Err(error) => {
             let diagnostic = HostDiagnostic::new(error.kind(), error.to_string());
+            entry.herdr_recoveries.clear();
             cancel_remote_constructive(entry);
             cancel_remote_attachment(entry);
             let stale_context = entry.context.take();
@@ -625,6 +626,7 @@ pub(crate) fn publish_remote_connection(
     }
     drop(snapshot_write);
     drop(stale_presentations);
+    crate::remote_herdr::restore_pending(&scene.runtime, host_id);
     drop(publication);
     if let Some((host, snapshot, target)) = pending_reconciliation {
         reconcile_remote_constructive_after_connection(

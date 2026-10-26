@@ -182,6 +182,7 @@ fn consumed_remote_launch_failure_remains_pending_for_reconciliation() {
                     target: target.clone(),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -283,6 +284,7 @@ fn queued_remote_attachment_recaptures_newer_same_connection_inventory() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -6988,6 +6990,7 @@ fn cancelled_remote_connection_cannot_publish_a_late_failure() {
                 cancellation: Some(cancellation.clone()),
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -7046,6 +7049,7 @@ fn remote_cancellation_waits_for_inventory_publication() {
                 cancellation: Some(cancellation.clone()),
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -7151,6 +7155,7 @@ fn stale_lease_exit_cannot_cancel_its_replacement_connection() {
                 cancellation: Some(replacement.clone()),
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 8,
             },
         );
@@ -7210,6 +7215,7 @@ fn newer_navigation_cancels_a_queued_remote_attachment() {
                 context: None,
                 cancellation: None,
                 constructive_cancellation: None,
+                herdr_recoveries: Vec::new(),
                 attachment_attempts: vec![RemoteAttachmentAttempt {
                     scene: workspace.scene.id,
                     navigation_generation: 7,
@@ -7273,6 +7279,7 @@ fn navigation_in_one_scene_leaves_other_scenes_remote_attempts_in_flight() {
                 context: None,
                 cancellation: None,
                 constructive_cancellation: None,
+                herdr_recoveries: Vec::new(),
                 attachment_attempts: vec![
                     RemoteAttachmentAttempt {
                         scene: a.scene.id,
@@ -7371,6 +7378,7 @@ fn concurrent_scene_attachment_attempts_coexist_on_one_host() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -7424,10 +7432,8 @@ fn concurrent_scene_attachment_attempts_coexist_on_one_host() {
     // A finished attempt clears only its own registration.
     clear_remote_attachment_registration(&a.scene.runtime, "ssh:studio", 13);
     let entries = a.scene.runtime.remote_hosts.lock().expect("remote hosts");
-    let attempts = &entries
-        .get("ssh:studio")
-        .expect("remote entry")
-        .attachment_attempts;
+    let entry = entries.get("ssh:studio").expect("remote entry");
+    let attempts = &entry.attachment_attempts;
     assert_eq!(attempts.len(), 1);
     assert_eq!(attempts[0].navigation_generation, 12);
 }
@@ -7465,6 +7471,7 @@ fn navigation_in_another_scene_leaves_remote_construction_active() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 1,
             },
         );
@@ -7526,6 +7533,7 @@ fn superseded_remote_attachment_cannot_cross_the_launch_fence() {
                 context: None,
                 cancellation: None,
                 constructive_cancellation: None,
+                herdr_recoveries: Vec::new(),
                 attachment_attempts: vec![RemoteAttachmentAttempt {
                     scene: workspace.scene.id,
                     navigation_generation: 7,
@@ -7625,6 +7633,7 @@ fn refresh_after_remote_launch_transfers_inventory_reconciliation() {
                     target: target.clone(),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -7692,6 +7701,7 @@ fn navigation_cancels_only_prelaunch_remote_construction() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 1,
             },
         );
@@ -7810,6 +7820,7 @@ fn concurrent_remote_inventory_publication_settles_pending_reconciliation() {
                     target.clone(),
                 )),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -7930,6 +7941,7 @@ fn stale_remote_inventory_cannot_overwrite_the_published_generation() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -8033,6 +8045,7 @@ fn remote_kill_refresh_fixture() -> (Workspace, RemoteTmuxAttachRequest) {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -8219,6 +8232,7 @@ fn display_only_ssh_host_edits_preserve_runtime_and_selection() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -8306,6 +8320,7 @@ fn connection_changing_ssh_host_edits_disconnect_and_move_selection() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -8706,6 +8721,7 @@ fn stale_generation_remote_publication_cannot_touch_another_scenes_presentation(
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 8,
             },
         );
@@ -10236,6 +10252,7 @@ fn queued_remote_construction_recaptures_newer_same_connection_inventory() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -10398,6 +10415,7 @@ fn queued_remote_tmux_creation_stops_when_scene_closes() {
             cancellation: None,
             constructive_cancellation: None,
             attachment_attempts: Vec::new(),
+            herdr_recoveries: Vec::new(),
             generation: 7,
         },
     );
@@ -10503,6 +10521,7 @@ fn queued_zellij_construction_consults_recaptured_inventory_before_launching() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -10669,6 +10688,7 @@ fn queued_herdr_restart_revalidates_the_stopped_record_before_launching() {
                     target: remote_herdr_target("agents"),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -10834,6 +10854,7 @@ fn queued_construction_acquires_the_lane_before_recapturing() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 7,
             },
         );
@@ -12433,6 +12454,7 @@ fn connect_never_holds_navigation_while_waiting_on_publication() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 8,
             },
         );
@@ -12564,6 +12586,7 @@ fn cancellations_are_rejected_from_a_closed_scene() {
                 cancellation: Some(token.clone()),
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 3,
             },
         );
@@ -14484,6 +14507,7 @@ fn closing_a_scene_releases_worker_presentations_attempts_and_lease() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                herdr_recoveries: Vec::new(),
                 generation: 8,
             },
         );

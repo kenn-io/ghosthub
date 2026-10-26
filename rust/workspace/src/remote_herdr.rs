@@ -1,10 +1,10 @@
 use crate::{
     CancellationToken, DiagnosticKind, HerdrInventory, HerdrLifecycleAction, HerdrSessionState,
     PendingHerdrLifecycle, RemoteHerdrAttachRequest, RemotePresentationKey, RemoteSessionIdentity,
-    Scene, SessionKind, SessionSelection, Workspace, WorkspaceError, begin_snapshot_write,
-    current_remote_context, drop_matching_confirmations, finish_herdr_lifecycle_state,
-    lock_live_navigation, lock_session_operations, next_operation_id, require_host_session_actions,
-    runtime, scene,
+    Runtime, Scene, SceneId, SessionKind, SessionSelection, Workspace, WorkspaceError,
+    begin_snapshot_write, current_remote_context, drop_matching_confirmations,
+    finish_herdr_lifecycle_state, lock_live_navigation, lock_session_operations, next_operation_id,
+    require_host_session_actions, runtime, scene,
 };
 
 #[derive(Clone)]
@@ -13,6 +13,11 @@ pub(crate) struct RemoteHerdrLifecycle {
     pub(crate) operation_id: u64,
     pub(crate) action: HerdrLifecycleAction,
     pub(crate) request: RemoteHerdrAttachRequest,
+}
+
+pub(crate) struct Recovery {
+    request: RemoteHerdrAttachRequest,
+    scenes: Vec<(SceneId, u64)>,
 }
 
 pub(crate) fn capture(
@@ -144,7 +149,8 @@ pub(crate) fn run(workspace: &Workspace, pending: &RemoteHerdrLifecycle) {
         finish_presentations(workspace, pending);
     }
     let refreshed = refresh(workspace, pending, &cancellation);
-    let restore = result.is_err() && matches!(refreshed, Ok(Some(true)));
+    let restore = result.is_err();
+    let fresh_running = matches!(refreshed, Ok(Some(true)));
     let mut operation_error = result.err().map(|error| error.to_string());
     match refreshed {
         Ok(Some(false)) => finish_presentations(workspace, pending),
@@ -160,8 +166,80 @@ pub(crate) fn run(workspace: &Workspace, pending: &RemoteHerdrLifecycle) {
     }
     finish_herdr_lifecycle_state(&workspace.scene.runtime, pending.operation_id);
     if restore {
-        for (scene_id, navigation_generation) in suppressed {
-            let Some(scene) = runtime::scene_by_id(&workspace.scene.runtime, scene_id) else {
+        recover(workspace, request, suppressed, fresh_running);
+    }
+    if let Some(error) = operation_error {
+        workspace.push_operation_error(error);
+    }
+}
+
+fn recover(
+    workspace: &Workspace,
+    request: &RemoteHerdrAttachRequest,
+    scenes: Vec<(SceneId, u64)>,
+    fresh_running: bool,
+) {
+    if scenes.is_empty() {
+        return;
+    }
+    let runtime = &workspace.scene.runtime;
+    let _publication = runtime
+        .remote_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut entries = runtime
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(entry) = entries.get_mut(&request.host_id) else {
+        return;
+    };
+    // The original connection needs the post-operation refresh. A replacement
+    // connection supplies its own fresh inventory, possibly after Stop settles.
+    if entry.generation == request.connection_generation && !fresh_running {
+        return;
+    }
+    entry.herdr_recoveries.push(Recovery {
+        request: request.clone(),
+        scenes,
+    });
+    drop(entries);
+    restore_pending(runtime, &request.host_id);
+}
+
+/// Called under the remote publication fence, after publishing fresh inventory.
+pub(crate) fn restore_pending(runtime: &Runtime, host_id: &str) {
+    let recoveries = {
+        let mut entries = runtime
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = entries.get_mut(host_id) else {
+            return;
+        };
+        if entry.cancellation.is_some() {
+            return;
+        }
+        std::mem::take(&mut entry.herdr_recoveries)
+    };
+    for recovery in recoveries {
+        let Ok(request) =
+            runtime::capture_remote_herdr_attach_request(runtime, &recovery.request.selection)
+        else {
+            continue;
+        };
+        if request.snapshot.route_identity() != recovery.request.snapshot.route_identity()
+            || crate::resolve_remote_herdr_attach_target(
+                request.snapshot.herdr(),
+                &recovery.request.executable,
+                &recovery.request.session,
+            )
+            .is_err()
+        {
+            continue;
+        }
+        for (scene_id, navigation_generation) in recovery.scenes {
+            let Some(scene) = runtime::scene_by_id(runtime, scene_id) else {
                 continue;
             };
             let Ok(_navigation) = lock_live_navigation(&scene) else {
@@ -173,17 +251,12 @@ pub(crate) fn run(workspace: &Workspace, pending: &RemoteHerdrLifecycle) {
             let recovery = Workspace {
                 scene: crate::Arc::clone(&scene),
             };
-            let restored = runtime::recapture_remote_herdr_attach_request(&scene.runtime, request)
-                .and_then(|request| {
-                    recovery.start_remote_herdr_attachment(request, recovery.begin_navigation())
-                });
+            let restored = recovery
+                .start_remote_herdr_attachment(request.clone(), recovery.begin_navigation());
             if let Err(error) = restored {
                 recovery.push_operation_error(error.to_string());
             }
         }
-    }
-    if let Some(error) = operation_error {
-        workspace.push_operation_error(error);
     }
 }
 
