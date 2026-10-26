@@ -110,7 +110,24 @@ pub(crate) fn run(workspace: &Workspace, pending: &RemoteHerdrLifecycle) {
                     pending.action,
                     &cancellation,
                     || {
-                        if workspace.scene.closed.load(crate::Ordering::Acquire) {
+                        // Connection changes and presentation suppression share this fence.
+                        let _publication = workspace
+                            .scene
+                            .runtime
+                            .remote_publication
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let is_current = || {
+                            !workspace.scene.closed.load(crate::Ordering::Acquire)
+                                && runtime::recapture_remote_attachment_context(
+                                    &workspace.scene.runtime,
+                                    &request.host_id,
+                                    request.connection_generation,
+                                    &request.snapshot,
+                                )
+                                .is_ok()
+                        };
+                        if !is_current() {
                             return false;
                         }
                         if pending.action == HerdrLifecycleAction::Stop {
@@ -118,14 +135,7 @@ pub(crate) fn run(workspace: &Workspace, pending: &RemoteHerdrLifecycle) {
                                 matches_presentation(request, key)
                             }));
                         }
-                        runtime::recapture_remote_attachment_context(
-                            &workspace.scene.runtime,
-                            &request.host_id,
-                            request.connection_generation,
-                            &request.snapshot,
-                        )
-                        .is_ok()
-                            && !workspace.scene.closed.load(crate::Ordering::Acquire)
+                        is_current()
                     },
                 )
                 .map_err(|error| WorkspaceError::new(error.to_string()))

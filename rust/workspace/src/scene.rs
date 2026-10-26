@@ -318,7 +318,23 @@ pub(crate) fn clear_active_presentation(scene: &Scene) {
     } else {
         purge_queued_clipboard_writes(scene);
     }
-    restore_scene_inventory_state(scene);
+    let pending = scene
+        .attachment
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .active()
+        .map(|active| WorkspaceContent::Attaching {
+            host_id: active.request.host_id.clone(),
+            endpoint: active.request.endpoint.name().to_owned(),
+            session: active.request.name.clone(),
+            kind: active.request.target.kind(),
+        });
+    // A preserved local request must remain visible to navigation supersession.
+    if let Some(pending) = pending {
+        set_scene_state(scene, pending);
+    } else {
+        restore_scene_inventory_state(scene);
+    }
 }
 
 /// Project the runtime's stored inventory content back into this scene.
@@ -6701,6 +6717,9 @@ pub(crate) fn run_attach_over_remote(
             Ok(prepared) => prepared,
             Err(AttachFreshError::SceneClosed) => return,
             Err(error) => {
+                let Ok(_navigation) = lock_live_navigation(scene) else {
+                    return;
+                };
                 let snapshot_write = begin_snapshot_write(&scene.runtime);
                 let mut attachment = scene
                     .attachment
@@ -6718,7 +6737,7 @@ pub(crate) fn run_attach_over_remote(
                     | AttachFreshError::SessionChanged { error, .. } => error.to_string(),
                     AttachFreshError::SceneClosed => unreachable!("handled above"),
                 };
-                push_operation_event(scene, WorkspaceEvent::Error(message));
+                publish_cross_host_attachment_failure(scene, message);
                 drop(snapshot_write);
                 return;
             }
@@ -6758,7 +6777,7 @@ pub(crate) fn run_attach_over_remote(
     {
         attachment.clear_if_current(generation);
         drop(attachment);
-        push_operation_event(scene, WorkspaceEvent::Error(error.to_string()));
+        publish_cross_host_attachment_failure(scene, error.to_string());
         return;
     }
     let mut remote_active = scene
@@ -6813,6 +6832,19 @@ pub(crate) fn run_attach_over_remote(
         _ => {}
     }
     drop(snapshot_write);
+}
+
+// The caller holds navigation and snapshot guards through failure publication.
+fn publish_cross_host_attachment_failure(scene: &Scene, message: String) {
+    if scene
+        .remote_active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_none()
+    {
+        restore_scene_inventory_state(scene);
+    }
+    push_operation_event(scene, WorkspaceEvent::Error(message));
 }
 
 pub(crate) fn run_retained_retry(scene: &Scene, retry: &RetainedRetry) {

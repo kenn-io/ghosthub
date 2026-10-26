@@ -2,6 +2,61 @@ use super::*;
 use workspace::{HerdrLifecycleAction, HerdrSessionState};
 
 impl Fixture {
+    fn gate_herdr_stop(&self, reject_stop: bool) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let binary = self.root.join("bin/herdr");
+        std::fs::rename(&binary, self.root.join("bin/herdr-real")).unwrap();
+        // Hold the first inventory read while Stop owns the operation lane.
+        std::fs::write(
+            &binary,
+            format!(
+                r#"#!/bin/sh
+if [ -n "${{SSH_CONNECTION:-}}" ] && [ "$1 $2" = 'session list' ] && mkdir '{root}/probe-started' 2>/dev/null; then
+  while [ ! -f '{root}/release-probe' ]; do sleep 0.02; done
+fi
+if [ "$1 $2 $3" = 'session stop guarded' ]; then
+  touch '{root}/stop-started'
+  while [ ! -f '{root}/release-stop' ]; do sleep 0.02; done
+fi
+if [ "$1 $2 $3" = 'session stop guarded' ] && [ '{reject_stop}' = true ]; then
+  printf '%s\n' '{{"error":{{"message":"fixture stop rejected"}}}}'
+  exit 1
+fi
+exec '{root}/bin/herdr-real' "$@"
+"#,
+                root = self.root.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    fn local_session(&self, name: &str) -> SessionSelection {
+        let output = Command::new("/usr/bin/tmux")
+            .env("TMUX_TMPDIR", self.root.join("local-tmux"))
+            .args([
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                name,
+                "/bin/sh",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        self.workspace.refresh().unwrap();
+        self.wait(|snapshot| {
+            snapshot.hosts().iter().any(|host| {
+                !host.is_ssh() && host.sessions().iter().any(|session| session.name() == name)
+            })
+        });
+        let snapshot = self.workspace.snapshot();
+        let host = snapshot.hosts().iter().find(|host| !host.is_ssh()).unwrap();
+        SessionSelection::new(host.id(), host.endpoint(), name)
+    }
+
     fn create_herdr(&self, name: &str) -> SessionSelection {
         self.workspace.select_host(&self.host_id).unwrap();
         self.workspace
@@ -299,7 +354,7 @@ fn successful_stop_preserves_navigation_queued_before_suppression() {
     stop_with_queued_navigation(
         "native_ssh::herdr::successful_stop_preserves_navigation_queued_before_suppression",
         false,
-        false,
+        QueuedNavigation::Remote,
     );
 }
 
@@ -309,7 +364,7 @@ fn failed_stop_preserves_navigation_queued_before_suppression() {
     stop_with_queued_navigation(
         "native_ssh::herdr::failed_stop_preserves_navigation_queued_before_suppression",
         true,
-        false,
+        QueuedNavigation::Remote,
     );
 }
 
@@ -319,7 +374,7 @@ fn successful_stop_preserves_local_navigation_queued_before_suppression() {
     stop_with_queued_navigation(
         "native_ssh::herdr::successful_stop_preserves_local_navigation_queued_before_suppression",
         false,
-        true,
+        QueuedNavigation::Local,
     );
 }
 
@@ -329,46 +384,108 @@ fn failed_stop_preserves_local_navigation_queued_before_suppression() {
     stop_with_queued_navigation(
         "native_ssh::herdr::failed_stop_preserves_local_navigation_queued_before_suppression",
         true,
-        true,
+        QueuedNavigation::Local,
     );
 }
 
-fn stop_with_queued_navigation(test_name: &str, reject_stop: bool, local_destination: bool) {
-    use std::os::unix::fs::PermissionsExt as _;
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn successful_stop_allows_superseding_local_navigation_after_suppression() {
+    stop_with_queued_navigation(
+        "native_ssh::herdr::successful_stop_allows_superseding_local_navigation_after_suppression",
+        false,
+        QueuedNavigation::SupersededLocal,
+    );
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn failed_stop_allows_superseding_local_navigation_after_suppression() {
+    stop_with_queued_navigation(
+        "native_ssh::herdr::failed_stop_allows_superseding_local_navigation_after_suppression",
+        true,
+        QueuedNavigation::SupersededLocal,
+    );
+}
+
+#[derive(Clone, Copy)]
+enum QueuedNavigation {
+    Remote,
+    Local,
+    SupersededLocal,
+    ExitedLocal,
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn failed_queued_local_attachment_settles_after_suppression() {
+    stop_with_queued_navigation(
+        "native_ssh::herdr::failed_queued_local_attachment_settles_after_suppression",
+        false,
+        QueuedNavigation::ExitedLocal,
+    );
+}
+
+#[test]
+#[ignore = "requires Linux KWT, Herdr, OpenSSH, and Bubblewrap; run make rust-test-ssh-live"]
+fn reconnect_during_stop_probe_preserves_existing_clients() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::herdr::reconnect_during_stop_probe_preserves_existing_clients",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    let selection = fixture.create_herdr("guarded");
+    let other = fixture.open_scene();
+    other.workspace.switch_session(&selection).unwrap();
+    other.herdr_shell("before-reconnect");
+    let presentation_id = |fixture: &Fixture| match fixture.workspace.snapshot().content() {
+        WorkspaceContent::Terminal {
+            presentation_id, ..
+        } => *presentation_id,
+        _ => panic!("expected a live Herdr presentation"),
+    };
+    let original = presentation_id(&fixture);
+    let other_original = presentation_id(&other);
+    fixture.gate_herdr_stop(false);
+    fixture
+        .workspace
+        .request_herdr_lifecycle(&selection, HerdrLifecycleAction::Stop)
+        .unwrap();
+    fixture.workspace.confirm_herdr_lifecycle().unwrap();
+    fixture.wait(|_| fixture.root.join("probe-started").exists());
+    fixture.connect();
+    assert_eq!(presentation_id(&fixture), original);
+    assert_eq!(presentation_id(&other), other_original);
+    std::fs::write(fixture.root.join("release-probe"), "").unwrap();
+    fixture.wait_for_error("no longer current");
+    assert!(!fixture.root.join("stop-started").exists());
+    assert_eq!(presentation_id(&fixture), original);
+    assert_eq!(presentation_id(&other), other_original);
+    fixture.wait_herdr("guarded", Some(HerdrSessionState::Running));
+    fixture.herdr_shell("original-client-preserved");
+    other.herdr_shell("other-client-preserved");
+    other.workspace.close();
+    fixture.workspace.close();
+}
+
+fn stop_with_queued_navigation(test_name: &str, reject_stop: bool, navigation: QueuedNavigation) {
     let Some(fixture) = Fixture::isolated(test_name) else {
         return;
     };
-    let destination = if local_destination {
-        let output = Command::new("/usr/bin/tmux")
-            .env("TMUX_TMPDIR", fixture.root.join("local-tmux"))
-            .args([
-                "-f",
-                "/dev/null",
-                "new-session",
-                "-d",
-                "-s",
-                "local-review",
-                "/bin/sh",
-            ])
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        fixture.workspace.refresh().unwrap();
-        fixture.wait(|snapshot| {
-            snapshot.hosts().iter().any(|host| {
-                !host.is_ssh()
-                    && host
-                        .sessions()
-                        .iter()
-                        .any(|session| session.name() == "local-review")
-            })
-        });
-        let snapshot = fixture.workspace.snapshot();
-        let host = snapshot.hosts().iter().find(|host| !host.is_ssh()).unwrap();
-        SessionSelection::new(host.id(), host.endpoint(), "local-review")
-    } else {
-        SessionSelection::new(&fixture.host_id, &fixture.endpoint, "review")
+    let destination = match navigation {
+        QueuedNavigation::Remote => {
+            SessionSelection::new(&fixture.host_id, &fixture.endpoint, "review")
+        }
+        QueuedNavigation::Local
+        | QueuedNavigation::SupersededLocal
+        | QueuedNavigation::ExitedLocal => fixture.local_session("local-review"),
     };
+    let replacement = matches!(
+        navigation,
+        QueuedNavigation::SupersededLocal | QueuedNavigation::ExitedLocal
+    )
+    .then(|| fixture.local_session("local-next"));
     fixture.connect();
     let selection = fixture.create_herdr("guarded");
     // Reselecting the current client still permits recovery after a rejected Stop.
@@ -377,27 +494,7 @@ fn stop_with_queued_navigation(test_name: &str, reject_stop: bool, local_destina
     other.workspace.switch_session(&selection).unwrap();
     other.herdr_shell("before-probe");
 
-    let binary = fixture.root.join("bin/herdr");
-    std::fs::rename(&binary, fixture.root.join("bin/herdr-real")).unwrap();
-    // Hold the first inventory read while Stop owns the operation lane.
-    std::fs::write(
-        &binary,
-        format!(
-            r#"#!/bin/sh
-if [ -n "${{SSH_CONNECTION:-}}" ] && [ "$1 $2" = 'session list' ] && mkdir '{root}/probe-started' 2>/dev/null; then
-  while [ ! -f '{root}/release-probe' ]; do sleep 0.02; done
-fi
-if [ "$1 $2 $3" = 'session stop guarded' ] && [ '{reject_stop}' = true ]; then
-  printf '%s\n' '{{"error":{{"message":"fixture stop rejected"}}}}'
-  exit 1
-fi
-exec '{root}/bin/herdr-real' "$@"
-"#,
-            root = fixture.root.display(),
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    fixture.gate_herdr_stop(reject_stop);
     fixture
         .workspace
         .request_herdr_lifecycle(&selection, HerdrLifecycleAction::Stop)
@@ -414,6 +511,25 @@ exec '{root}/bin/herdr-real' "$@"
         }
     ));
     std::fs::write(fixture.root.join("release-probe"), "").unwrap();
+    fixture.wait(|_| fixture.root.join("stop-started").exists());
+    let destination = if let Some(replacement) = replacement
+        .as_ref()
+        .filter(|_| matches!(navigation, QueuedNavigation::SupersededLocal))
+    {
+        other.workspace.switch_session(replacement).unwrap();
+        replacement.clone()
+    } else {
+        destination
+    };
+    if matches!(navigation, QueuedNavigation::ExitedLocal) {
+        let output = Command::new("/usr/bin/tmux")
+            .env("TMUX_TMPDIR", fixture.root.join("local-tmux"))
+            .args(["kill-session", "-t", "=local-review"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    std::fs::write(fixture.root.join("release-stop"), "").unwrap();
     if reject_stop {
         fixture.wait_for_error("fixture stop rejected");
         fixture.wait_herdr("guarded", Some(HerdrSessionState::Running));
@@ -421,8 +537,19 @@ exec '{root}/bin/herdr-real' "$@"
     } else {
         fixture.wait_herdr("guarded", Some(HerdrSessionState::Stopped));
     }
-    // Probe the queued destination without selecting it again.
-    other.tmux_shell(destination.session(), "queued-before-suppression");
+    if matches!(navigation, QueuedNavigation::ExitedLocal) {
+        other.wait_for_error("session no longer exists");
+        assert!(!matches!(
+            other.workspace.snapshot().content(),
+            WorkspaceContent::Attaching { .. }
+        ));
+        let replacement = replacement.unwrap();
+        other.workspace.switch_session(&replacement).unwrap();
+        other.tmux_shell(replacement.session(), "after-failed-attachment");
+    } else {
+        // Probe the queued destination without selecting it again.
+        other.tmux_shell(destination.session(), "queued-before-suppression");
+    }
     other.workspace.close();
     fixture.workspace.close();
 }
