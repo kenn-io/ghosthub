@@ -58,7 +58,9 @@ struct WorktreeFlagViewTests {
             size: CGSize(width: 360, height: 440)
         )
         let window = NSWindow(
-            contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false
+            contentRect: view.frame,
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false
         )
         window.isReleasedWhenClosed = false
         window.title = "Ghosthub"
