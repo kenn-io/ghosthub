@@ -100,6 +100,8 @@ pub(crate) struct Scene {
     /// shared cadence runs while any live scene wants them.
     pub(crate) inventory_polling_enabled: AtomicBool,
     pub(crate) navigation: Mutex<()>,
+    #[cfg(test)]
+    pub(crate) before_navigation_lock: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub(crate) remote_active: Mutex<Option<RemoteActive>>,
     pub(crate) remote_retained: Mutex<RemoteRetainedPresentations>,
     pub(crate) worker: Mutex<WorkerState<TerminalWorker>>,
@@ -166,6 +168,8 @@ pub(crate) fn attach_scene(
         navigation_generation: AtomicU64::new(0),
         inventory_polling_enabled: AtomicBool::new(false),
         navigation: Mutex::new(()),
+        #[cfg(test)]
+        before_navigation_lock: Mutex::new(None),
         remote_active: Mutex::new(None),
         remote_retained: Mutex::new(RemoteRetainedPresentations::new()),
         worker: Mutex::new(WorkerState::new()),
@@ -473,6 +477,17 @@ impl NavigationFence<'_> {
 /// Returns the scene-closed cancellation error; the caller's operation
 /// never starts.
 pub(crate) fn lock_live_navigation(scene: &Scene) -> Result<NavigationFence<'_>, WorkspaceError> {
+    #[cfg(test)]
+    {
+        let before = scene
+            .before_navigation_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(before) = before {
+            before();
+        }
+    }
     let guard = scene
         .navigation
         .lock()

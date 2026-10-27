@@ -4818,6 +4818,89 @@ fn herdr_workspace_fixture() -> (Workspace, Arc<ManualRefreshRuntime>) {
 }
 
 #[test]
+fn local_switch_waiting_on_navigation_survives_remote_suppression() {
+    let (workspace, _runtime) = herdr_workspace_fixture();
+    workspace
+        .scene
+        .runtime
+        .host
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .value
+        .host = LocalHost::wsl(
+        LocalConfig::with_distro("Ubuntu").unwrap(),
+        Arc::new(RefusingRunner) as SharedCommandRunner,
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").unwrap(),
+    );
+    let remote = RemoteTmuxSnapshot::test_fixture(
+        "studio.example",
+        TEST_REMOTE_ROUTE,
+        7,
+        Vec::new(),
+        HerdrInventory::Unavailable,
+        ZellijInventory::Unavailable,
+    );
+    *workspace.scene.remote_active.lock().unwrap() = Some(RemoteActive {
+        navigation_generation: 0,
+        key: RemotePresentationKey {
+            host_id: "ssh:studio".to_owned(),
+            endpoint: "studio.example".to_owned(),
+            route_identity: TEST_REMOTE_ROUTE.to_owned(),
+            lease_generation: 7,
+            session_identity: RemoteSessionIdentity::Herdr {
+                name: "guarded".to_owned(),
+                is_default: false,
+                session_directory: "/srv/herdr/guarded".to_owned(),
+                socket_path: "/srv/herdr/guarded/herdr.sock".to_owned(),
+            },
+        },
+        selection: SessionSelection::herdr("ssh:studio", "studio.example", "guarded"),
+        worker_generation: 1,
+        lease: remote.lease().clone(),
+        presentation_id: 1,
+        term: AttachTerm::Xterm256Color,
+        retainable: false,
+        identity_mismatch_marker: None,
+    });
+    // Hold the same lane and navigation fence as Stop's suppression callback.
+    // The lane also keeps this routing test from launching a real WSL client.
+    let operation = workspace.scene.runtime.session_operations.lock().unwrap();
+    let navigation = lock_live_navigation(&workspace.scene).unwrap();
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (resume_tx, resume_rx) = mpsc::sync_channel(1);
+    *workspace.scene.before_navigation_lock.lock().unwrap() = Some(Box::new(move || {
+        entered_tx.send(()).unwrap();
+        resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    }));
+    let switching = workspace.clone();
+    let (done_tx, done_rx) = mpsc::sync_channel(1);
+    let switcher = thread::spawn(move || {
+        done_tx
+            .send(switching.switch_session(&SessionSelection::new("wsl", "Ubuntu", "work")))
+            .unwrap();
+    });
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    {
+        let _snapshot = begin_snapshot_write(&workspace.scene.runtime);
+        crate::scene::clear_active_presentation(&workspace.scene);
+    }
+    drop(navigation);
+    resume_tx.send(()).unwrap();
+    let result = done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    switcher.join().unwrap();
+    result.expect("the selected local session is accepted after its remote predecessor closes");
+    assert!(matches!(
+        workspace.snapshot().content(),
+        WorkspaceContent::Attaching { host_id, endpoint, session, kind: SessionKind::Tmux }
+            if host_id == "wsl" && endpoint == "Ubuntu" && session == "work"
+    ));
+    workspace.close();
+    drop(operation);
+}
+
+#[test]
 fn successful_refresh_projects_herdr_without_changing_tmux_readiness() {
     let (workspace, _runtime) = herdr_workspace_fixture();
 

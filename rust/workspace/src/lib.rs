@@ -6000,6 +6000,8 @@ impl Workspace {
             let request = capture_remote_tmux_attach_request(&self.scene.runtime, selection)?;
             return self.start_remote_tmux_attachment(request, navigation_generation);
         }
+        // Suppression changes the active presentation under this same fence.
+        let _navigation = lock_live_navigation(&self.scene)?;
         if self
             .scene
             .remote_active
@@ -6007,7 +6009,6 @@ impl Workspace {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_some()
         {
-            let _navigation = lock_live_navigation(&self.scene)?;
             let (key, request) = self.navigation_target(selection)?;
             let navigation_generation = self.begin_navigation();
             self.scene
@@ -6026,7 +6027,6 @@ impl Workspace {
             return self.start_attachment_over_remote(request, navigation_generation);
         }
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
-        let _navigation = lock_live_navigation(&self.scene)?;
         self.switch_session_locked(selection)
     }
 
