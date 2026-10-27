@@ -271,30 +271,42 @@ fn kill_accepts_names_that_zellij_cannot_attach_to() {
     for name in ["--review", "help"] {
         let output = Command::new("/usr/bin/tmux")
             .env("TMUX_TMPDIR", fixture.root.join("tmux"))
-            .env("ZELLIJ_CONFIG_DIR", fixture.root.join("xdg/config/zellij"))
             .args(["new-session", "-d", "-s", &format!("seed-{name}")])
             .arg(fixture.root.join("bin/zellij"))
             .arg(format!("--session={name}"))
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
+        // Zellij inventory probes can unlink a socket before its server listens.
+        // Wait through the terminal before asking inventory about the new session.
+        let target = format!("=seed-{name}:");
         fixture.wait(|_| {
             fixture
-                .zellij_list()
+                .tmux(&["capture-pane", "-p", "-t", &target])
                 .lines()
-                .any(|line| line.starts_with(&format!("{name} ")))
+                .any(|line| line.trim() == "$")
+        });
+        fixture.tmux(&[
+            "send-keys",
+            "-t",
+            &target,
+            "-l",
+            "printf 'seed-%s:%s\\n' \"$ZELLIJ_SESSION_NAME\" ready",
+        ]);
+        fixture.tmux(&["send-keys", "-t", &target, "Enter"]);
+        fixture.wait(|_| {
+            fixture
+                .tmux(&["capture-pane", "-p", "-t", &target])
+                .contains(&format!("seed-{name}:ready"))
         });
     }
     fixture.connect();
     for name in ["--review", "help"] {
         let selection = fixture.zellij_selection(name);
+        let error = fixture.workspace.switch_session(&selection).unwrap_err();
         assert!(
-            fixture
-                .workspace
-                .switch_session(&selection)
-                .unwrap_err()
-                .to_string()
-                .contains("Zellij cannot attach")
+            error.to_string().contains("Zellij cannot attach"),
+            "{name}: {error}"
         );
         fixture.request_zellij_kill(&selection);
         fixture.workspace.confirm_session_kill().unwrap();
