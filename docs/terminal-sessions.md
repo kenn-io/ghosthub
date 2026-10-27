@@ -152,8 +152,10 @@ names from the branch and path instead of storing them, so a session that a
 kwt worktree or directory workspace owns is never renamable, including when
 kwt-managed sessions are shown as plain rows. For the same reason a rename
 cannot take a name that starts with `kwt-wt-` or `kwt-workspace-`, or that a
-kwt worktree or directory workspace on that host uses. Rename uses the identity
-discovery recorded for the row and one tmux conditional that runs
+kwt worktree or directory workspace on that host uses. The rename sheet
+captures the identity discovery recorded for the row when it opens. Submitting
+refuses a session that no longer has that identity, including one that took
+the name while the sheet was open, and one tmux conditional runs
 `rename-session` only when the server PID, `session_id`, and `session_created`
 still match.
 

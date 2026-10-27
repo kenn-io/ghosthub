@@ -11713,28 +11713,45 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func renameTmuxSession(
-        _ tmuxSelection: WorkspaceTmuxSessionSelection,
+        _ request: TmuxSessionRenameRequest,
         to requestedName: String
     ) async throws {
+        let tmuxSelection = request.session
         let newName = TmuxSessionName.normalized(requestedName)
         guard newName != tmuxSelection.name else { return }
-        guard let hostSummary = snapshot.host(id: tmuxSelection.hostID),
-              let host = CommandHostResolver.resolve(hostSummary)
+        guard request.confirmedHost.id == tmuxSelection.hostID,
+              let confirmedHost = CommandHostResolver.resolve(
+                  request.confirmedHost
+              ),
+              let hostSummary = snapshot.host(id: tmuxSelection.hostID),
+              let host = CommandHostResolver.resolve(hostSummary),
+              host == confirmedHost
         else {
             throw TmuxSessionRenameError.hostChanged(
                 session: tmuxSelection.name
             )
         }
+        // The sheet's identity, not the current listing's, names the
+        // session to rename. tmux checks it again when the rename runs.
+        let identity = TmuxSessionIdentity(
+            serverPID: request.serverPID,
+            sessionID: request.sessionID,
+            createdAt: request.sessionCreatedAt
+        )
         guard WorkspaceSidebarModel.canRequestRename(
             tmuxSelection,
             in: snapshot
-        ),
-            let identity = Self.discoveredTmuxSessionIdentity(
-                tmuxSelection,
-                hostSummary: hostSummary
-            )
-        else {
+        ) else {
             throw TmuxSessionRenameError.sessionNotRunning(
+                host: host.displayName,
+                session: tmuxSelection.name
+            )
+        }
+        guard Self.discoveredTmuxSessionIdentity(
+            tmuxSelection,
+            hostSummary: hostSummary
+        ) == identity else {
+            throw TmuxSessionRenameError.sessionChanged(
                 host: host.displayName,
                 session: tmuxSelection.name
             )

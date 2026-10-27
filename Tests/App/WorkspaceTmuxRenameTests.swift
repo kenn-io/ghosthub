@@ -995,6 +995,51 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("rename refuses a session that took the name while the sheet was open")
+    func renameRefusesReplacedSession() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["desk": "$2"])
+        let renames = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
+            tmuxSessionRenamer: { _, _, _, _ in
+                renames.withLock { $0 += 1 }
+            },
+            tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator()
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.first?.sessionID == "$2"
+        }
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        let request = try #require(
+            WorkspaceSidebarModel.renameRequest(desk, in: model.snapshot)
+        )
+
+        // While the sheet is open, desk ends and a new session takes its name.
+        names.store(["desk": "$9"])
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.first?.sessionID == "$9"
+        }
+
+        await #expect {
+            try await model.renameTmuxSession(request, to: "work")
+        } throws: { error in
+            error as? TmuxSessionRenameError == .sessionChanged(
+                host: "localhost",
+                session: "desk"
+            )
+        }
+        #expect(renames.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("rename refuses taken names and kwt-owned sessions without running tmux")
     func renameRefusesTakenAndOwnedNames() async throws {
         let environment = try setupStandardEnvironment()
@@ -1283,6 +1328,26 @@ private func renameFixtureSession(
 
 private func renameFixtureIdentity(_ sessionID: String) -> TmuxSessionIdentity {
     TmuxSessionIdentity(serverPID: "101", sessionID: sessionID, createdAt: "1000")
+}
+
+@MainActor
+private extension WorkspaceSceneModel {
+    /// Opens the rename sheet for `selection` and submits `name` at once.
+    func renameTmuxSession(
+        _ selection: WorkspaceTmuxSessionSelection,
+        to name: String
+    ) async throws {
+        guard let request = WorkspaceSidebarModel.renameRequest(
+            selection,
+            in: snapshot
+        ) else {
+            throw TmuxSessionRenameError.sessionNotRunning(
+                host: "",
+                session: selection.name
+            )
+        }
+        try await renameTmuxSession(request, to: name)
+    }
 }
 
 @MainActor

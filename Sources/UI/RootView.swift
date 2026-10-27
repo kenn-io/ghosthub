@@ -41,7 +41,7 @@ public struct RootView: View {
     @State private var newWorktreeProject: ProjectSummary?
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
-    @State private var renamingTmuxSession: WorkspaceTmuxSessionSelection?
+    @State private var renamingTmuxSession: TmuxSessionRenameRequest?
     @State private var newHerdrSessionHost: HostSummary?
     @State private var newZellijSessionHost: HostSummary?
     @State private var herdrCreationTask: Task<Void, Never>?
@@ -220,11 +220,11 @@ public struct RootView: View {
                     onCancel: { newWorktreeProject = nil }
                 )
             }
-            .sheet(item: $renamingTmuxSession) { session in
+            .sheet(item: $renamingTmuxSession) { request in
                 RenameTmuxSessionSheet(
-                    session: session,
+                    session: request.session,
                     existingNames: Set(
-                        snapshot.host(id: session.hostID)?.tmuxSessions
+                        snapshot.host(id: request.session.hostID)?.tmuxSessions
                             .filter { $0.socketName == nil }
                             .map(\.name) ?? []
                     ),
@@ -232,7 +232,7 @@ public struct RootView: View {
                         guard let rename = handlers.renameTmuxSession else {
                             throw SessionRenameUnavailableError()
                         }
-                        try await rename(session, name)
+                        try await rename(request, name)
                     },
                     onDismiss: { renamingTmuxSession = nil }
                 )
@@ -1267,9 +1267,12 @@ public struct RootView: View {
         _ tmuxSession: WorkspaceTmuxSessionSelection
     ) {
         guard handlers.renameTmuxSession != nil,
-              WorkspaceSidebarModel.canRequestRename(tmuxSession, in: snapshot)
+              let request = WorkspaceSidebarModel.renameRequest(
+                  tmuxSession,
+                  in: snapshot
+              )
         else { return }
-        renamingTmuxSession = tmuxSession
+        renamingTmuxSession = request
     }
 
     private func requestSessionKill(

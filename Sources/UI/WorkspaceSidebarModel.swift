@@ -547,6 +547,15 @@ public enum WorkspaceSidebarModel {
         _ selection: WorkspaceTmuxSessionSelection,
         in snapshot: WorkspaceSnapshot
     ) -> Bool {
+        renameRequest(selection, in: snapshot) != nil
+    }
+
+    /// Captures the identity discovery recorded for the session, which the
+    /// rename must still match when it runs.
+    public static func renameRequest(
+        _ selection: WorkspaceTmuxSessionSelection,
+        in snapshot: WorkspaceSnapshot
+    ) -> TmuxSessionRenameRequest? {
         guard selection.worktreeID == nil,
               selection.directoryWorkspaceID == nil,
               selection.socketName == nil,
@@ -557,13 +566,23 @@ public enum WorkspaceSidebarModel {
                   selection.name,
                   hostID: host.id,
                   in: snapshot
-              )
-        else { return false }
-        return host.tmuxSessions.contains {
-            $0.name == selection.name
-                && $0.socketName == nil
-                && $0.hasStableIdentity
-        }
+              ),
+              let summary = host.tmuxSessions.first(where: {
+                  $0.name == selection.name
+                      && $0.socketName == nil
+                      && $0.hasStableIdentity
+              }),
+              let serverPID = summary.serverPID,
+              let sessionID = summary.sessionID,
+              let createdAt = summary.createdAt
+        else { return nil }
+        return TmuxSessionRenameRequest(
+            session: selection,
+            confirmedHost: host,
+            serverPID: serverPID,
+            sessionID: sessionID,
+            sessionCreatedAt: createdAt
+        )
     }
 
     /// kwt derives worktree and directory session names and finds them by

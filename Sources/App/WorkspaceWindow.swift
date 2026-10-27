@@ -1074,8 +1074,8 @@ struct WorkspaceWindow: View {
                 killTmuxSession: { [sceneModel] request in
                     try await sceneModel.killTmuxSession(request)
                 },
-                renameTmuxSession: { [sceneModel] selection, name in
-                    try await sceneModel.renameTmuxSession(selection, to: name)
+                renameTmuxSession: { [sceneModel] request, name in
+                    try await sceneModel.renameTmuxSession(request, to: name)
                 },
                 applyTmuxSessionTheme: { [sceneModel] selection in
                     try await sceneModel.applyTheme(to: selection)
