@@ -816,65 +816,6 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("a terminal opened under the new name stays open when the rename lands")
-    func renameKeepsTerminalOpenedUnderNewName() async throws {
-        let environment = try setupStandardEnvironment()
-        let hostID = environment.host.id
-        let names = LockedValue(["desk": "$2"])
-        let renamed = KillGate()
-        let store = SceneTmuxSurfaceStoreStub()
-        let model = try makeModel(
-            database: environment.database,
-            localHostID: hostID,
-            snapshot: environment.snapshot,
-            nativeTmuxSurfaceStore: store,
-            nativeTmuxPathProvider: {
-                successfulTmuxResolution("/usr/bin/tmux")
-            },
-            tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
-            tmuxSessionRenamer: { selection, newName, _, _ in
-                names.withLock { renameFixtureSession(
-                    &$0,
-                    from: selection.name,
-                    to: newName
-                ) }
-                await renamed.suspend()
-            }
-        )
-        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
-        let notes = WorkspaceTmuxSessionSelection(hostID: hostID, name: "notes")
-        model.startTmuxSessionDiscovery()
-        await waitUntilMainActor {
-            model.snapshot.hosts[0].tmuxSessions.count == 1
-        }
-        model.openBorrowedTmuxSession(desk)
-        await connectActiveRenameSession(model, store: store)
-
-        let rename = Task { try await model.renameTmuxSession(desk, to: "notes") }
-        await renamed.waitUntilStarted()
-        model.refreshTmuxSessionDiscovery()
-        await waitUntilMainActor {
-            model.snapshot.hosts[0].tmuxSessions.map(\.name) == ["notes"]
-        }
-        model.openBorrowedTmuxSession(notes)
-        await waitUntilMainActor {
-            model.prepareActiveBorrowedTmuxSurface()
-            return model.activeBorrowedTmuxSelection == notes
-                && model.activeBorrowedTmuxSessionIsConnected
-        }
-        let opened = try #require(model.retainedBorrowedTmuxHandle(for: notes))
-
-        await renamed.release()
-        try await rename.value
-
-        #expect(model.retainedBorrowedTmuxHandle(for: notes)?.id == opened.id)
-        #expect(model.retainedBorrowedTmuxHandle(for: desk) == nil)
-        #expect(model.activeBorrowedTmuxSelection == notes)
-        #expect(model.activeBorrowedTmuxSessionIsConnected)
-        await model.shutdown()
-    }
-
-    @MainActor
     @Test("a session renamed while its SSH client reconnects reattaches under the new name")
     func reconnectFollowsTmuxRename() async throws {
         let environment = try setupRemoteTmuxEnvironment()
@@ -932,6 +873,75 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(model.activeBorrowedTmuxRecoveryState == nil)
         #expect(model.retainedBorrowedTmuxHandle(for: shipping)?.id == handle.id)
         #expect(model.retainedBorrowedTmuxHandle(for: releaseWork) == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a terminal that is reconnecting keeps its name from a rename that takes it")
+    func renameKeepsReconnectingDestination() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let hostID = environment.remoteHost.id
+        let names = LockedValue(["release-work": "$2", "notes": "$3"])
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { host in
+                host == .local ? .success([]) : .success(renameFixture(names))
+            },
+            tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator(),
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.host(id: hostID)?.tmuxSessions
+                .compactMap(\.sessionID).sorted() == ["$2", "$3"]
+        }
+        let releaseWork = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "release-work"
+        )
+        let notes = WorkspaceTmuxSessionSelection(hostID: hostID, name: "notes")
+        model.openBorrowedTmuxSession(notes)
+        await connectActiveRenameSession(model, store: store)
+        let notesHandle = try #require(model.retainedBorrowedTmuxHandle(for: notes))
+        model.openBorrowedTmuxSession(releaseWork)
+        await connectActiveRenameSession(model, store: store)
+        let releaseHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: releaseWork)
+        )
+
+        // While release-work's SSH client is down, tmux renames it to
+        // shipping and gives its old name to the notes session.
+        names.store(["shipping": "$2", "release-work": "$3"])
+        store.surface.closeObservers[releaseHandle.id]?(false, 255)
+
+        let shipping = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "shipping"
+        )
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return model.retainedBorrowedTmuxHandle(for: shipping)?.id
+                == releaseHandle.id
+                && model.retainedBorrowedTmuxHandle(for: releaseWork)?.id
+                == notesHandle.id
+        }
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: shipping)?.id
+                == releaseHandle.id
+        )
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: releaseWork)?.id
+                == notesHandle.id
+        )
+        #expect(model.activeBorrowedTmuxSelection == shipping)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
         await model.shutdown()
     }
 

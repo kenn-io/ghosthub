@@ -169,9 +169,11 @@ Renames go into an in-memory log that keeps the latest name of each session
 identity. A window that cannot move a presentation when the rename lands, because
 it is still connecting or resizing, keeps it under the old name and applies the
 log entry once the presentation connects or the next discovery runs, in every
-preview mode. A presentation whose SSH client is reconnecting moves when its
-reconnect probe lists the session's identity under another name, and then
-reattaches by `session_id` instead of reporting the session as ended. A rename
+preview mode. A presentation whose SSH client is reconnecting keeps its name
+and reserves the new one, so neither Always Live nor another presentation's
+move takes or discards it. When its reconnect probe lists the session's
+identity under another name, it reattaches by `session_id` instead of
+reporting the session as ended, and then moves like any connected client. A rename
 fences in-flight discovery, so an entry newer than a window's last listing wins
 and a later listing is current. Each discovery also moves any presentation
 whose session identity is now listed under another name, including when the

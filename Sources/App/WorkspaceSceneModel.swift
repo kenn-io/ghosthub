@@ -11852,9 +11852,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard selection.hostID == hostID,
                       Self.isPlainTmuxSession(selection),
                       retainedTmuxPresentations[key] === presentation,
-                      !nativeTmuxSessionCoordinator.hasClosedAttachment(
-                          presentation.handle
-                      ),
                       let identity = retainedTmuxSessionIdentity(presentation),
                       let name = currentTmuxSessionName(
                           of: identity,
@@ -11866,6 +11863,18 @@ final class WorkspaceSceneModel: ObservableObject {
                           name: name
                       )
                 else { continue }
+                if nativeTmuxSessionCoordinator.hasClosedAttachment(
+                    presentation.handle
+                ) {
+                    // A reconnecting client reattaches by session ID under
+                    // its current name and moves once it connects. Both
+                    // names stay reserved until then.
+                    if presentation.reconnectSupervisor.isRunning {
+                        waiting.insert(key)
+                        waiting.insert(TmuxPresentationKey(renamed))
+                    }
+                    continue
+                }
                 if followTmuxRename(
                     presentation,
                     to: renamed,
@@ -11908,7 +11917,7 @@ final class WorkspaceSceneModel: ObservableObject {
             guard blocked[current] == start else { continue }
             let presentations = cycle.compactMap { retainedTmuxPresentations[$0] }
             guard presentations.count == cycle.count,
-                  presentations.allSatisfy({ tmuxPresentationCanMove($0) }),
+                  presentations.allSatisfy(tmuxPresentationCanMove),
                   let parked = presentations.first
             else { continue }
             var aside = parked.selection
@@ -11938,6 +11947,9 @@ final class WorkspaceSceneModel: ObservableObject {
             return rekeyTmuxPresentation(presentation, to: renamedSelection)
         }
         if nativeTmuxSessionCoordinator.hasClosedAttachment(existing.handle) {
+            // A reconnecting client may still reach a running session, and
+            // it moves on its own once it reattaches.
+            guard !existing.reconnectSupervisor.isRunning else { return false }
             invalidateBorrowedTmuxSession(existing.selection)
             return rekeyTmuxPresentation(presentation, to: renamedSelection)
         }
@@ -12090,14 +12102,12 @@ final class WorkspaceSceneModel: ObservableObject {
             && TmuxPresentationKey(selection).tmuxAttachMode == nil
     }
 
-    /// Work still in flight for a presentation targets its current name. A
-    /// reconnect attempt moves its own presentation before it relaunches.
+    /// Work still in flight for a presentation targets its current name.
     private func tmuxPresentationCanMove(
-        _ presentation: RetainedTmuxPresentation,
-        duringReconnect: Bool = false
+        _ presentation: RetainedTmuxPresentation
     ) -> Bool {
         let handle = presentation.handle
-        return (duringReconnect || !presentation.reconnectSupervisor.isRunning)
+        return !presentation.reconnectSupervisor.isRunning
             && presentation.establishmentConfirmationTask == nil
             && !presentation.previewPromotionIsPending
             && presentation.sizingTransitionTask == nil
@@ -12112,18 +12122,14 @@ final class WorkspaceSceneModel: ObservableObject {
     @discardableResult
     private func rekeyTmuxPresentation(
         _ presentation: RetainedTmuxPresentation,
-        to renamedSelection: WorkspaceTmuxSessionSelection,
-        duringReconnect: Bool = false
+        to renamedSelection: WorkspaceTmuxSessionSelection
     ) -> Bool {
         let oldKey = TmuxPresentationKey(presentation.selection)
         let newKey = TmuxPresentationKey(renamedSelection)
         let handle = presentation.handle
         guard retainedTmuxPresentations[oldKey] === presentation,
               retainedTmuxPresentations[newKey] == nil,
-              tmuxPresentationCanMove(
-                  presentation,
-                  duringReconnect: duringReconnect
-              ),
+              tmuxPresentationCanMove(presentation),
               let renamedHandle = nativeTmuxSessionCoordinator.rename(
                   handle,
                   to: renamedSelection.name
@@ -13540,55 +13546,33 @@ final class WorkspaceSceneModel: ObservableObject {
                 break
             }
         }
-        if probe.outcome == .absent,
-           let renamedContext = followTmuxRenameDuringReconnect(
-               presentation,
-               context: decisionContext
-           ) {
-            return reconnectDecision(
-                for: presentation,
-                context: renamedContext,
-                outcome: .present
-            )
-        }
+        // The probe looks for the session by name. A session renamed while
+        // its client was away is still running, and the relaunch attaches by
+        // session ID, so it reattaches under the old name and then moves
+        // with every other connected client.
+        let outcome = probe.outcome == .absent
+            && renamedTmuxSessionIsListed(presentation, context: decisionContext)
+            ? TmuxSessionProbeOutcome.present
+            : probe.outcome
         return reconnectDecision(
             for: presentation,
             context: decisionContext,
-            outcome: probe.outcome
+            outcome: outcome
         )
     }
 
-    /// The reconnect probe looks for the session by name. A session renamed
-    /// while its client was disconnected is listed under another name, so
-    /// the presentation moves there and recovery reattaches by session ID.
-    /// Returns nil when the session is gone or the move has to wait.
-    private func followTmuxRenameDuringReconnect(
+    /// The relaunch is fenced on `reconnectExpectedIdentity`, so only that
+    /// identity may stand in for a missing name.
+    private func renamedTmuxSessionIsListed(
         _ presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext
-    ) -> TmuxReconnectContext? {
+    ) -> Bool {
         let hostID = context.selection.hostID
         guard Self.isPlainTmuxSession(context.selection),
-              let identity = presentation.expectedPreviewIdentity,
-              let name = currentTmuxSessionName(of: identity, hostID: hostID),
-              name != context.selection.name,
-              let renamed = renamedTmuxSelection(hostID: hostID, name: name)
-        else { return nil }
-        if let existing = retainedTmuxPresentation(for: renamed),
-           existing !== presentation {
-            guard nativeTmuxSessionCoordinator.hasClosedAttachment(
-                existing.handle
-            ) else { return nil }
-            invalidateBorrowedTmuxSession(existing.selection)
-        }
-        guard rekeyTmuxPresentation(
-            presentation,
-            to: renamed,
-            duringReconnect: true
-        ),
-            let renamedContext = presentation.reconnectContext,
-            renamedContext.handleID == context.handleID
-        else { return nil }
-        return renamedContext
+              let identity = presentation.reconnectExpectedIdentity,
+              let name = currentTmuxSessionName(of: identity, hostID: hostID)
+        else { return false }
+        return name != context.selection.name
     }
 
     private func tmuxSSHAcquisitionFailureDecision(
