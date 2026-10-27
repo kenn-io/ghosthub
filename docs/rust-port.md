@@ -1237,6 +1237,10 @@ presentation. Reading the receipt has a bounded deadline and best-effort
 cleanup. Later opens use attach-only authority and never replay creation.
 Interactive tmux clients inherit the remote login locale; only inventory
 commands force the C locale for parsing.
+When a remote client exits with a nonzero status, its error banner reports
+the exit status without copying terminal contents or control sequences.
+Ghosthub's attachment identity check retains its specific error. A successful
+exit detaches silently; Refresh and session selection can open a new client.
 The UI withholds remote Zellij kill, worktrees,
 reconnect/backoff, and restoration until each operation has fresh remote
 identity and lifecycle fencing. An absent control cannot silently fall back to

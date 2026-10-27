@@ -2291,6 +2291,17 @@ fn terminal_output_that_only_contains_the_marker_is_not_an_attach_mismatch() {
 }
 
 #[test]
+fn remote_session_output_is_not_an_exit_diagnostic() {
+    let output = "\x1b[2J\x1b[Hsession contents\r\nShared connection closed.\r\n";
+
+    assert_eq!(
+        classify_remote_terminal_exit(255, output, None).as_deref(),
+        Some("Remote session client exited with status 255")
+    );
+    assert_eq!(classify_remote_terminal_exit(0, output, None), None);
+}
+
+#[test]
 fn remote_identity_mismatch_tolerates_preceding_login_shell_noise() {
     let marker = "GHOSTHUB_REMOTE_IDENTITY_MISMATCH_deadbeef";
     let output =

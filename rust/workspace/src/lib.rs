@@ -10178,14 +10178,8 @@ fn classify_remote_terminal_exit(
                 .to_owned(),
         );
     }
-    (code != 0).then(|| {
-        let tail = output_tail.trim();
-        if tail.is_empty() {
-            format!("Remote session client exited with status {code}")
-        } else {
-            tail.to_owned()
-        }
-    })
+    // The PTY tail mixes screen updates and session contents with client errors.
+    (code != 0).then(|| format!("Remote session client exited with status {code}"))
 }
 
 fn classify_terminal_exit_event(

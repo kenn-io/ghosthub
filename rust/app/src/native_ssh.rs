@@ -234,6 +234,57 @@ impl Fixture {
 
 #[test]
 #[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
+fn native_ssh_server_exit_reports_a_summary_and_allows_reconnection() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::native_ssh_server_exit_reports_a_summary_and_allows_reconnection",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    fixture.attach("review", "before-exit");
+    fixture.stop_tmux_server();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let diagnostic = loop {
+        let messages: Vec<_> = fixture
+            .workspace
+            .drain_events()
+            .0
+            .into_iter()
+            .filter_map(|event| match event {
+                WorkspaceEvent::Error(message) => Some(message),
+                _ => None,
+            })
+            .collect();
+        if !messages.is_empty() {
+            assert_eq!(messages.len(), 1, "{messages:?}");
+            break messages.into_iter().next().unwrap();
+        }
+        assert!(Instant::now() < deadline, "missing remote exit diagnostic");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(diagnostic, "Remote session client exited with status 1");
+    assert!(matches!(
+        fixture.workspace.snapshot().content(),
+        WorkspaceContent::Shell
+    ));
+
+    fixture.tmux(&[
+        "-f",
+        "/dev/null",
+        "new-session",
+        "-d",
+        "-s",
+        "replacement",
+        "/bin/sh",
+    ]);
+    fixture.connect();
+    fixture.attach("replacement", "after-exit");
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires the bundled Linux KWT helper, OpenSSH server, and Bubblewrap; run make rust-test-ssh-live"]
 fn native_ssh_kill_cancels_then_closes_only_matching_clients_across_scenes() {
     let Some(fixture) = Fixture::isolated(
         "native_ssh::native_ssh_kill_cancels_then_closes_only_matching_clients_across_scenes",
