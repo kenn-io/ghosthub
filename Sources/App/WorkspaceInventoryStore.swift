@@ -136,6 +136,16 @@ final class WorkspaceInventoryStore {
         snapshotSubject.eraseToAnyPublisher()
     }
 
+    private let scheduledRefreshSubject = PassthroughSubject<Void, Never>()
+
+    /// Fires each time the cadence refreshes subscribed inventory, so scenes
+    /// can refresh the Herdr and Zellij inventories they own on the same
+    /// schedule. Reactivation does not fire it; activation stays free of
+    /// scene-owned fleet discovery.
+    var scheduledRefreshPublisher: AnyPublisher<Void, Never> {
+        scheduledRefreshSubject.eraseToAnyPublisher()
+    }
+
     private struct Subscriber {
         var registrations: [HostRegistration]
         var wantsKwt: Bool
@@ -970,6 +980,7 @@ final class WorkspaceInventoryStore {
                 }
                 guard let self, isApplicationActive else { return }
                 requestSubscribedInventory()
+                scheduledRefreshSubject.send()
             }
         }
     }

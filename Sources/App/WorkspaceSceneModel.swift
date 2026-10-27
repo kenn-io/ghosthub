@@ -233,6 +233,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let workspaceInventoryStore: WorkspaceInventoryStore
     private let workspaceInventorySubscriberID = UUID()
     private var workspaceInventoryCancellable: AnyCancellable?
+    private var scheduledInventoryRefreshCancellable: AnyCancellable?
     private var appliedKwtInventoryRevisions:
         [SharedInventoryApplicationKey: UInt64] = [:]
     private var appliedKwtObservationRevisions:
@@ -1816,6 +1817,11 @@ final class WorkspaceSceneModel: ObservableObject {
             .sink { [weak self] snapshot in
                 self?.consumeSharedInventory(snapshot)
             }
+        scheduledInventoryRefreshCancellable = workspaceInventoryStore
+            .scheduledRefreshPublisher
+            .sink { [weak self] in
+                self?.scheduledInventoryRefresh()
+            }
         publishProtectedTmuxEndpoints()
         herdrLifecycleCancellable = herdrLifecycleCoordinator.events.sink {
             [weak self] event in
@@ -1896,6 +1902,7 @@ final class WorkspaceSceneModel: ObservableObject {
         terminalColorsCancellable?.cancel()
         sessionPreviewModeCancellable?.cancel()
         workspaceInventoryCancellable?.cancel()
+        scheduledInventoryRefreshCancellable?.cancel()
         let workspaceInventoryStore = workspaceInventoryStore
         let workspaceInventorySubscriberID = workspaceInventorySubscriberID
         Task { @MainActor in
@@ -2489,6 +2496,7 @@ final class WorkspaceSceneModel: ObservableObject {
         configuredSSHHostsCancellable?.cancel()
         configuredExeHostsCancellable?.cancel()
         workspaceInventoryCancellable?.cancel()
+        scheduledInventoryRefreshCancellable?.cancel()
         workspaceInventoryStore.removeSubscriber(
             id: workspaceInventorySubscriberID
         )
@@ -5562,6 +5570,19 @@ final class WorkspaceSceneModel: ObservableObject {
     private func tmuxRefreshEpoch(hostID: UUID) -> UInt64? {
         inventoryHosts[hostID].map {
             workspaceInventoryStore.tmuxRefreshEpoch(on: $0)
+        }
+    }
+
+    /// Herdr and Zellij inventories are scene-owned, so the shared cadence
+    /// only announces its refresh. A sweep still in flight is left to finish
+    /// rather than restarted, so a slow host's probe is never cut short.
+    private func scheduledInventoryRefresh() {
+        guard !isShutDown else { return }
+        if !isHerdrDiscoveryLoading {
+            scheduleHerdrSessionDiscovery()
+        }
+        if !isZellijDiscoveryLoading {
+            scheduleZellijSessionDiscovery()
         }
     }
 

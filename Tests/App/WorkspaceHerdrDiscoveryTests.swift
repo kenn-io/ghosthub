@@ -347,6 +347,47 @@ struct WorkspaceHerdrDiscoveryTests {
     }
 
     @MainActor
+    @Test("the inventory cadence discovers Herdr sessions created elsewhere")
+    func cadenceDiscoversExternalSessions() async throws {
+        let environment = try setupStandardEnvironment()
+        let cadence = AsyncGate()
+        let probes = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            workspaceInventoryStore: makeCadenceInventoryStore(
+                cadence: cadence
+            ),
+            herdrSessionDiscovery: { _ in
+                probes.withLock { $0 += 1 }
+                guard probes.load() > 1 else { return .available([]) }
+                return .available([
+                    HerdrSessionSummary(
+                        name: "money",
+                        isDefault: false,
+                        state: .running
+                    ),
+                ])
+            }
+        )
+
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor {
+            model.inventoryRefreshProgress.herdrCompleted
+        }
+        #expect(model.snapshot.host(id: environment.host.id)?
+            .herdrSessions.isEmpty == true)
+
+        await cadence.waitUntilWaiting()
+        cadence.open()
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.host.id)?
+                .herdrSessions.map(\.name) == ["money"]
+        }
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("exact validation cancellation does not clear Herdr inventory")
     func validationCancellationPreservesInventory() async throws {
         let environment = try setupStandardEnvironment()

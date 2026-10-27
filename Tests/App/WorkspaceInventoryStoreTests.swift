@@ -167,6 +167,40 @@ struct WorkspaceInventoryStoreTests {
         }
     }
 
+    @Test("cadence ticks announce a scheduled refresh and reactivation does not")
+    func cadenceAnnouncesScheduledRefresh() async {
+        let cadence = AsyncGate()
+        let store = makeCadenceInventoryStore(cadence: cadence)
+        let subscriberID = UUID()
+        var refreshes = 0
+        let subscription = store.scheduledRefreshPublisher.sink {
+            refreshes += 1
+        }
+        defer {
+            subscription.cancel()
+            store.removeSubscriber(id: subscriberID)
+        }
+        store.updateSubscriber(
+            id: subscriberID,
+            registrations: [.init(
+                hostID: UUID(),
+                commandHost: .local,
+                provisioningHost: nil
+            )],
+            wantsKwt: true,
+            wantsTmux: true
+        )
+        #expect(refreshes == 0)
+
+        await cadence.waitUntilWaiting()
+        cadence.open()
+        await waitUntilMainActor { refreshes == 1 }
+
+        store.setApplicationActive(false)
+        store.setApplicationActive(true)
+        #expect(refreshes == 1)
+    }
+
     @Test("reactivation replaces loads started before inactivity")
     func reactivationReplacesInFlightLoads() async {
         let staleKwt = KwtHostInventory(

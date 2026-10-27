@@ -37,6 +37,43 @@ struct WorkspaceZellijTests {
         await model.shutdown()
     }
 
+    @Test("the inventory cadence discovers Zellij sessions created elsewhere")
+    func cadenceDiscoversExternalSessions() async throws {
+        let environment = try zellijEnvironment(sessions: [])
+        let cadence = AsyncGate()
+        let discoveries = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            workspaceInventoryStore: makeCadenceInventoryStore(
+                cadence: cadence
+            ),
+            zellijSessionDiscovery: { _ in
+                let discovery = discoveries.withLock {
+                    $0 += 1
+                    return $0
+                }
+                return .available(discovery > 1 ? ["money"] : [])
+            }
+        )
+
+        model.startZellijSessionDiscovery()
+        await waitUntilMainActor {
+            model.inventoryRefreshProgress.zellijCompleted
+        }
+        #expect(model.snapshot.host(id: environment.host.id)?
+            .zellijSessions.isEmpty == true)
+
+        await cadence.waitUntilWaiting()
+        cadence.open()
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.host.id)?
+                .zellijSessions.map(\.name) == ["money"]
+        }
+        await model.shutdown()
+    }
+
     @Test("explicit refresh cancels the superseded Zellij probe")
     func refreshCancelsSupersededDiscovery() async throws {
         let environment = try zellijEnvironment(sessions: [])

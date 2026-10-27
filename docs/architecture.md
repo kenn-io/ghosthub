@@ -1266,7 +1266,11 @@ that host is rejected, and the fence-end reload reconciles instead. Inventory
 loaded for removal preflight or failed-removal classification stays local to
 the mutating scene and still excludes the cache's active removal tombstones. Scene-local tmux probes capture the cache's refresh epoch before
 they run and publish to it only when no newer shared refresh has started since.
-Herdr and Zellij inventories remain scene-owned. Session-only publication uses the runtime
+Herdr and Zellij inventories remain scene-owned. Each cadence tick, but not
+reactivation, also asks every scene to rerun Herdr and Zellij discovery, so
+sessions created outside Ghosthub appear without a restart or reconnect. A
+scene skips a lane whose previous sweep is still running rather than cancel it.
+Session-only publication uses the runtime
 overlay, which cannot reconcile KWT projects or worktrees and cannot normalize
 their paths. The full overlay remains reserved for authoritative KWT changes.
 Application activation still does not start process sampling.

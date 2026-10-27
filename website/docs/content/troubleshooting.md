@@ -54,7 +54,9 @@ command -v herdr
 herdr session list --json
 ```
 
-Ghosthub shows entries reported as running or stopped. If `herdr` is missing, the
+Ghosthub shows entries reported as running or stopped. A session created
+outside Ghosthub, for example with `herdr --session NAME`, appears within about
+30 seconds while Ghosthub is the active app. If `herdr` is missing, the
 host stays fully usable and Ghosthub silently omits **Herdr Sessions**. If the
 command exists but fails or returns malformed JSON, the host header shows a
 warning with **Retry** and a shortcut to Host Settings. Herdr is not probed on
@@ -79,7 +81,9 @@ command -v zellij
 zellij list-sessions --no-formatting
 ```
 
-Ghosthub lists active Zellij sessions only. If `zellij` is missing, the host
+Ghosthub lists active Zellij sessions only. A session created outside
+Ghosthub appears within about 30 seconds while Ghosthub is the active app. If
+`zellij` is missing, the host
 stays fully usable and Ghosthub silently omits **Zellij Sessions**. If the
 command exists but fails unexpectedly or returns malformed output, the host
 header shows a warning with **Retry** and a shortcut to Host Settings. Zellij

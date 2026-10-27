@@ -297,6 +297,28 @@ func setupRemoteEnvironment() throws -> RemoteEnvironment {
 
 // MARK: - Model Factory
 
+/// An empty shared inventory store whose first cadence tick waits for
+/// `cadence` to open. Later ticks never arrive during a test.
+@MainActor
+func makeCadenceInventoryStore(cadence: AsyncGate) -> WorkspaceInventoryStore {
+    let sleeps = LockedValue(0)
+    return WorkspaceInventoryStore(
+        kwtLoader: { _ in KwtHostInventory(projects: []) },
+        kwtProvisioner: { _ in },
+        tmuxLoader: { _ in .success([]) },
+        sleep: { _ in
+            let attempt = sleeps.load()
+            sleeps.withLock { $0 += 1 }
+            if attempt == 0 {
+                await cadence.wait()
+            } else {
+                try await Task.sleep(for: .seconds(3_600))
+            }
+        },
+        mutationCoordinator: WorktreeMutationCoordinator()
+    )
+}
+
 @MainActor
 func makeModel(
     database: WorkspaceDatabase,

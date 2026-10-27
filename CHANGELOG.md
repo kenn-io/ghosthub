@@ -5,6 +5,12 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Fixed
+
+- Herdr and Zellij sessions you start outside Ghosthub, for example from a
+  shell or script, now appear in the sidebar within about 30 seconds. Before,
+  they appeared only after Ghosthub restarted or reconnected the host.
+
 ## [0.11.3] - 2026-10-23
 
 ### Fixed
