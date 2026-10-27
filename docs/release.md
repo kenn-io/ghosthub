@@ -84,6 +84,12 @@ release inputs that must move deliberately:
 - the same Zig compiler in `mise.toml` and its official archive checksum in CI
 - immutable revisions for every GitHub Action
 
+Pull-request CI runs `.github/workflows/ci.yml` from `main`, but reads the Zig
+version from the checked-out `Vendor/ghostty.version.json` and its macOS arm64
+archive checksum from `.github/zig.sha256`. Update both when bumping Zig.
+Changes to the reusable workflow itself must reach `main` before a pull
+request can use them.
+
 Sandbox-capable builds will also consume the root `SANDBOX_IMAGE` file as the
 sole runtime image identity. Packaging reads the tag-free digest from that
 file and embeds it as `GhosthubSandboxImage`; Swift, build scripts, workflows,

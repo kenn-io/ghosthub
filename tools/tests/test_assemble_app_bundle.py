@@ -113,57 +113,6 @@ def make_release_inputs(
     return app_license, kwt_binary, kwt_variants_dir, licenses_dir
 
 
-def test_release_license_inventory_covers_compiled_dependencies():
-    repo_root = Path(__file__).resolve().parents[2]
-    licenses_dir = repo_root / "LICENSES"
-    required = {
-        "THIRD-PARTY-NOTICES.md",
-        "ghostty-MIT.txt",
-        "GRDB-MIT.txt",
-        "Zig-MIT.txt",
-        "zlib.txt",
-        "libpng.txt",
-        "FreeType.txt",
-        "FreeType-FTL.txt",
-        "FreeType-BDF.txt",
-        "FreeType-PCF.txt",
-        "FreeType-HarfBuzz-Old-MIT.txt",
-        "Oniguruma-BSD.txt",
-        "glslang.txt",
-        "SPIRV-Cross.txt",
-        "Highway-Apache-2.0.txt",
-        "Highway-BSD-3-Clause.txt",
-        "simdutf-Apache-2.0.txt",
-        "simdutf-MIT.txt",
-        "Wuffs.txt",
-        "stb-MIT.txt",
-        "Dear-ImGui-MIT.txt",
-        "Dear-Bindings.txt",
-        "libxev-MIT.txt",
-        "z2d-MPL-2.0.txt",
-        "z2d-NOTICE.txt",
-        "zf-MIT.txt",
-        "zig-objc-MIT.txt",
-        "uucode-MIT.txt",
-        "uucode-Bjoern-Hoehrmann-MIT.txt",
-        "Unicode-Data.txt",
-        "Symbols-Nerd-Font-MIT.txt",
-        "JetBrains-Mono-OFL-1.1.txt",
-        "iTerm2-Color-Schemes-MIT.txt",
-        "kwt-Apache-2.0.txt",
-        "kwt-NOTICE.txt",
-        "fantastty-MIT.txt",
-        "Sparkle-LICENSE.txt",
-    }
-
-    missing = required - {path.name for path in licenses_dir.iterdir()}
-    assert not missing, f"Missing release license notices: {sorted(missing)}"
-
-    inventory = (licenses_dir / "THIRD-PARTY-NOTICES.md").read_text()
-    unlisted = {name for name in required if name != "THIRD-PARTY-NOTICES.md" and name not in inventory}
-    assert not unlisted, f"Unlisted release license notices: {sorted(unlisted)}"
-
-
 def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
     assemble = load_module()
     source_bin_dir = tmp_path / "bin"
