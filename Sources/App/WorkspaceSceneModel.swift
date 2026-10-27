@@ -6082,9 +6082,15 @@ final class WorkspaceSceneModel: ObservableObject {
                   selection.tmuxAttachMode != .protected,
                   nativeTmuxSessionCoordinator.hasClosedAttachment(handle)
             else { continue }
+            // A renamed session is still running; the rename follow moves
+            // its presentation to the new name after this.
+            let identity = Self.isPlainTmuxSession(selection)
+                ? retainedTmuxSessionIdentity(presentation) : nil
             if discovered
                 .contains(where: {
-                    $0.name == selection.name && $0.socketName == selection.socketName
+                    ($0.name == selection.name && $0.socketName == selection.socketName)
+                        || (identity != nil && $0.socketName == nil
+                            && Self.tmuxSessionIdentity($0.summary) == identity)
                 }) {
                 confirmedEndedTmuxSessionHandles.remove(handle.id)
             } else {
@@ -11902,16 +11908,16 @@ final class WorkspaceSceneModel: ObservableObject {
                           name: name
                       )
                 else { continue }
-                if nativeTmuxSessionCoordinator.hasClosedAttachment(
-                    presentation.handle
-                ) {
-                    // A reconnecting client reattaches by session ID under
-                    // its current name and moves once it connects. Both
-                    // names stay reserved until then.
-                    if presentation.reconnectSupervisor.isRunning {
-                        waiting.insert(key)
-                        waiting.insert(TmuxPresentationKey(renamed))
-                    }
+                // A reconnecting client reattaches by session ID under its
+                // current name and moves once it connects. Both names stay
+                // reserved until then. A detached client moves now and
+                // stays detached.
+                if presentation.reconnectSupervisor.isRunning,
+                   nativeTmuxSessionCoordinator.hasClosedAttachment(
+                       presentation.handle
+                   ) {
+                    waiting.insert(key)
+                    waiting.insert(TmuxPresentationKey(renamed))
                     continue
                 }
                 if followTmuxRename(
@@ -11992,6 +11998,11 @@ final class WorkspaceSceneModel: ObservableObject {
             invalidateBorrowedTmuxSession(existing.selection)
             return rekeyTmuxPresentation(presentation, to: renamedSelection)
         }
+        // A detached client has no tmux client to keep or detach, so it
+        // never displaces a live one.
+        guard !nativeTmuxSessionCoordinator.hasClosedAttachment(
+            presentation.handle
+        ) else { return false }
         let existingIdentity = retainedTmuxSessionIdentity(existing)
         if existingIdentity.map({
             $0 != identity && tmuxSessionHasEnded(

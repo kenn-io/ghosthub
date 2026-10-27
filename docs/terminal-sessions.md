@@ -190,9 +190,12 @@ identity condition that rename uses. A launch that is still provisioning when
 its session is renamed therefore reaches the renamed session, and refuses a
 replacement session that took the old name.
 
-A presentation under the destination name stays while its own session is
-still listed, because that session moves on its own. It is discarded once its
-attachment closed. When its session is gone from a fresh listing but its client
+A presentation whose client detached cleanly also moves to its session's new
+name and stays detached, so Always Live does not open a second client and
+discovery does not mark the session ended. A presentation under the
+destination name stays while its own session is still listed, because that
+session moves on its own. It is discarded once its attachment closed, unless
+it is still reconnecting. When its session is gone from a fresh listing but its client
 is still running, tmux has moved that client to another session. The client is
 detached only while the session it is on now has another client, and the
 presentation closes only after that detach. If a window
