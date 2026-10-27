@@ -8309,6 +8309,28 @@ final class WorkspaceSceneModel: ObservableObject {
                 reason: .replacement
             )
         }
+        // An exclusion belongs to the session, not its name, so a session
+        // the user closed stays closed after a rename.
+        let desiredKeysByIdentity = Dictionary(
+            desiredIdentities.map { ($0.value, $0.key) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        // Clear every old name first, because renamed sessions can swap.
+        let renamedExclusions: [(
+            TmuxPresentationKey, TmuxPresentationKey, TmuxSessionIdentity
+        )] = alwaysLiveIneligibleTmuxPresentationIdentities
+            .filter {
+                $0.key.hostID == hostID && desiredIdentities[$0.key] != $0.value
+            }
+            .compactMap { key, identity in
+                desiredKeysByIdentity[identity].map { (key, $0, identity) }
+            }
+        for (oldKey, _, _) in renamedExclusions {
+            alwaysLiveIneligibleTmuxPresentationIdentities[oldKey] = nil
+        }
+        for (_, newKey, identity) in renamedExclusions {
+            alwaysLiveIneligibleTmuxPresentationIdentities[newKey] = identity
+        }
         alwaysLiveIneligibleTmuxPresentationIdentities =
             alwaysLiveIneligibleTmuxPresentationIdentities.filter {
                 $0.key.hostID != hostID

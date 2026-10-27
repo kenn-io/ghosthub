@@ -888,6 +888,10 @@ extension WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: store,
+            nativeTmuxPaneSplitter: renameClientSplitter(
+                names,
+                launches: store.launchCommands
+            ),
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },
@@ -942,6 +946,53 @@ extension WorkspaceTmuxDiscoveryTests {
         )
         #expect(model.activeBorrowedTmuxSelection == shipping)
         #expect(model.activeBorrowedTmuxSessionIsConnected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Always Live keeps a session the user closed closed after it is renamed")
+    func alwaysLiveKeepsClosedSessionClosedAcrossRename() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["desk": "$2"])
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: renameIdentitySplitter(names),
+            tmuxSessionDiscovery: { _ in
+                .success(renameFixture(names, live: true))
+            },
+            tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator(),
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        let work = WorkspaceTmuxSessionSelection(hostID: hostID, name: "work")
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: desk) != nil
+        }
+        model.closeBorrowedTmuxSession(desk)
+        #expect(model.retainedBorrowedTmuxHandle(for: desk) == nil)
+
+        names.withLock { renameFixtureSession(&$0, from: "desk", to: "work") }
+        model.refreshTmuxSessionDiscovery()
+        // Always Live reconciles in the same pass that lists the new name.
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.map(\.name) == ["work"]
+        }
+
+        #expect(model.retainedBorrowedTmuxHandle(for: work) == nil)
+        #expect(model.retainedBorrowedTmuxHandle(for: desk) == nil)
         await model.shutdown()
     }
 
