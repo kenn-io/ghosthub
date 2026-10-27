@@ -657,18 +657,16 @@ final class NativeTmuxSessionCoordinator {
         else { return nil }
         handlesByKey.removeValue(forKey: oldKey)
         handlesByKey[newKey] = renamed
-        // Queued splits and an in-flight client lookup target the old name.
+        // Splits and Find target the exact client, not the session name, so
+        // they keep running. A client lookup reports its handle when it
+        // finishes, so it restarts with the renamed one, and the surface
+        // callbacks that captured the old name are reinstalled.
         paneSplitClientBindings.removeValue(forKey: handle.id)?.task.cancel()
-        paneSplitWorkers.removeValue(forKey: handle.id)?.task.cancel()
-        paneSplitRequests.removeValue(forKey: handle.id)
-        // The surface callbacks captured the old name; reinstall them.
         if hasLaunched(renamed),
-           let surface = terminalCoordinator.paneSurfaceIfPresent(
+           terminalCoordinator.paneSurfaceIfPresent(
                for: surfaceKey(renamed)
-           ) {
-            surface.terminalFindController.close()
-            surface.terminalFindController = .unavailable
-            _ = self.surface(handle: renamed)
+           ) != nil {
+            _ = surface(handle: renamed)
         }
         return renamed
     }

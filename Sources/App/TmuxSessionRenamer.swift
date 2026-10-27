@@ -5,6 +5,8 @@ import GhosthubUI
 
 enum TmuxSessionRenameError: Error, Equatable, LocalizedError {
     case unsupportedHost(host: String, session: String)
+    case hostChanged(session: String)
+    case invalidName(name: String)
     case sessionNotRunning(host: String, session: String)
     case nameInUse(host: String, name: String)
     case nameOwnedByKwt(host: String, name: String)
@@ -22,6 +24,12 @@ enum TmuxSessionRenameError: Error, Equatable, LocalizedError {
         case let .unsupportedHost(host, session):
             return "Renaming tmux session “\(session)” is unavailable on"
                 + " \(host)."
+        case let .hostChanged(session):
+            return "The host for session “\(session)” changed. Refresh the"
+                + " host and try again."
+        case let .invalidName(name):
+            return "“\(name)” is not a valid tmux session name. Use 1–100"
+                + " characters without periods, colons, or line breaks."
         case let .sessionNotRunning(host, session):
             return "Session “\(session)” is no longer known to be running on"
                 + " \(host). Refresh the host and try again."

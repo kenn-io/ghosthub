@@ -875,6 +875,116 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a session renamed while its SSH client reconnects reattaches under the new name")
+    func reconnectFollowsTmuxRename() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let hostID = environment.remoteHost.id
+        let names = LockedValue(["release-work": "$2"])
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { host in
+                host == .local ? .success([]) : .success(renameFixture(names))
+            },
+            tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator(),
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.host(id: hostID)?.tmuxSessions.first?.sessionID
+                == "$2"
+        }
+        let releaseWork = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(releaseWork)
+        await connectActiveRenameSession(model, store: store)
+        let handle = try #require(
+            model.retainedBorrowedTmuxHandle(for: releaseWork)
+        )
+
+        // The SSH client drops, and the session is renamed in tmux before
+        // Ghosthub reconnects.
+        names.withLock { renameFixtureSession(
+            &$0,
+            from: "release-work",
+            to: "shipping"
+        ) }
+        store.surface.closeObservers[handle.id]?(false, 255)
+
+        let shipping = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "shipping"
+        )
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSelection == shipping
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(model.activeBorrowedTmuxSelection == shipping)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        #expect(model.activeBorrowedTmuxRecoveryState == nil)
+        #expect(model.retainedBorrowedTmuxHandle(for: shipping)?.id == handle.id)
+        #expect(model.retainedBorrowedTmuxHandle(for: releaseWork) == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a listing whose kwt pass failed still follows a rename made in tmux")
+    func partialListingFollowsTmuxRename() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["desk": "$2"])
+        let kwtFails = LockedValue(false)
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                let sessions = renameFixture(names)
+                return kwtFails.load()
+                    ? .failure(.kwtDiscoveryFailed(sessions: sessions, status: 1))
+                    : .success(sessions)
+            },
+            tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator()
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.count == 1
+        }
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        model.openBorrowedTmuxSession(desk)
+        await connectActiveRenameSession(model, store: store)
+        let handle = try #require(model.retainedBorrowedTmuxHandle(for: desk))
+
+        names.withLock { renameFixtureSession(&$0, from: "desk", to: "work") }
+        kwtFails.store(true)
+        model.refreshTmuxSessionDiscovery()
+
+        let work = WorkspaceTmuxSessionSelection(hostID: hostID, name: "work")
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: work)?.id == handle.id
+        }
+        #expect(model.retainedBorrowedTmuxHandle(for: work)?.id == handle.id)
+        #expect(model.retainedBorrowedTmuxHandle(for: desk) == nil)
+        #expect(model.activeBorrowedTmuxSelection == work)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        #expect(store.removedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("rename refuses taken names and kwt-owned sessions without running tmux")
     func renameRefusesTakenAndOwnedNames() async throws {
         let environment = try setupStandardEnvironment()
@@ -933,11 +1043,13 @@ extension WorkspaceTmuxDiscoveryTests {
                 to: "mine"
             )
         }
-        await #expect(throws: TmuxSessionRenameError.self) {
+        await #expect {
             try await model.renameTmuxSession(
                 WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk"),
                 to: "has.period"
             )
+        } throws: { error in
+            error as? TmuxSessionRenameError == .invalidName(name: "has.period")
         }
         for kwtName in ["kwt-wt-ghosthub-main-abc123", "notes"] {
             await #expect {
