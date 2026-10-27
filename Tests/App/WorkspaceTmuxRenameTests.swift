@@ -997,6 +997,102 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a terminal awaiting SSH sign-in keeps its recovery through a rename cycle")
+    func renameKeepsRecoveryAwaitingSignIn() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let hostID = environment.remoteHost.id
+        let names = LockedValue([
+            "notes": "$3", "release-work": "$2", "shipping": "$4",
+        ])
+        let signInRequired = LockedValue(false)
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPaneSplitter: renameClientSplitter(
+                names,
+                launches: store.launchCommands
+            ),
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { host in
+                guard host != .local else { return .success([]) }
+                guard !signInRequired.load() else {
+                    return .failure(.sshConnectionFailed(
+                        host: "build-box",
+                        classification: SSHConnectionFailure.classify(
+                            status: 255,
+                            output: "Permission denied (publickey,password)."
+                        )
+                    ))
+                }
+                return .success(renameFixture(names))
+            },
+            tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator(),
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.host(id: hostID)?.tmuxSessions
+                .compactMap(\.sessionID).count == 3
+        }
+        let notes = WorkspaceTmuxSessionSelection(hostID: hostID, name: "notes")
+        let shipping = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "shipping"
+        )
+        let releaseWork = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "release-work"
+        )
+        var handles: [BorrowedTmuxSessionHandle] = []
+        for selection in [notes, shipping, releaseWork] {
+            model.openBorrowedTmuxSession(selection)
+            await connectActiveRenameSession(model, store: store)
+            try handles.append(#require(
+                model.retainedBorrowedTmuxHandle(for: selection)
+            ))
+        }
+
+        // release-work's SSH client drops and recovery waits for sign-in.
+        signInRequired.store(true)
+        store.surface.closeObservers[handles[2].id]?(false, 255)
+        await waitUntilMainActor {
+            model.sessionConnectionRecoveryRequest != nil
+        }
+
+        // tmux rotates the names, so notes wants release-work's name before
+        // release-work can move.
+        signInRequired.store(false)
+        names.store(["shipping": "$2", "release-work": "$3", "notes": "$4"])
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: shipping)?.id == handles[2].id
+                && model.retainedBorrowedTmuxHandle(for: releaseWork)?.id
+                == handles[0].id
+                && model.retainedBorrowedTmuxHandle(for: notes)?.id
+                == handles[1].id
+        }
+
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: shipping)?.id == handles[2].id
+        )
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: releaseWork)?.id
+                == handles[0].id
+        )
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: notes)?.id == handles[1].id
+        )
+        #expect(model.activeBorrowedTmuxSelection == shipping)
+        #expect(model.sessionConnectionRecoveryRequest != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a detached terminal moves to its session's new name and stays detached")
     func renameKeepsDetachedTerminalDetached() async throws {
         let environment = try setupStandardEnvironment()
