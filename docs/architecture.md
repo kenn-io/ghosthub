@@ -634,9 +634,13 @@ client is published. Every remote client uses a terminal type verified against
 the host's terminfo database; `xterm-256color` is preferred and the verified
 `xterm` fallback is disclosed only after successful presentation. Superseding
 navigation cancels queued and running attachment probes before they can retain
-the shared session-operation lane. Remote destruction, tmux creation, KWT
-project/worktree management, reconnect, and restoration remain unavailable
-until their own identity and lifecycle contracts are implemented.
+the shared session-operation lane. Remote tmux creation and confirmed kill,
+Herdr Stop/Delete, and active Zellij Kill now use the same reviewed lease.
+Herdr and Zellij share failed-operation recovery: fresh matching inventory and
+unchanged navigation are required, including across an in-progress reconnect.
+Zellij kills advance a host/route/name revision to reject older confirmations
+and queued attachments. KWT project/worktree management, automatic reconnect,
+and persisted restoration remain separate Rust parity work.
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and

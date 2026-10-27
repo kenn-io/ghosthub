@@ -341,7 +341,6 @@ pub(crate) fn pending_remote_constructive_snapshot(
         })
 }
 
-#[cfg(test)]
 pub(crate) fn pending_remote_constructive_target(
     runtime: &Runtime,
     host_id: &str,
@@ -777,6 +776,17 @@ pub(crate) fn capture_remote_zellij_attach_request(
     runtime: &Runtime,
     selection: &SessionSelection,
 ) -> Result<RemoteZellijAttachRequest, WorkspaceError> {
+    let request = capture_remote_zellij_request(runtime, selection)?;
+    session::ZellijSessionRecord::discovered(&request.name)
+        .attach_name()
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    Ok(request)
+}
+
+pub(crate) fn capture_remote_zellij_request(
+    runtime: &Runtime,
+    selection: &SessionSelection,
+) -> Result<RemoteZellijAttachRequest, WorkspaceError> {
     if selection.kind() != SessionKind::Zellij {
         return Err(WorkspaceError::new(
             "the selected session is not a Zellij session",
@@ -817,10 +827,15 @@ pub(crate) fn capture_remote_zellij_attach_request(
         host: context.host.clone(),
         snapshot: context.snapshot.clone(),
         executable: executable.clone(),
-        name: session
-            .attach_name()
-            .map_err(|error| WorkspaceError::new(error.to_string()))?
-            .to_owned(),
+        name: session.name().to_owned(),
+        kill_revision: zellij_kill_revision(
+            runtime,
+            &crate::remote_zellij::key_for(
+                selection.host_id(),
+                context.snapshot.route_identity(),
+                session.name(),
+            ),
+        ),
     })
 }
 
@@ -1588,6 +1603,7 @@ pub(crate) fn recapture_remote_zellij_attach_request(
     runtime: &Runtime,
     request: &RemoteZellijAttachRequest,
 ) -> Result<RemoteZellijAttachRequest, WorkspaceError> {
+    crate::remote_zellij::require_attach_revision(runtime, request)?;
     let (host, snapshot) = recapture_remote_attachment_context(
         runtime,
         &request.host_id,
@@ -1604,6 +1620,7 @@ pub(crate) fn recapture_remote_zellij_attach_request(
         snapshot,
         executable,
         name: session.name().to_owned(),
+        kill_revision: request.kill_revision,
     })
 }
 

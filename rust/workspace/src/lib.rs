@@ -34,6 +34,8 @@ use terminal::{
 
 mod pump;
 mod remote_herdr;
+mod remote_recovery;
+mod remote_zellij;
 mod runtime;
 mod scene;
 
@@ -1887,8 +1889,8 @@ struct RemoteEntry {
     /// Supersede and cancel fences act per scene; only connection-authority
     /// changes cancel every scene's attempt at once.
     attachment_attempts: Vec<RemoteAttachmentAttempt>,
-    /// Rejected Stop recoveries awaiting this host's in-flight reconnect.
-    herdr_recoveries: Vec<remote_herdr::Recovery>,
+    /// Rejected lifecycle recoveries awaiting this host's in-flight reconnect.
+    session_recoveries: Vec<remote_recovery::Recovery>,
     generation: u64,
 }
 
@@ -2386,6 +2388,7 @@ enum KillCaptureRequest {
         runtime: host::LinuxRuntimeIdentity,
     },
     RemoteTmux(Box<RemoteTmuxAttachRequest>),
+    RemoteZellij(Box<RemoteZellijAttachRequest>),
     Zellij(PendingKill),
 }
 
@@ -2420,23 +2423,21 @@ struct KwtRemovalCaptureIntent {
 }
 
 /// Execute one reserved, confirmed Zellij kill under the operation lane.
-fn run_confirmed_zellij_kill(
-    workspace: &Workspace,
-    pending: &PendingKill,
-    key: &ZellijKillKey,
-    revision: u64,
-) {
+fn run_confirmed_zellij_kill(workspace: &Workspace, pending: &PendingKill) {
     let KillTarget::Zellij {
         host,
         endpoint,
         runtime,
         executable,
         name,
+        revision,
         ..
     } = &pending.target
     else {
         return;
     };
+    let key = &zellij_kill_key(endpoint, runtime, name);
+    let revision = *revision;
     // Rechecked under the lane: a kill of the same target completing while
     // this one was queued advanced the revision, and killing again would
     // hit a same-name replacement.
@@ -2498,6 +2499,7 @@ enum KillTarget {
         target: Arc<LiveSessionTarget>,
     },
     RemoteTmux(Box<RemoteTmuxAttachRequest>),
+    RemoteZellij(Box<RemoteZellijAttachRequest>),
     Zellij {
         host: RuntimeHost,
         endpoint: host::LocalEndpoint,
@@ -3041,6 +3043,7 @@ struct RemoteZellijAttachRequest {
     snapshot: RemoteTmuxSnapshot,
     executable: String,
     name: String,
+    kill_revision: u64,
 }
 
 #[derive(Clone)]
@@ -4150,7 +4153,7 @@ impl Workspace {
                             cancellation: None,
                             constructive_cancellation: None,
                             attachment_attempts: Vec::new(),
-                            herdr_recoveries: Vec::new(),
+                            session_recoveries: Vec::new(),
                             generation: 0,
                         },
                     );
@@ -4811,7 +4814,7 @@ impl Workspace {
                     .filter(|entry| entry.generation == generation)
                     .map(|entry| {
                         entry.cancellation.take();
-                        entry.herdr_recoveries.clear();
+                        entry.session_recoveries.clear();
                         entry.context.take()
                     });
                 if stale_context.is_some() {
@@ -4862,7 +4865,7 @@ impl Workspace {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 entries.get_mut(id).and_then(|entry| {
                     let cancellation = entry.cancellation.take()?;
-                    entry.herdr_recoveries.clear();
+                    entry.session_recoveries.clear();
                     entry.generation = entry.generation.wrapping_add(1).max(1);
                     Some((cancellation, entry.context.take()))
                 })
@@ -5026,7 +5029,7 @@ impl Workspace {
                         cancellation: None,
                         constructive_cancellation: None,
                         attachment_attempts: Vec::new(),
-                        herdr_recoveries: Vec::new(),
+                        session_recoveries: Vec::new(),
                         generation: 0,
                     },
                 );
@@ -7519,15 +7522,20 @@ impl Workspace {
         // confirmation for the same session is refused instead of queuing
         // behind the first, where it would kill a newly discovered
         // same-name replacement.
-        let reservation = if let KillTarget::Zellij {
-            endpoint,
-            runtime,
-            name,
-            revision,
-            ..
-        } = &pending.target
-        {
-            let key = zellij_kill_key(endpoint, runtime, name);
+        let reservation = match &pending.target {
+            KillTarget::Zellij {
+                endpoint,
+                runtime,
+                name,
+                revision,
+                ..
+            } => Some((zellij_kill_key(endpoint, runtime, name), *revision)),
+            KillTarget::RemoteZellij(request) => {
+                Some((remote_zellij::key(request), request.kill_revision))
+            }
+            _ => None,
+        };
+        if let Some((key, revision)) = &reservation {
             match reserve_zellij_kill(&self.scene.runtime, key.clone(), *revision) {
                 ZellijKillReservation::Reserved => {}
                 ZellijKillReservation::InFlight => {
@@ -7541,12 +7549,8 @@ impl Workspace {
                     ));
                 }
             }
-            Some((key, *revision))
-        } else {
-            None
-        };
+        }
         let workspace = self.clone();
-        let task_reservation = reservation.clone();
         let retry = pending.clone();
         let spawn_result = thread::Builder::new()
             .name("ghosthub-session-kill".to_owned())
@@ -7570,15 +7574,11 @@ impl Workspace {
                         }
                         return;
                     }
-                    KillTarget::Zellij { .. } => {
-                        let Some((key, revision)) = task_reservation else {
-                            workspace.push_operation_error(
-                                "the Zellij kill lost its reservation".to_owned(),
-                            );
-                            return;
-                        };
-                        run_confirmed_zellij_kill(&workspace, &pending, &key, revision);
+                    KillTarget::RemoteZellij(request) => {
+                        remote_zellij::run(&workspace, request);
+                        return;
                     }
+                    KillTarget::Zellij { .. } => run_confirmed_zellij_kill(&workspace, &pending),
                 }
                 let _refresh_started = workspace.refresh_reanchored();
                 workspace
@@ -7971,7 +7971,9 @@ impl Workspace {
                         && target.runtime() == runtime
                         && target.identity() == identity
                 }
-                KillTarget::Zellij { .. } | KillTarget::RemoteTmux(_) => false,
+                KillTarget::Zellij { .. }
+                | KillTarget::RemoteTmux(_)
+                | KillTarget::RemoteZellij(_) => false,
             },
             |selection| {
                 selection.kind() == SessionKind::Tmux

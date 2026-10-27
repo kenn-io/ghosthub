@@ -25,7 +25,11 @@ confirm the session and host. A same-name replacement requires a new
 confirmation. Remote Herdr rows offer **Stop** for running sessions and
 **Restart** or **Delete** for stopped sessions. Stop and Delete ask for
 confirmation; closing a terminal only detaches. Herdr's default session cannot
-be deleted. See the [native Linux development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
+be deleted. Remote Zellij rows also offer confirmed **Kill**. Success closes
+matching clients across windows; cancellation preserves the session. A failed
+kill restores a still-active session only where navigation is unchanged.
+Zellij cannot distinguish an otherwise identical same-name replacement, and
+exited sessions stay hidden. See the [native Linux development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
 for build instructions and native session controls. The Rust port supports
 Zellij 0.45.1. Names beginning with `-` (except `-` itself), `help`, and `options`
 cannot be created or attached; existing sessions remain visible and killable.
@@ -35,6 +39,8 @@ cannot be created or attached; existing sessions remain visible and killable.
 ![Confirm Stop for a running Herdr session on the SSH host](https://github.com/user-attachments/assets/2a5220ee-c9d6-4b6b-a227-975578bf0f89)
 
 ![Confirm Delete for the stopped remote Herdr session](https://github.com/user-attachments/assets/a4185835-f0e8-4a75-a7f0-6318a4eaecdf)
+
+![Confirm a remote Zellij kill in the native Rust application](/docs/assets/guide-rust-remote-zellij-kill.png)
 
 ## Find tmux sessions on kwt's server
 

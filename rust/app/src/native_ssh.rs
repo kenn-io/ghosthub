@@ -9,6 +9,7 @@ use workspace::{
 };
 
 mod herdr;
+mod zellij;
 
 struct Fixture {
     workspace: Workspace,

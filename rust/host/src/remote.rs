@@ -328,6 +328,16 @@ impl RemoteTmuxSnapshot {
         &self.lease
     }
 
+    /// Remove a confirmed kill and invalidate inventory reads begun before it.
+    #[must_use]
+    pub fn without_zellij_session(mut self, name: &str) -> Self {
+        if let ZellijInventory::Available { sessions, .. } = &mut self.zellij {
+            sessions.retain(|session| session.name() != name);
+        }
+        self.inventory_generation += 1;
+        self
+    }
+
     /// Replace only the multiplexer inventory while preserving the reviewed
     /// route and lease identity that authorized the refresh.
     ///
@@ -1075,6 +1085,73 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             )),
             target,
         ))
+    }
+
+    /// Validate one active Zellij name and executable on the reviewed connection.
+    ///
+    /// # Errors
+    /// Rejects missing sessions, changed executables, and expired SSH leases.
+    pub fn validate_zellij_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
+        match self.discover_zellij(snapshot.lease(), cancellation)? {
+            ZellijInventory::Available {
+                executable: current,
+                sessions,
+            } if current == executable && sessions.iter().any(|session| session.name() == name) => {
+                Ok(())
+            }
+            ZellijInventory::Failed(error) => Err(RemoteTmuxError::from_host(&error)),
+            _ => Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "Zellij session or executable changed; refresh before trying again",
+            )),
+        }
+    }
+
+    /// Kill an active Zellij session after suppressing its clients and rechecking authority.
+    /// Zellij has no stable generation for an otherwise identical same-name replacement.
+    ///
+    /// # Errors
+    /// Rejects changed targets, expired confirmation authority, and command failures.
+    pub fn kill_zellij_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        executable: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+        mut prepare_mutation: impl FnMut() -> bool,
+    ) -> Result<(), RemoteTmuxError> {
+        for _ in 0..2 {
+            self.validate_zellij_session(snapshot, executable, name, cancellation)?;
+            if !prepare_mutation() {
+                return Err(RemoteTmuxError::new(
+                    DiagnosticKind::Transport,
+                    "the SSH connection or Zellij confirmation is no longer current",
+                ));
+            }
+        }
+        let command = multiplexer_command(
+            &zellij::CONTROL_VARIABLES,
+            RemoteCommandLocale::StableOutput,
+            None,
+            executable,
+            ["kill-session", "--", name],
+        );
+        let output = self.run_framed_remote_shell(
+            snapshot.lease(),
+            &posix_command(&command),
+            "GHOSTHUB_ZELLIJ_KILL_",
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(command_failure(&output, "remote Zellij kill failed"));
+        }
+        Ok(())
     }
 
     /// Build an ordinary remote Zellij client over the reviewed SSH lease.
