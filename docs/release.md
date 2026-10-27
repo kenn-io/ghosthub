@@ -80,7 +80,8 @@ release inputs that must move deliberately:
 - the Go compiler in `KWT_GO_VERSION` for every bundled KWT helper
 - Sparkle 2.10.0 as an exact Swift package dependency
 - Xcode 26.0.1
-- Zig 0.15.2 and its archive checksum
+- Ghostty source and Zig 0.17.0 in `Vendor/ghostty.version.json`
+- the same Zig compiler in `mise.toml` and its official archive checksum in CI
 - immutable revisions for every GitHub Action
 
 Sandbox-capable builds will also consume the root `SANDBOX_IMAGE` file as the

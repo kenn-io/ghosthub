@@ -1256,7 +1256,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
             "selected text".withCString { data in
                 let contents = [ghostty_clipboard_content_s(
                     mime: mime,
-                    data: data
+                    data: data, len: strlen(data)
                 )]
                 contents.withUnsafeBufferPointer { buffer in
                     LibghosttyRuntime.handleWriteClipboard(
@@ -1278,8 +1278,8 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
                 LibghosttyRuntime.osc52ClipboardWriteMIME.withCString { marker in
                     "".withCString { empty in
                         let contents = [
-                            ghostty_clipboard_content_s(mime: mime, data: data),
-                            ghostty_clipboard_content_s(mime: marker, data: empty),
+                            ghostty_clipboard_content_s(mime: mime, data: data, len: strlen(data)),
+                            ghostty_clipboard_content_s(mime: marker, data: empty, len: 0),
                         ]
                         contents.withUnsafeBufferPointer { buffer in
                             LibghosttyRuntime.handleWriteClipboard(
@@ -1331,7 +1331,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
                 "nonblocking copy".withCString { data in
                     let contents = [ghostty_clipboard_content_s(
                         mime: mime,
-                        data: data
+                        data: data, len: strlen(data)
                     )]
                     contents.withUnsafeBufferPointer { buffer in
                         LibghosttyRuntime.handleWriteClipboard(
@@ -1377,7 +1377,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
             "owned callback token".withCString { data in
                 let contents = [ghostty_clipboard_content_s(
                     mime: mime,
-                    data: data
+                    data: data, len: strlen(data)
                 )]
                 contents.withUnsafeBufferPointer { buffer in
                     LibghosttyRuntime.handleWriteClipboard(

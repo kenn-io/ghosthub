@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import GhosthubTerminal
 import GhosttyKit
@@ -15,13 +16,17 @@ struct ClipboardAccessPolicyTests {
         )
     }
 
-    @Test("remote clipboard reads do not evaluate the pasteboard supplier")
-    func blockedReadNeverTouchesClipboardContents() {
+    @Test("remote clipboard reads do not evaluate the pasteboard supplier", arguments: [
+        GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ,
+        GHOSTTY_CLIPBOARD_REQUEST_KITTY_READ,
+        GHOSTTY_CLIPBOARD_REQUEST_LIST,
+    ])
+    func blockedReadNeverTouchesClipboardContents(request: ghostty_clipboard_request_e) {
         var didReadPasteboard = false
 
         let contents = LibghosttyRuntime.clipboardReadContents(
             blocked: true,
-            request: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ,
+            request: request,
             contents: {
                 didReadPasteboard = true
                 return "local secret"
@@ -30,6 +35,39 @@ struct ClipboardAccessPolicyTests {
 
         #expect(contents.isEmpty)
         #expect(!didReadPasteboard)
+    }
+
+    @Test("clipboard callbacks copy exactly the supplied byte length")
+    func clipboardBytesUseExplicitLength() {
+        // No terminator at the declared end, and invalid UTF-8 after it.
+        let bytes: [UInt8] = [0x61, 0x00, 0x62, 0xFF]
+        let entries = "text/plain".withCString { mime in
+            bytes.withUnsafeBytes { buffer in
+                var content = ghostty_clipboard_content_s(
+                    mime: mime,
+                    data: buffer.baseAddress!.assumingMemoryBound(to: CChar.self),
+                    len: 3
+                )
+                return LibghosttyRuntime.clipboardWriteEntries(&content, count: 1)
+            }
+        }
+        #expect(entries == [.init(mime: "text/plain", data: "a\0b")])
+    }
+
+    @Test("non-text clipboard bytes are not converted into corrupt text")
+    func invalidClipboardTextIsRejected() {
+        let bytes: [UInt8] = [0xFF]
+        let entries = "image/png".withCString { mime in
+            bytes.withUnsafeBytes { buffer in
+                var content = ghostty_clipboard_content_s(
+                    mime: mime,
+                    data: buffer.baseAddress!.assumingMemoryBound(to: CChar.self),
+                    len: 1
+                )
+                return LibghosttyRuntime.clipboardWriteEntries(&content, count: 1)
+            }
+        }
+        #expect(entries.isEmpty)
     }
 
     @Test("a semantic paste request may supply clipboard contents")

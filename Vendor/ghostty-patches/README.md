@@ -1,25 +1,27 @@
-# Ghostty Memory Backports
+# Embedded libghostty source
 
-Ghosthub applies these patches in the order declared by `GHOSTTY_BACKPORTS` to
-its clean, pinned Ghostty `v1.3.1` checkout. PR #220 separately backports ten
-upstream lifetime fixes through `apply_upstream_lifetime_backports`; the patches
-here are the additional long-lived terminal-memory fixes not included there.
+`Vendor/ghostty.version.json` pins Ghostty 1.4.0 and Zig 0.17.0. The bootstrap
+fetches that exact source revision and applies Ghosthub's integration changes
+in `tools/libghostty_bootstrap.py`. Local builds and CI use the same compiler.
 
-| Patch | Upstream commit | Upstream PR | Purpose |
-| --- | --- | --- | --- |
-| `0001` | `c4e16970a803b170e352432424f44192cb59f3ac` | [#14017](https://github.com/ghostty-org/ghostty/pull/14017) | Release Metal and IOSurface resources while a terminal surface is hidden. |
-| `0003` | `16e4b5e98f10f255bdda934a61ff41e9b3a849c7` | [#13241](https://github.com/ghostty-org/ghostty/pull/13241) | Track terminal page ownership explicitly so pooled and heap-backed pages are reclaimed safely. |
-| `0004` | `896aca499001f42e132f456ebc9cdfed616cf1fb` | [#13245](https://github.com/ghostty-org/ghostty/pull/13245) | Return free-listed terminal page memory to macOS or Linux instead of retaining the high-water footprint. |
+Ghostty 1.4.0 includes the memory and lifetime fixes previously backported to
+1.3.1, including hidden-surface GPU cleanup and terminal page reclamation.
+Those backports are no longer applied. A small Ghosthub patch still preserves
+the presented IOSurface while Core Animation retains it for hidden previews.
+Upstream now normalizes static archives and applies its libSystem symbol
+overrides; Ghosthub validates the emitted archive without rebuilding it.
+Direct config-file loading also uses the upstream C API.
 
-The first patch is adapted to the semaphore and display-link APIs in `v1.3.1`.
-Its Metal target cleanup releases its IOSurface reference without forcibly
-emptying the image: Core Animation still owns the last presented frame for
-Mission Control and other Spaces. Hidden surfaces still release their swap
-chains, buffers, and textures; the presented image lasts until its final owner
-releases it. `TerminalSurfacePreviewTests.testHiddenWindowPreservesPresentedTerminalFrame`
-checks this against the built library.
-The page-list source changes match their upstream commits; the fourth patch omits
-unrelated test context that landed between the pinned release and that commit.
+The remaining patches provide Ghosthub's bundle and terminal identity,
+launcher environment isolation, quiet macOS login, child process status,
+output injection and child-write callbacks, clipboard request classification
+and OSC 52 write origin, disabled gettext linking, and an Apple Silicon-only
+XCFramework target. The bootstrap schema invalidates cached artifacts whenever
+these patches change.
 
-When the pinned Ghostty release contains these fixes, remove the corresponding
-patches, update `GHOSTTY_BACKPORTS`, and bump `GHOSTHUB_BOOTSTRAP_VERSION`.
+For an upstream update, compare the embedding header and linked dependencies,
+remove patches already supplied upstream, adapt the remaining patches, and
+bump the bootstrap schema. Run the terminal regression gates in
+[AGENTS.md](../../AGENTS.md), then build both Debug and ReleaseFast variants.
+Check shell startup, paste confirmation, remote clipboard isolation, surface
+shutdown, and hidden previews against the compiled library.

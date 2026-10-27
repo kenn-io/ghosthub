@@ -2,7 +2,7 @@
 # Zig must match `required_zig_version` in Vendor/ghostty.version.json;
 # CI installs the same release from the official archive.
 [tools]
-zig = "0.15.2"
+zig = "0.17.0"
 go = "latest"
 prek = "0.5.7"
 swiftformat = "0.63.1"

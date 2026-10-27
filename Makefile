@@ -186,7 +186,7 @@ help:
 		'Notes:' \
 		'  bootstrap-libghostty is idempotent: if the staged artifacts already match the pinned Ghostty revision, it exits without rebuilding.' \
 		'  Debug and release libghostty variants are cached separately; switching LIBGHOSTTY_OPTIMIZE modes re-activates the requested variant into .build/libghostty and only rebuilds when that cached variant is missing or stale.' \
-		'  bootstrap-libghostty and check-libghostty prefer LIBGHOSTTY_ZIG first, then ~/.local/bin/zig-0.15.2-x86_64, then zig from PATH, and finally /opt/homebrew/bin/zig as a fallback.' \
+		'  bootstrap-libghostty and check-libghostty prefer LIBGHOSTTY_ZIG first, then zig from PATH, and finally /opt/homebrew/bin/zig as a fallback.' \
 		'  libghostty bootstrap requires a full Xcode install and the Metal Toolchain, not just Command Line Tools.'
 
 ensure-go:
@@ -240,9 +240,6 @@ bootstrap-libghostty:
 	@set -euo pipefail; \
 	cmd=($(UV) run --frozen $(PYTHON) tools/bootstrap_libghostty.py); \
 	zig_path="$(LIBGHOSTTY_ZIG)"; \
-	if [[ -z "$$zig_path" && -x "$$HOME/.local/bin/zig-0.15.2-x86_64" ]]; then \
-		zig_path="$$HOME/.local/bin/zig-0.15.2-x86_64"; \
-	fi; \
 	if [[ -z "$$zig_path" ]]; then \
 		zig_path="$$(command -v zig || true)"; \
 	fi; \
@@ -277,9 +274,6 @@ check-libghostty:
 	@set -euo pipefail; \
 	cmd=($(UV) run --frozen $(PYTHON) tools/bootstrap_libghostty.py --check); \
 	zig_path="$(LIBGHOSTTY_ZIG)"; \
-	if [[ -z "$$zig_path" && -x "$$HOME/.local/bin/zig-0.15.2-x86_64" ]]; then \
-		zig_path="$$HOME/.local/bin/zig-0.15.2-x86_64"; \
-	fi; \
 	if [[ -z "$$zig_path" ]]; then \
 		zig_path="$$(command -v zig || true)"; \
 	fi; \

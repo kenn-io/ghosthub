@@ -135,7 +135,6 @@ def test_release_license_inventory_covers_compiled_dependencies():
         "Highway-BSD-3-Clause.txt",
         "simdutf-Apache-2.0.txt",
         "simdutf-MIT.txt",
-        "utfcpp-BSL-1.0.txt",
         "Wuffs.txt",
         "stb-MIT.txt",
         "Dear-ImGui-MIT.txt",

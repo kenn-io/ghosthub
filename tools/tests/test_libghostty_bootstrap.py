@@ -121,75 +121,6 @@ def test_main_print_command_uses_aarch64_target(
     assert "-Dxcframework-target=aarch64" in capsys.readouterr().out
 
 
-def test_public_header_patch_upgrades_old_config_load_signature(tmp_path: Path) -> None:
-    header = tmp_path / "ghostty.h"
-    header.write_text(
-        """ghostty_config_t ghostty_config_new();
-void ghostty_config_load_file(ghostty_config_t, const char*);
-void ghostty_config_finalize(ghostty_config_t);
-void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
-bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
-bool ghostty_surface_process_exited(ghostty_surface_t);
-void ghostty_surface_refresh(ghostty_surface_t);
-void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
-void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
-void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
-                                                const char*,
-                                                void*,
-                                                bool);
-"""
-    )
-
-    bootstrap.patch_public_header(header)
-
-    contents = header.read_text()
-    assert (
-        "void ghostty_config_load_file(ghostty_config_t, const char*, size_t);"
-        in contents
-    )
-    assert (
-        "void ghostty_config_load_file(ghostty_config_t, const char*);" not in contents
-    )
-
-
-def test_apply_ghostty_backports_is_idempotent(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for name in tuple(os.environ):
-        if name.startswith("GIT_"):
-            monkeypatch.delenv(name)
-    config = tmp_path / "gitconfig"
-    config.write_text("", encoding="utf-8")
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    paths = _paths(tmp_path)
-    source = paths.source_checkout_root
-    source.mkdir(parents=True)
-    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
-    target = source / "memory.txt"
-    target.write_text("retained\n")
-
-    patch_root = tmp_path / "Vendor" / "ghostty-patches"
-    patch_root.mkdir(parents=True)
-    patch_name = "memory.patch"
-    patch_root.joinpath(patch_name).write_text(
-        """diff --git a/memory.txt b/memory.txt
---- a/memory.txt
-+++ b/memory.txt
-@@ -1 +1 @@
--retained
-+released
-"""
-    )
-    monkeypatch.setattr(bootstrap, "GHOSTTY_BACKPORTS", (("memory-fix", patch_name),))
-
-    bootstrap.apply_ghostty_backports(paths, git="git")
-    bootstrap.apply_ghostty_backports(paths, git="git")
-
-    assert target.read_text() == "released\n"
-
-
 def _make_archive(
     workdir: Path,
     name: str,
@@ -218,82 +149,6 @@ def _make_archive(
     sys.platform != "darwin" or not shutil.which("cc"),
     reason="needs macOS cc/ar/libtool",
 )
-def test_rebuild_fat_archive_restores_dropped_members(tmp_path: Path) -> None:
-    workdir = tmp_path
-    alpha = _make_archive(workdir, "libalpha.a", "alpha_fn")
-    beta = _make_archive(workdir, "libbeta.a", "beta_fn")
-    # The broken fat archive only carries alpha, mimicking
-    # libtool having dropped beta's member.
-    fat = workdir / "libghostty-fat.a"
-    shutil.copy2(alpha, fat)
-
-    assert not bootstrap.archive_defines_symbol(fat, "_beta_fn")
-
-    bootstrap.rebuild_fat_archive(fat, [alpha, beta])
-
-    assert bootstrap.archive_defines_symbol(fat, "_alpha_fn")
-    assert bootstrap.archive_defines_symbol(fat, "_beta_fn")
-
-
-@pytest.mark.skipif(
-    sys.platform != "darwin" or not shutil.which("cc") or not shutil.which("lipo"),
-    reason="needs macOS cc/ar/libtool/lipo",
-)
-def test_repair_fat_archive_preserves_xcframework_slice_architecture(
-    tmp_path: Path,
-) -> None:
-    repo_root = tmp_path
-    paths = _paths(repo_root, xcframework_target="aarch64")
-    source_root = paths.source_checkout_root
-    cache_root = source_root / ".zig-cache" / "o"
-    arm_cache = cache_root / "arm64"
-    x86_cache = cache_root / "x86_64"
-    arm_cache.mkdir(parents=True)
-    x86_cache.mkdir(parents=True)
-    slice_dir = source_root / "macos" / "GhosttyKit.xcframework" / "macos-arm64"
-    slice_dir.mkdir(parents=True)
-    fat = slice_dir / bootstrap.FAT_ARCHIVE_NAME
-
-    sentinel_only = _make_archive(
-        tmp_path,
-        "libbroken.a",
-        "ghostty_app_new",
-        arch="arm64",
-    )
-    shutil.copy2(sentinel_only, fat)
-    _make_archive(
-        arm_cache,
-        "libghostty.a",
-        "ghostty_app_new",
-        arch="arm64",
-    )
-    _make_archive(
-        arm_cache,
-        "libdependency.a",
-        "dependency_fn",
-        arch="arm64",
-    )
-    _make_archive(
-        x86_cache,
-        "libx86_only.a",
-        "x86_only_fn",
-        arch="x86_64",
-    )
-    bootstrap.repair_fat_archives(paths)
-
-    assert bootstrap.archive_defines_symbol(
-        fat,
-        bootstrap.GHOSTTY_SENTINEL_SYMBOL,
-    )
-    assert bootstrap.archive_archs(fat) == ["arm64"]
-    assert bootstrap.archive_defines_symbol(fat, "_dependency_fn")
-    assert not bootstrap.archive_defines_symbol(fat, "_x86_only_fn")
-
-
-@pytest.mark.skipif(
-    sys.platform != "darwin" or not shutil.which("cc"),
-    reason="needs macOS cc/ar/libtool",
-)
 def test_artifact_state_flags_archive_missing_ghostty_api(tmp_path: Path) -> None:
     workdir = tmp_path
     artifacts = bootstrap.ArtifactPaths.from_root(workdir)
@@ -313,7 +168,6 @@ def test_artifact_state_flags_archive_missing_ghostty_api(tmp_path: Path) -> Non
         json.dumps(
             {
                 "ghosttyCommit": "abc123",
-                "ghosttyBackports": bootstrap.GHOSTTY_BACKPORT_COMMITS,
                 "ghosthubBootstrapVersion": bootstrap.GHOSTHUB_BOOTSTRAP_VERSION,
                 "xcframeworkTarget": "native",
                 "optimize": "Debug",
@@ -332,31 +186,16 @@ def test_artifact_state_flags_archive_missing_ghostty_api(tmp_path: Path) -> Non
     )
 
     broken = _make_archive(workdir, "libbroken.a", "other_fn")
-    shutil.copy2(broken, slice_dir / "libghostty-fat.a")
+    shutil.copy2(broken, slice_dir / "libghostty-internal.a")
     message = bootstrap.artifact_state_message(artifacts, metadata, "native", "Debug")
     assert message is not None
     assert "ghostty API" in message
 
     healthy = _make_archive(workdir, "libhealthy.a", "ghostty_app_new")
-    shutil.copy2(healthy, slice_dir / "libghostty-fat.a")
+    shutil.copy2(healthy, slice_dir / "libghostty-internal.a")
     assert (
         bootstrap.artifact_state_message(artifacts, metadata, "native", "Debug") is None
     )
-
-
-def test_component_archives_excludes_fat_outputs(tmp_path: Path) -> None:
-    cache = tmp_path / ".zig-cache" / "o" / "abc"
-    cache.mkdir(parents=True)
-    (cache / "libdep.a").write_bytes(b"!<arch>\n")
-    (cache / "libghostty-fat.a").write_bytes(b"!<arch>\n")
-    nested = tmp_path / ".zig-cache" / "o" / "def"
-    nested.mkdir(parents=True)
-    (nested / "libghostty.a").write_bytes(b"!<arch>\n")
-
-    found = bootstrap.component_archives(tmp_path / ".zig-cache")
-
-    names = [p.name for p in found]
-    assert names == ["libdep.a", "libghostty.a"]
 
 
 def test_clipboard_write_patch_marks_both_osc52_paths(tmp_path: Path) -> None:
@@ -364,551 +203,24 @@ def test_clipboard_write_patch_marks_both_osc52_paths(tmp_path: Path) -> None:
     surface.write_text(
         """    self.rt_surface.setClipboard(loc, &.{.{
         .mime = "text/plain",
-        .data = buf,
+        .data = buf[0..decoded.len :0],
     }}, confirm) catch |err| {
         return err;
     };
 
-        .osc_52_write => |clipboard| try self.rt_surface.setClipboard(clipboard, &.{.{
-            .mime = "text/plain",
-            .data = data,
-        }}, !confirmed),
+            try self.rt_surface.setClipboard(clipboard, &.{.{
+                .mime = "text/plain",
+                .data = data,
+            }}, !complete.confirmed);
 """
     )
-
     bootstrap.patch_clipboard_write_origin(surface)
-
     patched = surface.read_text()
+    bootstrap.patch_clipboard_write_origin(surface)
+    assert surface.read_text() == patched
     assert patched.count("application/x-ghosthub-osc52") == 2
-    assert ".data = buf" in patched
+    assert ".data = buf[0..decoded.len :0]" in patched
     assert ".data = data" in patched
-
-
-def test_apply_upstream_lifetime_backports_releases_owned_resources(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "source"
-    embedded = source / "src" / "apprt" / "embedded.zig"
-    surface = source / "src" / "Surface.zig"
-    apc = source / "src" / "terminal" / "apc.zig"
-    osc = source / "src" / "terminal" / "osc.zig"
-    metal_buffer = source / "src" / "renderer" / "metal" / "buffer.zig"
-    iosurface_layer = source / "src" / "renderer" / "metal" / "IOSurfaceLayer.zig"
-    message = source / "src" / "termio" / "message.zig"
-    mailbox = source / "src" / "termio" / "mailbox.zig"
-    thread = source / "src" / "termio" / "Thread.zig"
-
-    for path in (
-        embedded,
-        surface,
-        apc,
-        osc,
-        metal_buffer,
-        iosurface_layer,
-        message,
-        mailbox,
-        thread,
-    ):
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-    embedded.write_text(
-        "    export fn ghostty_surface_free_text(ptr: *Text) void {\n"
-        "        ptr.deinit();\n"
-        "    }\n"
-    )
-    apc.write_text(
-        "            .kitty => |*p| if (comptime build_options.kitty_graphics) {\n"
-        "                p.feed(byte) catch |err| {\n"
-        '                    log.warn("kitty graphics protocol error: {}", .{err});\n'
-        "                    self.state = .{ .ignore = {} };\n"
-        "                };\n"
-        "            } else unreachable,\n"
-    )
-    osc.write_text(
-        "        switch (self.command) {\n"
-        "            .kitty_color_protocol => |*v| kitty_color_protocol: {\n"
-        "                v.deinit(self.alloc orelse break :kitty_color_protocol);\n"
-        "            },\n"
-        "            .change_window_icon,\n"
-        "            .change_window_title,\n"
-        "            .clipboard_contents,\n"
-        "            .color_operation,\n"
-    )
-    surface.write_text(
-        "/// Queue a message for the IO thread.\n"
-        "///\n"
-        "/// We centralize all our logic into this spot so we can intercept\n"
-        "/// messages for example in readonly mode.\n"
-        "fn queueIo(\n"
-        "    self: *Surface,\n"
-        "    msg: termio.Message,\n"
-        "    mutex: termio.Termio.MutexState,\n"
-        ") void {\n"
-        "    // In readonly mode, we don't allow any writes through to the pty.\n"
-        "    if (self.readonly) {\n"
-        "        switch (msg) {\n"
-        "            .write_small,\n"
-        "            .write_stable,\n"
-        "            .write_alloc,\n"
-        "            => return,\n"
-        "\n"
-        "            else => {},\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    self.io.queueMessage(msg, mutex);\n"
-        "}\n"
-        "\n"
-        "fn setSelection(self: *Surface, sel_: ?terminal.Selection) !void {\n"
-        "    const prev_ = self.io.terminal.screens.active.selection;\n"
-        "    try self.io.terminal.screens.active.select(sel_);\n"
-        "\n"
-        "    // If copy on select is false then exit early.\n"
-        "    if (self.config.copy_on_select == .false) return;\n"
-        "\n"
-        "    // Set our selection clipboard. If the selection is cleared we do not\n"
-        "    // clear the clipboard. If the selection is set, we only set the clipboard\n"
-        "    // again if it changed, since setting the clipboard can be an expensive\n"
-        "    // operation.\n"
-        "    const sel = sel_ orelse return;\n"
-        "    if (prev_) |prev| if (sel.eql(prev)) return;\n"
-        "\n"
-        "        if (self.child_exited) {\n"
-        "            self.close();\n"
-        "            return .closed;\n"
-        "        }\n"
-        "\n"
-        "        errdefer write_req.deinit();\n"
-        "        self.queueIo(switch (write_req) {\n"
-        "            .small => |v| .{ .write_small = v },\n"
-        "            .stable => |v| .{ .write_stable = v },\n"
-        "            .alloc => |v| .{ .write_alloc = v },\n"
-        "        }, .unlocked);\n"
-        "\n"
-        "        .leader => |set| {\n"
-        "            // Setup the next set we'll look at.\n"
-        "            self.keyboard.sequence_set = set;\n"
-        "\n"
-        "            // Store this event so that we can drain and encode on invalid.\n"
-        "            // We don't need to cap this because it is naturally capped by\n"
-        "            // the config validation.\n"
-        "            if (try self.encodeKey(event, insp_ev)) |req| {\n"
-        "                try self.keyboard.sequence_queued.append(self.alloc, req);\n"
-        "            }\n"
-        "\n"
-        "        if (self.mouse.over_link) {\n"
-        "            const pos = try self.rt_surface.getCursorPos();\n"
-        "            if (self.processLinks(pos)) |processed| {\n"
-        "                if (processed) return true;\n"
-        "            } else |err| {\n"
-        '                log.warn("error processing links err={}", .{err});\n'
-        "            }\n"
-        "        }\n"
-    )
-    metal_buffer.write_text(
-        "                // Allocate a new buffer with enough to hold double what we require.\n"
-        "                const size = req_bytes * 2;\n"
-        "                self.buffer = self.opts.device.msgSend(\n"
-        "                    objc.Object,\n"
-        '                    objc.sel("newBufferWithLength:options:"),\n'
-        "                    .{\n"
-        "                        @as(c_ulong, @intCast(size * @sizeOf(T))),\n"
-        "                        self.opts.resource_options,\n"
-        "                    },\n"
-        "                );\n"
-        "\n"
-        "                // Allocate a new buffer with enough to hold double what we require.\n"
-        "                const size = req_bytes * 2;\n"
-        "                self.buffer = self.opts.device.msgSend(\n"
-        "                    objc.Object,\n"
-        '                    objc.sel("newBufferWithLength:options:"),\n'
-        "                    .{\n"
-        "                        @as(c_ulong, @intCast(size * @sizeOf(T))),\n"
-        "                        self.opts.resource_options,\n"
-        "                    },\n"
-        "                );\n"
-    )
-    iosurface_layer.write_text(
-        "pub fn release(self: *IOSurfaceLayer) void {\n    self.layer.release();\n}\n"
-    )
-    message.write_text(
-        "    pub fn writeReq(alloc: Allocator, data: anytype) !Message {\n"
-        "        return switch (try WriteReq.init(alloc, data)) {\n"
-        "            .stable => unreachable,\n"
-        "            .small => |v| Message{ .write_small = v },\n"
-        "            .alloc => |v| Message{ .write_alloc = v },\n"
-        "        };\n"
-        "    }\n"
-        "\n"
-        "    /// The types of size reports that we support\n"
-    )
-    mailbox.write_text(
-        "            .spsc => |*v| {\n"
-        "                v.queue.destroy(alloc);\n"
-        "                v.wakeup.deinit();\n"
-        "            },\n"
-        "\n"
-        "                mb.wakeup.notify() catch |err| {\n"
-        '                    log.warn("failed to wake up writer, data will be dropped err={}", .{err});\n'
-        "                    return;\n"
-        "                };\n"
-        "\n"
-        "                _ = mb.queue.push(msg, .{ .forever = {} });\n"
-    )
-    thread.write_text(
-        "    if (self.flags.drain) {\n"
-        "        while (mailbox.pop()) |_| {}\n"
-        "        return;\n"
-        "    }\n"
-    )
-
-    bootstrap.apply_upstream_lifetime_backports(source)
-    bootstrap.apply_upstream_lifetime_backports(source)
-
-    assert "ghostty_surface_free_text(_: *Surface, ptr: *Text)" in embedded.read_text()
-    assert "p.deinit();" in apc.read_text()
-    assert "v.requests.deinit" in osc.read_text()
-    patched_surface = surface.read_text()
-    assert "msg.deinit();" in patched_surface
-    assert "const prev_" not in patched_surface
-    assert "            write_req.deinit();\n            self.close();" in patched_surface
-    assert (
-        "                    req.deinit();\n                    return err;"
-        in patched_surface
-    )
-    assert "self.renderer_state.mutex.lock();" in patched_surface
-    patched_buffer = metal_buffer.read_text()
-    assert "self.len = data.len * 2;" in patched_buffer
-    assert "self.len = total_len * 2;" in patched_buffer
-    assert "size * @sizeOf(T)" not in patched_buffer
-    assert "self.setDisplayCallback(null, null);" in iosurface_layer.read_text()
-    assert "pub fn deinit(self: *const Message) void" in message.read_text()
-    assert "while (v.queue.pop()) |msg| msg.deinit();" in mailbox.read_text()
-    assert mailbox.read_text().count("msg.deinit();") == 3
-    assert "while (mailbox.pop()) |msg| msg.deinit();" in thread.read_text()
-
-
-def test_apply_ghosthub_source_patches_exports_direct_config_loading(
-    tmp_path: Path,
-) -> None:
-    repo_root = tmp_path
-    _create_repo_layout(repo_root)
-    paths = _paths(repo_root)
-    build_config = paths.source_checkout_root / "src" / "build_config.zig"
-    config_c_api = paths.source_checkout_root / "src" / "config" / "CApi.zig"
-    header = paths.source_checkout_root / "include" / "ghostty.h"
-    embedded = paths.source_checkout_root / "src" / "apprt" / "embedded.zig"
-    apprt_surface = paths.source_checkout_root / "src" / "apprt" / "surface.zig"
-    core_surface = paths.source_checkout_root / "src" / "Surface.zig"
-    exec_zig = paths.source_checkout_root / "src" / "termio" / "Exec.zig"
-    termio_zig = paths.source_checkout_root / "src" / "termio" / "Termio.zig"
-    xcframework_enum = paths.source_checkout_root / "src" / "build" / "xcframework.zig"
-    ghostty_xcframework = (
-        paths.source_checkout_root / "src" / "build" / "GhosttyXCFramework.zig"
-    )
-    ghostty_xcodebuild = (
-        paths.source_checkout_root / "src" / "build" / "GhosttyXcodebuild.zig"
-    )
-    shared_deps = paths.source_checkout_root / "src" / "build" / "SharedDeps.zig"
-
-    build_config.parent.mkdir(parents=True, exist_ok=True)
-    config_c_api.parent.mkdir(parents=True, exist_ok=True)
-    header.parent.mkdir(parents=True, exist_ok=True)
-    embedded.parent.mkdir(parents=True, exist_ok=True)
-    apprt_surface.parent.mkdir(parents=True, exist_ok=True)
-    core_surface.parent.mkdir(parents=True, exist_ok=True)
-    exec_zig.parent.mkdir(parents=True, exist_ok=True)
-    termio_zig.parent.mkdir(parents=True, exist_ok=True)
-    xcframework_enum.parent.mkdir(parents=True, exist_ok=True)
-
-    build_config.write_text('pub const bundle_id = "com.mitchellh.ghostty";\n')
-    config_c_api.write_text(
-        """export fn ghostty_config_load_default_files(self: *Config) void {
-    self.loadDefaultFiles(state.alloc) catch |err| {
-        log.err("error loading config err={}", .{err});
-    };
-}
-"""
-    )
-    header.write_text(
-        """ghostty_config_t ghostty_config_new();
-void ghostty_config_free(ghostty_config_t);
-ghostty_config_t ghostty_config_clone(ghostty_config_t);
-void ghostty_config_load_cli_args(ghostty_config_t);
-void ghostty_config_load_default_files(ghostty_config_t);
-void ghostty_config_load_recursive_files(ghostty_config_t);
-void ghostty_config_finalize(ghostty_config_t);
-void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
-bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
-bool ghostty_surface_process_exited(ghostty_surface_t);
-void ghostty_surface_refresh(ghostty_surface_t);
-void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
-void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
-void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
-                                                const char*,
-                                                void*,
-                                                bool);
-typedef void (*ghostty_runtime_close_surface_cb)(void*, bool);
-typedef struct {
-  ghostty_runtime_close_surface_cb close_surface_cb;
-} ghostty_runtime_config_s;
-"""
-    )
-    embedded.write_text(
-        """    pub fn defaultTermioEnv(self: *const Surface) !std.process.EnvMap {
-        const alloc = self.app.core_app.alloc;
-        var env = try internal_os.getEnvMap(alloc);
-        errdefer env.deinit();
-
-        if (comptime builtin.target.os.tag.isDarwin()) {
-            if (env.get("__XCODE_BUILT_PRODUCTS_DIR_PATHS") != null) {
-                env.remove("__XCODE_BUILT_PRODUCTS_DIR_PATHS");
-                env.remove("__XPC_DYLD_LIBRARY_PATH");
-                env.remove("DYLD_FRAMEWORK_PATH");
-                env.remove("DYLD_INSERT_LIBRARIES");
-                env.remove("DYLD_LIBRARY_PATH");
-                env.remove("LD_LIBRARY_PATH");
-                env.remove("SECURITYSESSIONID");
-                env.remove("XPC_SERVICE_NAME");
-            }
-
-            // Remove this so that running `ghostty` within Ghostty works.
-            env.remove("GHOSTTY_MAC_LAUNCH_SOURCE");
-
-            // If we were launched from the desktop then we want to
-            // remove the LANGUAGE env var so that we don't inherit
-            // our translation settings for Ghostty. If we aren't from
-            // the desktop then we didn't set our LANGUAGE var so we
-            // don't need to remove it.
-            if (internal_os.launchedFromDesktop()) env.remove("LANGUAGE");
-        }
-
-        return env;
-    }
-
-    export fn ghostty_surface_process_exited(surface: *Surface) bool {
-        return surface.core_surface.child_exited;
-    }
-
-    export fn ghostty_surface_text(
-        surface: *Surface,
-        ptr: [*]const u8,
-        len: usize,
-    ) void {
-        surface.textCallback(ptr[0..len]);
-    }
-
-    /// Complete a clipboard read request started via the read callback.
-    /// This can only be called once for a given request. Once it is called
-    /// with a request the request pointer will be invalidated.
-    export fn ghostty_surface_complete_clipboard_request(
-        ptr: *Surface,
-        str: [*:0]const u8,
-        state: *apprt.ClipboardRequest,
-        confirmed: bool,
-    ) void {}
-
-        /// Close the current surface given by this function.
-        close_surface: ?*const fn (SurfaceUD, bool) callconv(.c) void = null,
-    };
-
-    pub fn getCursorPos(self: *const Surface) !apprt.CursorPos {
-        return self.cursor_pos;
-    }
-"""
-    )
-    apprt_surface.write_text(
-        "    /// The terminal has reported a change in the working directory.\n"
-        "    pwd_change: WriteReq,\n"
-        "\n"
-        "    /// The terminal encountered a bell character.\n"
-        "    ring_bell,\n"
-    )
-    core_surface.write_text(
-        "/// This is set to true if our IO thread notifies us our child exited.\n"
-        "/// This is used to determine if we need to confirm, hold open, etc.\n"
-        "child_exited: bool = false,\n"
-        "\n"
-        "        .close => self.close(),\n"
-        "\n"
-        "        .child_exited => |v| self.childExited(v),\n"
-        "\n"
-        "fn childExited(self: *Surface, info: apprt.surface.Message.ChildExited) void {\n"
-        "    // Mark our flag that we exited immediately\n"
-        "    self.child_exited = true;\n"
-        "\n"
-        "    self.rt_surface.setClipboard(loc, &.{.{\n"
-        '        .mime = "text/plain",\n'
-        "        .data = buf,\n"
-        "    }}, confirm) catch |err| {\n"
-        "\n"
-        "        .osc_52_write => |clipboard| try self.rt_surface.setClipboard(clipboard, &.{.{\n"
-        '            .mime = "text/plain",\n'
-        "            .data = data,\n"
-        "        }}, !confirmed),\n"
-    )
-    exec_zig.write_text(
-        """        const hush = if (passwd.home) |home| hush: {
-            var dir = std.fs.openDirAbsolute(home, .{}) catch |err| {
-                log.warn(
-                    "failed to open home dir, not checking for hushlogin err={}",
-                    .{err},
-                );
-                break :hush false;
-            };
-            defer dir.close();
-
-            break :hush if (dir.access(".hushlogin", .{})) true else |_| false;
-        } else false;
-
-        try args.append(alloc, "/usr/bin/login");
-        if (hush) try args.append(alloc, "-q");
-        try args.append(alloc, "-flp");
-        // Set environment variables used by some programs (such as neovim) to detect
-        // which terminal emulator and version they're running under.
-        try env.put("TERM_PROGRAM", "ghostty");
-        try env.put("TERM_PROGRAM_VERSION", build_config.version_string);
-"""
-    )
-    termio_zig.write_text(
-        "pub inline fn queueWrite(\n"
-        "    self: *Termio,\n"
-        "    td: *ThreadData,\n"
-        "    data: []const u8,\n"
-        "    linefeed: bool,\n"
-        ") !void {\n"
-        "    try self.backend.queueWrite(self.alloc, td, data, linefeed);\n"
-        "}\n"
-    )
-    xcframework_enum.write_text("pub const Target = enum { native, universal };\n")
-    ghostty_xcframework.write_text(
-        """const GhosttyXCFramework = @This();
-
-const Config = @import("Config.zig");
-const GhosttyLib = @import("GhosttyLib.zig");
-
-pub fn init(
-    b: *std.Build,
-    deps: *const SharedDeps,
-    target: Target,
-) !GhosttyXCFramework {
-    const macos_native = try GhosttyLib.initStatic(b, &try deps.retarget(
-        b,
-        Config.genericMacOSTarget(b, null),
-    ));
-
-    const xcframework = XCFrameworkStep.create(b, .{
-        .libraries = switch (target) {
-            .native => &.{.{
-                .library = macos_native.output,
-                .headers = b.path("include"),
-                .dsym = macos_native.dsym,
-            }},
-        },
-    });
-}
-"""
-    )
-    ghostty_xcodebuild.write_text(
-        """const builtin = @import("builtin");
-
-pub fn init() void {
-    const xc_arch: ?[]const u8 = switch (deps.xcframework.target) {
-        .universal => null,
-
-        .native => switch (builtin.cpu.arch) {
-            .aarch64 => "arm64",
-            .x86_64 => "x86_64",
-            else => @panic("unsupported macOS arch"),
-        },
-    };
-}
-"""
-    )
-    shared_deps.write_text(
-        """        if (b.lazyDependency("libintl", .{
-            .target = target,
-            .optimize = optimize,
-        })) |libintl_dep| {
-            step.linkLibrary(libintl_dep.artifact("intl"));
-            try static_libs.append(
-                b.allocator,
-                libintl_dep.artifact("intl").getEmittedBin(),
-            );
-        }
-"""
-    )
-
-    bootstrap.apply_ghosthub_source_patches(paths)
-
-    assert (
-        f'pub const bundle_id = "{bootstrap.GHOSTHUB_GHOSTTY_BUNDLE_ID}";'
-        in build_config.read_text()
-    )
-    assert "export fn ghostty_config_load_file(" in config_c_api.read_text()
-    assert (
-        "void ghostty_config_load_file(ghostty_config_t, const char*, size_t);"
-        in header.read_text()
-    )
-    assert "int ghostty_surface_child_pid(ghostty_surface_t);" in header.read_text()
-    assert (
-        "int ghostty_surface_child_exit_code(ghostty_surface_t);" in header.read_text()
-    )
-    assert (
-        "void ghostty_surface_inject_output(ghostty_surface_t, const char*, uintptr_t);"
-        in header.read_text()
-    )
-    assert (
-        "typedef void (*ghostty_runtime_child_write_cb)(void*, const char*, uintptr_t);"
-        in header.read_text()
-    )
-    assert "ghostty_runtime_child_write_cb child_write_cb;" in header.read_text()
-    assert "try stripGhosthubLauncherEnv(alloc, &env);" in embedded.read_text()
-    assert (
-        "export fn ghostty_surface_child_pid(surface: *Surface) c_int {"
-        in embedded.read_text()
-    )
-    assert (
-        "export fn ghostty_surface_child_exit_code(surface: *Surface) c_int {"
-        in embedded.read_text()
-    )
-    assert "export fn ghostty_surface_inject_output(" in embedded.read_text()
-    assert "fn stripGhosthubLauncherEnv(" in embedded.read_text()
-    assert '"EDITOR",' in embedded.read_text()
-    assert '"VISUAL",' in embedded.read_text()
-    assert (
-        "child_write: ?*const fn (SurfaceUD, [*]const u8, usize) callconv(.c) void = null,"
-        in embedded.read_text()
-    )
-    assert (
-        "pub fn childWrite(self: *const Surface, data: []const u8) void {"
-        in embedded.read_text()
-    )
-    assert "child_write: WriteReq," in apprt_surface.read_text()
-    assert ".child_write => |w| {" in core_surface.read_text()
-    assert "self.rt_surface.childWrite(w.slice());" in core_surface.read_text()
-    assert "child_exit_code: ?u32 = null," in core_surface.read_text()
-    assert "self.child_exit_code = info.exit_code;" in core_surface.read_text()
-    assert ".child_write = req" in termio_zig.read_text()
-    assert "req.deinit();" in termio_zig.read_text()
-    assert (
-        '        try args.append(alloc, "/usr/bin/login");\n'
-        '        try args.append(alloc, "-q");\n'
-        '        try args.append(alloc, "-flp");\n' in exec_zig.read_text()
-    )
-    assert "const hush = if (passwd.home)" not in exec_zig.read_text()
-    assert (
-        f'try env.put("TERM_PROGRAM", "{bootstrap.GHOSTHUB_TERM_PROGRAM}");'
-        in exec_zig.read_text()
-    )
-    assert (
-        "pub const Target = enum { native, universal, aarch64 };"
-        in xcframework_enum.read_text()
-    )
-    assert "Config.genericMacOSTarget(b, .aarch64)" in ghostty_xcframework.read_text()
-    assert (
-        '        },\n\n        .aarch64 => "arm64",\n' in ghostty_xcodebuild.read_text()
-    )
 
 
 def test_patch_term_program_env_sets_ghosthub_identity(tmp_path: Path) -> None:
@@ -936,7 +248,7 @@ def test_patch_libintl_i18n_guard_skips_static_gettext(tmp_path: Path) -> None:
             .target = target,
             .optimize = optimize,
         })) |libintl_dep| {
-            step.linkLibrary(libintl_dep.artifact("intl"));
+            step.root_module.linkLibrary(libintl_dep.artifact("intl"));
             try static_libs.append(
                 b.allocator,
                 libintl_dep.artifact("intl").getEmittedBin(),
@@ -997,45 +309,6 @@ def test_patch_clipboard_request_type_export_adds_capi_function(
 
     bootstrap.patch_clipboard_request_type_export(embedded)
     assert embedded.read_text().count("export fn ghostty_clipboard_request_type(") == 1
-
-
-def test_patch_public_header_declares_inject_output(tmp_path: Path) -> None:
-    header = tmp_path / "ghostty.h"
-    header.write_text(
-        "ghostty_config_t ghostty_config_new();\n"
-        "void ghostty_config_free(ghostty_config_t);\n"
-        "ghostty_config_t ghostty_config_clone(ghostty_config_t);\n"
-        "void ghostty_config_load_cli_args(ghostty_config_t);\n"
-        "void ghostty_config_load_default_files(ghostty_config_t);\n"
-        "void ghostty_config_load_recursive_files(ghostty_config_t);\n"
-        "void ghostty_config_finalize(ghostty_config_t);\n"
-        "void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);\n"
-        "bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);\n"
-        "bool ghostty_surface_process_exited(ghostty_surface_t);\n"
-        "void ghostty_surface_refresh(ghostty_surface_t);\n"
-        "void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);\n"
-        "void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);\n"
-        "void ghostty_surface_complete_clipboard_request(ghostty_surface_t,\n"
-        "                                                const char*,\n"
-        "                                                void*,\n"
-        "                                                bool);\n"
-    )
-    bootstrap.patch_public_header(header)
-    contents = header.read_text()
-    assert (
-        "void ghostty_surface_inject_output(ghostty_surface_t, const char*, uintptr_t);"
-        in contents
-    )
-    # Declaration sits between text and preedit.
-    assert contents.index("ghostty_surface_text(") < contents.index(
-        "ghostty_surface_inject_output("
-    )
-    assert contents.index("ghostty_surface_inject_output(") < contents.index(
-        "ghostty_surface_preedit("
-    )
-    assert (
-        "ghostty_clipboard_request_e ghostty_clipboard_request_type(void*);" in contents
-    )
 
 
 def test_patch_child_write_header_adds_typedef_and_field(tmp_path: Path) -> None:
@@ -1180,7 +453,7 @@ pub fn init(
         .libraries = switch (target) {
             .native => &.{.{
                 .library = macos_native.output,
-                .headers = b.path("include"),
+                .headers = headers,
                 .dsym = macos_native.dsym,
             }},
         },
@@ -1196,7 +469,7 @@ pub fn init() void {
     const xc_arch: ?[]const u8 = switch (deps.xcframework.target) {
         .universal => null,
 
-        .native => switch (builtin.cpu.arch) {
+        .native => switch (builtin.target.cpu.arch) {
             .aarch64 => "arm64",
             .x86_64 => "x86_64",
             else => @panic("unsupported macOS arch"),
@@ -1230,12 +503,18 @@ pub fn init() void {
     )
 
 
-def test_ensure_supported_zig_version_rejects_incompatible_version() -> None:
+@pytest.mark.parametrize("version", ["0.16.0", "0.18.0", "1.0.0", "0.17.0-dev.1"])
+def test_ensure_supported_zig_version_rejects_incompatible_version(version: str) -> None:
     with pytest.raises(
         bootstrap.BootstrapError,
-        match="requires Zig 0.15.2 or newer, but found 0.14.1",
+        match="requires Zig 0.17.0",
     ):
-        bootstrap.ensure_supported_zig_version("0.14.1", "0.15.2")
+        bootstrap.ensure_supported_zig_version(version, "0.17.0")
+
+
+@pytest.mark.parametrize("version", ["0.17.0", "0.17.1"])
+def test_ensure_supported_zig_version_accepts_compatible_patch_releases(version: str) -> None:
+    bootstrap.ensure_supported_zig_version(version, "0.17.0")
 
 
 def test_ensure_metal_toolchain_reports_actionable_install_hint() -> None:
@@ -1383,9 +662,7 @@ def test_universal_build_requires_both_sdk_targets(
 def test_bootstrap_wraps_build_failures_with_setup_guidance(repo: Repo) -> None:
     with (
         mock.patch.object(bootstrap, "ensure_source_checkout"),
-        mock.patch.object(bootstrap, "apply_ghostty_backports"),
         mock.patch.object(bootstrap, "apply_ghosthub_source_patches"),
-        mock.patch.object(bootstrap, "apply_upstream_lifetime_backports"),
         mock.patch.object(
             bootstrap, "resolve_tool", side_effect=lambda tool: f"/usr/bin/{tool}"
         ),
@@ -1554,11 +831,6 @@ def test_artifact_state_reports_missing_bootstrap_outputs(repo: Repo) -> None:
             {"ghosttyCommit": "different"},
             "against a different Ghostty revision",
             id="commit",
-        ),
-        pytest.param(
-            {"ghosttyBackports": []},
-            "without the current Ghostty memory backports",
-            id="memory-backports",
         ),
         pytest.param(
             {"ghosthubBootstrapVersion": bootstrap.GHOSTHUB_BOOTSTRAP_VERSION - 1},
@@ -2128,7 +1400,6 @@ def _write_artifacts(
     manifest: dict[str, object] = {
         "ghosthubBootstrapVersion": bootstrap.GHOSTHUB_BOOTSTRAP_VERSION,
         "ghosttyBundleID": bootstrap.GHOSTHUB_GHOSTTY_BUNDLE_ID,
-        "ghosttyBackports": bootstrap.GHOSTTY_BACKPORT_COMMITS,
         "embeddedEnvIsolation": True,
         "macosLoginQuiet": True,
         "ghosttyConfigLoadExport": True,

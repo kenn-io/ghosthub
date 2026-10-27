@@ -21,7 +21,6 @@ revisions and is copied verbatim into `Ghosthub.app/Contents/Resources/Licenses`
 | SPIRV-Cross | `SPIRV-Cross.txt` |
 | Highway | `Highway-Apache-2.0.txt`, `Highway-BSD-3-Clause.txt` |
 | simdutf | `simdutf-Apache-2.0.txt`, `simdutf-MIT.txt` |
-| utfcpp | `utfcpp-BSL-1.0.txt` |
 | Wuffs | `Wuffs.txt` |
 | stb image and image resize | `stb-MIT.txt` |
 | Dear ImGui | `Dear-ImGui-MIT.txt` |

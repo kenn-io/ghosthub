@@ -3373,6 +3373,54 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
+    func testKittyClipboardReadsRespectRemoteIsolation() throws {
+        let runtime = try runtimeWithClipboardReadsAllowed()
+        let appHandle = try requireAppHandle(from: runtime)
+        let scriptURL = makeExecutableScript(
+            """
+            #!/usr/bin/env python3
+            import os
+            import select
+            import sys
+            import termios
+            import tty
+
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            print("<READY>", flush=True)
+            data = b""
+            try:
+                tty.setraw(fd)
+                os.write(sys.stdout.fileno(), b"\\x1b]5522;type=read:id=r1;dGV4dC9wbGFpbg==\\x1b\\\\")
+                while select.select([fd], [], [], 0.5)[0]:
+                    data += os.read(fd, 4096)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            print(f"<KITTY:{data.hex()}>", flush=True)
+            """
+        )
+        let secret = "local-secret"
+        // Hex of the protocol's base64 payload for "local-secret".
+        let encodedSecret = "6247396a595777746332566a636d5630"
+        for blocked in [false, true] {
+            let view = makeSurface(
+                app: appHandle,
+                configuration: TerminalSurfaceConfiguration(
+                    command: try pythonCommand(scriptURL.path)
+                )
+            )
+            view.blocksClipboardReads = blocked
+            pasteboard.clearContents()
+            pasteboard.setString(secret, forType: .string)
+            _ = hostInWindow(view)
+            waitForViewportText("<KITTY:", in: view)
+            let output = readViewportText(from: view)
+            // OSC 5522 replies prove the request reached the clipboard path.
+            XCTAssertTrue(output.contains("1b5d353532323b"), output)
+            XCTAssertEqual(output.contains(encodedSecret), !blocked, output)
+        }
+    }
+
     func testRemoteSurfaceWritesOSC52CopyToPasteboard() throws {
         let runtime = try runtimeWithTerminalConfig(
             "clipboard-write = allow\n"

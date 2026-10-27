@@ -749,7 +749,10 @@ programs on configured remote
 hosts may write the Mac clipboard through OSC 52 when allowed by the user's
 `clipboard-write` configuration, so remote tmux copy behaves like local tmux
 copy. Remote terminal surfaces cannot read the local Mac clipboard through
-OSC 52, regardless of `clipboard-read`. libghostty exposes the semantic type
+OSC 52 or Kitty clipboard requests, regardless of `clipboard-read`.
+Ghosthub serves text clipboard representations; terminal requests to list
+clipboard MIME types or read binary representations are unsupported.
+libghostty exposes the semantic type
 of every clipboard request: Ghosthub supplies clipboard contents only for a
 configured `paste_from_clipboard` action, independent of which key triggers
 it. libghostty retains bracketed-paste framing and requires confirmation before

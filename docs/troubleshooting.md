@@ -14,14 +14,14 @@ The target is idempotent; if staged artifacts already match the
 pinned Ghostty revision, it exits without rebuilding. If bootstrap
 still fails after this, check the sections below.
 
-## Bootstrap fails because `zig` is older than the pinned Ghostty requirement
+## Bootstrap fails because `zig` does not match the pinned Ghostty requirement
 
-Install a newer zig (0.15.2 or later) and point the bootstrap at it
-explicitly:
+Install the Zig release pinned in `mise.toml` and run the bootstrap through
+mise. A newer Zig minor version is not automatically compatible:
 
 ```bash
-brew install zig
-make bootstrap-libghostty LIBGHOSTTY_ZIG=/opt/homebrew/bin/zig
+mise install zig
+mise exec -- make bootstrap-libghostty
 ```
 
 ## Bootstrap fails with `missing Metal Toolchain`

@@ -21,7 +21,7 @@ struct LibghosttyBackgroundAppearanceTests {
         try contents.write(to: file, atomically: true, encoding: .utf8)
         let config = try #require(ghostty_config_new())
         file.path.withCString { pointer in
-            ghostty_config_load_file(config, pointer, file.path.utf8.count)
+            ghostty_config_load_file(config, pointer)
         }
         ghostty_config_finalize(config)
         return config

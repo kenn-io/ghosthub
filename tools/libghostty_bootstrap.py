@@ -8,35 +8,17 @@ import re
 import shlex
 import shutil
 import subprocess
-import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 26
+GHOSTHUB_BOOTSTRAP_VERSION = 28
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 SOURCE_FETCH_ATTEMPTS = 3
 SOURCE_FETCH_RETRY_DELAY_SECONDS = 5.0
-
-GHOSTTY_BACKPORTS = (
-    (
-        "c4e16970a803b170e352432424f44192cb59f3ac",
-        "0001-renderer-release-GPU-resources-for-hidden-surfaces-m.patch",
-    ),
-    (
-        "16e4b5e98f10f255bdda934a61ff41e9b3a849c7",
-        "0003-terminal-track-page-ownership-explicitly-on-pagelist.patch",
-    ),
-    (
-        "896aca499001f42e132f456ebc9cdfed616cf1fb",
-        "0004-terminal-return-free-listed-page-memory-to-the-OS.patch",
-    ),
-)
-GHOSTTY_BACKPORT_COMMITS = [commit for commit, _ in GHOSTTY_BACKPORTS]
-
 
 class BootstrapError(RuntimeError):
     pass
@@ -382,8 +364,8 @@ def ensure_source_checkout(
 
 def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
     patch_build_config_bundle_id(paths.source_checkout_root / "src" / "build_config.zig")
-    patch_config_c_api(paths.source_checkout_root / "src" / "config" / "CApi.zig")
     patch_public_header(paths.source_checkout_root / "include" / "ghostty.h")
+    patch_preserve_presented_frame(paths.source_checkout_root / "src" / "renderer" / "metal" / "Target.zig")
     patch_embedded_runtime_env(paths.source_checkout_root / "src" / "apprt" / "embedded.zig")
     patch_surface_child_pid_export(paths.source_checkout_root / "src" / "apprt" / "embedded.zig")
     patch_surface_child_exit_code_state(paths.source_checkout_root / "src" / "Surface.zig")
@@ -414,465 +396,6 @@ def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
     )
 
 
-def apply_upstream_lifetime_backports(source_root: Path) -> None:
-    """Apply focused post-1.3.1 ownership and lifetime fixes from upstream.
-
-    Backports Ghostty commits 4803d58, 8302740, e9ca0f8, ab82b8a, 4a22eed,
-    4b4a5b2, 0060d89, 957ed21, and 2f7fbad, plus the OSC cleanup hunk from
-    3ff6d08. Keep this list aligned with the transformations below so the
-    pinned source's divergence from upstream remains auditable.
-    """
-    patch_surface_free_text_signature(source_root / "src" / "apprt" / "embedded.zig")
-    patch_terminal_parser_cleanup(
-        source_root / "src" / "terminal" / "apc.zig",
-        source_root / "src" / "terminal" / "osc.zig",
-    )
-    patch_surface_lifetime_cleanup(source_root / "src" / "Surface.zig")
-    patch_metal_buffer_allocation(
-        source_root / "src" / "renderer" / "metal" / "buffer.zig"
-    )
-    patch_iosurface_layer_release(
-        source_root / "src" / "renderer" / "metal" / "IOSurfaceLayer.zig"
-    )
-    patch_termio_discarded_message_cleanup(
-        source_root / "src" / "termio" / "message.zig",
-        source_root / "src" / "termio" / "mailbox.zig",
-        source_root / "src" / "termio" / "Thread.zig",
-    )
-
-
-def patch_surface_free_text_signature(path: Path) -> None:
-    original = """    export fn ghostty_surface_free_text(ptr: *Text) void {
-        ptr.deinit();
-    }
-"""
-    replacement = """    export fn ghostty_surface_free_text(_: *Surface, ptr: *Text) void {
-        ptr.deinit();
-    }
-"""
-    patch_source_file(
-        path,
-        original=original,
-        replacement=replacement,
-        already_applied=replacement,
-        description="upstream ghostty_surface_free_text parameter fix",
-    )
-
-
-def patch_terminal_parser_cleanup(apc_path: Path, osc_path: Path) -> None:
-    apc_original = """                p.feed(byte) catch |err| {
-                    log.warn("kitty graphics protocol error: {}", .{err});
-                    self.state = .{ .ignore = {} };
-                };
-"""
-    apc_replacement = """                p.feed(byte) catch |err| {
-                    log.warn("kitty graphics protocol error: {}", .{err});
-                    p.deinit();
-                    self.state = .{ .ignore = {} };
-                };
-"""
-    patch_source_file(
-        apc_path,
-        original=apc_original,
-        replacement=apc_replacement,
-        already_applied=apc_replacement,
-        description="upstream invalid Kitty APC cleanup",
-    )
-
-    osc_original = """            .kitty_color_protocol => |*v| kitty_color_protocol: {
-                v.deinit(self.alloc orelse break :kitty_color_protocol);
-            },
-            .change_window_icon,
-            .change_window_title,
-            .clipboard_contents,
-            .color_operation,
-"""
-    osc_replacement = """            .kitty_color_protocol => |*v| kitty_color_protocol: {
-                v.deinit(self.alloc orelse break :kitty_color_protocol);
-            },
-            .color_operation => |*v| color_operation: {
-                v.requests.deinit(self.alloc orelse break :color_operation);
-            },
-            .change_window_icon,
-            .change_window_title,
-            .clipboard_contents,
-"""
-    patch_source_file(
-        osc_path,
-        original=osc_original,
-        replacement=osc_replacement,
-        already_applied=osc_replacement,
-        description="upstream OSC color request cleanup",
-    )
-
-
-def patch_surface_lifetime_cleanup(path: Path) -> None:
-    queue_original = """/// Queue a message for the IO thread.
-///
-/// We centralize all our logic into this spot so we can intercept
-/// messages for example in readonly mode.
-"""
-    queue_replacement = """/// Queue a message for the IO thread, taking ownership of `msg`.
-///
-/// We centralize all our logic into this spot so we can intercept
-/// messages for example in readonly mode.
-"""
-    patch_source_file(
-        path,
-        original=queue_original,
-        replacement=queue_replacement,
-        already_applied=queue_replacement,
-        description="upstream Surface queue ownership contract",
-    )
-
-    readonly_original = """            .write_small,
-            .write_stable,
-            .write_alloc,
-            => return,
-"""
-    readonly_replacement = """            .write_small,
-            .write_stable,
-            .write_alloc,
-            => {
-                msg.deinit();
-                return;
-            },
-"""
-    patch_source_file(
-        path,
-        original=readonly_original,
-        replacement=readonly_replacement,
-        already_applied=readonly_replacement,
-        description="upstream read-only write cleanup",
-    )
-
-    selection_original = """    const prev_ = self.io.terminal.screens.active.selection;
-    try self.io.terminal.screens.active.select(sel_);
-
-    // If copy on select is false then exit early.
-    if (self.config.copy_on_select == .false) return;
-
-    // Set our selection clipboard. If the selection is cleared we do not
-    // clear the clipboard. If the selection is set, we only set the clipboard
-    // again if it changed, since setting the clipboard can be an expensive
-    // operation.
-    const sel = sel_ orelse return;
-    if (prev_) |prev| if (sel.eql(prev)) return;
-"""
-    selection_replacement = """    try self.io.terminal.screens.active.select(sel_);
-
-    // If copy on select is false then exit early.
-    if (self.config.copy_on_select == .false) return;
-
-    // Set our selection clipboard. If the selection is cleared we do not
-    // clear the clipboard.
-    const sel = sel_ orelse return;
-"""
-    patch_source_file(
-        path,
-        original=selection_original,
-        replacement=selection_replacement,
-        already_applied=selection_replacement,
-        description="upstream Surface selection lifetime fix",
-    )
-
-    key_original = """        if (self.child_exited) {
-            self.close();
-            return .closed;
-        }
-
-        errdefer write_req.deinit();
-        self.queueIo(switch (write_req) {
-"""
-    key_replacement = """        if (self.child_exited) {
-            write_req.deinit();
-            self.close();
-            return .closed;
-        }
-
-        self.queueIo(switch (write_req) {
-"""
-    patch_source_file(
-        path,
-        original=key_original,
-        replacement=key_replacement,
-        already_applied=key_replacement,
-        description="upstream encoded key request cleanup",
-    )
-
-    leader_original = """        .leader => |set| {
-            // Setup the next set we'll look at.
-            self.keyboard.sequence_set = set;
-
-            // Store this event so that we can drain and encode on invalid.
-            // We don't need to cap this because it is naturally capped by
-            // the config validation.
-            if (try self.encodeKey(event, insp_ev)) |req| {
-                try self.keyboard.sequence_queued.append(self.alloc, req);
-            }
-
-"""
-    leader_replacement = """        .leader => |set| {
-            // Store this event so that we can drain and encode on invalid.
-            // We don't need to cap this because it is naturally capped by
-            // the config validation.
-            if (try self.encodeKey(event, insp_ev)) |req| {
-                self.keyboard.sequence_queued.append(self.alloc, req) catch |err| {
-                    req.deinit();
-                    return err;
-                };
-            }
-
-            // Setup the next set we'll look at only after all fallible work.
-            self.keyboard.sequence_set = set;
-
-"""
-    patch_source_file(
-        path,
-        original=leader_original,
-        replacement=leader_replacement,
-        already_applied=leader_replacement,
-        description="upstream key sequence request cleanup",
-    )
-
-    links_original = """        if (self.mouse.over_link) {
-            const pos = try self.rt_surface.getCursorPos();
-            if (self.processLinks(pos)) |processed| {
-"""
-    links_replacement = """        if (self.mouse.over_link) {
-            const pos = try self.rt_surface.getCursorPos();
-            self.renderer_state.mutex.lock();
-            defer self.renderer_state.mutex.unlock();
-            if (self.processLinks(pos)) |processed| {
-"""
-    patch_source_file(
-        path,
-        original=links_original,
-        replacement=links_replacement,
-        already_applied=links_replacement,
-        description="upstream renderer link processing lock",
-    )
-
-
-def patch_metal_buffer_allocation(path: Path) -> None:
-    original = """                // Allocate a new buffer with enough to hold double what we require.
-                const size = req_bytes * 2;
-                self.buffer = self.opts.device.msgSend(
-                    objc.Object,
-                    objc.sel("newBufferWithLength:options:"),
-                    .{
-                        @as(c_ulong, @intCast(size * @sizeOf(T))),
-                        self.opts.resource_options,
-                    },
-                );
-"""
-    for item_count in ("data.len", "total_len"):
-        replacement = f"""                // Allocate a new buffer with enough to hold double what we require.
-                self.len = {item_count} * 2;
-                self.buffer = self.opts.device.msgSend(
-                    objc.Object,
-                    objc.sel("newBufferWithLength:options:"),
-                    .{{
-                        @as(c_ulong, @intCast(self.len * @sizeOf(T))),
-                        self.opts.resource_options,
-                    }},
-                );
-"""
-        patch_source_file(
-            path,
-            original=original,
-            replacement=replacement,
-            already_applied=replacement,
-            description=f"upstream Metal buffer allocation fix for {item_count}",
-        )
-
-
-def patch_iosurface_layer_release(path: Path) -> None:
-    original = """pub fn release(self: *IOSurfaceLayer) void {
-    self.layer.release();
-}
-"""
-    replacement = """pub fn release(self: *IOSurfaceLayer) void {
-    // The layer may be retained by the view after we release our reference.
-    // Clear the callback first so that a later display pass can't access the
-    // renderer that owned this wrapper after it has been freed.
-    self.setDisplayCallback(null, null);
-    self.layer.release();
-}
-"""
-    patch_source_file(
-        path,
-        original=original,
-        replacement=replacement,
-        already_applied=replacement,
-        description="upstream IOSurface display callback cleanup",
-    )
-
-
-def patch_termio_discarded_message_cleanup(
-    message_path: Path,
-    mailbox_path: Path,
-    thread_path: Path,
-) -> None:
-    message_original = """    pub fn writeReq(alloc: Allocator, data: anytype) !Message {
-        return switch (try WriteReq.init(alloc, data)) {
-            .stable => unreachable,
-            .small => |v| Message{ .write_small = v },
-            .alloc => |v| Message{ .write_alloc = v },
-        };
-    }
-
-    /// The types of size reports that we support
-"""
-    message_replacement = """    pub fn writeReq(alloc: Allocator, data: anytype) !Message {
-        return switch (try WriteReq.init(alloc, data)) {
-            .stable => unreachable,
-            .small => |v| Message{ .write_small = v },
-            .alloc => |v| Message{ .write_alloc = v },
-        };
-    }
-
-    /// Free resources owned by a message that will not be processed.
-    /// The message is invalid after this call.
-    pub fn deinit(self: *const Message) void {
-        switch (self.*) {
-            .change_config => |v| {
-                v.ptr.deinit();
-                v.alloc.destroy(v.ptr);
-            },
-            .write_alloc => |v| v.alloc.free(v.data),
-            else => {},
-        }
-    }
-
-    /// The types of size reports that we support
-"""
-    patch_source_file(
-        message_path,
-        original=message_original,
-        replacement=message_replacement,
-        already_applied=message_replacement,
-        description="upstream discarded termio message cleanup",
-    )
-
-    mailbox_deinit_original = """            .spsc => |*v| {
-                v.queue.destroy(alloc);
-                v.wakeup.deinit();
-            },
-"""
-    mailbox_deinit_replacement = """            .spsc => |*v| {
-                while (v.queue.pop()) |msg| msg.deinit();
-                v.queue.destroy(alloc);
-                v.wakeup.deinit();
-            },
-"""
-    patch_source_file(
-        mailbox_path,
-        original=mailbox_deinit_original,
-        replacement=mailbox_deinit_replacement,
-        already_applied=mailbox_deinit_replacement,
-        description="upstream mailbox teardown cleanup",
-    )
-
-    mailbox_wakeup_original = """                mb.wakeup.notify() catch |err| {
-                    log.warn("failed to wake up writer, data will be dropped err={}", .{err});
-                    return;
-                };
-"""
-    mailbox_wakeup_replacement = """                mb.wakeup.notify() catch |err| {
-                    log.warn("failed to wake up writer, data will be dropped err={}", .{err});
-                    msg.deinit();
-                    return;
-                };
-"""
-    patch_source_file(
-        mailbox_path,
-        original=mailbox_wakeup_original,
-        replacement=mailbox_wakeup_replacement,
-        already_applied=mailbox_wakeup_replacement,
-        description="upstream mailbox wakeup failure cleanup",
-    )
-
-    mailbox_push_original = """                _ = mb.queue.push(msg, .{ .forever = {} });
-"""
-    mailbox_push_replacement = """                if (mb.queue.push(msg, .{ .forever = {} }) == 0) msg.deinit();
-"""
-    patch_source_file(
-        mailbox_path,
-        original=mailbox_push_original,
-        replacement=mailbox_push_replacement,
-        already_applied=mailbox_push_replacement,
-        description="upstream mailbox push failure cleanup",
-    )
-
-    thread_original = """    if (self.flags.drain) {
-        while (mailbox.pop()) |_| {}
-        return;
-    }
-"""
-    thread_replacement = """    if (self.flags.drain) {
-        while (mailbox.pop()) |msg| msg.deinit();
-        return;
-    }
-"""
-    patch_source_file(
-        thread_path,
-        original=thread_original,
-        replacement=thread_replacement,
-        already_applied=thread_replacement,
-        description="upstream drained mailbox message cleanup",
-    )
-
-
-def apply_ghostty_backports(paths: BootstrapPaths, *, git: str) -> None:
-    """Apply Ghostty memory fixes that landed after the pinned release."""
-    git_path = resolve_tool(git)
-    patch_root = paths.repo_root / "Vendor" / "ghostty-patches"
-
-    for commit, filename in GHOSTTY_BACKPORTS:
-        patch_path = patch_root / filename
-        if not patch_path.is_file():
-            raise BootstrapError(
-                f"Ghostty backport {commit} is missing its patch file: {patch_path}"
-            )
-
-        command = [
-            git_path,
-            "-C",
-            str(paths.source_checkout_root),
-            "apply",
-            "--whitespace=error-all",
-            str(patch_path),
-        ]
-        check = subprocess.run(
-            [*command[:4], "--check", *command[4:]],
-            capture_output=True,
-            text=True,
-        )
-        if check.returncode == 0:
-            try:
-                subprocess.run(command, check=True, capture_output=True, text=True)
-            except subprocess.CalledProcessError as error:
-                raise BootstrapError(
-                    f"Failed to apply Ghostty memory backport {commit} from "
-                    f"{patch_path}.\n{describe_command_failure(error)}"
-                ) from error
-            continue
-
-        reverse = subprocess.run(
-            [*command[:4], "--reverse", "--check", *command[4:]],
-            capture_output=True,
-            text=True,
-        )
-        if reverse.returncode == 0:
-            continue
-
-        detail = check.stderr.strip() or check.stdout.strip() or "git apply failed"
-        raise BootstrapError(
-            f"Ghostty memory backport {commit} no longer applies to the pinned "
-            f"source checkout: {patch_path}\n{detail}"
-        )
-
 def patch_build_config_bundle_id(path: Path) -> None:
     original = 'pub const bundle_id = "com.mitchellh.ghostty";'
     replacement = f'pub const bundle_id = "{GHOSTHUB_GHOSTTY_BUNDLE_ID}";'
@@ -885,205 +408,58 @@ def patch_build_config_bundle_id(path: Path) -> None:
     )
 
 
-def patch_config_c_api(path: Path) -> None:
-    marker = "export fn ghostty_config_load_file("
-    original = """export fn ghostty_config_load_default_files(self: *Config) void {
-    self.loadDefaultFiles(state.alloc) catch |err| {
-        log.err("error loading config err={}", .{err});
-    };
-}
-"""
-    replacement = """export fn ghostty_config_load_default_files(self: *Config) void {
-    self.loadDefaultFiles(state.alloc) catch |err| {
-        log.err("error loading config err={}", .{err});
-    };
-}
-
-/// Load the configuration from a specific file. This bypasses Ghostty's
-/// default config discovery so an embedder can fully own config layering.
-export fn ghostty_config_load_file(
-    self: *Config,
-    path: [*]const u8,
-    len: usize,
-) void {
-    self.loadFile(state.alloc, path[0..len]) catch |err| {
-        log.err("error loading config file err={}", .{err});
-    };
-}
-"""
+def patch_preserve_presented_frame(path: Path) -> None:
     patch_source_file(
         path,
-        original=original,
-        replacement=replacement,
-        already_applied=marker,
-        description="Ghostty config-file C export",
+        original="""pub fn deinit(self: *Self) void {
+    self.surface.deinit();
+    self.texture.release();
+}""",
+        replacement="""pub fn deinit(self: *Self) void {
+    // Core Animation may still display these pixels in previews or other Spaces.
+    // Release our reference without marking the shared image purgeable.
+    self.surface.release();
+    self.texture.release();
+}""",
+        already_applied="    self.surface.release();",
+        description="Ghosthub retained preview image lifetime",
     )
 
 
 def patch_public_header(path: Path) -> None:
-    marker = "void ghostty_config_load_file(ghostty_config_t, const char*, size_t);"
-    legacy_marker = "void ghostty_config_load_file(ghostty_config_t, const char*);"
-    contents = path.read_text()
-    if marker not in contents and legacy_marker in contents:
-        path.write_text(contents.replace(legacy_marker, marker, 1))
-
-    original = """ghostty_config_t ghostty_config_new();
-void ghostty_config_free(ghostty_config_t);
-ghostty_config_t ghostty_config_clone(ghostty_config_t);
-void ghostty_config_load_cli_args(ghostty_config_t);
-void ghostty_config_load_default_files(ghostty_config_t);
-void ghostty_config_load_recursive_files(ghostty_config_t);
-void ghostty_config_finalize(ghostty_config_t);
-"""
-    replacement = """ghostty_config_t ghostty_config_new();
-void ghostty_config_free(ghostty_config_t);
-ghostty_config_t ghostty_config_clone(ghostty_config_t);
-void ghostty_config_load_cli_args(ghostty_config_t);
-void ghostty_config_load_default_files(ghostty_config_t);
-void ghostty_config_load_file(ghostty_config_t, const char*, size_t);
-void ghostty_config_load_recursive_files(ghostty_config_t);
-void ghostty_config_finalize(ghostty_config_t);
-"""
-    patch_source_file(
-        path,
-        original=original,
-        replacement=replacement,
-        already_applied=marker,
-        description="Ghostty public config-file declaration",
-    )
-
-    patch_source_file(
-        path,
-        original="""void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
-bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
-bool ghostty_surface_process_exited(ghostty_surface_t);
-void ghostty_surface_refresh(ghostty_surface_t);
-""",
-        replacement="""void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
-bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
-bool ghostty_surface_process_exited(ghostty_surface_t);
-int ghostty_surface_child_pid(ghostty_surface_t);
-void ghostty_surface_refresh(ghostty_surface_t);
-""",
-        already_applied="int ghostty_surface_child_pid(ghostty_surface_t);",
-        description="Ghostty public surface child-pid declaration",
-    )
-
-    patch_source_file(
-        path,
-        original="""bool ghostty_surface_process_exited(ghostty_surface_t);
-int ghostty_surface_child_pid(ghostty_surface_t);
-void ghostty_surface_refresh(ghostty_surface_t);
-""",
-        replacement="""bool ghostty_surface_process_exited(ghostty_surface_t);
-int ghostty_surface_child_pid(ghostty_surface_t);
-int ghostty_surface_child_exit_code(ghostty_surface_t);
-void ghostty_surface_refresh(ghostty_surface_t);
-""",
-        already_applied="int ghostty_surface_child_exit_code(ghostty_surface_t);",
-        description="Ghostty public surface child-exit-code declaration",
-    )
-
-    patch_source_file(
-        path,
-        original="""void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
-void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
-""",
-        replacement="""void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
-void ghostty_surface_inject_output(ghostty_surface_t, const char*, uintptr_t);
-void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
-""",
-        already_applied="void ghostty_surface_inject_output(ghostty_surface_t, const char*, uintptr_t);",
-        description="Ghostty public inject-output declaration",
-    )
-
-    patch_source_file(
-        path,
-        original="""void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
-                                                const char*,
-                                                void*,
-                                                bool);
-""",
-        replacement="""ghostty_clipboard_request_e ghostty_clipboard_request_type(void*);
-void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
-                                                const char*,
-                                                void*,
-                                                bool);
-""",
-        already_applied="ghostty_clipboard_request_e ghostty_clipboard_request_type(void*);",
-        description="libghostty clipboard request-type declaration",
-    )
+    declarations = {
+        "GHOSTTY_API bool ghostty_surface_process_exited(ghostty_surface_t);": (
+            "GHOSTTY_API int ghostty_surface_child_pid(ghostty_surface_t);\n"
+            "GHOSTTY_API int ghostty_surface_child_exit_code(ghostty_surface_t);"
+        ),
+        "GHOSTTY_API void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);":
+            "GHOSTTY_API void ghostty_surface_inject_output(ghostty_surface_t, const char*, uintptr_t);",
+        "GHOSTTY_API void ghostty_surface_complete_clipboard_request(":
+            "GHOSTTY_API ghostty_clipboard_request_e ghostty_clipboard_request_type(void*);",
+    }
+    for anchor, declaration in declarations.items():
+        patch_source_file(
+            path,
+            original=anchor,
+            replacement=declaration + "\n" + anchor,
+            already_applied=declaration,
+            description="Ghosthub embedding API declarations",
+        )
 
 
 def patch_embedded_runtime_env(path: Path) -> None:
-    marker = "try stripGhosthubLauncherEnv(alloc, &env);"
-    original = """    pub fn defaultTermioEnv(self: *const Surface) !std.process.EnvMap {
-        const alloc = self.app.core_app.alloc;
-        var env = try internal_os.getEnvMap(alloc);
-        errdefer env.deinit();
-
-        if (comptime builtin.target.os.tag.isDarwin()) {
-            if (env.get("__XCODE_BUILT_PRODUCTS_DIR_PATHS") != null) {
-                env.remove("__XCODE_BUILT_PRODUCTS_DIR_PATHS");
-                env.remove("__XPC_DYLD_LIBRARY_PATH");
-                env.remove("DYLD_FRAMEWORK_PATH");
-                env.remove("DYLD_INSERT_LIBRARIES");
-                env.remove("DYLD_LIBRARY_PATH");
-                env.remove("LD_LIBRARY_PATH");
-                env.remove("SECURITYSESSIONID");
-                env.remove("XPC_SERVICE_NAME");
-            }
-
-            // Remove this so that running `ghostty` within Ghostty works.
-            env.remove("GHOSTTY_MAC_LAUNCH_SOURCE");
-
-            // If we were launched from the desktop then we want to
-            // remove the LANGUAGE env var so that we don't inherit
-            // our translation settings for Ghostty. If we aren't from
-            // the desktop then we didn't set our LANGUAGE var so we
-            // don't need to remove it.
-            if (internal_os.launchedFromDesktop()) env.remove("LANGUAGE");
-        }
-
-        return env;
+    original = """        return env;
     }
+
+    /// The cursor position from the host directly is in screen coordinates but
 """
-    replacement = """    pub fn defaultTermioEnv(self: *const Surface) !std.process.EnvMap {
-        const alloc = self.app.core_app.alloc;
-        var env = try internal_os.getEnvMap(alloc);
-        errdefer env.deinit();
-
-        if (comptime builtin.target.os.tag.isDarwin()) {
-            if (env.get("__XCODE_BUILT_PRODUCTS_DIR_PATHS") != null) {
-                env.remove("__XCODE_BUILT_PRODUCTS_DIR_PATHS");
-                env.remove("__XPC_DYLD_LIBRARY_PATH");
-                env.remove("DYLD_FRAMEWORK_PATH");
-                env.remove("DYLD_INSERT_LIBRARIES");
-                env.remove("DYLD_LIBRARY_PATH");
-                env.remove("LD_LIBRARY_PATH");
-                env.remove("SECURITYSESSIONID");
-                env.remove("XPC_SERVICE_NAME");
-            }
-
-            // Remove this so that running `ghostty` within Ghostty works.
-            env.remove("GHOSTTY_MAC_LAUNCH_SOURCE");
-
-            // If we were launched from the desktop then we want to
-            // remove the LANGUAGE env var so that we don't inherit
-            // our translation settings for Ghostty. If we aren't from
-            // the desktop then we didn't set our LANGUAGE var so we
-            // don't need to remove it.
-            if (internal_os.launchedFromDesktop()) env.remove("LANGUAGE");
-        }
-
-        try stripGhosthubLauncherEnv(alloc, &env);
+    replacement = """        stripGhosthubLauncherEnv(&env);
         return env;
     }
 
     fn stripGhosthubLauncherEnv(
-        alloc: std.mem.Allocator,
-        env: *std.process.EnvMap,
-    ) !void {
+        env: *std.process.Environ.Map,
+    ) void {
         const exact_keys = [_][]const u8{
             "__CFBundleIdentifier",
             "EDITOR",
@@ -1100,7 +476,7 @@ def patch_embedded_runtime_env(path: Path) -> None:
             "WINDOWID",
             "_",
         };
-        inline for (exact_keys) |key| env.remove(key);
+        inline for (exact_keys) |key| _ = env.orderedRemove(key);
 
         const prefixes = [_][]const u8{
             "ALACRITTY_",
@@ -1116,30 +492,27 @@ def patch_embedded_runtime_env(path: Path) -> None:
             "WT_",
         };
 
-        var keys_to_remove: std.ArrayList([]const u8) = .empty;
-        defer keys_to_remove.deinit(alloc);
-
-        var it = env.iterator();
-        while (it.next()) |entry| {
-            const key = entry.key_ptr.*;
+        // Remove backwards because orderedRemove shifts the remaining keys.
+        var index = env.keys().len;
+        while (index > 0) {
+            index -= 1;
+            const key = env.keys()[index];
             inline for (prefixes) |prefix| {
                 if (std.mem.startsWith(u8, key, prefix)) {
-                    try keys_to_remove.append(alloc, key);
+                    _ = env.orderedRemove(key);
                     break;
                 }
             }
         }
-
-        for (keys_to_remove.items) |key| {
-            env.remove(key);
-        }
     }
+
+    /// The cursor position from the host directly is in screen coordinates but
 """
     patch_source_file(
         path,
         original=original,
         replacement=replacement,
-        already_applied=marker,
+        already_applied="stripGhosthubLauncherEnv(&env);",
         description="Ghostty embedded launcher environment isolation",
     )
 
@@ -1263,25 +636,18 @@ def patch_surface_inject_output_export(path: Path) -> None:
 
 
 def patch_clipboard_request_type_export(path: Path) -> None:
-    patch_source_file(
-        path,
-        original="""    /// Complete a clipboard read request started via the read callback.
-    /// This can only be called once for a given request. Once it is called
-    /// with a request the request pointer will be invalidated.
-    export fn ghostty_surface_complete_clipboard_request(
-""",
-        replacement="""    /// Return the semantic type of an active clipboard request.
-    export fn ghostty_clipboard_request_type(
+    anchor = "    export fn ghostty_surface_complete_clipboard_request("
+    declaration = """    export fn ghostty_clipboard_request_type(
         state: *apprt.ClipboardRequest,
     ) c_int {
-        return @intCast(@intFromEnum(std.meta.activeTag(state.*)));
+        return @intCast(@backingInt(std.meta.activeTag(state.*)));
     }
 
-    /// Complete a clipboard read request started via the read callback.
-    /// This can only be called once for a given request. Once it is called
-    /// with a request the request pointer will be invalidated.
-    export fn ghostty_surface_complete_clipboard_request(
-""",
+"""
+    patch_source_file(
+        path,
+        original=anchor,
+        replacement=declaration + anchor,
         already_applied="export fn ghostty_clipboard_request_type(",
         description="libghostty clipboard request-type export",
     )
@@ -1360,52 +726,30 @@ def patch_child_write_dispatch(path: Path) -> None:
 
 def patch_clipboard_write_origin(path: Path) -> None:
     """Tag OSC 52 writes so the embedder can distinguish them from user copy."""
-    marker_entry = """        .{
-            .mime = "application/x-ghosthub-osc52",
-            .data = "",
-        },
-"""
-    patch_source_file(
-        path,
-        original="""    self.rt_surface.setClipboard(loc, &.{.{
-        .mime = "text/plain",
-        .data = buf,
-    }}, confirm) catch |err| {
-""",
-        replacement="""    self.rt_surface.setClipboard(loc, &.{
-        .{
-            .mime = "text/plain",
-            .data = buf,
-        },
-"""
-        + marker_entry
-        + """    }, confirm) catch |err| {
-""",
-        already_applied="application/x-ghosthub-osc52",
-        description="Ghostty OSC 52 direct-write origin marker",
-    )
-    patch_source_file(
-        path,
-        original="""        .osc_52_write => |clipboard| try self.rt_surface.setClipboard(clipboard, &.{.{
-            .mime = "text/plain",
-            .data = data,
-        }}, !confirmed),
-""",
-        replacement="""        .osc_52_write => |clipboard| try self.rt_surface.setClipboard(clipboard, &.{
-            .{
-                .mime = "text/plain",
-                .data = data,
-            },
-            .{
-                .mime = "application/x-ghosthub-osc52",
-                .data = "",
-            },
-        }, !confirmed),
-""",
-        already_applied="""        .osc_52_write => |clipboard| try self.rt_surface.setClipboard(clipboard, &.{
-""",
-        description="Ghostty OSC 52 confirmed-write origin marker",
-    )
+    for call, data, ending in (
+        ("self.rt_surface.setClipboard(loc,", "buf[0..decoded.len :0]", "confirm) catch |err| {"),
+        ("try self.rt_surface.setClipboard(clipboard,", "data", "!complete.confirmed);"),
+    ):
+        indent = "    " if data.startswith("buf") else "            "
+        original = (
+            f"{indent}{call} &.{{.{{\n"
+            f'{indent}    .mime = "text/plain",\n'
+            f"{indent}    .data = {data},\n"
+            f"{indent}}}}}, {ending}"
+        )
+        replacement = (
+            f"{indent}{call} &.{{\n"
+            f'{indent}    .{{ .mime = "text/plain", .data = {data} }},\n'
+            f'{indent}    .{{ .mime = "application/x-ghosthub-osc52", .data = "" }},\n'
+            f"{indent}}}, {ending}"
+        )
+        patch_source_file(
+            path,
+            original=original,
+            replacement=replacement,
+            already_applied=replacement,
+            description="Ghostty OSC 52 write origin marker",
+        )
 
 
 def patch_child_write_embedded(path: Path) -> None:
@@ -1494,16 +838,16 @@ def patch_macos_login_quiet(path: Path) -> None:
     contents = path.read_text()
 
     hush_original = """        const hush = if (passwd.home) |home| hush: {
-            var dir = std.fs.openDirAbsolute(home, .{}) catch |err| {
+            var dir = std.Io.Dir.openDirAbsolute(global.io(), home, .{}) catch |err| {
                 log.warn(
                     "failed to open home dir, not checking for hushlogin err={}",
                     .{err},
                 );
                 break :hush false;
             };
-            defer dir.close();
+            defer dir.close(global.io());
 
-            break :hush if (dir.access(".hushlogin", .{})) true else |_| false;
+            break :hush if (dir.access(global.io(), ".hushlogin", .{})) true else |_| false;
         } else false;
 
 """
@@ -1557,7 +901,7 @@ def patch_libintl_i18n_guard(path: Path) -> None:
             .target = target,
             .optimize = optimize,
         })) |libintl_dep| {
-            step.linkLibrary(libintl_dep.artifact("intl"));
+            step.root_module.linkLibrary(libintl_dep.artifact("intl"));
             try static_libs.append(
                 b.allocator,
                 libintl_dep.artifact("intl").getEmittedBin(),
@@ -1581,7 +925,7 @@ def patch_libintl_i18n_guard(path: Path) -> None:
                 .target = target,
                 .optimize = optimize,
             })) |libintl_dep| {
-                step.linkLibrary(libintl_dep.artifact("intl"));
+                step.root_module.linkLibrary(libintl_dep.artifact("intl"));
                 try static_libs.append(
                     b.allocator,
                     libintl_dep.artifact("intl").getEmittedBin(),
@@ -1628,14 +972,14 @@ def patch_apple_silicon_xcframework_target(
 
     native_switch_case = """            .native => &.{.{
                 .library = macos_native.output,
-                .headers = b.path("include"),
+                .headers = headers,
                 .dsym = macos_native.dsym,
             }},
 """
     aarch64_switch_case = native_switch_case + """
             .aarch64 => &.{.{
                 .library = macos_aarch64.output,
-                .headers = b.path("include"),
+                .headers = headers,
                 .dsym = macos_aarch64.dsym,
             }},
 """
@@ -1647,7 +991,7 @@ def patch_apple_silicon_xcframework_target(
         description="Ghostty Apple Silicon xcframework switch case",
     )
 
-    native_arch_case = """        .native => switch (builtin.cpu.arch) {
+    native_arch_case = """        .native => switch (builtin.target.cpu.arch) {
             .aarch64 => "arm64",
             .x86_64 => "x86_64",
             else => @panic("unsupported macOS arch"),
@@ -1694,9 +1038,11 @@ def parse_semver(version: str) -> tuple[int, int, int]:
 
 
 def ensure_supported_zig_version(version: str, minimum_version: str) -> None:
-    if parse_semver(version) < parse_semver(minimum_version):
+    current = parse_semver(version)
+    required = parse_semver(minimum_version)
+    if current[:2] != required[:2] or current < required or "-" in version:
         raise BootstrapError(
-            f"Ghostty requires Zig {minimum_version} or newer, but found {version}. "
+            f"Ghostty requires Zig {minimum_version} or a compatible patch release, but found {version}. "
             "Install a compatible Zig toolchain and rerun "
             "`python3 tools/bootstrap_libghostty.py`."
         )
@@ -1930,11 +1276,6 @@ def artifact_state_message(
             "libghostty artifacts were built against a different Ghostty revision. "
             "Re-run `python3 tools/bootstrap_libghostty.py`."
         )
-    if manifest.get("ghosttyBackports") != GHOSTTY_BACKPORT_COMMITS:
-        return (
-            "libghostty artifacts were built without the current Ghostty memory backports. "
-            "Re-run `python3 tools/bootstrap_libghostty.py`."
-        )
     if manifest.get("ghosthubBootstrapVersion") != GHOSTHUB_BOOTSTRAP_VERSION:
         return (
             "libghostty artifacts were built against an older Ghosthub bootstrap schema. "
@@ -2010,22 +1351,20 @@ def artifact_state_message(
             "Re-run `python3 tools/bootstrap_libghostty.py`."
         )
 
-    # A current manifest can still cover a broken archive: a strict
-    # libtool that drops misaligned members produces a fat lib without
-    # the ghostty API (see rebuild_fat_archive). Validate the sentinel
-    # so such artifacts rebuild instead of failing the app link.
-    for fat_path in sorted(artifacts.xcframework_path.rglob(FAT_ARCHIVE_NAME)):
+    # Upstream normalizes and combines archives before applying its libSystem
+    # symbol overrides. Check the emitted library without reassembling it.
+    for fat_path in sorted(artifacts.xcframework_path.rglob(LIBRARY_ARCHIVE_NAME)):
         if not archive_defines_symbol(fat_path, GHOSTTY_SENTINEL_SYMBOL):
             return (
                 f"libghostty artifacts at {fat_path} lack the ghostty API "
-                "(a strict libtool dropped archive members). "
+                "(the static library is incomplete). "
                 "Re-run `python3 tools/bootstrap_libghostty.py`."
             )
 
     return None
 
 
-FAT_ARCHIVE_NAME = "libghostty-fat.a"
+LIBRARY_ARCHIVE_NAME = "libghostty-internal.a"
 GHOSTTY_SENTINEL_SYMBOL = "_ghostty_app_new"
 
 
@@ -2042,103 +1381,6 @@ def archive_defines_symbol(archive: Path, symbol: str) -> bool:
         for line in result.stdout.splitlines()
         if line
     )
-
-
-def archive_archs(archive: Path) -> list[str]:
-    result = subprocess.run(
-        ["lipo", "-archs", str(archive)],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return []
-    return result.stdout.split()
-
-
-def component_archives(
-    cache_root: Path,
-    allowed_archs: list[str] | None = None,
-) -> list[Path]:
-    archives = sorted(
-        path
-        for path in cache_root.rglob("*.a")
-        if path.name != FAT_ARCHIVE_NAME
-    )
-    if allowed_archs is None:
-        return archives
-
-    allowed = set(allowed_archs)
-    return [
-        archive
-        for archive in archives
-        if (archs := set(archive_archs(archive))) and archs.issubset(allowed)
-    ]
-
-
-def xcframework_slice_archs(fat_path: Path) -> list[str]:
-    current = archive_archs(fat_path)
-    if current:
-        return current
-
-    name = fat_path.parent.name
-    if "-" not in name:
-        return []
-    arch_segment = name.split("-", 1)[1].split("-", 1)[0]
-    return [arch for arch in arch_segment.split("_") if arch]
-
-
-def rebuild_fat_archive(fat_path: Path, components: list[Path]) -> None:
-    """Re-merge the fat archive from realigned component archives.
-
-    Xcode 26.5's libtool (cctools 1267) silently drops static-archive
-    members that are not 8-byte aligned, and Zig 0.15's archiver packs
-    members at 2-byte alignment — so the assembled libghostty-fat.a can
-    lose the ghostty core (and assorted dependency objects) on machines
-    with a current Xcode. `ranlib` rewrites an archive with aligned
-    members, after which the same libtool keeps everything.
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        aligned: list[str] = []
-        for index, component in enumerate(components):
-            copy = Path(tmpdir) / f"{index:03d}-{component.name}"
-            shutil.copy2(component, copy)
-            subprocess.run(
-                ["ranlib", str(copy)], check=True, capture_output=True
-            )
-            aligned.append(str(copy))
-        subprocess.run(
-            ["libtool", "-static", "-o", str(fat_path), *aligned],
-            check=True,
-            capture_output=True,
-        )
-
-
-def repair_fat_archives(paths: BootstrapPaths) -> None:
-    """Reassemble every fresh fat archive from its component archives.
-
-    A strict libtool may retain the Ghostty sentinel while silently dropping
-    unrelated dependency members, so checking one symbol cannot prove the
-    archive is link-complete. Bootstrap runs this only after a real Zig build;
-    idempotent cached bootstraps still skip all archive work.
-    """
-    source_root = paths.source_checkout_root
-    xcframework = source_root / "macos" / "GhosttyKit.xcframework"
-    for fat_path in sorted(xcframework.rglob(FAT_ARCHIVE_NAME)):
-        components = component_archives(
-            source_root / ".zig-cache",
-            allowed_archs=xcframework_slice_archs(fat_path),
-        )
-        if not components:
-            raise BootstrapError(
-                f"{fat_path} lacks the ghostty API and no component "
-                "archives were found in the zig cache to rebuild it."
-            )
-        rebuild_fat_archive(fat_path, components)
-        if not archive_defines_symbol(fat_path, GHOSTTY_SENTINEL_SYMBOL):
-            raise BootstrapError(
-                f"{fat_path} still lacks {GHOSTTY_SENTINEL_SYMBOL} after "
-                "realignment repair; the Ghostty build output is broken."
-            )
 
 
 def ensure_emitted_resources(paths: BootstrapPaths) -> None:
@@ -2217,7 +1459,6 @@ def write_manifest(
         "ghosttySource": metadata.source,
         "ghosttyTag": metadata.tag,
         "ghosttyCommit": metadata.commit,
-        "ghosttyBackports": GHOSTTY_BACKPORT_COMMITS,
         "ghosthubBootstrapVersion": GHOSTHUB_BOOTSTRAP_VERSION,
         "ghosttyBundleID": GHOSTHUB_GHOSTTY_BUNDLE_ID,
         "ghosttyConfigLoadExport": True,
@@ -2258,9 +1499,7 @@ def bootstrap(
     rebuilt_variant = False
     if artifact_state_message(paths.cached_artifacts, metadata, xcframework_target, optimize) is not None:
         ensure_source_checkout(paths, metadata, git=git)
-        apply_ghostty_backports(paths, git=git)
         apply_ghosthub_source_patches(paths)
-        apply_upstream_lifetime_backports(paths.source_checkout_root)
 
         zig_path = resolve_tool(zig)
         _ = resolve_tool(xcodebuild)
@@ -2290,7 +1529,6 @@ def bootstrap(
                 "toolchain, a full Xcode installation selected via `xcode-select`, and the "
                 "Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`)."
             ) from error
-        repair_fat_archives(paths)
         ensure_emitted_resources(paths)
         copy_outputs(paths)
         write_manifest(paths, metadata, zig_version, xcframework_target, optimize)

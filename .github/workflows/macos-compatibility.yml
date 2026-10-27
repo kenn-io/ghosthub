@@ -64,11 +64,11 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
-      - name: Install Zig 0.15.2
+      - name: Install Zig 0.17.0
         shell: bash
         env:
-          ZIG_VERSION: 0.15.2
-          ZIG_SHA256: 3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b
+          ZIG_VERSION: 0.17.0
+          ZIG_SHA256: b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a
         run: |
           archive="$RUNNER_TEMP/zig-${ZIG_VERSION}.tar.xz"
           install_root="$RUNNER_TOOL_CACHE/zig/${ZIG_VERSION}/arm64"
