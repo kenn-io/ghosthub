@@ -63,6 +63,18 @@ at full resolution. Build success alone does not check the wording or layout.
 For local previews, use `make docs-serve`, `make site-docs-serve`, or
 `pnpm dev` from `website/`.
 
+CI runs the shared [first-paint check](https://github.com/kenn-io/actions/tree/main/first-paint)
+on the built website, both docs sites, and the Rust web UI. It fails when a
+page can paint before its stylesheets and fonts load. Website and docs pages
+embed their fonts in a render-blocking stylesheet and inline
+`hold-first-paint.js` right after `<meta charset>`; the Rust web UI uses only
+system fonts and needs neither. Both Zensical sites share
+`website/docs/overrides/`, which holds that script, the template that inlines
+it, and the embedded Inter and JetBrains Mono faces. Keep the theme's Google
+Fonts loading off (`font = false`). To run the check locally, set it up in a
+kenn-io/actions checkout as its README describes, then run
+`node <checkout>/first-paint/check-first-paint.mjs --dist <built site>`.
+
 ## How do I refresh screenshots and deploy?
 
 Follow the [website capture and deployment instructions](../website/README.md).

@@ -9,7 +9,7 @@ site_dir = "public/docs"
 use_directory_urls = true
 repo_url = "https://github.com/kenn-io/ghosthub"
 repo_name = "kenn-io/ghosthub"
-extra_css = ["stylesheets/extra.css"]
+extra_css = ["assets/stylesheets/fonts.css", "stylesheets/extra.css"]
 nav = [
   {"Overview" = "index.md"},
   {"Getting Started" = "getting-started.md"},
@@ -29,6 +29,8 @@ nav = [
 homepage = "/"
 
 [project.theme]
+custom_dir = "docs/overrides"
+font = false
 variant = "modern"
 features = [
   "content.code.copy",

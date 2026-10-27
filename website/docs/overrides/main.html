@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{#- Inline the first-paint hold directly after the charset, before any
+    stylesheet, then the theme's own site_meta without its charset. The
+    website's Astro pages inline the same file. -#}
+{% block site_meta %}
+  <meta charset="utf-8">
+  <script>{% include "hold-first-paint.js" %}</script>
+  {{ super() | replace('<meta charset="utf-8">', '') }}
+{% endblock %}

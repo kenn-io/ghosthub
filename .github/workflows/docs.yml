@@ -1,0 +1,41 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'website/docs/overrides/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'website/docs/overrides/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Engineering docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Build the engineering docs
+        working-directory: docs
+        run: uv run --frozen ./zensical-docs.sh build
+      - name: Check that pages paint with their stylesheets and fonts
+        uses: kenn-io/actions/first-paint@ee1ddcce6a620e49ba96f613bb8d113e0193b4f6 # first-paint, kenn-io/actions#6
+        with:
+          dist: docs/site

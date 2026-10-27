@@ -6,6 +6,7 @@ copyright = "Copyright &copy; 2026 Kenn Software LLC. AGPL-3.0."
 docs_dir = "docs"
 site_dir = "site"
 use_directory_urls = true
+extra_css = ["assets/stylesheets/fonts.css"]
 nav = [
   {"Overview" = "index.md"},
   {"Quick Start" = "quickstart.md"},
@@ -25,6 +26,9 @@ nav = [
 homepage = "/"
 
 [project.theme]
+# The website docs share the first-paint hold and embedded fonts.
+custom_dir = "../website/docs/overrides"
+font = false
 variant = "modern"
 features = [
   "navigation.instant",

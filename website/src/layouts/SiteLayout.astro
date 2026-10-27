@@ -3,6 +3,8 @@
 import '../styles/global.css';
 import Footer from '../components/Footer.astro';
 import Header from '../components/Header.astro';
+// The docs theme override inlines the same file.
+import holdFirstPaint from '../../docs/overrides/hold-first-paint.js?raw';
 
 interface Props {
   title: string;
@@ -18,6 +20,7 @@ const canonical = new URL(path, Astro.site);
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <script is:inline set:html={holdFirstPaint} />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
@@ -30,13 +33,6 @@ const canonical = new URL(path, Astro.site);
     <meta property="og:image" content={new URL('/og.png', Astro.site)} />
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:image" content={new URL('/og.png', Astro.site)} />
-    <link
-      rel="preload"
-      href="/fonts/JetBrainsMono-Bold.woff2"
-      as="font"
-      type="font/woff2"
-      crossorigin
-    />
   </head>
   <body>
     <Header />

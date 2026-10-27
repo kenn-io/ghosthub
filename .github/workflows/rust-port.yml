@@ -178,3 +178,47 @@ jobs:
 
       - name: Check dependency policy
         run: make -C .. rust-deny
+
+  web-first-paint:
+    name: Web UI first paint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+
+      - name: Build the web UI launcher
+        run: cargo build --locked -p ghosthub-web --example serve
+
+      # The launcher serves the same embedded page and CSP as the app. Its
+      # bootstrap URL carries a credential for this loopback-only process,
+      # which ends with the job.
+      - name: Start the web UI
+        id: serve
+        run: |
+          log="$RUNNER_TEMP/web-ui.log"
+          target/debug/examples/serve > "$log" 2>&1 &
+          url=""
+          for _ in $(seq 100); do
+            url="$(grep -o 'http://127\.0\.0\.1:[0-9]*/?auth_token=[0-9a-f]*' "$log" || true)"
+            if [[ -n "$url" ]]; then break; fi
+            sleep 0.1
+          done
+          if [[ -z "$url" ]]; then
+            cat "$log"
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Check that the page paints with its stylesheets and fonts
+        uses: kenn-io/actions/first-paint@ee1ddcce6a620e49ba96f613bb8d113e0193b4f6 # first-paint, kenn-io/actions#6
+        with:
+          urls: ${{ steps.serve.outputs.url }}
