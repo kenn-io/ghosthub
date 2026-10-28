@@ -11996,8 +11996,10 @@ final class WorkspaceSceneModel: ObservableObject {
             // it moves on its own once it reattaches. A detached client, or
             // one whose recovery waits for sign-in or host-key review, stays
             // while its session is listed under another name, because it
-            // moves there itself. Only a closed duplicate of this session,
-            // or one whose session ended, is discarded.
+            // moves there itself. The selected terminal also stays, so the
+            // window keeps showing what the user chose. Otherwise only a
+            // closed duplicate of this session, or one whose session ended,
+            // is discarded.
             let existingSessionMoved = retainedTmuxSessionIdentity(existing)
                 .flatMap {
                     currentTmuxSessionName(
@@ -12006,8 +12008,15 @@ final class WorkspaceSceneModel: ObservableObject {
                     )
                 }
                 .map { $0 != renamedSelection.name } ?? false
+            let existingIsSelected =
+                activeBorrowedTmuxHandle?.id == existing.handle.id
+                    || activeBorrowedTmuxSelection.map {
+                        TmuxPresentationKey($0)
+                            == TmuxPresentationKey(existing.selection)
+                    } == true
             guard !existing.reconnectSupervisor.isRunning,
-                  !existingSessionMoved
+                  !existingSessionMoved,
+                  !existingIsSelected
             else { return false }
             invalidateBorrowedTmuxSession(existing.selection)
             return rekeyTmuxPresentation(presentation, to: renamedSelection)

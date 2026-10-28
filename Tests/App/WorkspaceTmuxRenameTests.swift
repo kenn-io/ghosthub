@@ -1149,6 +1149,95 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a selected detached terminal stays when the original terminal can move")
+    func renameKeepsSelectedDetachedDestination() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["anchor": "$1", "desk": "$2"])
+        let sizingHold = LockedValue<DispatchGroup?>(nil)
+        let identityHold = LockedValue<DispatchGroup?>(nil)
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: renameClientSplitter(
+                names,
+                launches: store.launchCommands,
+                sizingHold: sizingHold,
+                identityHold: identityHold
+            ),
+            tmuxSessionDiscovery: { _ in .success(renameFixture(names)) },
+            tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator()
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.count == 2
+        }
+        let anchor = WorkspaceTmuxSessionSelection(hostID: hostID, name: "anchor")
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        let notes = WorkspaceTmuxSessionSelection(hostID: hostID, name: "notes")
+        model.openBorrowedTmuxSession(desk)
+        await connectActiveRenameSession(model, store: store)
+        let moving = try #require(model.retainedBorrowedTmuxHandle(for: desk))
+
+        // Switching away starts a resize that holds the desk terminal in
+        // place while tmux renames its session.
+        let sizing = DispatchGroup()
+        sizing.enter()
+        sizingHold.store(sizing)
+        model.openBorrowedTmuxSession(anchor)
+        await connectActiveRenameSession(model, store: store)
+        names.withLock { renameFixtureSession(&$0, from: "desk", to: "notes") }
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.map(\.name).sorted()
+                == ["anchor", "notes"]
+        }
+        #expect(model.retainedBorrowedTmuxHandle(for: desk)?.id == moving.id)
+
+        // The user opens the session under its new name before tmux reports
+        // that client, then detaches it.
+        let identity = DispatchGroup()
+        identity.enter()
+        identityHold.store(identity)
+        model.openBorrowedTmuxSession(notes)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return model.activeBorrowedTmuxSelection == notes
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+        let selected = try #require(model.retainedBorrowedTmuxHandle(for: notes))
+        store.surface.closeObservers[selected.id]?(false, 0)
+        await waitUntilMainActor {
+            !model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        // The resize finishes, so the desk terminal can move again.
+        sizingHold.store(nil)
+        sizing.leave()
+        identityHold.store(nil)
+        identity.leave()
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        names.withLock { $0["extra"] = "$7" }
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.count == 3
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == notes)
+        #expect(model.retainedBorrowedTmuxHandle(for: notes)?.id == selected.id)
+        #expect(model.retainedBorrowedTmuxHandle(for: desk)?.id == moving.id)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a detached terminal keeps its session through a name swap")
     func nameSwapKeepsDetachedTerminal() async throws {
         let environment = try setupStandardEnvironment()
