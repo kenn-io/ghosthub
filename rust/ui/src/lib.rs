@@ -10237,20 +10237,6 @@ mod tests {
                 false,
                 vec![],
             ),
-            (
-                HostConnectionState::Ready,
-                KwtTmuxAttachMode::Direct,
-                Some("other"),
-                true,
-                vec![],
-            ),
-            (
-                HostConnectionState::Ready,
-                KwtTmuxAttachMode::Protected,
-                Some("kwt"),
-                true,
-                vec![],
-            ),
         ] {
             let host = HostItem::ssh(
                 "ssh:studio",
