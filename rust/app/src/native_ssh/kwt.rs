@@ -244,6 +244,92 @@ fn kills_only_confirmed_default_socket_workspace_sessions() {
     workspace_session_lifecycle(&fixture, false);
 }
 
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+fn opens_and_kills_kwt_sessions_when_default_inventory_fails() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::opens_and_kills_kwt_sessions_when_default_inventory_fails",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let directory = fixture.root.join("assets");
+    std::fs::create_dir(&directory).unwrap();
+    remote_kwt(&["workspace", "add", directory.to_str().unwrap()]);
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let snapshot = fixture.workspace.snapshot();
+    let row = &snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == fixture.host_id)
+        .unwrap()
+        .directory_workspaces()[0];
+    start_workspace_session(&fixture, true, row.session_name(), row.path(), None);
+
+    // A real filesystem error breaks only the configured default socket.
+    // The executable and canonical KWT server remain healthy.
+    let socket_directory = fixture.root.join("tmux");
+    std::fs::rename(&socket_directory, fixture.root.join("tmux-saved")).unwrap();
+    std::fs::write(&socket_directory, "not a directory").unwrap();
+    fixture.connect();
+    fixture.wait(|snapshot| {
+        snapshot
+            .hosts()
+            .iter()
+            .any(|host| host.id() == fixture.host_id && !host.kwt_refreshing())
+    });
+    let snapshot = fixture.workspace.snapshot();
+    let host = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == fixture.host_id)
+        .unwrap();
+    assert!(host.tmux_diagnostic().is_some(), "{host:?}");
+    assert!(host.kwt_diagnostic().is_none(), "{host:?}");
+    let row = &host.directory_workspaces()[0];
+    assert!(row.session_available(), "{row:?}");
+    assert_eq!(row.tmux_socket_name(), Some("kwt"));
+    let selection = SessionSelection::kwt_workspace(
+        &fixture.host_id,
+        &fixture.endpoint,
+        row.session_name(),
+        row.tmux_attach_mode(),
+        row.tmux_socket_name().map(str::to_owned),
+        row.path(),
+        None,
+    );
+    // This session has never had a retained client to mask skipped discovery.
+    fixture.workspace.switch_session(&selection).unwrap();
+    fixture.tmux_shell(selection.session(), "default-inventory-failed");
+    fixture.workspace.request_session_kill(&selection).unwrap();
+    fixture.wait(|_| fixture.workspace.session_kill_confirmation().is_some());
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait(|snapshot| {
+        let output = Command::new("/usr/bin/tmux")
+            .env_remove("TMUX_TMPDIR")
+            .args([
+                "-L",
+                "kwt",
+                "has-session",
+                "-t",
+                &format!("={}", selection.session()),
+            ])
+            .output()
+            .unwrap();
+        !output.status.success()
+            && snapshot.hosts().iter().any(|host| {
+                host.id() == fixture.host_id
+                    && host.directory_workspaces().iter().any(|row| {
+                        row.session_name() == selection.session() && !row.session_available()
+                    })
+            })
+    });
+    assert!(directory.is_dir());
+    fixture.workspace.close();
+}
+
 #[allow(clippy::too_many_lines)] // Both workspace kinds through discovery, switching, and confirmed kills.
 fn workspace_session_lifecycle(fixture: &Fixture, kwt_socket: bool) {
     if kwt_socket {
