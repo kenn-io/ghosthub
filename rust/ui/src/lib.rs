@@ -7559,10 +7559,12 @@ impl RootView {
                 };
                 let endpoint_is_resolved = (!host.is_ssh()
                     || (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
-                        && worktree.tmux_socket_name().is_none()))
+                        && matches!(worktree.tmux_socket_name(), None | Some("kwt"))))
                     && (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
                         || worktree.tmux_socket_name().is_some());
-                let open_mode = if endpoint_is_resolved {
+                let open_mode = if endpoint_is_resolved
+                    && (!host.is_ssh() || worktree.session_available() || is_active || is_retained)
+                {
                     worktree_open_mode(WorktreeOpenContext {
                         attach_mode: worktree.tmux_attach_mode(),
                         authority,
@@ -7586,6 +7588,7 @@ impl RootView {
                 };
                 let can_open = open_mode != WorktreeOpenMode::Disabled;
                 let can_kill = endpoint_is_resolved
+                    && (!host.is_ssh() || worktree.session_available())
                     && can_kill_worktree(host_can_attach, socket, session, authority);
                 let open_target = WorktreeOpenTarget {
                     host_id: host.id().to_owned(),
@@ -7688,15 +7691,16 @@ impl RootView {
             let host_can_attach = host.accepts_session_actions();
             let supported = !host.is_ssh()
                 || (workspace.tmux_attach_mode() != KwtTmuxAttachMode::Protected
-                    && workspace.tmux_socket_name().is_none());
+                    && matches!(workspace.tmux_socket_name(), None | Some("kwt")));
             let can_open = supported
-                && can_open_directory_workspace(
-                    is_active || is_retained,
-                    workspace.tmux_attach_mode(),
-                    socket,
-                    workspace.session_available() && host_can_attach,
-                    host.kwt_available() && host_can_attach && !host.is_ssh(),
-                );
+                && ((host.is_ssh() && workspace.session_available() && host_can_attach)
+                    || can_open_directory_workspace(
+                        is_active || is_retained,
+                        workspace.tmux_attach_mode(),
+                        socket,
+                        workspace.session_available() && host_can_attach,
+                        host.kwt_available() && host_can_attach && !host.is_ssh(),
+                    ));
             let can_kill = supported
                 && can_kill_directory_workspace(
                     host_can_attach,
@@ -8585,7 +8589,7 @@ fn host_owns_worktree_presentation(host: &HostItem, selection: &SessionSelection
     } else {
         selection.host_id() == host.id()
             && selection.endpoint() == host.endpoint()
-            && host.kwt_owns_default_tmux_session(selection.session())
+            && host.kwt_owns_tmux_session(selection.session(), selection.tmux_socket_name())
     }
 }
 
@@ -8595,7 +8599,7 @@ fn kwt_selection_matches_presentation(
 ) -> bool {
     selection == presentation
         || (selection.tmux_attach_mode() == Some(KwtTmuxAttachMode::Direct)
-            && selection.tmux_socket_name().is_none()
+            && selection.tmux_socket_name() == presentation.tmux_socket_name()
             && presentation.tmux_attach_mode().is_none()
             && presentation.kind() == workspace::SessionKind::Tmux
             && selection.host_id() == presentation.host_id()
@@ -8615,7 +8619,7 @@ fn tree_sessions(
     let mut selections = host
         .sessions()
         .iter()
-        .filter(|session| !host.kwt_owns_default_tmux_session(session.name()))
+        .filter(|session| !host.kwt_owns_tmux_session(session.name(), None))
         .map(|session| {
             (
                 SessionSelection::new(host.id(), host.endpoint(), session.name()),

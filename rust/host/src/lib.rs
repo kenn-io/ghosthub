@@ -34,7 +34,7 @@ pub use local::{
 };
 pub use remote::{
     RemoteKwtTarget, RemoteSessionInventory, RemoteTmuxConfig, RemoteTmuxError, RemoteTmuxHost,
-    RemoteTmuxSnapshot, SshExecutable,
+    RemoteTmuxServer, RemoteTmuxSnapshot, SshExecutable,
 };
 pub use ssh::{
     KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshError, SshExecutionProjection,

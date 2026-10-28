@@ -403,6 +403,14 @@ pub(crate) fn set_remote_host_snapshot(
     host.tmux_diagnostic = snapshot
         .tmux_diagnostic()
         .map(|error| HostDiagnostic::new(error.kind(), error.to_string()));
+    host.kwt_sessions = snapshot
+        .sessions_on(host::RemoteTmuxServer::Kwt)
+        .iter()
+        .map(|session| SessionItem::new(session.name(), session.attached_clients()))
+        .collect();
+    host.kwt_tmux_diagnostic = snapshot
+        .kwt_tmux_diagnostic()
+        .map(|error| HostDiagnostic::new(error.kind(), error.to_string()));
     crate::reconcile_kwt_session_availability(host);
     apply_herdr_inventory(host, snapshot.herdr());
     apply_zellij_inventory(host, snapshot.zellij());
@@ -737,13 +745,7 @@ pub(crate) fn require_remote_tmux_selection(
     runtime: &Runtime,
     selection: &SessionSelection,
 ) -> Result<(), WorkspaceError> {
-    if selection.tmux_socket_name().is_some()
-        || selection.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected)
-    {
-        return Err(WorkspaceError::new(
-            "Remote workspaces on dedicated tmux sockets cannot be opened yet",
-        ));
-    }
+    selection.remote_tmux_server()?;
     require_current_kwt_selection(runtime, selection)?;
     Ok(())
 }
@@ -775,7 +777,7 @@ pub(crate) fn capture_remote_tmux_attach_request(
     }
     let session = context
         .snapshot
-        .sessions()
+        .sessions_on(selection.remote_tmux_server()?)
         .iter()
         .find(|session| session.name() == selection.session())
         .cloned()
@@ -1565,6 +1567,7 @@ pub(crate) fn recapture_remote_tmux_attach_request(
     runtime: &Runtime,
     request: &RemoteTmuxAttachRequest,
 ) -> Result<RemoteTmuxAttachRequest, WorkspaceError> {
+    require_remote_tmux_selection(runtime, &request.selection)?;
     let (host, snapshot) = recapture_remote_attachment_context(
         runtime,
         &request.host_id,
@@ -1572,7 +1575,7 @@ pub(crate) fn recapture_remote_tmux_attach_request(
         &request.snapshot,
     )?;
     let session = snapshot
-        .sessions()
+        .sessions_on(request.selection.remote_tmux_server()?)
         .iter()
         .find(|session| session.identity() == request.session.identity())
         .cloned()
@@ -1584,7 +1587,10 @@ pub(crate) fn recapture_remote_tmux_attach_request(
     Ok(RemoteTmuxAttachRequest {
         host_id: request.host_id.clone(),
         connection_generation: request.connection_generation,
-        selection: SessionSelection::new(&request.host_id, snapshot.endpoint(), session.name()),
+        selection: SessionSelection {
+            session: session.name().to_owned(),
+            ..request.selection.clone()
+        },
         host,
         snapshot,
         session,
