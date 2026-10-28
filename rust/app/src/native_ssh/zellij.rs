@@ -6,13 +6,41 @@ impl Fixture {
         SessionSelection::zellij(&self.host_id, &self.endpoint, name)
     }
 
-    fn create_zellij(&self, name: &str) -> SessionSelection {
-        self.workspace.select_host(&self.host_id).unwrap();
-        self.workspace
-            .create_zellij_session(&self.host_id, &self.endpoint, name)
+    fn seed_zellij(&self, name: &str) -> SessionSelection {
+        let output = Command::new("/usr/bin/tmux")
+            .env("TMUX_TMPDIR", self.root.join("tmux"))
+            .args(["new-session", "-d", "-s", &format!("seed-{name}")])
+            .arg(self.root.join("bin/zellij"))
+            .arg(format!("--session={name}"))
+            .output()
             .unwrap();
-        self.zellij_shell(name, "created");
+        assert!(output.status.success(), "{output:?}");
+        // Inventory probes can unlink a socket before its server listens.
+        // Seed through the terminal before connecting the workspace to this host.
+        let target = format!("=seed-{name}:");
+        self.wait(|_| {
+            self.tmux(&["capture-pane", "-p", "-t", &target])
+                .lines()
+                .any(|line| line.trim() == "$")
+        });
+        self.tmux(&[
+            "send-keys",
+            "-t",
+            &target,
+            "-l",
+            "printf 'seed-%s:%s\\n' \"$ZELLIJ_SESSION_NAME\" ready",
+        ]);
+        self.tmux(&["send-keys", "-t", &target, "Enter"]);
+        self.wait(|_| {
+            self.tmux(&["capture-pane", "-p", "-t", &target])
+                .contains(&format!("seed-{name}:ready"))
+        });
         self.zellij_selection(name)
+    }
+
+    fn attach_zellij(&self, selection: &SessionSelection) {
+        self.workspace.switch_session(selection).unwrap();
+        self.zellij_shell(selection.session(), "attached");
     }
 
     fn zellij_shell(&self, name: &str, marker: &str) {
@@ -85,10 +113,12 @@ fn confirmed_kill_preserves_other_sessions_and_clears_every_matching_window() {
     ) else {
         return;
     };
+    let keep = fixture.seed_zellij("keep");
+    let selection = fixture.seed_zellij("review 'one'");
     fixture.connect();
-    let keep = fixture.create_zellij("keep");
+    fixture.attach_zellij(&keep);
     fixture.workspace.detach();
-    let selection = fixture.create_zellij("review 'one'");
+    fixture.attach_zellij(&selection);
     fixture.request_zellij_kill(&selection);
     fixture.workspace.cancel_session_kill();
     assert!(fixture.workspace.confirm_session_kill().is_err());
@@ -136,8 +166,9 @@ fn a_confirmed_kill_fences_competing_kills_and_queued_attachments() {
     ) else {
         return;
     };
+    let selection = fixture.seed_zellij("guarded");
     fixture.connect();
-    let selection = fixture.create_zellij("guarded");
+    fixture.attach_zellij(&selection);
     let other = fixture.open_scene();
     other.request_zellij_kill(&selection);
     fixture.request_zellij_kill(&selection);
@@ -185,10 +216,12 @@ fn rejected_kill_restores_unchanged_windows_and_preserves_new_navigation() {
     ) else {
         return;
     };
+    let keep = fixture.seed_zellij("keep");
+    let selection = fixture.seed_zellij("guarded");
     fixture.connect();
-    let keep = fixture.create_zellij("keep");
+    fixture.attach_zellij(&keep);
     fixture.workspace.detach();
-    let selection = fixture.create_zellij("guarded");
+    fixture.attach_zellij(&selection);
     let other = fixture.open_scene();
     other.workspace.switch_session(&selection).unwrap();
     other.zellij_shell("guarded", "before");
@@ -215,8 +248,9 @@ fn reconnect_after_suppression_recovers_the_running_session() {
     ) else {
         return;
     };
+    let selection = fixture.seed_zellij("guarded");
     fixture.connect();
-    let selection = fixture.create_zellij("guarded");
+    fixture.attach_zellij(&selection);
     fixture.request_zellij_kill(&selection);
     fixture.gate_zellij_kill(true, false);
     fixture.workspace.confirm_session_kill().unwrap();
@@ -241,8 +275,9 @@ fn stale_confirmation_preserves_clients_and_rejects_an_exited_target() {
     ) else {
         return;
     };
+    let selection = fixture.seed_zellij("guarded");
     fixture.connect();
-    let selection = fixture.create_zellij("guarded");
+    fixture.attach_zellij(&selection);
     fixture.request_zellij_kill(&selection);
     fixture.connect();
     fixture.workspace.confirm_session_kill().unwrap();
@@ -269,36 +304,7 @@ fn kill_accepts_names_that_zellij_cannot_attach_to() {
         return;
     };
     for name in ["--review", "help"] {
-        let output = Command::new("/usr/bin/tmux")
-            .env("TMUX_TMPDIR", fixture.root.join("tmux"))
-            .args(["new-session", "-d", "-s", &format!("seed-{name}")])
-            .arg(fixture.root.join("bin/zellij"))
-            .arg(format!("--session={name}"))
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        // Zellij inventory probes can unlink a socket before its server listens.
-        // Wait through the terminal before asking inventory about the new session.
-        let target = format!("=seed-{name}:");
-        fixture.wait(|_| {
-            fixture
-                .tmux(&["capture-pane", "-p", "-t", &target])
-                .lines()
-                .any(|line| line.trim() == "$")
-        });
-        fixture.tmux(&[
-            "send-keys",
-            "-t",
-            &target,
-            "-l",
-            "printf 'seed-%s:%s\\n' \"$ZELLIJ_SESSION_NAME\" ready",
-        ]);
-        fixture.tmux(&["send-keys", "-t", &target, "Enter"]);
-        fixture.wait(|_| {
-            fixture
-                .tmux(&["capture-pane", "-p", "-t", &target])
-                .contains(&format!("seed-{name}:ready"))
-        });
+        fixture.seed_zellij(name);
     }
     fixture.connect();
     for name in ["--review", "help"] {
