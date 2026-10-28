@@ -35,6 +35,17 @@ impl Fixture {
             self.tmux(&["capture-pane", "-p", "-t", &target])
                 .contains(&format!("seed-{name}:ready"))
         });
+        // Release the client used for seeding before exercising app-owned clients.
+        self.tmux(&["send-keys", "-t", &target, "C-o", "d"]);
+        self.wait(|_| {
+            !Command::new("/usr/bin/tmux")
+                .env("TMUX_TMPDIR", self.root.join("tmux"))
+                .args(["has-session", "-t", &format!("=seed-{name}")])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        });
         self.zellij_selection(name)
     }
 

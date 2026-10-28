@@ -1387,17 +1387,20 @@ const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
     }
 }
 
-const fn can_kill_worktree(
-    host_can_attach: bool,
-    socket: WorktreeSocket,
-    session: WorktreeSessionPresence,
-    authority: WorktreeAuthority,
-) -> bool {
-    host_can_attach
-        && if matches!(socket, WorktreeSocket::Custom) {
-            matches!(authority, WorktreeAuthority::Generation)
+fn can_kill_worktree(host: &HostItem, worktree: &workspace::WorktreeItem) -> bool {
+    let endpoint_is_resolved = (!host.is_ssh()
+        || (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
+            && matches!(worktree.tmux_socket_name(), None | Some("kwt"))))
+        && (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
+            || worktree.tmux_socket_name().is_some());
+    endpoint_is_resolved
+        && host.accepts_session_actions()
+        && if host.is_ssh() {
+            worktree.session_available()
+        } else if worktree.tmux_socket_name().is_some() {
+            worktree.generation().is_some()
         } else {
-            matches!(session, WorktreeSessionPresence::Discovered)
+            worktree.session_available()
         }
 }
 
@@ -7587,9 +7590,7 @@ impl RootView {
                     WorktreeOpenMode::Disabled
                 };
                 let can_open = open_mode != WorktreeOpenMode::Disabled;
-                let can_kill = endpoint_is_resolved
-                    && (!host.is_ssh() || worktree.session_available())
-                    && can_kill_worktree(host_can_attach, socket, session, authority);
+                let can_kill = can_kill_worktree(host, worktree);
                 let open_target = WorktreeOpenTarget {
                     host_id: host.id().to_owned(),
                     endpoint: host.endpoint().to_owned(),
@@ -10175,30 +10176,104 @@ mod tests {
 
     #[test]
     fn protected_worktrees_offer_fresh_named_socket_kill_capture() {
-        assert!(can_kill_worktree(
-            true,
-            WorktreeSocket::Custom,
-            WorktreeSessionPresence::Absent,
-            WorktreeAuthority::Generation,
-        ));
-        assert!(!can_kill_worktree(
-            false,
-            WorktreeSocket::Custom,
-            WorktreeSessionPresence::Absent,
-            WorktreeAuthority::Generation,
-        ));
-        assert!(!can_kill_worktree(
-            true,
-            WorktreeSocket::Custom,
-            WorktreeSessionPresence::Absent,
-            WorktreeAuthority::Generationless,
-        ));
-        assert!(!can_kill_worktree(
-            true,
-            WorktreeSocket::Default,
-            WorktreeSessionPresence::Absent,
-            WorktreeAuthority::Generationless,
-        ));
+        for (connection, socket, generation, allowed) in [
+            (
+                HostConnectionState::Ready,
+                Some("protected"),
+                Some("g1"),
+                true,
+            ),
+            (
+                HostConnectionState::Unavailable,
+                Some("protected"),
+                Some("g1"),
+                false,
+            ),
+            (HostConnectionState::Ready, Some("protected"), None, false),
+            (HostConnectionState::Ready, None, None, false),
+        ] {
+            let host = HostItem::wsl("Ubuntu", None, connection, Vec::new(), None);
+            let worktree = WorktreeItem::new(
+                "/repos/project/topic",
+                "topic",
+                false,
+                generation.map(str::to_owned),
+                "project-topic",
+                (socket.map(str::to_owned), KwtTmuxAttachMode::Protected),
+                false,
+            );
+            assert_eq!(can_kill_worktree(&host, &worktree), allowed);
+        }
+    }
+
+    #[test]
+    fn remote_generationless_worktrees_offer_kill_for_live_supported_servers() {
+        for (connection, mode, socket, live, actions) in [
+            (
+                HostConnectionState::Ready,
+                KwtTmuxAttachMode::Direct,
+                Some("kwt"),
+                true,
+                vec![SessionRowAction::KillSession],
+            ),
+            (
+                HostConnectionState::Ready,
+                KwtTmuxAttachMode::Direct,
+                None,
+                true,
+                vec![SessionRowAction::KillSession],
+            ),
+            (
+                HostConnectionState::Unavailable,
+                KwtTmuxAttachMode::Direct,
+                Some("kwt"),
+                true,
+                vec![],
+            ),
+            (
+                HostConnectionState::Ready,
+                KwtTmuxAttachMode::Direct,
+                Some("kwt"),
+                false,
+                vec![],
+            ),
+            (
+                HostConnectionState::Ready,
+                KwtTmuxAttachMode::Direct,
+                Some("other"),
+                true,
+                vec![],
+            ),
+            (
+                HostConnectionState::Ready,
+                KwtTmuxAttachMode::Protected,
+                Some("kwt"),
+                true,
+                vec![],
+            ),
+        ] {
+            let host = HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                connection,
+                Vec::new(),
+                None,
+            );
+            let worktree = WorktreeItem::new(
+                "/repos/project/topic",
+                "topic",
+                false,
+                None,
+                "project-topic",
+                (socket.map(str::to_owned), mode),
+                live,
+            );
+            assert_eq!(
+                tmux_row_actions(false, can_kill_worktree(&host, &worktree)),
+                actions
+            );
+        }
     }
 
     #[test]
