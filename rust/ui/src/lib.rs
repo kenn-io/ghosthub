@@ -7432,6 +7432,15 @@ impl RootView {
             }
             header
         });
+        if let Some(diagnostic) = host.kwt_diagnostic() {
+            tree = tree.child(Self::capability_diagnostic_row(
+                host_index,
+                host.id(),
+                "retry-kwt",
+                diagnostic.message().to_owned(),
+                cx,
+            ));
+        }
         for (project_index, project) in host.projects().iter().enumerate() {
             let project_for_remove = project.clone();
             let project_for_create = project.clone();

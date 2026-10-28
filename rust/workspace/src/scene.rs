@@ -1479,11 +1479,6 @@ pub(crate) fn capture_kill_request(
     generation: u64,
 ) -> Result<KillCaptureRequest, WorkspaceError> {
     if !is_local_host_id(selection.host_id()) {
-        if selection.worktree_path().is_some() {
-            return Err(WorkspaceError::new(
-                "Remote worktree session kills are not available",
-            ));
-        }
         if selection.kind() == SessionKind::Zellij {
             let request = crate::runtime::capture_remote_zellij_request(&scene.runtime, selection)?;
             if matches!(crate::runtime::pending_remote_constructive_target(&scene.runtime, selection.host_id()),

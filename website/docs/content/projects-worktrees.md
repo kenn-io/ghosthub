@@ -18,9 +18,13 @@ The unreleased Rust app can also register projects on connected macOS and Linux
 SSH hosts. Select **+** beside that host's **Projects**, enter the repository's
 absolute path on the remote machine, and select **Add Project**. Ghosthub
 installs or repairs its bundled remote helper automatically. If this fails,
-ordinary terminal sessions remain available.
+the **Projects** section shows the error and a **Retry** action. Ordinary
+terminal sessions remain available. Select **Retry** after resolving the error
+to reconnect and refresh projects.
 
 ![Add a project on the Studio SSH host in the native Rust application](/docs/assets/guide-rust-remote-project.png)
+
+![Remote project diagnostic and Retry action beside an active terminal](/docs/assets/guide-rust-project-retry.png)
 
 Select **×** beside a project and confirm **Remove** to unregister it. The
 repository, worktrees, and running sessions remain intact. Cancel leaves the
@@ -29,7 +33,13 @@ registration unchanged.
 ![Confirm removing the remote project registration while its terminal stays open](/docs/assets/guide-rust-remove-project.png)
 
 The Rust remote project tree opens existing ordinary sessions on the default
-tmux socket. Remote worktree creation/removal, dedicated KWT sockets, protected
+tmux socket. Open a running worktree or directory row's **⋯** menu, select **Kill**,
+and confirm **Kill Session** to stop its session. Its files and registration
+remain intact.
+
+![Confirm killing a remote worktree session in the native Rust application](/docs/assets/guide-rust-project-kill.png)
+
+Remote worktree creation/removal, dedicated KWT sockets, protected
 imports, and repair/open are still in development. The remaining instructions
 on this page describe the macOS app.
 

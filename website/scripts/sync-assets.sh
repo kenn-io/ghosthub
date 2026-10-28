@@ -20,6 +20,8 @@ assets=(
   guide-rust-remote-zellij-kill.png
   guide-rust-remote-project.png
   guide-rust-remove-project.png
+  guide-rust-project-retry.png
+  guide-rust-project-kill.png
   guide-find.png
   guide-session-previews.png
   guide-session-activity.png

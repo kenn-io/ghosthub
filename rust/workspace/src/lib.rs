@@ -5087,14 +5087,19 @@ impl Workspace {
             "the fence must belong to the initiating scene"
         );
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
-        if let Some(mut entry) = self
-            .scene
-            .runtime
-            .remote_hosts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id)
-        {
+        let removed = {
+            let mut entries = self
+                .scene
+                .runtime
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(entry) = entries.get(id) {
+                remote_kwt::cancel(entry);
+            }
+            entries.remove(id)
+        };
+        if let Some(mut entry) = removed {
             if let Some(cancellation) = entry.cancellation.take() {
                 cancellation.cancel();
             }
@@ -5664,13 +5669,13 @@ impl Workspace {
         endpoint: &str,
         request: KwtProjectMutationRequest,
     ) -> Result<(), WorkspaceError> {
+        if !is_local_host_id(host_id) {
+            return remote_kwt::mutate(&self.scene, host_id, endpoint, request);
+        }
         // Same close fence as worktree operations: reservation and
         // scheduling complete before a concurrent close proceeds, or fail
         // after it.
         let _navigation = lock_live_navigation(&self.scene)?;
-        if !is_local_host_id(host_id) {
-            return remote_kwt::mutate(&self.scene, host_id, endpoint, request);
-        }
         let task = reserve_kwt_project_mutation(&self.scene, host_id, endpoint, request)?;
         let task_scene = Arc::clone(&self.scene);
         if let Err(error) = self.scene.runtime.refresh_runtime.spawn(

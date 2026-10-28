@@ -34,6 +34,12 @@ struct Task {
     mutation: Option<Mutation>,
 }
 
+pub(crate) fn cancel(entry: &RemoteEntry) {
+    if let Some(operation) = &entry.kwt.operation {
+        operation.cancellation.cancel();
+    }
+}
+
 pub(crate) fn cancel_read(entry: &RemoteEntry) {
     if let Some(operation) = &entry.kwt.operation
         && !operation.mutation
@@ -75,7 +81,15 @@ pub(crate) fn start(scene: &Arc<Scene>, host_id: &str) {
     if scene.closed.load(Ordering::Acquire) || scene.runtime.remote_kwt_bundles.is_empty() {
         return;
     }
-    if let Ok(task) = reserve(scene, host_id, None) {
+    let task = {
+        let publication = scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reserve(scene, &publication, host_id, None)
+    };
+    if let Ok(task) = task {
         schedule(scene, &task);
     }
 }
@@ -86,21 +100,29 @@ pub(crate) fn mutate(
     endpoint: &str,
     request: KwtProjectMutationRequest,
 ) -> Result<(), WorkspaceError> {
-    let task = reserve(scene, host_id, Some((endpoint, request)))?;
+    let task = {
+        // Publication reconciles scenes under their navigation locks. Keep
+        // that order when reserving a project mutation as well.
+        let publication = scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _navigation = scene::lock_live_navigation(scene)?;
+        reserve(scene, &publication, host_id, Some((endpoint, request)))?
+    };
+    // Close or host removal can now cancel the registered task. Scheduling
+    // outside the fences also lets spawn-failure cleanup publish its result.
     schedule(scene, &task);
     Ok(())
 }
 
 fn reserve(
     scene: &Scene,
+    _publication: &std::sync::MutexGuard<'_, ()>,
     host_id: &str,
     mutation: Option<(&str, KwtProjectMutationRequest)>,
 ) -> Result<Task, WorkspaceError> {
-    let _publication = scene
-        .runtime
-        .remote_publication
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut entries = scene
         .runtime
         .remote_hosts
@@ -367,10 +389,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn project_mutation_holds_publication_before_navigation() {
+        let (workspace, _) = crate::tests::remote_kill_refresh_fixture();
+        let runtime = Arc::clone(&workspace.scene.runtime);
+        *workspace.scene.before_navigation_lock.lock().unwrap() = Some(Box::new(move || {
+            assert!(matches!(
+                runtime.remote_publication.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+        }));
+        workspace
+            .add_kwt_project("ssh:studio", "studio.example", "/projects/orbit")
+            .unwrap();
+        workspace.close();
+    }
+
+    #[test]
     fn close_cancels_queued_project_mutation_before_execution() {
         let (workspace, _) = crate::tests::remote_kill_refresh_fixture();
+        let publication = workspace.scene.runtime.remote_publication.lock().unwrap();
         let task = reserve(
             &workspace.scene,
+            &publication,
             "ssh:studio",
             Some((
                 "studio.example",
@@ -380,6 +420,7 @@ mod tests {
             )),
         )
         .unwrap();
+        drop(publication);
         assert!(!task.cancellation.is_cancelled());
         workspace.close();
         assert!(task.cancellation.is_cancelled());
@@ -395,7 +436,9 @@ mod tests {
     #[test]
     fn superseded_inventory_cannot_replace_the_new_connection() {
         let (workspace, _) = crate::tests::remote_kill_refresh_fixture();
-        let task = reserve(&workspace.scene, "ssh:studio", None).unwrap();
+        let publication = workspace.scene.runtime.remote_publication.lock().unwrap();
+        let task = reserve(&workspace.scene, &publication, "ssh:studio", None).unwrap();
+        drop(publication);
         {
             let mut entries = workspace.scene.runtime.remote_hosts.lock().unwrap();
             let entry = entries.get_mut("ssh:studio").unwrap();
