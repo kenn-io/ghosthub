@@ -11993,17 +11993,21 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         if nativeTmuxSessionCoordinator.hasClosedAttachment(existing.handle) {
             // A reconnecting client may still reach a running session, and
-            // it moves on its own once it reattaches. A recovery paused for
-            // sign-in or host-key review resumes later, so it stays while
-            // its session is still listed under any name.
-            let awaitsRecovery = existing.recoveryState != nil
-                && retainedTmuxSessionIdentity(existing).flatMap {
+            // it moves on its own once it reattaches. A detached client, or
+            // one whose recovery waits for sign-in or host-key review, stays
+            // while its session is listed under another name, because it
+            // moves there itself. Only a closed duplicate of this session,
+            // or one whose session ended, is discarded.
+            let existingSessionMoved = retainedTmuxSessionIdentity(existing)
+                .flatMap {
                     currentTmuxSessionName(
                         of: $0,
                         hostID: renamedSelection.hostID
                     )
-                } != nil
-            guard !existing.reconnectSupervisor.isRunning, !awaitsRecovery
+                }
+                .map { $0 != renamedSelection.name } ?? false
+            guard !existing.reconnectSupervisor.isRunning,
+                  !existingSessionMoved
             else { return false }
             invalidateBorrowedTmuxSession(existing.selection)
             return rekeyTmuxPresentation(presentation, to: renamedSelection)

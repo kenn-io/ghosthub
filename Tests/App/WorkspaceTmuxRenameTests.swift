@@ -1149,6 +1149,71 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a detached terminal keeps its session through a name swap")
+    func nameSwapKeepsDetachedTerminal() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let names = LockedValue(["desk": "$2", "notes": "$3"])
+        let store = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeTmuxPaneSplitter: renameClientSplitter(
+                names,
+                launches: store.launchCommands
+            ),
+            tmuxSessionDiscovery: { _ in
+                .success(renameFixture(names, live: true))
+            },
+            tmuxSessionRenameCoordinator: TmuxSessionRenameCoordinator(),
+            sessionPreviewCoordinator: TmuxSessionPreviewCoordinator(
+                mode: .alwaysLive,
+                budget: LivePreviewBudget(limit: 0),
+                capture: { _, _ in nil }
+            )
+        )
+        let desk = WorkspaceTmuxSessionSelection(hostID: hostID, name: "desk")
+        let notes = WorkspaceTmuxSessionSelection(hostID: hostID, name: "notes")
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: desk) != nil
+                && model.retainedBorrowedTmuxHandle(for: notes) != nil
+        }
+        model.openBorrowedTmuxSession(notes)
+        await connectActiveRenameSession(model, store: store)
+        let wasNotes = try #require(model.retainedBorrowedTmuxHandle(for: notes))
+        model.openBorrowedTmuxSession(desk)
+        await connectActiveRenameSession(model, store: store)
+        let wasDesk = try #require(model.retainedBorrowedTmuxHandle(for: desk))
+
+        // desk's client detaches cleanly, then the two sessions swap names.
+        store.surface.closeObservers[wasDesk.id]?(false, 0)
+        await waitUntilMainActor {
+            !model.activeBorrowedTmuxSessionIsConnected
+        }
+        let surfaceRequests = store.requestCount
+        names.store(["desk": "$3", "notes": "$2"])
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.retainedBorrowedTmuxHandle(for: notes)?.id == wasDesk.id
+                && model.retainedBorrowedTmuxHandle(for: desk)?.id
+                == wasNotes.id
+        }
+
+        #expect(model.retainedBorrowedTmuxHandle(for: notes)?.id == wasDesk.id)
+        #expect(model.retainedBorrowedTmuxHandle(for: desk)?.id == wasNotes.id)
+        #expect(model.activeBorrowedTmuxSelection == notes)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        #expect(store.requestCount == surfaceRequests)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a listing whose kwt pass failed still follows a rename made in tmux")
     func partialListingFollowsTmuxRename() async throws {
         let environment = try setupStandardEnvironment()
