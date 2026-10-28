@@ -855,7 +855,14 @@ fn await_output(socket: &mut WebSocket<TcpStream>, marker: &str) {
     let mut answered = false;
     while !contains(&collected, marker.as_bytes()) {
         assert!(Instant::now() < deadline, "shell echo never arrived");
-        match socket.read().expect("shell output") {
+        match socket.read().unwrap_or_else(|error| {
+            let tail = &collected[collected.len().saturating_sub(1024)..];
+            panic!(
+                "waiting for {marker:?}: {error}; received {} bytes, ending with {:?}",
+                collected.len(),
+                String::from_utf8_lossy(tail)
+            );
+        }) {
             Message::Binary(bytes) => {
                 collected.extend_from_slice(&bytes);
                 if !answered && contains(&collected, b"[6n") {
@@ -919,6 +926,9 @@ fn attach_accepts_chunked_input_beyond_the_message_limit() {
                    for ($received=0; $received -lt 307200; $received++) { \
                        if ([Console]::ReadKey($true).KeyChar -ne 'a') { \
                            throw 'Unexpected input' \
+                       }; \
+                       if (($received + 1) % 65536 -eq 0) { \
+                           Write-Output ('received-' + ($received + 1)) \
                        } \
                    }; Write-Output ('chunk-' + 'complete'); exit\r";
     #[cfg(not(windows))]
