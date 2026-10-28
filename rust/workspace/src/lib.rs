@@ -34,6 +34,7 @@ use terminal::{
 
 mod pump;
 mod remote_herdr;
+mod remote_kwt;
 mod remote_recovery;
 mod remote_zellij;
 mod runtime;
@@ -1880,6 +1881,7 @@ struct RemoteHostContext {
 }
 
 struct RemoteEntry {
+    kwt: remote_kwt::State,
     config: RemoteTmuxConfig,
     native_host: Option<RuntimeRemoteHost>,
     context: Option<RemoteHostContext>,
@@ -4044,6 +4046,7 @@ impl Workspace {
                     remote_runner: Arc::new(StdCommandRunner),
                     remote_controller: None,
                     ssh_executable: None,
+                    remote_kwt_bundles: Vec::new(),
                     settings_mutation: Mutex::new(()),
                     settings: Mutex::new(None),
                     discovery_cancel: Mutex::new(None),
@@ -4106,6 +4109,7 @@ impl Workspace {
 
     /// Build the application workspace with disconnected configured SSH hosts.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn application_with_remote_hosts(
         appearance: TerminalAppearance,
         wsl: Option<LocalHostSpec>,
@@ -4114,6 +4118,7 @@ impl Workspace {
         roots: Roots,
         controller: Option<KwtSshExecutable>,
         ssh: Option<SshExecutable>,
+        remote_kwt_bundles: Vec<(host::RemoteKwtTarget, host::KwtBundle)>,
     ) -> Self {
         let (mut runtime, mut selected_host) = Self::application_runtime(
             appearance,
@@ -4123,6 +4128,7 @@ impl Workspace {
         );
         runtime.remote_controller = controller;
         runtime.ssh_executable = ssh;
+        runtime.remote_kwt_bundles = remote_kwt_bundles;
         let ssh_kwt_home = Path::new(&roots.state).join("ssh/kwt");
         *runtime
             .settings
@@ -4141,12 +4147,16 @@ impl Workspace {
                 .hosts
                 .get_mut()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for spec in remote_specs {
+            for mut spec in remote_specs {
+                spec.config = spec
+                    .config
+                    .with_kwt_bundles(runtime.remote_kwt_bundles.clone());
                 let item = spec.host_item();
                 if spec.diagnostic.is_none() {
                     entries.insert(
                         item.id().to_owned(),
                         RemoteEntry {
+                            kwt: remote_kwt::State::default(),
                             config: spec.config.clone(),
                             native_host: spec.runtime_host(&ssh_kwt_home, Arc::clone(&runner)),
                             context: None,
@@ -4227,6 +4237,7 @@ impl Workspace {
                 remote_runner: Arc::new(StdCommandRunner),
                 remote_controller: None,
                 ssh_executable: None,
+                remote_kwt_bundles: Vec::new(),
                 settings_mutation: Mutex::new(()),
                 settings: Mutex::new(None),
                 discovery_cancel: Mutex::new(None),
@@ -4285,6 +4296,7 @@ impl Workspace {
                     remote_runner: Arc::new(StdCommandRunner),
                     remote_controller: None,
                     ssh_executable: None,
+                    remote_kwt_bundles: Vec::new(),
                     settings_mutation: Mutex::new(()),
                     settings: Mutex::new(None),
                     discovery_cancel: Mutex::new(None),
@@ -4758,6 +4770,7 @@ impl Workspace {
                     .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
                 cancel_remote_constructive(entry);
                 cancel_remote_attachment(entry);
+                remote_kwt::cancel_read(entry);
                 if let Some(previous) = entry.cancellation.replace(cancellation.clone()) {
                     previous.cancel();
                 }
@@ -4952,7 +4965,8 @@ impl Workspace {
             navigation.fences(&self.scene),
             "the fence must belong to the initiating scene"
         );
-        let config = remote_config(settings)?;
+        let config = remote_config(settings)?
+            .with_kwt_bundles(self.scene.runtime.remote_kwt_bundles.clone());
         let new_id = config.id().to_owned();
         if self.update_ssh_host_metadata(original_id, &config) {
             return Ok(());
@@ -5023,6 +5037,7 @@ impl Workspace {
                 .insert(
                     settings.id(),
                     RemoteEntry {
+                        kwt: remote_kwt::State::default(),
                         config,
                         native_host: runtime,
                         context: None,
@@ -5193,7 +5208,7 @@ impl Workspace {
         Ok(())
     }
 
-    /// Register one explicit absolute WSL checkout through the pinned KWT helper.
+    /// Register one explicit absolute checkout on a local or SSH host through the pinned KWT helper.
     ///
     /// The command and subsequent inventory read run on the background refresh
     /// runtime. Ghosthub never scans the host or edits KWT configuration.
@@ -5223,7 +5238,7 @@ impl Workspace {
         )
     }
 
-    /// Unregister one freshly identified WSL project through the pinned KWT helper.
+    /// Unregister one freshly identified local or SSH project through the pinned KWT helper.
     ///
     /// This changes KWT metadata only. It never deletes a repository or
     /// worktree and never terminates a tmux session.
@@ -5653,6 +5668,9 @@ impl Workspace {
         // scheduling complete before a concurrent close proceeds, or fail
         // after it.
         let _navigation = lock_live_navigation(&self.scene)?;
+        if !is_local_host_id(host_id) {
+            return remote_kwt::mutate(&self.scene, host_id, endpoint, request);
+        }
         let task = reserve_kwt_project_mutation(&self.scene, host_id, endpoint, request)?;
         let task_scene = Arc::clone(&self.scene);
         if let Err(error) = self.scene.runtime.refresh_runtime.spawn(
@@ -5972,6 +5990,9 @@ impl Workspace {
         }
         if self.is_remote_host(selection.host_id()) {
             let _navigation = lock_live_navigation(&self.scene)?;
+            if selection.kind() == SessionKind::Tmux {
+                runtime::require_remote_tmux_selection(&self.scene.runtime, selection)?;
+            }
             let navigation_generation = self.begin_navigation();
             self.settle_local_navigation_before_remote()?;
             let current_key = self.remote_presentation_key(selection);

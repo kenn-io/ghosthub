@@ -170,6 +170,7 @@ fn consumed_remote_launch_failure_remains_pending_for_reconciliation() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -274,6 +275,7 @@ fn queued_remote_attachment_recaptures_newer_same_connection_inventory() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -7078,6 +7080,7 @@ fn cancelled_remote_connection_cannot_publish_a_late_failure() {
         .insert(
             "ssh:studio".to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -7137,6 +7140,7 @@ fn remote_cancellation_waits_for_inventory_publication() {
         .insert(
             "ssh:studio".to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -7239,6 +7243,7 @@ fn stale_lease_exit_cannot_cancel_its_replacement_connection() {
         .insert(
             "ssh:studio".to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -7304,6 +7309,7 @@ fn newer_navigation_cancels_a_queued_remote_attachment() {
         .insert(
             "ssh:studio".to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -7368,6 +7374,7 @@ fn navigation_in_one_scene_leaves_other_scenes_remote_attempts_in_flight() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -7462,6 +7469,7 @@ fn concurrent_scene_attachment_attempts_coexist_on_one_host() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -7553,6 +7561,7 @@ fn navigation_in_another_scene_leaves_remote_construction_active() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -7622,6 +7631,7 @@ fn superseded_remote_attachment_cannot_cross_the_launch_fence() {
         .insert(
             "ssh:studio".to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -7715,6 +7725,7 @@ fn refresh_after_remote_launch_transfers_inventory_reconciliation() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -7783,6 +7794,7 @@ fn navigation_cancels_only_prelaunch_remote_construction() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -7902,6 +7914,7 @@ fn concurrent_remote_inventory_publication_settles_pending_reconciliation() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -8025,6 +8038,7 @@ fn stale_remote_inventory_cannot_overwrite_the_published_generation() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -8081,7 +8095,7 @@ fn stale_remote_inventory_cannot_overwrite_the_published_generation() {
     );
 }
 
-fn remote_kill_refresh_fixture() -> (Workspace, RemoteTmuxAttachRequest) {
+pub(super) fn remote_kill_refresh_fixture() -> (Workspace, RemoteTmuxAttachRequest) {
     let config = RemoteTmuxConfig::new(
         "ssh:studio",
         "Studio",
@@ -8129,6 +8143,7 @@ fn remote_kill_refresh_fixture() -> (Workspace, RemoteTmuxAttachRequest) {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -8314,6 +8329,7 @@ fn display_only_ssh_host_edits_preserve_runtime_and_selection() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config: config.clone(),
                 native_host: None,
                 context: None,
@@ -8402,6 +8418,7 @@ fn connection_changing_ssh_host_edits_disconnect_and_move_selection() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config: config.clone(),
                 native_host: None,
                 context: None,
@@ -8805,6 +8822,7 @@ fn stale_generation_remote_publication_cannot_touch_another_scenes_presentation(
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -10330,6 +10348,7 @@ fn queued_remote_construction_recaptures_newer_same_connection_inventory() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -10499,6 +10518,7 @@ fn queued_remote_tmux_creation_stops_when_scene_closes() {
     workspace.scene.runtime.remote_hosts.lock().unwrap().insert(
         config.id().to_owned(),
         RemoteEntry {
+            kwt: remote_kwt::State::default(),
             config,
             native_host: Some(host.clone()),
             context: Some(RemoteHostContext {
@@ -10599,6 +10619,7 @@ fn queued_zellij_construction_consults_recaptured_inventory_before_launching() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -10766,6 +10787,7 @@ fn queued_herdr_restart_revalidates_the_stopped_record_before_launching() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -10932,6 +10954,7 @@ fn queued_construction_acquires_the_lane_before_recapturing() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -12542,6 +12565,7 @@ fn connect_never_holds_navigation_while_waiting_on_publication() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(host),
                 context: None,
@@ -12674,6 +12698,7 @@ fn cancellations_are_rejected_from_a_closed_scene() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: None,
                 context: None,
@@ -14591,6 +14616,7 @@ fn closing_a_scene_releases_worker_presentations_attempts_and_lease() {
         .insert(
             config.id().to_owned(),
             RemoteEntry {
+                kwt: remote_kwt::State::default(),
                 config,
                 native_host: Some(remote_host.clone()),
                 context: Some(RemoteHostContext {

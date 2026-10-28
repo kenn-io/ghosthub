@@ -639,8 +639,15 @@ Herdr Stop/Delete, and active Zellij Kill now use the same reviewed lease.
 Herdr and Zellij share failed-operation recovery: fresh matching inventory and
 unchanged navigation are required, including across an in-progress reconnect.
 Zellij kills advance a host/route/name revision to reject older confirmations
-and queued attachments. KWT project/worktree management, automatic reconnect,
-and persisted restoration remain separate Rust parity work.
+and queued attachments. Remote project registration and removal use a separate
+per-host KWT lane over the reviewed lease. The app provisions the pinned helper
+for macOS/Linux x86_64 or arm64 and publishes projects, worktrees, and directory
+workspaces independently of multiplexer inventory. Failed reads preserve the
+last usable inventory with a project diagnostic; connection generations fence
+stale publication. Removal revalidates the exact repository, path, and
+registration fingerprint and never removes files or sessions. Remote worktree
+mutation, dedicated-socket attachment, automatic reconnect, and persisted
+restoration remain separate Rust parity work.
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and

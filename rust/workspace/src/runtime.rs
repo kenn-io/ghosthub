@@ -59,6 +59,7 @@ pub(crate) struct Runtime {
     pub(crate) remote_runner: SharedCommandRunner,
     pub(crate) remote_controller: Option<KwtSshExecutable>,
     pub(crate) ssh_executable: Option<SshExecutable>,
+    pub(crate) remote_kwt_bundles: Vec<(host::RemoteKwtTarget, host::KwtBundle)>,
     pub(crate) settings: Mutex<Option<SettingsState>>,
     /// Serializes every settings mutation from persistence through runtime
     /// publication, so concurrent scenes cannot publish out of persistence
@@ -402,6 +403,7 @@ pub(crate) fn set_remote_host_snapshot(
     host.tmux_diagnostic = snapshot
         .tmux_diagnostic()
         .map(|error| HostDiagnostic::new(error.kind(), error.to_string()));
+    crate::reconcile_kwt_session_availability(host);
     apply_herdr_inventory(host, snapshot.herdr());
     apply_zellij_inventory(host, snapshot.zellij());
     runtime.revision.fetch_add(1, Ordering::Release);
@@ -731,6 +733,21 @@ pub(crate) fn capture_remote_zellij_create_request(
     })
 }
 
+pub(crate) fn require_remote_tmux_selection(
+    runtime: &Runtime,
+    selection: &SessionSelection,
+) -> Result<(), WorkspaceError> {
+    if selection.tmux_socket_name().is_some()
+        || selection.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected)
+    {
+        return Err(WorkspaceError::new(
+            "Remote workspaces on dedicated tmux sockets cannot be opened yet",
+        ));
+    }
+    require_current_kwt_selection(runtime, selection)?;
+    Ok(())
+}
+
 pub(crate) fn capture_remote_tmux_attach_request(
     runtime: &Runtime,
     selection: &SessionSelection,
@@ -740,6 +757,7 @@ pub(crate) fn capture_remote_tmux_attach_request(
             "the selected session is not a tmux session",
         ));
     }
+    require_remote_tmux_selection(runtime, selection)?;
     require_host_session_actions(runtime, selection)?;
     let entries = runtime
         .remote_hosts

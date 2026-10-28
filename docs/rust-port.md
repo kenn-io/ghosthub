@@ -431,7 +431,23 @@ queued attachments cannot resurrect a session killed by Ghosthub.
 
 ![Confirm a remote Zellij kill in the native Rust application](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-zellij-kill.png)
 
-Remote worktree workflows and automatic transport recovery remain separate work.
+The Rust app automatically installs or repairs its pinned KWT helper on a
+connected macOS or Linux SSH host. Terminal discovery remains usable while
+projects load or if helper setup fails. To register an existing repository,
+select **+** beside **Projects**, enter its absolute path on the SSH host, and
+select **Add Project**. The remote dialog has no local folder picker.
+
+Use **×** beside the project to remove its registration. Confirm the repository
+and host; cancellation changes nothing. Removal preserves the checkout,
+worktrees, and sessions, and a changed registration requires a new confirmation.
+Registrations persist through KWT on that host across Ghosthub restarts.
+
+![Add a remote project in the native Rust application](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-project.png)
+
+The project tree can open already-running ordinary tmux sessions on the host's
+default socket. Dedicated KWT sockets, protected imports, remote worktree
+creation/removal, repair/open, and automatic transport recovery remain separate
+work. Their unsupported controls are unavailable in the remote project tree.
 
 ![Confirm the exact remote tmux session and host](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
 
@@ -1137,8 +1153,23 @@ account home has no helper-path override. Installation fails with an actionable
 diagnostic requiring a corrected or different remote account. This enterprise
 tradeoff is accepted for fleet predictability.
 
-Windows Cargo builds embed and validate both the revision-pinned native KWT
-controller and the Linux helper for the current architecture. The native PE
+Rust builds also embed the pinned remote helper matrix: macOS and Linux, each
+for x86_64 and arm64. `make rust-build` and `make rust-test-ssh-live` stage it
+through `ensure-kwt-variants`; `KWT_VARIANTS_DIR` accepts a prebuilt matrix.
+`GHOSTHUB_KWT_VARIANTS_DIR` supplies the directory directly to Cargo. Release
+builds and `GHOSTHUB_REQUIRE_KWT_BUNDLE` reject an incomplete matrix.
+
+Remote inventory and project mutations use the existing reviewed SSH lease,
+with one KWT operation per host. The helper checksum and revision are verified
+before use; a replacement is uploaded to a unique temporary path and activated
+atomically after verification. Closing the owning scene cancels its operation.
+Reconnect fences old inventory publication and schedules a fresh read. Failed
+reads retain the last usable project inventory and publish a project diagnostic;
+a successful registration receipt remains published if reconciliation fails.
+Only explicitly retryable reads are retried, never project mutations.
+
+Windows Cargo builds additionally embed and validate the revision-pinned native
+KWT controller and the Linux helper for the current architecture. The native PE
 controller remains a packaged contract artifact, but it is not the Windows
 product path for SSH leases: Windows OpenSSH does not provide the Unix-domain
 ControlMaster socket required by KWT's persistent daemon lease. The product

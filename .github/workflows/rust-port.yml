@@ -103,7 +103,7 @@ jobs:
 
       - name: Build the pinned Linux KWT helper
         if: runner.os == 'Linux'
-        run: make -C .. bootstrap-kwt
+        run: make -C .. bootstrap-kwt bootstrap-kwt-variants
 
       - name: Stage Herdr for Linux acceptance
         if: runner.os == 'Linux'

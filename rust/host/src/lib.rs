@@ -33,8 +33,8 @@ pub use local::{
     LocalExecutable, LocalHost, SystemWslPresence, WslExecutable, WslPresence, ZellijInventory,
 };
 pub use remote::{
-    RemoteSessionInventory, RemoteTmuxConfig, RemoteTmuxError, RemoteTmuxHost, RemoteTmuxSnapshot,
-    SshExecutable,
+    RemoteKwtTarget, RemoteSessionInventory, RemoteTmuxConfig, RemoteTmuxError, RemoteTmuxHost,
+    RemoteTmuxSnapshot, SshExecutable,
 };
 pub use ssh::{
     KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshError, SshExecutionProjection,

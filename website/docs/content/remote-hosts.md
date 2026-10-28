@@ -12,8 +12,9 @@ support them.
 
 The unreleased Rust/Linux source build also connects to POSIX SSH hosts using
 its bundled KWT controller. See the [native Linux SSH guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
-for setup and current limits. Remote tmux creation, confirmed destruction,
-worktree operations, and automatic recovery remain follow-up work in the port.
+for setup and current limits. It supports remote tmux, Herdr, and Zellij
+session lifecycle actions, plus the project registration workflow below.
+Remote worktree mutation and automatic recovery remain follow-up work.
 
 ## Before you add a host
 

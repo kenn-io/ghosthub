@@ -69,6 +69,25 @@ redistributes verbatim, including the iTerm2-Color-Schemes theme corpus. Embedde
 internationalization disabled, so its otherwise static GNU libintl/gettext
 dependency is not part of Ghosthub's app binary or release obligations.
 
+## Rust helper bundles
+
+The Rust Linux and Windows applications embed remote KWT helpers for macOS and
+Linux on x86_64 and arm64, all built from `KWT_REVISION` with `KWT_GO_VERSION`.
+`make rust-build` stages the matrix on Linux; `tools/build_rust_kwt.ps1` stages
+it alongside the native Windows controller and selected WSL architecture.
+Cargo validates executable architecture and revision and computes the embedded
+SHA-256 digest. Release builds reject missing helpers. Direct Cargo builds can
+use `GHOSTHUB_KWT_VARIANTS_DIR` to select a prebuilt matrix; the local helper
+bundle override does not change these remote artifacts.
+
+The remote helper is installed under
+`$HOME/.ghosthub/helpers/kwt/<revision>/kwt`. Ghosthub verifies its checksum and
+version before project commands. A missing or damaged helper is replaced from
+the bundle. A failed installation leaves terminal workflows available and
+reports a project diagnostic; correct the remote account's home or permissions,
+then refresh the host to retry. See the [Rust guide](rust-port.md#native-linux-ssh-sessions)
+for the currently supported project workflows.
+
 ## Reproducible inputs
 
 The root `RELEASE_VERSION`, `KWT_REVISION`, and `KWT_GO_VERSION` files plus

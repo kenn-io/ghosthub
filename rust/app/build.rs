@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -72,6 +73,31 @@ fn validate_windows_controller(
     validate_revision(bytes, revision, "controller")
 }
 
+fn validate_remote_helper(
+    bytes: &[u8],
+    os: &str,
+    architecture: &str,
+    revision: &str,
+) -> Result<(), String> {
+    if os == "linux" {
+        return validate_linux_helper(bytes, architecture, revision);
+    }
+    let cpu = match architecture {
+        "amd64" => 0x0100_0007_u32,
+        "arm64" => 0x0100_000c_u32,
+        _ => return Err("unsupported remote KWT architecture".to_owned()),
+    };
+    if bytes.len() < 32
+        || bytes[..4] != [0xcf, 0xfa, 0xed, 0xfe]
+        || u32::from_le_bytes(bytes[4..8].try_into().expect("Mach-O CPU field")) != cpu
+    {
+        return Err(format!(
+            "staged KWT helper does not match darwin-{architecture}"
+        ));
+    }
+    validate_revision(bytes, revision, "remote helper")
+}
+
 fn validate_revision(bytes: &[u8], revision: &str, kind: &str) -> Result<(), String> {
     if !bytes
         .windows(revision.len())
@@ -99,10 +125,16 @@ fn stage_bundle(
     (true, hex::encode(Sha256::digest(&bytes)))
 }
 
+#[allow(clippy::too_many_lines)] // Stage the native controller and complete remote helper matrix together.
 fn main() {
-    println!("cargo:rerun-if-env-changed=GHOSTHUB_KWT_BUNDLE");
-    println!("cargo:rerun-if-env-changed=GHOSTHUB_KWT_CONTROLLER_BUNDLE");
-    println!("cargo:rerun-if-env-changed=GHOSTHUB_REQUIRE_KWT_BUNDLE");
+    for variable in [
+        "GHOSTHUB_KWT_BUNDLE",
+        "GHOSTHUB_KWT_CONTROLLER_BUNDLE",
+        "GHOSTHUB_REQUIRE_KWT_BUNDLE",
+        "GHOSTHUB_KWT_VARIANTS_DIR",
+    ] {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
 
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
     let repo = manifest
@@ -131,7 +163,8 @@ fn main() {
         _ => None,
     };
     let linux_configured = env::var_os("GHOSTHUB_KWT_BUNDLE").map(PathBuf::from);
-    let variants = repo.join(".build/kwt/variants");
+    let variants = env::var_os("GHOSTHUB_KWT_VARIANTS_DIR")
+        .map_or_else(|| repo.join(".build/kwt/variants"), PathBuf::from);
     let linux_candidate = linux_configured.or_else(|| {
         if target_os == "linux" {
             return Some(repo.join(".build/kwt/kwt"));
@@ -187,6 +220,7 @@ fn main() {
 
     let release = matches!(target_os.as_str(), "linux" | "windows")
         && env::var("PROFILE").is_ok_and(|profile| profile == "release");
+    stage_remote_bundles(&variants, &out, &revision, release);
     assert!(
         (available && (target_os != "windows" || controller_available))
             || !(release || env::var_os("GHOSTHUB_REQUIRE_KWT_BUNDLE").is_some()),
@@ -202,4 +236,35 @@ fn main() {
     println!("cargo:rustc-env=GHOSTHUB_KWT_SHA256={digest}");
     println!("cargo:rustc-env=GHOSTHUB_KWT_CONTROLLER_AVAILABLE={controller_available}");
     println!("cargo:rustc-env=GHOSTHUB_KWT_CONTROLLER_SHA256={controller_digest}");
+}
+
+fn stage_remote_bundles(variants: &Path, out: &Path, revision: &str, release: bool) {
+    let mut remote_available = true;
+    let mut remote_source = String::from(
+        "fn bundled_remote_kwt() -> Vec<(host::RemoteKwtTarget, host::KwtBundle)> { vec![\n",
+    );
+    for (os, arch, variant) in [
+        ("darwin", "amd64", "DarwinAmd64"),
+        ("darwin", "arm64", "DarwinArm64"),
+        ("linux", "amd64", "LinuxAmd64"),
+        ("linux", "arm64", "LinuxArm64"),
+    ] {
+        let candidate = variants.join(format!("{os}-{arch}/kwt"));
+        println!("cargo:rerun-if-changed={}", candidate.display());
+        let bundled = out.join(format!("kwt-{os}-{arch}"));
+        let (present, digest) = stage_bundle(Some(&candidate), &bundled, |bytes| {
+            validate_remote_helper(bytes, os, arch, revision)
+        });
+        remote_available &= present;
+        if present {
+            let bundle_literal = format!("{:?}", bundled.to_str().expect("UTF-8 bundle path"));
+            writeln!(remote_source, "(host::RemoteKwtTarget::{variant}, host::KwtBundle::new({revision:?}, {digest:?}, include_bytes!({bundle_literal}).as_slice()).expect(\"validated remote KWT bundle\")),").expect("write remote bundle source");
+        }
+    }
+    remote_source.push_str("] }\n");
+    fs::write(out.join("remote_kwt.rs"), remote_source).expect("write remote KWT bundle metadata");
+    assert!(
+        remote_available || !(release || env::var_os("GHOSTHUB_REQUIRE_KWT_BUNDLE").is_some()),
+        "pinned remote KWT helpers are required; run make bootstrap-kwt-variants or tools/build_rust_kwt.ps1"
+    );
 }

@@ -9,6 +9,7 @@ use workspace::{
 };
 
 mod herdr;
+mod kwt;
 mod zellij;
 
 struct Fixture {

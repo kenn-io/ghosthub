@@ -18,6 +18,8 @@ assets=(
   hero.png
   guide-sessions.png
   guide-rust-remote-zellij-kill.png
+  guide-rust-remote-project.png
+  guide-rust-remove-project.png
   guide-find.png
   guide-session-previews.png
   guide-session-activity.png
