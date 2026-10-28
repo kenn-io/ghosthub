@@ -11,7 +11,8 @@ creation, attachment, restart, and confirmed stop/delete. Local Zellij supports
 active-session discovery, creation, attachment, and confirmed kills.
 Connected SSH hosts support tmux creation, attachment, and confirmed kills
 bound to the live session identity. Remote Herdr supports creation, attachment,
-restart, and confirmed stop/delete.
+restart, and confirmed stop/delete. Remote Zellij supports creation, attachment,
+and confirmed kills of active sessions.
 Distribution packaging remains separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
@@ -244,7 +245,8 @@ For native Linux SSH acceptance, install `openssh-server`, `openssh-client`,
 `tmux`, and `bubblewrap`, then run:
 
 ```sh
-make rust-test-ssh-live HERDR_BINARY_PATH=/absolute/path/to/herdr
+make rust-test-ssh-live HERDR_BINARY_PATH=/absolute/path/to/herdr \
+    ZELLIJ_BINARY_PATH=/absolute/path/to/zellij
 ```
 
 These tests run the application composition root with its bundled controller
@@ -272,6 +274,9 @@ The same fixture stages Herdr and tests confirmed stop/delete, cancelled and
 stale confirmations, cross-window cleanup, and recovery after a rejected Stop.
 A failed Stop restores a matching client only after fresh inventory confirms
 that the session is still running and the user has not navigated elsewhere.
+The fixture also stages Zellij and checks cancelled and stale kills, cleanup
+across windows, queued attachment cancellation, and recovery after failed kills
+or reconnects. The fixture uses its own Zellij configuration and runtime roots.
 Windows/WSL controllers and remote macOS servers need separate acceptance.
 
 Track implementation and baseline failures in the existing Kata project.
@@ -414,8 +419,19 @@ the host to refresh its inventory. Other backends remain available.
 
 ![Confirm Delete for the stopped remote Herdr session](https://github.com/user-attachments/assets/a4185835-f0e8-4a75-a7f0-6318a4eaecdf)
 
-Remote Zellij kill, worktree workflows, and automatic transport recovery
-remain separate work.
+To end an active remote Zellij session, open its **…** menu, choose **Kill**,
+and confirm the session and host. Ghosthub checks fresh active inventory and
+the executable on the confirmed SSH connection. A successful kill closes
+matching clients across windows and removes the session from inventory.
+Cancellation leaves it running. A failed kill restores clients only after
+fresh inventory confirms the session is active and navigation is unchanged.
+Zellij has no stable session generation; an otherwise identical same-name
+replacement cannot be distinguished. Exited sessions remain excluded, and
+queued attachments cannot resurrect a session killed by Ghosthub.
+
+![Confirm a remote Zellij kill in the native Rust application](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-zellij-kill.png)
+
+Remote worktree workflows and automatic transport recovery remain separate work.
 
 ![Confirm the exact remote tmux session and host](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
 

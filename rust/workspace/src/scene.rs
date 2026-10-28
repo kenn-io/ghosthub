@@ -630,7 +630,7 @@ pub(crate) fn publish_remote_connection(
         }
         Err(error) => {
             let diagnostic = HostDiagnostic::new(error.kind(), error.to_string());
-            entry.herdr_recoveries.clear();
+            entry.session_recoveries.clear();
             cancel_remote_constructive(entry);
             cancel_remote_attachment(entry);
             let stale_context = entry.context.take();
@@ -651,7 +651,7 @@ pub(crate) fn publish_remote_connection(
     }
     drop(snapshot_write);
     drop(stale_presentations);
-    crate::remote_herdr::restore_pending(&scene.runtime, host_id);
+    crate::remote_recovery::restore_pending(&scene.runtime, host_id);
     drop(publication);
     if let Some((host, snapshot, target)) = pending_reconciliation {
         reconcile_remote_constructive_after_connection(
@@ -1482,6 +1482,15 @@ pub(crate) fn capture_kill_request(
                 "Remote worktree session kills are not available",
             ));
         }
+        if selection.kind() == SessionKind::Zellij {
+            let request = crate::runtime::capture_remote_zellij_request(&scene.runtime, selection)?;
+            if matches!(crate::runtime::pending_remote_constructive_target(&scene.runtime, selection.host_id()),
+                Some(crate::RemoteConstructiveTarget::Zellij { name, .. }) if name == selection.session())
+            {
+                return Err(WorkspaceError::new("a remote session is still starting"));
+            }
+            return Ok(KillCaptureRequest::RemoteZellij(Box::new(request)));
+        }
         return crate::capture_remote_tmux_attach_request(&scene.runtime, selection)
             .map(|request| KillCaptureRequest::RemoteTmux(Box::new(request)));
     }
@@ -1680,6 +1689,35 @@ pub(crate) fn capture_tmux_kill(
                 generation,
                 selection: request.selection.clone(),
                 target: KillTarget::RemoteTmux(request),
+            })
+        }
+        KillCaptureRequest::RemoteZellij(mut request) => {
+            let (host, snapshot) = crate::runtime::recapture_remote_attachment_context(
+                &scene.runtime,
+                &request.host_id,
+                request.connection_generation,
+                &request.snapshot,
+            )?;
+            host.validate_zellij_session(
+                &snapshot,
+                &request.executable,
+                &request.name,
+                &cancellation,
+            )
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            crate::runtime::recapture_remote_attachment_context(
+                &scene.runtime,
+                &request.host_id,
+                request.connection_generation,
+                &snapshot,
+            )?;
+            crate::remote_zellij::require_attach_revision(&scene.runtime, &request)?;
+            request.host = host;
+            request.snapshot = snapshot;
+            Ok(PendingKill {
+                generation,
+                selection: request.selection.clone(),
+                target: KillTarget::RemoteZellij(request),
             })
         }
         KillCaptureRequest::Zellij(_) => unreachable!("Zellij captures publish synchronously"),

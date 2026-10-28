@@ -8724,7 +8724,7 @@ fn tree_zellij_sessions(
         .map(|(selection, discovered)| {
             let retained = retained.contains(&selection);
             let is_active = active == Some(&selection);
-            let can_kill = discovered && host_accepts_actions && !host.is_ssh();
+            let can_kill = discovered && host_accepts_actions;
             let state = match (is_active, retained, host_accepts_actions, can_kill) {
                 (true, _, _, true) => TreeSessionState::ActiveKillable,
                 (true, _, _, false) => TreeSessionState::Active,
@@ -11018,7 +11018,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_zellij_sessions_are_openable_without_remote_kill_authority() {
+    fn remote_zellij_sessions_offer_open_and_kill() {
         let host = HostItem::ssh(
             "ssh:studio",
             "Studio",
@@ -11033,7 +11033,7 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert!(rows[0].state.can_open());
-        assert!(!rows[0].state.can_kill());
+        assert!(rows[0].state.can_kill());
     }
 
     #[test]
