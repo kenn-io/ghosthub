@@ -73,11 +73,17 @@ the real SwiftUI views with synthetic data. From the repository root:
 
     make screenshot-settings SCREENSHOT_DIR=/tmp/ghosthub-website-assets
     make screenshot-project-recovery SCREENSHOT_PATH=/tmp/ghosthub-website-assets/guide-project-recovery.png
+    make screenshot-worktree-flags SCREENSHOT_DIR=/tmp/ghosthub-worktree-flags
     website/demo/render-launch-profile.sh /tmp/ghosthub-website-assets/docs-launch-profiles.png
 
 Run the Settings renderer after the demo capture to use the current host list
 alongside matching Keyboard and Privacy views. It opens only test windows;
 no host discovery or terminal process is needed.
+
+The worktree flag renderer exercises the real sidebar actions with isolated
+preferences and synthetic primary/linked checkouts. It exports light and dark
+views as `worktree-flags-light.png` and `worktree-flags-dark.png`. Use the
+accepted dark capture as `guide-worktree-flags.png` when publishing that guide.
 
 The staged app uses its own OpenSSH configuration, known-hosts file, and tmux
 socket directory. The demo tmux wrapper restores that directory for kwt

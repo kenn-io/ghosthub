@@ -136,7 +136,7 @@ struct WorkspaceSessionActionPresentation: Equatable {
     }
 }
 
-struct WorkspaceWorktreeRemovalActionPresentation: Equatable {
+struct WorkspaceWorktreeActionPresentation: Equatable {
     static let controlWidth: CGFloat = 30
 
     let isVisible: Bool
@@ -144,15 +144,14 @@ struct WorkspaceWorktreeRemovalActionPresentation: Equatable {
     let hitTargetWidth: CGFloat
 
     init(
-        isRemovable: Bool,
         isRowHovered: Bool,
         isActionHovered: Bool,
+        isSelected: Bool,
         isFocused: Bool
     ) {
-        isVisible = isRemovable
-            && (isRowHovered || isActionHovered || isFocused)
-        reservedWidth = isRemovable ? Self.controlWidth : 0
-        hitTargetWidth = isRemovable ? Self.controlWidth : 0
+        isVisible = isRowHovered || isActionHovered || isSelected || isFocused
+        reservedWidth = Self.controlWidth
+        hitTargetWidth = Self.controlWidth
     }
 }
 
@@ -241,16 +240,91 @@ struct WorktreeStatusCluster: View {
 struct WorktreeRowLine: View {
     let title: String
     let status: WorktreeRowStatus
+    var titleColor = Color.primary
 
     var body: some View {
         HStack(spacing: 4) {
             Text(title)
                 .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(titleColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
             WorktreeStatusCluster(status: status)
         }
+    }
+}
+
+struct WorktreeFlagPresentation {
+    static let flagColor = Color.orange
+    let isFlagged: Bool
+    let isPrimary: Bool
+
+    var systemImageName: String {
+        isFlagged ? "flag.fill" : (isPrimary
+            ? WorkspaceSidebarRowIcon.primaryWorktree.systemImageName
+            : WorkspaceSidebarRowIcon.worktree.systemImageName)
+    }
+
+    var titleColor: Color { isFlagged ? Self.flagColor : .primary }
+}
+
+enum WorktreeMenuAction: Equatable, Identifiable {
+    case setFlagged(WorktreeFlagKey?, Bool)
+    case setChangesExpanded(Bool)
+    case killSession
+    case removeWorktree
+
+    var id: String {
+        switch self {
+        case .setFlagged: "flag"
+        case .setChangesExpanded: "changes"
+        case .killSession: "kill"
+        case .removeWorktree: "remove"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case let .setFlagged(_, flagged): flagged ? "Flag Worktree" : "Unflag Worktree"
+        case let .setChangesExpanded(expanded): expanded ? "Show Changes" : "Hide Changes"
+        case .killSession: "Kill Session…"
+        case .removeWorktree: "Remove Worktree…"
+        }
+    }
+
+    var isEnabled: Bool {
+        if case let .setFlagged(key, _) = self {
+            return key != nil
+        }
+        return true
+    }
+
+    var isDestructive: Bool {
+        self == .killSession || self == .removeWorktree
+    }
+
+    static func groups(
+        flagKey: WorktreeFlagKey?,
+        isFlagged: Bool,
+        isExpanded: Bool,
+        canKill: Bool,
+        canRemove: Bool
+    ) -> [[Self]] {
+        var groups: [[Self]] = [[
+            .setFlagged(flagKey, !isFlagged), .setChangesExpanded(!isExpanded),
+        ]]
+        var destructive: [Self] = []
+        if canKill {
+            destructive.append(.killSession)
+        }
+        if canRemove {
+            destructive.append(.removeWorktree)
+        }
+        if !destructive.isEmpty {
+            groups.append(destructive)
+        }
+        return groups
     }
 }
 

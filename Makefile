@@ -355,6 +355,13 @@ screenshot-settings:
 	@GHOSTHUB_SETTINGS_SCREENSHOT_DIR="$(SCREENSHOT_DIR)" \
 		sh tools/run_swift_tests.sh $(SWIFT) test --filter SettingsScreenshotTests
 
+.PHONY: screenshot-worktree-flags
+screenshot-worktree-flags:
+	@test -n "$(SCREENSHOT_DIR)" || { printf 'Set SCREENSHOT_DIR to an output directory.\n' >&2; exit 2; }
+	@mkdir -p "$(SCREENSHOT_DIR)"
+	@GHOSTHUB_WORKTREE_FLAG_SCREENSHOT_DIR="$(SCREENSHOT_DIR)" \
+		sh tools/run_swift_tests.sh $(SWIFT) test --filter WorktreeFlagViewTests
+
 # Essential workflow smoke for kwt inventory and ordinary tmux attachment.
 test-essential-workflows: test-kwt-contract
 	@set -euo pipefail; \

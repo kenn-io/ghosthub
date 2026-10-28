@@ -109,6 +109,18 @@ New scenes start with hosts and session groups expanded and projects collapsed.
 The parsed disclosure sets remain in view state across sidebar hiding and focus
 changes; they are not app-wide preferences or part of restored scene descriptors.
 Saved row ordering and explicit Settings preferences remain app-wide.
+Manual worktree flags are also app-wide preferences on this Mac. The sidebar's
+ellipsis menu sets or clears a flag; terminal activity never changes it. A flag
+uses the stable host key, project key, and canonical kwt worktree generation,
+so another checkout at the same path does not inherit it. Rows without verified
+identity cannot be flagged yet. Offline hosts and missing inventory do not clear
+saved flags. Flagging changes only the sidebar's leading icon and name color.
+One shared in-memory store supplies an observable flag value for each durable
+key. Only the matching worktree rows observe that value; neither the sidebar nor
+terminal roots observe the full flag set. Durable keys are cached with inventory
+rows. Only explicit changes serialize and save preferences, and flag changes do
+not invalidate inventory sections or unrelated previews. See
+[sidebar performance](sidebar-performance.md).
 Host display order is shared by the sidebar and the host list in Settings.
 Both views save moves immediately, separately from connection settings. Host
 ordering uses configuration keys and a fixed local-host identity, so renaming

@@ -420,6 +420,7 @@ enum WorkspaceAlert: Identifiable {
     case sessionThemeFailure(session: String, message: String)
     case worktreeRemovalConfirmation(WorktreeRemovalRequest)
     case worktreeRemovalFailure(worktree: String, message: String)
+    case worktreeFlagFailure(worktree: String, message: String)
     case projectRemovalConfirmation(ProjectRemovalRequest)
     case projectRemovalFailure(project: String, message: String)
 
@@ -445,6 +446,8 @@ enum WorkspaceAlert: Identifiable {
             return "worktree:confirm:\(request.worktree.id.uuidString)"
         case let .worktreeRemovalFailure(worktree, message):
             return "worktree:failure:\(worktree):\(message)"
+        case let .worktreeFlagFailure(worktree, message):
+            return "worktree-flag:failure:\(worktree):\(message)"
         case let .projectRemovalConfirmation(request):
             return "project:confirm:\(request.confirmedHost.id.uuidString):"
                 + request.project.id.uuidString

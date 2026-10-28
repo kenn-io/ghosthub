@@ -363,31 +363,31 @@ struct WorkspaceSidebarModelTests {
         #expect(selected.hitTargetWidth >= 28)
     }
 
-    @Test("worktree removal stays subtle without shrinking its hit target")
-    func worktreeRemovalKeepsStableHitTarget() {
-        let idle = WorkspaceWorktreeRemovalActionPresentation(
-            isRemovable: true,
+    @Test("worktree actions reserve one stable slot with or without a session")
+    func worktreeActionsKeepStableHitTarget() {
+        let idle = WorkspaceWorktreeActionPresentation(
             isRowHovered: false,
             isActionHovered: false,
+            isSelected: false,
             isFocused: false
         )
-        let hovered = WorkspaceWorktreeRemovalActionPresentation(
-            isRemovable: true,
+        let hovered = WorkspaceWorktreeActionPresentation(
             isRowHovered: true,
             isActionHovered: false,
+            isSelected: false,
             isFocused: false
         )
-        let focused = WorkspaceWorktreeRemovalActionPresentation(
-            isRemovable: true,
+        let focused = WorkspaceWorktreeActionPresentation(
             isRowHovered: false,
             isActionHovered: false,
+            isSelected: false,
             isFocused: true
         )
-        let primary = WorkspaceWorktreeRemovalActionPresentation(
-            isRemovable: false,
-            isRowHovered: true,
-            isActionHovered: true,
-            isFocused: true
+        let selected = WorkspaceWorktreeActionPresentation(
+            isRowHovered: false,
+            isActionHovered: false,
+            isSelected: true,
+            isFocused: false
         )
 
         #expect(!idle.isVisible)
@@ -395,8 +395,9 @@ struct WorkspaceSidebarModelTests {
         #expect(focused.isVisible)
         #expect(idle.reservedWidth == hovered.reservedWidth)
         #expect(hovered.hitTargetWidth >= 28)
-        #expect(!primary.isVisible)
-        #expect(primary.reservedWidth == 0)
+        #expect(selected.isVisible)
+        #expect(idle.reservedWidth == 30)
+        #expect(selected.reservedWidth == 30)
     }
 
     @Test("project removal appears on hover or keyboard focus")

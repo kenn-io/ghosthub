@@ -21,6 +21,17 @@ expansion, while `WorktreeChangesPanel` observes results and owns the existing
 polling task. A changed filename therefore does not rebuild unrelated rows.
 Identity validation, retry policy, and request coordination are unchanged.
 
+Manual worktree flags use a shared in-memory set with an observable value per
+durable key. Only the matching worktree rows observe updates. Flagging does not
+invalidate the whole sidebar, terminal roots, cached inventory sections, or
+unrelated eager preview builders. Each row's key is derived when inventory
+sections are built, using their existing host, project, and worktree values.
+Row construction retrieves the shared value by cached key; render updates read
+that value, with no preference reads, encoding, regular expressions, or added
+inventory scans. The store holds row values weakly so it does not retain hidden
+presentations. Explicit flag changes save preferences once; setting an
+already-current value does no work.
+
 | Workload | Items | Before | After |
 | --- | ---: | ---: | ---: |
 | Tmux selection and layout | 100 | 19.7 ms | 5.9 ms |
@@ -59,7 +70,13 @@ Run `make test-activation-gate` and
 `make swift-test SWIFT_TEST_FILTER=WorktreeChanges` for the relevant checks.
 `ActivationWorkGateTests` bounds row construction independently of inventory
 size, selects the final offscreen session and worktree through accessibility,
-and checks that Changes expansion survives scrolling away and back. The Changes
+and checks that Changes expansion survives scrolling away and back. Its flag
+fixture hosts two windows with 100 or 500 worktrees, with previews Off and Always
+Live. It requires zero terminal-root evaluations, zero section rebuilds, at most
+16 row evaluations, and at most four preview-builder calls per window when a
+flag changes. Preview mounts and selection must stay unchanged.
+`WorktreeFlagStoreTests` also verifies repeated lookups neither read
+preferences nor encode state. The Changes
 fixture checks displayed filenames, manual Refresh, collapse, and reopening.
 An Always Live fixture keeps 100 synthetic preview views mounted while scrolling;
 separate terminal tests exercise real preview coordinators and libghostty.

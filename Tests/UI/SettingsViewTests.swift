@@ -262,6 +262,10 @@ final class SettingsViewTests: XCTestCase {
     }
 
     func testFollowConfigAllowsSharedTmuxThemeOverride() throws {
+        let app = NSApplication.shared
+        let wasEnhanced = app.value(forKey: "accessibilityEnhancedUserInterface")
+        app.setValue(true, forKey: "accessibilityEnhancedUserInterface")
+        defer { app.setValue(wasEnhanced, forKey: "accessibilityEnhancedUserInterface") }
         let store = makeSettingsStore()
         store.selectedDomain = .appearance
         store.setTerminalTheme(.followConfig)
@@ -287,10 +291,11 @@ final class SettingsViewTests: XCTestCase {
 
         let sheet = try XCTUnwrap(waitForAttachedSheet(on: window))
         let sheetContent = try XCTUnwrap(sheet.contentView)
+        pumpRunLoopAndLayout(for: hostingView)
         let toggle = try XCTUnwrap(
-            firstUntitledButton(in: sheetContent)
+            settingsElement("settings.apply-theme-to-tmux-sessions", in: sheetContent)
         )
-        XCTAssertTrue(toggle.isEnabled)
+        XCTAssertEqual(toggle.value(forKey: "accessibilityEnabled") as? Bool, true)
     }
 
     func testRestoredDomainsKeepStableMinimumSize() {
@@ -426,13 +431,16 @@ final class SettingsViewTests: XCTestCase {
 }
 
 @MainActor
-private func firstUntitledButton(in view: NSView) -> NSButton? {
-    if let button = view as? NSButton, button.title.isEmpty {
-        return button
+private func settingsElement(_ identifier: String, in element: NSObject) -> NSObject? {
+    if element.responds(to: NSSelectorFromString("accessibilityIdentifier")),
+       element.value(forKey: "accessibilityIdentifier") as? String == identifier {
+        return element
     }
-    for subview in view.subviews {
-        if let button = firstUntitledButton(in: subview) {
-            return button
+    let children = element.responds(to: NSSelectorFromString("accessibilityChildren"))
+        ? element.value(forKey: "accessibilityChildren") as? [NSObject] : nil
+    for child in children ?? [] {
+        if let match = settingsElement(identifier, in: child) {
+            return match
         }
     }
     return nil

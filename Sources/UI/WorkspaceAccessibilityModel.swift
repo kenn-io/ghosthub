@@ -37,9 +37,16 @@ enum WorkspaceAccessibilityModel {
     static func descriptor(
         for row: WorkspaceSidebarRow,
         isSelected: Bool,
-        hasRecentTmuxOutput: Bool = false
+        hasRecentTmuxOutput: Bool = false,
+        isWorktreeFlagged: Bool = false
     ) -> WorkspaceAccessibilityDescriptor {
         var values: [String] = []
+        if isWorktreeFlagged {
+            values.append("Flagged")
+            if row.icon == .primaryWorktree {
+                values.append("Primary checkout")
+            }
+        }
         if let subtitle = row.subtitle, !subtitle.isEmpty {
             values.append(subtitle)
         }

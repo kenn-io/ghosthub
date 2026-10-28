@@ -358,6 +358,8 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
     public var indentLevel: Int
     /// Populated only for worktree rows; nil for host and project rows.
     public var worktreeStatus: WorktreeRowStatus?
+    /// Derived once with inventory; flag membership stays outside this cache.
+    public var worktreeFlagKey: WorktreeFlagKey?
     /// Direct tmux discovery state for non-worktree workspace rows.
     public var sessionIsRunning: Bool
     /// Populated only for Herdr session rows.
@@ -374,6 +376,7 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         subtitle: String? = nil,
         indentLevel: Int = 0,
         worktreeStatus: WorktreeRowStatus? = nil,
+        worktreeFlagKey: WorktreeFlagKey? = nil,
         sessionIsRunning: Bool = false,
         herdrSessionState: HerdrSessionState? = nil,
         herdrSessionIsDefault: Bool? = nil
@@ -384,6 +387,7 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         self.subtitle = subtitle
         self.indentLevel = indentLevel
         self.worktreeStatus = worktreeStatus
+        self.worktreeFlagKey = worktreeFlagKey
         self.sessionIsRunning = sessionIsRunning
         self.herdrSessionState = herdrSessionState
         self.herdrSessionIsDefault = herdrSessionIsDefault
@@ -751,6 +755,7 @@ public enum WorkspaceSidebarModel {
                             for: worktree,
                             snapshot: snapshot,
                             host: host,
+                            project: project,
                             sessionsByEndpoint:
                             sessionsByEndpoint,
                             connectedTmuxSessionIDs:
@@ -941,6 +946,7 @@ public enum WorkspaceSidebarModel {
         for worktree: WorktreeSummary,
         snapshot: WorkspaceSnapshot,
         host: HostSummary,
+        project: ProjectSummary,
         sessionsByEndpoint: [String: TmuxSessionSummary],
         connectedTmuxSessionIDs: Set<String>,
         liveTmuxWindowCounts: [String: Int]
@@ -986,7 +992,10 @@ public enum WorkspaceSidebarModel {
             title: worktree.sidebarTitle,
             subtitle: nil,
             indentLevel: 1,
-            worktreeStatus: status
+            worktreeStatus: status,
+            worktreeFlagKey: WorktreeFlagKey.resolve(
+                worktree: worktree, host: host, project: project
+            )
         )
     }
 }
