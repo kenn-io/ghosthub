@@ -11,6 +11,7 @@ use workspace::{LocalHostSpec, RemoteHostSpec, Workspace};
 mod native_ssh;
 
 const KWT_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kwt"));
+include!(concat!(env!("OUT_DIR"), "/remote_kwt.rs"));
 #[cfg(not(target_os = "linux"))]
 const KWT_CONTROLLER_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kwt-controller.exe"));
 
@@ -148,6 +149,7 @@ fn workspace_for(
         roots,
         controller,
         ssh,
+        bundled_remote_kwt(),
     ))
 }
 

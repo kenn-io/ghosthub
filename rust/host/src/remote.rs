@@ -18,6 +18,9 @@ use crate::{
     SshLeasePrompt, SshTarget, ZellijInventory, herdr, zellij,
 };
 
+mod kwt;
+pub use kwt::RemoteKwtTarget;
+
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 // Keep fixed metadata printable under `LC_ALL=C`: tmux sanitizes control
 // characters in format output to `_` in that locale. The name remains
@@ -100,6 +103,7 @@ pub struct RemoteTmuxConfig {
     target: SshTarget,
     tmux_binary: String,
     socket_directory: Option<String>,
+    kwt_bundles: Vec<(RemoteKwtTarget, crate::KwtBundle)>,
 }
 
 impl RemoteTmuxConfig {
@@ -121,6 +125,7 @@ impl RemoteTmuxConfig {
             target,
             tmux_binary: tmux_binary.into(),
             socket_directory,
+            kwt_bundles: Vec::new(),
         };
         require_safe("remote host ID", &config.id)?;
         require_safe("remote host name", &config.name)?;
@@ -171,6 +176,12 @@ impl RemoteTmuxConfig {
     pub fn socket_directory(&self) -> Option<&str> {
         self.socket_directory.as_deref()
     }
+
+    #[must_use]
+    pub fn with_kwt_bundles(mut self, bundles: Vec<(RemoteKwtTarget, crate::KwtBundle)>) -> Self {
+        self.kwt_bundles = bundles;
+        self
+    }
 }
 
 impl Default for RemoteTmuxConfig {
@@ -181,6 +192,7 @@ impl Default for RemoteTmuxConfig {
             target: SshTarget::new("example.invalid", None, None).expect("static SSH target"),
             tmux_binary: String::new(),
             socket_directory: None,
+            kwt_bundles: Vec::new(),
         }
     }
 }

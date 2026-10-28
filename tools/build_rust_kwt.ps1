@@ -58,10 +58,11 @@ $previousCgo = $env:CGO_ENABLED
 $previousToolchain = $env:GOTOOLCHAIN
 try {
     $env:GOTOOLCHAIN = "go" + (Get-Content -Raw (Join-Path $repoRoot "KWT_GO_VERSION")).Trim()
-    $env:GOARCH = $Architecture
     $env:CGO_ENABLED = "0"
-    foreach ($targetOs in @("linux", "windows")) {
-        $target = "$targetOs-$Architecture"
+    $targets = @("darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64", "windows-$Architecture")
+    foreach ($target in $targets) {
+        $targetOs, $targetArch = $target.Split("-")
+        $env:GOARCH = $targetArch
         $outputDirectory = Join-Path $variantsDirectory $target
         $output = Join-Path $outputDirectory "kwt"
         New-Item -ItemType Directory -Force $outputDirectory | Out-Null

@@ -645,7 +645,8 @@ test: swift-test python-test
 .PHONY: rust-build
 ifeq ($(shell uname -s),Linux)
 rust-build: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
-rust-build: ensure-kwt
+rust-build: export GHOSTHUB_KWT_VARIANTS_DIR ?= $(shell realpath -m -- "$(KWT_VARIANTS_DIR)")
+rust-build: ensure-kwt ensure-kwt-variants
 endif
 rust-build:
 	@cd "$(RUST_DIR)" && $(CARGO) build --locked -p ghosthub-app
@@ -691,7 +692,8 @@ rust-test-ssh-controller-live:
 rust-test-ssh-live: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
 rust-test-ssh-live: export GHOSTHUB_HERDR_TEST = $(shell realpath -m -- "$(HERDR_BINARY_PATH)")
 rust-test-ssh-live: export GHOSTHUB_ZELLIJ_TEST = $(shell realpath -m -- "$(ZELLIJ_BINARY_PATH)")
-rust-test-ssh-live: ensure-kwt
+rust-test-ssh-live: export GHOSTHUB_KWT_VARIANTS_DIR ?= $(shell realpath -m -- "$(KWT_VARIANTS_DIR)")
+rust-test-ssh-live: ensure-kwt ensure-kwt-variants
 	@test -n "$(HERDR_BINARY_PATH)" -a -x "$(HERDR_BINARY_PATH)" || \
 		{ echo "Set HERDR_BINARY_PATH to a Linux Herdr executable" >&2; exit 1; }
 	@test -n "$(ZELLIJ_BINARY_PATH)" -a -x "$(ZELLIJ_BINARY_PATH)" || \

@@ -163,6 +163,7 @@ fn saved_appearance_is_persisted_and_published_without_rebuilding_hosts() {
         roots.clone(),
         None,
         None,
+        Vec::new(),
     );
 
     workspace
@@ -213,6 +214,7 @@ fn saved_terminal_settings_are_persisted_and_published_without_rebuilding_hosts(
         roots.clone(),
         None,
         None,
+        Vec::new(),
     );
     let draft = workspace::TerminalSettingsDraft {
         cursor_style: workspace::CursorStyle::Underline,

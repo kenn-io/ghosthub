@@ -101,9 +101,13 @@ jobs:
           bwrap --unshare-user --unshare-pid --unshare-net \
             --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev --chdir / /bin/true
 
+      - name: Set up uv for KWT helper validation
+        if: runner.os == 'Linux'
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
       - name: Build the pinned Linux KWT helper
         if: runner.os == 'Linux'
-        run: make -C .. bootstrap-kwt
+        run: make -C .. bootstrap-kwt bootstrap-kwt-variants
 
       - name: Stage Herdr for Linux acceptance
         if: runner.os == 'Linux'

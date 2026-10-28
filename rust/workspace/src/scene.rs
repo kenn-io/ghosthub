@@ -382,6 +382,7 @@ pub(crate) fn release_scene(scene: &Scene) {
         return;
     }
     unregister_scene(&scene.runtime, scene.id);
+    crate::remote_kwt::cancel_scene(scene);
     {
         // The detach denies the withheld paste at the worker before killing
         // it. Constructive entry points parked on this mutex observe the
@@ -572,7 +573,7 @@ pub(crate) fn request_ssh_prompt(
 }
 
 pub(crate) fn publish_remote_connection(
-    scene: &Scene,
+    scene: &Arc<Scene>,
     host_id: &str,
     generation: u64,
     result: Result<(RuntimeRemoteHost, RemoteTmuxSnapshot), host::RemoteTmuxError>,
@@ -653,6 +654,7 @@ pub(crate) fn publish_remote_connection(
     drop(stale_presentations);
     crate::remote_recovery::restore_pending(&scene.runtime, host_id);
     drop(publication);
+    crate::remote_kwt::start(scene, host_id);
     if let Some((host, snapshot, target)) = pending_reconciliation {
         reconcile_remote_constructive_after_connection(
             scene, host_id, generation, &host, snapshot, &target,
@@ -1477,11 +1479,6 @@ pub(crate) fn capture_kill_request(
     generation: u64,
 ) -> Result<KillCaptureRequest, WorkspaceError> {
     if !is_local_host_id(selection.host_id()) {
-        if selection.worktree_path().is_some() {
-            return Err(WorkspaceError::new(
-                "Remote worktree session kills are not available",
-            ));
-        }
         if selection.kind() == SessionKind::Zellij {
             let request = crate::runtime::capture_remote_zellij_request(&scene.runtime, selection)?;
             if matches!(crate::runtime::pending_remote_constructive_target(&scene.runtime, selection.host_id()),
@@ -2240,6 +2237,7 @@ pub(crate) fn schedule_kwt_refresh(scene: &Arc<Scene>) -> std::io::Result<()> {
             };
             if inventory_polling_wanted(&scene.runtime) {
                 start_kwt_refresh(&scene, false);
+                crate::remote_kwt::refresh_all(&scene);
             }
             if let Err(error) = schedule_kwt_refresh(&scene) {
                 scene
@@ -3769,41 +3767,47 @@ pub(crate) fn publish_kwt_project_mutation(
     project: &host::KwtProject,
 ) {
     publish_kwt(scene, generation, endpoint, runtime, |host| {
-        match action {
-            KwtProjectAction::Add => {
-                let worktrees = host
-                    .projects
-                    .iter()
-                    .find(|item| {
-                        item.repository == project.repository() && item.path == project.path()
-                    })
-                    .map(|item| item.worktrees.clone())
-                    .unwrap_or_default();
-                host.projects.retain(|item| {
-                    item.repository != project.repository() && item.path != project.path()
-                });
-                host.projects.push(ProjectItem::new(
-                    project.repository(),
-                    project.name(),
-                    project.path(),
-                    project.registration_fingerprint(),
-                    worktrees,
-                ));
-                host.projects.sort_by(|left, right| {
-                    left.name
-                        .cmp(&right.name)
-                        .then_with(|| left.path.cmp(&right.path))
-                });
-            }
-            KwtProjectAction::Remove => {
-                host.projects.retain(|item| {
-                    item.repository != project.repository() || item.path != project.path()
-                });
-            }
-        }
-        host.kwt_state = KwtState::Ready;
-        host.kwt_diagnostic = None;
+        apply_kwt_project_mutation(host, action, project);
     });
+}
+
+pub(crate) fn apply_kwt_project_mutation(
+    host: &mut HostItem,
+    action: KwtProjectAction,
+    project: &host::KwtProject,
+) {
+    match action {
+        KwtProjectAction::Add => {
+            let worktrees = host
+                .projects
+                .iter()
+                .find(|item| item.repository == project.repository() && item.path == project.path())
+                .map(|item| item.worktrees.clone())
+                .unwrap_or_default();
+            host.projects.retain(|item| {
+                item.repository != project.repository() && item.path != project.path()
+            });
+            host.projects.push(ProjectItem::new(
+                project.repository(),
+                project.name(),
+                project.path(),
+                project.registration_fingerprint(),
+                worktrees,
+            ));
+            host.projects.sort_by(|left, right| {
+                left.name
+                    .cmp(&right.name)
+                    .then_with(|| left.path.cmp(&right.path))
+            });
+        }
+        KwtProjectAction::Remove => {
+            host.projects.retain(|item| {
+                item.repository != project.repository() || item.path != project.path()
+            });
+        }
+    }
+    host.kwt_state = KwtState::Ready;
+    host.kwt_diagnostic = None;
 }
 
 pub(crate) fn publish_kwt_mutation_failure(
@@ -4312,70 +4316,74 @@ pub(crate) fn publish_kwt_inventory(
     inventory: &KwtInventory,
 ) -> bool {
     let published = publish_kwt(scene, generation, endpoint, runtime, |host| {
-        let session_names = host
-            .sessions
-            .iter()
-            .map(|session| session.name.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        host.projects = inventory
-            .projects()
-            .iter()
-            .map(|project| {
-                ProjectItem::new(
-                    project.project().repository(),
-                    project.project().name(),
-                    project.project().path(),
-                    project.project().registration_fingerprint(),
-                    project
-                        .worktrees()
-                        .iter()
-                        .map(|worktree| {
-                            let available = worktree.tmux_attach_mode()
-                                == host::KwtTmuxAttachMode::Direct
-                                && worktree.tmux_socket_name().is_none()
-                                && session_names.contains(worktree.session_name());
-                            WorktreeItem::new(
-                                worktree.path(),
-                                worktree.branch(),
-                                worktree.is_main(),
-                                worktree.generation().map(str::to_owned),
-                                worktree.session_name(),
-                                (
-                                    worktree.tmux_socket_name().map(str::to_owned),
-                                    worktree.tmux_attach_mode(),
-                                ),
-                                available,
-                            )
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
-        host.directory_workspaces = inventory
-            .directory_workspaces()
-            .iter()
-            .map(|workspace| {
-                DirectoryWorkspaceItem::new(
-                    workspace.name(),
-                    workspace.path(),
-                    workspace.session_name(),
-                    (
-                        workspace.tmux_socket_name().map(str::to_owned),
-                        workspace.tmux_attach_mode(),
-                    ),
-                    workspace.session_live()
-                        && (workspace.tmux_socket_name().is_some()
-                            || session_names.contains(workspace.session_name())),
-                )
-            })
-            .collect();
-        host.kwt_state = KwtState::Ready;
-        host.kwt_diagnostic = None;
+        apply_kwt_inventory(host, inventory);
     });
     if published {
         resolve_pending_kwt_creations(scene, endpoint, inventory);
     }
     published
+}
+
+pub(crate) fn apply_kwt_inventory(host: &mut HostItem, inventory: &KwtInventory) {
+    let session_names = host
+        .sessions
+        .iter()
+        .map(|session| session.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    host.projects = inventory
+        .projects()
+        .iter()
+        .map(|project| {
+            ProjectItem::new(
+                project.project().repository(),
+                project.project().name(),
+                project.project().path(),
+                project.project().registration_fingerprint(),
+                project
+                    .worktrees()
+                    .iter()
+                    .map(|worktree| {
+                        let available = worktree.tmux_attach_mode()
+                            == host::KwtTmuxAttachMode::Direct
+                            && worktree.tmux_socket_name().is_none()
+                            && session_names.contains(worktree.session_name());
+                        WorktreeItem::new(
+                            worktree.path(),
+                            worktree.branch(),
+                            worktree.is_main(),
+                            worktree.generation().map(str::to_owned),
+                            worktree.session_name(),
+                            (
+                                worktree.tmux_socket_name().map(str::to_owned),
+                                worktree.tmux_attach_mode(),
+                            ),
+                            available,
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    host.directory_workspaces = inventory
+        .directory_workspaces()
+        .iter()
+        .map(|workspace| {
+            DirectoryWorkspaceItem::new(
+                workspace.name(),
+                workspace.path(),
+                workspace.session_name(),
+                (
+                    workspace.tmux_socket_name().map(str::to_owned),
+                    workspace.tmux_attach_mode(),
+                ),
+                workspace.session_live()
+                    && (workspace.tmux_socket_name().is_some()
+                        || session_names.contains(workspace.session_name())),
+            )
+        })
+        .collect();
+    host.kwt_state = KwtState::Ready;
+    host.kwt_diagnostic = None;
 }
 
 pub(crate) fn publish_kwt_error(
