@@ -140,6 +140,12 @@ account-login-shell test, continues to run hosted. CI rejects every runtime skip
 terminal smoke tests. It selects a supported Xcode installation and the exact Zig toolchain required
 by the pinned Ghostty source, then runs the existing build and test gates.
 
+If Zig reports a connection reset while downloading a dependency, bootstrap
+retries the build twice, after 5 and 10 seconds, reusing downloaded packages.
+Compiler errors and other download failures stop the build immediately. After
+three interrupted attempts, check access to the dependency URL in the log and
+rerun `make build`.
+
 Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target.
 Local bootstrap checks every architecture required by the running Zig
 executable and selected XCFramework target, then places a repository-local

@@ -659,33 +659,97 @@ def test_universal_build_requires_both_sdk_targets(
     assert str(fallback.resolve()) in shim.read_text()
 
 
-def test_bootstrap_wraps_build_failures_with_setup_guidance(repo: Repo) -> None:
+DOWNLOAD_RESET = (
+    "./build.zig.zon:27:20: error: HTTP response read failure: ConnectionResetByPeer"
+)
+COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
+
+
+@pytest.mark.parametrize(
+    ("failures", "attempts", "succeeds"),
+    [
+        ([], 1, True),
+        ([DOWNLOAD_RESET], 2, True),
+        ([DOWNLOAD_RESET, DOWNLOAD_RESET], 3, True),
+        ([DOWNLOAD_RESET] * 3, 3, False),
+        ([COMPILE_ERROR], 1, False),
+        ([DOWNLOAD_RESET, COMPILE_ERROR], 2, False),
+        (
+            ["./build.zig.zon:27:20: error: bad HTTP response code: '404 Not Found'"],
+            1,
+            False,
+        ),
+        (["./build.zig.zon:27:20: error: hash mismatch"], 1, False),
+        ([DOWNLOAD_RESET + "\n" + COMPILE_ERROR], 1, False),
+    ],
+    ids=[
+        "success",
+        "recovers",
+        "last-attempt",
+        "exhausted",
+        "compiler",
+        "compiler-after-reset",
+        "not-found",
+        "hash",
+        "mixed-errors",
+    ],
+)
+def test_bootstrap_retries_only_interrupted_dependency_downloads(
+    repo: Repo,
+    capfd: pytest.CaptureFixture[str],
+    failures: list[str],
+    attempts: int,
+    succeeds: bool,
+) -> None:
+    source = repo.paths.source_checkout_root
+    source.mkdir(parents=True)
+    _write_share_tree(source / "zig-out" / "share")
+    (source / "macos" / "GhosttyKit.xcframework").mkdir(parents=True)
+    (source / "include").mkdir()
+    (source / "include" / "ghostty.h").write_text("// header\n")
+    (source / "include" / "module.modulemap").write_text("module GhosttyKit {}\n")
+    zig = repo.root / "zig"
+    zig.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "if sys.argv[1:] == ['version']:\n"
+        f"    print({repo.metadata.required_zig_version!r})\n"
+        "    sys.exit(0)\n"
+        "assert sys.argv[1] == 'build'\n"
+        "assert '-Dxcframework-target=native' in sys.argv\n"
+        "assert os.environ['BOOTSTRAP_FIXTURE'] == 'kept'\n"
+        "count = Path('attempts')\n"
+        "attempt = int(count.read_text()) + 1 if count.exists() else 1\n"
+        "count.write_text(str(attempt))\n"
+        f"failures = {failures!r}\n"
+        "if attempt <= len(failures):\n"
+        "    print(failures[attempt - 1], file=sys.stderr)\n"
+        "    sys.exit(1)\n"
+        "print('build complete')\n"
+    )
+    zig.chmod(0o755)
     with (
         mock.patch.object(bootstrap, "ensure_source_checkout"),
         mock.patch.object(bootstrap, "apply_ghosthub_source_patches"),
         mock.patch.object(
-            bootstrap, "resolve_tool", side_effect=lambda tool: f"/usr/bin/{tool}"
+            bootstrap,
+            "resolve_tool",
+            side_effect=lambda tool: str(zig) if tool == "zig" else tool,
         ),
-        mock.patch.object(bootstrap, "read_tool_output", return_value="0.15.2"),
         mock.patch.object(bootstrap, "ensure_metal_toolchain"),
         mock.patch.object(
             bootstrap, "zig_executable_architecture", return_value="aarch64"
         ),
-        mock.patch.object(bootstrap, "prepare_zig_build_environment", return_value={}),
         mock.patch.object(
-            bootstrap.subprocess,
-            "run",
-            side_effect=bootstrap.subprocess.CalledProcessError(
-                1,
-                ["/usr/bin/zig", "build"],
-            ),
+            bootstrap,
+            "prepare_zig_build_environment",
+            return_value={**os.environ, "BOOTSTRAP_FIXTURE": "kept"},
         ),
+        mock.patch.object(bootstrap.time, "sleep"),
     ):
-        with pytest.raises(
-            bootstrap.BootstrapError,
-            match="full Xcode installation selected via `xcode-select`",
-        ):
-            bootstrap.bootstrap(
+        def build() -> bootstrap.BootstrapResult:
+            return bootstrap.bootstrap(
                 paths=repo.paths,
                 metadata=repo.metadata,
                 git="git",
@@ -695,6 +759,30 @@ def test_bootstrap_wraps_build_failures_with_setup_guidance(repo: Repo) -> None:
                 xcframework_target="native",
                 optimize="Debug",
             )
+
+        if succeeds:
+            result = build()
+            assert result.rebuilt_variant and result.staged_synced
+            assert repo.paths.staged_artifacts.header_path.read_text() == "// header\n"
+        else:
+            with pytest.raises(bootstrap.BootstrapError) as raised:
+                build()
+            if failures[-1] == DOWNLOAD_RESET:
+                assert "3 attempts" in str(raised.value)
+            else:
+                assert "full Xcode installation selected via `xcode-select`" in str(
+                    raised.value
+                )
+            assert not repo.paths.cached_artifacts.manifest_path.exists()
+            assert not repo.paths.staged_artifacts.root.exists()
+
+    assert (source / "attempts").read_text() == str(attempts)
+    captured = capfd.readouterr()
+    output = captured.out + captured.err
+    for failure in failures:
+        assert failure in output
+    if succeeds:
+        assert "build complete" in output
 
 
 def _write_sdk_stub(sdk_path: Path, targets: str) -> Path:
