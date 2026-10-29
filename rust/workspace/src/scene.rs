@@ -799,7 +799,7 @@ fn reconcile_scene_remote_presentations(
         {
             RemoteReconcile::Found(kind, name) => {
                 active.retainable = retain_remote_session(kind);
-                let selection = SessionSelection::for_kind(host_id, endpoint, name, kind);
+                let selection = active.key.selection(kind, name);
                 if active.selection == selection {
                     None
                 } else {
@@ -1671,7 +1671,12 @@ pub(crate) fn capture_tmux_kill(
                 &request.snapshot,
             )?;
             request.session = host
-                .capture_live_session(&snapshot, request.selection.session(), &cancellation)
+                .capture_live_session(
+                    &snapshot,
+                    request.selection.remote_tmux_server()?,
+                    request.selection.session(),
+                    &cancellation,
+                )
                 .map_err(|error| WorkspaceError::new(error.to_string()))?;
             // Check for a reconnect during the query; confirmation checks again.
             crate::runtime::recapture_remote_attachment_context(
@@ -4382,6 +4387,9 @@ pub(crate) fn apply_kwt_inventory(host: &mut HostItem, inventory: &KwtInventory)
             )
         })
         .collect();
+    if host.is_ssh() {
+        crate::reconcile_kwt_session_availability(host);
+    }
     host.kwt_state = KwtState::Ready;
     host.kwt_diagnostic = None;
 }
@@ -4698,15 +4706,17 @@ pub(crate) fn run_remote_tmux_attach(
                         endpoint: request.snapshot.endpoint().to_owned(),
                         route_identity: request.snapshot.route_identity().to_owned(),
                         lease_generation: request.snapshot.lease_generation(),
-                        session_identity: RemoteSessionIdentity::Tmux(
+                        session_identity: RemoteSessionIdentity::tmux(
+                            request.selection.remote_tmux_server()?,
                             request.session.identity().clone(),
                         ),
                     };
+                    let selection = key.selection(SessionKind::Tmux, request.session.name());
                     let published = publish_remote_worker(
                         scene,
                         worker,
                         key,
-                        &request.selection,
+                        &selection,
                         request.snapshot.lease().clone(),
                         next_presentation_id(&scene.runtime),
                         term,
@@ -4748,7 +4758,12 @@ pub(crate) fn prepare_remote_tmux_attachment<'scene>(
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let (plan, identity_mismatch_marker) = request
         .host
-        .attach_plan(&request.snapshot, &request.session, term.as_str())
+        .attach_plan(
+            &request.snapshot,
+            request.selection.remote_tmux_server()?,
+            &request.session,
+            term.as_str(),
+        )
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let geometry = *scene
         .terminal_geometry

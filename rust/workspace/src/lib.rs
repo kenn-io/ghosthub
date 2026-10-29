@@ -322,6 +322,27 @@ pub enum SessionKind {
 }
 
 impl SessionSelection {
+    fn remote_tmux_server(&self) -> Result<host::RemoteTmuxServer, WorkspaceError> {
+        if self.tmux_attach_mode() != Some(host::KwtTmuxAttachMode::Protected) {
+            match self.tmux_socket_name() {
+                None => return Ok(host::RemoteTmuxServer::Default),
+                Some("kwt") => return Ok(host::RemoteTmuxServer::Kwt),
+                Some(_) => {}
+            }
+        }
+        Err(WorkspaceError::new(
+            "Protected workspaces and custom remote tmux sockets cannot be opened yet",
+        ))
+    }
+
+    fn remote_client(&self) -> Self {
+        let mut selection = self.clone();
+        selection.tmux_attach_mode = None;
+        selection.worktree_path = None;
+        selection.worktree_generation = None;
+        selection
+    }
+
     fn for_kind(
         host_id: impl Into<String>,
         endpoint: impl Into<String>,
@@ -513,6 +534,8 @@ pub struct HostItem {
     directory_workspaces: Vec<DirectoryWorkspaceItem>,
     kwt_state: KwtState,
     kwt_diagnostic: Option<HostDiagnostic>,
+    kwt_tmux_diagnostic: Option<HostDiagnostic>,
+    kwt_sessions: Vec<SessionItem>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -813,6 +836,8 @@ impl HostItem {
             directory_workspaces: Vec::new(),
             kwt_state: KwtState::Uninitialized,
             kwt_diagnostic: None,
+            kwt_tmux_diagnostic: None,
+            kwt_sessions: Vec::new(),
         }
     }
 
@@ -845,6 +870,8 @@ impl HostItem {
             directory_workspaces: Vec::new(),
             kwt_state: KwtState::Unavailable,
             kwt_diagnostic: None,
+            kwt_tmux_diagnostic: None,
+            kwt_sessions: Vec::new(),
         }
     }
 
@@ -1027,8 +1054,10 @@ impl HostItem {
     }
 
     #[must_use]
-    pub const fn kwt_diagnostic(&self) -> Option<&HostDiagnostic> {
-        self.kwt_diagnostic.as_ref()
+    pub fn kwt_diagnostic(&self) -> Option<&HostDiagnostic> {
+        self.kwt_diagnostic
+            .as_ref()
+            .or(self.kwt_tmux_diagnostic.as_ref())
     }
 
     #[must_use]
@@ -1044,16 +1073,16 @@ impl HostItem {
     }
 
     #[must_use]
-    pub fn kwt_owns_default_tmux_session(&self, name: &str) -> bool {
+    pub fn kwt_owns_tmux_session(&self, name: &str, socket: Option<&str>) -> bool {
         self.projects.iter().any(|project| {
             project.worktrees.iter().any(|worktree| {
                 worktree.tmux_attach_mode == host::KwtTmuxAttachMode::Direct
-                    && worktree.tmux_socket_name.is_none()
+                    && worktree.tmux_socket_name.as_deref() == socket
                     && worktree.session_name == name
             })
         }) || self.directory_workspaces.iter().any(|workspace| {
             workspace.tmux_attach_mode == host::KwtTmuxAttachMode::Direct
-                && workspace.tmux_socket_name.is_none()
+                && workspace.tmux_socket_name.as_deref() == socket
                 && workspace.session_name == name
         })
     }
@@ -1953,6 +1982,7 @@ struct RemoteActive {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RemoteSessionIdentity {
     Tmux(session::SessionIdentity),
+    KwtTmux(session::SessionIdentity),
     Herdr {
         name: String,
         is_default: bool,
@@ -1960,6 +1990,15 @@ enum RemoteSessionIdentity {
         socket_path: String,
     },
     Zellij(String),
+}
+
+impl RemoteSessionIdentity {
+    fn tmux(server: host::RemoteTmuxServer, identity: session::SessionIdentity) -> Self {
+        match server {
+            host::RemoteTmuxServer::Default => Self::Tmux(identity),
+            host::RemoteTmuxServer::Kwt => Self::KwtTmux(identity),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2001,6 +2040,7 @@ struct RemotePublicationFence<'a> {
 #[derive(Clone, Copy)]
 struct RemoteInventory<'a> {
     tmux: Option<&'a [session::DiscoveredSession]>,
+    kwt_tmux: Option<&'a [session::DiscoveredSession]>,
     herdr: Option<&'a [session::HerdrSessionRecord]>,
     zellij: Option<&'a [session::ZellijSessionRecord]>,
 }
@@ -2012,6 +2052,10 @@ impl<'a> From<&'a RemoteTmuxSnapshot> for RemoteInventory<'a> {
                 .tmux_diagnostic()
                 .is_none()
                 .then(|| snapshot.sessions()),
+            kwt_tmux: snapshot
+                .kwt_tmux_diagnostic()
+                .is_none()
+                .then(|| snapshot.sessions_on(host::RemoteTmuxServer::Kwt)),
             herdr: match snapshot.herdr() {
                 HerdrInventory::Available { sessions, .. } => Some(sessions),
                 HerdrInventory::Unavailable => Some(&[]),
@@ -2034,6 +2078,14 @@ enum RemoteReconcile {
 }
 
 impl RemotePresentationKey {
+    fn selection(&self, kind: SessionKind, name: impl Into<String>) -> SessionSelection {
+        let mut selection = SessionSelection::for_kind(&self.host_id, &self.endpoint, name, kind);
+        if matches!(self.session_identity, RemoteSessionIdentity::KwtTmux(_)) {
+            selection.tmux_socket_name = Some("kwt".to_owned());
+        }
+        selection
+    }
+
     fn reconcile(
         &mut self,
         endpoint: &str,
@@ -2048,8 +2100,14 @@ impl RemotePresentationKey {
             return RemoteReconcile::Stale;
         };
         let (kind, name) = match &self.session_identity {
-            RemoteSessionIdentity::Tmux(identity) => {
-                let Some(sessions) = inventory.tmux else {
+            RemoteSessionIdentity::Tmux(identity) | RemoteSessionIdentity::KwtTmux(identity) => {
+                let sessions = if matches!(self.session_identity, RemoteSessionIdentity::KwtTmux(_))
+                {
+                    inventory.kwt_tmux
+                } else {
+                    inventory.tmux
+                };
+                let Some(sessions) = sessions else {
                     self.lease_generation = lease_generation;
                     return RemoteReconcile::Unknown;
                 };
@@ -2140,7 +2198,7 @@ impl RemoteRetainedPresentations {
         let index = self
             .entries
             .iter()
-            .position(|entry| &entry.active.selection == selection)?;
+            .position(|entry| entry.active.selection == selection.remote_client())?;
         Some(self.entries.remove(index))
     }
 
@@ -2182,7 +2240,7 @@ impl RemoteRetainedPresentations {
             match resolved {
                 RemoteReconcile::Found(kind, name) => {
                     self.entries[index].active.selection =
-                        SessionSelection::for_kind(host_id, endpoint, name, kind);
+                        self.entries[index].active.key.selection(kind, name);
                     index += 1;
                 }
                 RemoteReconcile::Unknown => index += 1,
@@ -6008,9 +6066,10 @@ impl Workspace {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
                 .is_some_and(|active| {
-                    current_key
-                        .as_ref()
-                        .map_or_else(|| active.selection == *selection, |key| active.key == *key)
+                    current_key.as_ref().map_or_else(
+                        || active.selection == selection.remote_client(),
+                        |key| active.key == *key,
+                    )
                 });
             if active_matches {
                 return self.refresh_active_remote_selection(selection, current_key.as_ref());
@@ -6083,10 +6142,11 @@ impl Workspace {
             return None;
         }
         let session_identity = match selection.kind() {
-            SessionKind::Tmux => RemoteSessionIdentity::Tmux(
+            SessionKind::Tmux => RemoteSessionIdentity::tmux(
+                selection.remote_tmux_server().ok()?,
                 context
                     .snapshot
-                    .sessions()
+                    .sessions_on(selection.remote_tmux_server().ok()?)
                     .iter()
                     .find(|session| session.name() == selection.session())?
                     .identity()
@@ -6154,7 +6214,7 @@ impl Workspace {
         };
         active.navigation_generation = self.scene.navigation_generation.load(Ordering::Acquire);
         if current_key.is_some_and(|key| active.key == *key) && active.selection != *selection {
-            active.selection = selection.clone();
+            active.selection = active.key.selection(selection.kind(), selection.session());
             set_scene_state(
                 &self.scene,
                 WorkspaceContent::Terminal {
@@ -6192,7 +6252,10 @@ impl Workspace {
             return Ok(false);
         };
         if current_key.is_some() {
-            presentation.active.selection = selection.clone();
+            presentation.active.selection = presentation
+                .active
+                .key
+                .selection(selection.kind(), selection.session());
         }
         presentation.worker.set_clipboard_writes_enabled(true);
         if let Err(error) = publish_remote_worker(
@@ -7856,6 +7919,7 @@ impl Workspace {
             .host
             .kill_live_session(
                 &request.snapshot,
+                request.selection.remote_tmux_server()?,
                 &request.session,
                 &CancellationToken::new(),
             )
@@ -7911,7 +7975,13 @@ impl Workspace {
                 && key.endpoint == request.snapshot.endpoint()
                 && key.route_identity == request.snapshot.route_identity()
                 && key.session_identity
-                    == RemoteSessionIdentity::Tmux(request.session.identity().clone())
+                    == RemoteSessionIdentity::tmux(
+                        request
+                            .selection
+                            .remote_tmux_server()
+                            .expect("validated remote tmux selection"),
+                        request.session.identity().clone(),
+                    )
         };
         drop_matching_kill_confirmations(
             &self.scene.runtime,
@@ -7919,6 +7989,7 @@ impl Workspace {
                 matches!(&pending.target, KillTarget::RemoteTmux(other)
                 if other.host_id == request.host_id
                     && other.snapshot.route_identity() == request.snapshot.route_identity()
+                    && other.selection.tmux_socket_name() == request.selection.tmux_socket_name()
                     && other.session.identity() == request.session.identity())
             },
             |selection| selection == &request.selection,
@@ -10155,24 +10226,40 @@ fn project_herdr_lifecycle(
 }
 
 fn reconcile_kwt_session_availability(host: &mut HostItem) {
-    let session_names = host
+    let sessions = host
         .sessions
         .iter()
-        .map(|session| session.name.as_str())
+        .map(SessionItem::name)
         .collect::<std::collections::HashSet<_>>();
+    let kwt_sessions = host
+        .kwt_sessions
+        .iter()
+        .map(SessionItem::name)
+        .collect::<std::collections::HashSet<_>>();
+    let remote = host.is_ssh();
+    let available = |socket: Option<&str>, name: &str| match socket {
+        None => sessions.contains(name),
+        Some("kwt") if remote => kwt_sessions.contains(name),
+        Some(_) => false,
+    };
     for project in &mut host.projects {
         for worktree in &mut project.worktrees {
             worktree.session_available = worktree.tmux_attach_mode
                 == host::KwtTmuxAttachMode::Direct
-                && worktree.tmux_socket_name.is_none()
-                && session_names.contains(worktree.session_name.as_str());
+                && available(worktree.tmux_socket_name.as_deref(), &worktree.session_name);
         }
     }
     for workspace in &mut host.directory_workspaces {
-        if workspace.tmux_attach_mode == host::KwtTmuxAttachMode::Direct
-            && workspace.tmux_socket_name.is_none()
+        if remote
+            || (workspace.tmux_attach_mode == host::KwtTmuxAttachMode::Direct
+                && workspace.tmux_socket_name.is_none())
         {
-            workspace.session_available = session_names.contains(workspace.session_name.as_str());
+            workspace.session_available = workspace.tmux_attach_mode
+                == host::KwtTmuxAttachMode::Direct
+                && available(
+                    workspace.tmux_socket_name.as_deref(),
+                    &workspace.session_name,
+                );
         }
     }
 }

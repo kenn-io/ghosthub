@@ -657,9 +657,15 @@ for macOS/Linux x86_64 or arm64 and publishes projects, worktrees, and directory
 workspaces independently of multiplexer inventory. Failed reads preserve the
 last usable inventory with a project diagnostic; connection generations fence
 stale publication. Removal revalidates the exact repository, path, and
-registration fingerprint and never removes files or sessions. Remote worktree
-mutation, dedicated-socket attachment, automatic reconnect, and persisted
-restoration remain separate Rust parity work.
+registration fingerprint and never removes files or sessions. Remote direct
+workspace clients can use either the default server or KWT's canonical `kwt`
+server. Session inventory, retained-client keys, and exact Kill authority include
+the server, so same-name sessions remain independent. The canonical server
+ignores `TMUX_TMPDIR`; its probe failures appear beside Projects without hiding
+ordinary sessions. Removing a project registration preserves its retained
+clients as session rows. Remote worktree mutation, protected or other named
+sockets, automatic reconnect, and persisted restoration remain separate Rust
+parity work.
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and

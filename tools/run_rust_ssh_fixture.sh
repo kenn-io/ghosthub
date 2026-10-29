@@ -139,7 +139,11 @@ TMUX_TMPDIR="$root/tmux" tmux -f /dev/null new-session -d -s review /bin/sh
 TMUX_TMPDIR="$root/tmux" tmux new-session -d -s "notes 'one'" /bin/sh
 /usr/sbin/sshd -D -e -f "$root/sshd_config" > "$root/sshd.log" 2>&1 &
 sshd_pid=$!
-trap 'if [ "$?" -ne 0 ]; then cat "$root/sshd.log" >&2; fi' EXIT
+trap 'if [ "$?" -ne 0 ]; then
+    cat "$root/sshd.log" >&2
+    zellij_log="/tmp/zellij-$(id -u)/zellij-log/zellij.log"
+    if [ -f "$zellij_log" ]; then tail -n 200 "$zellij_log" >&2; fi
+fi' EXIT
 attempt=0
 until test -s "$root/sshd.pid"; do
     kill -0 "$sshd_pid"

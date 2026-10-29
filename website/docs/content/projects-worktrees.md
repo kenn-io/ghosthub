@@ -32,14 +32,20 @@ registration unchanged.
 
 ![Confirm removing the remote project registration while its terminal stays open](/docs/assets/guide-rust-remove-project.png)
 
-The Rust remote project tree opens existing ordinary sessions on the default
-tmux socket. Open a running worktree or directory row's **⋯** menu, select **Kill**,
+Select a running remote worktree or registered directory to open its terminal.
+The Rust app supports direct sessions on the default tmux server and KWT's
+standard `kwt` server. Switching rows keeps already-opened tmux clients available
+for reuse. A same-name session on the other server remains separate.
+
+![A remote worktree attached through the standard KWT server](/docs/assets/guide-rust-kwt-socket.png)
+
+Open a running worktree or directory row's **⋯** menu, select **Kill**,
 and confirm **Kill Session** to stop its session. Its files and registration
 remain intact.
 
 ![Confirm killing a remote worktree session in the native Rust application](/docs/assets/guide-rust-project-kill.png)
 
-Remote worktree creation/removal, dedicated KWT sockets, protected
+Remote worktree creation/removal, other named sockets, protected
 imports, and repair/open are still in development. The remaining instructions
 on this page describe the macOS app.
 

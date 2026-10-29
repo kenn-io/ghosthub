@@ -206,9 +206,18 @@ pub struct RemoteTmuxSnapshot {
     tmux_binary: Option<String>,
     tmux_diagnostic: Option<HostError>,
     sessions: Vec<DiscoveredSession>,
+    kwt_sessions: Vec<DiscoveredSession>,
+    kwt_tmux_diagnostic: Option<HostError>,
     herdr: HerdrInventory,
     zellij: ZellijInventory,
     lease: SshLease,
+}
+
+/// The host's ordinary server or KWT's canonical isolated server.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteTmuxServer {
+    Default,
+    Kwt,
 }
 
 /// Multiplexer inventory captured through one reviewed SSH lease.
@@ -217,6 +226,8 @@ pub struct RemoteSessionInventory {
     tmux_binary: Option<String>,
     tmux_diagnostic: Option<HostError>,
     sessions: Vec<DiscoveredSession>,
+    kwt_sessions: Vec<DiscoveredSession>,
+    kwt_tmux_diagnostic: Option<HostError>,
     herdr: HerdrInventory,
     zellij: ZellijInventory,
 }
@@ -234,6 +245,8 @@ impl RemoteSessionInventory {
             tmux_binary,
             tmux_diagnostic: None,
             sessions,
+            kwt_sessions: Vec::new(),
+            kwt_tmux_diagnostic: None,
             herdr,
             zellij,
         }
@@ -284,6 +297,8 @@ impl RemoteTmuxSnapshot {
             tmux_binary: Some("/usr/bin/tmux".to_owned()),
             tmux_diagnostic: None,
             sessions,
+            kwt_sessions: Vec::new(),
+            kwt_tmux_diagnostic: None,
             herdr,
             zellij,
             lease: SshLease::test_fixture(route_identity, lease_generation),
@@ -323,6 +338,19 @@ impl RemoteTmuxSnapshot {
     #[must_use]
     pub fn sessions(&self) -> &[DiscoveredSession] {
         &self.sessions
+    }
+
+    #[must_use]
+    pub fn sessions_on(&self, server: RemoteTmuxServer) -> &[DiscoveredSession] {
+        match server {
+            RemoteTmuxServer::Default => &self.sessions,
+            RemoteTmuxServer::Kwt => &self.kwt_sessions,
+        }
+    }
+
+    #[must_use]
+    pub const fn kwt_tmux_diagnostic(&self) -> Option<&HostError> {
+        self.kwt_tmux_diagnostic.as_ref()
     }
 
     #[must_use]
@@ -370,6 +398,8 @@ impl RemoteTmuxSnapshot {
             tmux_binary: inventory.tmux_binary,
             tmux_diagnostic: inventory.tmux_diagnostic,
             sessions: inventory.sessions,
+            kwt_sessions: inventory.kwt_sessions,
+            kwt_tmux_diagnostic: inventory.kwt_tmux_diagnostic,
             herdr: inventory.herdr,
             zellij: inventory.zellij,
             lease: self.lease.clone(),
@@ -461,6 +491,8 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             tmux_binary: inventory.tmux_binary,
             tmux_diagnostic: inventory.tmux_diagnostic,
             sessions: inventory.sessions,
+            kwt_sessions: inventory.kwt_sessions,
+            kwt_tmux_diagnostic: inventory.kwt_tmux_diagnostic,
             herdr: inventory.herdr,
             zellij: inventory.zellij,
             lease,
@@ -477,19 +509,28 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         lease: &SshLease,
         cancellation: &CancellationToken,
     ) -> Result<RemoteSessionInventory, RemoteTmuxError> {
-        let (tmux_binary, sessions, tmux_diagnostic) = scope_tmux_inventory(
-            self.resolve_tmux_binary(lease, cancellation)
-                .and_then(|binary| {
-                    self.discover_sessions(lease, &binary, cancellation)
-                        .map(|sessions| (binary, sessions))
-                }),
-        )?;
+        let (tmux_binary, resolution_diagnostic) =
+            match self.resolve_tmux_binary(lease, cancellation) {
+                Ok(binary) => (Some(binary), None),
+                Err(error) => (None, Some(scope_backend_failure(error)?)),
+            };
+        let inventory = |server| match &tmux_binary {
+            Some(binary) => {
+                scope_tmux_inventory(self.discover_sessions(lease, binary, server, cancellation))
+            }
+            // Without an executable neither server has authoritative inventory.
+            None => Ok((Vec::new(), resolution_diagnostic.clone())),
+        };
+        let (sessions, tmux_diagnostic) = inventory(RemoteTmuxServer::Default)?;
+        let (kwt_sessions, kwt_tmux_diagnostic) = inventory(RemoteTmuxServer::Kwt)?;
         let herdr = self.discover_herdr(lease, cancellation)?;
         let zellij = self.discover_zellij(lease, cancellation)?;
         Ok(RemoteSessionInventory {
             tmux_binary,
             tmux_diagnostic,
             sessions,
+            kwt_sessions,
+            kwt_tmux_diagnostic,
             herdr,
             zellij,
         })
@@ -643,11 +684,13 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         &self,
         lease: &SshLease,
         tmux_binary: &str,
+        server: RemoteTmuxServer,
         cancellation: &CancellationToken,
     ) -> Result<Vec<DiscoveredSession>, RemoteTmuxError> {
         let (begin_marker, end_marker) = inventory_markers()?;
-        let command = posix_command(&tmux_command(
+        let command = posix_command(&tmux_server_command(
             &self.config,
+            server,
             tmux_binary,
             RemoteCommandLocale::StableOutput,
             ["-f", "/dev/null", "list-sessions", "-F", INVENTORY_FORMAT],
@@ -680,13 +723,14 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
     pub fn capture_live_session(
         &self,
         snapshot: &RemoteTmuxSnapshot,
+        server: RemoteTmuxServer,
         name: &str,
         cancellation: &CancellationToken,
     ) -> Result<DiscoveredSession, RemoteTmuxError> {
         let binary = snapshot.tmux_binary().ok_or_else(|| {
             RemoteTmuxError::new(DiagnosticKind::ExecutableNotFound, "tmux is unavailable")
         })?;
-        self.discover_sessions(snapshot.lease(), binary, cancellation)?
+        self.discover_sessions(snapshot.lease(), binary, server, cancellation)?
             .into_iter()
             .find(|session| session.name() == name)
             .ok_or_else(|| {
@@ -705,6 +749,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
     pub fn kill_live_session(
         &self,
         snapshot: &RemoteTmuxSnapshot,
+        server: RemoteTmuxServer,
         session: &DiscoveredSession,
         cancellation: &CancellationToken,
     ) -> Result<(), RemoteTmuxError> {
@@ -713,8 +758,9 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         })?;
         let marker = identity_mismatch_marker()?;
         let identity = session.identity();
-        let command = posix_command(&tmux_command(
+        let command = posix_command(&tmux_server_command(
             &self.config,
+            server,
             binary,
             RemoteCommandLocale::StableOutput,
             [
@@ -757,6 +803,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
     pub fn attach_plan(
         &self,
         snapshot: &RemoteTmuxSnapshot,
+        server: RemoteTmuxServer,
         session: &DiscoveredSession,
         term: &str,
     ) -> Result<(AttachPlan, String), RemoteTmuxError> {
@@ -768,8 +815,9 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         let identity = session.identity();
         let condition = tmux_identity_condition(identity);
         let attach = format!("attach-session -E -t ={}", identity.session_id());
-        let command = tmux_command(
+        let command = tmux_server_command(
             &self.config,
+            server,
             snapshot.tmux_binary().ok_or_else(|| {
                 RemoteTmuxError::new(
                     DiagnosticKind::ExecutableNotFound,
@@ -1299,6 +1347,23 @@ fn framed_status_marker(end_marker: &str) -> String {
     format!("{end_marker}_STATUS_")
 }
 
+fn tmux_server_command<'a>(
+    config: &RemoteTmuxConfig,
+    server: RemoteTmuxServer,
+    binary: &str,
+    locale: RemoteCommandLocale,
+    args: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut command = tmux_command(config, binary, locale, []);
+    if server == RemoteTmuxServer::Kwt {
+        // Canonical KWT always uses /tmp, irrespective of account or host overrides.
+        command.retain(|arg| !arg.starts_with("TMUX_TMPDIR="));
+        command.extend(["-L".to_owned(), "kwt".to_owned()]);
+    }
+    command.extend(args.into_iter().map(str::to_owned));
+    command
+}
+
 fn tmux_command<'a>(
     config: &RemoteTmuxConfig,
     tmux_binary: &str,
@@ -1677,19 +1742,12 @@ fn command_failure(output: &crate::CommandOutput, fallback: &str) -> RemoteTmuxE
     )
 }
 
-type OptionalTmuxInventory = (Option<String>, Vec<DiscoveredSession>, Option<HostError>);
-
 fn scope_tmux_inventory(
-    result: Result<(String, Vec<DiscoveredSession>), RemoteTmuxError>,
-) -> Result<OptionalTmuxInventory, RemoteTmuxError> {
+    result: Result<Vec<DiscoveredSession>, RemoteTmuxError>,
+) -> Result<(Vec<DiscoveredSession>, Option<HostError>), RemoteTmuxError> {
     match result {
-        Ok((binary, sessions)) => Ok((Some(binary), sessions, None)),
-        Err(error) if error.kind() == DiagnosticKind::Transport => Err(error),
-        Err(error) => Ok((
-            None,
-            Vec::new(),
-            Some(HostError::new(error.kind(), error.to_string())),
-        )),
+        Ok(sessions) => Ok((sessions, None)),
+        Err(error) => Ok((Vec::new(), Some(scope_backend_failure(error)?))),
     }
 }
 
@@ -2431,7 +2489,7 @@ mod tests {
             std::io::ErrorKind::TimedOut,
             "remote tmux command timed out",
         ));
-        let (_, sessions, diagnostic) =
+        let (sessions, diagnostic) =
             scope_tmux_inventory(Err(tmux_timeout)).expect("timeout remains tmux-scoped");
         assert!(sessions.is_empty());
         assert_eq!(
@@ -2554,7 +2612,7 @@ mod tests {
 
     #[test]
     fn missing_tmux_is_backend_scoped_but_transport_failure_is_not() {
-        let (_, sessions, diagnostic) = scope_tmux_inventory(Err(RemoteTmuxError::new(
+        let (sessions, diagnostic) = scope_tmux_inventory(Err(RemoteTmuxError::new(
             DiagnosticKind::ExecutableNotFound,
             "tmux is unavailable on the remote host",
         )))
@@ -2688,13 +2746,20 @@ mod tests {
             tmux_binary: Some("/usr/bin/tmux".to_owned()),
             tmux_diagnostic: None,
             sessions: vec![session.clone()],
+            kwt_sessions: Vec::new(),
+            kwt_tmux_diagnostic: None,
             herdr: HerdrInventory::Unavailable,
             zellij: ZellijInventory::Unavailable,
             lease: exited_lease(),
         };
 
         let error = host
-            .attach_plan(&snapshot, &session, "xterm-256color")
+            .attach_plan(
+                &snapshot,
+                RemoteTmuxServer::Default,
+                &session,
+                "xterm-256color",
+            )
             .expect_err("exited controller cannot issue stale SSH arguments");
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
@@ -2711,6 +2776,8 @@ mod tests {
             tmux_binary: Some("/usr/bin/tmux".to_owned()),
             tmux_diagnostic: None,
             sessions: Vec::new(),
+            kwt_sessions: Vec::new(),
+            kwt_tmux_diagnostic: None,
             herdr: HerdrInventory::Unavailable,
             zellij: ZellijInventory::Unavailable,
             lease: exited_lease(),
@@ -2719,6 +2786,8 @@ mod tests {
             tmux_binary: Some("/usr/bin/tmux".to_owned()),
             tmux_diagnostic: None,
             sessions: Vec::new(),
+            kwt_sessions: Vec::new(),
+            kwt_tmux_diagnostic: None,
             herdr: HerdrInventory::Unavailable,
             zellij: ZellijInventory::Unavailable,
         });

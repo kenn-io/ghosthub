@@ -3676,6 +3676,7 @@ fn remote_presentation_identity_survives_only_a_same_route_lease_renewal() {
             "route-a",
             8,
             Some(RemoteInventory {
+                kwt_tmux: Some(&[]),
                 tmux: Some(&sessions),
                 herdr: Some(&[]),
                 zellij: Some(&[]),
@@ -3690,6 +3691,7 @@ fn remote_presentation_identity_survives_only_a_same_route_lease_renewal() {
             "route-a",
             9,
             Some(RemoteInventory {
+                kwt_tmux: Some(&[]),
                 tmux: None,
                 herdr: Some(&[]),
                 zellij: Some(&[]),
@@ -3704,6 +3706,7 @@ fn remote_presentation_identity_survives_only_a_same_route_lease_renewal() {
             "route-b",
             10,
             Some(RemoteInventory {
+                kwt_tmux: Some(&[]),
                 tmux: Some(&sessions),
                 herdr: Some(&[]),
                 zellij: Some(&[]),
@@ -3735,6 +3738,7 @@ fn failed_remote_backend_inventory_preserves_known_presentation_identity() {
             "route-a",
             8,
             Some(RemoteInventory {
+                kwt_tmux: Some(&[]),
                 tmux: Some(&[]),
                 herdr: None,
                 zellij: Some(&[]),
@@ -3749,6 +3753,7 @@ fn failed_remote_backend_inventory_preserves_known_presentation_identity() {
             "route-a",
             9,
             Some(RemoteInventory {
+                kwt_tmux: Some(&[]),
                 tmux: Some(&[]),
                 herdr: Some(&[]),
                 zellij: Some(&[]),

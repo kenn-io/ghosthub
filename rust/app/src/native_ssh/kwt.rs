@@ -58,7 +58,13 @@ fn registers_refreshes_and_removes_a_remote_project() {
         .find(|item| item.branch() == "feature")
         .unwrap();
     let name = worktree.session_name();
-    start_workspace_session(&fixture, name, worktree.path(), worktree.generation());
+    start_workspace_session(
+        &fixture,
+        false,
+        name,
+        worktree.path(),
+        worktree.generation(),
+    );
     fixture.connect();
     wait_kwt_ready(&fixture);
     let refreshed = fixture.workspace.snapshot();
@@ -164,41 +170,186 @@ fn registers_refreshes_and_removes_a_remote_project() {
     fixture.workspace.close();
 }
 
-fn start_workspace_session(fixture: &Fixture, name: &str, path: &str, generation: Option<&str>) {
-    fixture.tmux(&["new-session", "-d", "-s", name, "/bin/sh"]);
-    fixture.tmux(&[
-        "set-option",
-        "-t",
-        name,
-        "@kwt-workspace-id",
-        &format!("{:x}", Sha256::digest(path.as_bytes())),
-    ]);
-    if let Some(generation) = generation {
-        fixture.tmux(&[
+fn start_workspace_session(
+    fixture: &Fixture,
+    kwt_socket: bool,
+    name: &str,
+    path: &str,
+    generation: Option<&str>,
+) {
+    workspace_tmux(
+        fixture,
+        kwt_socket,
+        &["new-session", "-d", "-s", name, "/bin/sh"],
+    );
+    workspace_tmux(
+        fixture,
+        kwt_socket,
+        &[
             "set-option",
             "-t",
             name,
-            "@kwt-workspace-generation",
-            generation,
-        ]);
+            "@kwt-workspace-id",
+            &format!("{:x}", Sha256::digest(path.as_bytes())),
+        ],
+    );
+    if let Some(generation) = generation {
+        workspace_tmux(
+            fixture,
+            kwt_socket,
+            &[
+                "set-option",
+                "-t",
+                name,
+                "@kwt-workspace-generation",
+                generation,
+            ],
+        );
     }
+}
+
+fn workspace_tmux(fixture: &Fixture, kwt_socket: bool, args: &[&str]) -> String {
+    if !kwt_socket {
+        return fixture.tmux(args);
+    }
+    let output = Command::new("/usr/bin/tmux")
+        .env_remove("TMUX_TMPDIR")
+        .args(["-L", "kwt"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
-#[allow(clippy::too_many_lines)] // Exercise both workspace kinds through real inventory and confirmed kills.
+fn opens_and_kills_workspaces_on_the_kwt_socket() {
+    let Some(fixture) =
+        Fixture::isolated("native_ssh::kwt::opens_and_kills_workspaces_on_the_kwt_socket")
+    else {
+        return;
+    };
+    workspace_session_lifecycle(&fixture, true);
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
 fn kills_only_confirmed_default_socket_workspace_sessions() {
     let Some(fixture) = Fixture::isolated(
         "native_ssh::kwt::kills_only_confirmed_default_socket_workspace_sessions",
     ) else {
         return;
     };
+    workspace_session_lifecycle(&fixture, false);
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+fn opens_and_kills_kwt_sessions_when_default_inventory_fails() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::opens_and_kills_kwt_sessions_when_default_inventory_fails",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let directory = fixture.root.join("assets");
+    std::fs::create_dir(&directory).unwrap();
+    remote_kwt(&["workspace", "add", directory.to_str().unwrap()]);
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let snapshot = fixture.workspace.snapshot();
+    let row = &snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == fixture.host_id)
+        .unwrap()
+        .directory_workspaces()[0];
+    start_workspace_session(&fixture, true, row.session_name(), row.path(), None);
+
+    // A real filesystem error breaks only the configured default socket.
+    // The executable and canonical KWT server remain healthy.
+    let socket_directory = fixture.root.join("tmux");
+    std::fs::rename(&socket_directory, fixture.root.join("tmux-saved")).unwrap();
+    std::fs::write(&socket_directory, "not a directory").unwrap();
+    fixture.connect();
+    fixture.wait(|snapshot| {
+        snapshot
+            .hosts()
+            .iter()
+            .any(|host| host.id() == fixture.host_id && !host.kwt_refreshing())
+    });
+    let snapshot = fixture.workspace.snapshot();
+    let host = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == fixture.host_id)
+        .unwrap();
+    assert!(host.tmux_diagnostic().is_some(), "{host:?}");
+    assert!(host.kwt_diagnostic().is_none(), "{host:?}");
+    let row = &host.directory_workspaces()[0];
+    assert!(row.session_available(), "{row:?}");
+    assert_eq!(row.tmux_socket_name(), Some("kwt"));
+    let selection = SessionSelection::kwt_workspace(
+        &fixture.host_id,
+        &fixture.endpoint,
+        row.session_name(),
+        row.tmux_attach_mode(),
+        row.tmux_socket_name().map(str::to_owned),
+        row.path(),
+        None,
+    );
+    // This session has never had a retained client to mask skipped discovery.
+    fixture.workspace.switch_session(&selection).unwrap();
+    fixture.tmux_shell(selection.session(), "default-inventory-failed");
+    fixture.workspace.request_session_kill(&selection).unwrap();
+    fixture.wait(|_| fixture.workspace.session_kill_confirmation().is_some());
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait(|snapshot| {
+        let output = Command::new("/usr/bin/tmux")
+            .env_remove("TMUX_TMPDIR")
+            .args([
+                "-L",
+                "kwt",
+                "has-session",
+                "-t",
+                &format!("={}", selection.session()),
+            ])
+            .output()
+            .unwrap();
+        !output.status.success()
+            && snapshot.hosts().iter().any(|host| {
+                host.id() == fixture.host_id
+                    && host.directory_workspaces().iter().any(|row| {
+                        row.session_name() == selection.session() && !row.session_available()
+                    })
+            })
+    });
+    assert!(directory.is_dir());
+    fixture.workspace.close();
+}
+
+#[allow(clippy::too_many_lines)] // Both workspace kinds through discovery, switching, and confirmed kills.
+fn workspace_session_lifecycle(fixture: &Fixture, kwt_socket: bool) {
+    if kwt_socket {
+        use std::os::unix::fs::PermissionsExt;
+        let wrapper = fixture.root.join("tmux-probe");
+        std::fs::write(&wrapper, "#!/bin/sh\nif [ -e \"$HOME/fail-tmux\" ] && [ \"$1\" = -V ]; then echo 'tmux probe unavailable' >&2; exit 42; fi\nif [ -e \"$HOME/fail-kwt\" ] && [ \"$1\" = -L ] && [ \"$2\" = kwt ] && [ \"$5\" = list-sessions ]; then echo 'kwt server inventory unavailable' >&2; exit 42; fi\nexec /usr/bin/tmux \"$@\"\n").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut draft = fixture.workspace.configured_ssh_hosts()[0].draft().clone();
+        wrapper.to_str().unwrap().clone_into(&mut draft.tmux_binary);
+        fixture
+            .workspace
+            .save_ssh_host(Some(&fixture.host_id), &draft)
+            .unwrap();
+    }
     let project_path = fixture.root.join("orbit");
     create_project(&project_path);
     let directory = fixture.root.join("assets");
     std::fs::create_dir(&directory).unwrap();
     fixture.connect();
-    wait_kwt_ready(&fixture);
+    wait_kwt_ready(fixture);
     fixture
         .workspace
         .add_kwt_project(
@@ -207,14 +358,14 @@ fn kills_only_confirmed_default_socket_workspace_sessions() {
             project_path.to_str().unwrap(),
         )
         .unwrap();
-    wait_mutation(&fixture).unwrap();
+    wait_mutation(fixture).unwrap();
     remote_kwt_in(
         project_path.to_str().unwrap(),
         &["add", "--branch", "feature", "--no-launch"],
     );
     remote_kwt(&["workspace", "add", directory.to_str().unwrap()]);
     fixture.connect();
-    wait_kwt_ready(&fixture);
+    wait_kwt_ready(fixture);
     let selections = |snapshot: &WorkspaceSnapshot| {
         let host = snapshot
             .hosts()
@@ -251,18 +402,125 @@ fn kills_only_confirmed_default_socket_workspace_sessions() {
     let snapshot = fixture.workspace.snapshot();
     for selection in &selections(&snapshot) {
         start_workspace_session(
-            &fixture,
+            fixture,
+            kwt_socket,
             selection.session(),
             selection.worktree_path().unwrap(),
             selection.worktree_generation(),
         );
     }
     fixture.connect();
-    wait_kwt_ready(&fixture);
+    wait_kwt_ready(fixture);
     let snapshot = fixture.workspace.snapshot();
     for selection in &selections(&snapshot) {
+        assert_eq!(selection.tmux_socket_name(), kwt_socket.then_some("kwt"));
+        if kwt_socket {
+            // A same-name session on the ordinary server must never receive this client or kill.
+            fixture.tmux(&["new-session", "-d", "-s", selection.session(), "/bin/sh"]);
+        }
         fixture.workspace.switch_session(selection).unwrap();
         fixture.tmux_shell(selection.session(), "workspace-before-kill");
+        assert_eq!(
+            workspace_tmux(
+                fixture,
+                kwt_socket,
+                &[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    selection.session(),
+                    "#{session_attached}"
+                ]
+            ),
+            "1"
+        );
+        fixture.attach("review", "switch-away");
+        fixture.connect();
+        wait_kwt_ready(fixture);
+        fixture.workspace.switch_session(selection).unwrap();
+        fixture.tmux_shell(selection.session(), "retained-after-refresh");
+        assert_eq!(
+            workspace_tmux(
+                fixture,
+                kwt_socket,
+                &[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    selection.session(),
+                    "#{session_attached}"
+                ]
+            ),
+            "1"
+        );
+        if kwt_socket && selection.worktree_generation().is_some() {
+            for fault in ["fail-kwt", "fail-tmux"] {
+                let marker = fixture.root.join("home").join(fault);
+                std::fs::write(&marker, "").unwrap();
+                fixture.attach("review", "before-failed-probe");
+                fixture.connect();
+                fixture.wait(|snapshot| {
+                    snapshot.hosts().iter().any(|host| {
+                        host.id() == fixture.host_id
+                            && host.kwt_diagnostic().is_some()
+                            && !host.kwt_refreshing()
+                    })
+                });
+                assert!(
+                    fixture
+                        .workspace
+                        .snapshot()
+                        .retained_selections()
+                        .iter()
+                        .any(|retained| retained.session() == selection.session()
+                            && retained.tmux_socket_name() == Some("kwt"))
+                );
+                if fault == "fail-kwt" {
+                    fixture.tmux_shell("review", "ordinary-server-still-usable");
+                }
+                fixture.workspace.switch_session(selection).unwrap();
+                fixture.tmux_shell(selection.session(), "retained-without-inventory");
+                std::fs::remove_file(marker).unwrap();
+                fixture.connect();
+                wait_kwt_ready(fixture);
+            }
+            let project = &snapshot
+                .hosts()
+                .iter()
+                .find(|host| host.id() == fixture.host_id)
+                .unwrap()
+                .projects()[0];
+            fixture
+                .workspace
+                .remove_kwt_project(
+                    &fixture.host_id,
+                    &fixture.endpoint,
+                    project.repository(),
+                    project.path(),
+                    project.registration_fingerprint(),
+                )
+                .unwrap();
+            wait_mutation(fixture).unwrap();
+            fixture.attach("review", "unregistered-project");
+        }
+        let live_selection = fixture
+            .workspace
+            .snapshot()
+            .active_selection()
+            .filter(|active| active.session() == selection.session())
+            .cloned()
+            .or_else(|| {
+                fixture
+                    .workspace
+                    .snapshot()
+                    .retained_selections()
+                    .iter()
+                    .find(|retained| retained.session() == selection.session())
+                    .cloned()
+            })
+            .unwrap();
+        fixture.workspace.switch_session(&live_selection).unwrap();
+        fixture.tmux_shell(selection.session(), "live-client");
         for (mode, socket) in [
             (
                 host::KwtTmuxAttachMode::Direct,
@@ -286,28 +544,58 @@ fn kills_only_confirmed_default_socket_workspace_sessions() {
                     .is_err()
             );
         }
-        fixture.workspace.request_session_kill(selection).unwrap();
+        fixture
+            .workspace
+            .request_session_kill(&live_selection)
+            .unwrap();
         fixture.wait(|_| fixture.workspace.session_kill_confirmation().is_some());
         fixture.workspace.cancel_session_kill();
         assert!(fixture.workspace.confirm_session_kill().is_err());
         fixture.tmux_shell(selection.session(), "workspace-kill-cancelled");
-        fixture.workspace.request_session_kill(selection).unwrap();
+        fixture
+            .workspace
+            .request_session_kill(&live_selection)
+            .unwrap();
         fixture.wait(|_| fixture.workspace.session_kill_confirmation().is_some());
         fixture.workspace.confirm_session_kill().unwrap();
         fixture.wait(|snapshot| {
-            snapshot
+            let output = Command::new("/usr/bin/tmux")
+                .env(
+                    "TMUX_TMPDIR",
+                    if kwt_socket {
+                        PathBuf::from("/tmp")
+                    } else {
+                        fixture.root.join("tmux")
+                    },
+                )
+                .args(if kwt_socket {
+                    vec!["-L", "kwt"]
+                } else {
+                    vec![]
+                })
+                .args(["has-session", "-t", &format!("={}", selection.session())])
+                .output()
+                .unwrap();
+            let host = snapshot
                 .hosts()
                 .iter()
                 .find(|host| host.id() == fixture.host_id)
-                .unwrap()
-                .sessions()
-                .iter()
-                .all(|session| session.name() != selection.session())
-                && !fixture
-                    .tmux(&["list-sessions", "-F", "#{session_name}"])
-                    .lines()
-                    .any(|name| name == selection.session())
+                .unwrap();
+            !output.status.success()
+                && host
+                    .projects()
+                    .iter()
+                    .flat_map(workspace::ProjectItem::worktrees)
+                    .all(|row| {
+                        row.session_name() != selection.session() || !row.session_available()
+                    })
+                && host.directory_workspaces().iter().all(|row| {
+                    row.session_name() != selection.session() || !row.session_available()
+                })
         });
+        if kwt_socket {
+            fixture.tmux(&["has-session", "-t", &format!("={}", selection.session())]);
+        }
         assert!(Path::new(selection.worktree_path().unwrap()).is_dir());
     }
     fixture.attach("review", "unrelated-session-survives");

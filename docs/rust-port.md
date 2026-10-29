@@ -444,10 +444,17 @@ Registrations persist through KWT on that host across Ghosthub restarts.
 
 ![Add a remote project in the native Rust application](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-project.png)
 
-The project tree can open already-running ordinary tmux sessions on the host's
-default socket. Dedicated KWT sockets, protected imports, remote worktree
-creation/removal, repair/open, and automatic transport recovery remain separate
-work. Their unsupported controls are unavailable in the remote project tree.
+The project tree opens existing direct sessions on the host's default tmux
+server and KWT's standard `kwt` server. Worktrees and registered directories
+support attach, retained-client switching, detach, and confirmed Kill. Discovery
+and confirmation query the selected server; a same-name session on the other
+server is independent. The `kwt` server ignores `TMUX_TMPDIR`, as KWT does.
+
+![A remote worktree on the standard KWT server](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-kwt-socket.png)
+
+Protected imports, other named sockets, remote worktree creation/removal,
+repair/open, and automatic transport recovery remain separate work. Their
+unsupported controls are unavailable in the remote project tree.
 
 ![Confirm the exact remote tmux session and host](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
 
