@@ -163,8 +163,9 @@ independent image version, official Ubuntu 26.04 arm64 base digest, and APT
 snapshot time. Review those three changes and any deliberate package or
 disposition changes.
 
-The October 22 package snapshot includes Ubuntu's
-`ca-certificates` fix for the compromised eMudhra intermediates
+The pinned package snapshot includes Ubuntu's Brotli decoder fix
+(`libbrotli1` `1.2.0-3ubuntu0.1`, [USN-8956-1](https://ubuntu.com/security/notices/USN-8956-1))
+and the `ca-certificates` fix for the compromised eMudhra intermediates
 (`20260816ubuntu0.26.04.1`, [USN-8944-1](https://ubuntu.com/security/notices/USN-8944-1)).
 Existing sandboxes keep their image's trust bundle until a rebuilt image
 passes the candidate and promotion process below. Updating the source
