@@ -147,6 +147,152 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok(expected.clone())
     }
 
+    /// Build one interactive KWT open on the reviewed SSH connection.
+    ///
+    /// # Errors
+    /// Returns an error when the lease or pinned helper is unavailable.
+    pub fn kwt_worktree_open_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        open: &crate::KwtWorktreeOpen,
+        term: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<session::RepairOrOpenPlan, RemoteTmuxError> {
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        let readiness = crate::local::kwt_client_readiness_path()
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        let staging = format!("{readiness}.tmp");
+        let mut command = tmux_command(
+            &self.config,
+            &helper,
+            RemoteCommandLocale::Login,
+            [
+                "open",
+                open.path(),
+                "--expected-repository",
+                open.repository(),
+                "--expected-registration",
+                open.registration_fingerprint(),
+                "--expected-generation",
+                open.generation(),
+                "--expected-session",
+                open.session_name(),
+            ],
+        );
+        if let Some(value) = command.iter_mut().find(|value| value.starts_with("TERM=")) {
+            *value = format!("TERM={term}");
+        }
+        let binary = snapshot.tmux_binary().ok_or_else(|| {
+            RemoteTmuxError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "tmux is unavailable on the remote host",
+            )
+        })?;
+        let directory = binary
+            .rsplit_once('/')
+            .map_or("/", |(directory, _)| directory);
+        // KWT execs its ordinary tmux client, preserving this recorded PID.
+        let body = format!(
+            "umask 077; set -C; printf '%s\\n' \"$$\" > {staging} && mv -f {staging} {readiness} && PATH={directory}:\"$PATH\" exec {command}",
+            staging = shell_quoted_argument(&staging),
+            readiness = shell_quoted_argument(&readiness),
+            directory = shell_quoted_argument(directory),
+            command = posix_command(&command),
+        );
+        Ok(session::RepairOrOpenPlan::worktree(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                true,
+                &account_login_shell_command(&body),
+            )),
+            open.session_name(),
+            readiness,
+        ))
+    }
+
+    /// Identify the actual tmux client started by KWT, on one supported server.
+    ///
+    /// # Errors
+    /// Returns an error for a stale lease, invalid receipt, or failed server probe.
+    pub fn kwt_client_identity(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        plan: &session::RepairOrOpenPlan,
+        server: super::RemoteTmuxServer,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<session::SessionIdentity>, RemoteTmuxError> {
+        crate::local::require_kwt_client_readiness_path(plan.readiness_path())
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        let receipt = self.run_framed_remote_shell(
+            snapshot.lease(),
+            &format!(
+                "if test -s {path}; then cat {path}; fi",
+                path = shell_quoted_argument(plan.readiness_path()),
+            ),
+            "GHOSTHUB_KWT_CLIENT_",
+            cancellation,
+        )?;
+        require_kwt_output(&receipt)?;
+        if receipt.stdout.is_empty() {
+            return Ok(None);
+        }
+        let pid = crate::local::parse_kwt_client_pid(&receipt.stdout)
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        let binary = snapshot.tmux_binary().ok_or_else(|| {
+            RemoteTmuxError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "tmux is unavailable on the remote host",
+            )
+        })?;
+        let command = posix_command(&super::tmux_server_command(
+            &self.config,
+            server,
+            binary,
+            RemoteCommandLocale::StableOutput,
+            [
+                "list-clients",
+                "-F",
+                "#{client_pid}|#{pid}|#{session_id}|#{session_created}",
+            ],
+        ));
+        let output = self.run_framed_remote_shell(
+            snapshot.lease(),
+            &command,
+            "GHOSTHUB_KWT_CLIENT_",
+            cancellation,
+        )?;
+        if output.status != 0
+            && super::is_missing_tmux_server(&String::from_utf8_lossy(&output.stderr))
+        {
+            return Ok(None);
+        }
+        require_kwt_output(&output)?;
+        crate::local::parse_kwt_client_identity(&output.stdout, pid, '|')
+            .map_err(|error| RemoteTmuxError::from_host(&error))
+    }
+
+    pub fn remove_kwt_client_readiness(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        plan: &session::RepairOrOpenPlan,
+    ) {
+        if crate::local::require_kwt_client_readiness_path(plan.readiness_path()).is_err() {
+            return;
+        }
+        let _cleanup = self.run_remote_shell_with_timeout(
+            snapshot.lease(),
+            &format!(
+                "rm -f -- {} {}",
+                shell_quoted_argument(plan.readiness_path()),
+                shell_quoted_argument(&format!("{}.tmp", plan.readiness_path())),
+            ),
+            &CancellationToken::new(),
+            Duration::from_secs(2),
+        );
+    }
+
     fn ensure_kwt(
         &self,
         lease: &SshLease,

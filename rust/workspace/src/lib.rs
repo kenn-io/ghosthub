@@ -36,6 +36,7 @@ mod pump;
 mod remote_herdr;
 mod remote_kwt;
 mod remote_recovery;
+mod remote_worktree;
 mod remote_zellij;
 mod runtime;
 mod scene;
@@ -6462,6 +6463,21 @@ impl Workspace {
         tmux_socket_name: Option<&str>,
         tmux_attach_mode: host::KwtTmuxAttachMode,
     ) -> Result<(), WorkspaceError> {
+        if self.is_remote_host(host_id) {
+            return remote_worktree::open(
+                self,
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+                worktree_path,
+                generation,
+                session_name,
+                tmux_socket_name,
+                tmux_attach_mode,
+            );
+        }
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
         let _navigation = lock_live_navigation(&self.scene)?;
         let request = capture_kwt_worktree_request(

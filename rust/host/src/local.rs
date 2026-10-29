@@ -1580,7 +1580,7 @@ impl<R: CommandRunner> LocalHost<R> {
                 "query KWT tmux client readiness",
             ));
         }
-        let matched = parse_kwt_client_identity(&output.stdout, client_pid)?;
+        let matched = parse_kwt_client_identity(&output.stdout, client_pid, '\t')?;
         self.require_runtime(endpoint, runtime, cancellation)?;
         Ok(matched)
     }
@@ -1647,7 +1647,7 @@ impl<R: CommandRunner> LocalHost<R> {
                 "query named KWT tmux client readiness",
             ));
         }
-        let matched = parse_kwt_client_identity(&output.stdout, client_pid)?;
+        let matched = parse_kwt_client_identity(&output.stdout, client_pid, '\t')?;
         self.require_runtime(endpoint, runtime, cancellation)?;
         Ok(matched)
     }
@@ -4735,7 +4735,7 @@ fn helper_nonce() -> Result<String, HostError> {
     Ok(format!("{:032x}", u128::from_ne_bytes(nonce)))
 }
 
-fn kwt_client_readiness_path() -> Result<String, HostError> {
+pub(crate) fn kwt_client_readiness_path() -> Result<String, HostError> {
     let mut nonce = [0_u8; 16];
     getrandom::fill(&mut nonce).map_err(|error| {
         HostError::new(
@@ -4749,7 +4749,7 @@ fn kwt_client_readiness_path() -> Result<String, HostError> {
     ))
 }
 
-fn require_kwt_client_readiness_path(path: &str) -> Result<(), HostError> {
+pub(crate) fn require_kwt_client_readiness_path(path: &str) -> Result<(), HostError> {
     let Some(nonce) = path.strip_prefix("/tmp/.ghosthub-kwt-client-") else {
         return Err(HostError::new(
             DiagnosticKind::MalformedOutput,
@@ -4786,7 +4786,7 @@ fn require_kwt_socket_name(name: &str) -> Result<(), HostError> {
     Ok(())
 }
 
-fn parse_kwt_client_pid(bytes: &[u8]) -> Result<u32, HostError> {
+pub(crate) fn parse_kwt_client_pid(bytes: &[u8]) -> Result<u32, HostError> {
     let text = decode(bytes, "KWT client readiness")?.trim();
     let pid = text.parse::<u32>().map_err(|_| {
         HostError::new(
@@ -4803,14 +4803,15 @@ fn parse_kwt_client_pid(bytes: &[u8]) -> Result<u32, HostError> {
     Ok(pid)
 }
 
-fn parse_kwt_client_identity(
+pub(crate) fn parse_kwt_client_identity(
     bytes: &[u8],
     client_pid: u32,
+    separator: char,
 ) -> Result<Option<SessionIdentity>, HostError> {
     let mut matched = None;
     let client_pid_text = client_pid.to_string();
     for line in decode(bytes, "KWT tmux client readiness")?.lines() {
-        let mut fields = line.split('\t');
+        let mut fields = line.split(separator);
         if fields.next() != Some(client_pid_text.as_str()) {
             continue;
         }
@@ -6158,13 +6159,13 @@ mod tests {
 
     #[test]
     fn kwt_client_readiness_matches_only_the_recorded_process() {
-        let identity = parse_kwt_client_identity(b"8\t40\t$1\t90\n7\t42\t$3\t99\n", 7)
+        let identity = parse_kwt_client_identity(b"8\t40\t$1\t90\n7\t42\t$3\t99\n", 7, '\t')
             .expect("valid readiness inventory")
             .expect("recorded client is attached");
 
         assert_eq!(identity, SessionIdentity::new(42, "$3", 99));
         assert!(
-            parse_kwt_client_identity(b"8\t40\t$1\t90\n", 7)
+            parse_kwt_client_identity(b"8\t40\t$1\t90\n", 7, '\t')
                 .expect("unrelated clients are valid")
                 .is_none()
         );

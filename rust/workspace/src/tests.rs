@@ -15560,3 +15560,118 @@ fn light_themes_render_every_ansi_color_with_readable_contrast() {
         }
     }
 }
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "exercise cancellation at the public entry point before releasing the operation lane"
+)]
+fn queued_remote_worktree_open_is_cancelled_by_close_and_detach() {
+    for close in [false, true] {
+        let config = RemoteTmuxConfig::new(
+            "ssh:studio",
+            "Studio",
+            SshTarget::new("studio.example", None, None).unwrap(),
+            "/usr/bin/tmux",
+            None,
+        )
+        .unwrap();
+        let host = remote_host_fixture(&config);
+        let snapshot = RemoteTmuxSnapshot::test_fixture(
+            "studio.example",
+            TEST_REMOTE_ROUTE,
+            7,
+            Vec::new(),
+            HerdrInventory::Unavailable,
+            ZellijInventory::Unavailable,
+        );
+        let worktree = WorktreeItem::new(
+            "/repos/project/topic",
+            "topic",
+            false,
+            Some("generation".to_owned()),
+            "project-topic",
+            (Some("kwt".to_owned()), KwtTmuxAttachMode::Direct),
+            false,
+        );
+        let project = ProjectItem::new(
+            "repository",
+            "Project",
+            "/repos/project",
+            "registration",
+            vec![worktree],
+        );
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![
+                HostItem::ssh(
+                    "ssh:studio",
+                    "Studio",
+                    "studio.example",
+                    HostConnectionState::Ready,
+                    Vec::new(),
+                    None,
+                )
+                .with_kwt_inventory(vec![project], Vec::new()),
+            ],
+        ));
+        workspace.scene.runtime.remote_hosts.lock().unwrap().insert(
+            config.id().to_owned(),
+            RemoteEntry {
+                kwt: remote_kwt::State::default(),
+                config,
+                native_host: Some(host.clone()),
+                context: Some(RemoteHostContext {
+                    generation: 7,
+                    host,
+                    snapshot,
+                }),
+                cancellation: None,
+                constructive_cancellation: None,
+                attachment_attempts: Vec::new(),
+                session_recoveries: Vec::new(),
+                generation: 7,
+            },
+        );
+        let lane = workspace.scene.runtime.session_operations.lock().unwrap();
+        workspace
+            .open_kwt_worktree(
+                "ssh:studio",
+                "studio.example",
+                "repository",
+                "/repos/project",
+                "registration",
+                "/repos/project/topic",
+                Some("generation"),
+                "project-topic",
+                Some("kwt"),
+                KwtTmuxAttachMode::Direct,
+            )
+            .unwrap();
+        let cancellation = workspace.scene.runtime.remote_hosts.lock().unwrap()["ssh:studio"]
+            .attachment_attempts[0]
+            .cancellation
+            .clone();
+        assert!(!cancellation.is_cancelled());
+        if close {
+            workspace.close();
+        } else {
+            workspace.detach();
+        }
+        assert!(
+            cancellation.is_cancelled(),
+            "cancel before the queued KWT open can launch"
+        );
+        drop(lane);
+        settle("worktree open cancellation", || {
+            workspace
+                .scene
+                .runtime
+                .remote_hosts
+                .lock()
+                .unwrap()
+                .get("ssh:studio")
+                .is_none_or(|entry| entry.attachment_attempts.is_empty())
+        });
+    }
+}
