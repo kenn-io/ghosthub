@@ -15566,8 +15566,8 @@ fn light_themes_render_every_ansi_color_with_readable_contrast() {
     clippy::too_many_lines,
     reason = "exercise cancellation at the public entry point before releasing the operation lane"
 )]
-fn queued_remote_worktree_open_is_cancelled_by_close_and_detach() {
-    for close in [false, true] {
+fn queued_remote_workspace_open_is_cancelled_by_close_and_detach() {
+    for (directory, close) in [(false, false), (false, true), (true, false), (true, true)] {
         let config = RemoteTmuxConfig::new(
             "ssh:studio",
             "Studio",
@@ -15612,7 +15612,16 @@ fn queued_remote_worktree_open_is_cancelled_by_close_and_detach() {
                     Vec::new(),
                     None,
                 )
-                .with_kwt_inventory(vec![project], Vec::new()),
+                .with_kwt_inventory(
+                    vec![project],
+                    vec![DirectoryWorkspaceItem::new(
+                        "assets",
+                        "/assets",
+                        "assets-session",
+                        (Some("kwt".to_owned()), KwtTmuxAttachMode::Direct),
+                        false,
+                    )],
+                ),
             ],
         ));
         workspace.scene.runtime.remote_hosts.lock().unwrap().insert(
@@ -15634,20 +15643,34 @@ fn queued_remote_worktree_open_is_cancelled_by_close_and_detach() {
             },
         );
         let lane = workspace.scene.runtime.session_operations.lock().unwrap();
-        workspace
-            .open_kwt_worktree(
-                "ssh:studio",
-                "studio.example",
-                "repository",
-                "/repos/project",
-                "registration",
-                "/repos/project/topic",
-                Some("generation"),
-                "project-topic",
-                Some("kwt"),
-                KwtTmuxAttachMode::Direct,
-            )
-            .unwrap();
+        if directory {
+            workspace
+                .switch_session(&SessionSelection::kwt_workspace(
+                    "ssh:studio",
+                    "studio.example",
+                    "assets-session",
+                    KwtTmuxAttachMode::Direct,
+                    Some("kwt".to_owned()),
+                    "/assets",
+                    None,
+                ))
+                .unwrap();
+        } else {
+            workspace
+                .open_kwt_worktree(
+                    "ssh:studio",
+                    "studio.example",
+                    "repository",
+                    "/repos/project",
+                    "registration",
+                    "/repos/project/topic",
+                    Some("generation"),
+                    "project-topic",
+                    Some("kwt"),
+                    KwtTmuxAttachMode::Direct,
+                )
+                .unwrap();
+        }
         let cancellation = workspace.scene.runtime.remote_hosts.lock().unwrap()["ssh:studio"]
             .attachment_attempts[0]
             .cancellation
@@ -15663,7 +15686,7 @@ fn queued_remote_worktree_open_is_cancelled_by_close_and_detach() {
             "cancel before the queued KWT open can launch"
         );
         drop(lane);
-        settle("worktree open cancellation", || {
+        settle("workspace open cancellation", || {
             workspace
                 .scene
                 .runtime

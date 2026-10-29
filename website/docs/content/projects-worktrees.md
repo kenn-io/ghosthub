@@ -34,12 +34,19 @@ registration unchanged.
 
 Select an ordinary remote worktree to open its terminal, even when its session
 is stopped. Ghosthub asks KWT to open the exact registered worktree and checks
-the resulting client before showing it. Running registered directories also
-open from the tree. The Rust app supports direct sessions on the default tmux
+the resulting client before showing it. Registered directories also open when
+their sessions are stopped. The Rust app supports direct sessions on the default tmux
 server and KWT's standard `kwt` server. Switching rows keeps already-opened
 tmux clients available for reuse. A same-name session on the other server remains separate.
 
 ![A remote worktree attached through the standard KWT server](/docs/assets/guide-rust-kwt-socket.png)
+
+To register a directory, run `kwt workspace add /absolute/path` on the remote
+host. Refresh that host in Ghosthub and select the row under **Directory Workspaces**.
+Ghosthub opens the registered directory and reuses its terminal when you switch
+away and return.
+
+![A registered remote directory opened from its idle row](/docs/assets/guide-rust-remote-directory.png)
 
 Open a running worktree or directory row's **⋯** menu, select **Kill**,
 and confirm **Kill Session** to stop its session. Its files and registration
@@ -52,7 +59,7 @@ KWT keeps the new session alive during setup, then restores the session's
 captured policy when its first client attaches.
 
 Remote worktree creation/removal, other named sockets, protected
-imports, and opening idle registered directories are still in development.
+imports, and directory registration in the Rust UI are still in development.
 The remaining instructions on this page describe the macOS app.
 
 ## Register a project

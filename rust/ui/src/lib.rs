@@ -1470,6 +1470,30 @@ const fn can_open_directory_workspace(
             || kwt_open_available)
 }
 
+fn directory_row_can_open(
+    host: &HostItem,
+    workspace: &workspace::DirectoryWorkspaceItem,
+    is_presented: bool,
+) -> bool {
+    let host_can_attach = host.accepts_session_actions();
+    let supported = !host.is_ssh()
+        || (workspace.tmux_attach_mode() == KwtTmuxAttachMode::Direct
+            && matches!(workspace.tmux_socket_name(), None | Some("kwt")));
+    supported
+        && ((host.is_ssh() && workspace.session_available() && host_can_attach)
+            || can_open_directory_workspace(
+                is_presented,
+                workspace.tmux_attach_mode(),
+                if workspace.tmux_socket_name().is_some() {
+                    WorktreeSocket::Custom
+                } else {
+                    WorktreeSocket::Default
+                },
+                workspace.session_available() && host_can_attach,
+                host.kwt_available() && host_can_attach,
+            ))
+}
+
 const fn can_kill_directory_workspace(
     host_can_attach: bool,
     attach_mode: KwtTmuxAttachMode,
@@ -7706,15 +7730,7 @@ impl RootView {
             let supported = !host.is_ssh()
                 || (workspace.tmux_attach_mode() != KwtTmuxAttachMode::Protected
                     && matches!(workspace.tmux_socket_name(), None | Some("kwt")));
-            let can_open = supported
-                && ((host.is_ssh() && workspace.session_available() && host_can_attach)
-                    || can_open_directory_workspace(
-                        is_active || is_retained,
-                        workspace.tmux_attach_mode(),
-                        socket,
-                        workspace.session_available() && host_can_attach,
-                        host.kwt_available() && host_can_attach && !host.is_ssh(),
-                    ));
+            let can_open = directory_row_can_open(host, workspace, is_active || is_retained);
             let can_kill = supported
                 && can_kill_directory_workspace(
                     host_can_attach,
@@ -10216,6 +10232,39 @@ mod tests {
                 false,
             );
             assert_eq!(can_kill_worktree(&host, &worktree), allowed);
+        }
+    }
+
+    #[test]
+    fn idle_remote_directories_require_ready_host_and_kwt() {
+        for (connection, kwt, socket, can_open) in [
+            (HostConnectionState::Ready, true, Some("kwt"), true),
+            (HostConnectionState::Ready, true, None, true),
+            (HostConnectionState::Ready, false, Some("kwt"), false),
+            (HostConnectionState::Unavailable, true, Some("kwt"), false),
+        ] {
+            let mut host = HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                connection,
+                Vec::new(),
+                None,
+            );
+            if kwt {
+                host = host.with_kwt_inventory(Vec::new(), Vec::new());
+            }
+            let directory = workspace::DirectoryWorkspaceItem::new(
+                "assets",
+                "/assets",
+                "assets-session",
+                (socket.map(str::to_owned), KwtTmuxAttachMode::Direct),
+                false,
+            );
+            assert_eq!(
+                super::directory_row_can_open(&host, &directory, false),
+                can_open
+            );
         }
     }
 

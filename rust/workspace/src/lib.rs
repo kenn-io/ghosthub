@@ -36,7 +36,7 @@ mod pump;
 mod remote_herdr;
 mod remote_kwt;
 mod remote_recovery;
-mod remote_worktree;
+mod remote_workspace;
 mod remote_zellij;
 mod runtime;
 mod scene;
@@ -6086,6 +6086,12 @@ impl Workspace {
                 let request = capture_remote_zellij_attach_request(&self.scene.runtime, selection)?;
                 return self.start_remote_zellij_attachment(request, navigation_generation);
             }
+            if current_key.is_none()
+                && selection.worktree_path().is_some()
+                && selection.worktree_generation().is_none()
+            {
+                return remote_workspace::open_directory(self, selection, navigation_generation);
+            }
             let request = capture_remote_tmux_attach_request(&self.scene.runtime, selection)?;
             return self.start_remote_tmux_attachment(request, navigation_generation);
         }
@@ -6464,7 +6470,7 @@ impl Workspace {
         tmux_attach_mode: host::KwtTmuxAttachMode,
     ) -> Result<(), WorkspaceError> {
         if self.is_remote_host(host_id) {
-            return remote_worktree::open(
+            return remote_workspace::open_worktree(
                 self,
                 host_id,
                 endpoint,

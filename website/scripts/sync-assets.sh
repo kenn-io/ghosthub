@@ -23,6 +23,7 @@ assets=(
   guide-rust-project-retry.png
   guide-rust-project-kill.png
   guide-rust-kwt-socket.png
+  guide-rust-remote-directory.png
   guide-find.png
   guide-session-previews.png
   guide-session-activity.png
