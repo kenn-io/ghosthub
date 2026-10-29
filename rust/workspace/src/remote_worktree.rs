@@ -206,7 +206,12 @@ pub(super) fn open(
     clippy::too_many_lines,
     reason = "revalidation and publication remain one ordered lifecycle operation"
 )]
-fn run(scene: &Scene, mut request: Request, navigation: u64, cancellation: &CancellationToken) {
+fn run(
+    scene: &Arc<Scene>,
+    mut request: Request,
+    navigation: u64,
+    cancellation: &CancellationToken,
+) {
     let host_id = request.host_id.clone();
     let _reset = RemoteAttachmentReset {
         scene,
@@ -228,6 +233,15 @@ fn run(scene: &Scene, mut request: Request, navigation: u64, cancellation: &Canc
         if !scene::remote_attachment_is_current(scene, &host_id, navigation, cancellation) {
             return Ok(());
         }
+        let kwt_inventory = crate::remote_kwt::reserve_worktree(
+            scene,
+            &RemotePublicationFence {
+                host_id: &host_id,
+                connection_generation: request.connection_generation,
+                snapshot: &request.snapshot,
+                cancellation,
+            },
+        )?;
         // A queued open of a running session must not undo a preceding confirmed kill.
         if let Some(prior) = &request.prior_session {
             let current = request
@@ -260,6 +274,7 @@ fn run(scene: &Scene, mut request: Request, navigation: u64, cancellation: &Canc
                 "KWT attached to a different tmux server; refresh and try again",
             ));
         }
+        kwt_inventory.publish(inventory)?;
         let inventory = request
             .host
             .refresh(request.snapshot.lease(), cancellation)

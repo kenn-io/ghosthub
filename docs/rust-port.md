@@ -458,9 +458,10 @@ server is independent. The `kwt` server ignores `TMUX_TMPDIR`, as KWT does.
 
 ![A remote worktree on the standard KWT server](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-kwt-socket.png)
 
-The pinned helper currently fails to open an idle worktree with tmux's
-`destroy-unattached` option enabled. Ghosthub uses KWT's interactive open path
-and does not change that server option.
+KWT keeps a new session alive through setup when tmux's `destroy-unattached`
+option is enabled, then restores the captured session policy on attachment.
+Reopening a killed default-server worktree publishes its new KWT-server socket
+before presenting the client, so subsequent selections reuse that client.
 
 Protected imports, other named sockets, remote worktree creation/removal,
 opening idle registered directories, and automatic transport recovery remain separate work. Their

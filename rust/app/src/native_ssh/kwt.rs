@@ -1011,6 +1011,85 @@ fn opens_idle_worktrees_and_reuses_the_attached_client() {
 
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+fn opens_idle_worktree_with_destroy_unattached() {
+    let Some(fixture) =
+        Fixture::isolated("native_ssh::kwt::opens_idle_worktree_with_destroy_unattached")
+    else {
+        return;
+    };
+    std::fs::write(
+        fixture.root.join("home/.tmux.conf"),
+        "set -g destroy-unattached on\n",
+    )
+    .unwrap();
+    let project_path = fixture.root.join("orbit");
+    create_project(&project_path);
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let path = project_path.to_str().unwrap();
+    remote_kwt(&["projects", "add", path, "--json"]);
+    remote_kwt_in(path, &["add", "--branch", "feature", "--no-launch"]);
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let snapshot = fixture.workspace.snapshot();
+    let host = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == fixture.host_id)
+        .unwrap();
+    let project = &host.projects()[0];
+    let worktree = project
+        .worktrees()
+        .iter()
+        .find(|row| row.branch() == "feature")
+        .unwrap();
+    fixture
+        .workspace
+        .open_kwt_worktree(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            project.path(),
+            project.registration_fingerprint(),
+            worktree.path(),
+            worktree.generation(),
+            worktree.session_name(),
+            worktree.tmux_socket_name(),
+            worktree.tmux_attach_mode(),
+        )
+        .unwrap();
+    fixture.tmux_shell(worktree.session_name(), "destroy-unattached-open");
+    assert_eq!(
+        workspace_tmux(
+            &fixture,
+            true,
+            &[
+                "show-options",
+                "-Av",
+                "-t",
+                worktree.session_name(),
+                "destroy-unattached"
+            ]
+        )
+        .trim(),
+        "on"
+    );
+    fixture.workspace.detach();
+    fixture.wait(|_| {
+        !Command::new("/usr/bin/tmux")
+            .env_remove("TMUX_TMPDIR")
+            .args(["-L", "kwt", "has-session", "-t", worktree.session_name()])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    });
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+#[allow(clippy::too_many_lines)] // Follow the legacy session through kill, migration, and client reuse.
 fn kwt_open_preserves_an_existing_default_server_worktree() {
     let Some(fixture) = Fixture::isolated(
         "native_ssh::kwt::kwt_open_preserves_an_existing_default_server_worktree",
@@ -1091,6 +1170,79 @@ fn kwt_open_preserves_an_existing_default_server_worktree() {
             "#{pid}|#{session_id}|#{session_created}"
         ]),
         before
+    );
+    let selection = fixture
+        .workspace
+        .snapshot()
+        .active_selection()
+        .unwrap()
+        .clone();
+    fixture.workspace.request_session_kill(&selection).unwrap();
+    fixture.wait(|_| fixture.workspace.session_kill_confirmation().is_some());
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait(|snapshot| {
+        snapshot.active_selection().is_none()
+            && snapshot
+                .hosts()
+                .iter()
+                .find(|host| host.id() == fixture.host_id)
+                .unwrap()
+                .projects()[0]
+                .worktrees()
+                .iter()
+                .find(|row| row.branch() == "legacy")
+                .is_some_and(|row| !row.session_available())
+    });
+    fixture
+        .workspace
+        .open_kwt_worktree(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            project.path(),
+            project.registration_fingerprint(),
+            worktree.path(),
+            worktree.generation(),
+            worktree.session_name(),
+            worktree.tmux_socket_name(),
+            worktree.tmux_attach_mode(),
+        )
+        .unwrap();
+    fixture.tmux_shell(worktree.session_name(), "legacy-reopened-on-kwt");
+    let snapshot = fixture.workspace.snapshot();
+    let row = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == fixture.host_id)
+        .unwrap()
+        .projects()[0]
+        .worktrees()
+        .iter()
+        .find(|row| row.branch() == "legacy")
+        .unwrap();
+    assert_eq!(row.tmux_socket_name(), Some("kwt"));
+    assert!(row.session_available());
+    let client = workspace_tmux(&fixture, true, &["list-clients", "-F", "#{client_pid}"]);
+    fixture.attach("review", "legacy-retained");
+    fixture
+        .workspace
+        .open_kwt_worktree(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            project.path(),
+            project.registration_fingerprint(),
+            row.path(),
+            row.generation(),
+            row.session_name(),
+            row.tmux_socket_name(),
+            row.tmux_attach_mode(),
+        )
+        .unwrap();
+    fixture.tmux_shell(row.session_name(), "legacy-client-reused");
+    assert_eq!(
+        workspace_tmux(&fixture, true, &["list-clients", "-F", "#{client_pid}"]),
+        client
     );
     fixture.workspace.close();
 }

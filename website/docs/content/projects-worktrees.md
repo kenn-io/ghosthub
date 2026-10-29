@@ -47,8 +47,9 @@ remain intact.
 
 ![Confirm killing a remote worktree session in the native Rust application](/docs/assets/guide-rust-project-kill.png)
 
-Opening an idle worktree currently requires tmux's `destroy-unattached` option
-to be off. The pinned KWT helper fails during session setup when it is on.
+Idle worktrees also open with tmux's `destroy-unattached` option enabled.
+KWT keeps the new session alive during setup, then restores the session's
+captured policy when its first client attaches.
 
 Remote worktree creation/removal, other named sockets, protected
 imports, and opening idle registered directories are still in development.
