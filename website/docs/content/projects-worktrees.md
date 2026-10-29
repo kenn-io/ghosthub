@@ -32,10 +32,12 @@ registration unchanged.
 
 ![Confirm removing the remote project registration while its terminal stays open](/docs/assets/guide-rust-remove-project.png)
 
-Select a running remote worktree or registered directory to open its terminal.
-The Rust app supports direct sessions on the default tmux server and KWT's
-standard `kwt` server. Switching rows keeps already-opened tmux clients available
-for reuse. A same-name session on the other server remains separate.
+Select an ordinary remote worktree to open its terminal, even when its session
+is stopped. Ghosthub asks KWT to open the exact registered worktree and checks
+the resulting client before showing it. Running registered directories also
+open from the tree. The Rust app supports direct sessions on the default tmux
+server and KWT's standard `kwt` server. Switching rows keeps already-opened
+tmux clients available for reuse. A same-name session on the other server remains separate.
 
 ![A remote worktree attached through the standard KWT server](/docs/assets/guide-rust-kwt-socket.png)
 
@@ -45,9 +47,13 @@ remain intact.
 
 ![Confirm killing a remote worktree session in the native Rust application](/docs/assets/guide-rust-project-kill.png)
 
+Idle worktrees also open with tmux's `destroy-unattached` option enabled.
+KWT keeps the new session alive during setup, then restores the session's
+captured policy when its first client attaches.
+
 Remote worktree creation/removal, other named sockets, protected
-imports, and repair/open are still in development. The remaining instructions
-on this page describe the macOS app.
+imports, and opening idle registered directories are still in development.
+The remaining instructions on this page describe the macOS app.
 
 ## Register a project
 

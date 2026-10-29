@@ -34,6 +34,91 @@ struct Task {
     mutation: Option<Mutation>,
 }
 
+pub(crate) struct WorktreeInventory<'a> {
+    scene: &'a Arc<Scene>,
+    task: Task,
+}
+
+impl WorktreeInventory<'_> {
+    pub(crate) fn publish(&self, inventory: host::KwtInventory) -> Result<(), WorkspaceError> {
+        if publish(self.scene, &self.task, |state, host| {
+            scene::apply_kwt_inventory(host, &inventory);
+            host.kwt_state = KwtState::Mutating;
+            state.inventory = Some(inventory);
+        }) {
+            Ok(())
+        } else {
+            Err(WorkspaceError::new(
+                "SSH connection changed while opening the worktree",
+            ))
+        }
+    }
+}
+
+impl Drop for WorktreeInventory<'_> {
+    fn drop(&mut self) {
+        finish(self.scene, &self.task);
+    }
+}
+
+pub(crate) fn reserve_worktree<'a>(
+    scene: &'a Arc<Scene>,
+    fence: &crate::RemotePublicationFence<'_>,
+) -> Result<WorktreeInventory<'a>, WorkspaceError> {
+    let publication = scene
+        .runtime
+        .remote_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    {
+        let mut entries = scene
+            .runtime
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries
+            .get_mut(fence.host_id)
+            .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+        crate::validate_remote_publication_fence(entry, fence)?;
+        if entry
+            .kwt
+            .operation
+            .as_ref()
+            .is_some_and(|operation| operation.mutation)
+        {
+            return Err(WorkspaceError::new(
+                "another KWT project operation is already running",
+            ));
+        }
+        // An older read must not restore the socket captured before this open.
+        if let Some(operation) = entry.kwt.operation.take() {
+            operation.cancellation.cancel();
+        }
+    }
+    let mut task = reserve(scene, &publication, fence.host_id, None)?;
+    task.cancellation = fence.cancellation.clone();
+    {
+        let mut entries = scene
+            .runtime
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let operation = entries
+            .get_mut(fence.host_id)
+            .unwrap()
+            .kwt
+            .operation
+            .as_mut()
+            .unwrap();
+        operation.mutation = true;
+        operation.cancellation = task.cancellation.clone();
+    }
+    update_host(scene, fence.host_id, |host| {
+        host.kwt_state = KwtState::Mutating;
+    });
+    Ok(WorktreeInventory { scene, task })
+}
+
 pub(crate) fn cancel(entry: &RemoteEntry) {
     if let Some(operation) = &entry.kwt.operation {
         operation.cancellation.cancel();
@@ -387,6 +472,44 @@ fn update_host(scene: &Scene, host_id: &str, update: impl FnOnce(&mut HostItem))
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_open_supersedes_reads_and_excludes_project_mutations() {
+        let (workspace, _) = crate::tests::remote_kill_refresh_fixture();
+        let scene = &workspace.scene;
+        let publication = scene.runtime.remote_publication.lock().unwrap();
+        let read = reserve(scene, &publication, "ssh:studio", None).unwrap();
+        drop(publication);
+        let cancellation = CancellationToken::new();
+        let operation = reserve_worktree(
+            scene,
+            &crate::RemotePublicationFence {
+                host_id: "ssh:studio",
+                connection_generation: read.generation,
+                snapshot: &read.snapshot,
+                cancellation: &cancellation,
+            },
+        )
+        .unwrap();
+        assert!(read.cancellation.is_cancelled());
+        assert!(!publish(scene, &read, |_, host| host.sessions.clear()));
+        finish(scene, &read);
+        assert!(
+            workspace
+                .add_kwt_project("ssh:studio", "studio.example", "/projects/orbit")
+                .is_err()
+        );
+        operation
+            .publish(host::KwtInventory::parse(b"[]", b"[]", b"[]").unwrap())
+            .unwrap();
+        assert!(workspace.snapshot().hosts()[0].kwt_mutating());
+        drop(operation);
+        assert!(!workspace.snapshot().hosts()[0].kwt_mutating());
+        workspace
+            .add_kwt_project("ssh:studio", "studio.example", "/projects/orbit")
+            .unwrap();
+        workspace.close();
+    }
 
     #[test]
     fn project_mutation_holds_publication_before_navigation() {

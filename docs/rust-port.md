@@ -444,16 +444,27 @@ Registrations persist through KWT on that host across Ghosthub restarts.
 
 ![Add a remote project in the native Rust application](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-project.png)
 
-The project tree opens existing direct sessions on the host's default tmux
-server and KWT's standard `kwt` server. Worktrees and registered directories
+The project tree opens ordinary remote worktrees through the pinned KWT helper,
+including worktrees with no running session. KWT receives the captured repository,
+registration, worktree generation, and exact session name. The ordinary SSH client
+records its PID; Ghosthub checks that client's tmux identity before publication.
+Close, detach, and newer navigation cancel queued opens. Previously opened clients
+are reused. Running registered directories still use attach-only presentation.
+
+Both paths support the host's default tmux server and KWT's standard `kwt` server. Worktrees and registered directories
 support attach, retained-client switching, detach, and confirmed Kill. Discovery
 and confirmation query the selected server; a same-name session on the other
 server is independent. The `kwt` server ignores `TMUX_TMPDIR`, as KWT does.
 
 ![A remote worktree on the standard KWT server](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-kwt-socket.png)
 
+KWT keeps a new session alive through setup when tmux's `destroy-unattached`
+option is enabled, then restores the captured session policy on attachment.
+Reopening a killed default-server worktree publishes its new KWT-server socket
+before presenting the client, so subsequent selections reuse that client.
+
 Protected imports, other named sockets, remote worktree creation/removal,
-repair/open, and automatic transport recovery remain separate work. Their
+opening idle registered directories, and automatic transport recovery remain separate work. Their
 unsupported controls are unavailable in the remote project tree.
 
 ![Confirm the exact remote tmux session and host](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
@@ -1295,9 +1306,8 @@ When a remote client exits with a nonzero status, its error banner reports
 the exit status without copying terminal contents or control sequences.
 Ghosthub's attachment identity check retains its specific error. A successful
 exit detaches silently; Refresh and session selection can open a new client.
-The UI withholds remote Zellij kill, worktrees,
-reconnect/backoff, and restoration until each operation has fresh remote
-identity and lifecycle fencing. An absent control cannot silently fall back to
+Remote worktree creation/removal, protected imports, automatic reconnect, and
+restoration still require their own remote identity and lifecycle fencing. An absent control cannot silently fall back to
 WSL or unguarded SSH.
 
 Rust config resolution is:
@@ -1718,9 +1728,9 @@ The Windows WSL slice remains independently tested throughout this work.
 4. Remote POSIX host settings, explicit connect, KWT-owned prompts, tmux plus
    optional Herdr/Zellij inventory, attach-only presentation, and one-shot
    tmux/Herdr/Zellij creation now ship.
-   Follow-on remote work adds identity-fenced lifecycle operations,
-   managed-helper installation, transport reconnect, repair/open reconnect,
-   worktrees, and remote Windows.
+   Remote lifecycle controls, managed-helper installation, project registration,
+   and ordinary worktree opening also ship. Follow-on work adds worktree
+   creation/removal, protected imports, transport recovery, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.

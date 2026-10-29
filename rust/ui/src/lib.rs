@@ -1387,6 +1387,59 @@ const fn worktree_open_mode(context: WorktreeOpenContext) -> WorktreeOpenMode {
     }
 }
 
+fn worktree_row_open_mode(
+    host: &HostItem,
+    worktree: &workspace::WorktreeItem,
+    retained: bool,
+) -> WorktreeOpenMode {
+    let has_generation = worktree.generation().is_some();
+    let host_can_attach = host.accepts_session_actions();
+    let authority = if has_generation {
+        WorktreeAuthority::Generation
+    } else {
+        WorktreeAuthority::Generationless
+    };
+    let socket = if worktree.tmux_socket_name().is_some() {
+        WorktreeSocket::Custom
+    } else {
+        WorktreeSocket::Default
+    };
+    let session = if worktree.session_available() {
+        WorktreeSessionPresence::Discovered
+    } else {
+        WorktreeSessionPresence::Absent
+    };
+    let endpoint_is_resolved = (!host.is_ssh()
+        || (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
+            && matches!(worktree.tmux_socket_name(), None | Some("kwt"))))
+        && (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
+            || worktree.tmux_socket_name().is_some());
+    if endpoint_is_resolved
+        && (!host.is_ssh() || worktree.session_available() || retained || host.kwt_available())
+    {
+        worktree_open_mode(WorktreeOpenContext {
+            attach_mode: worktree.tmux_attach_mode(),
+            authority,
+            socket,
+            session,
+            presentation: if retained {
+                WorktreePresentation::ActiveOrRetained
+            } else {
+                WorktreePresentation::Inactive
+            },
+            host: if host_can_attach {
+                WorktreeHostAccess::Ready {
+                    kwt_available: host.kwt_available(),
+                }
+            } else {
+                WorktreeHostAccess::Unavailable
+            },
+        })
+    } else {
+        WorktreeOpenMode::Disabled
+    }
+}
+
 fn can_kill_worktree(host: &HostItem, worktree: &workspace::WorktreeItem) -> bool {
     let endpoint_is_resolved = (!host.is_ssh()
         || (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
@@ -7543,52 +7596,12 @@ impl RootView {
                 let is_retained = retained
                     .iter()
                     .any(|retained| kwt_selection_matches_presentation(&selection, retained));
-                let has_generation = worktree.generation().is_some();
-                let host_can_attach = host.accepts_session_actions();
-                let authority = if has_generation {
-                    WorktreeAuthority::Generation
-                } else {
-                    WorktreeAuthority::Generationless
-                };
-                let socket = if worktree.tmux_socket_name().is_some() {
-                    WorktreeSocket::Custom
-                } else {
-                    WorktreeSocket::Default
-                };
-                let session = if worktree.session_available() {
-                    WorktreeSessionPresence::Discovered
-                } else {
-                    WorktreeSessionPresence::Absent
-                };
                 let endpoint_is_resolved = (!host.is_ssh()
                     || (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
                         && matches!(worktree.tmux_socket_name(), None | Some("kwt"))))
                     && (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
                         || worktree.tmux_socket_name().is_some());
-                let open_mode = if endpoint_is_resolved
-                    && (!host.is_ssh() || worktree.session_available() || is_active || is_retained)
-                {
-                    worktree_open_mode(WorktreeOpenContext {
-                        attach_mode: worktree.tmux_attach_mode(),
-                        authority,
-                        socket,
-                        session,
-                        presentation: if is_active || is_retained {
-                            WorktreePresentation::ActiveOrRetained
-                        } else {
-                            WorktreePresentation::Inactive
-                        },
-                        host: if host_can_attach {
-                            WorktreeHostAccess::Ready {
-                                kwt_available: host.kwt_available() && !host.is_ssh(),
-                            }
-                        } else {
-                            WorktreeHostAccess::Unavailable
-                        },
-                    })
-                } else {
-                    WorktreeOpenMode::Disabled
-                };
+                let open_mode = worktree_row_open_mode(host, worktree, is_active || is_retained);
                 let can_open = open_mode != WorktreeOpenMode::Disabled;
                 let can_kill = can_kill_worktree(host, worktree);
                 let open_target = WorktreeOpenTarget {
@@ -10203,6 +10216,65 @@ mod tests {
                 false,
             );
             assert_eq!(can_kill_worktree(&host, &worktree), allowed);
+        }
+    }
+
+    #[test]
+    fn idle_remote_worktree_rows_open_through_kwt() {
+        for (socket, mode, generation, expected) in [
+            (
+                Some("kwt"),
+                KwtTmuxAttachMode::Direct,
+                Some("generation"),
+                WorktreeOpenMode::RepairOrOpen,
+            ),
+            (
+                None,
+                KwtTmuxAttachMode::Direct,
+                Some("generation"),
+                WorktreeOpenMode::RepairOrOpen,
+            ),
+            (
+                Some("other"),
+                KwtTmuxAttachMode::Direct,
+                Some("generation"),
+                WorktreeOpenMode::Disabled,
+            ),
+            (
+                Some("kwt"),
+                KwtTmuxAttachMode::Protected,
+                Some("generation"),
+                WorktreeOpenMode::Disabled,
+            ),
+            (
+                Some("kwt"),
+                KwtTmuxAttachMode::Direct,
+                None,
+                WorktreeOpenMode::Disabled,
+            ),
+        ] {
+            let host = HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Ready,
+                Vec::new(),
+                None,
+            )
+            .with_kwt_inventory(Vec::new(), Vec::new());
+            let worktree = WorktreeItem::new(
+                "/repos/project/topic",
+                "topic",
+                false,
+                generation.map(str::to_owned),
+                "project-topic",
+                (socket.map(str::to_owned), mode),
+                false,
+            );
+            assert_eq!(
+                super::worktree_row_open_mode(&host, &worktree, false),
+                expected
+            );
         }
     }
 
