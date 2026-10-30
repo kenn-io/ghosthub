@@ -341,6 +341,10 @@ fn native_zellij_lifecycle() {
     fixture.shell_probe("keep 'one'", "survived");
     fixture.workspace.detach();
 
+    // Zellij 0.45.1 servers panic when a list-sessions probe disconnects
+    // before the first client initializes the session. Keep background
+    // inventory from probing the external servers while they start.
+    fixture.workspace.set_inventory_polling_enabled(false);
     for name in ["--review", "help", "options"] {
         assert!(
             fixture
@@ -359,6 +363,11 @@ fn native_zellij_lifecycle() {
             &format!("--session={name}"),
         ]);
         assert!(created.status.success(), "{created:?}");
+        // The shell prompt renders only after the session is initialized.
+        fixture.wait(|| {
+            let pane = fixture.tmux(&["capture-pane", "-p", "-t", "=external-zellij:"]);
+            pane.status.success() && !String::from_utf8_lossy(&pane.stdout).trim().is_empty()
+        });
         fixture.wait(|| {
             fixture
                 .session_list()
@@ -399,6 +408,7 @@ fn native_zellij_lifecycle() {
                 .success()
         });
     }
+    fixture.workspace.set_inventory_polling_enabled(true);
 
     // Hide the optional executable through its login profile, leaving tmux usable.
     fs::write(
