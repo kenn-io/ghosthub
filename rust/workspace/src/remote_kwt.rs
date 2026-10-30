@@ -4,6 +4,9 @@ use crate::{
     WorkspaceEvent, begin_snapshot_write, current_remote_context, next_operation_id, scene,
 };
 
+mod worktree;
+pub(crate) use worktree::{cancel_listing, start_worktree};
+
 #[derive(Default)]
 pub(crate) struct State {
     inventory: Option<host::KwtInventory>,
@@ -15,6 +18,7 @@ struct Operation {
     cancellation: CancellationToken,
     mutation: bool,
     scene_id: crate::SceneId,
+    listing: bool,
 }
 
 #[derive(Clone)]
@@ -32,6 +36,7 @@ struct Task {
     snapshot: RemoteTmuxSnapshot,
     cancellation: CancellationToken,
     mutation: Option<Mutation>,
+    worktree: Option<worktree::Request>,
 }
 
 pub(crate) struct WorkspaceInventory<'a> {
@@ -278,12 +283,14 @@ fn reserve(
         snapshot: context.snapshot.clone(),
         cancellation: CancellationToken::new(),
         mutation,
+        worktree: None,
     };
     entry.kwt.operation = Some(Operation {
         id: task.id,
         cancellation: task.cancellation.clone(),
         mutation: task.mutation.is_some(),
         scene_id: scene.id,
+        listing: false,
     });
     update_host(scene, host_id, |host| {
         host.kwt_state = if task.mutation.is_some() {
@@ -307,10 +314,17 @@ fn schedule(scene: &Arc<Scene>, task: &Task) {
         fail(scene, task, &error);
         finish(scene, task);
         mutation_event(scene, task, Err(WorkspaceError::new(error.to_string())));
+        if let Some(request) = &task.worktree {
+            scene::push_lossless_event(scene, request.failure(task, error.to_string()));
+        }
     }
 }
 
 fn run(scene: &Arc<Scene>, task: &Task) {
+    if let Some(request) = &task.worktree {
+        worktree::run(scene, task, request);
+        return;
+    }
     let mut committed = false;
     let result = (|| {
         if scene.closed.load(Ordering::Acquire) || !publish(scene, task, |_, _| {}) {

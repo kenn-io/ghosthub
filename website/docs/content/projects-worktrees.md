@@ -41,6 +41,18 @@ tmux clients available for reuse. A same-name session on the other server remain
 
 ![A remote worktree attached through the standard KWT server](/docs/assets/guide-rust-kwt-socket.png)
 
+To create a remote worktree, select **+** beside its project. Enter a new branch
+name or search and select an existing branch. If several remotes have the same
+branch name, choose the source you want. Select **Create** to create the checkout
+and open its terminal. Cancel closes the dialog without creating a worktree.
+
+![Create a remote worktree from a branch in the native Rust application](/docs/assets/guide-rust-create-worktree.png)
+
+Ghosthub checks the project registration and SSH connection before creation.
+If the result cannot be confirmed, refresh the host before trying again;
+the worktree may already exist. Newer navigation takes precedence over
+automatically opening a completed worktree.
+
 To register a directory, run `kwt workspace add /absolute/path` on the remote
 host. Refresh that host in Ghosthub and select the row under **Directory Workspaces**.
 Ghosthub opens the registered directory and reuses its terminal when you switch
@@ -58,7 +70,7 @@ Idle worktrees also open with tmux's `destroy-unattached` option enabled.
 KWT keeps the new session alive during setup, then restores the session's
 captured policy when its first client attaches.
 
-Remote worktree creation/removal, other named sockets, protected
+Remote worktree removal, other named sockets, protected
 imports, and directory registration in the Rust UI are still in development.
 The remaining instructions on this page describe the macOS app.
 

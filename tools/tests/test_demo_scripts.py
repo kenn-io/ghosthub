@@ -31,6 +31,8 @@ WEBSITE_ASSET_NAMES = (
     "guide-rust-project-kill.png",
     "guide-rust-kwt-socket.png",
     "guide-rust-remote-directory.png",
+    "guide-rust-appearance.png",
+    "guide-rust-create-worktree.png",
     "guide-find.png",
     "guide-session-previews.png",
     "guide-session-activity.png",
