@@ -106,6 +106,9 @@ button {
   background: #0f1116;
   border-right: 1px solid #20242c;
   overflow-y: auto;
+  /* Reserve the scrollbar's width up front so right-aligned controls do not
+     shift when expanding a host makes the sidebar scroll. */
+  scrollbar-gutter: stable;
   user-select: none;
 }
 

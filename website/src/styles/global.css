@@ -31,6 +31,13 @@
   box-sizing: border-box;
 }
 
+/* Reserve the scrollbar's width up front so centered content does not shift
+   between pages that fit and pages that scroll, or when the lightbox locks
+   scrolling. */
+html {
+  scrollbar-gutter: stable;
+}
+
 body {
   margin: 0;
   background: var(--bg);

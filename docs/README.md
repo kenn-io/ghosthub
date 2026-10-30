@@ -53,6 +53,7 @@ pnpm check
 pnpm lint
 pnpm test
 pnpm build
+pnpm test:browser
 ```
 
 The website build checks the public docs in strict mode, copies the changelog,

@@ -2,6 +2,8 @@ node_modules/
 dist/
 .astro/
 .cache/
+test-results/
+playwright-report/
 public/docs/
 public/docs.md
 public/llms.txt
