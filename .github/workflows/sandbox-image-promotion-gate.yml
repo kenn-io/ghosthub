@@ -45,7 +45,7 @@ jobs:
     steps:
       - name: Mint repository-scoped status token
         id: status-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
           private-key: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}
@@ -164,7 +164,7 @@ jobs:
     steps:
       - name: Mint installation-audit token
         id: audit-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
           private-key: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}
@@ -263,7 +263,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.workflow_run.head_sha }}
           path: .dist/proposed-authority
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: '0.13.4'
           checksum: 2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f
@@ -342,7 +342,7 @@ jobs:
     steps:
       - name: Mint repository-scoped status token
         id: status-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.SANDBOX_PROMOTION_APP_CLIENT_ID }}
           private-key: ${{ secrets.SANDBOX_PROMOTION_APP_PRIVATE_KEY }}

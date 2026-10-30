@@ -33,10 +33,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271  # v6.0.9
+      - uses: step-security/action-setup@8beec6731697ff7a074963eaa56f6d8e02e1c399  # v6.1.0
         with:
           package_json_file: website/package.json
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.23.4
           cache: pnpm
@@ -47,6 +47,6 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - name: Check that pages paint with their stylesheets and fonts
-        uses: kenn-io/actions/first-paint@ee1ddcce6a620e49ba96f613bb8d113e0193b4f6 # first-paint, kenn-io/actions#6
+        uses: kenn-io/actions/first-paint@b523fb403607f01de5eec5f4556c7668544c70fe # main
         with:
           dist: website/dist
